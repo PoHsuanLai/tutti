@@ -38,7 +38,7 @@ use tutti_clap_test_plugin::{
     ProcessCapture, STATE_MAGIC,
 };
 use tutti_plugin_types::Control;
-use tutti_plugin_types::{ParamAddress, ParamFlags, ParamSteps, Request, RescanScope};
+use tutti_plugin_types::{ParamFlags, ParamId, ParamSteps, Request, RescanScope};
 
 /// CLAP event type constants, pinned here rather than imported: these are the
 /// wire values the host puts on the FFI, so a failure names what the plugin
@@ -243,11 +243,8 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     );
 
     let listed = loaded.parameter_list();
-    let got_ids: Vec<ParamAddress> = listed.iter().map(|p| p.id).collect();
-    let want_ids: Vec<ParamAddress> = probe_params()
-        .iter()
-        .map(|p| ParamAddress::Opaque(p.id.into()))
-        .collect();
+    let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id).collect();
+    let want_ids: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
         got_ids, want_ids,
         "host must hand back the plugin's own param ids, in the plugin's index \
@@ -265,7 +262,7 @@ fn host_projects_parameter_metadata_exactly() {
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
-        assert_eq!(got.id, ParamAddress::Opaque(want.id.into()), "param {i} id");
+        assert_eq!(got.id, want.id.into(), "param {i} id");
         assert_eq!(
             got.name.as_bytes(),
             want.name,
@@ -547,8 +544,8 @@ fn host_denormalizes_automation_against_the_parameter_range() {
 
     let mut params = ParameterChanges::reserved(1, 2);
     // Deliberately out of offset order, so the sort is exercised too.
-    params.add_change(ParamAddress::Opaque(p.id.into()), 192, 0.75);
-    params.add_change(ParamAddress::Opaque(p.id.into()), 64, 0.25);
+    params.add_change(p.id.into(), 192, 0.75);
+    params.add_change(p.id.into(), 64, 0.25);
     let ctx = ClapProcessContext {
         params: Some(&params),
         ..Default::default()
@@ -583,8 +580,8 @@ fn host_denormalizes_each_parameter_against_its_own_range() {
     let b = param(1); // -12 .. 12
 
     let mut params = ParameterChanges::reserved(2, 1);
-    params.add_change(ParamAddress::Opaque(a.id.into()), 0, 0.5);
-    params.add_change(ParamAddress::Opaque(b.id.into()), 0, 0.5);
+    params.add_change(a.id.into(), 0, 0.5);
+    params.add_change(b.id.into(), 0, 0.5);
     let ctx = ClapProcessContext {
         params: Some(&params),
         ..Default::default()

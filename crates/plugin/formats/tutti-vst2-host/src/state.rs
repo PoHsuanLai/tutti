@@ -12,7 +12,7 @@
 use vst::plugin::Plugin as _;
 
 use crate::error::{Result, Vst2Error};
-use crate::instance::Vst2Instance;
+use crate::loaded::Vst2Loaded;
 
 /// State format header bytes:
 /// - `b"CHK\0"` = chunk-based state (plugin's own binary format)
@@ -35,8 +35,8 @@ pub(crate) enum StateHeader<'a> {
 /// Validates the framing of a state blob and split off its payload.
 ///
 /// Pure: performs only the header/length/count checks that don't need a live
-/// plugin (the plugin-parameter-count cross-check stays in `set_state`).
-/// Errors mirror the `set_state` early-returns exactly.
+/// plugin (the plugin-parameter-count cross-check stays in `write_state`).
+/// Errors mirror the `write_state` early-returns exactly.
 pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
     if data.len() < 4 {
         return Err(Vst2Error::StateError(
@@ -89,9 +89,9 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
     }
 }
 
-impl Vst2Instance {
+impl Vst2Loaded {
     /// Captures the plugin's current state as a byte blob that
-    /// [`set_state`](Self::set_state) can restore.
+    /// [`write_state`](Self::write_state) can restore.
     ///
     /// Uses the plugin's own chunk format (`effGetChunk`) when it declares
     /// `effFlagsProgramChunks` and returns a non-empty chunk; otherwise saves
@@ -103,7 +103,7 @@ impl Vst2Instance {
     ///
     /// Returns [`Vst2Error::StateError`] if the plugin's chunk save fails, or if
     /// it declares parameters but exposes no `getParameter` to read them.
-    pub fn get_state(&self) -> Result<Vec<u8>> {
+    pub(crate) fn read_state(&self) -> Result<Vec<u8>> {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {
@@ -155,7 +155,7 @@ impl Vst2Instance {
     }
 
     /// Restores a state blob previously produced by
-    /// [`get_state`](Self::get_state).
+    /// [`read_state`](Self::read_state).
     ///
     /// Parameter values are clamped to `[0.0, 1.0]` before they are written.
     ///
@@ -165,7 +165,7 @@ impl Vst2Instance {
     /// header, truncated, or an empty chunk), if a parameter snapshot holds
     /// more parameters than the plugin declares, if the plugin rejects the
     /// chunk, or if it exposes no `setParameter` to write parameters with.
-    pub fn set_state(&self, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&self, data: &[u8]) -> Result<()> {
         match parse_state_header(data)? {
             StateHeader::Chunk(payload) => {
                 // `effSetChunk` reports whether the plugin took the blob.
@@ -182,10 +182,10 @@ impl Vst2Instance {
                 Ok(())
             }
             StateHeader::Params { count, values } => {
-                // `.max(0)` as in `get_state`: `numParams` is raw from the
+                // `.max(0)` as in `read_state`: `numParams` is raw from the
                 // `AEffect`. Unclamped, a plugin declaring `-1` makes this
                 // comparison `0 > -1` and rejects the empty snapshot
-                // `get_state` just wrote for that same plugin.
+                // `read_state` just wrote for that same plugin.
                 let actual_count = self.handle.instance.get_info().parameters.max(0);
                 if count > actual_count {
                     return Err(Vst2Error::StateError(format!(

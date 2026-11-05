@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::host::handles::{ParamAddress, PluginHandle};
+use crate::host::handles::PluginHandle;
 
 /// Edits the plugin reported, in order, waiting for [`PluginParamValues::drain_edits`].
 type Edits = Arc<Mutex<Vec<(u32, f32)>>>;
@@ -57,9 +57,9 @@ pub struct ParamRead {
 }
 
 impl ParamRead {
-    /// Reads every parameter the plugin lists, by id. A parameter whose
-    /// address has no `u32` id, or whose value the plugin does not answer, is
-    /// left out; a plugin that lists none gives an empty map.
+    /// Reads every parameter the plugin lists, by id. A parameter whose value
+    /// the plugin does not answer is left out; a plugin that lists none gives an
+    /// empty map.
     #[must_use]
     pub fn run(self) -> HashMap<u32, f32> {
         let params = self.handle.params();
@@ -67,10 +67,7 @@ impl ParamRead {
             .parameter_descriptors()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|p| {
-                let id = param_id(p.id)?;
-                Some((id, params.parameter_value(p.id)?))
-            })
+            .filter_map(|p| Some((p.id.get(), params.parameter_value(p.id)?)))
             .collect()
     }
 }
@@ -166,26 +163,19 @@ impl PluginParamValues {
     }
 }
 
-/// The `u32` a [`ParamAddress`] names in `ParamAddr::Id`.
-fn param_id(id: ParamAddress) -> Option<u32> {
-    match id {
-        ParamAddress::Opaque(id) => Some(id.get()),
-        ParamAddress::Index(i) => u32::try_from(i).ok(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::{HostParams, HostState, ParameterChangeSink};
     use crate::error::StateError;
+    use crate::handles::ParamId;
     use crate::handles::{Normalized, OptionalCapabilities};
     use crate::server::ParameterInfo;
 
     /// A backend listing `params` (address, value); a value of `None` is a
     /// parameter it lists but does not answer.
     struct FakeParams {
-        params: Vec<(ParamAddress, Option<f32>)>,
+        params: Vec<(ParamId, Option<f32>)>,
     }
 
     impl HostParams for FakeParams {
@@ -197,10 +187,10 @@ mod tests {
                     .collect(),
             )
         }
-        fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
+        fn parameter_value(&self, id: ParamId) -> Option<f32> {
             self.params.iter().find(|(a, _)| *a == id)?.1
         }
-        fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
+        fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
             false
         }
@@ -223,7 +213,7 @@ mod tests {
 
     /// A handle over [`FakeParams`], and the sink its reports go through
     /// (firing it is the plugin reporting a value).
-    fn handle(params: Vec<(ParamAddress, Option<f32>)>) -> (PluginHandle, ParameterChangeSink) {
+    fn handle(params: Vec<(ParamId, Option<f32>)>) -> (PluginHandle, ParameterChangeSink) {
         let sink = ParameterChangeSink::default();
         let handle = PluginHandle::from_backend(
             Arc::new(FakeParams { params }),
@@ -238,19 +228,19 @@ mod tests {
     /// `ParamRead::run` returns each listed parameter's value by its id, and
     /// `land` makes the mirror ready with them.
     ///
-    /// The fake lists an opaque id, a VST2 index and a parameter it does not
-    /// answer: the first two come back by their `u32`, the third is left out
-    /// (`Some(None)` once landed: listed nowhere the mirror knows).
+    /// The fake lists two parameters and one it does not answer: the first two
+    /// come back by their `u32`, the third is left out (`Some(None)` once
+    /// landed: listed nowhere the mirror knows).
     ///
     /// Mutations (each run, each failed): `run` returning an empty map (the
     /// values assert fails); `land` dropping its values (`is_ready` fails);
-    /// `param_id` mapping `Index(i)` to `None` (the index's value is missing).
+    /// `run` leaving out the second parameter (its value is missing).
     #[test]
     fn a_read_returns_the_descriptors_values_and_landing_it_makes_the_mirror_ready() {
         use crate::handles::ParamId;
-        let opaque = ParamAddress::Opaque(ParamId::new(7));
-        let index = ParamAddress::Index(3);
-        let silent = ParamAddress::Opaque(ParamId::new(9));
+        let opaque = ParamId::new(7);
+        let index = ParamId::new(3);
+        let silent = ParamId::new(9);
         let (plugin, _) = handle(vec![
             (opaque, Some(0.25)),
             (index, Some(0.75)),
@@ -292,7 +282,7 @@ mod tests {
     #[test]
     fn a_reported_edit_waits_for_the_read_then_reaches_the_mirror() {
         use crate::handles::ParamId;
-        let (plugin, sink) = handle(vec![(ParamAddress::Opaque(ParamId::new(1)), Some(0.1))]);
+        let (plugin, sink) = handle(vec![(ParamId::new(1), Some(0.1))]);
         let (mut mirror, read) = PluginParamValues::start(&plugin);
 
         sink.fire(1, 0.9);

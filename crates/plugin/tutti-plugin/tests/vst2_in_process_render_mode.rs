@@ -78,7 +78,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Vst2Loaded` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
@@ -133,8 +133,13 @@ fn drive_block(unit: &mut InProcessVst2Client) {
 
 /// One block of `frames` through `unit` prepared for blocks of up to `max`.
 fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
+    drive_blocks_at(unit, SAMPLE_RATE, max, frames);
+}
+
+/// [`drive_blocks`] at `hz`: the node is prepared at that rate.
+fn drive_blocks_at(unit: &mut InProcessVst2Client, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
-    let rate = SampleRate(SAMPLE_RATE);
+    let rate = SampleRate(hz);
     Node::prepare(unit, &Prepare::new(rate, tutti_core::Samples(max)));
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
@@ -246,5 +251,32 @@ fn restoring_realtime_reaches_the_plugin() {
     assert_eq!(
         cap.process_level, LEVEL_REALTIME,
         "the plugin is stuck offline after the render ended"
+    );
+}
+
+/// **A rate change keeps the render mode**: re-activating the plugin at a new
+/// rate (a rejoin and an activation) must not put it back to realtime. An export
+/// sets the mode and then prepares at its own rate.
+///
+/// Mutation (run): `Instance::set_offline_render` not recording the mode in
+/// `prepare` (the activation then re-applies the load-time realtime mode) → the
+/// block after the rate change reads level 2 → fails.
+#[test]
+fn a_rate_change_keeps_the_render_mode() {
+    let _guard = lock_probe();
+    let mut loaded = load();
+
+    assert!(loaded.handle.set_render_mode(RenderMode::Offline));
+    drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
+    // The drain point of the rate the audio side parked.
+    loaded.handle.editor_idle();
+    drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
+    let cap = read_capture(&loaded.path);
+
+    assert_eq!(cap.sample_rate, 44_100.0, "the rate change never happened");
+    assert!(cap.process_level_queries > 0, "the probe never asked");
+    assert_eq!(
+        cap.process_level, LEVEL_OFFLINE,
+        "the rate change re-activated the plugin in realtime mode"
     );
 }

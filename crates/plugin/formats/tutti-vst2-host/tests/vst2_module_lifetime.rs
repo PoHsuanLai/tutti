@@ -18,7 +18,7 @@
 //! The probe's switches are `static`s inside its image, and they survive only
 //! while the image stays mapped. A test helper that opens the library, writes a
 //! switch, and lets the handle drop decrements the refcount that keeps it
-//! mapped — and with no `Vst2Instance` holding it open at that moment, the
+//! mapped — and with no `Active` holding it open at that moment, the
 //! write goes with the unload and the next load maps a fresh image reading the
 //! default. That is why the helpers `std::mem::forget` their handle.
 //!
@@ -31,10 +31,12 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::Vst2Instance;
-
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
@@ -91,7 +93,7 @@ fn reset_close_count(path: &PathBuf) {
     });
 }
 
-/// Pins the ordering in `Vst2Handle`'s `Drop`. Dropping a `Vst2Instance` must
+/// Pins the ordering in `Vst2Handle`'s `Drop`. Dropping an `Active` must
 /// dispatch `effClose`, and must do so while the module is still mapped.
 ///
 /// The two halves are one assertion, because the count is *read out of the
@@ -118,7 +120,7 @@ fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
          this nonzero"
     );
 
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     assert_eq!(
         close_count(&path),
@@ -131,7 +133,7 @@ fn dropping_an_instance_dispatches_eff_close_while_the_module_stays_mapped() {
     assert_eq!(
         close_count(&path),
         1,
-        "dropping a Vst2Instance must dispatch effClose exactly once, and the \
+        "dropping an `Active` must dispatch effClose exactly once, and the \
          module must still be mapped afterwards to report it. 0 means either \
          the instance destructor was skipped (the `ManuallyDrop` bug) or the \
          module was unloaded with the instance, taking the counter with it — \
@@ -157,12 +159,12 @@ fn the_module_survives_an_instance_lifetime_and_a_reload() {
     reset_close_count(&path);
 
     drop(
-        Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+        Active::load(&path, SAMPLE_RATE, BLOCK)
             .unwrap_or_else(|e| panic!("first load failed: {e:?}")),
     );
     assert_eq!(close_count(&path), 1, "the first instance was closed");
 
-    let second = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let second = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("second load failed: {e:?}"));
     assert_eq!(
         close_count(&path),
@@ -218,10 +220,7 @@ fn a_switch_written_through_a_leaked_handle_survives_the_hosts_load() {
     // dispatch into it. If the write had gone to an image that was subsequently
     // unloaded, the host's load would map a fresh one and the close below would
     // land on a counter that never saw the reset.
-    drop(
-        Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
-            .unwrap_or_else(|e| panic!("load failed: {e:?}")),
-    );
+    drop(Active::load(&path, SAMPLE_RATE, BLOCK).unwrap_or_else(|e| panic!("load failed: {e:?}")));
 
     assert_eq!(
         close_count(&path),

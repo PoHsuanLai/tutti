@@ -7,16 +7,19 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{
-    MidiEvent, RenderScratch, Samples, TransportInfo, Vst2Instance, Vst2ProcessContext,
-};
+use tutti_plugin_types::Control;
+use tutti_vst2_host::{MidiEvent, Samples, TransportInfo, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, channel_tag};
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
@@ -30,10 +33,10 @@ fn lock_probe() -> MutexGuard<'static, ()> {
 }
 
 /// Load the probe through the real host, capture and switches reset.
-fn load_probe() -> (Vst2Instance, PathBuf) {
+fn load_probe() -> (Active, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     (instance, path)
 }
@@ -63,7 +66,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Active` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
@@ -112,19 +115,16 @@ fn host_loads_probe_and_reports_declared_metadata() {
     assert_eq!(meta.name, "Tutti VST2 Probe");
     assert_eq!(meta.vendor, "Tutti");
     // The probe's defaults: stereo in, stereo out, four parameters.
-    assert_eq!(meta.num_inputs.count(), 2);
-    assert_eq!(meta.num_outputs.count(), 2);
+    assert_eq!(instance.pins().0.count(), 2);
+    assert_eq!(instance.pins().1.count(), 2);
     assert_eq!(instance.parameter_count(), 4);
-    assert_eq!(meta.latency_samples, Samples::ZERO);
+    assert_eq!(instance.wiring().latency_samples, Samples::ZERO);
 }
 
 #[test]
 fn capture_round_trips_what_the_host_sent() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe();
-
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     let inputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
     let mut outputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
@@ -140,7 +140,7 @@ fn capture_round_trips_what_the_host_sent() {
     ];
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE).midi(&midi);
-    instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
+    instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx);
 
     let cap = read_capture(&path);
 
@@ -194,8 +194,6 @@ fn the_transport_changed_edge_spans_blocks() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe();
 
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
     let inputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
     let mut outputs: Vec<Vec<f32>> = (0..2).map(|_| vec![0.0f32; BLOCK]).collect();
     let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
@@ -206,7 +204,7 @@ fn the_transport_changed_edge_spans_blocks() {
     let mut changed = Vec::new();
     for transport in [&stopped, &playing, &playing, &stopped] {
         let ctx = Vst2ProcessContext::new(SAMPLE_RATE).transport(transport);
-        instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
+        instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx);
         let cap = read_capture(&path);
         assert!(cap.time_info_present, "the plugin read no transport");
         changed.push(cap.time_flags & TRANSPORT_CHANGED != 0);
@@ -220,9 +218,6 @@ fn tag_passthrough_oracle_produces_exact_samples() {
     let _guard = lock_probe();
     let (mut instance, path) = load_probe();
 
-    let meta = instance.metadata().clone();
-    let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
-
     // A distinct ramp per channel, so a host that copies channel 0 into both
     // outputs fails on content as well as tag.
     let inputs: Vec<Vec<f32>> = (0..2)
@@ -233,7 +228,7 @@ fn tag_passthrough_oracle_produces_exact_samples() {
     let mut out_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
-    instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
+    instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx);
 
     // Confirm the render happened before asserting on its output, or a host
     // that skipped `process` is judged on whatever was left in `outputs`.

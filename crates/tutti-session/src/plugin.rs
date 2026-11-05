@@ -827,7 +827,7 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamAddress};
+    use tutti_plugin::handles::{Normalized, OptionalCapabilities, ParamId};
     use tutti_plugin::server::ParameterInfo;
 
     /// A backend that answers `state` (or declines), counts its saves, and
@@ -837,7 +837,7 @@ mod tests {
         saves: Arc<AtomicUsize>,
         dead: Arc<AtomicBool>,
         /// The parameters it lists, and their values.
-        params: Vec<(ParamAddress, f32)>,
+        params: Vec<(ParamId, f32)>,
     }
 
     impl tutti_plugin::backend::HostParams for Fake {
@@ -849,10 +849,10 @@ mod tests {
                     .collect(),
             )
         }
-        fn parameter_value(&self, id: ParamAddress) -> Option<f32> {
+        fn parameter_value(&self, id: ParamId) -> Option<f32> {
             self.params.iter().find(|(a, _)| *a == id).map(|&(_, v)| v)
         }
-        fn set_parameter_value(&self, _id: ParamAddress, _value: Normalized) {}
+        fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
             self.dead.load(Ordering::SeqCst)
         }
@@ -922,7 +922,7 @@ mod tests {
     /// sink its reports go through (firing it is the plugin reporting).
     fn fake_handle(
         state: Option<Vec<u8>>,
-        params: Vec<(ParamAddress, f32)>,
+        params: Vec<(ParamId, f32)>,
     ) -> (PluginHandle, tutti_plugin::backend::ParameterChangeSink) {
         let sink = tutti_plugin::backend::ParameterChangeSink::default();
         let handle = PluginHandle::from_backend(
@@ -1168,7 +1168,7 @@ mod tests {
     #[cfg(feature = "modulation")]
     #[test]
     fn a_crossfade_to_another_plugin_rebuilds_the_mirror() {
-        let param = ParamAddress::Index(3);
+        let param = ParamId::new(3);
         let mut rig = rig(None);
         let (outgoing, _) = fake_handle(None, vec![(param, 0.25)]);
         let (mut mirror, read) = tutti_plugin::PluginParamValues::start(&outgoing);

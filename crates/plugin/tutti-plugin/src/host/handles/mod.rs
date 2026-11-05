@@ -25,18 +25,16 @@ pub use crate::host::node::{
 // input. Named here because a caller matching on the `Option` a
 // `PluginClient` accessor returns has to be able to name what is inside it.
 pub use crate::host::node::TransportView;
-// `ParamAddress` because a plugin's parameters are addressed by one
+// `ParamId` because a plugin's parameters are addressed by one
 // (`HostParams::parameter_value`, `set_parameter_value`): a caller of those must be
 // able to name it without reaching into the private `protocol` module.
-// `ParamId` for the same reason one step further in — every `ParamAddress`
+// `ParamId` for the same reason one step further in — every `ParamId`
 // variant wraps one, so naming the address without it builds nothing.
 // `Normalized` for the same rule applied to values rather than addresses:
 // `HostParams::set_parameter_value` takes one, so a caller that cannot name it
 // cannot call the method, and an out-of-crate backend cannot implement the
 // trait at all.
-pub use crate::protocol::{
-    ChordValue, Normalized, ParamAddress, ParamId, Preset, PresetId, ScaleValue,
-};
+pub use crate::protocol::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
 pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 

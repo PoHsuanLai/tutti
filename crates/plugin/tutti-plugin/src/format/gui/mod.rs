@@ -14,7 +14,7 @@ mod clap;
 mod vst3;
 
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamAddress};
+use crate::protocol::{Normalized, ParamId};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
@@ -51,14 +51,14 @@ pub(crate) trait PluginEditor: Send {
     /// follows a host-side edit. [`Normalized`] for the same reason the audio
     /// path takes one: this is the host's authoring domain, and each impl
     /// denormalizes at its own FFI edge if its format needs plain units.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized);
+    fn set_parameter(&mut self, id: ParamId, value: Normalized);
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
     ///
     /// Every format with an editor here is one of the three opaque-id formats
     /// (VST2's in-process editor does not go through this trait), so an impl
     /// tags what the plugin handed it rather than choosing a model.
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)>;
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)>;
 
     /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
     /// GUI instance so the editor can update its automation UI feedback. Each

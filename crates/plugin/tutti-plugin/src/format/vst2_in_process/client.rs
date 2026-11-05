@@ -1,14 +1,15 @@
 //! `InProcessVst2Client`: the graph node (`node.rs`) that drives a VST2 plugin
 //! from the host audio thread.
 //!
-//! The instance lives behind `Arc<Mutex<tutti_vst2_host::Vst2Instance>>` shared
-//! with the matching control backend. Audio thread acquires with
+//! The plugin (both halves of its activation, `super::instance::Instance`) lives
+//! behind an `Arc<Mutex<_>>` shared with the matching control backend. Audio thread acquires with
 //! `try_lock`; on contention it falls back to silence and bumps
 //! [`InProcessVst2Client::contention_count`].
 //!
-//! The plugin's render scratch is sized in the node's `prepare`, to the
-//! graph's largest block; the channel tables a block hands `vst2-host` are
-//! stack `ArrayVec`s of the graph's own buffers.
+//! The plugin's render scratch is the Processor's, sized at the activation to
+//! the block the plugin was told; a longer graph block is split before it
+//! reaches the plugin. The channel tables a block hands `vst2-host` are stack
+//! `ArrayVec`s of the graph's own buffers.
 //! A block is allocation-free in steady state (verified by the
 //! `assert_no_alloc` test in `tests/`).
 
@@ -20,11 +21,12 @@ use parking_lot::Mutex;
 use tutti_core::{MeterMap, MeterSlotReader, ProjectMeter, Samples};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_vst2_host::{PluginInfo, RenderScratch, Vst2Instance, Vst2ProcessContext};
+use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext};
 
+use super::instance::Instance;
 use crate::host::node::transport_source::{self, HostClock, ProjectTime, SteadyTime};
 use crate::host::node::{DeliveryCounters, MidiIntake, ParamDelivery, PluginMeter, SegmentPoints};
-use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
+use crate::protocol::{Features, MidiEventVec, ParamId, TransportInfo};
 
 /// A VST2 plugin running inside the host process, as a graph node.
 ///
@@ -44,8 +46,13 @@ use crate::protocol::{Features, MidiEventVec, ParamAddress, TransportInfo};
 /// library, restored from this one's saved state. See
 /// [`fork_instance`](Self::fork_instance).
 pub struct InProcessVst2Client {
-    pub(super) inner: Arc<Mutex<Vst2Instance>>,
+    pub(super) inner: Arc<Mutex<Instance>>,
     pub(super) metadata: PluginInfo,
+    /// The pin counts, latency and tail the plugin declared when the node was
+    /// built: what `shape` and `process` size by while the instance lock is
+    /// held elsewhere. Moves are reported through the handle
+    /// (`PluginInvalidation`), not here.
+    pub(super) declared: Declared,
     /// The block's MIDI in: its event input's.
     pub(super) midi: MidiEventVec,
     /// Takes the event input's MIDI into `midi`, carrying across blocks
@@ -59,12 +66,6 @@ pub struct InProcessVst2Client {
     /// read against. Stored rather than passed in per block so the node's
     /// declared capability and its delivered behaviour read from one value.
     pub(super) features: Features,
-    /// Audio scratch handed to `vst::AudioBuffer::from_raw`: the one copy
-    /// each way between the graph's buffers and the plugin's.
-    pub(super) scratch: RenderScratch,
-    /// The block length `scratch` is sized for: the largest block the node
-    /// was prepared for (zero before it is).
-    pub(super) frames: usize,
     pub(super) sample_rate: f64,
     /// A rate the graph handed this node that the plugin has not been told
     /// about yet, or [`NO_PENDING_RATE`] when there is none.
@@ -109,11 +110,19 @@ impl std::fmt::Debug for InProcessVst2Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InProcessVst2Client")
             .field("metadata", &self.metadata)
-            .field("frames", &self.frames)
             .field("sample_rate", &self.sample_rate)
             .field("origin", &self.origin)
             .finish_non_exhaustive()
     }
+}
+
+/// What the plugin declared when the node was built.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Declared {
+    pub(super) inputs: ChannelLayout,
+    pub(super) outputs: ChannelLayout,
+    pub(super) latency: Samples,
+    pub(super) tail: crate::protocol::PluginTail,
 }
 
 /// Who tells the plugin the rate the node is prepared at.
@@ -140,7 +149,7 @@ pub(super) enum RateDelivery {
 /// plugin node maps it ([`transport_source::from_cx`]), with the project
 /// meter for the signature and bar. For an offline fork the `Cx` is the
 /// render's. The snapshot is built in `process` before the plugin is
-/// entered: `Vst2Instance::process_f32` publishes it to the cell the
+/// entered: `Vst2Processor::process_f32` publishes it to the cell the
 /// callback reads, then calls the plugin.
 ///
 /// A clone shares the meter slot and reads it through a reader of its own
@@ -259,14 +268,14 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
 
 /// Dispatch a parked rate, if any, and report whether one reached the plugin.
 ///
-/// Main thread only: `Vst2Instance::set_sample_rate` runs the `effMainsChanged`
+/// Main thread only: `Instance::set_sample_rate` runs the `effMainsChanged`
 /// bracket, which allocates. This is the drain half of the deferral
 /// [`queue_sample_rate`] opens.
 ///
 /// The rate is claimed out of the cell before the lock is tried and put back if
 /// the lock is unavailable — but only if nothing newer arrived meanwhile, so a
 /// stale rate cannot overwrite a fresh one.
-pub(super) fn drain_sample_rate(cell: &AtomicU64, inner: &Mutex<Vst2Instance>) -> bool {
+pub(super) fn drain_sample_rate(cell: &AtomicU64, inner: &Mutex<Instance>) -> bool {
     let bits = cell.swap(NO_PENDING_RATE, Ordering::Relaxed);
     if bits == NO_PENDING_RATE {
         return false;
@@ -285,36 +294,33 @@ pub(super) fn drain_sample_rate(cell: &AtomicU64, inner: &Mutex<Vst2Instance>) -
 }
 
 impl InProcessVst2Client {
-    pub(crate) fn new(
-        inner: Arc<Mutex<Vst2Instance>>,
+    pub(super) fn new(
+        inner: Arc<Mutex<Instance>>,
         metadata: PluginInfo,
+        declared: Declared,
         features: Features,
         sample_rate: f64,
         pending_sample_rate: Arc<AtomicU64>,
         contention_count: Arc<AtomicU64>,
         origin: Arc<Path>,
-        param_count: i32,
+        param_count: usize,
     ) -> Self {
         // A slot per declared parameter, by index: every parameter can move
         // in one block. Its point room is sized in `prepare`.
         let params = ParamDelivery::closed(
-            (0..param_count.max(0)).map(ParamAddress::Index),
+            (0..param_count as u32).map(ParamId::new),
             Arc::new(DeliveryCounters::default()),
         );
         let mut segments = SegmentPoints::default();
         segments.prepare(params.room());
-        // Empty until the node is prepared: `prepare` sizes it to the
-        // graph's largest block.
-        let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, 0);
         Self {
             inner,
             metadata,
+            declared,
             midi: MidiEventVec::new(),
             intake: MidiIntake::default(),
             transport: TransportFeed::new(),
             features,
-            scratch,
-            frames: 0,
             sample_rate,
             pending_sample_rate,
             contention_count,
@@ -383,17 +389,6 @@ impl InProcessVst2Client {
 }
 
 impl InProcessVst2Client {
-    /// Size the scratch for blocks of up to `frames`: a no-op when it
-    /// already is. Control thread (the node's `prepare`): it allocates.
-    pub(super) fn ensure_scratch_size(&mut self, frames: usize) {
-        if frames <= self.frames {
-            return;
-        }
-        self.frames = frames;
-        self.scratch =
-            RenderScratch::new(self.metadata.num_inputs, self.metadata.num_outputs, frames);
-    }
-
     /// Take `sample_rate` as the rate blocks run at, and hand it to the
     /// plugin as [`RateDelivery`] says: parked for the main thread (see
     /// `pending_sample_rate`), or, on a fork, dispatched here. What the
@@ -404,7 +399,7 @@ impl InProcessVst2Client {
         let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
         match self.rate_delivery {
-            // Parked, not dispatched: `Vst2Instance::set_sample_rate` runs the
+            // Parked, not dispatched: `Instance::set_sample_rate` runs the
             // allocating `effMainsChanged` bracket, which must not race a
             // block the audio thread is rendering through the live plugin.
             RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
@@ -449,13 +444,12 @@ pub(super) fn block_context<'a>(
 /// Returns whether the plugin ran. On `false` (the instance was locked)
 /// `outputs` is untouched: the caller writes the silence.
 pub(super) fn drive_f32(
-    inner: &Arc<Mutex<Vst2Instance>>,
+    inner: &Arc<Mutex<Instance>>,
     contention: &AtomicU64,
     params: &ParamDelivery,
     midi: &mut MidiEventVec,
     midi_out: &mut dyn FnMut(&[MidiEvent]),
     transport: &TransportInfo,
-    scratch: &mut RenderScratch,
     inputs: &[&[f32]],
     outputs: &mut [&mut [f32]],
     size: usize,
@@ -468,9 +462,9 @@ pub(super) fn drive_f32(
     tutti_plugin_types::insertion_sort_by_key(&mut midi_events, |e| e.frame_offset);
     match inner.try_lock() {
         Some(mut instance) => {
-            apply_params(&instance, params);
+            apply_params(&mut instance, params);
             let ctx = block_context(sample_rate, &midi_events, transport);
-            let out = instance.process_f32(inputs, outputs, size, &ctx, scratch);
+            let out = instance.process_f32(inputs, outputs, size, &ctx);
             // The plugin's MIDI-out, each on its frame_offset.
             midi_out(out);
             true
@@ -488,27 +482,14 @@ pub(super) fn drive_f32(
 /// VST 2.4 has no sample-accurate parameter events, so a point inside the
 /// block lands on its first frame, and only the latest one counts.
 ///
-/// An opaque address addresses nothing on a VST2 plugin and is skipped. An
-/// index the plugin did not declare has no slot (the delivery is closed), so
-/// none reaches here; a write `Vst2Instance` refuses anyway is counted
-/// dropped. (No test reaches that count: both bounds are the count the
-/// plugin declared at load, so a refusal cannot be provoked through the
-/// node.) Under the instance lock, on the audio thread:
-/// `setParameter` is the call a VST2 host automates through, and
-/// `Vst2Instance::set_parameter` does not allocate.
-fn apply_params(instance: &Vst2Instance, params: &ParamDelivery) {
-    let mut refused = 0;
-    for queue in &params.chunk().queues {
-        let (Some(point), Some(index)) = (queue.points.last(), queue.param_id.index()) else {
-            continue;
-        };
-        // Already on the unit interval: `Normalized` cannot be built
-        // otherwise. `f32` is the VST2 ABI's parameter type.
-        if !instance.set_parameter(index, point.value.get() as f32) {
-            refused += 1;
-        }
-    }
-    params.refused(refused);
+/// An id the plugin did not declare has no slot (the delivery is closed), so
+/// none reaches here; a write the plugin refuses anyway is counted dropped. (No
+/// test reaches that count: the bound is the count the plugin declared at
+/// load, so a refusal cannot be provoked through the node.) Under the instance
+/// lock, on the audio thread: `setParameter` is the call a VST2 host automates
+/// through, and the Processor's write does not allocate.
+fn apply_params(instance: &mut Instance, params: &ParamDelivery) {
+    params.refused(u64::from(instance.write_automation(params.chunk())));
 }
 
 #[cfg(test)]

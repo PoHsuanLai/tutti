@@ -270,14 +270,12 @@ returns `Err((Self, ClapError))` — the *unconsumed* `ClapLoaded` comes back on
 refusal, so a plugin that declines 64-bit audio can be retried at `f32` without
 being reloaded.
 
-**One fused type — VST2.** `Vst2Instance` has no split, because VST2 has no
-meaningful state to split off: `effOpen`, `effSetSampleRate`, `effSetBlockSize`
-and the first `effMainsChanged(1)` all run during construction, and the instance
-is ready to process the moment it exists. A `Vst2Loaded` type would carry no
-operations the fused type does not, so the split would buy a type boundary that
-guards nothing. Suspend and resume remain as ordinary `&mut self` methods with a
-`resumed: bool`, because in VST2 they are a *reconfiguration bracket* — the thing
-you do around a sample rate change — and not a lifecycle stage a host parks in.
+**The same split — VST2.** `Vst2Loaded` is the plugin after `effOpen`, and its
+activation (`effSetSampleRate`, `effSetBlockSize`, `effSetProcessPrecision`, then
+`effMainsChanged(1)`) splits it into a `Vst2Processor` and a `Vst2Controller`,
+as the other formats'. The Controller's dispatcher calls run beside a rendering
+Processor by the host convention every VST2 host follows, which the format does
+not state; a rate change is the rejoin and an activation, like the others'.
 
 **Internal state enum — AU.** `AuInstance` carries a private `Loaded` / `Ready`
 state as data, because both AU transitions are fallible in *both* directions and a

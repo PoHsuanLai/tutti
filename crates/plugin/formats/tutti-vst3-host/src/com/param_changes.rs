@@ -36,7 +36,7 @@ use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
 use crate::types::{ParameterChanges, ParameterPoint};
-use tutti_plugin_types::{Normalized, ParamAddress, PointPool};
+use tutti_plugin_types::{Normalized, PointPool};
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
@@ -215,7 +215,7 @@ impl ParameterChangesImpl {
             // Outbound across the COM edge: the plugin answered with a bare
             // `ParamID`, and VST3 ids are opaque — tag it rather than letting
             // the number travel with its model unstated.
-            let param_id = ParamAddress::Opaque(queue.param_id().into());
+            let param_id = queue.param_id().into();
             queue.for_each_point(|point| {
                 out.add_change(param_id, point.sample_offset, point.value.get());
             });
@@ -351,12 +351,11 @@ mod tests {
     /// counted too → fails.
     #[test]
     fn a_prepended_point_without_room_is_counted_not_grown_into() {
-        use tutti_plugin_types::ParamAddress;
         // Two queues of two points: one is full of automation for 7, one is free.
         let list = unpooled(2, 2);
         let mut changes = ParameterChanges::reserved(1, 2);
-        changes.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.1);
-        changes.add_change(ParamAddress::Opaque(7u32.into()), 4, 0.2);
+        changes.add_change(7u32.into(), 0, 0.1);
+        changes.add_change(7u32.into(), 4, 0.2);
         list.refill_from_changes(&changes);
 
         list.prepend_point(7, Normalized::new(0.9));
@@ -371,7 +370,7 @@ mod tests {
         let points = |id: u32| -> Vec<(i32, f64)> {
             out.queues
                 .iter()
-                .find(|q| q.param_id == ParamAddress::Opaque(id.into()))
+                .find(|q| q.param_id == id.into())
                 .map(|q| {
                     q.points
                         .iter()
@@ -456,11 +455,7 @@ mod tests {
         let mut changes = ParameterChanges::reserved(num_queues, points_per);
         for q in 0..num_queues {
             for p in 0..points_per {
-                changes.add_change(
-                    ParamAddress::Opaque((q as u32).into()),
-                    p as i32,
-                    p as f64 * 0.01,
-                );
+                changes.add_change((q as u32).into(), p as i32, p as f64 * 0.01);
             }
         }
         changes
@@ -684,7 +679,7 @@ mod tests {
         assert_eq!(out.point_storage(), storage);
         assert_eq!(out.points_overflowed(), 1);
         for q in &out.queues {
-            let id = q.param_id.opaque().expect("opaque").get();
+            let id = q.param_id.get();
             let want = if (pooled..2 * pooled).contains(&id) {
                 room
             } else {
@@ -692,9 +687,7 @@ mod tests {
             };
             assert_eq!(q.points.len(), want, "parameter {id}");
         }
-        let third = out
-            .queue(ParamAddress::Opaque((2 * pooled).into()))
-            .expect("queued");
+        let third = out.queue((2 * pooled).into()).expect("queued");
         let last = floor as i32;
         assert_eq!(third.points.last().map(|p| p.sample_offset), Some(last));
     }
@@ -716,7 +709,7 @@ mod tests {
                     continue;
                 }
                 changes.add_change(
-                    ParamAddress::Opaque(id.into()),
+                    id.into(),
                     2 * k as i32,
                     ((id as usize + k) % 5) as f64 / 8.0,
                 );
@@ -869,7 +862,7 @@ mod tests {
         let view = plugin_view(&list);
         assert_eq!(view.len(), PARAMS as usize);
         for (q, (id, points)) in chunk.queues.iter().zip(&view) {
-            assert_eq!(Some(*id), q.param_id.opaque().map(|p| p.get()));
+            assert_eq!(*id, q.param_id.get());
             let want: Vec<(i32, f64)> = q
                 .points
                 .iter()

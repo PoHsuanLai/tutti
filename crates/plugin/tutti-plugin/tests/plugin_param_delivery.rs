@@ -30,7 +30,7 @@ use param_probe::{knob, knobs, load_vst2_probe, until};
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::{ForkMode, ForkTarget, Prepare, Transport};
 use tutti_nodes::automation::{ControlLaneNode, LaneControls};
-use tutti_plugin::handles::{ParamAddress, ParamId, PluginHandle};
+use tutti_plugin::handles::{ParamId, PluginHandle};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -50,7 +50,7 @@ fn value(i: usize) -> f32 {
 fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
     handle
         .params()
-        .parameter_value(ParamAddress::Index(i32::try_from(i).expect("small")))
+        .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
 }
 
 /// A rolling graph with the plugin fed by `lanes`.
@@ -176,7 +176,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
         || read(&handle, p) == Some(0.25),
     ));
     handle.params().set_parameter_value(
-        ParamAddress::Index(p as i32),
+        ParamId::new((p as i32) as u32),
         tutti_plugin::handles::Normalized::new(0.75),
     );
     assert!(
@@ -211,7 +211,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
 }
 
 /// The reference CLAP plugin's gain parameter, and its plain range in dB.
-const GAIN: ParamAddress = ParamAddress::Opaque(ParamId::new(77));
+const GAIN: ParamId = ParamId::new(77);
 /// [`GAIN`]'s number, as a lane carries it.
 const GAIN_ID: u32 = 77;
 const GAIN_DB: (f64, f64) = (-60.0, 12.0);

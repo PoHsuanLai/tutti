@@ -116,6 +116,14 @@ jobs:
       # The two vendored forks are excluded: they are third-party code we do not
       # restyle, and they carry pre-existing lint debt that is not ours to pay.
       - run: cargo clippy --locked --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
+      # One format at a time: a test helper or a match that only the other
+      # formats use is dead or irrefutable here, and the workspace run (every
+      # format on) cannot see it.
+      - name: clippy (plugin server, one format)
+        run: |
+          for f in vst2 vst3 clap; do
+            cargo clippy --locked -p tutti-plugin-server --no-default-features --features "$f" --all-targets -- -D warnings
+          done
 
   # The same lint, on Windows. The `clippy` job above cannot see a
   # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on

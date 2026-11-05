@@ -8,8 +8,8 @@ use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::host::node::MidiIntake;
 use crate::protocol::{
-    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamAddress, ParameterChanges,
-    ParameterPoint, ParameterQueue, ProcessAudioData, midi_from_wire,
+    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamId, ParameterChanges, ParameterPoint,
+    ParameterQueue, ProcessAudioData, midi_from_wire,
 };
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
@@ -161,7 +161,7 @@ pub(super) struct Owed {
     /// The parameter changes of blocks skipped as stale, as each parameter's
     /// last value, on frame 0: sent on the first frame of the next block that
     /// goes. A plain list, cleared (its capacity kept) once merged.
-    carried: Vec<(ParamAddress, ParameterPoint)>,
+    carried: Vec<(ParamId, ParameterPoint)>,
     /// The MIDI of the blocks that go, filtered: once a stale block is
     /// skipped, the rest of every SysEx open in it is not sent, so the
     /// server's reassembler never completes one with a gap.
@@ -901,7 +901,7 @@ fn recv_reply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::ParamAddress;
+    use crate::protocol::ParamId;
 
     /// **A carried value goes into a reserved queue of the block's buffer**,
     /// so the buffer returns to the pool with its point room intact. A
@@ -916,17 +916,17 @@ mod tests {
     fn a_carried_value_fills_a_reserved_queue() {
         let mut owed = Owed::default();
         let mut skipped = ParameterChanges::reserved(1, 1);
-        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
+        skipped.add_change(ParamId::new(7), 3, 0.25);
         owed.carry(&skipped);
 
         let mut block = ParameterChanges::reserved(4, 40);
-        assert!(block.open_queue(ParamAddress::Index(1)));
+        assert!(block.open_queue(ParamId::new(1)));
         if let Some(q) = block.queues.last_mut() {
             q.add_point(5, 0.5);
         }
         owed.merge_carried(&mut block);
 
-        let carried = block.queue(ParamAddress::Index(7)).expect("carried");
+        let carried = block.queue(ParamId::new(7)).expect("carried");
         assert_eq!(carried.points.len(), 1);
         assert_eq!(carried.points[0].sample_offset, 0);
         assert!((carried.points[0].value.get() - 0.25).abs() < 1e-12);
@@ -954,13 +954,13 @@ mod tests {
     #[test]
     fn a_carried_value_past_the_queues_is_dropped_but_the_placeholder_takes_all() {
         let mut skipped = ParameterChanges::reserved(2, 1);
-        skipped.add_change(ParamAddress::Index(7), 3, 0.25);
-        skipped.add_change(ParamAddress::Index(8), 3, 0.5);
+        skipped.add_change(ParamId::new(7), 3, 0.25);
+        skipped.add_change(ParamId::new(8), 3, 0.5);
 
         let mut owed = Owed::default();
         owed.carry(&skipped);
         let mut block = ParameterChanges::reserved_bridged(1, 40);
-        assert!(block.add_change(ParamAddress::Index(1), 5, 0.5));
+        assert!(block.add_change(ParamId::new(1), 5, 0.5));
         assert_no_alloc::assert_no_alloc(|| owed.merge_carried(&mut block));
         assert_eq!(block.queues.len(), 1);
         assert_eq!(block.points_overflowed(), 2);
@@ -972,7 +972,7 @@ mod tests {
         assert_eq!(placeholder.queues.len(), 2);
         assert_eq!(placeholder.points_overflowed(), 0);
         for (id, value) in [(7, 0.25), (8, 0.5)] {
-            let q = placeholder.queue(ParamAddress::Index(id)).expect("queued");
+            let q = placeholder.queue(ParamId::new(id as u32)).expect("queued");
             assert_eq!(q.points.len(), 1);
             assert_eq!(
                 (q.points[0].sample_offset, q.points[0].value.get()),
@@ -1003,7 +1003,7 @@ mod tests {
         let room = crate::protocol::ParameterQueue::chunk_room(512);
         let moved = PARAMS - UNMOVED;
         let full = moved - ParameterChanges::POOLED_QUEUES..moved;
-        let addr = |i: usize| ParamAddress::Index(i as i32);
+        let addr = |i: usize| ParamId::new((i as i32) as u32);
 
         let mut skipped = ParameterChanges::reserved(PARAMS, 1);
         for i in 0..PARAMS {

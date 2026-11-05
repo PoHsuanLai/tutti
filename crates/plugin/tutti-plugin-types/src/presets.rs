@@ -37,9 +37,9 @@ use serde::{Deserialize, Serialize};
 /// - **VST2** — genuinely positional: `effProgramChange` takes an index in
 ///   `[0, numPrograms)`.
 ///
-/// Split on the *shape* of the identifier rather than on the format, for the
-/// reason [`ParamAddress`](crate::ParamAddress) gives: `Au(i32) | Vst2(i32)`
-/// would be two names for one behaviour, and nothing downstream could act on
+/// Split on the *shape* of the identifier rather than on the format:
+/// `Au(i32) | Vst2(i32)` would be two names for one behaviour, and nothing
+/// downstream could act on
 /// the distinction. What a consumer must decide is whether the value is a
 /// number, a pair, or a path — which is exactly the line these variants draw.
 ///

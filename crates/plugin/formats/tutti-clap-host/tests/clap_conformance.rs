@@ -48,11 +48,11 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 /// such an id has no known range and would otherwise reach the plugin
 /// un-denormalized (see `add_param_changes` in `events.rs`). An invented id
 /// would make these tests fail for a reason unrelated to what they assert.
-use tutti_plugin_types::{ParamAddress, ParamId};
+use tutti_plugin_types::ParamId;
 
-/// The probe's real `clap_id`. A `ParamAddress` because that is what a queue
+/// The probe's real `clap_id`. A `ParamId` because that is what a queue
 /// is keyed by — CLAP ids are opaque handles, never positional indices.
-const REAL_PARAM_ID: ParamAddress = ParamAddress::Opaque(ParamId::new(101));
+const REAL_PARAM_ID: ParamId = ParamId::new(101);
 
 /// The same id as the bare `clap_id` the FFI carries, for assertions against
 /// captured raw events.

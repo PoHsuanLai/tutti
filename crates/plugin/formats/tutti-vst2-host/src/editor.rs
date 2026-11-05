@@ -5,10 +5,10 @@
 //! of the crate never touches the unsafe conversion.
 
 use crate::error::{Result, Vst2Error};
-use crate::instance::Vst2Instance;
+use crate::loaded::Vst2Loaded;
 use crate::types::{EditorSize, WindowHandle};
 
-impl Vst2Instance {
+impl Vst2Loaded {
     /// Returns `true` if the plugin has a native editor.
     ///
     /// Probed once at load, so this does not call into the plugin. `false`

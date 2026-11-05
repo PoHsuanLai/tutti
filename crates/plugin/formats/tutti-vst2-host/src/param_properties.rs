@@ -46,9 +46,10 @@
 //! spec'd success value instead of testing `!= 0`.
 
 use vst::api;
-use vst::plugin::Plugin as _;
 
-use crate::instance::Vst2Instance;
+use tutti_plugin_types::ParamId;
+
+use crate::loaded::Vst2Loaded;
 
 /// How many MIDI channels the program/key queries are enumerated over.
 ///
@@ -371,44 +372,42 @@ impl MidiKeyName {
     }
 }
 
-impl Vst2Instance {
+impl Vst2Loaded {
     /// Returns what `effGetParameterProperties` reports for one parameter.
     ///
     /// `None` when the index is out of range, or when the plugin does not
     /// implement the opcode, which is the common case. Callers must keep their
     /// name/label fallback.
-    pub fn parameter_properties(&self, id: i32) -> Option<ParameterProperties> {
+    pub fn parameter_properties(&self, id: ParamId) -> Option<ParameterProperties> {
         // Range-check before dispatch. Plugins are not required to bounds-check
         // the index, and the probe's own out-of-range answers show why: an
         // unchecked walk reads properties for parameters that do not exist.
-        let count = self.parameter_count();
-        if id < 0 || id >= count {
-            return None;
-        }
+        let index = self.param_index(id)?;
 
-        let raw = self.handle.instance.parameter_properties(id)?;
-        Some(ParameterProperties::decode(id, &raw))
+        let raw = self.handle.instance.parameter_properties(index)?;
+        Some(ParameterProperties::decode(index, &raw))
     }
 
     /// Returns what `effGetParameterProperties` reports for every declared
     /// parameter.
     ///
     /// Entries are `None` where the plugin declined, so the result stays index-
-    /// aligned with [`Vst2Instance::get_parameter_list`]. Compacting to only the
+    /// aligned with [`Vst2Loaded::parameter_list`]. Compacting to only the
     /// answered ones would silently renumber every parameter after a gap.
     pub fn all_parameter_properties(&self) -> Vec<Option<ParameterProperties>> {
-        (0..self.parameter_count())
-            .map(|i| self.parameter_properties(i))
+        (0..self.parameter_count() as u32)
+            .map(|i| self.parameter_properties(ParamId::new(i)))
             .collect()
     }
 
-    /// Returns the number of parameters the plugin advertises, never negative.
+    /// Returns the number of parameters the plugin advertised at load, never
+    /// negative.
     ///
     /// A negative `numParams` from a malformed plugin is reported as zero. The
     /// count is the addressing bound too: VST2 addresses by position, so every
     /// valid id is in `[0, count)`.
-    pub fn parameter_count(&self) -> i32 {
-        self.handle.instance.get_info().parameters.max(0)
+    pub fn parameter_count(&self) -> usize {
+        self.initial_values.len()
     }
 
     /// Returns what `effGetMidiProgramName` reports for one program on one MIDI

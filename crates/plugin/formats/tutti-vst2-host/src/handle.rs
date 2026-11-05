@@ -1,8 +1,8 @@
 //! RAII wrapper around `vst::host::PluginInstance`.
 //!
-//! The wrapper exists so [`Vst2Instance`](crate::instance::Vst2Instance)'s
-//! Drop semantics are spelled out in one place: close the editor, suspend
-//! audio, then run the plugin's own teardown — which dispatches `effClose`.
+//! The wrapper exists so [`Vst2Loaded`](crate::Vst2Loaded)'s Drop semantics are
+//! spelled out in one place: close the editor, suspend audio, then run the
+//! plugin's own teardown — which dispatches `effClose`.
 //!
 //! # `effClose` vs `dlclose`
 //!
@@ -41,19 +41,18 @@ pub(crate) struct Vst2Handle {
     ///
     /// Tracked because `effMainsChanged` is not documented as idempotent and real
     /// plugins reallocate rate-dependent buffers on every `resume(1)`. The
-    /// reconfigure pair reads this to make both transitions edge-triggered, and
-    /// `Drop` reads it so a plugin that is not resumed is not suspended or
-    /// stopped a second time. Lives here, with the instance it describes.
+    /// rejoin reads this to make the transition edge-triggered, and `Drop` reads
+    /// it so a plugin that is not resumed is not suspended a second time. Lives
+    /// here, with the instance it describes.
     pub(crate) resumed: bool,
 }
 
 /// Wrapper to make `Box<dyn Editor>` `Send`.
 ///
-/// SAFETY: the editor is only accessed from one thread at a time. In the
-/// in-process backend a `parking_lot::Mutex` serializes access; the
-/// subprocess server is single-threaded for plugin operations. GUI
-/// methods (`open`, `close`, `idle`) are called on the main thread; the
-/// audio thread never touches the editor.
+/// SAFETY: the editor is only accessed from one thread at a time, because it
+/// lives in the `Vst2Loaded` the Controller reaches through `&mut self` (clause
+/// 2 of the invariant on `Shell`). GUI methods (`open`, `close`, `idle`) are
+/// called on the main thread; the audio thread never touches the editor.
 pub(crate) struct SendEditor(pub(crate) Box<dyn vst::editor::Editor>);
 unsafe impl Send for SendEditor {}
 
@@ -91,14 +90,14 @@ impl Drop for Vst2Handle {
             editor.0.close();
         }
 
-        // Stop and suspend audio processing so the plugin releases any
-        // RT-allocated resources before it is closed, in the SDK's teardown
-        // order (`effStopProcess`, `effMainsChanged(0)`). Only a plugin that is
-        // resumed: both opcodes are legal only there, and a plugin already
-        // suspended (a failed reconfigure left it so) would see a second
-        // `effMainsChanged(0)` with no start before it.
+        // Suspend audio so the plugin releases any RT-allocated resources
+        // before it is closed. Only a plugin that is resumed: a plugin already
+        // suspended (a rejoin left it so) would see a second
+        // `effMainsChanged(0)` with no start before it. `effStopProcess`, which
+        // the SDK puts before it, is the Processor's, or the shell's when no
+        // Processor stopped it (`Shell::drop`): whoever started processing
+        // knows whether it is still on.
         if self.resumed {
-            self.instance.stop_process();
             self.instance.suspend();
             self.resumed = false;
         }

@@ -33,7 +33,7 @@ use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{
     InProcessVst2Client, PluginForkError, PresetId, RenderMode, in_process_vst2_client,
 };
-use tutti_plugin_types::{Normalized, ParamAddress};
+use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -181,7 +181,7 @@ fn assert_renders(out: &[Vec<f32>], dc: f32, what: &str) {
     }
 }
 
-/// A chunk blob as `Vst2Instance::get_state` frames it.
+/// A chunk blob as `Control::save_state` frames it.
 fn chunk_state(payload: &[u8]) -> Vec<u8> {
     let mut blob = b"CHK\0".to_vec();
     blob.extend_from_slice(payload);
@@ -260,7 +260,7 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     assert!(presets.load_preset(&program_1));
     handle
         .params()
-        .set_parameter_value(ParamAddress::Index(0), Normalized::new(0.75));
+        .set_parameter_value(ParamId::new(0), Normalized::new(0.75));
 
     let fork = client
         .fork_instance(ForkMode::Live)
@@ -277,9 +277,9 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
 
     handle
         .params()
-        .set_parameter_value(ParamAddress::Index(0), Normalized::new(0.25));
+        .set_parameter_value(ParamId::new(0), Normalized::new(0.25));
     assert_eq!(
-        handle.params().parameter_value(ParamAddress::Index(0)),
+        handle.params().parameter_value(ParamId::new(0)),
         Some(0.25),
         "the live write landed"
     );

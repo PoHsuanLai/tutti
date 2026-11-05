@@ -102,6 +102,9 @@ check-features:
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
 # The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and

@@ -20,7 +20,7 @@
 //!    delivery's record, `host::node`'s `param_delivery`), then **ask the
 //!    live instance for its state**, under its lock: the current
 //!    program, when the plugin declares any (`effGetProgram`), its state blob
-//!    (`Vst2Instance::get_state`: the plugin's own chunk through `effGetChunk`
+//!    (`Control::save_state`: the plugin's own chunk through `effGetChunk`
 //!    when it declares `effFlagsProgramChunks`, else every parameter's value,
 //!    one `getParameter` each), and whether the host reports it as rendering
 //!    offline. Nothing else is touched. For as long as the lock is held the
@@ -30,7 +30,7 @@
 //!    plugin without chunks that has thousands of parameters, or a slow
 //!    `effGetChunk`.
 //! 2. **Load a second instance** of the same file at the live node's rate:
-//!    `Vst2Instance::load`, as the live one was. The second `dlopen` of the
+//!    `Vst2Loaded::load`, as the live one was. The second `dlopen` of the
 //!    path maps the image already loaded (one more reference to it), and the
 //!    plugin's entry point builds a second `AEffect`. The image is never
 //!    unloaded (`tutti-vst2-host`'s `Vst2Handle` leaks the module on purpose),
@@ -64,7 +64,7 @@
 //!
 //! # Threads
 //!
-//! Fork on the **main thread** — `Vst2Instance::load`'s rule. A fork runs the
+//! Fork on the **main thread** — `Vst2Loaded::load`'s rule. A fork runs the
 //! plugin's entry point (`VSTPluginMain`, through a loader whose entry-point
 //! slot is a process global) and dispatches state opcodes, and a plugin may
 //! assume all of that is on its host's main thread. Through the graph's split
@@ -106,9 +106,10 @@ use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
-use tutti_vst2_host::Vst2Instance;
+use tutti_plugin_types::Control;
 
 use super::client::{InProcessVst2Client, RateDelivery, TransportFeed};
+use super::instance::Instance;
 use crate::error::{PluginForkError, StateError};
 use crate::host::node::DeliveryCounters;
 
@@ -118,7 +119,7 @@ pub(super) struct Vst2Fork {
     /// The live instance — asked for its state, nothing else. Weak: once every
     /// node and handle on it is gone, a fork answers
     /// [`PluginForkError::LiveGone`].
-    live: Weak<Mutex<Vst2Instance>>,
+    live: Weak<Mutex<Instance>>,
     /// The file the live instance was loaded from.
     origin: Arc<Path>,
     /// The live instance's plugin id, which the second one must match.
@@ -155,10 +156,9 @@ impl Vst2Fork {
         // Before the state: see step 1.
         let delivered = self.delivery.delivered();
         let (program, state, live_offline) = {
-            let instance = live.lock();
+            let mut instance = live.lock();
             let program = (instance.program_count() > 0).then(|| instance.current_program());
-            let state = instance
-                .get_state()
+            let state = Control::save_state(&mut **instance)
                 .map_err(|e| PluginForkError::SaveState(StateError::Rejected(e.to_string())))?;
             (program, state, instance.is_offline_render())
         };
@@ -188,15 +188,17 @@ impl Vst2Fork {
         {
             let mut instance = fork.inner.lock();
             if let Some(program) = program
-                && !instance.set_program(program)
+                && !Control::load_preset(
+                    &mut **instance,
+                    &tutti_plugin_types::PresetId::Number(program),
+                )
             {
                 return Err(PluginForkError::LoadState(StateError::Rejected(format!(
                     "the live instance's program {program} is out of the fresh \
                          instance's range"
                 ))));
             }
-            instance
-                .set_state(&state)
+            Control::load_state(&mut **instance, &state)
                 .map_err(|e| PluginForkError::LoadState(StateError::Rejected(e.to_string())))?;
             instance.set_offline_render(offline);
         }
@@ -234,7 +236,7 @@ impl InProcessVst2Client {
     /// graph ([`IntoNode`](tutti_graph::IntoNode)) hands the editor, so
     /// `Editor::fork` (an offline export) forks a graph holding it.
     ///
-    /// **Main thread only**, as `Vst2Instance::load` is: it runs the plugin's
+    /// **Main thread only**, as `Vst2Loaded::load` is: it runs the plugin's
     /// entry point a second time and dispatches its state. Drop the fork on
     /// the main thread too (dropping closes its instance); it may render on
     /// any thread.

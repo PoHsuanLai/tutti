@@ -393,7 +393,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
     use bevy_tutti::plugin_host::PluginEmitter;
     use tutti_graph::ForkByClone;
-    use tutti_plugin::handles::ParamAddress;
+    use tutti_plugin::handles::ParamId;
     use tutti_types::Depth;
 
     let mut app = app();
@@ -431,7 +431,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .expect("the handle")
             .handle
             .params()
-            .parameter_value(ParamAddress::Index(0))
+            .parameter_value(ParamId::new(0))
             .expect("a value")
     };
     let mut out = vec![Vec::new(), Vec::new()];
@@ -481,7 +481,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
 fn a_plugin_echoing_the_lane_keeps_its_knob() {
     use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
     use bevy_tutti::plugin_host::PluginEmitter;
-    use tutti_plugin::handles::ParamAddress;
+    use tutti_plugin::handles::ParamId;
     use tutti_types::Depth;
 
     let path = common::plugin::vst2_probe();
@@ -531,7 +531,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             "round {round}: the knob"
         );
         assert_eq!(
-            handle.params().parameter_value(ParamAddress::Index(0)),
+            handle.params().parameter_value(ParamId::new(0)),
             Some(0.25),
             "round {round}: the plugin reads the knob plus the offset"
         );

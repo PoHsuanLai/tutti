@@ -19,14 +19,18 @@
 use std::sync::{Mutex, MutexGuard};
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_plugin_types::{Control, Controller, Request};
 use tutti_vst2_host::{
-    MidiEvent, RenderScratch, Samples, TimeSignature, TransportInfo, Vst2Instance,
-    Vst2ProcessContext, WindowHandle,
+    MidiEvent, Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
 };
 use tutti_vst2_test_plugin::ProcessCapture;
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -136,17 +140,17 @@ fn set_late_latency(samples: i32) {
     });
 }
 
-fn load(block: usize) -> Vst2Instance {
+fn load(block: usize) -> Active {
     reset_probe();
     set_late_latency(0);
-    let instance = Vst2Instance::load(probe_path::probe_path(), SAMPLE_RATE, block)
+    let instance = Active::load(probe_path::probe_path(), SAMPLE_RATE, block)
         .unwrap_or_else(|e| panic!("the probe must load: {e:?}"));
     // The AEffect is built; clearing keeps a variable from outliving its load.
     clear_probe_env();
     instance
 }
 
-fn load_with_env(block: usize, env: &[(&str, &str)]) -> Vst2Instance {
+fn load_with_env(block: usize, env: &[(&str, &str)]) -> Active {
     clear_probe_env();
     for (k, v) in env {
         // SAFETY: callers hold `PROBE_LOCK`.
@@ -159,18 +163,20 @@ fn load_with_env(block: usize, env: &[(&str, &str)]) -> Vst2Instance {
 // effStartProcess / effStopProcess
 // ---------------------------------------------------------------------------
 
-/// Load is the full init sequence ending in `effStartProcess`, and every later
-/// reconfigure is the SDK's bracket around the change.
+/// An activation is the full start-up sequence ending in `effStartProcess`, and
+/// every later reconfigure is the SDK's bracket around the change: a rejoin
+/// that stops and suspends, then an activation that tells the plugin all three
+/// figures again.
 ///
 /// Before the fix `load` stopped at `effMainsChanged(1)`: the first
 /// `set_sample_rate` then sent `effStopProcess` for a process never started.
 ///
-/// Mutation (run): drop `instance.start_process()` from `load` -> the load
-/// trace has no `START_PROCESS` -> fails. Mutation (run): drop the
-/// `start_process()` in `restore_after_reconfigure` -> the reconfigure trace
-/// ends at `MAINS_CHANGED(1)` -> fails.
+/// Mutation (run): drop `start_process()` from `Loaded::activate` -> the
+/// activation trace has no `START_PROCESS` -> fails. Mutation (run): drop the
+/// `Processor::stop` from the rejoin -> the reconfigure traces lack
+/// `STOP_PROCESS` -> fails.
 #[test]
-fn load_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
+fn activation_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
     let _guard = lock_probe();
     let mut instance = load(512);
 
@@ -183,7 +189,7 @@ fn load_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
             (MAINS_CHANGED, 1),
             (START_PROCESS, 0),
         ],
-        "load: rate, block, precision while suspended, then resume and start"
+        "activate: rate, block, precision while suspended, then resume and start"
     );
 
     clear_trace();
@@ -194,10 +200,12 @@ fn load_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
             (STOP_PROCESS, 0),
             (MAINS_CHANGED, 0),
             (SET_SAMPLE_RATE, 0),
+            (SET_BLOCK_SIZE, 512),
+            (SET_PROCESS_PRECISION, 0),
             (MAINS_CHANGED, 1),
             (START_PROCESS, 0),
         ],
-        "a rate change: stop, suspend, set, resume, start"
+        "a rate change: stop, suspend, then the whole activation"
     );
 
     clear_trace();
@@ -207,7 +215,9 @@ fn load_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
         [
             (STOP_PROCESS, 0),
             (MAINS_CHANGED, 0),
+            (SET_SAMPLE_RATE, 0),
             (SET_BLOCK_SIZE, 1024),
+            (SET_PROCESS_PRECISION, 0),
             (MAINS_CHANGED, 1),
             (START_PROCESS, 0),
         ],
@@ -216,11 +226,13 @@ fn load_starts_processing_and_a_reconfigure_is_a_balanced_bracket() {
 }
 
 /// A resumed plugin is stopped, then suspended, as it is dropped; one that is
-/// already suspended is neither stopped nor suspended a second time.
+/// already rejoined, or was never activated, is neither stopped nor suspended a
+/// second time.
 ///
-/// Mutation (run): `Vst2Handle::drop` suspending unconditionally (the previous
-/// behaviour) and never stopping -> the first trace lacks `STOP_PROCESS` and
-/// the second gains a second `MAINS_CHANGED(0)` -> fails.
+/// Mutation (run): `Vst2Handle::drop` suspending unconditionally -> the second
+/// and third traces gain a `MAINS_CHANGED(0)` -> fails. Mutation (run):
+/// `Shell::drop` not stopping processing -> the first trace lacks
+/// `STOP_PROCESS` -> fails.
 #[test]
 fn drop_stops_then_suspends_only_a_resumed_plugin() {
     let _guard = lock_probe();
@@ -230,14 +242,23 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
     drop(instance);
     assert_eq!(trace(), [(STOP_PROCESS, 0), (MAINS_CHANGED, 0)]);
 
-    let mut instance = load(512);
-    assert!(instance.suspend(), "a resumed plugin suspends");
+    let instance = load(512);
+    let loaded = instance.deactivate();
     clear_trace();
-    drop(instance);
+    drop(loaded);
     assert_eq!(
         trace(),
         [],
         "already stopped and suspended: nothing more is dispatched"
+    );
+
+    clear_trace();
+    let loaded = Vst2Loaded::load(probe_path::probe_path()).expect("the probe loads");
+    drop(loaded);
+    assert_eq!(
+        trace(),
+        [],
+        "a plugin that was never activated was never resumed"
     );
 }
 
@@ -245,20 +266,28 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 // audioMasterIOChanged, latency and tail
 // ---------------------------------------------------------------------------
 
+/// The requests the plugin has raised since the last call.
+fn requests(instance: &Active) -> Vec<Request> {
+    let mut asked = Vec::new();
+    instance.take_requests(&mut asked);
+    asked
+}
+
 /// A plugin that reports `audioMasterIOChanged` is answered 1 ("handled"), and
-/// the host re-reads its latency and pin counts, reporting both through
-/// `poll_changes`.
+/// the host is told to re-read its pins, latency and tail, which it then reads
+/// live.
 ///
 /// Mutation (run): `HostState::io_changed` returning `false` -> the plugin
-/// reads 0 -> fails the first assert. Mutation (run): the latch not set ->
-/// `poll_changes` is empty -> fails. Mutation (run): `poll_changes` not
-/// calling `refresh_effect_fields` -> `num_inputs` stays 2 -> fails.
+/// reads 0 -> fails the first assert. Mutation (run): `pins()` reading the
+/// `get_info()` snapshot instead of the `AEffect` -> the pin count stays 2 ->
+/// fails. (That the requests are raised, and consumed, is pinned in
+/// `host::tests` and `vst2_host_opcodes`.)
 #[test]
 fn an_io_change_is_answered_and_re_read() {
     let _guard = lock_probe();
-    let mut instance = load(512);
-    assert_eq!(instance.metadata().num_inputs.count(), 2);
-    assert!(instance.poll_changes().is_empty(), "nothing yet");
+    let instance = load(512);
+    assert_eq!(instance.pins().0.count(), 2);
+    assert_eq!(requests(&instance), [], "nothing yet");
 
     let answered = probe_call(b"tutti_vst2_probe_fire_io_changed\0", |sym| {
         let f: extern "C" fn(i32, i32) -> isize = unsafe { std::mem::transmute(*sym) };
@@ -266,47 +295,50 @@ fn an_io_change_is_answered_and_re_read() {
     });
     assert_eq!(answered, 1, "the host handles audioMasterIOChanged");
 
-    let changes = instance.poll_changes();
-    assert!(changes.io, "the plugin reported an I/O change");
-    assert_eq!(changes.latency, Some(Samples(2048)));
-    assert_eq!(instance.metadata().latency_samples, Samples(2048));
     assert_eq!(
-        instance.metadata().num_inputs.count(),
-        4,
-        "the pin count was re-read"
+        requests(&instance),
+        [
+            Request::IoChanged,
+            Request::LatencyChanged,
+            Request::TailChanged
+        ],
+        "the plugin reported an I/O change"
     );
-    assert_eq!(instance.latency(), Samples(2048));
+    assert_eq!(instance.wiring().latency_samples, Samples(2048));
+    assert_eq!(instance.pins().0.count(), 4, "the pin count was re-read");
+    assert_eq!(instance.latency_samples(), Samples(2048));
 
-    assert!(instance.poll_changes().is_empty(), "consumed");
+    assert_eq!(requests(&instance), [], "consumed");
 }
 
-/// A rate change that moves a plugin's latency is reported, and so is one that
-/// does not move it not.
+/// A rate change that moves a plugin's latency is read: the Controller's figure
+/// follows the plugin's, and one that does not move stays.
 ///
 /// The probe recomputes its latency on `effSetSampleRate` (a linear-phase EQ
-/// does); the host re-reads after the resume that follows.
+/// does); the figure is read live after the activation that follows.
 ///
-/// Mutation (run): drop `refresh_declared()` from `set_sample_rate` -> the
-/// changed latency is never reported -> fails. Mutation (run): report
-/// unconditionally -> the unchanged rate change reports a latency -> fails.
+/// Mutation (run): `Controller::latency` returning a constant instead of
+/// reading the plugin -> the recomputed figure is not seen -> fails.
 #[test]
-fn a_rate_change_that_moves_latency_is_reported() {
+fn a_rate_change_that_moves_latency_is_read() {
     let _guard = lock_probe();
     set_late_latency(0);
     let mut instance = load(512);
+    assert_eq!(Controller::latency(&*instance), Samples(0));
     set_late_latency(1537);
     instance.set_sample_rate(96_000.0);
 
-    let changes = instance.poll_changes();
-    assert_eq!(changes.latency, Some(Samples(1537)));
-    assert!(!changes.io, "the plugin did not report an I/O change");
-    assert_eq!(instance.metadata().latency_samples, Samples(1537));
-
-    instance.set_sample_rate(44_100.0);
-    assert!(
-        instance.poll_changes().is_empty(),
-        "the same latency again is not a change"
+    assert_eq!(Controller::latency(&*instance), Samples(1537));
+    assert_eq!(instance.wiring().latency_samples, Samples(1537));
+    assert_eq!(
+        requests(&instance),
+        [],
+        "the plugin did not report an I/O change"
     );
+
+    set_late_latency(0);
+    instance.set_sample_rate(44_100.0);
+    assert_eq!(Controller::latency(&*instance), Samples(0));
     set_late_latency(0);
 }
 
@@ -354,13 +386,9 @@ fn counts_finalised_in_eff_open_are_read() {
             ("TUTTI_VST2_PROBE_OPEN_PARAMS", "7"),
         ],
     );
-    assert_eq!(instance.metadata().num_inputs.count(), 5);
+    assert_eq!(instance.pins().0.count(), 5);
     assert_eq!(instance.parameter_count(), 7);
-    assert_eq!(
-        instance.metadata().num_outputs.count(),
-        2,
-        "an untouched count stays"
-    );
+    assert_eq!(instance.pins().1.count(), 2, "an untouched count stays");
 }
 
 // ---------------------------------------------------------------------------
@@ -434,15 +462,14 @@ fn editor_idle_reaches_an_open_editor() {
 // ---------------------------------------------------------------------------
 
 fn render_f32(
-    instance: &mut Vst2Instance,
-    scratch: &mut RenderScratch,
+    instance: &mut Active,
     frames: usize,
     midi: &[MidiEvent],
     transport: Option<&TransportInfo>,
     input: f32,
 ) -> Vec<Vec<f32>> {
-    let channels = instance.metadata().num_outputs.count() as usize;
-    let ins = vec![vec![input; frames]; instance.metadata().num_inputs.count() as usize];
+    let channels = instance.pins().1.count() as usize;
+    let ins = vec![vec![input; frames]; instance.pins().0.count() as usize];
     let mut outs = vec![vec![0.0f32; frames]; channels];
     let in_refs: Vec<&[f32]> = ins.iter().map(Vec::as_slice).collect();
     let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
@@ -450,7 +477,7 @@ fn render_f32(
     if let Some(t) = transport {
         ctx = ctx.transport(t);
     }
-    instance.process_f32(&in_refs, &mut out_refs, frames, &ctx, scratch);
+    instance.process_f32(&in_refs, &mut out_refs, frames, &ctx);
     outs
 }
 
@@ -469,13 +496,8 @@ fn render_f32(
 fn a_block_longer_than_the_announced_maximum_is_split() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
-    let mut scratch = RenderScratch::new(
-        instance.metadata().num_inputs,
-        instance.metadata().num_outputs,
-        256,
-    );
 
-    let out = render_f32(&mut instance, &mut scratch, 200, &[], None, 0.5);
+    let out = render_f32(&mut instance, 200, &[], None, 0.5);
 
     let cap = read_capture();
     assert_eq!(cap.max_block_size, BLOCK as i64, "the announced maximum");
@@ -501,14 +523,9 @@ fn a_block_longer_than_the_announced_maximum_is_split() {
 fn raising_the_block_size_stops_the_split() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
-    let mut scratch = RenderScratch::new(
-        instance.metadata().num_inputs,
-        instance.metadata().num_outputs,
-        256,
-    );
     instance.set_block_size(256);
 
-    render_f32(&mut instance, &mut scratch, 200, &[], None, 0.0);
+    render_f32(&mut instance, 200, &[], None, 0.0);
 
     let cap = read_capture();
     assert_eq!(cap.process_calls, 1);
@@ -530,18 +547,13 @@ fn raising_the_block_size_stops_the_split() {
 fn midi_is_delivered_in_the_piece_it_falls_in() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
-    let mut scratch = RenderScratch::new(
-        instance.metadata().num_inputs,
-        instance.metadata().num_outputs,
-        256,
-    );
 
     let at = |frame: u32, note: u8| {
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000)
             .with_frame_offset(frame)
     };
     let midi = [at(10, 60), at(150, 62)];
-    render_f32(&mut instance, &mut scratch, 200, &midi, None, 0.0);
+    render_f32(&mut instance, 200, &midi, None, 0.0);
 
     let cap = read_capture();
     assert_eq!(
@@ -562,11 +574,6 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
 fn a_later_piece_sees_the_transport_advanced() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
-    let mut scratch = RenderScratch::new(
-        instance.metadata().num_inputs,
-        instance.metadata().num_outputs,
-        256,
-    );
 
     let transport = TransportInfo::new()
         .with_playing(true)
@@ -574,7 +581,7 @@ fn a_later_piece_sees_the_transport_advanced() {
         .with_position_samples(1_000)
         .with_tempo(120.0)
         .with_time_signature(TimeSignature::default());
-    render_f32(&mut instance, &mut scratch, 200, &[], Some(&transport), 0.0);
+    render_f32(&mut instance, 200, &[], Some(&transport), 0.0);
 
     // The capture is the last piece's, which starts 192 frames in.
     let cap = read_capture();
@@ -604,11 +611,6 @@ fn a_later_piece_sees_the_transport_advanced() {
 fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
-    let mut scratch = RenderScratch::new(
-        instance.metadata().num_inputs,
-        instance.metadata().num_outputs,
-        256,
-    );
     let transport = TransportInfo::new()
         .with_playing(true)
         .with_position_quarters(3.995)
@@ -616,12 +618,12 @@ fn a_bar_line_in_a_later_piece_moves_the_bar_start() {
         .with_tempo(120.0)
         .with_time_signature(TimeSignature::default())
         .with_bar(0.0, Default::default());
-    render_f32(&mut instance, &mut scratch, 200, &[], Some(&transport), 0.0);
+    render_f32(&mut instance, 200, &[], Some(&transport), 0.0);
     let cap = read_capture();
     assert_eq!(cap.time_bar_start_pos, 4.0);
 
     // No transport on the next block: the snapshot stays the last piece's.
     let before = cap.time_sample_pos;
-    render_f32(&mut instance, &mut scratch, 200, &[], None, 0.0);
+    render_f32(&mut instance, 200, &[], None, 0.0);
     assert_eq!(read_capture().time_sample_pos, before);
 }

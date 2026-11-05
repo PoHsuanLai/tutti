@@ -9,22 +9,27 @@ extern crate vst_tutti as vst;
 mod error;
 pub mod types;
 
+mod control;
+mod controller;
 mod editor;
 mod handle;
 mod host;
-mod instance;
+mod loaded;
 mod midi;
 mod param_properties;
 mod parameters;
-mod process;
+mod processor;
 mod scratch;
+mod shell;
 mod state;
 mod time_info;
 mod transport_cell;
 
+pub use controller::Vst2Controller;
 pub use error::{LoadStage, Result, Vst2Error};
 pub use host::ParameterChange;
-pub use instance::{Precision, Vst2Changes, Vst2Instance};
+pub use loaded::Vst2Loaded;
+pub use processor::Vst2Processor;
 // `effGetParameterProperties` + the MIDI-metadata family. VST2 has no
 // CC→parameter mapping query at all — see the module docs for the opcode
 // evidence — so this is the whole of its parameter/MIDI metadata surface.
@@ -32,10 +37,9 @@ pub use param_properties::{
     FloatSteps, IntegerRange, MAX_MIDI_KEY, MidiKeyName, MidiProgram, MidiProgramCategory,
     NUM_MIDI_CHANNELS, ParameterCategory, ParameterProperties, ParameterPropertyFlags,
 };
-pub use scratch::RenderScratch;
 pub use types::{
-    ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParamAddress, ParameterInfo, PluginInfo,
-    Samples, TimeSignature, TransportInfo, Vst2Category, Vst2ProcessContext, WindowHandle,
+    ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, Samples,
+    TimeSignature, TransportInfo, Vst2Category, Vst2ProcessContext, WindowHandle,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

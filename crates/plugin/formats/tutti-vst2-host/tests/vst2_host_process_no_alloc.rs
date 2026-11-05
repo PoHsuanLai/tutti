@@ -21,13 +21,15 @@ use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst2_host::{
-    MidiEvent, RenderScratch, TimeSignature, TransportInfo, Vst2Instance, Vst2ProcessContext,
-};
+use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
 
 // Not redundant with `src/lib.rs`: that declaration is `#[cfg(test)]`, which
 // covers unit tests only, not integration-test binaries. Without this the
@@ -48,17 +50,17 @@ fn lock_probe() -> MutexGuard<'static, ()> {
     PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn load_probe() -> (Vst2Instance, RenderScratch, PathBuf) {
+fn load_probe() -> (Active, PathBuf) {
     load_probe_inner(false)
 }
 
 /// As [`load_probe`], with `effFlagsCanDoubleReplacing` declared so the host
 /// takes the native f64 render path rather than the narrowing fallback.
-fn load_probe_f64() -> (Vst2Instance, RenderScratch, PathBuf) {
+fn load_probe_f64() -> (Active, PathBuf) {
     load_probe_inner(true)
 }
 
-fn load_probe_inner(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf) {
+fn load_probe_inner(declares_f64: bool) -> (Active, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
     // SAFETY: callers hold `PROBE_LOCK`, so no other test thread is reading or
@@ -72,18 +74,16 @@ fn load_probe_inner(declares_f64: bool) -> (Vst2Instance, RenderScratch, PathBuf
     }
     // Told 64-bit when the probe declares it: this file gates the native f64 path.
     let precision = if declares_f64 {
-        tutti_vst2_host::Precision::Double
+        active::Precision::Double
     } else {
-        tutti_vst2_host::Precision::Single
+        active::Precision::Single
     };
-    let instance = Vst2Instance::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
+    let instance = Active::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     // The AEffect is built; clearing keeps the variable from outliving this load.
     // SAFETY: as above.
     unsafe { std::env::remove_var("TUTTI_VST2_PROBE_F64") };
-    let meta = instance.metadata().clone();
-    let scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
-    (instance, scratch, path)
+    (instance, path)
 }
 
 /// Re-open the image the host loaded and call one of the probe's exports.
@@ -109,7 +109,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Active` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
@@ -149,12 +149,7 @@ fn playing_transport() -> TransportInfo {
 
 /// Render `iters` blocks of silence. Every buffer is on the stack, so any
 /// allocation the gate observes came from the host, not this harness.
-fn drive_silent(
-    inst: &mut Vst2Instance,
-    scratch: &mut RenderScratch,
-    iters: usize,
-    transport: &TransportInfo,
-) {
+fn drive_silent(inst: &mut Active, iters: usize, transport: &TransportInfo) {
     let mut in_l = [0.0f32; BLOCK];
     let mut in_r = [0.0f32; BLOCK];
     let mut out_l = [0.0f32; BLOCK];
@@ -163,7 +158,7 @@ fn drive_silent(
     for _ in 0..iters {
         let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
-        let _ = inst.process_f32(ins, outs, BLOCK, &ctx, scratch);
+        let _ = inst.process_f32(ins, outs, BLOCK, &ctx);
         // Touch the inputs so the optimiser cannot hoist the buffers out.
         in_l[0] = out_l[0] * 0.0;
         in_r[0] = out_r[0] * 0.0;
@@ -177,15 +172,15 @@ fn drive_silent(
 #[test]
 fn process_f32_with_transport_does_not_allocate() {
     let _guard = lock_probe();
-    let (mut inst, mut scratch, path) = load_probe();
+    let (mut inst, path) = load_probe();
     let transport = playing_transport();
 
     // Warm-up: grow the MIDI staging buffer and the pooled `midi_out` drain
     // past their inline capacities so steady-state calls are heap-free.
-    drive_silent(&mut inst, &mut scratch, 32, &transport);
+    drive_silent(&mut inst, 32, &transport);
 
     assert_no_alloc::assert_no_alloc(|| {
-        drive_silent(&mut inst, &mut scratch, 256, &transport);
+        drive_silent(&mut inst, 256, &transport);
     });
 
     // The gate is vacuous unless the plugin actually ran and read the
@@ -206,12 +201,7 @@ fn process_f32_with_transport_does_not_allocate() {
 }
 
 /// Render `iters` f64 blocks of silence, all buffers on the stack.
-fn drive_silent_f64(
-    inst: &mut Vst2Instance,
-    scratch: &mut RenderScratch,
-    iters: usize,
-    transport: &TransportInfo,
-) {
+fn drive_silent_f64(inst: &mut Active, iters: usize, transport: &TransportInfo) {
     let mut in_l = [0.0f64; BLOCK];
     let mut in_r = [0.0f64; BLOCK];
     let mut out_l = [0.0f64; BLOCK];
@@ -220,7 +210,7 @@ fn drive_silent_f64(
     for _ in 0..iters {
         let ins: &[&[f64]] = &[&in_l[..], &in_r[..]];
         let outs: &mut [&mut [f64]] = &mut [&mut out_l[..], &mut out_r[..]];
-        let _ = inst.process_f64(ins, outs, BLOCK, &ctx, scratch);
+        let _ = inst.process_f64(ins, outs, BLOCK, &ctx);
         // Touch the inputs so the optimiser cannot hoist the buffers out.
         in_l[0] = out_l[0] * 0.0;
         in_r[0] = out_r[0] * 0.0;
@@ -236,7 +226,7 @@ fn drive_silent_f64(
 #[test]
 fn process_f64_does_not_allocate() {
     let _guard = lock_probe();
-    let (mut inst, mut scratch, path) = load_probe_f64();
+    let (mut inst, path) = load_probe_f64();
     assert!(
         inst.metadata().supports_f64,
         "the probe must declare f64 here, or this gates the narrowing \
@@ -244,10 +234,10 @@ fn process_f64_does_not_allocate() {
     );
     let transport = playing_transport();
 
-    drive_silent_f64(&mut inst, &mut scratch, 32, &transport);
+    drive_silent_f64(&mut inst, 32, &transport);
 
     assert_no_alloc::assert_no_alloc(|| {
-        drive_silent_f64(&mut inst, &mut scratch, 256, &transport);
+        drive_silent_f64(&mut inst, 256, &transport);
     });
 
     let cap = read_capture(&path);
@@ -269,7 +259,7 @@ fn process_f64_does_not_allocate() {
 #[test]
 fn process_f32_with_midi_does_not_allocate() {
     let _guard = lock_probe();
-    let (mut inst, mut scratch, path) = load_probe();
+    let (mut inst, path) = load_probe();
     let transport = playing_transport();
 
     let mut out_l = [0.0f32; BLOCK];
@@ -287,9 +277,9 @@ fn process_f32_with_midi_does_not_allocate() {
         let ctx = Vst2ProcessContext::new(SAMPLE_RATE)
             .midi(&warm)
             .transport(&transport);
-        let _ = inst.process_f32(ins, outs, BLOCK, &ctx, &mut scratch);
+        let _ = inst.process_f32(ins, outs, BLOCK, &ctx);
     }
-    drive_silent(&mut inst, &mut scratch, 32, &transport);
+    drive_silent(&mut inst, 32, &transport);
 
     let on_event = [MidiEvent::note_on(
         MidiGroup::FIRST,
@@ -316,7 +306,7 @@ fn process_f32_with_midi_does_not_allocate() {
             let ctx = Vst2ProcessContext::new(SAMPLE_RATE)
                 .midi(events)
                 .transport(&transport);
-            let _ = inst.process_f32(ins, outs, BLOCK, &ctx, &mut scratch);
+            let _ = inst.process_f32(ins, outs, BLOCK, &ctx);
         }
     });
 
@@ -329,106 +319,94 @@ fn process_f32_with_midi_does_not_allocate() {
     );
 }
 
-/// Reconfiguring an **already-suspended** plugin must not suspend it again,
-/// and must leave it suspended.
+/// A rejoin suspends the plugin once, an activation resumes it once, and a
+/// plugin that is only loaded is neither.
 ///
-/// The plugin must be suspended on entry for this to bite: back-to-back
-/// reconfigures of a *resumed* plugin produce one balanced pair each even with
-/// an unconditional bracket. Only from suspended would such a bracket dispatch
-/// a second `effMainsChanged(0)` and then silently resume on the way out.
+/// The probe's counters say what crossed the FFI seam, not what the host's own
+/// flag claims. Before the activation split a reconfigure of an
+/// already-suspended plugin dispatched a second `effMainsChanged(0)` and then
+/// silently resumed on the way out; now a suspended plugin is a `Vst2Loaded`
+/// with no halves to reconfigure.
 ///
-/// Counters come from the probe, so this asserts what crossed the FFI seam
-/// rather than trusting the host's own flag.
+/// Mutation (run): `Vst2Handle::drop` suspending without checking `resumed` ->
+/// the dropped plugin suspends a second time -> fails. Mutation (run):
+/// `activate` not setting `resumed` -> the rejoin does not suspend -> fails.
 #[test]
-fn reconfigure_while_suspended_does_not_double_suspend_or_silently_resume() {
+fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     let _guard = lock_probe();
-    let (mut inst, _scratch, path) = load_probe();
+    let (inst, path) = load_probe();
 
-    // `load` ends resumed: one resume, no suspend.
+    // An activation ends resumed: one resume, no suspend.
     let base = read_capture(&path);
-    assert_eq!(base.resume_count, 1, "load must resume exactly once");
-    assert_eq!(base.suspend_count, 0, "load should not leave a suspend");
-    assert!(inst.is_resumed());
+    assert_eq!(base.resume_count, 1, "activate must resume exactly once");
+    assert_eq!(base.suspend_count, 0, "activate should not leave a suspend");
+    assert!(inst.is_active());
 
-    // Explicitly suspend, then reconfigure while down.
-    assert!(inst.suspend(), "first suspend must dispatch");
-    assert!(!inst.is_resumed());
-    assert_eq!(read_capture(&path).suspend_count, 1);
-
-    inst.set_sample_rate(96_000.0);
-
-    let after = read_capture(&path);
-    assert_eq!(
-        after.suspend_count, 1,
-        "reconfiguring an already-suspended plugin must not suspend it again"
-    );
-    assert_eq!(
-        after.resume_count, 1,
-        "reconfiguring a suspended plugin must not silently resume it"
-    );
-    assert!(
-        !inst.is_resumed(),
-        "the plugin was suspended on entry and must stay suspended"
-    );
-    // The reconfigure itself must still have taken effect.
-    assert_eq!(after.sample_rate, 96_000.0);
-
-    // Resuming afterwards is a single, real transition.
-    assert!(inst.resume(), "resume must dispatch when suspended");
-    assert_eq!(read_capture(&path).resume_count, 2);
-    assert!(inst.is_resumed());
-}
-
-/// `suspend` / `resume` must be idempotent: a redundant call dispatches
-/// nothing across the FFI seam.
-#[test]
-fn repeated_suspend_and_resume_are_idempotent() {
-    let _guard = lock_probe();
-    let (mut inst, _scratch, path) = load_probe();
-
-    // Already resumed from load, so this must be a no-op.
-    assert!(
-        !inst.resume(),
-        "resume on a resumed plugin must not dispatch"
-    );
+    let loaded = inst.deactivate();
+    assert!(!loaded.is_active());
+    assert_eq!(read_capture(&path).suspend_count, 1, "one suspend");
     assert_eq!(read_capture(&path).resume_count, 1);
 
-    assert!(inst.suspend());
-    assert!(
-        !inst.suspend(),
-        "suspend on a suspended plugin must not dispatch"
-    );
+    // Dropping a rejoined plugin is not a second suspend.
+    drop(loaded);
     assert_eq!(
         read_capture(&path).suspend_count,
         1,
-        "the redundant suspend reached the plugin"
+        "the drop of a suspended plugin reached the plugin"
     );
 
-    assert!(inst.resume());
-    assert!(!inst.resume());
+    // A second activation, at another rate, is a single, real transition.
+    let loaded = Vst2Loaded::load(probe_path::probe_path()).expect("the probe loads");
     assert_eq!(
         read_capture(&path).resume_count,
-        2,
-        "the redundant resume reached the plugin"
+        1,
+        "a load does not resume"
     );
+    let inst = Active::activate(loaded, active::prepare_for(96_000.0, BLOCK, false))
+        .expect("the probe activates");
+    let cap = read_capture(&path);
+    assert_eq!(cap.resume_count, 2);
+    assert_eq!(
+        cap.sample_rate, 96_000.0,
+        "the activation's rate took effect"
+    );
+    assert!(inst.is_active());
 }
 
-/// The same bracket on `set_block_size`, which shares the implementation.
-/// It has no in-tree caller, so this test is the only thing holding its
-/// lifecycle correct.
+/// A refused activation (a rate that is no rate) leaves the plugin loaded and
+/// untouched: nothing crosses the FFI seam, and a valid activation after it is
+/// the first resume.
+///
+/// Mutation (run): the rate check removed from `Loaded::activate` -> the
+/// refused rate reaches `effSetSampleRate` and the plugin resumes -> fails.
 #[test]
-fn set_block_size_while_suspended_does_not_double_suspend() {
+fn a_refused_activation_dispatches_nothing() {
     let _guard = lock_probe();
-    let (mut inst, _scratch, path) = load_probe();
+    let path = probe_path::probe_path().clone();
+    reset_probe(&path);
+    let mut loaded = Vst2Loaded::load(&path).expect("the probe loads");
 
-    assert!(inst.suspend());
-    inst.set_block_size(512);
+    for (rate, block) in [
+        (0.0, BLOCK),
+        (f64::NAN, BLOCK),
+        (-48_000.0, BLOCK),
+        (48_000.0, 0),
+    ] {
+        match Active::activate(loaded, active::prepare_for(rate, block, false)) {
+            Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            Err((plugin, _reason)) => loaded = plugin,
+        }
+        assert_eq!(
+            read_capture(&path).resume_count,
+            0,
+            "a refused activation never resumes"
+        );
+    }
 
-    let cap = read_capture(&path);
-    assert_eq!(cap.suspend_count, 1, "must not re-suspend");
-    assert_eq!(cap.resume_count, 1, "must not silently resume");
-    assert!(!inst.is_resumed());
-    assert_eq!(cap.max_block_size, 512, "the reconfigure must take effect");
+    let inst = Active::activate(loaded, active::prepare_for(SAMPLE_RATE, BLOCK, false))
+        .expect("the same plugin activates at a valid rate");
+    assert_eq!(read_capture(&path).resume_count, 1);
+    assert!(inst.is_active());
 }
 
 /// Reconfiguring a *resumed* plugin must leave it resumed, with exactly one
@@ -437,7 +415,7 @@ fn set_block_size_while_suspended_does_not_double_suspend() {
 #[test]
 fn reconfigure_while_resumed_issues_one_balanced_pair() {
     let _guard = lock_probe();
-    let (mut inst, _scratch, path) = load_probe();
+    let (mut inst, path) = load_probe();
 
     inst.set_sample_rate(96_000.0);
     inst.set_sample_rate(44_100.0);
@@ -454,7 +432,7 @@ fn reconfigure_while_resumed_issues_one_balanced_pair() {
         "resume/suspend must alternate, with load's initial resume unmatched"
     );
     assert_eq!(cap.sample_rate, 44_100.0);
-    assert!(inst.is_resumed());
+    assert!(inst.is_active());
 }
 
 /// A reconfigure must leave the plugin in a state where it still renders —
@@ -466,14 +444,14 @@ fn reconfigure_while_resumed_issues_one_balanced_pair() {
 #[test]
 fn plugin_still_renders_after_repeated_reconfigure() {
     let _guard = lock_probe();
-    let (mut inst, mut scratch, path) = load_probe();
+    let (mut inst, path) = load_probe();
 
     inst.set_sample_rate(96_000.0);
     inst.set_sample_rate(SAMPLE_RATE);
-    assert!(inst.is_resumed());
+    assert!(inst.is_active());
 
     let transport = playing_transport();
-    drive_silent(&mut inst, &mut scratch, 4, &transport);
+    drive_silent(&mut inst, 4, &transport);
 
     let cap = read_capture(&path);
     assert!(

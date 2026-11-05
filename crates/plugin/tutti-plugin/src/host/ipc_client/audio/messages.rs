@@ -5,7 +5,7 @@ use super::ask::Reply;
 use crate::error::StateError;
 use crate::protocol::{
     ChordChanges, MidiEventVec, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, ParamAddress, ParameterChanges, ParameterInfo, PluginTail, Preset,
+    NoteExpressionTextChanges, ParamId, ParameterChanges, ParameterInfo, PluginTail, Preset,
     PresetId, Samples, ScaleChanges, TransportInfo,
 };
 use tutti_types::SampleRate;
@@ -55,7 +55,7 @@ impl ProcessPayload {
 pub(super) enum Command {
     Process(Box<ProcessPayload>),
     SetParameter {
-        param_id: ParamAddress,
+        param_id: ParamId,
         value: f32,
     },
     SetAutomationState {
@@ -96,7 +96,7 @@ pub(super) enum Command {
         reply: Reply<Option<Vec<ParameterInfo>>>,
     },
     GetParameter {
-        param_id: ParamAddress,
+        param_id: ParamId,
         reply: Reply<Option<f32>>,
     },
     GetPresetList {
@@ -110,12 +110,12 @@ pub(super) enum Command {
         reply: Reply<Option<PresetId>>,
     },
     GetParameterText {
-        param_id: ParamAddress,
+        param_id: ParamId,
         value: Normalized,
         reply: Reply<Option<String>>,
     },
     GetParameterValueFromText {
-        param_id: ParamAddress,
+        param_id: ParamId,
         text: String,
         reply: Reply<Option<Normalized>>,
     },

@@ -279,11 +279,7 @@ fn automation_in_the_block_overrides_a_queued_write() {
     controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
     controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.25));
     let mut automation = tutti_plugin_types::ParameterChanges::reserved(1, 4);
-    automation.add_change(
-        tutti_plugin_types::ParamAddress::Opaque(id(PARAM_RAMP)),
-        0,
-        0.75,
-    );
+    automation.add_change(ParamId::new(PARAM_RAMP), 0, 0.75);
     let ctx = ProcessContext::new().params(&automation);
     assert_eq!(
         render(&mut processor, SampleFormat::Float32, &ctx).expect("renders"),

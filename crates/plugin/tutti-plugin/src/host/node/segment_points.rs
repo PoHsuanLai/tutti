@@ -55,7 +55,7 @@ use tutti_graph::ParamSegment;
 use tutti_types::Samples;
 
 use super::param_delivery::ParamDelivery;
-use crate::protocol::ParamAddress;
+use crate::protocol::ParamId;
 
 /// Segment slots the unit tests prepare: a figure past any they fill.
 #[cfg(test)]
@@ -64,7 +64,7 @@ const MAX_SEGMENTS: usize = 1024;
 /// One segment in flight.
 #[derive(Clone, Copy, Debug)]
 struct Track {
-    address: ParamAddress,
+    address: ParamId,
     segment: ParamSegment,
     /// The node's absolute frame of the segment's event.
     start: u64,
@@ -104,13 +104,13 @@ impl SegmentPoints {
 
     /// A ramp or segment for `address` lands: the segment it was on, if
     /// any, stops here.
-    pub(super) fn interrupt(&mut self, address: ParamAddress) {
+    pub(super) fn interrupt(&mut self, address: ParamId) {
         self.tracks.retain(|t| t.address != address);
     }
 
     /// The value the segment in flight on `address` gives absolute frame
     /// `frame`, if one is on it there.
-    pub(super) fn value_at(&self, address: ParamAddress, frame: u64) -> Option<f32> {
+    pub(super) fn value_at(&self, address: ParamId, frame: u64) -> Option<f32> {
         let t = self.tracks.iter().find(|t| t.address == address)?;
         let j = frame.checked_sub(t.start)?;
         Some(
@@ -129,7 +129,7 @@ impl SegmentPoints {
     pub(super) fn start(
         &mut self,
         changes: &mut ParamDelivery,
-        address: ParamAddress,
+        address: ParamId,
         segment: ParamSegment,
         frame: u64,
         at: usize,
@@ -218,7 +218,7 @@ impl SegmentPoints {
 }
 
 /// A point at chunk frame `at`. The address has a slot (`start` checked).
-fn point(changes: &mut ParamDelivery, address: ParamAddress, at: usize, value: f32) {
+fn point(changes: &mut ParamDelivery, address: ParamId, at: usize, value: f32) {
     let offset = i32::try_from(at).unwrap_or(i32::MAX);
     changes.point(address, offset, value);
 }
@@ -231,19 +231,18 @@ mod tests {
     use std::sync::Arc;
     use tutti_graph::SegmentShape;
 
-    const A: ParamAddress = ParamAddress::Opaque(ParamId::new(7));
+    const A: ParamId = ParamId::new(7);
 
     /// A delivery with a slot for each of `ids`, and the spares.
     fn delivery(ids: impl IntoIterator<Item = u32>) -> ParamDelivery {
         ParamDelivery::new(
-            ids.into_iter()
-                .map(|id| ParamAddress::Opaque(ParamId::new(id))),
+            ids.into_iter().map(ParamId::new),
             Arc::new(DeliveryCounters::default()),
         )
     }
 
     /// `(chunk frame, value)` of `address`'s queue in the chunk being filled.
-    fn queue(d: &mut ParamDelivery, address: ParamAddress) -> Vec<(i32, f32)> {
+    fn queue(d: &mut ParamDelivery, address: ParamId) -> Vec<(i32, f32)> {
         d.changes()
             .queues
             .iter()
@@ -368,7 +367,7 @@ mod tests {
     /// sending points → fails.
     #[test]
     fn an_interrupting_event_stops_the_segment() {
-        let b = ParamAddress::Opaque(ParamId::new(8));
+        let b = ParamId::new(8);
         let seg = ParamSegment::foreign(7, 0.0, 1.0, Samples(500), SegmentShape::Linear);
         let mut sp = SegmentPoints::default();
         let mut d = delivery([7, 8]);
@@ -398,7 +397,7 @@ mod tests {
     #[test]
     fn two_hundred_segments_each_land_on_their_frame() {
         let n = 200u32;
-        let addr = |k: u32| ParamAddress::Opaque(ParamId::new(100 + k));
+        let addr = |k: u32| ParamId::new(100 + k);
         // Address `k` arrives `400 - k` frames after frame 0.
         let seg = |k: u32| {
             ParamSegment::foreign(
@@ -475,19 +474,9 @@ mod tests {
         d.begin();
         sp.begin(64);
         for id in [1, 2, 3] {
-            sp.start(
-                &mut d,
-                ParamAddress::Opaque(ParamId::new(id)),
-                seg(id),
-                5,
-                5,
-                false,
-            );
+            sp.start(&mut d, ParamId::new(id), seg(id), 5, 5, false);
         }
-        assert_eq!(
-            queue(&mut d, ParamAddress::Opaque(ParamId::new(3))),
-            vec![(5, 1.0)]
-        );
-        assert!(queue(&mut d, ParamAddress::Opaque(ParamId::new(1)))[0].1 < 0.01);
+        assert_eq!(queue(&mut d, ParamId::new(3)), vec![(5, 1.0)]);
+        assert!(queue(&mut d, ParamId::new(1))[0].1 < 0.01);
     }
 }

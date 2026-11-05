@@ -77,10 +77,6 @@ pub struct PluginControls {
     /// The rate stamped onto a freshly-installed source. Shared — see the module
     /// docs for why it could not stay a per-clone field. `f64` at the atomic.
     sample_rate: Arc<AtomicF64>,
-    /// Whether the plugin addresses its parameters by VST2 index rather than
-    /// by opaque handle: what a parameter ramp's number means to its node.
-    /// Fixed at load.
-    indexed: bool,
     /// What the node's parameter delivery has done
     /// ([`param_delivery`](Self::param_delivery)).
     delivery: Arc<super::param_delivery::DeliveryCounters>,
@@ -91,14 +87,8 @@ pub struct PluginControls {
 }
 
 impl PluginControls {
-    pub(super) fn new(
-        latency: Samples,
-        tail: PluginTail,
-        sample_rate: SampleRate,
-        indexed: bool,
-    ) -> Self {
+    pub(super) fn new(latency: Samples, tail: PluginTail, sample_rate: SampleRate) -> Self {
         Self {
-            indexed,
             latency: Arc::new(AtomicUsize::new(latency.get())),
             tail: Arc::new(Mutex::new(tail)),
             pipeline: Arc::new(AtomicUsize::new(MAX_CHUNK)),
@@ -183,7 +173,7 @@ impl PluginControls {
 
     /// What the node has delivered so far, per listed parameter: what a fork
     /// is seeded with. Control thread: allocates.
-    pub(super) fn delivered(&self) -> Vec<(crate::protocol::ParamAddress, f64)> {
+    pub(super) fn delivered(&self) -> Vec<(crate::protocol::ParamId, f64)> {
         self.delivery.delivered()
     }
 
@@ -296,11 +286,6 @@ impl PluginControls {
             meter: self.meter.installed(),
         }
     }
-
-    /// Whether the plugin addresses its parameters by VST2 index.
-    pub(super) fn indexed(&self) -> bool {
-        self.indexed
-    }
 }
 
 /// Lock a tail cell. A poisoned lock still holds a whole `PluginTail` (a
@@ -344,12 +329,7 @@ mod tests {
     use tutti_core::meter::MeterMap;
 
     fn controls() -> PluginControls {
-        PluginControls::new(
-            Samples(0),
-            PluginTail::default(),
-            SampleRate(44_100.0),
-            false,
-        )
+        PluginControls::new(Samples(0), PluginTail::default(), SampleRate(44_100.0))
     }
 
     /// A handle taken *before* a rate change reads the new rate — the
@@ -382,12 +362,7 @@ mod tests {
         let live = controls();
         let meter = ProjectMeter::new(MeterMap::default());
         live.set_meter(meter.clone());
-        let fork = PluginControls::new(
-            Samples(0),
-            PluginTail::default(),
-            SampleRate(96_000.0),
-            false,
-        );
+        let fork = PluginControls::new(Samples(0), PluginTail::default(), SampleRate(96_000.0));
         let gathered = live.sources_now();
         live.set_meter(ProjectMeter::new(MeterMap::default()));
         gathered.install(&fork);

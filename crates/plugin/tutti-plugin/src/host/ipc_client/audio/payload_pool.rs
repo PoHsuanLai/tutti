@@ -246,7 +246,7 @@ impl PayloadPool {
 mod tests {
     use super::*;
     use crate::host::node::{DeliveryCounters, ParamDelivery};
-    use crate::protocol::{ParamAddress, ParamId, ParameterQueue};
+    use crate::protocol::{ParamId, ParameterQueue};
 
     /// **The bridge's buffers hold the pool budget, not parameters × room**:
     /// for 2 000 parameters (and the node's 64 spare slots) at 512- and
@@ -346,10 +346,7 @@ mod tests {
     #[test]
     fn a_buffer_of_the_room_before_a_re_prepare_is_dropped_not_reused() {
         let counters = Arc::new(DeliveryCounters::default());
-        let mut d = ParamDelivery::new(
-            (0..2000).map(|i| ParamAddress::Opaque(ParamId::new(i))),
-            counters,
-        );
+        let mut d = ParamDelivery::new((0..2000).map(ParamId::new), counters);
         let pool = PayloadPool::new();
         let lanes = 20u32;
         let load = |d: &mut ParamDelivery, phase: usize| {
@@ -357,7 +354,7 @@ mod tests {
             for f in 0..512i32 {
                 for id in 0..lanes {
                     let v = ((f as usize + id as usize + phase) % 7 + 1) as f32 / 8.0;
-                    let address = ParamAddress::Opaque(ParamId::new(id));
+                    let address = ParamId::new(id);
                     if f % 32 == 0 {
                         d.grid_point(address, f, v);
                     } else {

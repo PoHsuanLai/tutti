@@ -159,7 +159,6 @@ impl Node for PluginClient<Bound> {
         } else {
             SortedEvents::EMPTY
         };
-        let indexed = c.controls.indexed();
         // One host-clock read per block; each chunk is placed on it by its
         // frame. None offline, and none for a plugin told no transport.
         let block_ns = host_clock
@@ -176,7 +175,6 @@ impl Node for PluginClient<Bound> {
             block_ns,
             pending,
             out_events,
-            indexed,
             segments,
             params,
             intake,
@@ -258,9 +256,6 @@ struct PluginChunks<'a> {
     pending: &'a mut BlockPayload,
     /// The plugin's MIDI-out at this call's frames ([`Chunks::emit`]).
     out_events: &'a mut MidiEventVec,
-    /// Whether the plugin addresses parameters by VST2 index: how a ramp's
-    /// number is read.
-    indexed: bool,
     /// The curve segments in flight on the event input.
     segments: &'a mut SegmentPoints,
     /// The chunk's parameter changes: a queue per parameter, changes only.
@@ -320,7 +315,6 @@ impl Chunks for PluginChunks<'_> {
             events,
             features,
             pending,
-            indexed,
             segments,
             params,
             intake,
@@ -334,7 +328,6 @@ impl Chunks for PluginChunks<'_> {
             n,
             at,
             cx,
-            *indexed,
             segments,
             params,
             |e, frame| match e.kind {
@@ -537,7 +530,6 @@ mod loss_tests {
             block_ns: None,
             pending: &mut pending,
             out_events: &mut out_events,
-            indexed: false,
             segments: &mut segments,
             params: &mut params,
             intake: &mut intake,

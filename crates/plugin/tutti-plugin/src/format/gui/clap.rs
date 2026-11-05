@@ -9,7 +9,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamAddress, ParamRange};
+use crate::protocol::{Normalized, ParamId, ParamRange};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 use tutti_plugin_types::{Control, Request, RescanScope};
@@ -26,7 +26,7 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
 /// or [`None`] for an event that carries no authored value.
 ///
 /// Only `ParamValue` does. `ParamGestureBegin`/`End` mark the start and end of a
-/// knob drag and have no value at all, so the trait's `(ParamAddress, f32)` pair
+/// knob drag and have no value at all, so the trait's `(ParamId, f32)` pair
 /// has nowhere to put them; surfacing them would mean widening that signature
 /// for all three formats, and the only consumer would be automation touch/latch,
 /// which is not wired up. `ParamMod` is dropped for a different reason — it is a
@@ -46,7 +46,7 @@ fn lookup_range(table: &[(u32, (f64, f64))], id: u32) -> Option<(f64, f64)> {
 fn param_edit_from_event(
     ranges: &[(u32, (f64, f64))],
     event: tutti_clap_host::ClapEvent,
-) -> Option<(ParamAddress, f32)> {
+) -> Option<(ParamId, f32)> {
     let tutti_clap_host::ClapEvent::ParamValue(v) = event else {
         return None;
     };
@@ -59,7 +59,7 @@ fn param_edit_from_event(
         .to_normalized(v.value),
         None => v.value,
     };
-    Some((ParamAddress::Opaque(v.param_id.into()), normalized as f32))
+    Some((v.param_id.into(), normalized as f32))
 }
 
 pub(crate) struct ClapGuiInstance {
@@ -106,7 +106,7 @@ fn read_param_ranges(inner: &tutti_clap_host::ClapLoaded) -> Vec<(u32, (f64, f64
         .parameter_list()
         .into_iter()
         .filter_map(|p| {
-            let id = p.id.opaque()?.get();
+            let id = p.id.get();
             p.bounds().map(|b| (id, b))
         })
         .collect();
@@ -170,10 +170,7 @@ impl PluginEditor for ClapGuiInstance {
         }
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        // `clap_id` is opaque; a VST2 index addresses nothing here.
-        let Some(id) = id.opaque() else { return };
-
+    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
         // CLAP values are in the plugin's native plain range, so the host's
         // normalized value is denormalized against the declared bounds — the
         // same conversion the subprocess loader applies on the audio path.
@@ -202,7 +199,7 @@ impl PluginEditor for ClapGuiInstance {
             .map_err(|e| BridgeError::ProtocolError(format!("CLAP set_state failed: {e}")))
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)> {
         // A CLAP editor reports its knob movements as output events on the next
         // `params.flush`, so an empty flush is how the host collects them. This
         // is the only bridge back to the audio instance in the subprocess —
@@ -336,16 +333,16 @@ mod tests {
         let (id, (min, max)) = CUTOFF;
 
         let at_min = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, min));
-        assert_eq!(at_min, Some((ParamAddress::Opaque(id.into()), 0.0)));
+        assert_eq!(at_min, Some((id.into(), 0.0)));
 
         let at_max = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, max));
-        assert_eq!(at_max, Some((ParamAddress::Opaque(id.into()), 1.0)));
+        assert_eq!(at_max, Some((id.into(), 1.0)));
 
         // Midpoint of the declared span, which is *not* the midpoint of the
         // value: 10010 Hz is halfway between 20 and 20000 linearly, and a
         // pass-through would report 10010.0 rather than 0.5.
         let mid = param_edit_from_event(&ranges, ClapEvent::param_value(0, id, 10_010.0));
-        assert_eq!(mid, Some((ParamAddress::Opaque(id.into()), 0.5)));
+        assert_eq!(mid, Some((id.into(), 0.5)));
     }
 
     /// Round-trip against the sibling `set_parameter` mirror, which converts the
@@ -389,7 +386,7 @@ mod tests {
         // a populated table, not the trivially-empty case.
         let ranges = [CUTOFF];
         let edit = param_edit_from_event(&ranges, ClapEvent::param_value(0, 99, 0.5));
-        assert_eq!(edit, Some((ParamAddress::Opaque(99.into()), 0.5)));
+        assert_eq!(edit, Some((99.into(), 0.5)));
     }
 
     /// Events that carry no authored value are dropped rather than forwarded.

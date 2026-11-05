@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use super::ContentScale;
 use super::Normalized;
-use super::ParamAddress;
+use super::ParamId;
 use super::SampleFormat;
 use super::Samples;
 use super::midi::IpcMidiEventVec;
@@ -67,7 +67,7 @@ pub enum HostMessage {
     /// Set one parameter to a normalized value.
     SetParameter {
         /// Which parameter — opaque handle or positional index, per format.
-        param_id: ParamAddress,
+        param_id: ParamId,
         /// Normalized `0.0..=1.0`; the loader maps it into the plugin's domain.
         value: f32,
     },
@@ -80,14 +80,14 @@ pub enum HostMessage {
     /// Read one parameter's current normalized value.
     GetParameter {
         /// Which parameter — opaque handle or positional index, per format.
-        param_id: ParamAddress,
+        param_id: ParamId,
     },
     /// Ask for every parameter the plugin declares.
     GetParameterList,
     /// Ask for one parameter's declaration (name, range, flags, group).
     GetParameterInfo {
         /// Which parameter — opaque handle or positional index, per format.
-        param_id: ParamAddress,
+        param_id: ParamId,
     },
     /// Re-rate the plugin. Deactivates and reactivates it server-side, and is
     /// answered by [`BridgeMessage::SampleRateSet`]: the host must learn
@@ -175,7 +175,7 @@ pub enum HostMessage {
     /// to its format's domain.
     GetParameterText {
         /// Which parameter — opaque handle or positional index, per format.
-        param_id: crate::protocol::ParamAddress,
+        param_id: crate::protocol::ParamId,
         /// The value to render, normalized.
         value: crate::protocol::Normalized,
     },
@@ -186,7 +186,7 @@ pub enum HostMessage {
     /// `parameter_value_from_text`.
     GetParameterValueFromText {
         /// Which parameter — opaque handle or positional index, per format.
-        param_id: crate::protocol::ParamAddress,
+        param_id: crate::protocol::ParamId,
         /// Display text to parse, in whatever form the plugin renders.
         text: String,
     },

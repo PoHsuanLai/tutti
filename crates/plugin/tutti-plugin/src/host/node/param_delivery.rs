@@ -121,7 +121,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use crate::protocol::{Normalized, ParamAddress, ParameterChanges, ParameterQueue};
+use crate::protocol::{Normalized, ParamId, ParameterChanges, ParameterQueue};
 
 /// A slot with no queue in the chunk being filled.
 const NO_QUEUE: u32 = u32::MAX;
@@ -208,12 +208,12 @@ pub(crate) struct DeliveryCounters {
 #[derive(Debug)]
 pub(crate) struct DeliveredRecord {
     /// Sorted, the same order as the node's listed slots.
-    addresses: Box<[ParamAddress]>,
+    addresses: Box<[ParamId]>,
     values: Box<[AtomicU64]>,
 }
 
 impl DeliveredRecord {
-    fn new(addresses: &[ParamAddress]) -> Self {
+    fn new(addresses: &[ParamId]) -> Self {
         Self {
             addresses: addresses.into(),
             values: addresses
@@ -224,7 +224,7 @@ impl DeliveredRecord {
     }
 
     /// Each listed parameter the node has delivered, with its value.
-    fn snapshot(&self) -> Vec<(ParamAddress, f64)> {
+    fn snapshot(&self) -> Vec<(ParamId, f64)> {
         self.addresses
             .iter()
             .zip(self.values.iter())
@@ -239,7 +239,7 @@ impl DeliveredRecord {
 impl DeliveryCounters {
     /// What the node has delivered so far, per listed parameter: empty
     /// before bind. Control thread: allocates.
-    pub(crate) fn delivered(&self) -> Vec<(ParamAddress, f64)> {
+    pub(crate) fn delivered(&self) -> Vec<(ParamId, f64)> {
         self.record.get().map(|r| r.snapshot()).unwrap_or_default()
     }
 
@@ -257,7 +257,7 @@ impl DeliveryCounters {
 /// One parameter's delivery state.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
-    address: ParamAddress,
+    address: ParamId,
     /// The last value handed over with a chunk, normalized; `None` until one is.
     sent: Option<f64>,
     /// The last value placed in the chunk being filled (or, while `owed`,
@@ -277,7 +277,7 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(address: ParamAddress) -> Self {
+    fn new(address: ParamId) -> Self {
         Self {
             address,
             sent: None,
@@ -487,7 +487,7 @@ impl ParamDelivery {
     /// more, and a chunk with room for a queue in each. Control thread:
     /// allocates.
     pub(crate) fn new(
-        params: impl IntoIterator<Item = ParamAddress>,
+        params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
         Self::with_spares(params, counters, ParameterChanges::SPARE_QUEUES)
@@ -498,18 +498,18 @@ impl ParamDelivery {
     /// list"). Control thread: allocates.
     #[cfg(feature = "vst2")]
     pub(crate) fn closed(
-        params: impl IntoIterator<Item = ParamAddress>,
+        params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
     ) -> Self {
         Self::with_spares(params, counters, 0)
     }
 
     fn with_spares(
-        params: impl IntoIterator<Item = ParamAddress>,
+        params: impl IntoIterator<Item = ParamId>,
         counters: Arc<DeliveryCounters>,
         spares: usize,
     ) -> Self {
-        let mut addresses: Vec<ParamAddress> = params.into_iter().collect();
+        let mut addresses: Vec<ParamId> = params.into_iter().collect();
         addresses.sort_unstable();
         addresses.dedup();
         let room = addresses.len() + spares;
@@ -543,7 +543,7 @@ impl ParamDelivery {
     /// loaded with that state then sends a parameter only once the host's
     /// value differs from it, as the live one does. Control thread, before
     /// the node runs.
-    pub(crate) fn seed(&mut self, delivered: &[(ParamAddress, f64)]) {
+    pub(crate) fn seed(&mut self, delivered: &[(ParamId, f64)]) {
         for &(address, value) in delivered {
             if let Some(i) = self.slot(address) {
                 let slot = &mut self.slots[i];
@@ -612,7 +612,7 @@ impl ParamDelivery {
     /// The slot for `address`, learning it into a spare slot when it is new
     /// and one is free. Allocation-free: a learned slot is inserted within
     /// the reserved capacity.
-    fn slot(&mut self, address: ParamAddress) -> Option<usize> {
+    fn slot(&mut self, address: ParamId) -> Option<usize> {
         match self.slots.binary_search_by(|s| s.address.cmp(&address)) {
             Ok(i) => Some(i),
             Err(i) if self.slots.len() < self.room => {
@@ -631,7 +631,7 @@ impl ParamDelivery {
 
     /// Whether `address` has a slot (learning it if there is room); counts
     /// a refusal as one dropped point.
-    pub(crate) fn knows(&mut self, address: ParamAddress) -> bool {
+    pub(crate) fn knows(&mut self, address: ParamId) -> bool {
         let known = self.slot(address).is_some();
         if !known {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
@@ -644,7 +644,7 @@ impl ParamDelivery {
     /// handed over. `None` until the node has given it one. The host's
     /// value, not the plugin's: an edit in the plugin's editor is not in it
     /// (see the module docs). Allocation-free; learns no slot.
-    pub(crate) fn current(&self, address: ParamAddress) -> Option<f32> {
+    pub(crate) fn current(&self, address: ParamId) -> Option<f32> {
         let i = self
             .slots
             .binary_search_by(|s| s.address.cmp(&address))
@@ -673,7 +673,7 @@ impl ParamDelivery {
     /// `stood`, and its points are refused. Allocation-free.
     pub(crate) fn frame_start(
         &mut self,
-        address: ParamAddress,
+        address: ParamId,
         frame: usize,
         stood: impl FnOnce(&Self) -> Option<f32>,
     ) -> Option<f32> {
@@ -699,17 +699,17 @@ impl ParamDelivery {
     /// its latest point replaced, counted as merged: the latest value wins,
     /// so a chunk spanning several blocks ends exact.
     /// `false` when `address` has no slot (counted). Allocation-free.
-    pub(crate) fn point(&mut self, address: ParamAddress, offset: i32, value: f32) -> bool {
+    pub(crate) fn point(&mut self, address: ParamId, offset: i32, value: f32) -> bool {
         self.point_kind(address, offset, value, false)
     }
 
     /// [`point`](Self::point) for a grid point (a frame whose play count is
     /// a multiple of 32): dropped first when its queue is full, and counted.
-    pub(crate) fn grid_point(&mut self, address: ParamAddress, offset: i32, value: f32) -> bool {
+    pub(crate) fn grid_point(&mut self, address: ParamId, offset: i32, value: f32) -> bool {
         self.point_kind(address, offset, value, true)
     }
 
-    fn point_kind(&mut self, address: ParamAddress, offset: i32, value: f32, grid: bool) -> bool {
+    fn point_kind(&mut self, address: ParamId, offset: i32, value: f32, grid: bool) -> bool {
         let Some(i) = self.slot(address) else {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
@@ -867,8 +867,8 @@ mod tests {
     use super::*;
     use crate::protocol::ParamId;
 
-    fn op(id: u32) -> ParamAddress {
-        ParamAddress::Opaque(ParamId::new(id))
+    fn op(id: u32) -> ParamId {
+        ParamId::new(id)
     }
 
     /// **`GridBits` finds and removes marks as a list of bits does,
@@ -931,7 +931,7 @@ mod tests {
     }
 
     /// `(address, [(offset, value)])` of the chunk being filled.
-    fn chunk(d: &ParamDelivery) -> Vec<(ParamAddress, Vec<(i32, f64)>)> {
+    fn chunk(d: &ParamDelivery) -> Vec<(ParamId, Vec<(i32, f64)>)> {
         d.changes
             .queues
             .iter()
@@ -1135,12 +1135,12 @@ mod tests {
     #[test]
     fn a_closed_list_refuses_an_undeclared_index() {
         let counters = Arc::new(DeliveryCounters::default());
-        let mut d = ParamDelivery::closed((0..4).map(ParamAddress::Index), Arc::clone(&counters));
+        let mut d = ParamDelivery::closed((0..4).map(ParamId::new), Arc::clone(&counters));
         d.begin();
-        assert!(!d.point(ParamAddress::Index(4), 0, 0.5));
-        assert!(!d.point(ParamAddress::Index(200), 0, 0.5));
-        assert!(d.point(ParamAddress::Index(3), 0, 0.5));
-        assert_eq!(chunk(&d), vec![(ParamAddress::Index(3), vec![(0, 0.5)])]);
+        assert!(!d.point(ParamId::new(4), 0, 0.5));
+        assert!(!d.point(ParamId::new(200), 0, 0.5));
+        assert!(d.point(ParamId::new(3), 0, 0.5));
+        assert_eq!(chunk(&d), vec![(ParamId::new(3), vec![(0, 0.5)])]);
         assert_eq!(counters.snapshot().points_dropped, 2);
     }
 

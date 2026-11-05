@@ -6,7 +6,7 @@
 //! (`numInputs`, `numParams`, `numPrograms`, `flags`, `initialDelay`) is only
 //! reachable through the process environment.
 //!
-//! A test must set these before `Vst2Instance::load` and serialize against
+//! A test must set these before `Vst2Loaded::load` and serialize against
 //! other tests — `set_var` is process-global.
 
 use std::env;

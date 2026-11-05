@@ -141,9 +141,9 @@ pub use tutti_plugin_types::{
     ChordValue, ContentScale, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin,
     Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
-    ParameterPoint, ParameterQueue, PluginTail, PointBuf, Preset, PresetId, PresetSupport,
-    RenderMode, Samples, ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
+    ParameterQueue, PluginTail, PointBuf, Preset, PresetId, PresetSupport, RenderMode, Samples,
+    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]
@@ -287,20 +287,20 @@ mod tests {
     fn every_parameter_display_frame_round_trips() {
         let requests = [
             HostMessage::GetParameterText {
-                param_id: ParamAddress::Opaque(ParamId::new(0x8000_0001)),
+                param_id: ParamId::new(0x8000_0001),
                 value: Normalized::new(0.375),
             },
             // The other addressing model, which VST2 uses.
             HostMessage::GetParameterText {
-                param_id: ParamAddress::Index(3),
+                param_id: ParamId::new(3),
                 value: Normalized::new(1.0),
             },
             HostMessage::GetParameterValueFromText {
-                param_id: ParamAddress::Opaque(ParamId::new(7)),
+                param_id: ParamId::new(7),
                 text: "800 Hz".to_string(),
             },
             HostMessage::GetParameterValueFromText {
-                param_id: ParamAddress::Index(0),
+                param_id: ParamId::new(0),
                 text: String::new(),
             },
         ];
@@ -363,7 +363,7 @@ mod tests {
         );
         assert_eq!(
             tag(&bincode::serialize(&HostMessage::GetParameterText {
-                param_id: ParamAddress::Index(0),
+                param_id: ParamId::new(0),
                 value: Normalized::new(0.0),
             })
             .expect("serialize")),
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(
             tag(
                 &bincode::serialize(&HostMessage::GetParameterValueFromText {
-                    param_id: ParamAddress::Index(0),
+                    param_id: ParamId::new(0),
                     text: String::new(),
                 })
                 .expect("serialize")

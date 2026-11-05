@@ -22,11 +22,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_vst2_host::{Precision, RenderScratch, Vst2Instance, Vst2ProcessContext};
+use tutti_vst2_host::Vst2ProcessContext;
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::{Active, Precision};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -88,7 +92,7 @@ where
     // Leak the handle, deliberately. The switches these helpers touch are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Active` holding the probe open at that moment, the
     // write is discarded with the unload and the next load maps a fresh image
     // reading the default.
     //
@@ -121,7 +125,7 @@ fn read_capture(path: &Path) -> ProcessCapture {
 
 /// Load the probe, with `effFlagsCanDoubleReplacing` set or clear, telling it
 /// it will be processed at `precision`.
-fn load_probe(declares_f64: bool, precision: Precision) -> (Vst2Instance, RenderScratch, PathBuf) {
+fn load_probe(declares_f64: bool, precision: Precision) -> (Active, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
     clear_probe_env();
@@ -129,26 +133,19 @@ fn load_probe(declares_f64: bool, precision: Precision) -> (Vst2Instance, Render
         // SAFETY: the caller holds `PROBE_LOCK`.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_F64", "1") };
     }
-    let instance = Vst2Instance::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
+    let instance = Active::load_with_precision(&path, SAMPLE_RATE, BLOCK, precision)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     // The AEffect is built; clearing now keeps the variable from outliving
     // this load.
     clear_probe_env();
-    let meta = instance.metadata().clone();
-    let scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
-    (instance, scratch, path)
+    (instance, path)
 }
 
 /// Render one f64 block of `input_value` on every channel, returning the
 /// per-channel output.
-fn render_f64(
-    instance: &mut Vst2Instance,
-    scratch: &mut RenderScratch,
-    input_value: f64,
-) -> Vec<Vec<f64>> {
-    let meta = instance.metadata().clone();
-    let inputs = meta.num_inputs.count() as usize;
-    let outputs = meta.num_outputs.count() as usize;
+fn render_f64(instance: &mut Active, input_value: f64) -> Vec<Vec<f64>> {
+    let inputs = instance.pins().0.count() as usize;
+    let outputs = instance.pins().1.count() as usize;
 
     let input_data = vec![vec![input_value; BLOCK]; inputs];
     let mut output_data = vec![vec![0.0f64; BLOCK]; outputs];
@@ -158,7 +155,7 @@ fn render_f64(
         output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
 
     let ctx = Vst2ProcessContext::new(SAMPLE_RATE);
-    instance.process_f64(&input_slices, &mut output_slices, BLOCK, &ctx, scratch);
+    instance.process_f64(&input_slices, &mut output_slices, BLOCK, &ctx);
 
     output_data
 }
@@ -171,14 +168,14 @@ fn render_f64(
 #[test]
 fn f64_capable_plugin_is_entered_through_the_f64_slot() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(true, Precision::Double);
+    let (mut instance, path) = load_probe(true, Precision::Double);
     assert!(
         instance.metadata().supports_f64,
         "the probe was asked to declare effFlagsCanDoubleReplacing but the \
          host did not read it back — the rest of this test would be vacuous"
     );
 
-    let _ = render_f64(&mut instance, &mut scratch, 0.0);
+    let _ = render_f64(&mut instance, 0.0);
 
     let cap = read_capture(&path);
     assert!(cap.valid, "probe observed no render");
@@ -200,13 +197,12 @@ fn f64_capable_plugin_is_entered_through_the_f64_slot() {
 #[test]
 fn f64_render_preserves_precision_f32_cannot_carry() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(true, Precision::Double);
-    let meta = instance.metadata().clone();
+    let (mut instance, path) = load_probe(true, Precision::Double);
 
     // Guard the fixture, per channel, against the tag rounding the difference
     // back off. Checking only the bare round trip is not enough: a narrowing
     // host can pass it.
-    for ch in 0..meta.num_outputs.count() as usize {
+    for ch in 0..instance.pins().1.count() as usize {
         let tag = tutti_vst2_test_plugin::channel_tag(ch) as f64;
         assert_ne!(
             NEEDS_F64 + tag,
@@ -217,7 +213,7 @@ fn f64_render_preserves_precision_f32_cannot_carry() {
         );
     }
 
-    let out = render_f64(&mut instance, &mut scratch, NEEDS_F64);
+    let out = render_f64(&mut instance, NEEDS_F64);
 
     let cap = read_capture(&path);
     assert!(cap.valid, "probe observed no render");
@@ -245,13 +241,13 @@ fn f64_render_preserves_precision_f32_cannot_carry() {
 #[test]
 fn plugin_without_f64_support_falls_back_to_the_f32_slot() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(false, Precision::Double);
+    let (mut instance, path) = load_probe(false, Precision::Double);
     assert!(
         !instance.metadata().supports_f64,
         "the default probe must not declare effFlagsCanDoubleReplacing"
     );
 
-    let out = render_f64(&mut instance, &mut scratch, 0.0);
+    let out = render_f64(&mut instance, 0.0);
 
     let cap = read_capture(&path);
     assert!(cap.valid, "probe observed no render");
@@ -288,7 +284,7 @@ fn set_process_precision_announces_the_width_the_host_will_use() {
     let _guard = lock_probe();
 
     let announced = |declares_f64: bool, precision: Precision| {
-        let (instance, _scratch, path) = load_probe(declares_f64, precision);
+        let (instance, path) = load_probe(declares_f64, precision);
         let cap = read_capture(&path);
         assert_eq!(
             cap.set_precision_count, 1,
@@ -330,10 +326,10 @@ fn set_process_precision_announces_the_width_the_host_will_use() {
 #[test]
 fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
     let _guard = lock_probe();
-    let (mut instance, mut scratch, path) = load_probe(true, Precision::Single);
+    let (mut instance, path) = load_probe(true, Precision::Single);
     assert!(instance.metadata().supports_f64, "fixture");
 
-    let _ = render_f64(&mut instance, &mut scratch, 0.0);
+    let _ = render_f64(&mut instance, 0.0);
 
     let cap = read_capture(&path);
     assert_eq!(cap.entry, ProcessEntry::Replacing);
@@ -345,7 +341,7 @@ fn a_plugin_told_32_bit_is_entered_through_the_f32_slot() {
 #[test]
 fn set_process_precision_precedes_the_load_resume() {
     let _guard = lock_probe();
-    let (_instance, _scratch, path) = load_probe(true, Precision::Double);
+    let (_instance, path) = load_probe(true, Precision::Double);
 
     let cap = read_capture(&path);
     assert_eq!(cap.set_precision_count, 1);

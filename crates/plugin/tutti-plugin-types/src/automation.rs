@@ -1,6 +1,6 @@
 //! Parameter automation primitives passed into a plugin's process call.
 
-use crate::{Normalized, ParamAddress, PointBuf, PointPool};
+use crate::{Normalized, ParamId, PointBuf, PointPool};
 
 /// One automation sample: the value at a specific sample offset within
 /// the current process block.
@@ -56,14 +56,10 @@ fn point(sample_offset: i32, value: f64) -> ParameterPoint {
 pub struct ParameterQueue {
     /// Which parameter these points drive.
     ///
-    /// A [`ParamAddress`] rather than a bare `u32` for the same reason the
-    /// direct path takes one: the number alone does not say whether it is an
-    /// opaque plugin-chosen handle (VST3/CLAP/AU) or a VST2 positional index,
-    /// and the two do not even share a range. The address survives the wire, so
-    /// a receiving loader reads the model off the value rather than assuming
-    /// its own format's — which is correct only while a session hosts exactly
-    /// one format, something nothing states and nothing checks.
-    pub param_id: ParamAddress,
+    /// A [`ParamId`] rather than a bare `u32`, for the reason that type gives:
+    /// the number is the plugin's own handle (VST3, CLAP, AU) or its parameter's
+    /// position (VST2), and carries no arithmetic.
+    pub param_id: ParamId,
     /// Points in ascending, non-negative `sample_offset` order, in storage of
     /// a fixed capacity.
     ///
@@ -116,7 +112,7 @@ impl ParameterQueue {
     /// `points` points. Allocates (unless `points` is 0); call it off the
     /// audio thread.
     #[must_use]
-    pub fn with_capacity(param_id: ParamAddress, points: usize) -> Self {
+    pub fn with_capacity(param_id: ParamId, points: usize) -> Self {
         Self {
             param_id,
             points: PointBuf::with_capacity(points),
@@ -127,7 +123,7 @@ impl ParameterQueue {
     /// capacity their count: for a builder sized by its data, off the audio
     /// thread.
     #[must_use]
-    pub fn from_points(param_id: ParamAddress, points: Vec<ParameterPoint>) -> Self {
+    pub fn from_points(param_id: ParamId, points: Vec<ParameterPoint>) -> Self {
         Self {
             param_id,
             points: PointBuf::from_points(points),
@@ -222,7 +218,7 @@ impl<'de> serde::Deserialize<'de> for ParameterQueue {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct Raw {
-            param_id: ParamAddress,
+            param_id: ParamId,
             points: PointBuf,
         }
         let raw = Raw::deserialize(d)?;
@@ -402,7 +398,7 @@ impl ParameterChanges {
     pub fn reserved(queues: usize, room: usize) -> Self {
         let (floor, blocks) = Self::point_layout(queues, room);
         // A placeholder address: `open_queue` readdresses each queue.
-        let placeholder = ParamAddress::Index(0);
+        let placeholder = ParamId::new(0);
         Self {
             queues: Vec::with_capacity(queues),
             spare: (0..queues)
@@ -492,7 +488,7 @@ impl ParameterChanges {
     /// with no point room (which does not allocate). Returns `false`,
     /// opening nothing, when `queues` has no room left
     /// ([`has_room`](Self::has_room)). Allocation-free.
-    pub fn open_queue(&mut self, param_id: ParamAddress) -> bool {
+    pub fn open_queue(&mut self, param_id: ParamId) -> bool {
         if !self.has_room() {
             return false;
         }
@@ -558,10 +554,8 @@ impl ParameterChanges {
     /// [`ParameterQueue::add_point`] does) — out-of-range input saturates with
     /// no error, so pass an already-normalized value.
     ///
-    /// Queues are matched by full [`ParamAddress`] equality, so an opaque handle
-    /// and a positional index that happen to be the same number address two
-    /// different queues.
-    pub fn add_change(&mut self, param_id: ParamAddress, sample_offset: i32, value: f64) -> bool {
+    /// Queues are matched by [`ParamId`] equality.
+    pub fn add_change(&mut self, param_id: ParamId, sample_offset: i32, value: f64) -> bool {
         let i = match self.queues.iter().position(|q| q.param_id == param_id) {
             Some(i) => i,
             None if self.open_queue(param_id) => self.queues.len() - 1,
@@ -630,13 +624,13 @@ impl ParameterChanges {
     }
 
     /// Returns the queue addressed by `param_id`, if one has been created.
-    pub fn queue(&self, param_id: ParamAddress) -> Option<&ParameterQueue> {
+    pub fn queue(&self, param_id: ParamId) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
     }
 
     /// Returns the queue addressed by `param_id` for mutation, if one has been
     /// created.
-    pub fn queue_mut(&mut self, param_id: ParamAddress) -> Option<&mut ParameterQueue> {
+    pub fn queue_mut(&mut self, param_id: ParamId) -> Option<&mut ParameterQueue> {
         self.queues.iter_mut().find(|q| q.param_id == param_id)
     }
 }
@@ -655,14 +649,14 @@ mod serde_tests {
     /// maintain the `points` doc's ascending invariant, so deserialize must.
     #[test]
     fn deserialize_sorts_out_of_order_points() {
-        let mut q = ParameterQueue::with_capacity(ParamAddress::Opaque(ParamId::new(7)), 3);
+        let mut q = ParameterQueue::with_capacity(ParamId::new(7), 3);
         q.add_point(32, 0.5);
         q.add_point(0, 0.0);
         q.add_point(16, 0.25);
 
         let got = round_trip(&q);
 
-        assert_eq!(got.param_id, ParamAddress::Opaque(ParamId::new(7)));
+        assert_eq!(got.param_id, ParamId::new(7));
         let offsets: Vec<i32> = got.points.iter().map(|p| p.sample_offset).collect();
         assert_eq!(offsets, vec![0, 16, 32]);
         // Values travel with their offsets, not independently.
@@ -675,7 +669,7 @@ mod serde_tests {
     /// VST3's `getPoint` hands it to the plugin verbatim.
     #[test]
     fn deserialize_clamps_negative_offsets() {
-        let mut q = ParameterQueue::with_capacity(ParamAddress::Opaque(ParamId::new(1)), 2);
+        let mut q = ParameterQueue::with_capacity(ParamId::new(1), 2);
         q.add_point(-100, 0.75);
         q.add_point(8, 0.25);
 
@@ -689,7 +683,7 @@ mod serde_tests {
     /// An already-ordered queue is untouched — the common case pays no reorder.
     #[test]
     fn deserialize_leaves_ordered_points_alone() {
-        let mut q = ParameterQueue::with_capacity(ParamAddress::Opaque(ParamId::new(3)), 9);
+        let mut q = ParameterQueue::with_capacity(ParamId::new(3), 9);
         for i in 0..9 {
             q.add_point(i * 8, i as f64 / 8.0);
         }
@@ -700,44 +694,23 @@ mod serde_tests {
         assert_eq!(offsets, (0..9).map(|i| i * 8).collect::<Vec<_>>());
     }
 
-    /// The two addressing models stay distinct across the wire, and a queue
-    /// keyed by one is not found by the other.
+    /// A parameter id above `i32::MAX` survives the wire and still finds its
+    /// queue.
     ///
-    /// This is what the field's type buys: `ParamId::new(3)` and `Index(3)` are
-    /// the same number and must not be the same address. Fused into one number,
-    /// the receiving loader can only recover the model from *which loader it
-    /// is* — correct solely because a session hosts one format.
+    /// Such ids are routine (plugins often hash a name into one) and are what a
+    /// signed index could not carry.
+    ///
+    /// Mutation (run): `ParamId::get` masking the top bit -> the id read back
+    /// is another number, `queue(high)` finds nothing -> fails.
     #[test]
-    fn the_addressing_model_survives_the_wire() {
-        let opaque = ParamAddress::Opaque(ParamId::new(3));
-        let index = ParamAddress::Index(3);
-        assert_ne!(opaque, index, "same number, different address");
-
-        let mut changes = ParameterChanges::reserved(2, 1);
-        changes.add_change(opaque, 0, 0.25);
-        changes.add_change(index, 0, 0.75);
-        // Two queues, not one merged by a coinciding number.
-        assert_eq!(changes.len(), 2);
-
-        let bytes = bincode::serialize(&changes).expect("serialize");
-        let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
-
-        assert_eq!(
-            got.queue(opaque).expect("opaque").points[0].value.get(),
-            0.25
-        );
-        assert_eq!(got.queue(index).expect("index").points[0].value.get(), 0.75);
-
-        // An opaque id above `i32::MAX` is routine (these are often name
-        // hashes) and is exactly what a bare number could not carry: read as
-        // an index it is negative.
-        let high = ParamAddress::Opaque(ParamId::new(0xF000_000A));
+    fn an_id_above_i32_max_survives_the_wire() {
+        let high = ParamId::new(0xF000_000A);
         let mut one = ParameterChanges::reserved(1, 1);
         one.add_change(high, 0, 1.0);
         let back: ParameterChanges =
             bincode::deserialize(&bincode::serialize(&one).expect("serialize")).expect("de");
         assert_eq!(back.queue(high).expect("high id survives").len(), 1);
-        assert_eq!(back.queues[0].param_id.index(), None);
+        assert_eq!(back.queues[0].param_id.get(), 0xF000_000A);
     }
 
     /// `ParameterChanges` derives its `Deserialize`, so the per-queue impl has
@@ -746,16 +719,14 @@ mod serde_tests {
     #[test]
     fn nested_in_parameter_changes() {
         let mut changes = ParameterChanges::reserved(2, 2);
-        changes.add_change(ParamAddress::Opaque(ParamId::new(1)), 32, 1.0);
-        changes.add_change(ParamAddress::Opaque(ParamId::new(1)), -4, 0.0);
-        changes.add_change(ParamAddress::Opaque(ParamId::new(2)), 0, 0.5);
+        changes.add_change(ParamId::new(1), 32, 1.0);
+        changes.add_change(ParamId::new(1), -4, 0.0);
+        changes.add_change(ParamId::new(2), 0, 0.5);
 
         let bytes = bincode::serialize(&changes).expect("serialize");
         let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
 
-        let q = got
-            .queue(ParamAddress::Opaque(ParamId::new(1)))
-            .expect("queue 1");
+        let q = got.queue(ParamId::new(1)).expect("queue 1");
         assert_eq!(q.points[0].sample_offset, 0);
         assert_eq!(q.points[1].sample_offset, 32);
     }
@@ -783,7 +754,7 @@ mod serde_tests {
         }
         let mut changes = ParameterChanges::reserved(200, 40);
         for id in 0..200i32 {
-            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
             let q = changes.queues.last_mut().expect("opened");
             for k in 0..12 {
                 q.add_point(k, 0.25);
@@ -808,7 +779,7 @@ mod serde_tests {
         let back: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.queues.len(), 200);
         for (id, q) in back.queues.iter().enumerate() {
-            assert_eq!(q.param_id, ParamAddress::Index(id as i32));
+            assert_eq!(q.param_id, ParamId::new(id as u32));
             assert_eq!(q.points.len(), 13);
         }
     }
@@ -841,13 +812,13 @@ mod serde_tests {
         // within the pool.
         for k in 0..13 {
             for id in 0..200i32 {
-                changes.add_change(ParamAddress::Index(id), k * 4 + id % 4, 0.25);
+                changes.add_change(ParamId::new(id as u32), k * 4 + id % 4, 0.25);
             }
         }
         let expected = seq(
             200,
             (0..200i32).map(|id| {
-                let mut b = bincode::serialize(&ParamAddress::Index(id)).expect("serialize");
+                let mut b = bincode::serialize(&ParamId::new(id as u32)).expect("serialize");
                 b.extend(seq(
                     13,
                     (0..13).map(|k| {
@@ -887,9 +858,9 @@ mod reserved_tests {
         let mut first = Vec::new();
         for block in 0..3 {
             for id in 0..3i32 {
-                assert!(changes.open_queue(ParamAddress::Index(id)));
+                assert!(changes.open_queue(ParamId::new(id as u32)));
                 let q = changes.queues.last_mut().expect("opened");
-                assert_eq!(q.param_id, ParamAddress::Index(id));
+                assert_eq!(q.param_id, ParamId::new(id as u32));
                 assert!(q.is_empty(), "a reused queue starts empty");
                 for k in 0..41 {
                     assert!(q.points.has_room(), "block {block} queue {id} point {k}");
@@ -913,9 +884,9 @@ mod reserved_tests {
         }
         // Past the reserved queues, nothing opens.
         for id in 0..3 {
-            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
         }
-        assert!(!changes.open_queue(ParamAddress::Index(3)));
+        assert!(!changes.open_queue(ParamId::new(3)));
     }
 
     /// **A queue pushed past the spares does not cost a reserved one its
@@ -931,15 +902,15 @@ mod reserved_tests {
     #[test]
     fn clear_keeps_the_reserved_queues_over_an_unreserved_one() {
         let mut changes = ParameterChanges::reserved(4, 40);
-        assert!(changes.open_queue(ParamAddress::Index(0)));
-        assert!(changes.open_queue(ParamAddress::Index(1)));
+        assert!(changes.open_queue(ParamId::new(0)));
+        assert!(changes.open_queue(ParamId::new(1)));
         changes
             .queues
-            .push(ParameterQueue::with_capacity(ParamAddress::Index(2), 0));
+            .push(ParameterQueue::with_capacity(ParamId::new(2), 0));
         changes.clear();
         assert!(changes.spare.iter().all(|q| q.points.capacity() == 41));
         for id in 0..4 {
-            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
             assert!(
                 changes
                     .queues
@@ -965,7 +936,7 @@ mod reserved_tests {
         for block in 0..3 {
             for id in 0..2i32 {
                 for k in 0..16 {
-                    changes.add_change(ParamAddress::Index(id), k, 0.5);
+                    changes.add_change(ParamId::new(id as u32), k, 0.5);
                 }
             }
             assert_eq!(changes.queues.len(), 2);
@@ -1063,7 +1034,7 @@ mod pool_tests {
         let mut first: Vec<*const ParameterPoint> = Vec::new();
         for block in 0..3 {
             for id in 0..QUEUES {
-                assert!(changes.open_queue(ParamAddress::Index(id as i32)));
+                assert!(changes.open_queue(ParamId::new(id as u32)));
             }
             // Every queue takes its floor.
             for i in 0..QUEUES {
@@ -1126,7 +1097,7 @@ mod pool_tests {
             for k in 0..ROOM {
                 for id in 0..QUEUES {
                     if k < floor || moving.contains(&id) {
-                        assert!(changes.add_change(ParamAddress::Index(id as i32), k as i32, 0.5));
+                        assert!(changes.add_change(ParamId::new(id as u32), k as i32, 0.5));
                     }
                 }
             }
@@ -1144,7 +1115,7 @@ mod pool_tests {
         let warm = ptrs(&changes);
 
         fill(&mut changes, pooled..2 * pooled);
-        let past = ParamAddress::Index((2 * pooled) as i32);
+        let past = ParamId::new((2 * pooled) as u32);
         assert!(!changes.add_change(past, 7, 0.875), "the pool is spent");
         let q = changes.queue(past).expect("queued");
         assert_eq!(q.points.len(), floor);
@@ -1152,7 +1123,7 @@ mod pool_tests {
             q.points.last().map(|p| (p.sample_offset, p.value.get())),
             Some((7, 0.875))
         );
-        assert!(!changes.add_change(ParamAddress::Index(QUEUES as i32), 0, 0.5));
+        assert!(!changes.add_change(ParamId::new(QUEUES as u32), 0, 0.5));
         assert_eq!(changes.queues.len(), QUEUES);
         assert_eq!(changes.points_overflowed(), 2);
         assert_eq!(changes.point_storage(), storage);
@@ -1162,7 +1133,7 @@ mod pool_tests {
 
         let mut empty = ParameterChanges::new();
         for k in 0..ROOM as i32 {
-            assert!(!empty.add_change(ParamAddress::Index(0), k, 0.5));
+            assert!(!empty.add_change(ParamId::new(0), k, 0.5));
         }
         assert!(empty.queues.is_empty());
         assert_eq!(empty.points_overflowed(), ROOM as u64);
@@ -1192,12 +1163,11 @@ mod pool_tests {
             .collect();
         blocks.sort_unstable();
         for id in 0..QUEUES {
-            assert!(changes.open_queue(ParamAddress::Index(id as i32)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
         }
         // The last queue has twice a block's room and no block (popped first
         // by `clear`, ahead of every holder).
-        let mut large =
-            ParameterQueue::with_capacity(ParamAddress::Index(QUEUES as i32 - 1), 2 * ROOM);
+        let mut large = ParameterQueue::with_capacity(ParamId::new(QUEUES as u32 - 1), 2 * ROOM);
         for k in 0..2 * ROOM {
             assert!(large.add_point(k as i32, 0.5));
         }
@@ -1248,7 +1218,7 @@ mod pool_tests {
     fn a_queue_that_held_a_block_starts_empty_when_reopened() {
         let mut changes = ParameterChanges::reserved(1_000, 30);
         for id in 0..ParameterChanges::POOLED_QUEUES {
-            assert!(changes.open_queue(ParamAddress::Index(id as i32)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
             for k in 0..10 {
                 assert!(changes.make_room(id));
                 changes.queues[id].add_point(k, 0.5);
@@ -1256,7 +1226,7 @@ mod pool_tests {
         }
         changes.clear();
         for id in 0..1_000 {
-            assert!(changes.open_queue(ParamAddress::Index(id)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
         }
         assert!(changes.queues.iter().all(ParameterQueue::is_empty));
         assert!(changes.is_empty());
@@ -1287,7 +1257,7 @@ mod carried_tests {
             assert_eq!(plain.point_storage(), budget, "{queues} × {room}");
             assert_eq!(bridged.point_storage(), budget, "{queues} × {room}");
             for (changes, want) in [(&mut plain, room + 1), (&mut bridged, room)] {
-                assert!(changes.open_queue(ParamAddress::Index(0)));
+                assert!(changes.open_queue(ParamId::new(0)));
                 let mut k = 0;
                 while changes.push_point(0, k, 0.5) {
                     k += 1;
@@ -1327,7 +1297,7 @@ mod carried_tests {
         let mut changes = ParameterChanges::reserved_bridged(PARAMS, room);
         let storage = changes.point_storage();
         for id in 0..PARAMS {
-            assert!(changes.open_queue(ParamAddress::Index(id as i32)));
+            assert!(changes.open_queue(ParamId::new(id as u32)));
             let want = if moving.contains(&id) {
                 room
             } else {
@@ -1380,7 +1350,7 @@ mod carried_tests {
     fn a_carried_value_with_no_slot_is_dropped_counted() {
         let mut changes = ParameterChanges::reserved(1, 2);
         for (k, v) in [(5, 0.5), (9, 0.75), (12, 1.0)] {
-            assert!(changes.add_change(ParamAddress::Index(0), k, v));
+            assert!(changes.add_change(ParamId::new(0), k, v));
         }
         let carried = ParameterPoint {
             sample_offset: 0,

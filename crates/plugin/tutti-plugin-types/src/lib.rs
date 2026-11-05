@@ -100,9 +100,7 @@ pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };
 pub use note_id::{MAX_HOST_NOTE_ID, note_id_for, note_id_to_channel_note};
-pub use parameters::{
-    Normalized, ParamAddress, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
-};
+pub use parameters::{Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo};
 pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;

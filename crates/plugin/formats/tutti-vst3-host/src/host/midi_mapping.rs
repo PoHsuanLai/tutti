@@ -28,7 +28,7 @@ use vst3::Steinberg::kResultTrue;
 
 use crate::com::EventList;
 use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
-use tutti_plugin_types::{MIDI_STACK_CAPACITY, ParamAddress};
+use tutti_plugin_types::MIDI_STACK_CAPACITY;
 use tutti_types::{Reader, RtVec};
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route
@@ -213,11 +213,8 @@ pub(crate) fn route_cc_events(
                     // keeps the latest value in time, the host's or the CC's
                     // (`PointBuf::push_or_replace_last`), counted in the
                     // set's `points_overflowed`.
-                    let _ = out_params.add_change(
-                        ParamAddress::Opaque(param_id.into()),
-                        event.frame_offset as i32,
-                        value,
-                    );
+                    let _ =
+                        out_params.add_change(param_id.into(), event.frame_offset as i32, value);
                 }
                 // Mappable message but no mapping for this slot — keep it as a
                 // MIDI event so the plugin can still react.
@@ -629,7 +626,7 @@ mod tests {
 
         // Mod wheel went to params.
         let queue = params
-            .queue(ParamAddress::Opaque(500u32.into()))
+            .queue(500u32.into())
             .expect("mod wheel mapped to param 500");
         assert_eq!(queue.points.len(), 1);
         assert_eq!(queue.points[0].sample_offset, 8);
@@ -657,17 +654,11 @@ mod tests {
         let mut filtered = FilteredMidi::new();
         let mut params = ParameterChanges::reserved(2, 1);
         // Pre-seed with a host automation point (as the audio path does).
-        params.add_change(ParamAddress::Opaque(42u32.into()), 0, 0.25);
+        params.add_change(42u32.into(), 0, 0.25);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
-        assert!(
-            params.queue(ParamAddress::Opaque(42u32.into())).is_some(),
-            "host param survived"
-        );
-        assert!(
-            params.queue(ParamAddress::Opaque(500u32.into())).is_some(),
-            "mapped CC added"
-        );
+        assert!(params.queue(42u32.into()).is_some(), "host param survived");
+        assert!(params.queue(500u32.into()).is_some(), "mapped CC added");
         assert!(filtered.is_empty(), "the only event was a mapped CC");
     }
 
@@ -701,32 +692,23 @@ mod tests {
         let mut params = ParameterChanges::reserved(2, 3);
         // Seed the SAME param (500) with host automation at a middle offset,
         // plus a separate param to prove per-queue sorting.
-        params.add_change(ParamAddress::Opaque(500u32.into()), 50, 0.5);
-        params.add_change(ParamAddress::Opaque(42u32.into()), 30, 0.1);
-        params.add_change(ParamAddress::Opaque(42u32.into()), 5, 0.2);
+        params.add_change(500u32.into(), 50, 0.5);
+        params.add_change(42u32.into(), 30, 0.1);
+        params.add_change(42u32.into(), 5, 0.2);
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
         // Before sorting, param 500 is [50 (host), 100 (cc), 10 (cc)] — unsorted.
         sort_param_points(&mut params);
 
         for param_id in [500, 42] {
-            let q = params
-                .queue(ParamAddress::Opaque(param_id.into()))
-                .expect("queue present");
+            let q = params.queue(param_id.into()).expect("queue present");
             let offsets: Vec<i32> = q.points.iter().map(|p| p.sample_offset).collect();
             let mut sorted = offsets.clone();
             sorted.sort_unstable();
             assert_eq!(offsets, sorted, "param {param_id} points not ascending");
         }
         // Param 500 carries all three merged points (1 host + 2 CC).
-        assert_eq!(
-            params
-                .queue(ParamAddress::Opaque(500u32.into()))
-                .unwrap()
-                .points
-                .len(),
-            3
-        );
+        assert_eq!(params.queue(500u32.into()).unwrap().points.len(), 3);
     }
 
     /// Points sharing a `sample_offset` keep the order they were added in.
@@ -753,7 +735,7 @@ mod tests {
     #[test]
     fn points_sharing_a_sample_offset_keep_their_insertion_order() {
         let mut params = ParameterChanges::reserved(1, 80);
-        let param = ParamAddress::Opaque(500u32.into());
+        let param = 500u32.into();
 
         // 40 offsets arriving high-to-low, each carrying a two-point jump.
         // `value` encodes arrival order so any transposition is visible.
@@ -841,7 +823,7 @@ mod tests {
         )
         .with_frame_offset(3)];
         let mut host = ParameterChanges::reserved(1, 1);
-        host.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.25);
+        host.add_change(7u32.into(), 0, 0.25);
         assert_no_alloc::assert_no_alloc(|| {
             let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
             assert!(midi.is_empty(), "the only event was a mapped CC");
@@ -920,7 +902,7 @@ mod tests {
         ];
         let mut host = ParameterChanges::reserved(1, 4);
         for (offset, value) in [(0, 0.1), (8, 0.2), (24, 0.3), (40, 0.4)] {
-            host.add_change(ParamAddress::Opaque(7u32.into()), offset, value);
+            host.add_change(7u32.into(), offset, value);
         }
 
         let mut route = CcRoute::new(mod_wheel_mapping(500), 4, 4);
@@ -928,9 +910,7 @@ mod tests {
             let (midi, params) = route.route(&events, Some(&host)).expect("mapped");
             assert_eq!(midi.len(), 1, "the note passes through");
             assert_eq!(params.queues.len(), 2, "host automation + the CC");
-            let host_queue = params
-                .queue(ParamAddress::Opaque(7u32.into()))
-                .expect("host queue");
+            let host_queue = params.queue(7u32.into()).expect("host queue");
             assert_eq!(host_queue.points.len(), 4);
         });
     }
@@ -961,7 +941,7 @@ mod tests {
             let mut host = ParameterChanges::reserved(QUEUES, room);
             for id in moving {
                 for k in 0..room {
-                    assert!(host.add_change(ParamAddress::Opaque(id.into()), k as i32, 0.5));
+                    assert!(host.add_change(id.into(), k as i32, 0.5));
                 }
             }
             host
@@ -986,9 +966,7 @@ mod tests {
         });
         assert_eq!(route.points_overflowed(), 1);
         let (_, params) = route.route(&four, Some(&measured)).expect("mapped");
-        let q = params
-            .queue(ParamAddress::Opaque(MAPPED.into()))
-            .expect("the CC");
+        let q = params.queue(MAPPED.into()).expect("the CC");
         assert_eq!(q.points.len(), ParameterChanges::FLOOR_POINTS + 1);
         assert_eq!(
             q.points.last().map(|p| (p.sample_offset, p.value.get())),
@@ -1029,11 +1007,7 @@ mod tests {
                 ParameterChanges::FLOOR_POINTS
             };
             for k in 0..points {
-                assert!(host.add_change(
-                    ParamAddress::Opaque((id as u32).into()),
-                    1 + k as i32,
-                    0.5
-                ));
+                assert!(host.add_change((id as u32).into(), 1 + k as i32, 0.5));
             }
             assert!(host.prepend_carried(
                 id,
@@ -1060,7 +1034,7 @@ mod tests {
                 assert_eq!(got.param_id, want.param_id);
                 assert_eq!(got.points.len(), want.points.len());
             }
-            let cc = params.queue(ParamAddress::Opaque(MAPPED.into()));
+            let cc = params.queue(MAPPED.into());
             assert_eq!(
                 cc.map(|q| q.points.len()),
                 (!events.is_empty()).then_some(1)
@@ -1085,7 +1059,7 @@ mod tests {
         let mut host = ParameterChanges::reserved(3, 4);
         for (id, points) in [(1u32, 4), (2, 3), (3, 2)] {
             for k in 0..points {
-                assert!(host.add_change(ParamAddress::Opaque(id.into()), 10 * k, 0.5));
+                assert!(host.add_change(id.into(), 10 * k, 0.5));
             }
         }
         let mut route = CcRoute::new(mod_wheel_mapping(500), 2, 2);
@@ -1097,7 +1071,7 @@ mod tests {
             .queues
             .iter()
             .map(|q| {
-                let id = q.param_id.opaque().map_or(0, |id| id.get());
+                let id = q.param_id.get();
                 (id, q.points.iter().map(|p| p.sample_offset).collect())
             })
             .collect();
@@ -1128,7 +1102,7 @@ mod tests {
         let room = 4;
         let mut host = ParameterChanges::reserved(1, room + 1);
         for (offset, value) in [(0, 0.0), (100, 0.25), (200, 0.5), (300, 0.625), (400, 0.75)] {
-            assert!(host.add_change(ParamAddress::Opaque(MAPPED.into()), offset, value));
+            assert!(host.add_change(MAPPED.into(), offset, value));
         }
         let cc = |frame: u32, value: u8| {
             MidiEvent::cc(
@@ -1142,9 +1116,7 @@ mod tests {
         let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
         let mut ends = |events: &[MidiEvent]| {
             let (_, params) = route.route(events, Some(&host)).expect("mapped");
-            let q = params
-                .queue(ParamAddress::Opaque(MAPPED.into()))
-                .expect("queued");
+            let q = params.queue(MAPPED.into()).expect("queued");
             assert!(
                 q.points
                     .windows(2)
@@ -1182,7 +1154,7 @@ mod tests {
         assert_eq!(full, 386);
         let mut host = ParameterChanges::reserved(1, room);
         for k in 0..full - CCS {
-            assert!(host.add_change(ParamAddress::Opaque(MAPPED.into()), 8 * k as i32, 0.25));
+            assert!(host.add_change(MAPPED.into(), 8 * k as i32, 0.25));
         }
         let cc = |frame: u32, value: u8| {
             MidiEvent::cc(
@@ -1200,9 +1172,7 @@ mod tests {
         let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
         let sorted = assert_no_alloc::assert_no_alloc(|| {
             let (_, params) = route.route(&events, Some(&host)).expect("mapped");
-            let q = params
-                .queue(ParamAddress::Opaque(MAPPED.into()))
-                .expect("queued");
+            let q = params.queue(MAPPED.into()).expect("queued");
             q.points
                 .iter()
                 .map(|p| (p.sample_offset, p.value.get()))
@@ -1213,9 +1183,7 @@ mod tests {
         assert_eq!(sorted, (full, true, 8 * (full - CCS - 1) as i32));
         assert_eq!(route.points_overflowed(), 0);
         let (_, params) = route.route(&events, Some(&host)).expect("mapped");
-        let q = params
-            .queue(ParamAddress::Opaque(MAPPED.into()))
-            .expect("queued");
+        let q = params.queue(MAPPED.into()).expect("queued");
         // A shared frame: the host's point, then the CC's.
         for k in (0..CCS as i32).step_by(2) {
             let at: Vec<f64> = q
@@ -1264,8 +1232,8 @@ mod tests {
 
         let mut route = CcRoute::new(mapping, 4, 16);
         let mut host = ParameterChanges::reserved(1, 2);
-        host.add_change(ParamAddress::Opaque(7u32.into()), 0, 0.25);
-        host.add_change(ParamAddress::Opaque(7u32.into()), 48, 0.75);
+        host.add_change(7u32.into(), 0, 0.25);
+        host.add_change(7u32.into(), 48, 0.75);
 
         // Warm up once, outside the gate.
         let _ = route.route(&events, Some(&host));

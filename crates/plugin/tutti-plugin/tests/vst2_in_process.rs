@@ -17,7 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_plugin::error::StateError;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::server::EditorPresence;
-use tutti_plugin_types::{Normalized, ParamAddress};
+use tutti_plugin_types::{Normalized, ParamId};
 
 #[path = "support/probe_path.rs"]
 mod probe_path;
@@ -25,7 +25,7 @@ mod probe_path;
 const SAMPLE_RATE: f64 = 48_000.0;
 
 /// VST2 addresses parameters by position, so every id here is an `Index`.
-const PARAM_0: ParamAddress = ParamAddress::Index(0);
+const PARAM_0: ParamId = ParamId::new(0);
 
 /// The parameter surface takes [`Normalized`], not a bare float — the domain is
 /// in the type, so a caller looking at a `[10, 22050]` Hz range on a

@@ -8,7 +8,7 @@
 
 use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{Normalized, ParamAddress};
+use crate::protocol::{Normalized, ParamId};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 use tutti_plugin_types::Control;
@@ -62,10 +62,8 @@ impl PluginEditor for Vst3GuiInstance {
         // VST3 editors don't have explicit idle.
     }
 
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        // `ParamID` is opaque; a VST2 index addresses nothing here. VST3's
-        // `setParamNormalized` takes the host domain unchanged.
-        let Some(id) = id.opaque() else { return };
+    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+        // VST3's `setParamNormalized` takes the host domain unchanged.
         Control::set_parameter(&mut self.inner, id, value);
     }
 
@@ -83,7 +81,7 @@ impl PluginEditor for Vst3GuiInstance {
         Ok(())
     }
 
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamAddress, f32)> {
+    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)> {
         // Drain through the unified notification poll, which also forwards
         // pending MIDI-learn CCs. The GUI path forwards `PerformEdit`s up.
         //
@@ -99,7 +97,7 @@ impl PluginEditor for Vst3GuiInstance {
             if let PluginNotification::Edit(ParameterEditEvent::PerformEdit { param_id, value }) = n
             {
                 // The plugin's editor reported one of its own `ParamID`s.
-                edits.push((ParamAddress::Opaque(param_id.into()), value as f32));
+                edits.push((param_id.into(), value as f32));
             }
         });
         edits

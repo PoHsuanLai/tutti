@@ -663,7 +663,7 @@ fn drive_and_read_output(
         .queues
         .iter()
         .map(|q| {
-            let id = q.param_id.opaque().expect("a CLAP id is opaque").get();
+            let id = q.param_id.get();
             let last = q.points.last().expect("an open queue has a point");
             (id, q.points.len(), last.value.get())
         })

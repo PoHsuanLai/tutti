@@ -42,7 +42,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_plugin_types::{ParamAddress, ParamId};
+use tutti_plugin_types::ParamId;
 use tutti_vst3_host::{
     AudioBuffer, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
     TransportInfo, Vst3InputEvents, Vst3Loaded,
@@ -58,8 +58,8 @@ use active::{Activate, Active, LoadError, ParamExt, StateExt};
 /// `probeids.h` literally and are also passed to `set_parameter`; only the
 /// queue calls need the address form. VST3 ids are `Opaque` — the format hands
 /// out numbers whose meaning only the plugin knows.
-fn param_address(tag: u32) -> ParamAddress {
-    ParamAddress::Opaque(ParamId::new(tag))
+fn param_address(tag: u32) -> ParamId {
+    ParamId::new(tag)
 }
 
 /// Compile-time default, baked in by `build.rs`; overridable at runtime.

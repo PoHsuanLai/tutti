@@ -408,7 +408,7 @@ macro_rules! fake_control {
             fn parameters(&self) -> Vec<ParameterInfo> {
                 self.values
                     .iter()
-                    .map(|&(id, _)| ParameterInfo::new(crate::ParamAddress::Opaque(id), "p"))
+                    .map(|&(id, _)| ParameterInfo::new(id, "p"))
                     .collect()
             }
 

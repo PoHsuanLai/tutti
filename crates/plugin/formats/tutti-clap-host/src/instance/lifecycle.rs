@@ -455,7 +455,7 @@ mod tests {
     /// parameters lose all their points, counted → fails.
     #[test]
     fn a_chunk_with_carried_values_reaches_the_plugin_whole() {
-        use tutti_plugin_types::{ParamAddress, ParameterPoint};
+        use tutti_plugin_types::ParameterPoint;
         const PARAMS: u32 = 2_000;
         const FRAMES: usize = 512;
         let mut scratch = AudioScratch::<f32>::new();
@@ -467,7 +467,7 @@ mod tests {
         let room = ParameterQueue::chunk_room(FRAMES);
         let mut chunk = ParameterChanges::reserved_bridged(PARAMS as usize, room);
         for id in 0..PARAMS {
-            assert!(chunk.open_queue(ParamAddress::Opaque(id.into())));
+            assert!(chunk.open_queue(id.into()));
         }
         for k in 0..room {
             for i in 0..PARAMS as usize {

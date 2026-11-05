@@ -31,11 +31,19 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_plugin_types::{ParamFlags, ParamSteps};
-use tutti_vst2_host::Vst2Instance;
+use tutti_plugin_types::{Control, Normalized, ParamFlags, ParamId, ParamSteps};
 
+#[path = "support/active.rs"]
+mod active;
 #[path = "support/probe_path.rs"]
 mod probe_path;
+
+use active::Active;
+
+/// The id of the parameter at `index`; a negative index is the id its bits make.
+fn pid(index: i32) -> ParamId {
+    ParamId::new(index as u32)
+}
 
 const SAMPLE_RATE: f64 = 44_100.0;
 const BLOCK: usize = 512;
@@ -73,7 +81,7 @@ where
     // Leak the handle, deliberately. The switches these helpers set are
     // `static`s inside the probe's image, and they only survive while that
     // image stays mapped — dropping `lib` decrements the refcount that keeps it
-    // mapped. With no `Vst2Instance` holding the probe open at that moment, the
+    // mapped. With no `Active` holding the probe open at that moment, the
     // value is written and then discarded with the unload, and the next load
     // maps a fresh image reading the default.
     //
@@ -119,10 +127,10 @@ fn set_answer_midi_metadata(path: &Path, enable: bool, serviced_programs: i32) {
 }
 
 /// Load the probe with every switch at its default (declining) state.
-fn load_probe() -> (Vst2Instance, std::path::PathBuf) {
+fn load_probe() -> (Active, std::path::PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_switches(&path);
-    let instance = Vst2Instance::load(&path, SAMPLE_RATE, BLOCK)
+    let instance = Active::load(&path, SAMPLE_RATE, BLOCK)
         .unwrap_or_else(|e| panic!("host failed to load reference plugin at {path:?}: {e:?}"));
     (instance, path)
 }
@@ -150,7 +158,7 @@ fn real_world_plugins_decline_these_opcodes() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count();
+    let count = instance.parameter_count() as i32;
     assert!(
         count > 0,
         "probe must declare parameters for this test to mean anything"
@@ -158,7 +166,7 @@ fn real_world_plugins_decline_these_opcodes() {
 
     for id in 0..count {
         assert_eq!(
-            instance.parameter_properties(id),
+            instance.parameter_properties(pid(id)),
             None,
             "a declining plugin must report absence, not zeroed properties, for param {id}"
         );
@@ -196,7 +204,7 @@ fn an_answering_plugin_round_trips_every_property_field() {
     set_answer_param_properties(&path, true);
 
     let props = instance
-        .parameter_properties(PROBE_INT_STEP_PARAM)
+        .parameter_properties(pid(PROBE_INT_STEP_PARAM))
         .expect("probe answers once the switch is on");
 
     let (min, max, step, large_step) = PROBE_INT_RANGE;
@@ -244,7 +252,7 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
     // Parameter 0 is not the int-step one, so the probe reports float steps
     // only while leaving garbage in the integer fields.
     let props = instance
-        .parameter_properties(0)
+        .parameter_properties(pid(0))
         .expect("probe answers for every parameter");
 
     assert!(!props.flags.uses_int_step);
@@ -270,25 +278,25 @@ fn ungated_integer_fields_are_not_reported_as_a_range() {
 /// VST2 plugins are not required to bounds-check the index, so a host that
 /// forwards `numParams + 1` invites the plugin to read past its own table.
 ///
-/// Mutation that catches it: deleting either half of the `id < 0 || id >= count`
-/// guard in `Vst2Instance::parameter_properties` — the probe answers `1` for any
-/// index, so the host would report properties for a parameter that does not
-/// exist.
+/// Mutation (run): `Vst2Loaded::param_index` accepting every id (the bound
+/// check removed) — the probe answers `1` for any index, so the host would
+/// report properties for a parameter that does not exist.
 #[test]
 fn an_out_of_range_parameter_index_is_refused_before_dispatch() {
     let _guard = lock_probe();
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let count = instance.parameter_count();
-    assert!(instance.parameter_properties(count - 1).is_some());
-    assert_eq!(instance.parameter_properties(count), None);
-    assert_eq!(instance.parameter_properties(count + 100), None);
-    assert_eq!(instance.parameter_properties(i32::MAX), None);
-    // Negative indices are refused by the same guard. The ABI's index is `i32`,
-    // so a caller can spell one; the plugin would subscript its table with it.
-    assert_eq!(instance.parameter_properties(-1), None);
-    assert_eq!(instance.parameter_properties(i32::MIN), None);
+    let count = instance.parameter_count() as i32;
+    assert!(instance.parameter_properties(pid(count - 1)).is_some());
+    assert_eq!(instance.parameter_properties(pid(count)), None);
+    assert_eq!(instance.parameter_properties(pid(count + 100)), None);
+    assert_eq!(instance.parameter_properties(pid(i32::MAX)), None);
+    // An id past `i32::MAX` is refused by the same guard. The ABI's index is
+    // `i32`, so such an id reads as a negative one; the plugin would subscript
+    // its table with it.
+    assert_eq!(instance.parameter_properties(pid(-1)), None);
+    assert_eq!(instance.parameter_properties(pid(i32::MIN)), None);
 
     reset_switches(&path);
 }
@@ -474,7 +482,7 @@ fn only_named_keys_are_reported() {
 /// bounds-check it.
 ///
 /// Mutation that catches it: deleting the range guards in
-/// `Vst2Instance::midi_key_name` — the probe keys only on `this_key_number`,
+/// `Active::midi_key_name` — the probe keys only on `this_key_number`,
 /// so channel 99 would answer as happily as channel 0.
 #[test]
 fn out_of_range_midi_coordinates_are_refused() {
@@ -546,17 +554,21 @@ fn the_probe_switches_gate_the_answers_both_ways() {
     let _guard = lock_probe();
     let (instance, path) = load_probe();
 
-    assert_eq!(instance.parameter_properties(0), None, "off by default");
+    assert_eq!(
+        instance.parameter_properties(pid(0)),
+        None,
+        "off by default"
+    );
 
     set_answer_param_properties(&path, true);
     assert!(
-        instance.parameter_properties(0).is_some(),
+        instance.parameter_properties(pid(0)).is_some(),
         "switching on must change the answer on the same live instance"
     );
 
     set_answer_param_properties(&path, false);
     assert_eq!(
-        instance.parameter_properties(0),
+        instance.parameter_properties(pid(0)),
         None,
         "switching off must restore the declining behaviour"
     );
@@ -588,7 +600,7 @@ fn a_declared_integer_range_reaches_the_shared_parameter_info() {
     let (instance, path) = load_probe();
     set_answer_param_properties(&path, true);
 
-    let listed = instance.get_parameter_list();
+    let listed = instance.parameter_list();
     assert!(
         listed.len() > PROBE_INT_STEP_PARAM as usize,
         "the probe exposes {} parameters, too few to reach the one that \
@@ -649,7 +661,7 @@ fn a_declining_plugin_reports_no_range_and_no_steps() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.get_parameter_list();
+    let listed = instance.parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert_eq!(
@@ -685,7 +697,7 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let listed = instance.get_parameter_list();
+    let listed = instance.parameter_list();
     assert!(!listed.is_empty(), "the probe exposes no parameters");
     for info in &listed {
         assert!(
@@ -720,18 +732,23 @@ fn the_automatable_flag_is_probed_rather_than_left_unasked() {
 /// the plugin's `getParameter`/`setParameter` function pointer, where it is
 /// typically an array subscript.
 ///
-/// The entry points take the ABI's own `i32`, so a caller can spell a negative
-/// index directly and the guard has to refuse it. The values below are hostile
-/// indices, including negative ones a wrapped `u32` would produce.
+/// A `ParamId` is a `u32` and the ABI's index is an `i32`, so an id past
+/// `i32::MAX` would be a negative index at the plugin, and the guard has to
+/// refuse it. The values below are hostile indices, including the negative ones
+/// a wrapped `u32` produces.
 ///
-/// All three entry points (`parameter_info`, `parameter`, `set_parameter`) are
-/// checked, so the guard is a requirement rather than a convention.
+/// All three entry points (`parameter_info`, `parameter`, `write_parameter`)
+/// are checked, so the guard is a requirement rather than a convention.
+///
+/// Mutation (run): `index_of` as `let index = id.get() as i32; (index <
+/// count as i32).then_some(index)` (a wrapped id reads as negative and
+/// passes) -> the plugin is asked about parameter -1 -> fails.
 #[test]
 fn an_out_of_range_id_never_reaches_the_plugin() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count();
+    let count = instance.parameter_count() as i32;
     assert!(count > 0, "the probe exposes no parameters");
 
     for id in [
@@ -743,16 +760,16 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
         i32::MIN + 3,  // negative, near a plausible index
     ] {
         assert_eq!(
-            instance.get_parameter(id),
+            instance.parameter(pid(id)).map(|n| n.get() as f32),
             None,
             "reading out-of-range id {id} must not dispatch"
         );
         assert!(
-            !instance.set_parameter(id, 0.5),
+            !instance.write_parameter(pid(id), Normalized::new(0.5)),
             "writing out-of-range id {id} must not dispatch"
         );
         assert!(
-            instance.get_parameter_info(id).is_none(),
+            instance.parameter_info(pid(id)).is_none(),
             "describing out-of-range id {id} must not dispatch"
         );
     }
@@ -760,10 +777,13 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
     // The guard did not cost the legal range.
     for id in 0..count {
         assert!(
-            instance.get_parameter(id).is_some(),
+            instance
+                .parameter(pid(id))
+                .map(|n| n.get() as f32)
+                .is_some(),
             "in-range id {id} must still read"
         );
-        assert!(instance.get_parameter_info(id).is_some());
+        assert!(instance.parameter_info(pid(id)).is_some());
     }
 }
 
@@ -788,7 +808,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    let count = instance.parameter_count();
+    let count = instance.parameter_count() as i32;
     assert!(
         count >= 4,
         "the probe must declare enough params to cycle its labels"
@@ -799,12 +819,12 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
 
     for id in 0..count.min(4) {
         assert!(
-            instance.set_parameter(id, 0.25),
+            instance.write_parameter(pid(id), Normalized::new(0.25)),
             "param {id} should accept a write"
         );
 
         let shown = instance
-            .parameter_display(id)
+            .parameter_display(pid(id))
             .unwrap_or_else(|| panic!("param {id} should have a display string"));
 
         // The value the plugin was just set to, formatted by the plugin.
@@ -822,9 +842,9 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     }
 
     // It tracks the parameter rather than caching: a second value reads differently.
-    assert!(instance.set_parameter(0, 0.75));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.75)));
     let after = instance
-        .parameter_display(0)
+        .parameter_display(pid(0))
         .expect("param 0 has a display");
     assert!(
         after.contains("0.750"),
@@ -832,8 +852,8 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     );
 
     // An out-of-range index addresses nothing and must not dispatch.
-    assert_eq!(instance.parameter_display(count), None);
-    assert_eq!(instance.parameter_display(-1), None);
+    assert_eq!(instance.parameter_display(pid(count)), None);
+    assert_eq!(instance.parameter_display(pid(-1)), None);
 }
 
 /// The probe declines `effString2Parameter`, and a decline is reported as
@@ -855,26 +875,29 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.set_parameter(0, 0.5));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.5)));
 
     for text in ["0.75", "-6 dB", "Bandpass", ""] {
         assert_eq!(
-            instance.set_parameter_from_string(0, text),
+            instance.set_parameter_from_string(pid(0), text),
             None,
             "the probe declines effString2Parameter; {text:?} must not parse"
         );
     }
 
-    let after = instance.get_parameter(0).expect("param 0 is readable");
+    let after = instance
+        .parameter(pid(0))
+        .map(|n| n.get() as f32)
+        .expect("param 0 is readable");
     assert!(
         (after - 0.5).abs() < 1e-6,
         "a refused parse must leave the parameter alone, got {after}"
     );
 
     // Out-of-range indices do not dispatch either.
-    let count = instance.parameter_count();
-    assert_eq!(instance.set_parameter_from_string(count, "0.5"), None);
-    assert_eq!(instance.set_parameter_from_string(-1, "0.5"), None);
+    let count = instance.parameter_count() as i32;
+    assert_eq!(instance.set_parameter_from_string(pid(count), "0.5"), None);
+    assert_eq!(instance.set_parameter_from_string(pid(-1), "0.5"), None);
 }
 
 /// The display string is only valid for the value the plugin currently holds,
@@ -894,14 +917,14 @@ fn the_display_string_describes_only_the_current_value() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.set_parameter(0, 0.25));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.25)));
     let at_quarter = instance
-        .parameter_display(0)
+        .parameter_display(pid(0))
         .expect("param 0 has a display");
 
-    assert!(instance.set_parameter(0, 0.75));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.75)));
     let at_three_quarters = instance
-        .parameter_display(0)
+        .parameter_display(pid(0))
         .expect("param 0 has a display");
 
     assert_ne!(
@@ -930,11 +953,15 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
         f(true);
     });
 
-    assert!(instance.set_parameter(0, 0.5));
+    assert!(instance.write_parameter(pid(0), Normalized::new(0.5)));
     let echoed = instance.drain_param_changes();
     reset_switches(&path);
 
-    assert_eq!(instance.get_parameter(0), Some(0.5), "the write landed");
+    assert_eq!(
+        instance.parameter(pid(0)).map(|n| n.get() as f32),
+        Some(0.5),
+        "the write landed"
+    );
     assert_eq!(echoed, Vec::new(), "the echo is not an edit");
     assert_eq!(instance.dropped_param_changes(), 0, "nor a dropped one");
 }

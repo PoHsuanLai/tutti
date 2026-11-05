@@ -350,7 +350,7 @@ struct Capture {
     /// live plugin holds unchanged (under an edit made in its editor, say)
     /// is not sent to the fork either, and the export renders what live
     /// playback plays.
-    delivered: Vec<(crate::protocol::ParamAddress, f64)>,
+    delivered: Vec<(crate::protocol::ParamId, f64)>,
     origin: Arc<Origin>,
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
@@ -543,12 +543,8 @@ mod tests {
     /// the pipeline chunk) → the unmoved plan reads as moved → fails.
     #[test]
     fn a_latency_moved_after_the_plan_is_a_fault() {
-        let controls = PluginControls::new(
-            Samples(137),
-            PluginTail::default(),
-            SampleRate(48_000.0),
-            false,
-        );
+        let controls =
+            PluginControls::new(Samples(137), PluginTail::default(), SampleRate(48_000.0));
         let watch = ForkWatch {
             controls: controls.clone(),
             planned: AtomicUsize::new(usize::MAX),

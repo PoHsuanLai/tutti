@@ -31,7 +31,7 @@ use tutti_graph::{
 };
 use tutti_mod::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_plugin::handles::{Normalized, ParamAddress, PluginHandle};
+use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 
 #[path = "support/probe_path.rs"]
@@ -94,7 +94,7 @@ fn load() -> (InProcessVst2Client, PluginHandle) {
 fn read(handle: &PluginHandle, i: u32) -> Option<f32> {
     handle
         .params()
-        .parameter_value(ParamAddress::Index(i32::try_from(i).expect("small")))
+        .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
 }
 
 /// A ramp to `value` on parameter `id` (a VST2 index) at block frame `at`.
@@ -189,7 +189,7 @@ fn a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it() {
 
     handle
         .params()
-        .set_parameter_value(ParamAddress::Index(p as i32), Normalized::new(0.75));
+        .set_parameter_value(ParamId::new((p as i32) as u32), Normalized::new(0.75));
     assert_eq!(read(&handle, p), Some(0.75), "the edit reached the plugin");
     held(&mut unit, 0.25, 32);
     assert_eq!(
@@ -251,7 +251,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     );
     handle
         .params()
-        .set_parameter_value(ParamAddress::Index(0), Normalized::new(0.5));
+        .set_parameter_value(ParamId::new(0), Normalized::new(0.5));
     assert_eq!(
         channel_0(&live.render(BLOCK * 8)),
         Some(501.0),

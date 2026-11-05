@@ -60,9 +60,7 @@ fn gained(v: f64) -> f32 {
 /// Ported from the deleted `PluginAutomation` node.
 ///
 /// Mutations (run), each fails with the gain left at 0 dB: the
-/// plugin node ignoring segment events (the lane's) in its event walk;
-/// decoding a segment's number in the other address model
-/// (`address(id, !indexed)`), so the loader finds no parameter `Index(77)`.
+/// plugin node ignoring segment events (the lane's) in its event walk.
 /// The ramp path (the deleted node's) is pinned by
 /// `an_interrupting_ramp_stops_a_segment_on_a_plugin`: ignoring ramp events
 /// there fails (run); here it survives, as a lane sends segments.

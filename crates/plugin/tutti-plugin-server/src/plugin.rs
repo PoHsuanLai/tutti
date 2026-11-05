@@ -60,7 +60,7 @@ pub(crate) enum AsyncEvent {
     /// The plugin moved one of its own parameters — a knob turned in its editor.
     /// VST2 only; the other formats signal this as `ParamValuesChanged`.
     ParameterChanged {
-        /// The plugin's own parameter index, not a `ParamAddress`.
+        /// The plugin's own parameter index, not a `ParamId`.
         index: i32,
         /// The new value, normalized to `0..1` as VST2 reports it.
         value: f32,
@@ -134,10 +134,7 @@ impl Plugin {
             #[cfg(all(feature = "au", target_os = "macos"))]
             "component" => AuInstance::probe(path),
             #[cfg(feature = "vst2")]
-            "vst" | "dll" | "so" => {
-                let vst = Vst2Instance::load(path, 44100.0, 512, false)?;
-                Ok(vst.descriptor().clone())
-            }
+            "vst" | "dll" | "so" => Vst2Instance::probe(path),
             _ => Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,
@@ -300,21 +297,7 @@ impl Plugin {
         let mut out = Vec::new();
         match self {
             #[cfg(feature = "vst2")]
-            Plugin::Vst2(vst2) => {
-                for (index, value) in vst2.poll_parameter_changes() {
-                    out.push(AsyncEvent::ParameterChanged { index, value });
-                }
-                let changes = vst2.poll_changes();
-                if let Some(samples) = changes.latency {
-                    out.push(AsyncEvent::LatencyChanged { samples });
-                }
-                if let Some(tail) = changes.tail {
-                    out.push(AsyncEvent::TailChanged { tail });
-                }
-                if changes.io {
-                    out.push(AsyncEvent::IoChanged);
-                }
-            }
+            Plugin::Vst2(vst2) => out.extend(vst2.poll()),
             #[cfg(feature = "vst3")]
             Plugin::Vst3(vst3) => out.extend(vst3.poll()),
             #[cfg(feature = "clap")]

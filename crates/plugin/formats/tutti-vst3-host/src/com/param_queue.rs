@@ -23,8 +23,6 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{ParameterPoint, ParameterQueue};
-#[cfg(test)]
-use tutti_plugin_types::ParamAddress;
 use tutti_plugin_types::{Normalized, PointBuf, PointPool};
 use tutti_types::AudioThreadCell;
 
@@ -87,7 +85,7 @@ impl ParamValueQueueImpl {
     /// the host's authoring convention; `Normalized` carries that guard.
     pub fn refill_from_queue(&self, queue: &ParameterQueue) -> u64 {
         // Same boundary as `from_queue`: unwrap the opaque handle for the ABI.
-        *self.param_id.borrow_mut() = queue.param_id.opaque().map(|id| id.get()).unwrap_or(0);
+        *self.param_id.borrow_mut() = queue.param_id.get();
         let mut points = self.points.borrow_mut();
         points.clear();
         let mut left_out = 0;
@@ -320,7 +318,7 @@ mod tests {
     }
 
     fn queue_with_points(count: usize) -> ParameterQueue {
-        let mut q = ParameterQueue::with_capacity(ParamAddress::Opaque(42u32.into()), count);
+        let mut q = ParameterQueue::with_capacity(42u32.into(), count);
         for i in 0..count {
             q.add_point(i as i32, i as f64 * 0.01);
         }
@@ -337,7 +335,7 @@ mod tests {
     /// don't guarantee interleaved order, so the queue must sort.
     #[test]
     fn refill_from_queue_sorts_points_by_sample_offset() {
-        let mut source = ParameterQueue::with_capacity(ParamAddress::Opaque(7u32.into()), 3);
+        let mut source = ParameterQueue::with_capacity(7u32.into(), 3);
         source.add_point(384, 0.75);
         source.add_point(0, 0.25);
         source.add_point(128, 0.5);
@@ -364,8 +362,7 @@ mod tests {
     #[test]
     fn refilling_an_unsorted_queue_past_256_points_does_not_allocate() {
         const RUN: i32 = 150;
-        let mut source =
-            ParameterQueue::with_capacity(ParamAddress::Opaque(7u32.into()), 2 * RUN as usize);
+        let mut source = ParameterQueue::with_capacity(7u32.into(), 2 * RUN as usize);
         for i in 0..RUN {
             source.add_point(2 * i, 0.25);
         }
@@ -385,7 +382,7 @@ mod tests {
     /// them would inverting the jump.
     #[test]
     fn refill_from_queue_is_stable_for_equal_offsets() {
-        let mut source = ParameterQueue::with_capacity(ParamAddress::Opaque(7u32.into()), 2);
+        let mut source = ParameterQueue::with_capacity(7u32.into(), 2);
         source.add_point(64, 0.1); // old value
         source.add_point(64, 0.9); // new value at the same instant
 
@@ -406,7 +403,7 @@ mod tests {
     /// already-sorted points, so they never exercise the sorting branch.
     #[test]
     fn refill_from_queue_unsorted_is_allocation_free() {
-        let mut source = ParameterQueue::with_capacity(ParamAddress::Opaque(7u32.into()), 16);
+        let mut source = ParameterQueue::with_capacity(7u32.into(), 16);
         for i in (0..16i32).rev() {
             source.add_point(i * 8, f64::from(i) * 0.01);
         }

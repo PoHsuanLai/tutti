@@ -654,6 +654,29 @@ pub(crate) mod test_utils {
             .as_str()
     }
 
+    /// The reference VST2 plugin under a `.vst` name, for a test that goes
+    /// through [`crate::plugin::Plugin::open`], which routes on the extension.
+    ///
+    /// The cdylib is a `.so`, `.dll` or `.dylib` by platform, and `.dylib` is no
+    /// VST2 extension, so the image is copied once per process.
+    ///
+    /// # Panics
+    ///
+    /// If the copy fails.
+    #[cfg(feature = "vst2")]
+    pub fn vst2_probe_staged_path() -> &'static std::path::Path {
+        static STAGED: OnceLock<std::path::PathBuf> = OnceLock::new();
+        STAGED.get_or_init(|| {
+            let staged = std::env::temp_dir().join(format!(
+                "tutti-server-vst2-probe-{}.vst",
+                std::process::id()
+            ));
+            std::fs::copy(vst2_probe_path(), &staged)
+                .unwrap_or_else(|e| panic!("staging the VST2 probe at {staged:?} failed: {e}"));
+            staged
+        })
+    }
+
     #[cfg(feature = "clap")]
     pub fn clap_probe_path() -> &'static str {
         static RESOLVED: OnceLock<String> = OnceLock::new();

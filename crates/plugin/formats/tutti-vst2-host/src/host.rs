@@ -35,8 +35,11 @@
 //!   realtime or offline for the render mode. The first two are written
 //!   before the opcode that tells the plugin, so a query from inside
 //!   `effSetSampleRate` reads the new figure.
-//! - `io_changed` latches for the main thread to re-read the plugin's pins and
-//!   latency, and answers 1; `can_do` answers what the host really supports.
+//! - `io_changed` and `update_display` raise [`Request`]s on a [`RequestWord`]
+//!   for the main thread to act on (`audioMasterIOChanged` is the plugin's
+//!   one notice that its pins, latency or tail moved, so it raises all
+//!   three), and `io_changed` answers 1; `can_do` answers what the host really
+//!   supports.
 //! - `size_window`, `get_input_latency`, `get_output_latency`,
 //!   `get_automation_state` return honest neutral defaults — the wiring
 //!   exists, but `HostState` has no reference to the value each would need
@@ -44,13 +47,14 @@
 //!   through to vst-rs's swallowed 0.
 
 use crate::midi::to_midi;
-use crate::transport_cell::{TransportReader, TransportWriter};
+use crate::transport_cell::TransportReader;
 use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_midi_types::MidiGroup;
-use tutti_plugin_types::unframed;
+use tutti_plugin_types::{Request, RescanScope, unframed};
+use tutti_types::RequestWord;
 use vst::api::Supported;
 use vst::host::Host;
 
@@ -73,7 +77,7 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 
 /// Capacity of the plugin→host MIDI-out queue.
 ///
-/// Sized in *blocks*, not events: [`crate::Vst2Instance::process_f32`] drains
+/// Sized in *blocks*, not events: [`crate::Vst2Processor::process_f32`] drains
 /// this at the end of every block, so the steady-state occupancy is one
 /// block's emission. `tutti_plugin_types::RT_MIDI_CAPACITY` puts a per-block
 /// plugin emission ceiling at 64 events on the same reasoning ("already far
@@ -86,32 +90,6 @@ pub(crate) const PARAM_QUEUE_CAPACITY: usize = 512;
 /// apart for unrelated reasons.
 pub(crate) const MIDI_OUT_QUEUE_CAPACITY: usize = 256;
 
-/// The endpoints of the plugin→host callback queues, plus the shared
-/// transport snapshot the plugin reads back. All three are created together
-/// from one [`HostState`] at load and live for the instance's lifetime.
-pub(crate) struct HostLink {
-    /// The host end of the callback link. Keeping it alive is what keeps the
-    /// `Host`-trait callbacks firing — dropping it ends them — and it also
-    /// carries the answers those callbacks give, so the host can move one
-    /// (`set_offline`) without rebuilding the link.
-    ///
-    /// No `Mutex`: this is reached from the plugin's audio thread on every
-    /// `audioMasterGetTime`, and every field it exposes is already lock-free.
-    pub(crate) state: Arc<HostState>,
-    /// The one writer of the transport snapshot the plugin reads via
-    /// `get_time_info` ([`HostState`] holds the read side). A seqlock, not an
-    /// `ArcSwap`: the push happens on the audio thread every block, and
-    /// `ArcSwap::store` would allocate the new value and free the retired one
-    /// there. See [`TransportWriter`].
-    pub(crate) time_info: TransportWriter,
-    /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
-    ///
-    /// The same queue [`HostState`] pushes into — an `ArrayQueue` is MPMC, so
-    /// both ends share one `Arc` rather than splitting into sender/receiver
-    /// halves.
-    pub(crate) param_rx: Arc<ArrayQueue<ParameterChange>>,
-}
-
 /// Implements `vst::host::Host`. Owns the producer end of the queues the
 /// plugin writes into.
 pub(crate) struct HostState {
@@ -122,7 +100,7 @@ pub(crate) struct HostState {
     ///
     /// A counter, not a flag: the question a caller asks is "did I lose
     /// automation, and how much", and a boolean answers only the first. Read
-    /// through [`Vst2Instance::dropped_param_changes`](crate::Vst2Instance::dropped_param_changes).
+    /// through [`Vst2Loaded::dropped_param_changes`](crate::Vst2Loaded::dropped_param_changes).
     dropped_param_changes: AtomicU64,
     /// MIDI events refused because [`midi_out_tx`](Self::midi_out_tx) was
     /// full. Monotonic for the instance's life.
@@ -150,25 +128,15 @@ pub(crate) struct HostState {
     ///
     /// Atomic rather than a plain `bool` because the plugin asks from its own
     /// thread while the control thread sets it, and this struct is shared
-    /// behind an `Arc` with no lock by design (see [`HostLink`]).
+    /// behind an `Arc` with no lock by design: every field it exposes is
+    /// already lock-free.
     offline: std::sync::atomic::AtomicBool,
-    /// Latched by `audioMasterUpdateDisplay`: the plugin changed something the
-    /// host is displaying — typically a preset or program switched from its own
-    /// editor — so the parameter list the host holds is stale.
-    ///
-    /// A latch rather than a channel because the signal carries no payload and
-    /// is idempotent: ten preset changes between polls need one re-read, not
-    /// ten. Drained by [`HostState::take_display_stale`].
-    display_stale: std::sync::atomic::AtomicBool,
-    /// Latched by `audioMasterIOChanged`: the plugin changed its pin counts or
-    /// its latency (VST2 has no separate latency callback, and plugins call
-    /// this for both). Drained by [`Vst2Instance::poll_changes`](crate::Vst2Instance::poll_changes),
-    /// which re-reads them on the main thread.
-    ///
-    /// A latch for the reason `display_stale` is: no payload, idempotent, and
+    /// What the plugin asked of the host through `audioMasterIOChanged` and
+    /// `audioMasterUpdateDisplay`: bits for the main thread to take, because
     /// the plugin may call from its audio thread, where a re-read dispatching
-    /// opcodes would be wrong.
-    io_changed: AtomicBool,
+    /// opcodes would be wrong. A request is a level, so ten changes between
+    /// two passes are one re-read.
+    requests: RequestWord,
 }
 
 impl HostState {
@@ -188,8 +156,7 @@ impl HostState {
             block_size: AtomicU64::new(block_size as u64),
             sample_rate_bits: AtomicU64::new(default_sample_rate.to_bits()),
             offline: std::sync::atomic::AtomicBool::new(false),
-            display_stale: std::sync::atomic::AtomicBool::new(false),
-            io_changed: AtomicBool::new(false),
+            requests: RequestWord::new(),
         }
     }
 
@@ -206,9 +173,9 @@ impl HostState {
             .store(rate.to_bits(), Ordering::Release);
     }
 
-    /// Consumes the `audioMasterIOChanged` latch.
-    pub(crate) fn take_io_changed(&self) -> bool {
-        self.io_changed.swap(false, Ordering::AcqRel)
+    /// The requests the plugin raised, for the main thread to take.
+    pub(crate) fn requests(&self) -> &RequestWord {
+        &self.requests
     }
 
     /// Sets the render mode reported through
@@ -223,16 +190,6 @@ impl HostState {
 
     pub(crate) fn is_offline(&self) -> bool {
         self.offline.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Consumes the `audioMasterUpdateDisplay` latch.
-    ///
-    /// `swap` rather than a load: the caller is acting on the signal, so
-    /// leaving it set would make every later poll re-read for a change already
-    /// handled.
-    pub(crate) fn take_display_stale(&self) -> bool {
-        self.display_stale
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// How many `audioMasterAutomate` reports have been dropped because the
@@ -375,13 +332,12 @@ impl Host for HostState {
     ///
     /// VST 2.4 gives the plugin no way to say *what* changed, so the only
     /// correct response is to re-read: the parameter list, names and displayed
-    /// values the host cached are all potentially stale. Latching rather than
-    /// re-reading here matters — this arrives on whatever thread the plugin's
-    /// editor runs on, and a synchronous re-read would dispatch opcodes from
-    /// it.
+    /// values the host cached are all potentially stale. A request rather than a
+    /// re-read here: this arrives on whatever thread the plugin's editor runs
+    /// on, and a synchronous re-read would dispatch opcodes from it.
     fn update_display(&self) {
-        self.display_stale
-            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = Request::RescanParams(RescanScope::Info).raise(&self.requests);
+        let _ = Request::RescanParams(RescanScope::Values).raise(&self.requests);
     }
 
     /// Called re-entrantly from inside the plugin's `process`, on the audio
@@ -442,7 +398,7 @@ impl Host for HostState {
 
     /// Neutral default: the plugin's editor-resize request. `HostState`
     /// has no handle to the editor window or a resize channel (the editor
-    /// lives on `Vst2Instance`, a separate object), so the resize cannot be
+    /// lives on `Vst2Loaded`, a separate object), so the resize cannot be
     /// honoured without a structural change. Returning `false` tells the plugin
     /// the host declined — honest, and better than the swallowed 0.
     fn size_window(&self, _index: i32, _value: isize) -> bool {
@@ -462,12 +418,14 @@ impl Host for HostState {
     }
 
     /// `audioMasterIOChanged`: the plugin changed its pin counts or latency.
-    /// Latched for the main thread to re-read
-    /// ([`Vst2Instance::poll_changes`](crate::Vst2Instance::poll_changes)), and
-    /// answered `true` (1, "handled") because the host does act on it: a
-    /// plugin that reads 0 as "host ignores this" may skip the change.
+    /// VST2 has no separate latency or tail callback and plugins call this for
+    /// all three, so it raises all three for the main thread to re-read, and is
+    /// answered `true` (1, "handled") because the host does act on it: a plugin
+    /// that reads 0 as "host ignores this" may skip the change.
     fn io_changed(&self) -> bool {
-        self.io_changed.store(true, Ordering::Release);
+        let _ = Request::IoChanged.raise(&self.requests);
+        let _ = Request::LatencyChanged.raise(&self.requests);
+        let _ = Request::TailChanged.raise(&self.requests);
         true
     }
 
@@ -510,6 +468,7 @@ impl Host for HostState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport_cell::TransportWriter;
     use vst::host::Host;
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {
@@ -559,19 +518,72 @@ mod tests {
         assert_eq!(host.get_block_size(), 8192);
     }
 
-    /// `audioMasterIOChanged` is answered "handled" and latched exactly once
-    /// for the main thread.
+    /// `audioMasterIOChanged` is answered "handled" and raises the I/O,
+    /// latency and tail requests, once each, for the main thread.
     ///
     /// Mutation (run): `io_changed` returning `false` (the previous answer)
-    /// -> fails the first assert. Mutation (run): not latching -> the take
-    /// reads `false` -> fails.
+    /// -> fails the first assert. Mutation (run): not raising `TailChanged`
+    /// -> the taken set lacks it -> fails. Mutation (run): raising nothing ->
+    /// the taken set is empty -> fails.
     #[test]
-    fn io_changed_is_handled_and_latched_once() {
+    fn io_changed_is_handled_and_raises_its_requests_once() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
-        assert!(!host.take_io_changed(), "nothing reported yet");
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "nothing reported yet"
+        );
         assert!(host.io_changed(), "answered 1: the host acts on it");
-        assert!(host.take_io_changed());
-        assert!(!host.take_io_changed(), "consumed");
+        let asked: Vec<_> = tutti_plugin_types::taken(host.requests()).collect();
+        assert_eq!(
+            asked,
+            [
+                Request::IoChanged,
+                Request::LatencyChanged,
+                Request::TailChanged
+            ]
+        );
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "consumed"
+        );
+    }
+
+    /// `audioMasterUpdateDisplay` asks for the parameters' names and values to
+    /// be read again.
+    ///
+    /// A host nobody called asks for nothing, and the request is consumed by
+    /// taking it, so one call is one re-read.
+    ///
+    /// Mutation (run): `update_display` raising only the `Values` scope -> the
+    /// `Info` request is missing and the names stay stale -> fails.
+    /// Mutation (run): `HostState::new` raising `IoChanged` -> the quiet host
+    /// reports a request -> fails.
+    /// Mutation (run): `RequestWord::take` loading the word instead of swapping
+    /// it to zero -> the second take sees the requests again -> fails.
+    #[test]
+    fn update_display_asks_for_a_reread_of_names_and_values() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "a quiet plugin has asked for nothing"
+        );
+        host.update_display();
+        let asked: Vec<_> = tutti_plugin_types::taken(host.requests()).collect();
+        assert_eq!(
+            asked,
+            [
+                Request::RescanParams(RescanScope::Values),
+                Request::RescanParams(RescanScope::Info)
+            ]
+        );
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "consumed on read"
+        );
     }
 
     /// `audioMasterCanDo` claims what tutti does and declines what it does not.

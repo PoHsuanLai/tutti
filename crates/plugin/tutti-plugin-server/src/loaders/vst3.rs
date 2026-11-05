@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, ContentScale, EditorPresence, EditorSize, LoadedPlugin,
-    Normalized, ParamAddress, ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost,
+    Normalized, ParamId, ParameterInfo, PluginAudio, PluginDescriptor, PluginEditorHost,
     PluginError, PluginMeta, PluginParams, PluginPresets, PluginResult, PluginState, Preset,
     PresetId, ProcessContext, ProcessOutput, RenderMode, WindowHandle,
 };
@@ -438,9 +438,7 @@ impl PluginAudio for Vst3Instance {
 
 impl PluginParams for Vst3Instance {
     /// Normalized `0..=1`, which is VST3's own domain.
-    fn get_parameter(&self, id: ParamAddress) -> f64 {
-        // A VST2 index addresses nothing here; `ParamID` is opaque.
-        let Some(id) = id.opaque() else { return 0.0 };
+    fn get_parameter(&self, id: ParamId) -> f64 {
         self.loaded_ref()
             .and_then(|loaded| Control::parameter(loaded, id))
             .map_or(0.0, Normalized::get)
@@ -449,8 +447,7 @@ impl PluginParams for Vst3Instance {
     /// Normalized `0..=1` in. On an active plugin the write reaches the edit
     /// controller now and is queued to the Processor, which hands it to the
     /// plugin at the head of the next block.
-    fn set_parameter(&mut self, id: ParamAddress, value: Normalized) {
-        let Some(id) = id.opaque() else { return };
+    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
         if let Some(control) = self.lifecycle.control() {
             control.set_parameter(id, value);
         }
@@ -459,15 +456,13 @@ impl PluginParams for Vst3Instance {
     /// VST3's `getParamStringByValue` takes the value already normalized, so
     /// this is the one format where no conversion stands between the seam's
     /// domain and the ABI's.
-    fn parameter_text(&self, id: ParamAddress, value: Normalized) -> Option<String> {
-        let id = id.opaque()?;
+    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
         Control::parameter_text(self.loaded_ref()?, id, value)
     }
 
     /// The inverse. `getParamValueByString` answers normalized too, so the
     /// result passes through `Normalized::new`'s clamp only.
-    fn parameter_value_from_text(&self, id: ParamAddress, text: &str) -> Option<Normalized> {
-        let id = id.opaque()?;
+    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
 
@@ -646,7 +641,7 @@ mod tests {
     /// believes.
     fn activations_seen_by_the_plugin(instance: &mut Vst3Instance) -> u32 {
         instance.set_parameter(
-            ParamAddress::Opaque(tutti_plugin_types::ParamId::new(PARAM_MODE)),
+            tutti_plugin_types::ParamId::new(PARAM_MODE),
             Normalized::new(MODE_ACTIVATION_COUNT),
         );
         let frames = 128;

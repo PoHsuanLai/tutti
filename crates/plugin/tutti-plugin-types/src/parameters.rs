@@ -54,8 +54,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Deliberately no `Deref`, no `From<f64>` and no arithmetic: those are the
 /// routes by which a raw float becomes a `Normalized` without passing the
-/// clamp, which is the whole point. Same discipline as
-/// [`ParamAddress`] — the models do not silently interconvert.
+/// clamp, which is the whole point. Same discipline as [`ParamId`] — a number
+/// does not silently become one.
 ///
 /// There is no matching `Plain` newtype. A plain value's legal range is
 /// per-parameter, so the type could promise only "finite"; conversions go
@@ -333,8 +333,11 @@ bitflags! {
 /// `id + 1` and `for id in 0..n` do not compile. A `u32` in a struct field
 /// invites exactly those.
 ///
-/// VST2 does not have one of these — see [`ParamAddress`], which is what a
-/// caller holding a parameter's address actually names.
+/// VST2's parameter has no id of its own, only a position in `[0, numParams)`,
+/// and that position is what its `ParamId` carries (`tutti-vst2-host` converts at
+/// its boundary). The type's algebra is still absent for it: a caller holding a
+/// `ParamId` does not know which format it came from, and must not rely on the
+/// position.
 ///
 /// [`Ord`] is derived and is arbitrary-but-total, for map keys and binary
 /// search only (AU's parameter-bounds table sorts by it on the load path). A
@@ -406,136 +409,6 @@ impl std::fmt::Display for ParamId {
     }
 }
 
-/// How a format addresses one of its parameters.
-///
-/// The four hosted formats use two different addressing models, and a single
-/// number cannot represent both without the consumer guessing which it holds:
-///
-/// - [`Opaque`](Self::Opaque) — VST3, CLAP and AU. A plugin-chosen [`ParamId`]
-///   with no positional meaning. See that type.
-/// - [`Index`](Self::Index) — VST2 alone. A dense `i32` position in
-///   `[0, numParams)`; `getParameter(effect, index)` and `numParams` are both
-///   `i32` in the ABI, and consecutive parameters really are consecutive.
-///
-/// Splitting on the addressing model rather than on the format is deliberate:
-/// `Vst3(u32) | Clap(u32) | Au(u32)` would be three names for one behaviour,
-/// and nothing downstream could act on the distinction. What a consumer must
-/// actually decide is whether arithmetic on the number means anything — and
-/// that is exactly the line this enum draws.
-///
-/// The underlying types differ too, which is why one number was never enough:
-/// `u32` cannot hold VST2's negative-capable `i32`, and `i32` cannot hold the
-/// upper half of an opaque `u32` — plenty of plugins hash a name into an id
-/// well above `0x7FFF_FFFF`.
-///
-/// **Not `Copy`-into-a-number.** There is deliberately no `From<ParamAddress>
-/// for u32`. A caller that wants the raw value states which model it expected,
-/// via [`opaque`](Self::opaque) or [`index`](Self::index), each of which
-/// returns `None` for the other variant rather than inventing a cast.
-///
-/// ```
-/// # use tutti_plugin_types::{ParamAddress, ParamId};
-/// let vst3 = ParamAddress::Opaque(ParamId::new(0x8000_0001));
-/// assert_eq!(vst3.opaque(), Some(ParamId::new(0x8000_0001)));
-/// // Not an index, and the type will not pretend otherwise.
-/// assert_eq!(vst3.index(), None);
-/// ```
-///
-/// **Name collision.** `tutti_au_host::parameters::ParamAddress` is a different
-/// type answering a different question — the AU `(scope, element)` pair naming
-/// which container a parameter sits in. It is not re-exported at that crate's
-/// root, so the two never meet at an import site; the note is here so neither
-/// is read as the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ParamAddress {
-    /// A plugin-chosen handle: VST3 `ParamID`, CLAP `clap_id`, AU
-    /// `AudioUnitParameterID`.
-    Opaque(ParamId),
-    /// A dense position in `[0, numParams)`. VST2 only.
-    Index(i32),
-}
-
-impl Default for ParamAddress {
-    /// Returns opaque id zero, a placeholder rather than an address any plugin
-    /// reported.
-    fn default() -> Self {
-        Self::Opaque(ParamId::new(0))
-    }
-}
-
-impl ParamAddress {
-    /// Returns the opaque handle, or `None` if this is a VST2 index.
-    ///
-    /// The refusals below are the enum's reason for existing, so they are
-    /// pinned rather than only described. A bare number cannot become an
-    /// address, because it does not say which model it belongs to:
-    ///
-    /// ```compile_fail
-    /// # use tutti_plugin_types::ParamAddress;
-    /// let _: ParamAddress = 3u32.into();
-    /// ```
-    ///
-    /// …and an address cannot collapse back to one:
-    ///
-    /// ```compile_fail
-    /// # use tutti_plugin_types::{ParamAddress, ParamId};
-    /// let a = ParamAddress::Opaque(ParamId::new(3));
-    /// let _: u32 = a.into();
-    /// ```
-    ///
-    /// The two models do not interconvert, which is what a shared `u32` let
-    /// happen silently — an index is not an id even when the numbers match:
-    ///
-    /// ```compile_fail
-    /// # use tutti_plugin_types::{ParamAddress, ParamId};
-    /// let index = ParamAddress::Index(3);
-    /// let _: ParamId = index;
-    /// ```
-    ///
-    /// What compiles is asking, and handling the answer:
-    ///
-    /// ```
-    /// # use tutti_plugin_types::{ParamAddress, ParamId};
-    /// let index = ParamAddress::Index(3);
-    /// assert_eq!(index.opaque(), None);
-    /// assert_eq!(index.index(), Some(3));
-    /// ```
-    #[must_use]
-    pub const fn opaque(self) -> Option<ParamId> {
-        match self {
-            Self::Opaque(id) => Some(id),
-            Self::Index(_) => None,
-        }
-    }
-
-    /// Returns the dense index, or `None` if this is an opaque handle.
-    #[must_use]
-    pub const fn index(self) -> Option<i32> {
-        match self {
-            Self::Index(i) => Some(i),
-            Self::Opaque(_) => None,
-        }
-    }
-}
-
-impl From<ParamId> for ParamAddress {
-    fn from(id: ParamId) -> Self {
-        Self::Opaque(id)
-    }
-}
-
-impl std::fmt::Display for ParamAddress {
-    /// Renders the number, tagged, so a log line cannot silently read as the
-    /// other model.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Opaque(id) => write!(f, "id {id}"),
-            Self::Index(i) => write!(f, "index {i}"),
-        }
-    }
-}
-
 /// The description of one plugin parameter, shared by every format host.
 ///
 /// Read it through the accessors — [`bounds`](Self::bounds),
@@ -547,7 +420,7 @@ impl std::fmt::Display for ParamAddress {
 /// # Examples
 ///
 /// ```
-/// use tutti_plugin_types::{ParamAddress, ParamFlags, ParamId, ParameterInfo};
+/// use tutti_plugin_types::{ParamFlags, ParamId, ParameterInfo};
 ///
 /// let cutoff = ParameterInfo::new(ParamId::new(7), "Cutoff")
 ///     .with_plain_range(20.0, 20_000.0, 1_000.0)
@@ -557,16 +430,15 @@ impl std::fmt::Display for ParamAddress {
 /// assert_eq!(cutoff.flag(ParamFlags::BYPASS), None); // never reported
 ///
 /// // VST2 without `effGetParameterProperties`: no declared range at all.
-/// let mix = ParameterInfo::new(ParamAddress::Index(0), "Mix");
+/// let mix = ParameterInfo::new(ParamId::new(0), "Mix");
 /// assert_eq!(mix.bounds(), None);
 /// ```
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ParameterInfo {
-    /// How this parameter is addressed. See [`ParamAddress`]: an opaque
-    /// plugin-chosen handle for VST3/CLAP/AU, a dense index for VST2. Match on
-    /// it rather than reaching for a number — the two are not interchangeable.
-    pub id: ParamAddress,
+    /// How this parameter is addressed: the plugin's handle for VST3, CLAP and
+    /// AU, its position for VST2. Opaque either way; see [`ParamId`].
+    pub id: ParamId,
     /// The plugin's display name for this parameter, unqualified by its group.
     /// Not unique — see [`qualified_name`](Self::qualified_name).
     pub name: String,
@@ -600,8 +472,7 @@ pub struct ParameterInfo {
     /// format said none" are the same flat list to every consumer, so there is
     /// no second state to keep. The group *id* is deliberately absent — AU
     /// clump 3, VST2 category 3 and VST3 unit 3 are unrelated numbers, and a
-    /// bare number that does not say which model it belongs to is the mistake
-    /// [`ParamAddress`] exists to prevent.
+    /// bare number that does not say which model it belongs to is a mistake.
     pub group: String,
 }
 
@@ -610,9 +481,9 @@ impl ParameterInfo {
     /// undeclared: no unit, no group, a normalized range defaulting to `0.0`,
     /// [`ParamSteps::Unknown`], and an empty `known` mask so every capability
     /// reads as unreported. The `with_*` builders fill in what a format states.
-    pub fn new(id: impl Into<ParamAddress>, name: impl Into<String>) -> Self {
+    pub fn new(id: ParamId, name: impl Into<String>) -> Self {
         Self {
-            id: id.into(),
+            id,
             name: name.into(),
             unit: String::new(),
             range: ParamRange::default(),

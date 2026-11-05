@@ -376,8 +376,8 @@ doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
     scripts/check-doc-features.sh
     # The docs.rs build: nightly, `--cfg docsrs`, so `doc_cfg` must parse and
-    # every feature badge must render.
-    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --locked --workspace --no-deps \
+    # every feature badge must render. The nightly is dated, as in CI.
+    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps \
         --exclude rustysynth-tutti
 
 # Clippy with `--cfg loom` on the crates that carry loom models. The flag swaps

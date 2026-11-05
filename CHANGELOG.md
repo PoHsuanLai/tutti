@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 the vendored `vst-tutti` inherits the workspace lints. Published members carry
 the full crates.io metadata (`[workspace.package]` holds `license` and
 `repository`), and every library enables `doc_cfg` under `cfg(docsrs)` with a
-`[package.metadata.docs.rs]` table. CI and `just ci` gain three gates: rustdoc
-with `--document-private-items` (138 broken or redundant links fixed), rustdoc
-per feature for `bevy-tutti`, `tutti-session` and `tutti` (`bevy-tutti`'s
-`export` and `midi` docs failed), and clippy under `--cfg loom` (`tutti-types`'
-task graph no longer takes a `% 1`).
+`[package.metadata.docs.rs]` table. CI and `just ci` gain four gates: rustdoc
+with `--document-private-items`, rustdoc per feature for `bevy-tutti`,
+`tutti-session` and `tutti` (`scripts/check-doc-features.sh`), the docs.rs
+build (`--cfg docsrs` on a dated nightly, `nightly-2026-10-14`), and clippy under
+`--cfg loom` (`just check-loom`).
 
 ### Added — `missing_docs` is a workspace lint
 

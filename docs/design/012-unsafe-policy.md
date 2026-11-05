@@ -77,7 +77,9 @@ be checked against the tree.
 - **`tutti-polysynth`, `tutti-analysis`** — mentions in prose only, no
   `unsafe` code.
 
-`tutti-mod` and `tutti-graph` carry `#![forbid(unsafe_code)]`. The second is
+Every library with no `unsafe` carries `#![forbid(unsafe_code)]`
+(`grep -rl 'forbid(unsafe_code)' crates/*/src crates/*/*/src`), `tutti-graph`
+among them. It is
 the one worth knowing: its executor hands every node `&[f32]` inputs and
 `&mut [f32]` outputs out of one shared arena, which is the textbook reason to
 reach for raw pointers. It does not — the disjoint borrows come from
@@ -153,5 +155,5 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
 No `#![deny(unsafe_code)]` workspace-wide with per-crate `allow`s. It reads as
 a stronger claim than it is: every crate that matters would carry the escape
 hatch, and the annotation would say nothing a reader could rely on.
-`#![forbid(unsafe_code)]` on crates that genuinely have none — starting with
-`tutti-mod` — is the honest version, and it should spread.
+`#![forbid(unsafe_code)]` on crates that genuinely have none is the honest
+version, and a new crate without `unsafe` takes it.

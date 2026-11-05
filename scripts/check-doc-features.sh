@@ -9,7 +9,7 @@
 # only resolves with two features on. A doc comment under `#[cfg(feature =
 # "x")]` is compiled by rustdoc only when `x` is on, so a link out of it into
 # an item another feature gates breaks for exactly the consumer who turns on
-# `x` alone (`bevy-tutti`'s `export` and `midi` did).
+# `x` alone.
 #
 # The feature list is read from each Cargo.toml, so a new feature is covered
 # without editing this file. Run from the repo root; `RUSTDOCFLAGS` defaults to
@@ -24,7 +24,7 @@ failed=()
 for dir in "${crates[@]}"; do
   name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)
   features=$(awk '/^\[features\]/{p=1;next} /^\[/{p=0} p && /^[a-z0-9_-]+ *=/{print $1}' \
-    "$dir/Cargo.toml" | grep -vx -e default -e jack)
+    "$dir/Cargo.toml" | grep -vx -e default -e jack || true)
   for f in $features; do
     echo "== cargo doc -p $name --features $f"
     cargo doc --locked -p "$name" --no-deps --features "$f" || failed+=("$name/$f")

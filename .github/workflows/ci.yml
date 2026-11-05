@@ -572,14 +572,16 @@ jobs:
           RUSTDOCFLAGS: -D warnings
       # Each feature of the feature-gated crates alone. The union above cannot
       # see a link out of one feature's docs into an item another feature
-      # gates: `bevy-tutti --features export` and `--features midi` failed
-      # while the union was clean.
+      # gates, which the union of features cannot see.
       - run: scripts/check-doc-features.sh
       # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
-      # the feature badges render. `+nightly` because `rust-toolchain.toml`
-      # pins stable.
-      - uses: dtolnay/rust-toolchain@nightly
-      - run: cargo +nightly doc --locked --workspace --no-deps --exclude rustysynth-tutti
+      # the feature badges render. A dated nightly (bumped by hand, like
+      # `rust-toolchain.toml`'s stable) so a new rustdoc lint cannot turn CI
+      # red; named with `+` because `rust-toolchain.toml` pins stable.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-14
+      - run: cargo +nightly-2026-10-14 doc --locked --workspace --no-deps --exclude rustysynth-tutti
         env:
           RUSTDOCFLAGS: -D warnings --cfg docsrs
 

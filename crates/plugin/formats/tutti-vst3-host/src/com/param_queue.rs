@@ -135,6 +135,12 @@ impl ParamValueQueueImpl {
         true
     }
 
+    /// Puts `point` before every point the queue holds, if it has room.
+    /// Allocation-free; `false` (the queue unchanged) when it is full.
+    pub(crate) fn prepend_point(&self, point: ParameterPoint) -> bool {
+        self.points.borrow_mut().try_push_front(point).is_ok()
+    }
+
     /// Counts one dropped point, from a COM entry point: skipped (the point
     /// goes uncounted) if the host is reading the count at that moment.
     fn count_dropped(&self) {

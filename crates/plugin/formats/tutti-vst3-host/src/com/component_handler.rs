@@ -14,6 +14,11 @@
 //!   `fetch_or`'d by the plugin and swapped to zero by
 //!   [`ComponentHandler::take_restart_bits`]. No queue, no capacity, nothing to
 //!   lose.
+//! - **The same flags are also raised as [`Request`]s** on a [`RequestWord`]
+//!   ([`ComponentHandler::requests`]), the form the shared core takes:
+//!   [`RestartFlags::raise_into`] says which flag is which request. A host that
+//!   drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) reads that word; the
+//!   coalesced `restart_bits` stay for a plugin held without one.
 //! - **Everything else** (edits, progress, unit news) goes on one bounded
 //!   [`ArrayQueue`] of [`PluginNotification`], preallocated at construction.
 //!   A push past [`NOTIFICATION_CAPACITY`] is dropped and counted
@@ -31,6 +36,9 @@
 
 use crate::guard::guard;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+
+use tutti_plugin_types::{Request, RescanScope};
+use tutti_types::RequestWord;
 
 use arrayvec::ArrayString;
 use crossbeam_queue::ArrayQueue;
@@ -215,6 +223,44 @@ pub struct RestartFlags {
 }
 
 impl RestartFlags {
+    /// Raises each flag as the core's [`Request`] it is.
+    ///
+    /// A latency or I/O change and a reload are the core's own; a parameter
+    /// remap is a rescan of the parameter info, as a title change is;
+    /// `kPrefetchableSupportChanged` asks for the deactivate and activate the
+    /// header names, which is a restart. The three that nothing acts on (bus
+    /// titles, routing, keyswitches) raise nothing: they stay in the
+    /// coalesced flags of [`ComponentHandler::take_restart_bits`].
+    pub fn raise_into(self, word: &RequestWord) {
+        let requests = [
+            (self.reload_component, Request::Reload),
+            (self.io_changed, Request::IoChanged),
+            (self.latency_changed, Request::LatencyChanged),
+            (
+                self.param_values_changed,
+                Request::RescanParams(RescanScope::Values),
+            ),
+            (
+                self.param_titles_changed || self.param_id_mapping_changed,
+                Request::RescanParams(RescanScope::Info),
+            ),
+            (
+                self.midi_cc_assignment_changed,
+                Request::MidiCcAssignmentChanged,
+            ),
+            (
+                self.note_expression_changed,
+                Request::NoteExpressionChanged,
+            ),
+            (self.prefetchable_support_changed, Request::Restart),
+        ];
+        for (raised, request) in requests {
+            if raised {
+                let _ = request.raise(word);
+            }
+        }
+    }
+
     /// Decodes the raw `i32` bitmask passed to `restartComponent`.
     #[must_use]
     pub fn from_bits(flags: i32) -> Self {
@@ -324,6 +370,9 @@ pub struct ComponentHandler {
     overflowed: AtomicBool,
     /// The union of every `restartComponent` flag word since the last take.
     restart_bits: AtomicI32,
+    /// The same flags as the core's requests, for a host that drives a
+    /// `Lifecycle`.
+    requests: RequestWord,
     next_progress_id: AtomicU64,
 }
 
@@ -347,8 +396,16 @@ impl ComponentHandler {
             dropped: AtomicU64::new(0),
             overflowed: AtomicBool::new(false),
             restart_bits: AtomicI32::new(0),
+            requests: RequestWord::new(),
             next_progress_id: AtomicU64::new(1),
         })
+    }
+
+    /// What the plugin has asked of the host as the core's requests, raised by
+    /// every `restartComponent`. Taken with
+    /// [`taken`](tutti_plugin_types::taken): wait-free and allocation-free.
+    pub fn requests(&self) -> &RequestWord {
+        &self.requests
     }
 
     /// Takes the union of every `restartComponent` flag word received since
@@ -428,6 +485,7 @@ impl IComponentHandlerTrait for ComponentHandler {
         guard(vst3::Steinberg::kInternalError, || {
             // Release pairs with `take_restart_bits`' Acquire; see there.
             self.restart_bits.fetch_or(flags, Ordering::Release);
+            RestartFlags::from_bits(flags).raise_into(&self.requests);
             kResultOk
         })
     }

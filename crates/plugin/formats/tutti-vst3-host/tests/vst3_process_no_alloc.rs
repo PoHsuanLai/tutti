@@ -34,8 +34,13 @@ use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamAddress;
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3Active, Vst3InputEvents,
+    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents,
 };
+#[path = "support/active.rs"]
+mod active;
+#[allow(unused_imports)]
+use active::{Activate, Active, LoadError, ParamExt, StateExt};
+
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -82,7 +87,7 @@ fn find_plugin() -> Option<PathBuf> {
     bundle.exists().then(|| resolve_bundle(bundle))
 }
 
-fn load_or_skip() -> Option<Vst3Active> {
+fn load_or_skip() -> Option<Active> {
     let Some(library) = find_plugin() else {
         eprintln!(
             "no VST3 plugin found (set VST3_SAMPLE_PLUGIN_DIR, or install \
@@ -90,13 +95,13 @@ fn load_or_skip() -> Option<Vst3Active> {
         );
         return None;
     };
-    let inst = Vst3Active::load(&library, 48_000.0, 64).expect("VST3 load failed");
+    let inst = Active::<f32>::load(&library, 48_000.0, 64).expect("VST3 load failed");
     Some(inst)
 }
 
 /// Run the plugin `iters` times with silent input. Buffer setup is done
 /// per-iteration but uses only stack arrays — no heap allocs.
-fn drive_silent(inst: &mut Vst3Active, iters: usize, transport: &TransportInfo) {
+fn drive_silent(inst: &mut Active, iters: usize, transport: &TransportInfo) {
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
     let midi: [MidiEvent; 0] = [];
@@ -154,7 +159,7 @@ fn process_with_automation_does_not_allocate() {
     let mut out_r = [0.0f32; 64];
     let midi: [MidiEvent; 0] = [];
 
-    let mut drive = |inst: &mut Vst3Active, iters: usize| {
+    let mut drive = |inst: &mut Active, iters: usize| {
         for _ in 0..iters {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
@@ -313,7 +318,7 @@ fn process_with_hundreds_of_events_does_not_allocate() {
 
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
-    let mut drive = |inst: &mut Vst3Active, exprs: &[NoteExpressionValue], iters: usize| {
+    let mut drive = |inst: &mut Active, exprs: &[NoteExpressionValue], iters: usize| {
         for _ in 0..iters {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];

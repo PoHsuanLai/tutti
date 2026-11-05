@@ -1,9 +1,11 @@
-//! Post-`initialize()` VST3 state. Audio processing is **not** active here —
-//! [`Vst3Loaded::activate`] transitions to [`Vst3Active`] for that.
+//! Post-`initialize()` VST3 state. Audio processing is **not** active here:
+//! [`Loaded::activate`](tutti_plugin_types::Loaded::activate) splits the plugin
+//! into a [`Vst3ProcessorAny`](crate::Vst3ProcessorAny), which renders, and a
+//! [`Vst3Controller`](crate::Vst3Controller), which holds everything else.
 //!
 //! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
-//! inspection, and state save/restore. `process()` lives exclusively on
-//! [`Vst3Active`]; the type system enforces that you can't call it here.
+//! inspection, and state save/restore. `process()` lives exclusively on the
+//! Processor; the type system enforces that you can't call it here.
 //!
 //! The size of this file is the argument for the type existing. Nearly forty
 //! public methods are legal in this state and need no audio buffer: the
@@ -11,17 +13,15 @@
 //! lists, note expression and keyswitch tables, `IMidiLearn`, physical UI
 //! mapping, XML representations, the compatibility JSON, state save/restore,
 //! and the entire editor surface. A host that only browses metadata, or only
-//! shows a GUI, calls `initialize()` and stops — activation is a cost it never
-//! pays. That is what distinguishes a state worth a type from a construction
-//! step, and it is why this file, not `instance`, holds the bulk of the module.
+//! shows a GUI, calls `initialize()` and stops: activation is a cost it never
+//! pays.
 //!
-//! Everything here stays reachable after activation: [`Vst3Active`] embeds a
-//! `Vst3Loaded` and `Deref`s to it, so the split subtracts `process` from this
-//! state without subtracting anything from the active one.
+//! Everything here stays reachable while the plugin renders: the Controller
+//! `Deref`s to the `Vst3Loaded` it holds.
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use vst3::ComPtr;
 use vst3::Steinberg::{
@@ -37,7 +37,7 @@ use vst3::Steinberg::{
         IPrefetchableSupport, IPrefetchableSupportTrait, IProcessContextRequirements,
         IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait, IUnitInfo,
         IUnitInfoTrait, IXmlRepresentationController, IXmlRepresentationControllerTrait,
-        PhysicalUIMap, PhysicalUIMapList, RepresentationInfo,
+        PhysicalUIMap, PhysicalUIMapList, RepresentationInfo, SpeakerArrangement,
     },
     kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue,
 };
@@ -52,21 +52,25 @@ use vst3::Steinberg::kPlatformTypeX11EmbedWindowID;
 use crate::com::{
     BStream, ComponentHandler, HostApplication, HostPlugFrame, PluginNotification, RestartFlags,
 };
-use tutti_plugin_types::{ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo};
+use tutti_plugin_types::{
+    Control, Normalized, ParamId, ParamAddress, ParamFlags, ParamRange, ParamSteps, ParameterInfo, PluginDescriptor, Request,
+};
+use tutti_types::{ArcLend, ChannelTopology};
 
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::helpers::utf16_to_string;
 use crate::types::unit_ids;
 use crate::types::{
-    ContentScale, EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo,
+    ContentScale, EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo,
     WindowHandle,
 };
 
-use super::instance::Vst3Active;
+use super::instance::usable_topology;
 use super::library::Vst3Library;
 use super::midi_learn::MidiLearnConsumer;
+use super::midi_mapping::{MidiCcCell, MidiCcMapping};
 use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
 
@@ -93,9 +97,67 @@ pub struct Vst3Loaded {
     /// the audio thread, drained in [`Self::poll_plugin_notifications`]. Built at load
     /// and outlives activate/deactivate cycles.
     pub(super) midi_learn: MidiLearnConsumer,
+    /// What `rebuild` loads again.
+    pub(super) origin: LoadOrigin,
+    /// The catalog identity, with the editor measured on first ask.
+    pub(super) descriptor: OnceLock<PluginDescriptor>,
+    /// Whether the plugin is activated, and at which width.
+    pub(super) active: Activation,
+    /// Writes a rejoin took from the halves that no block had delivered, for
+    /// the next activation's first block.
+    pub(super) carried: Vec<(ParamId, Normalized)>,
+    /// The `IMidiMapping` table the Processor routes against: published by
+    /// whichever half rebuilds it, lent to the Processor once per block.
+    pub(super) midi_cc: Arc<ArcLend<MidiCcCell>>,
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
     /// the teardown-order note at the top of this struct.
     pub(super) _library: Arc<Vst3Library>,
+}
+
+/// How a plugin was loaded, kept so [`Loaded::rebuild`] loads it again.
+///
+/// [`Loaded::rebuild`]: tutti_plugin_types::Loaded::rebuild
+#[derive(Debug, Clone)]
+pub(super) struct LoadOrigin {
+    pub(super) path: PathBuf,
+    pub(super) class: Option<String>,
+}
+
+/// The plugin's activation, as the host last made it.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Activation {
+    /// `setActive(1)` has run and `setActive(0)` has not.
+    pub(super) active: bool,
+    /// The sample width of that activation.
+    pub(super) f64: bool,
+}
+
+/// How to load a plugin from a bundle.
+///
+/// The default loads the bundle's first audio class.
+#[derive(Debug, Clone, Default)]
+pub struct LoadOptions {
+    class: Option<String>,
+}
+
+impl LoadOptions {
+    /// The default: the bundle's first audio class.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Loads the audio class with this display name from a bundle that exports
+    /// several (a name from [`Vst3Library::class_info`]).
+    ///
+    /// One VST3 bundle may export many plugins: that is the normal shape for a
+    /// commercial suite, and `mda-vst3` exports 34 audio classes from one
+    /// binary.
+    #[must_use]
+    pub fn class(mut self, name: impl Into<String>) -> Self {
+        self.class = Some(name.into());
+        self
+    }
 }
 
 impl std::fmt::Debug for Vst3Loaded {
@@ -234,7 +296,8 @@ impl Vst3Loaded {
     /// Returns [`Vst3Error::LoadFailed`] if the
     /// file is missing, the DSO can't be opened, the factory is empty, no
     /// audio class is found, or the component cannot be created.
-    pub fn probe(path: &Path) -> Result<PluginInfo> {
+    pub fn probe(path: impl AsRef<Path>) -> Result<PluginInfo> {
+        let path = path.as_ref();
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
@@ -251,39 +314,22 @@ impl Vst3Loaded {
         ))
     }
 
-    /// Loads a VST3 plugin for GUI / parameter work only — no audio processing
-    /// will ever happen on the returned value. Stays in `Loaded` state, skipping
-    /// the activation cost.
+    /// Loads a VST3 plugin: the bundle's first audio class, or the one
+    /// [`LoadOptions::class`] names. It stays loaded (not activated) until
+    /// [`Loaded::activate`](tutti_plugin_types::Loaded::activate), and a GUI-only
+    /// host never activates it.
     ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::LoadFailed`] if the
-    /// file is missing, the DSO can't be opened, the factory is empty, or no
-    /// audio class is found; returns
-    /// [`Vst3Error::PluginError`] if
+    /// Returns [`Vst3Error::LoadFailed`] if the file is missing, the DSO can't
+    /// be opened, the factory is empty, no audio class is found (the message
+    /// lists what the bundle does export when a named class is missing, since
+    /// a near-miss on a display name is the likely cause), or the component
+    /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
-    pub fn load(path: &Path) -> Result<Self> {
-        Self::load_class(path, None)
-    }
-
-    /// Loads a specific audio class from a bundle, by display name.
-    ///
-    /// One VST3 bundle may export many plugins — that is the normal shape for a
-    /// commercial suite, and the sample corpus has it too: `mda-vst3` exports
-    /// 34 audio classes from one binary. [`load`](Self::load) takes the first,
-    /// which is the right default for a single-plugin bundle and useless for
-    /// picking "mda Delay" out of the 34.
-    ///
-    /// `class_name` matches [`ClassInfo::name`](crate::host::ClassInfo::name)
-    /// exactly; `None` reproduces [`load`](Self::load).
-    ///
-    /// # Errors
-    ///
-    /// As [`load`](Self::load), plus
-    /// [`Vst3Error::LoadFailed`] when no audio
-    /// class carries `class_name` — the message lists what the bundle does
-    /// export, since a near-miss on a display name is the likely cause.
-    pub fn load_class(path: &Path, class_name: Option<&str>) -> Result<Self> {
+    pub fn load(path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+        let path = path.as_ref();
+        let class_name = options.class.as_deref();
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
@@ -306,7 +352,11 @@ impl Vst3Loaded {
         // initialized (`reconcile_bus_counts`).
         let info = build_plugin_info_raw(&library, &component, None, &class, false);
 
-        let mut loaded = Self::assemble(library, component, processor, controller, info);
+        let origin = LoadOrigin {
+            path: path.to_path_buf(),
+            class: options.class,
+        };
+        let mut loaded = Self::assemble(library, component, processor, controller, info, origin);
         loaded.initialize()?;
         Ok(loaded)
     }
@@ -319,6 +369,7 @@ impl Vst3Loaded {
         processor: ComPtr<IAudioProcessor>,
         controller: Controller,
         info: PluginInfo,
+        origin: LoadOrigin,
     ) -> Self {
         // Same run loop as the factory-level host context: a plugin that only
         // sees the context handed to `IPluginBase::initialize` must reach the
@@ -381,63 +432,16 @@ impl Vst3Loaded {
             editor: EditorState::Closed,
             info,
             midi_learn,
+            origin,
+            descriptor: OnceLock::new(),
+            active: Activation::default(),
+            carried: Vec::new(),
+            midi_cc: Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty()))),
         }
     }
 
-    /// Transitions to the processing state in [`ProcessMode::Realtime`].
-    ///
-    /// Runs `setupProcessing`, activates buses, and calls `setActive(1)` and
-    /// `setProcessing(1)`. Returns a [`Vst3Active<T>`] that exposes `process()`.
-    /// `sample_rate` is in Hz; `block_size` is the largest number of frames
-    /// any later `process` call may pass.
-    ///
-    /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
-    /// `f64` uses `kSample64`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Vst3Error::NotSupported`] if `T` is `f64` and the plugin does
-    /// not advertise 64-bit support, or [`Vst3Error::PluginError`] if
-    /// `setupProcessing` or `setActive` fails. `self` is consumed either way.
-    pub fn activate<T: Vst3Sample>(
-        self,
-        sample_rate: f64,
-        block_size: usize,
-    ) -> Result<Vst3Active<T>> {
-        self.activate_with_mode(sample_rate, block_size, ProcessMode::Realtime)
-    }
-
-    /// Transition to the processing state for a specific [`ProcessMode`].
-    ///
-    /// The mode is chosen *here*, on the state transition, rather than on the
-    /// resulting instance, because `setupProcessing` is where VST3 delivers it
-    /// and that call happens exactly once per activation. Selecting
-    /// [`Offline`](ProcessMode::Offline) afterwards would require re-running
-    /// setup, which is what the spec's `ProcessSetup`/`ProcessData` agreement
-    /// rule forbids doing silently — so the type-state boundary and the spec
-    /// boundary are made to coincide. (The realtime↔prefetch pair *is*
-    /// switchable on a live instance; that is
-    /// [`Vst3Active::set_prefetch`](crate::Vst3Active::set_prefetch), and
-    /// it is the one exception the rule names.)
-    ///
-    /// Query [`prefetchable_support`](Self::prefetchable_support) beforehand if
-    /// you intend to use prefetch: it is the plugin's own statement about
-    /// whether it can be driven that way.
-    ///
-    /// # Errors
-    ///
-    /// As [`activate`](Self::activate).
-    pub fn activate_with_mode<T: Vst3Sample>(
-        self,
-        sample_rate: f64,
-        block_size: usize,
-        mode: ProcessMode,
-    ) -> Result<Vst3Active<T>> {
-        Vst3Active::from_loaded(self, sample_rate, block_size, mode)
-    }
-
     /// Metadata snapshot (id, name, vendor, bus counts, MIDI and f64 support).
-    pub fn info(&self) -> &PluginInfo {
+    pub fn plugin_info(&self) -> &PluginInfo {
         &self.info
     }
 
@@ -450,7 +454,7 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn read_latency_samples(&self) -> u32 {
+    pub fn latency_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
         unsafe { self.interfaces.processor.getLatencySamples() }
     }
@@ -467,7 +471,7 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn read_tail_samples(&self) -> u32 {
+    pub fn tail_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
         unsafe { self.interfaces.processor.getTailSamples() }
     }
@@ -501,99 +505,6 @@ impl Vst3Loaded {
         }
     }
 
-    /// Reads the normalized (0.0 – 1.0) value of the parameter with **ParamID**
-    /// `param_id` — *not* an index (see the note above; use
-    /// [`parameter_by_index`](Self::parameter_by_index) to address by index).
-    /// Returns `0.0` if the plugin has no controller.
-    pub fn get_parameter(&self, param_id: u32) -> f64 {
-        match self.interfaces.controller.as_ref() {
-            Some(c) => unsafe { c.getParamNormalized(param_id) },
-            None => 0.0,
-        }
-    }
-
-    /// Writes a normalized (0.0 – 1.0) `value` to the parameter with **ParamID**
-    /// `param_id` — *not* an index (use
-    /// [`set_parameter_by_index`](Self::set_parameter_by_index) for that).
-    /// No-op if the plugin has no controller.
-    pub fn set_parameter(&mut self, param_id: u32, value: f64) {
-        if let Some(c) = self.interfaces.controller.as_ref() {
-            unsafe {
-                c.setParamNormalized(param_id, value);
-            }
-        }
-    }
-
-    /// The plugin's own display string for a normalized `value` on parameter
-    /// `param_id` — `"800 Hz"`, `"Bandpass"`, `"-inf"`.
-    ///
-    /// `None` when the plugin has no edit controller or refuses the id. VST3 is
-    /// the one format whose ABI takes the value already normalized, so nothing
-    /// is converted on the way in.
-    ///
-    /// The value is a *parameter* of the call, not the plugin's current one:
-    /// `getParamStringByValue` formats whatever is named, which is what an
-    /// automation lane drawing labels along a curve needs. Reading the live
-    /// value first would answer a different question.
-    ///
-    /// Main/UI thread, as with every other `IEditController` call here.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn parameter_string_by_value(&self, param_id: u32, value: f64) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.controller.as_ref()?;
-        let mut string: vst3::Steinberg::Vst::String128 = [0; 128];
-        let result = unsafe { ctrl.getParamStringByValue(param_id, value, &mut string) };
-        (result == kResultOk).then(|| utf16_to_string(&string))
-    }
-
-    /// Parses `text` into a normalized value using the plugin's own
-    /// interpretation — the inverse of
-    /// [`parameter_string_by_value`](Self::parameter_string_by_value).
-    ///
-    /// `None` when the plugin has no controller or cannot parse the string. A
-    /// caller must leave its field unchanged rather than substituting a
-    /// fallback: a fabricated `0.0` would be written into the user's preset.
-    ///
-    /// The buffer is a NUL-terminated UTF-16 copy the plugin borrows for the
-    /// duration of the call. It is a local rather than a borrow of `text`
-    /// because the ABI takes `*mut TChar` — non-const, so the plugin is
-    /// entitled to scribble on it — and because a Rust `&str` carries no
-    /// terminator. The copy is bounded at 128 units to match the `String128`
-    /// the display direction uses: a longer string is one no plugin's own
-    /// formatter could have produced, so truncating it costs no round-trip
-    /// that would otherwise have worked.
-    ///
-    /// Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn parameter_value_by_string(&self, param_id: u32, text: &str) -> Option<f64> {
-        tutti_plugin_types::assert_main_thread();
-        let ctrl = self.interfaces.controller.as_ref()?;
-
-        let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
-        buf.push(0);
-
-        let mut value: vst3::Steinberg::Vst::ParamValue = 0.0;
-        let result = unsafe {
-            ctrl.getParamValueByString(
-                param_id,
-                buf.as_mut_ptr() as *mut vst3::Steinberg::Vst::TChar,
-                &mut value,
-            )
-        };
-        // A plugin may answer `kResultOk` without touching `value`; a non-finite
-        // result would reach `Normalized::new`, which maps NaN to 0.0 and would
-        // commit that to the parameter as if the user had typed it.
-        (result == kResultOk && value.is_finite()).then_some(value)
-    }
-
     /// The **ParamID** of the parameter at `index` in `0 .. parameter_count()`.
     /// `None` when the index is out of range or the plugin has no controller.
     ///
@@ -609,7 +520,8 @@ impl Vst3Loaded {
     /// index to its ParamID first. `None` if the index is out of range or the
     /// plugin has no controller.
     pub fn parameter_by_index(&self, index: u32) -> Option<f64> {
-        self.parameter_id_at(index).map(|id| self.get_parameter(id))
+        let id = ParamId::new(self.parameter_id_at(index)?);
+        Control::parameter(self, id).map(Normalized::get)
     }
 
     /// Writes a normalized `value` to the parameter at **index**, resolving the
@@ -618,7 +530,7 @@ impl Vst3Loaded {
     pub fn set_parameter_by_index(&mut self, index: u32, value: f64) -> bool {
         match self.parameter_id_at(index) {
             Some(id) => {
-                self.set_parameter(id, value);
+                Control::set_parameter(self, ParamId::new(id), Normalized::new(value));
                 true
             }
             None => false,
@@ -653,7 +565,7 @@ impl Vst3Loaded {
     /// A parameter whose descriptor the plugin declines to hand over is
     /// skipped rather than substituted, so the list is short instead of
     /// carrying an invented entry.
-    pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+    pub fn parameter_list(&self) -> Vec<ParameterInfo> {
         let units = self.units();
         let groups = unit_names(&units);
 
@@ -1113,7 +1025,7 @@ impl Vst3Loaded {
 
         let count = self._library.count_classes();
         let cid = (0..count).find_map(|i| {
-            let info = self._library.get_class_info(i).ok()?;
+            let info = self._library.class_info(i).ok()?;
             (info.category == COMPATIBILITY_CATEGORY).then_some(info.cid)
         })?;
 
@@ -1331,7 +1243,7 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn set_automation_state(&mut self, state: i32) -> bool {
+    pub fn apply_automation_state(&mut self, state: i32) -> bool {
         tutti_plugin_types::assert_main_thread();
         match &self.interfaces.automation_state {
             Some(a) => {
@@ -1343,7 +1255,7 @@ impl Vst3Loaded {
     }
 
     /// Captures the plugin's state as an opaque byte blob suitable for
-    /// persisting and later feeding back to [`set_state`](Self::set_state).
+    /// persisting and later feeding back to [`load_state`](Control::load_state).
     ///
     /// This carries **both** of the plugin's streams. The spec gives the
     /// controller its own `getState`/`setState` pair, distinct from the
@@ -1378,7 +1290,7 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn get_state(&self) -> Result<Vec<u8>> {
+    pub(super) fn read_state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let component = self.read_component_state()?;
         let controller = self.read_controller_state();
@@ -1389,7 +1301,7 @@ impl Vst3Loaded {
     /// controller, it does not implement the call, or it fails.
     ///
     /// Failure is folded into `None` rather than surfaced: see
-    /// [`get_state`](Self::get_state) for why a controller's UI state is best-effort
+    /// [`save_state`](Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
     fn read_controller_state(&self) -> Option<Vec<u8>> {
         let ctrl = self.interfaces.controller.as_ref()?;
@@ -1406,7 +1318,7 @@ impl Vst3Loaded {
     }
 
     /// Writes the component's `getState` blob into a fresh `IBStream` and return
-    /// the bytes. Shared by [`get_state`](Self::get_state) and the load-time
+    /// the bytes. Shared by [`save_state`](Control::save_state) and the load-time
     /// controller state-sync in [`initialize`](Self::initialize).
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
@@ -1435,7 +1347,7 @@ impl Vst3Loaded {
     /// blob is empty. Errors from the controller are tolerated (some plugins
     /// return `kResultFalse` when they have no controller state to load) —
     /// this is best-effort synchronisation, shared by
-    /// [`set_state`](Self::set_state) and [`initialize`](Self::initialize).
+    /// [`load_state`](Control::load_state) and [`initialize`](Self::initialize).
     fn push_controller_state(&self, data: &[u8]) {
         if data.is_empty() {
             return;
@@ -1451,7 +1363,7 @@ impl Vst3Loaded {
         }
     }
 
-    /// Restores plugin state from a blob produced by [`get_state`](Self::get_state).
+    /// Restores plugin state from a blob produced by [`save_state`](Control::save_state).
     ///
     /// Three things happen, in the order the spec requires. The component gets
     /// its own stream via `IComponent::setState`. The controller is then shown
@@ -1468,13 +1380,13 @@ impl Vst3Loaded {
     /// `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`] if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
-    /// own stream is tolerated, matching [`get_state`](Self::get_state).
+    /// own stream is tolerated, matching [`save_state`](Control::save_state).
     ///
     /// # Panics
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    pub(super) fn write_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(());
@@ -2230,8 +2142,121 @@ impl Vst3Loaded {
     }
 }
 
+impl Vst3Loaded {
+    /// What the plugin has asked of the host since the last take, as the
+    /// core's requests, appended to `out`: every `restartComponent` flag that
+    /// has a request ([`RestartFlags::raise_into`] says which). A host that
+    /// drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) feeds these to it.
+    ///
+    /// Wait-free and allocation-free up to `out`'s capacity, so it can run
+    /// between blocks of a realtime-priority thread. Queued edits, progress
+    /// and unit news stay for
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) or
+    /// [`discard_notifications`](Self::discard_notifications).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
+    pub fn take_requests(&self, out: &mut Vec<Request>) {
+        tutti_plugin_types::assert_main_thread();
+        out.extend(tutti_plugin_types::taken(self.host.handler.requests()));
+    }
+
+    /// Whether the plugin is activated: `setActive(1)` has run and
+    /// `setActive(0)` has not.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.active
+    }
+
+    /// Re-queries the `IMidiMapping` CC to parameter table from the controller
+    /// and publishes it, so the Processor routes against it from its next
+    /// block. Call it when the plugin raised
+    /// [`Request::MidiCcAssignmentChanged`]. Allocates.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if called off the thread registered with
+    /// [`tutti_plugin_types::mark_main_thread`].
+    pub fn rebuild_midi_cc_mapping(&mut self) {
+        tutti_plugin_types::assert_main_thread();
+        self.midi_cc.publish(MidiCcCell(MidiCcMapping::query(
+            self.interfaces.controller.as_ref(),
+        )));
+        self.midi_cc.reclaim();
+    }
+
+    /// The channel topology of each **input** bus, as the plugin runs it.
+    /// See [`output_bus_topologies`](Self::output_bus_topologies).
+    ///
+    /// Two named methods rather than one taking a direction, so a caller does
+    /// not need the crate's private `kInput`/`kOutput` constants and cannot
+    /// pass an `i32` that is neither.
+    pub fn input_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(K_INPUT)
+    }
+
+    /// The channel topology of each **output** bus.
+    ///
+    /// Queried live from `getBusArrangement` rather than cached from
+    /// negotiation, because a plugin may restructure its buses after it. An
+    /// entry is `None` when the plugin's arrangement names a speaker this
+    /// vocabulary cannot, or when the query failed: both mean "cannot route
+    /// this bus by speaker". A bus whose arrangement is fully named yields
+    /// `Some`, and its width always equals the count reported beside it.
+    pub fn output_bus_topologies(&self) -> Vec<Option<ChannelTopology>> {
+        self.bus_topologies(K_OUTPUT)
+    }
+
+    fn bus_topologies(&self, direction: i32) -> Vec<Option<ChannelTopology>> {
+        let widths = self.interfaces.component.audio_bus_channels(direction);
+        self.read_back_arrangements(direction, widths.len())
+            .into_iter()
+            .zip(widths)
+            .map(|(topology, width)| usable_topology(topology, width))
+            .collect()
+    }
+
+    /// Reads the plugin's chosen layout for each of `num_buses` buses in
+    /// `direction`. A bus whose query fails contributes an empty topology, so
+    /// the length always equals `num_buses`.
+    ///
+    /// Decoded into a [`ChannelTopology`] rather than straight to a count: the
+    /// mask carries *which speaker each channel is*, which a popcount discards.
+    pub(super) fn read_back_arrangements(
+        &self,
+        direction: i32,
+        num_buses: usize,
+    ) -> Vec<ChannelTopology> {
+        (0..num_buses)
+            .map(|i| {
+                let mut arr: SpeakerArrangement = 0;
+                let res = unsafe {
+                    self.interfaces
+                        .processor
+                        .getBusArrangement(direction, i as i32, &mut arr)
+                };
+                if res == kResultOk {
+                    super::speakers::from_arrangement(arr)
+                } else {
+                    ChannelTopology::new([])
+                }
+            })
+            .collect()
+    }
+}
+
 impl Drop for Vst3Loaded {
     fn drop(&mut self) {
+        // A plugin dropped while activated (its halves were never rejoined)
+        // stops and deactivates first: `terminate` is for an inactive component.
+        if self.active.active {
+            unsafe {
+                self.interfaces.processor.setProcessing(0);
+                let _ = self.interfaces.component.setActive(0);
+            }
+        }
         // No main-thread assert: Drop has no main-thread guarantee. See
         // `close_editor_unchecked`.
         self.close_editor_unchecked();
@@ -2577,7 +2602,7 @@ fn build_plugin_info_raw(
     // credits the wrong one.
     let vendor = class.vendor.clone().unwrap_or_else(|| {
         library
-            .get_factory_info()
+            .factory_info()
             .map(|info| info.vendor)
             .unwrap_or_default()
     });
@@ -2633,7 +2658,7 @@ fn build_plugin_info_raw(
 /// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
 fn find_audio_class_named(library: &Vst3Library, path: &Path, wanted: &str) -> Result<AudioClass> {
     let audio: Vec<_> = (0..library.count_classes())
-        .filter_map(|i| library.get_class_info(i).ok())
+        .filter_map(|i| library.class_info(i).ok())
         .filter(|info| info.category.contains("Audio"))
         .collect();
 
@@ -2662,7 +2687,7 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
     let count = library.count_classes();
     (0..count)
         .find_map(|i| {
-            let info = library.get_class_info(i).ok()?;
+            let info = library.class_info(i).ok()?;
             if !info.category.contains("Audio") {
                 return None;
             }

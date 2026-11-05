@@ -293,7 +293,7 @@ and did not mention that `-1` is the `kAllProgramInvalid` sentinel a consumer wo
 otherwise spend as an array index.
 
 `PFactoryInfo::flags` was dropped, so `kClassesDiscardable` never reached the host
-**[fixed]**. `get_factory_info` copied vendor, url and email and did not mention the fourth
+**[fixed]**. `factory_info` copied vendor, url and email and did not mention the fourth
 field. It is now carried raw, with `classes_discardable()` / `component_non_discardable()`
 / `unicode_strings()` decoding by mask.
 

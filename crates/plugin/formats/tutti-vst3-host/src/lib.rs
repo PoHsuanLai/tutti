@@ -9,7 +9,10 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
-pub use host::{FactoryInfo, RestartOutcome, Vst3Active, Vst3Library, Vst3Loaded, factory_flags};
+pub use host::{
+    FactoryInfo, LoadOptions, ProcessFailed, RestartOutcome, Vst3Controller, Vst3Library, Vst3Loaded,
+    Vst3Processor, Vst3ProcessorAny, descriptor_of, factory_flags,
+};
 pub use types::{
     AudioBuffer, BufferPtrs, BusInfo, ChordValue, ContentScale, EditorCapabilities, EditorSize,
     MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,

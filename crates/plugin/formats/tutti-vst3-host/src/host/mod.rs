@@ -1,27 +1,26 @@
 //! Plugin lifecycle types: [`Vst3Library`] (loaded DSO + factory),
-//! [`Vst3Loaded`] (initialized plugin, no audio), and [`Vst3Active`] (active,
-//! ready to `process`). Stages are encoded as distinct types — transitions
-//! consume `self` so the compiler enforces the ordering.
+//! [`Vst3Loaded`] (initialized plugin, no audio), and the two halves an
+//! activation splits it into, [`Vst3Processor`] (renders blocks) and
+//! [`Vst3Controller`] (everything else). The stages are distinct types and the
+//! transitions consume their inputs, so the compiler enforces the ordering.
 //!
-//! The three types are one state machine split across three files, and the
-//! split follows the transitions: `library` builds a [`Vst3Loaded`] from a
-//! factory, `loaded` owns the pre-activation surface and the `activate` edge,
-//! `instance` owns the audio path and the `deactivate` edge back. Each edge is
-//! written in the file for the state it *produces*, which is why
-//! `Vst3Active::from_loaded` — the activation sequence itself — lives in
-//! `instance` rather than beside `activate`.
+//! The types are one state machine split across files, and the split follows
+//! the transitions: `library` builds a [`Vst3Loaded`] from a factory, `loaded`
+//! owns the pre-activation surface, `control` its shared-vocabulary face,
+//! `instance` the activation sequence (`setBusArrangements` to `setActive`),
+//! `controller` the edges between `Loaded` and the pair, and `processor` the
+//! audio path.
 //!
 //! [`Vst3Loaded`] is the state most of this module's code is about: it holds
 //! the COM interfaces, the host context and the editor, and it survives an
-//! activate/deactivate round trip intact ([`Vst3Active`] embeds it and
-//! `Deref`s to it). Only the scratch buffers and the process staging are
-//! created and destroyed by the transitions. Why the lifecycle is types rather
-//! than a flag on one type is argued at the crate root under *The lifecycle,
-//! and why it is shaped this way*.
+//! activate/deactivate round trip intact (the Controller holds it and `Deref`s
+//! to it).
 
 mod bus_buffers;
 #[cfg(feature = "conformance")]
 pub mod conformance;
+mod control;
+mod controller;
 mod instance;
 mod library;
 mod loaded;
@@ -29,11 +28,16 @@ mod midi_learn;
 mod midi_mapping;
 mod module_entry;
 mod plugin_state;
+mod processor;
+mod sequencer;
+mod shell;
 mod speakers;
 
-pub use instance::Vst3Active;
+pub use control::descriptor_of;
+pub use controller::Vst3Controller;
 pub use library::{ClassInfo, FactoryInfo, Vst3Library, factory_flags};
-pub use loaded::{RestartOutcome, Vst3Loaded};
+pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded};
+pub use processor::{ProcessFailed, Vst3Processor, Vst3ProcessorAny};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are
 /// reached in production only through `open_editor`/`close_editor`, which need

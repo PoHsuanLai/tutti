@@ -11,11 +11,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3Active, Vst3InputEvents};
+use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents};
+#[path = "support/active.rs"]
+mod active;
+#[allow(unused_imports)]
+use active::{Activate, Active, LoadError, ParamExt, StateExt};
+
 
 /// VST3 module lifecycle is not thread-safe here: loading and unloading the
 /// same DSO concurrently races module init/exit and crashes. Every test that
-/// constructs a `Vst3Active` must hold this.
+/// constructs a `Active` must hold this.
 ///
 /// This file went without one. Two of its tests run by default (the rest are
 /// `#[ignore]`d), both load real bundles, and under the default parallel runner
@@ -164,15 +169,15 @@ fn test_load_tal_noisemaker() {
         return;
     }
 
-    let plugin = Vst3Active::<f32>::load(Path::new(TAL_NOISEMAKER), 44100.0, 512);
+    let plugin = Active::<f32>::load(Path::new(TAL_NOISEMAKER), 44100.0, 512);
     match plugin {
         Ok(p) => {
-            println!("Loaded: {}", p.info().name);
-            println!("Vendor: {}", p.info().vendor);
-            println!("Version: {}", p.info().version);
-            println!("Audio inputs: {}", p.info().num_inputs);
-            println!("Audio outputs: {}", p.info().num_outputs);
-            println!("Supports f64: {}", p.info().supports_f64);
+            println!("Loaded: {}", p.plugin_info().name);
+            println!("Vendor: {}", p.plugin_info().vendor);
+            println!("Version: {}", p.plugin_info().version);
+            println!("Audio inputs: {}", p.plugin_info().num_inputs);
+            println!("Audio outputs: {}", p.plugin_info().num_outputs);
+            println!("Supports f64: {}", p.plugin_info().supports_f64);
         }
         Err(e) => {
             panic!("Failed to load TAL-NoiseMaker: {:?}", e);
@@ -194,9 +199,9 @@ fn test_load_any_available_plugin() {
 
     println!("Testing with: {}", path);
     let plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
-    let info = plugin.info();
+    let info = plugin.plugin_info();
     assert!(!info.name.is_empty(), "Plugin name should not be empty");
     println!("Successfully loaded: {} by {}", info.name, info.vendor);
 }
@@ -220,11 +225,11 @@ fn a_plugins_flat_channel_counts_match_its_bus_zero() {
     let mut checked = 0;
     for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
-        let Ok(plugin) = Vst3Active::<f32>::load(&library, 48_000.0, 64) else {
+        let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             eprintln!("skipping {} (failed to load)", path.display());
             continue;
         };
-        let info = plugin.info();
+        let info = plugin.plugin_info();
         println!(
             "{}: in={} out={} in_buses={:?} out_buses={:?}",
             info.name,
@@ -282,10 +287,10 @@ fn a_plugins_version_is_read_from_it_rather_than_assumed() {
 
     for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
-        let Ok(plugin) = Vst3Active::<f32>::load(&library, 48_000.0, 64) else {
+        let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.info();
+        let info = plugin.plugin_info();
         println!(
             "{}: version={:?} vendor={:?}",
             info.name, info.version, info.vendor
@@ -332,10 +337,10 @@ fn a_plugins_subcategories_are_read_from_it_rather_than_left_blank() {
 
     for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
-        let Ok(plugin) = Vst3Active::<f32>::load(&library, 48_000.0, 64) else {
+        let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.info();
+        let info = plugin.plugin_info();
         println!("{}: sub_categories={:?}", info.name, info.sub_categories);
         loaded += 1;
         if info
@@ -374,10 +379,10 @@ fn corpus_subcategories_parse_into_named_facets() {
 
     for path in corpus_or_fail() {
         let library = resolve_bundle(&path);
-        let Ok(plugin) = Vst3Active::<f32>::load(&library, 48_000.0, 64) else {
+        let Ok(plugin) = Active::<f32>::load(&library, 48_000.0, 64) else {
             continue;
         };
-        let info = plugin.info();
+        let info = plugin.plugin_info();
         let Some(raw) = info.sub_categories.as_deref().filter(|s| !s.is_empty()) else {
             continue;
         };
@@ -426,7 +431,7 @@ fn test_process_silence() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     // Create stereo buffers
     let input_left = vec![0.0f32; 512];
@@ -468,7 +473,7 @@ fn test_process_with_midi() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     // Create stereo buffers
     let input_left = vec![0.0f32; 512];
@@ -519,7 +524,7 @@ fn test_process_multiple_buffers() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     for i in 0..10 {
         let input_left = vec![0.0f32; 256];
@@ -579,7 +584,7 @@ fn test_state_save_load() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let state = plugin.get_state();
     match state {
@@ -609,7 +614,7 @@ fn test_get_parameters() {
     };
 
     let plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let param_count = plugin.parameter_count();
     println!("Plugin has {} parameters", param_count);
@@ -647,7 +652,7 @@ fn test_set_parameter() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     if plugin.parameter_count() > 0 {
         // Index 0, resolved to its ParamID — `set_parameter(0, ..)` would have
@@ -685,7 +690,7 @@ fn test_rapid_process_calls() {
     };
 
     let mut plugin =
-        Vst3Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
+        Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
     let midi: [MidiEvent; 0] = [];
@@ -754,7 +759,7 @@ fn plain_range_probe_recovers_real_ranges() {
 
     for path in &corpus {
         let resolved = resolve_bundle(path);
-        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(&resolved) else {
+        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new()) else {
             eprintln!("  {}: failed to load, skipping", path.display());
             continue;
         };

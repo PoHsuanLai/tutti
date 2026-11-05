@@ -35,8 +35,8 @@ use vst3::Steinberg::Vst::{IParamValueQueue, IParameterChanges, IParameterChange
 use vst3::{Class, ComWrapper};
 
 use super::param_queue::ParamValueQueueImpl;
-use crate::types::ParameterChanges;
-use tutti_plugin_types::{ParamAddress, PointPool};
+use crate::types::{ParameterChanges, ParameterPoint};
+use tutti_plugin_types::{Normalized, ParamAddress, PointPool};
 use tutti_types::AudioThreadCell;
 
 pub struct ParameterChangesImpl {
@@ -157,6 +157,44 @@ impl ParameterChangesImpl {
         }
         *self.dropped.borrow_mut() += dropped;
         *self.live.borrow_mut() = changes.queues.len() - past.len();
+    }
+
+    /// Puts a point for `param_id` ahead of the list's own, at the block's
+    /// first sample: the host's own write, which the automation already in the
+    /// list overrides where both set the parameter at one offset.
+    ///
+    /// Adds to the parameter's queue when the list has one, otherwise takes
+    /// the next unused queue of the pool. A queue with no room, or a list with
+    /// no queue left, drops the point and counts it
+    /// ([`points_dropped`](Self::points_dropped)): the automation outranks it.
+    ///
+    /// # Real-time
+    ///
+    /// Allocation-free; linear in the live queues.
+    pub fn prepend_point(&self, param_id: u32, value: Normalized) {
+        let point = ParameterPoint {
+            sample_offset: 0,
+            value,
+        };
+        let queues = self.queues.borrow();
+        let live = *self.live.borrow();
+        let landed = match queues
+            .iter()
+            .take(live)
+            .find(|q| q.param_id() == param_id)
+        {
+            Some(queue) => queue.prepend_point(point),
+            None => match queues.get(live) {
+                Some(free) if free.try_reset(param_id) && free.prepend_point(point) => {
+                    *self.live.borrow_mut() = live + 1;
+                    true
+                }
+                _ => false,
+            },
+        };
+        if !landed {
+            *self.dropped.borrow_mut() += 1;
+        }
     }
 
     /// Empties the list for the next block. The queues stay in the pool, so

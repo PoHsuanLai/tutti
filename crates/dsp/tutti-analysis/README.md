@@ -1,7 +1,8 @@
 # tutti-analysis
 
 Audio analysis over `&[f32]` for the Tutti audio engine: waveform blocks,
-onsets, pitch, loudness and stereo correlation.
+onsets, pitch, loudness, stereo correlation, spectral shape, silence regions and
+vectorscope points.
 
 Use it for offline or background analysis of audio you already hold as
 samples: drawing a waveform, finding transients, tracking pitch, measuring
@@ -16,6 +17,11 @@ where the results go:
 - `correlate` — inter-channel phase correlation and stereo image.
 - `measure_loudness` — EBU R128 integrated loudness, loudness range and true
   peak.
+- `spectral_features` — centroid, flatness and rolloff of every STFT frame.
+- `strip_silence` — the sample ranges that hold signal, with a minimum silence
+  length and padding.
+- `vectorscope_points` — a stereo pair as (side, mid) points for a goniometer.
+- `cross_correlate` — FFT cross-correlation of two buffers at every lag.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 
@@ -42,14 +48,16 @@ plans lazily, per scratch, on the cold path.
 Every algorithm takes a **config**: immutable, validated once, so an invalid
 combination fails at construction rather than silently producing nothing.
 
-Two of them additionally need a **carry** between frames — onset detection diffs
-against the previous spectrum, and waveform blocking holds a partial block.
-Those two expose the carry as an explicit value and a `step` function, and their
-batch entry points (`detect_onsets`, `summarize`) *fold that same step*, so the
-two paths cannot drift. Tests pin the equality across chunk sizes and channel
-layouts.
+Three of them additionally need a **carry** between frames — onset detection
+diffs against the previous spectrum, waveform blocking holds a partial block,
+and strip silence holds the region it is growing.
+Those expose the carry as an explicit value and a `step` function, and their
+batch entry points (`detect_onsets`, `summarize`, `strip_silence`) *fold that
+same step*, so the two paths cannot drift. Tests pin the equality across chunk
+sizes and channel layouts.
 
-The rest are stateless: `yin` and `correlate` are pure functions of their input,
+The rest are stateless: `yin`, `correlate`, `cross_correlate`,
+`spectral_features` and `vectorscope_points` are pure functions of their input,
 and `stft` is batch-only — there is no incremental transform. Meter ballistics
 (`step_ballistics`) carries a smoothed reading, but that is a filter over results
 rather than a step of the correlation itself.

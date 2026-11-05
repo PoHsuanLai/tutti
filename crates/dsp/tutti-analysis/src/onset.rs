@@ -240,6 +240,18 @@ impl OnsetState {
     pub fn frames_seen(&self) -> usize {
         self.novelty.len()
     }
+
+    /// The detection curve so far: one `(position, novelty)` pair per pushed
+    /// frame, in analysis order.
+    ///
+    /// The raw values [`finish`] thresholds, after the config's sensitivity
+    /// and before any peak picking, so a tempo or beat tracker can read the
+    /// curve itself. The scale depends on the [`DetectionFunction`] and is
+    /// only comparable within one run. Empty after [`reset`](Self::reset).
+    #[inline]
+    pub fn novelty(&self) -> &[(Samples, f32)] {
+        &self.novelty
+    }
 }
 
 /// Feeds one frame and accumulates its novelty.
@@ -430,6 +442,50 @@ mod tests {
     use super::*;
 
     const SAMPLE_RATE: f64 = 44100.0;
+
+    /// The curve has one entry per frame, at the frame's start sample, scaled by
+    /// the config's sensitivity, and a click raises the frame that holds it.
+    ///
+    /// Mutation checked: pushing `value` without the sensitivity gain fails the
+    /// ratio; pushing `Samples(frame.get())` as the position fails the grid.
+    #[test]
+    fn the_novelty_curve_is_readable_per_frame_and_scaled_by_sensitivity() {
+        let samples = signal(0.5, &[0.2]);
+        let run = |gain: f32| {
+            let cfg = OnsetConfig::new(geometry(), DetectionFunction::Energy)
+                .with_sensitivity(Amplitude(gain));
+            let mut state = OnsetState::new();
+            let window = cfg.geometry().window().get();
+            let mut fft = FftScratch::new();
+            for frame in cfg.geometry().frames_for(Samples(samples.len())).indices() {
+                let offset = frame.get() * cfg.geometry().hop().get();
+                step_onset(
+                    &cfg,
+                    &mut state,
+                    frame,
+                    &samples[offset..offset + window],
+                    &mut fft,
+                );
+            }
+            state
+        };
+        let (one, three) = (run(1.0), run(3.0));
+        assert_eq!(one.novelty().len(), one.frames_seen());
+        for (i, &(position, _)) in one.novelty().iter().enumerate() {
+            assert_eq!(position, Samples(i * 512));
+        }
+        for (a, b) in one.novelty().iter().zip(three.novelty()) {
+            assert!((b.1 - 3.0 * a.1).abs() <= 1e-4 * a.1.max(1.0));
+        }
+        // Frames holding the click (samples 8820..8870) carry its energy; a
+        // frame wholly before it carries none.
+        let at = |s: usize| one.novelty()[s / 512].1;
+        assert!(at(8820) > 1.0 && at(2048) == 0.0);
+
+        let mut cleared = one;
+        cleared.reset();
+        assert!(cleared.novelty().is_empty());
+    }
 
     fn geometry() -> StftGeometry {
         StftGeometry::new(SAMPLE_RATE, Samples(2048), Samples(512)).unwrap()

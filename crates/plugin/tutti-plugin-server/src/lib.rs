@@ -20,9 +20,8 @@ pub use tutti_plugin::{BridgeError, Result};
 #[global_allocator]
 static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
-/// VST2's `vst` crate uses a global `LOAD_POINTER` static during plugin
-/// loading that is not thread-safe. All plugin-loading tests across the
-/// crate must serialize on this lock.
+/// Plugin-loading tests across the crate serialize on this lock: format
+/// modules keep process globals of their own, and plugins' `main` may too.
 ///
 /// Gated on a loader feature as well as `test`, for the same reason
 /// `loaders::common` is: every consumer lives in `loaders::{clap,vst3}` or
@@ -63,9 +62,8 @@ pub(crate) mod test_utils {
     use std::sync::{Mutex, MutexGuard};
 
     /// Taken by every loader test that loads a real plugin — CLAP, VST3, VST2
-    /// and, on macOS, AU. VST2 is the reason the lock exists (the `vst` crate
-    /// keeps a global `LOAD_POINTER` during load), and until `loaders::vst2`
-    /// grew tests it was the one loader that never took it.
+    /// and, on macOS, AU. A plugin's entry point may touch process globals, so
+    /// loads are kept one at a time in tests.
     ///
     /// AU is gated on the target as well as the feature, matching the module's
     /// own `cfg`: the AU tests are `all(feature = "au", target_os = "macos")`,

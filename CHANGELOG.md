@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — VST2 loads no longer race on a global
+
+`vst-tutti`'s `static mut LOAD_POINTER` is a thread-local that points at the
+loader's own host for the duration of `VSTPluginMain`, so two threads loading
+plugins at once each reach their own host (it was a data race, reachable from
+safe code). The per-load `Box<Arc<_>>` leak is gone, and the box behind
+`AEffect::reserved1` is now owned by the `PluginInstance` and freed after
+`effClose`.
+
 ### Changed — lint, metadata and docs.rs policy
 
 `#![forbid(unsafe_code)]` is on every library with no `unsafe` (14 crates), and

@@ -47,7 +47,7 @@ pub use translation::scaling as convert;
 
 pub use clip_file::{
     CLIP_FILE_MAGIC, ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile,
-    read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
+    write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
 };
 pub use fixed::{q7_9_to_f32, q7_25_to_f32};
 pub use message::{
@@ -73,7 +73,7 @@ pub use ump::{
 /// ([`MidiEvent`]) and its decoded view ([`MidiMessage`] via
 /// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the
 /// [`normalize`] seam, and the MIDI 2.0 Clip File codec (beat-domain
-/// [`write_clip_file_from_beats`] / [`read_clip_file`] / [`ParsedClipFile`]).
+/// [`write_clip_file_from_beats`] / [`ParsedClipFile::from_bytes`] / [`ParsedClipFile`]).
 ///
 /// Deliberately *narrow* — the advanced surfaces (UMP-Stream endpoint
 /// negotiation, Flex Data, RPN/NRPN translation state, MPE zone config, the sync
@@ -95,7 +95,7 @@ pub use ump::{
 ///
 /// // Round-trip a phrase through a MIDI 2.0 Clip File, in beats.
 /// let bytes = write_clip_file_from_beats(96, [(Beat(0.0), ev)]);
-/// let clip = read_clip_file(&bytes).unwrap();
+/// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.timed().count(), 1);
 ///
 /// // Velocity survives at full MIDI 2.0 width — the point of the format.
@@ -109,7 +109,7 @@ pub use ump::{
 ///
 /// ```
 /// use tutti_midi_types::{
-///     read_clip_file, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
+///     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
 ///     CLIP_FILE_MAGIC,
 /// };
 /// use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
@@ -123,7 +123,7 @@ pub use ump::{
 /// // Self-identifying: a file can be recognised before it is parsed.
 /// assert_eq!(&bytes[..8], &CLIP_FILE_MAGIC);
 ///
-/// let clip = read_clip_file(&bytes).unwrap();
+/// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.time_signature(), Some((7, 8)));
 /// assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(174.0), 0.05));
 /// ```
@@ -133,7 +133,7 @@ pub use ump::{
 /// narrowing velocity to 7 bits on the way:
 ///
 /// ```
-/// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
+/// use tutti_midi_types::{ParsedClipFile, write_clip_file_from_beats, MidiEvent};
 /// use tutti_midi_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
@@ -141,7 +141,7 @@ pub use ump::{
 ///     (Beat(1.5), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
 ///
-/// let notes = read_clip_file(&bytes).unwrap().notes();
+/// let notes = ParsedClipFile::from_bytes(&bytes).unwrap().notes();
 /// assert_eq!(notes.len(), 1);
 /// assert_eq!(notes[0].duration_beats, BeatDuration(1.5));
 /// assert_eq!(notes[0].velocity, 0xABCD);
@@ -152,8 +152,8 @@ pub use ump::{
 pub mod prelude {
     pub use crate::{
         ClipEvent, ClipFileError, ControllerNamespace, MidiEvent, MidiMessage, NoteAttribute,
-        NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, read_clip_file,
-        write_clip_file, write_clip_file_from_beats,
+        NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
+        write_clip_file_from_beats,
     };
     pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
 }

@@ -815,7 +815,7 @@ fn a_plugin_lane_sends_linear_grid_pieces() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(128)));
     let lane = ControlLaneNode::for_foreign(
         3,
-        ControlProgram::from_automation(Arc::clone(&curve)),
+        ControlProgram::from_curve(Arc::clone(&curve)),
         None,
         (0.0, 1.0),
     );

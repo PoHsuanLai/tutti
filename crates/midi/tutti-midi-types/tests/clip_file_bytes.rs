@@ -39,7 +39,7 @@
 //! content rule.
 
 use tutti_midi_types::{
-    Beat, Bpm, ClipEvent, ClipHeader, MidiChannel, MidiEvent, MidiGroup, read_clip_file,
+    Beat, Bpm, ClipEvent, ClipHeader, MidiChannel, MidiEvent, MidiGroup, ParsedClipFile,
     write_clip_file_with_header,
 };
 
@@ -82,21 +82,21 @@ fn sample_clip() -> Vec<u8> {
 ///
 /// "Never panics" is the load-bearing half. A panic here is an index-out-of-
 /// bounds on attacker- or corruption-supplied bytes, reached from
-/// `read_clip_file_from_path`, i.e. from any file a user opens.
+/// `MidiFile::read`, i.e. from any file a user opens.
 ///
-/// Mutation-checked: removing any single length guard in `read_clip_file`
+/// Mutation-checked: removing any single length guard in `ParsedClipFile::from_bytes`
 /// turns one or more of these iterations into a panic.
 #[test]
 fn no_prefix_of_a_valid_clip_is_accepted() {
     let full = sample_clip();
     assert!(
-        read_clip_file(&full).is_ok(),
+        ParsedClipFile::from_bytes(&full).is_ok(),
         "the fixture itself must be valid, or this test sweeps nothing"
     );
 
     for n in 0..full.len() {
         let prefix = &full[..n];
-        let result = std::panic::catch_unwind(|| read_clip_file(prefix));
+        let result = std::panic::catch_unwind(|| ParsedClipFile::from_bytes(prefix));
         match result {
             Ok(Ok(_)) => panic!(
                 "a {n}-byte prefix of a {}-byte clip was accepted as a whole \
@@ -105,7 +105,7 @@ fn no_prefix_of_a_valid_clip_is_accepted() {
             ),
             Ok(Err(_)) => {}
             Err(_) => panic!(
-                "read_clip_file panicked on a {n}-byte prefix; truncated input \
+                "ParsedClipFile::from_bytes panicked on a {n}-byte prefix; truncated input \
                  must be an error, never an index-out-of-bounds"
             ),
         }
@@ -129,10 +129,10 @@ fn a_corrupted_header_byte_is_rejected_or_at_worst_survived() {
             if corrupt == full {
                 continue;
             }
-            let result = std::panic::catch_unwind(|| read_clip_file(&corrupt));
+            let result = std::panic::catch_unwind(|| ParsedClipFile::from_bytes(&corrupt));
             assert!(
                 result.is_ok(),
-                "read_clip_file panicked on a single bit flip at byte {i} — \
+                "ParsedClipFile::from_bytes panicked on a single bit flip at byte {i} — \
                  corruption must be an error, never a panic"
             );
         }
@@ -145,13 +145,13 @@ fn the_magic_is_required() {
     let mut wrong = sample_clip();
     wrong[0] = b'X';
     assert!(
-        read_clip_file(&wrong).is_err(),
+        ParsedClipFile::from_bytes(&wrong).is_err(),
         "a file whose magic does not read SMF2CLIP is not a clip file"
     );
 
     for n in 0..8 {
         assert!(
-            read_clip_file(&b"SMF2CLIP"[..n]).is_err(),
+            ParsedClipFile::from_bytes(&b"SMF2CLIP"[..n]).is_err(),
             "{n} bytes cannot carry an 8-byte magic"
         );
     }
@@ -190,7 +190,7 @@ fn delta_clockstamps_accumulate_to_the_reported_beats() {
     // and time-signature events, which `timed()` reports alongside the notes
     // and which would offset every index below.
     let bytes = tutti_midi_types::write_clip_file(TPQ, &events);
-    let clip = read_clip_file(&bytes).expect("a clip we just wrote must parse");
+    let clip = ParsedClipFile::from_bytes(&bytes).expect("a clip we just wrote must parse");
 
     let got: Vec<f64> = clip.timed().map(|(b, _)| b.get()).collect();
     assert_eq!(
@@ -223,7 +223,7 @@ fn delta_clockstamps_accumulate_to_the_reported_beats() {
 #[test]
 fn parse_write_parse_is_byte_stable() {
     let first = sample_clip();
-    let clip = read_clip_file(&first).expect("parses");
+    let clip = ParsedClipFile::from_bytes(&first).expect("parses");
 
     let reencoded = tutti_midi_types::write_clip_file(clip.ticks_per_quarter, &clip.events);
 
@@ -234,7 +234,7 @@ fn parse_write_parse_is_byte_stable() {
     );
 
     // And again, to catch a difference that only appears after the first pass.
-    let twice = read_clip_file(&reencoded).expect("the re-encode parses");
+    let twice = ParsedClipFile::from_bytes(&reencoded).expect("the re-encode parses");
     assert_eq!(
         reencoded,
         tutti_midi_types::write_clip_file(twice.ticks_per_quarter, &twice.events),
@@ -257,7 +257,7 @@ fn parse_write_parse_is_byte_stable() {
 #[test]
 fn re_encoding_with_a_header_replaces_it_rather_than_duplicating_it() {
     let first = sample_clip();
-    let clip = read_clip_file(&first).expect("parses");
+    let clip = ParsedClipFile::from_bytes(&first).expect("parses");
 
     let with_header = write_clip_file_with_header(
         clip.ticks_per_quarter,
@@ -274,7 +274,7 @@ fn re_encoding_with_a_header_replaces_it_rather_than_duplicating_it() {
 
     // A second cycle, because a duplication that is idempotent after the
     // first pass would still pass the check above.
-    let twice = read_clip_file(&with_header).expect("parses");
+    let twice = ParsedClipFile::from_bytes(&with_header).expect("parses");
     assert_eq!(
         with_header,
         write_clip_file_with_header(
@@ -323,7 +323,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
         ],
     );
 
-    let clip = read_clip_file(&original).expect("parses");
+    let clip = ParsedClipFile::from_bytes(&original).expect("parses");
     let tempo_events = |c: &tutti_midi_types::ParsedClipFile| {
         c.events
             .iter()
@@ -342,7 +342,7 @@ fn a_mid_clip_tempo_change_survives_a_header_rewrite() {
         clip.header().expect("both halves"),
         &clip.events,
     );
-    let after = read_clip_file(&rewritten).expect("parses");
+    let after = ParsedClipFile::from_bytes(&rewritten).expect("parses");
 
     // The sharpest of the three: a strip that reaches past the opening run
     // takes real events with it, and the count is what says so.
@@ -377,7 +377,7 @@ fn a_clip_with_no_header_reports_absent_rather_than_default() {
             ClipEvent::new(u32::from(TPQ), note_off(60)),
         ],
     );
-    let clip = read_clip_file(&bytes).expect("parses");
+    let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
 
     assert_eq!(
         clip.tempo_bpm(),
@@ -403,7 +403,7 @@ fn sixteen_bit_velocity_is_not_narrowed() {
             ClipEvent::new(u32::from(TPQ), note_off(60)),
         ],
     );
-    let notes = read_clip_file(&bytes).expect("parses").notes();
+    let notes = ParsedClipFile::from_bytes(&bytes).expect("parses").notes();
     assert_eq!(notes.len(), 1);
     assert_eq!(
         notes[0].velocity,
@@ -429,7 +429,7 @@ fn the_declared_tempo_and_meter_survive_the_round_trip() {
             },
             &[ClipEvent::new(0, note_on(60, 0x4000))],
         );
-        let clip = read_clip_file(&bytes).expect("parses");
+        let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
         let got = clip.tempo_bpm().expect("a declared tempo must be reported");
         assert!(
             (got.get() - bpm).abs() < 0.01,
@@ -451,7 +451,7 @@ fn the_reported_duration_reaches_the_last_event() {
             ClipEvent::new(u32::from(TPQ) * 4, note_off(60)),
         ],
     );
-    let clip = read_clip_file(&bytes).expect("parses");
+    let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
     let last = clip.timed().map(|(b, _)| b).last().unwrap_or(Beat(0.0));
     assert!(
         clip.duration_beats().get() >= last.get(),

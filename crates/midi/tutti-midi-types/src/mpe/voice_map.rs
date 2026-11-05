@@ -225,7 +225,7 @@ impl MpeChannelVoiceMap {
     /// per-*note* one: pressure arriving on a member channel belongs to whatever
     /// note that channel holds.
     #[inline]
-    pub fn get_note_for_channel(&self, channel: u8) -> Option<u8> {
+    pub fn note_for_channel(&self, channel: u8) -> Option<u8> {
         if channel < 16 {
             self.channel_to_note[channel as usize]
         } else {
@@ -235,7 +235,7 @@ impl MpeChannelVoiceMap {
 
     /// The channel currently carrying `note`, if any.
     #[inline]
-    pub fn get_channel_for_note(&self, note: u8) -> Option<u8> {
+    pub fn channel_for_note(&self, note: u8) -> Option<u8> {
         if note < 128 {
             self.note_to_channel[note as usize]
         } else {
@@ -328,13 +328,13 @@ mod tests {
         // The stolen note's mapping must be cleaned up
         let stolen_note = if ch_c == ch_a { 60 } else { 64 };
         assert!(
-            map.get_channel_for_note(stolen_note).is_none(),
+            map.channel_for_note(stolen_note).is_none(),
             "Old note mapping must be cleaned up after voice stealing"
         );
-        assert_eq!(map.get_channel_for_note(67), Some(ch_c));
+        assert_eq!(map.channel_for_note(67), Some(ch_c));
 
         // Bidirectional consistency: channel → note and note → channel match
-        assert_eq!(map.get_note_for_channel(ch_c), Some(67));
+        assert_eq!(map.note_for_channel(ch_c), Some(67));
     }
 
     #[test]
@@ -356,42 +356,39 @@ mod tests {
             "steal must reuse the channel of the oldest note"
         );
         assert!(
-            map.get_channel_for_note(60).is_none(),
+            map.channel_for_note(60).is_none(),
             "oldest note (60) must be evicted"
         );
-        assert!(
-            map.get_channel_for_note(64).is_some(),
-            "64 must still sound"
-        );
-        assert_eq!(map.get_channel_for_note(72), Some(ch_new));
+        assert!(map.channel_for_note(64).is_some(), "64 must still sound");
+        assert_eq!(map.channel_for_note(72), Some(ch_new));
 
         // A second steal must take note 64 (now the oldest survivor), not 67.
         map.assign_note(76).unwrap();
         assert!(
-            map.get_channel_for_note(64).is_none(),
+            map.channel_for_note(64).is_none(),
             "64 is now oldest, evict it"
         );
         assert!(
-            map.get_channel_for_note(67).is_some(),
+            map.channel_for_note(67).is_some(),
             "67 is newer, must survive"
         );
     }
 
     #[test]
-    fn test_get_note_for_channel() {
+    fn test_note_for_channel() {
         let config = MpeZoneConfig::lower(3);
         let mut map = MpeChannelVoiceMap::new(config);
 
         // No notes assigned → None for all channels
-        assert!(map.get_note_for_channel(1).is_none());
-        assert!(map.get_note_for_channel(2).is_none());
+        assert!(map.note_for_channel(1).is_none());
+        assert!(map.note_for_channel(2).is_none());
 
         // Assign note 60
         let ch = map.assign_note(60).unwrap();
-        assert_eq!(map.get_note_for_channel(ch), Some(60));
+        assert_eq!(map.note_for_channel(ch), Some(60));
 
         // Out-of-range channel → None
-        assert!(map.get_note_for_channel(16).is_none());
+        assert!(map.note_for_channel(16).is_none());
     }
 
     #[test]
@@ -405,9 +402,9 @@ mod tests {
 
         map.clear();
 
-        assert!(map.get_channel_for_note(60).is_none());
-        assert!(map.get_channel_for_note(64).is_none());
-        assert!(map.get_channel_for_note(67).is_none());
+        assert!(map.channel_for_note(60).is_none());
+        assert!(map.channel_for_note(64).is_none());
+        assert!(map.channel_for_note(67).is_none());
 
         // Should be able to assign fresh after clear
         let ch = map.assign_note(72);

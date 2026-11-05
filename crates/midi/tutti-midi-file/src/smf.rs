@@ -1,7 +1,7 @@
 //! Standard MIDI File reading and writing — the MIDI **1.0** half of this crate.
 //!
 //! Two read shapes over the same bytes: [`ParsedMidiFile`] is the flat, merged
-//! event stream, and [`tracks`] is the higher-level view that pairs note-on/off
+//! event stream, and [`SmfFile::tracks`](crate::SmfFile::tracks) is the higher-level view that pairs note-on/off
 //! into whole [`SmfNote`]s and keeps SMF tracks separate. An importer generally
 //! wants the second.
 //!
@@ -54,7 +54,7 @@ pub struct SmfTimedEvent {
 
 /// An SMF read as one flat event stream, merged across all tracks.
 ///
-/// The low-level read shape. For per-track notes with durations, use [`tracks`].
+/// The low-level read shape. For per-track notes with durations, use [`SmfFile`](crate::SmfFile).
 #[derive(Debug, Clone)]
 pub struct ParsedMidiFile {
     /// Every channel-voice event in the file, merged across tracks and sorted by
@@ -88,10 +88,10 @@ impl ParsedMidiFile {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] if the file cannot be read; otherwise as [`Self::parse`].
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    /// [`Error::Io`] if the file cannot be read; otherwise as [`Self::from_bytes`].
+    pub fn read(path: impl AsRef<Path>) -> Result<Self> {
         let data = std::fs::read(path.as_ref())?;
-        Self::parse(&data)
+        Self::from_bytes(&data)
     }
 
     /// Parses SMF bytes into a merged, beat-positioned event stream.
@@ -102,12 +102,12 @@ impl ParsedMidiFile {
     ///   division rather than metrical.
     /// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
     ///   bytes.
-    pub fn parse(data: &[u8]) -> Result<Self> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
         Self::from_smf(&Smf::parse(data)?)
     }
 
-    /// [`parse`](Self::parse) over an SMF `midly` already parsed, so a reader
-    /// that wants [`tracks`] too parses the bytes once.
+    /// [`from_bytes`](Self::from_bytes) over an SMF `midly` already parsed, so a reader
+    /// that wants tracks too parses the bytes once.
     pub(crate) fn from_smf(smf: &Smf) -> Result<Self> {
         let ticks_per_beat = metrical_division(smf)?;
 
@@ -162,7 +162,7 @@ impl ParsedMidiFile {
     /// Both bounds are [`Beat`] rather than `f64` because transposing them yields
     /// an empty slice rather than an error, which is silent at a call site.
     /// Binary search over the sorted `events`; no allocation.
-    pub fn get_events_in_range(&self, start_beats: Beat, end_beats: Beat) -> &[SmfTimedEvent] {
+    pub fn events_in_range(&self, start_beats: Beat, end_beats: Beat) -> &[SmfTimedEvent] {
         let start = self.events.partition_point(|e| e.time_beats < start_beats);
         let end = self.events[start..].partition_point(|e| e.time_beats < end_beats) + start;
         &self.events[start..end]
@@ -288,23 +288,15 @@ pub struct SmfTrack {
     pub notes: Vec<SmfNote>,
 }
 
-/// Parses an SMF into per-track paired notes (one [`SmfTrack`] per SMF track,
-/// note-on/off paired into [`SmfNote`]s, time in beats from the file division).
-///
-/// Tracks with no notes are still returned (callers skip empties as they see
-/// fit). The tempo map is not applied; beats come from the division, matching
-/// [`ParsedMidiFile`].
+/// Per-track paired notes of an SMF `midly` already parsed: one [`SmfTrack`] per
+/// SMF track, note-on/off paired into [`SmfNote`]s, time in beats from the file
+/// division. Tracks with no notes are still returned. The tempo map is not
+/// applied; beats come from the division, matching [`ParsedMidiFile`].
 ///
 /// # Errors
 ///
 /// - [`Error::MidiUnsupportedTiming`] if the file uses SMPTE/timecode division.
-/// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
-///   bytes.
-pub fn tracks(data: &[u8]) -> Result<Vec<SmfTrack>> {
-    tracks_of(&Smf::parse(data)?)
-}
-
-/// [`tracks`] over an SMF `midly` already parsed.
+/// - [`Error::MidiFileParse`] if the division is zero.
 pub(crate) fn tracks_of(smf: &Smf) -> Result<Vec<SmfTrack>> {
     let ticks_per_beat = f64::from(metrical_division(smf)?);
 
@@ -316,15 +308,6 @@ pub(crate) fn tracks_of(smf: &Smf) -> Result<Vec<SmfTrack>> {
             notes: pair_notes(track, ticks_per_beat),
         })
         .collect())
-}
-
-/// Parses an SMF file at `path` into per-track paired notes. See [`tracks`].
-///
-/// # Errors
-///
-/// [`Error::Io`] if the file cannot be read, otherwise as [`tracks`].
-pub fn tracks_from_path(path: impl AsRef<Path>) -> Result<Vec<SmfTrack>> {
-    tracks(&std::fs::read(path.as_ref())?)
 }
 
 /// Pair NoteOn / NoteOff events in one track into whole notes. Velocity-0
@@ -439,18 +422,18 @@ impl Default for MidiWriteConfig {
 ///
 /// [`Error::InvalidConfig`] if `tracks` is empty, or [`Error::Io`] if the write
 /// fails.
-pub fn write_midi_file(
+pub fn write(
     path: impl AsRef<Path>,
     tracks: &[Vec<SmfTimedEvent>],
     config: &MidiWriteConfig,
 ) -> Result<()> {
-    let data = encode_midi_file(tracks, config)?;
+    let data = to_bytes(tracks, config)?;
     std::fs::write(path, data)?;
     Ok(())
 }
 
 /// Encodes `tracks` to SMF bytes in memory. The in-memory half of
-/// [`write_midi_file`], with the same format rules.
+/// [`write()`], with the same format rules.
 ///
 /// # Errors
 ///
@@ -458,10 +441,7 @@ pub fn write_midi_file(
 /// track chunk — or if an event's time is not finite: a NaN or infinite beat
 /// has no tick to land on. [`Error::MidiFileParse`] if `midly` refuses to
 /// serialise.
-pub fn encode_midi_file(
-    tracks: &[Vec<SmfTimedEvent>],
-    config: &MidiWriteConfig,
-) -> Result<Vec<u8>> {
+pub fn to_bytes(tracks: &[Vec<SmfTimedEvent>], config: &MidiWriteConfig) -> Result<Vec<u8>> {
     if tracks.is_empty() {
         return Err(Error::InvalidConfig("No tracks provided".into()));
     }
@@ -572,7 +552,7 @@ fn meta_event(msg: MetaMessage<'static>) -> TrackEvent<'static> {
     }
 }
 
-/// `encode_midi_file` has rejected every non-finite time before this runs;
+/// `to_bytes` has rejected every non-finite time before this runs;
 /// `total_cmp` keeps the sort a total order (no panic) regardless.
 fn sort_by_time_ref(events: &mut [&SmfTimedEvent]) {
     events.sort_by(|a, b| a.time_beats.get().total_cmp(&b.time_beats.get()));
@@ -589,7 +569,7 @@ mod tests {
             0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x04, 0x00, 0xFF, 0x2F, 0x00,
         ];
 
-        let file = ParsedMidiFile::parse(&data).unwrap();
+        let file = ParsedMidiFile::from_bytes(&data).unwrap();
         assert_eq!(file.ticks_per_beat, 480);
         assert_eq!(file.events.len(), 0);
     }
@@ -609,7 +589,7 @@ mod tests {
             0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x0B, 0x00, 0xFF, 0x51, 0x03, 0x00, 0x00,
             0x00, 0x00, 0xFF, 0x2F, 0x00,
         ];
-        let file = ParsedMidiFile::parse(&data).expect("a zero tempo is not a parse failure");
+        let file = ParsedMidiFile::from_bytes(&data).expect("a zero tempo is not a parse failure");
         assert!(
             file.tempo_bpm.get().is_finite(),
             "zero microseconds-per-quarter must not become an infinite BPM"
@@ -632,14 +612,14 @@ mod tests {
                 vel: 100.into(),
             },
         }]];
-        let bytes = encode_midi_file(&track, &config).expect("encodes");
-        let reparsed = ParsedMidiFile::parse(&bytes).expect("round-trips");
+        let bytes = to_bytes(&track, &config).expect("encodes");
+        let reparsed = ParsedMidiFile::from_bytes(&bytes).expect("round-trips");
         assert!(reparsed.tempo_bpm.get().is_finite());
     }
 
     /// Both readers of the header's division field must reject a zero.
     ///
-    /// `tracks()` always did; `parse()` did not, on the same field of the same
+    /// `SmfFile::from_bytes` always did; `ParsedMidiFile::from_bytes` did not, on the same field of the same
     /// file — so which entry point you called decided whether a malformed file
     /// was an error or a set of infinite event times. The two bytes at offset
     /// 12..14 are the division, here zeroed.
@@ -651,16 +631,19 @@ mod tests {
         ];
         // Sanity: this fixture parses on both paths before the division is
         // zeroed, so the assertions below are about the zero and nothing else.
-        assert!(ParsedMidiFile::parse(&data).is_ok());
-        assert!(tracks(&data).is_ok());
+        assert!(ParsedMidiFile::from_bytes(&data).is_ok());
+        assert!(crate::SmfFile::from_bytes(&data).is_ok());
 
         data[12] = 0x00;
         data[13] = 0x00;
         assert!(matches!(
-            ParsedMidiFile::parse(&data),
+            ParsedMidiFile::from_bytes(&data),
             Err(Error::MidiFileParse(_))
         ));
-        assert!(matches!(tracks(&data), Err(Error::MidiFileParse(_))));
+        assert!(matches!(
+            crate::SmfFile::from_bytes(&data),
+            Err(Error::MidiFileParse(_))
+        ));
     }
 
     #[test]
@@ -690,8 +673,8 @@ mod tests {
             time_signature: Some((4, 2)),
         };
 
-        let data = encode_midi_file(&[events], &config).unwrap();
-        let parsed = ParsedMidiFile::parse(&data).unwrap();
+        let data = to_bytes(&[events], &config).unwrap();
+        let parsed = ParsedMidiFile::from_bytes(&data).unwrap();
 
         assert_eq!(parsed.ticks_per_beat, 480);
         assert!(!parsed.tempo_bpm.differs_from(Bpm(120.0), 0.1));
@@ -772,7 +755,7 @@ mod tests {
                 vel: 100.into(),
             },
         }];
-        let data = encode_midi_file(
+        let data = to_bytes(
             &[events],
             &MidiWriteConfig {
                 ticks_per_beat: 480,
@@ -803,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_write_empty_tracks_error() {
-        let result = encode_midi_file(&[], &MidiWriteConfig::default());
+        let result = to_bytes(&[], &MidiWriteConfig::default());
         assert!(result.is_err());
     }
 
@@ -828,7 +811,7 @@ mod tests {
                 },
             },
         ];
-        let data = encode_midi_file(
+        let data = to_bytes(
             &[events],
             &MidiWriteConfig {
                 ticks_per_beat: 480,
@@ -837,7 +820,7 @@ mod tests {
         )
         .unwrap();
 
-        let parsed = tracks(&data).unwrap();
+        let parsed = crate::SmfFile::from_bytes(&data).unwrap().into_tracks();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].notes.len(), 1);
         let n = parsed[0].notes[0];
@@ -875,7 +858,7 @@ mod tests {
             note(2.0, 1, false),
             note(4.0, 0, false),
         ];
-        let data = encode_midi_file(
+        let data = to_bytes(
             &[events],
             &MidiWriteConfig {
                 ticks_per_beat: 480,
@@ -884,7 +867,7 @@ mod tests {
         )
         .unwrap();
 
-        let parsed = tracks(&data).unwrap();
+        let parsed = crate::SmfFile::from_bytes(&data).unwrap().into_tracks();
         assert_eq!(parsed[0].notes.len(), 2);
 
         let ch0 = parsed[0]
@@ -931,7 +914,7 @@ mod tests {
                 },
             },
         ];
-        let data = encode_midi_file(
+        let data = to_bytes(
             &[events],
             &MidiWriteConfig {
                 ticks_per_beat: 480,
@@ -940,7 +923,7 @@ mod tests {
         )
         .unwrap();
 
-        let parsed = tracks(&data).unwrap();
+        let parsed = crate::SmfFile::from_bytes(&data).unwrap().into_tracks();
         assert_eq!(
             parsed[0].notes.len(),
             1,

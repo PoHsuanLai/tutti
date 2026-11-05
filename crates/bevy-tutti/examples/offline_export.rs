@@ -125,7 +125,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
             ExportTarget::File {
                 path: mix_path.clone(),
                 // Two passes: the signal is measured, then a gain applied.
-                normalize: Some(Normalize::lufs(Db(-14.0))),
+                normalize: Some(Normalize::to_lufs(Db(-14.0))),
             },
             config(),
             ExportClock::frozen(),

@@ -105,7 +105,7 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 ///
 /// **`header` replaces a header the events already carry.** Tempo and time
 /// signature are ordinary events in this format, so a clip that came from
-/// [`read_clip_file`] already has its pair sitting at the front of
+/// [`ParsedClipFile::from_bytes`] already has its pair sitting at the front of
 /// `events`; any such leading zero-delta pair is dropped in favour of
 /// `header`. Without that, re-encoding a parsed clip grew a duplicate pair
 /// on every cycle. A Set Tempo later in the stream is a mid-clip tempo
@@ -114,10 +114,10 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 /// Re-encode a parsed clip with [`ParsedClipFile::header`]:
 ///
 /// ```
-/// # use tutti_midi_types::{read_clip_file, write_clip_file_with_header, ClipHeader};
+/// # use tutti_midi_types::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
 /// # use tutti_midi_types::{write_clip_file_from_beats, Beat, MidiEvent, MidiChannel, MidiGroup};
 /// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
-/// let clip = read_clip_file(&first).unwrap();
+/// let clip = ParsedClipFile::from_bytes(&first).unwrap();
 /// let again = write_clip_file_with_header(
 ///     clip.ticks_per_quarter,
 ///     clip.header().unwrap(),
@@ -154,7 +154,7 @@ fn leading_header_len(events: &[ClipEvent]) -> usize {
 fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[ClipEvent]) -> Vec<u8> {
     // A supplied header REPLACES one the events already carry rather than being
     // prepended to it. Tempo and time signature are ordinary events in this
-    // format, so `read_clip_file` hands them back inside `events` — and writing
+    // format, so `ParsedClipFile::from_bytes` hands them back inside `events` — and writing
     // the header on top of them would make a parse -> write -> parse cycle
     // grow a duplicate pair every time round. Stripping is confined to the
     // leading zero-delta run, so a mid-clip tempo change is not touched.
@@ -223,13 +223,13 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 /// than `u32::MAX` ticks is clamped to it.
 ///
 /// ```
-/// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
+/// # use tutti_midi_types::{write_clip_file_from_beats, ParsedClipFile, MidiEvent};
 /// # use tutti_midi_types::{Beat, MidiChannel, MidiGroup};
 /// let bytes = write_clip_file_from_beats(96, [
 ///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
 ///     (Beat(2.0), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
 /// ]);
-/// let clip = read_clip_file(&bytes).unwrap();
+/// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.timed().count(), 2);
 /// ```
 pub fn write_clip_file_from_beats(
@@ -278,6 +278,27 @@ pub struct ParsedClipFile {
 }
 
 impl ParsedClipFile {
+    /// Parses a MIDI Clip File (M2-116) from its bytes.
+    ///
+    /// Delta Clockstamps set the delta of the following UMP; Start/End-of-Clip and
+    /// the DCTPQ are structural and not returned as events. Unknown/utility
+    /// messages between a DCS and a real event are tolerated.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`ClipFileError`] naming the first structural problem: a bad
+    /// magic, a body that is not whole UMP words, a truncated UMP, a missing or
+    /// zero DCTPQ, a missing Start or End of Clip, or data after the End of Clip.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ClipFileError> {
+        parse_clip(bytes)
+    }
+
+    /// Re-encodes the clip as Clip File bytes, events as they stand (a tempo
+    /// and time signature the file declared are events, so they are kept).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        write_clip_file(self.ticks_per_quarter, &self.events)
+    }
+
     /// Iterate events as `(beat, event)` with **absolute** beat positions —
     /// quarter notes from the clip start — undoing the file's relative delta
     /// ticks. The inverse of [`write_clip_file_from_beats`]: the natural way to
@@ -340,7 +361,7 @@ impl ParsedClipFile {
     }
 
     /// Pair the event stream into whole notes with durations — the shape an
-    /// importer wants, and the MIDI-2 analogue of `tutti_midi_file::smf::tracks`.
+    /// importer wants, and the MIDI-2 analogue of `tutti_midi_file::SmfFile::tracks`.
     ///
     /// Velocity stays 16-bit ([`ClipNote::velocity`]): pairing here rather than
     /// in a caller is what keeps a clip file's full-resolution velocity from
@@ -462,18 +483,7 @@ pub enum ClipFileError {
     TrailingData,
 }
 
-/// Parses a MIDI Clip File (M2-116) from its bytes.
-///
-/// Delta Clockstamps set the delta of the following UMP; Start/End-of-Clip and
-/// the DCTPQ are structural and not returned as events. Unknown/utility
-/// messages between a DCS and a real event are tolerated.
-///
-/// # Errors
-///
-/// Returns a [`ClipFileError`] naming the first structural problem: a bad
-/// magic, a body that is not whole UMP words, a truncated UMP, a missing or
-/// zero DCTPQ, a missing Start or End of Clip, or data after the End of Clip.
-pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
+fn parse_clip(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
         return Err(ClipFileError::BadMagic);
     }
@@ -678,7 +688,7 @@ mod tests {
     #[test]
     fn empty_clip_round_trips_dctpq() {
         let bytes = write_clip_file(480, &[]);
-        let parsed = read_clip_file(&bytes).expect("parses");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert_eq!(parsed.ticks_per_quarter, 480);
         assert!(parsed.events.is_empty());
     }
@@ -700,7 +710,7 @@ mod tests {
             },
         ];
         let bytes = write_clip_file(96, &events);
-        let parsed = read_clip_file(&bytes).expect("parses");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert_eq!(parsed.ticks_per_quarter, 96);
         assert_eq!(parsed.events.len(), 3);
         assert_eq!(parsed.events[0].delta_ticks, 0);
@@ -779,7 +789,7 @@ mod tests {
             push(w); // End of Clip
         }
 
-        let parsed = read_clip_file(&bytes).expect("parses");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert_eq!(parsed.ticks_per_quarter, 480);
         assert_eq!(parsed.events.len(), 1);
         assert_eq!(
@@ -812,7 +822,7 @@ mod tests {
             push(w); // End of Clip
         }
 
-        let parsed = read_clip_file(&bytes).expect("parses");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert_eq!(parsed.events.len(), 1);
         assert_eq!(parsed.events[0].delta_ticks, 1000);
     }
@@ -832,7 +842,7 @@ mod tests {
             },
         ];
         let bytes = write_clip_file(480, &events);
-        let parsed = read_clip_file(&bytes).expect("parses");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert_eq!(parsed.events, events);
     }
 
@@ -871,7 +881,7 @@ mod tests {
                 ),
             ],
         );
-        let clip = read_clip_file(&bytes).expect("parses");
+        let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
         let timed: Vec<(Beat, MidiEvent)> = clip.timed().collect();
         assert_eq!(timed.len(), 3);
         assert!((timed[0].0 - Beat(0.0)).abs() < BeatDuration(1e-9));
@@ -900,7 +910,7 @@ mod tests {
                 ),
             ],
         );
-        let clip = read_clip_file(&bytes).expect("parses");
+        let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
         let beats: Vec<Beat> = clip.timed().map(|(b, _)| b).collect();
         assert_eq!(beats.len(), 2);
         assert!(beats[0] < beats[1]);
@@ -926,7 +936,7 @@ mod tests {
             )],
         );
 
-        let clip = read_clip_file(&bytes).expect("parses");
+        let clip = ParsedClipFile::from_bytes(&bytes).expect("parses");
         assert!(
             !clip
                 .tempo_bpm()
@@ -956,7 +966,7 @@ mod tests {
         assert!(timed.iter().all(|(b, _)| *b == Beat(0.0)));
 
         // A clip written without a header simply declares none.
-        let bare = read_clip_file(&write_clip_file(480, &[])).expect("parses");
+        let bare = ParsedClipFile::from_bytes(&write_clip_file(480, &[])).expect("parses");
         assert_eq!(bare.tempo_bpm(), None);
         assert_eq!(bare.time_signature(), None);
     }
@@ -965,18 +975,21 @@ mod tests {
     fn errors_distinguish_failure_modes() {
         // Not a clip file at all.
         assert_eq!(
-            read_clip_file(b"NOTACLIP\0\0\0\0"),
+            ParsedClipFile::from_bytes(b"NOTACLIP\0\0\0\0"),
             Err(ClipFileError::BadMagic)
         );
-        assert_eq!(read_clip_file(b"short"), Err(ClipFileError::BadMagic));
+        assert_eq!(
+            ParsedClipFile::from_bytes(b"short"),
+            Err(ClipFileError::BadMagic)
+        );
         // Right magic, but the body isn't word-aligned.
         assert_eq!(
-            read_clip_file(b"SMF2CLIP\x00\x00\x00"),
+            ParsedClipFile::from_bytes(b"SMF2CLIP\x00\x00\x00"),
             Err(ClipFileError::Unaligned)
         );
         // Magic + aligned body, but no DCTPQ before EOF.
         assert_eq!(
-            read_clip_file(b"SMF2CLIP"),
+            ParsedClipFile::from_bytes(b"SMF2CLIP"),
             Err(ClipFileError::MissingDctpq)
         );
     }
@@ -992,12 +1005,15 @@ mod tests {
     fn a_zero_tick_unit_is_rejected_rather_than_dividing_by_it() {
         let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         let bytes = write_clip_file(0, &[ClipEvent::new(240, ev)]);
-        assert_eq!(read_clip_file(&bytes), Err(ClipFileError::ZeroDctpq));
+        assert_eq!(
+            ParsedClipFile::from_bytes(&bytes),
+            Err(ClipFileError::ZeroDctpq)
+        );
 
         // The neighbouring value still parses, so the guard rejects zero rather
         // than anything that merely looks small.
         let bytes = write_clip_file(1, &[ClipEvent::new(240, ev)]);
-        let parsed = read_clip_file(&bytes).expect("tpq=1 is a valid tick unit");
+        let parsed = ParsedClipFile::from_bytes(&bytes).expect("tpq=1 is a valid tick unit");
         assert!(parsed.timed().all(|(beat, _)| beat.get().is_finite()));
     }
 
@@ -1021,7 +1037,7 @@ mod tests {
         let mut no_start = base.clone();
         push(&mut no_start, &[0x0040_0000, 0xF021_0000, 0, 0, 0]);
         assert_eq!(
-            read_clip_file(&no_start),
+            ParsedClipFile::from_bytes(&no_start),
             Err(ClipFileError::MissingStartOfClip)
         );
 
@@ -1029,7 +1045,7 @@ mod tests {
         let mut no_end = base.clone();
         push(&mut no_end, &[0x0040_0000, 0xF020_0000, 0, 0, 0]);
         assert_eq!(
-            read_clip_file(&no_end),
+            ParsedClipFile::from_bytes(&no_end),
             Err(ClipFileError::MissingEndOfClip)
         );
 
@@ -1054,10 +1070,13 @@ mod tests {
                 0x8000_0000, // …then a stray note-on
             ],
         );
-        assert_eq!(read_clip_file(&trailing), Err(ClipFileError::TrailingData));
+        assert_eq!(
+            ParsedClipFile::from_bytes(&trailing),
+            Err(ClipFileError::TrailingData)
+        );
 
         // A well-formed file with both brackets still parses.
-        assert!(read_clip_file(&write_clip_file(480, &[])).is_ok());
+        assert!(ParsedClipFile::from_bytes(&write_clip_file(480, &[])).is_ok());
     }
 
     // --- Note pairing ---
@@ -1065,7 +1084,7 @@ mod tests {
     /// Round-trip a beat-positioned event list and pair it back into notes.
     fn notes_from(events: impl IntoIterator<Item = (Beat, MidiEvent)>) -> Vec<ClipNote> {
         let bytes = write_clip_file_from_beats(96, events);
-        read_clip_file(&bytes).unwrap().notes()
+        ParsedClipFile::from_bytes(&bytes).unwrap().notes()
     }
 
     #[test]

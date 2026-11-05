@@ -222,7 +222,7 @@ fn convolved_at(ir: &[f32], n: usize) -> f64 {
 
 /// Quad VBAP: a source at front-left and one at rear-left, each panned and
 /// summed into a 4-wide master — `build_vbap_mix`'s quad graph (no LFE send),
-/// written out. (The builder form of the helper, `tutti_spatial::vbap_mix_parts`,
+/// written out. (The builder form of the helper, `tutti_spatial::VbapMixParts::new`,
 /// is pinned against it in tutti-spatial's `tests/vbap_mix_parts.rs`, and
 /// `surround_export.rs` renders through it.)
 fn quad_vbap() -> GraphBuilder {
@@ -360,7 +360,7 @@ fn a_resampled_export_writes_its_render() {
 fn a_peak_normalized_export_writes_its_normalized_render() {
     let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 1.0;
-    let normalize = Normalize::peak(Db(-1.0));
+    let normalize = Normalize::to_peak(Db(-1.0));
     let bytes = same_file(
         || sine(440.0),
         &cfg,

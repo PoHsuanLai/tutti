@@ -30,7 +30,8 @@
 mod support;
 
 use support::{Division, RawEvent, build_smf};
-use tutti_midi_file::smf::{self, ParsedMidiFile};
+use tutti_midi_file::SmfFile;
+use tutti_midi_file::smf::ParsedMidiFile;
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;
@@ -61,7 +62,7 @@ fn a_sysex_between_notes_does_not_shift_the_beat_grid() {
         RawEvent::note_off(u32::from(TPQ) / 2, 0, 62, 0),
     ]]);
 
-    let parsed = ParsedMidiFile::parse(&data).expect("a well-formed file parses");
+    let parsed = ParsedMidiFile::from_bytes(&data).expect("a well-formed file parses");
     let onsets: Vec<f64> = parsed
         .events
         .iter()
@@ -82,7 +83,9 @@ fn a_sysex_between_notes_does_not_shift_the_beat_grid() {
 
     // The same property through the other entry point, which keeps its own
     // running tick in `pair_notes`.
-    let tracks = smf::tracks(&data).expect("a well-formed file parses");
+    let tracks = SmfFile::from_bytes(&data)
+        .expect("a well-formed file parses")
+        .into_tracks();
     let note = tracks[0]
         .notes
         .iter()
@@ -111,7 +114,7 @@ fn overlapping_same_key_notes_pair_lifo() {
         RawEvent::note_off(q, 0, 60, 0),  // beat 3 — closes A
     ]]);
 
-    let tracks = smf::tracks(&data).expect("parses");
+    let tracks = SmfFile::from_bytes(&data).expect("parses").into_tracks();
     let notes = &tracks[0].notes;
     assert_eq!(notes.len(), 2);
 
@@ -158,7 +161,7 @@ fn a_note_off_does_not_close_another_channels_note() {
         RawEvent::note_off(q, 1, 60, 0),  // beat 3 — ch1's own offset
     ]]);
 
-    let notes = &smf::tracks(&data).expect("parses")[0].notes;
+    let notes = &SmfFile::from_bytes(&data).expect("parses").into_tracks()[0].notes;
     assert_eq!(notes.len(), 2, "one note per channel");
     let ch0 = notes.iter().find(|n| n.channel == 0).expect("channel 0");
     let ch1 = notes.iter().find(|n| n.channel == 1).expect("channel 1");
@@ -188,7 +191,7 @@ fn a_velocity_zero_note_on_closes_the_note() {
         RawEvent::note_on(q, 0, 64, 0), // the "off"
     ]]);
 
-    let notes = &smf::tracks(&data).expect("parses")[0].notes;
+    let notes = &SmfFile::from_bytes(&data).expect("parses").into_tracks()[0].notes;
     assert_eq!(
         notes.len(),
         1,
@@ -214,7 +217,7 @@ fn running_status_notes_survive_the_reader() {
         RawEvent::running_status(q, vec![62u8, 0]), // → off for 62
     ]]);
 
-    let notes = &smf::tracks(&data).expect("parses")[0].notes;
+    let notes = &SmfFile::from_bytes(&data).expect("parses").into_tracks()[0].notes;
     assert_eq!(
         notes.len(),
         2,
@@ -229,7 +232,7 @@ fn running_status_notes_survive_the_reader() {
 /// **SMPTE division is refused by both entry points.**
 ///
 /// A timecode division is not a tempo-relative grid, so every `Beat` this
-/// crate produces would be meaningless. `ParsedMidiFile::parse` and `tracks`
+/// crate produces would be meaningless. `ParsedMidiFile::from_bytes` and `SmfFile::from_bytes`
 /// each carry their own `match` on the timing, so each needs its own check —
 /// an inline test covered neither at this level.
 #[test]
@@ -245,14 +248,14 @@ fn smpte_division_is_rejected_at_both_entry_points() {
 
     assert!(
         matches!(
-            ParsedMidiFile::parse(&data),
+            ParsedMidiFile::from_bytes(&data),
             Err(tutti_midi_file::Error::MidiUnsupportedTiming)
         ),
         "parse must refuse a timecode division rather than invent a tpb"
     );
     assert!(
         matches!(
-            smf::tracks(&data),
+            SmfFile::from_bytes(&data),
             Err(tutti_midi_file::Error::MidiUnsupportedTiming)
         ),
         "tracks must refuse it too — it has its own timing match"
@@ -271,11 +274,11 @@ fn a_zero_division_is_rejected_at_both_entry_points() {
     );
 
     assert!(
-        ParsedMidiFile::parse(&data).is_err(),
+        ParsedMidiFile::from_bytes(&data).is_err(),
         "parse must refuse a zero ticks-per-quarter"
     );
     assert!(
-        smf::tracks(&data).is_err(),
+        SmfFile::from_bytes(&data).is_err(),
         "tracks must refuse it too — it has its own guard"
     );
 }
@@ -311,7 +314,7 @@ fn format_1_multitrack_keeps_tracks_and_names_separate() {
         ],
     );
 
-    let tracks = smf::tracks(&data).expect("parses");
+    let tracks = SmfFile::from_bytes(&data).expect("parses").into_tracks();
     assert_eq!(tracks.len(), 3, "three chunks, three tracks");
     assert_eq!(tracks[0].name.as_deref(), Some("Conductor"));
     assert_eq!(tracks[1].name.as_deref(), Some("Bass"));
@@ -327,7 +330,7 @@ fn format_1_multitrack_keeps_tracks_and_names_separate() {
 
     // And the merged view finds the tempo from track 0 while carrying both
     // tracks' notes — the cross-track merge `ParsedMidiFile` exists for.
-    let parsed = ParsedMidiFile::parse(&data).expect("parses");
+    let parsed = ParsedMidiFile::from_bytes(&data).expect("parses");
     assert!((parsed.tempo_bpm.get() - 120.0).abs() < 1e-6);
     assert_eq!(
         parsed.events.len(),
@@ -338,7 +341,7 @@ fn format_1_multitrack_keeps_tracks_and_names_separate() {
 
 /// **The merged stream is sorted by time, across tracks.**
 ///
-/// `sort_by_time` is what makes `get_events_in_range`'s binary search valid.
+/// `sort_by_time` is what makes `events_in_range`'s binary search valid.
 /// An unsorted merge would make that search return arbitrary slices, and
 /// nothing would fail loudly.
 #[test]
@@ -360,7 +363,7 @@ fn merged_events_are_sorted_across_tracks() {
         ],
     );
 
-    let parsed = ParsedMidiFile::parse(&data).expect("parses");
+    let parsed = ParsedMidiFile::from_bytes(&data).expect("parses");
     let times: Vec<f64> = parsed.events.iter().map(|e| e.time_beats.get()).collect();
     assert!(
         times.windows(2).all(|w| w[0] <= w[1]),
@@ -369,7 +372,7 @@ fn merged_events_are_sorted_across_tracks() {
     assert_eq!(times.len(), 4);
 
     // And the range query tiles correctly over that order.
-    let in_first_bar = parsed.get_events_in_range(tutti_core::Beat(0.0), tutti_core::Beat(3.0));
+    let in_first_bar = parsed.events_in_range(tutti_core::Beat(0.0), tutti_core::Beat(3.0));
     assert_eq!(
         in_first_bar.len(),
         2,

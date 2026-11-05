@@ -102,8 +102,8 @@
 //! loop. It was the same loop as [`Recorder`]'s, so design 015 kept that
 //! one: it already had the width check, the `Drop` finalization and the
 //! driver seam its tests count passes through, and it gained the three
-//! non-blocking methods a frame loop needs ([`Recorder::request_stop`],
-//! [`Recorder::is_finished`], [`Recorder::shutdown`]). An [`AudioPump`] is a
+//! non-blocking methods a frame loop needs ([`Recorder::stop`],
+//! [`Recorder::is_finished`], [`Recorder::stop_and_join`]). An [`AudioPump`] is a
 //! `Recorder` plus the element type that keys its drain system.
 
 use std::marker::PhantomData;
@@ -224,7 +224,7 @@ impl<S> AudioPump<S> {
     /// finalizes. [`drain_audio_pumps`] reports the outcome once it has.
     pub fn stop(&self) {
         if let Take::Running(recorder) = &self.take {
-            recorder.request_stop();
+            recorder.stop();
         }
     }
 
@@ -249,7 +249,7 @@ impl<S> AudioPump<S> {
     /// double-finalize unrepresentable rather than a panic.
     fn join(&mut self) -> Option<std::io::Result<()>> {
         match &mut self.take {
-            Take::Running(recorder) => recorder.shutdown(),
+            Take::Running(recorder) => recorder.stop_and_join(),
             Take::Refused(error) => error.take().map(Err),
         }
     }

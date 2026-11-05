@@ -31,24 +31,18 @@ impl BandState {
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
     }
+}
 
-    /// Maps a plain `enabled` flag onto the two states: `true` is
-    /// [`Active`](Self::Active), `false` [`Bypassed`](Self::Bypassed).
+impl From<bool> for BandState {
+    /// The `enabled` flag as a state: `true` is [`Active`](Self::Active),
+    /// `false` [`Bypassed`](Self::Bypassed).
     #[inline]
-    #[must_use]
-    pub fn from_enabled(enabled: bool) -> Self {
+    fn from(enabled: bool) -> Self {
         if enabled {
             Self::Active
         } else {
             Self::Bypassed
         }
-    }
-}
-
-impl From<bool> for BandState {
-    #[inline]
-    fn from(enabled: bool) -> Self {
-        Self::from_enabled(enabled)
     }
 }
 
@@ -114,7 +108,7 @@ impl<F: Real> EqBandNode<F> {
     /// `&mut self`, so it cannot reach a node already live in the graph — drive
     /// a live bypass from the host instead.
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.state = BandState::from_enabled(enabled);
+        self.state = BandState::from(enabled);
     }
 
     /// Returns whether the band is filtering rather than passing through.

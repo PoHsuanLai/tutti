@@ -40,11 +40,12 @@ impl Direction {
     pub fn is_reverse(self) -> bool {
         matches!(self, Self::Reverse)
     }
+}
 
-    /// `true` → `Reverse`, `false` → `Forward`.
+impl From<bool> for Direction {
+    /// `true` is [`Reverse`](Self::Reverse), `false` [`Forward`](Self::Forward).
     #[inline]
-    #[must_use]
-    pub fn from_reverse(reverse: bool) -> Self {
+    fn from(reverse: bool) -> Self {
         if reverse {
             Self::Reverse
         } else {

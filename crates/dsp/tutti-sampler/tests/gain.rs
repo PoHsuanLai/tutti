@@ -5,11 +5,11 @@
 //! is not trivial is **where** the multiply happens, because there are two gain
 //! fields and two entry points, and the failure mode is applying gain twice.
 //!
-//! - [`MemorySource`] owns a `gain`, applied by `get_sample_into`.
+//! - [`MemorySource`] owns a `gain`, applied by `sample_into`.
 //! - [`Playback`] owns a `gain`, applied by `PlaybackSlot::read_clip_sample_into`.
 //!
 //! A voice played through a pool must take the second and **not** the first:
-//! the slot deliberately calls `get_sample_raw_into` (ungained) so gain lands
+//! the slot deliberately calls `sample_raw_into` (ungained) so gain lands
 //! exactly once. Its own doc says so — "gain is applied ONCE at this
 //! Voice/Playback level" — which is the kind of invariant that holds until
 //! someone rewrites one of the two paths. Squaring the gain is inaudible at
@@ -166,8 +166,8 @@ fn voice_gain_scales_the_output_by_exactly_its_value() {
 ///
 /// The specific hazard this file exists for. `MemorySource` carries its own
 /// `gain` and `PlaybackSlot` carries `Playback::gain`; the slot reads through
-/// `get_sample_raw_into` precisely so the source's copy is skipped. If a rewrite
-/// ever routed the slot through `get_sample_into` instead, both would apply and
+/// `sample_raw_into` precisely so the source's copy is skipped. If a rewrite
+/// ever routed the slot through `sample_into` instead, both would apply and
 /// the output would be the gain *squared*.
 ///
 /// Set the two gains to different values so the possible answers are all
@@ -177,7 +177,7 @@ fn voice_gain_scales_the_output_by_exactly_its_value() {
 /// did. Only the first is right, and the number reported on failure says which
 /// of the other two happened.
 ///
-/// Verified by sabotage: routing the slot through `get_sample_into` makes this
+/// Verified by sabotage: routing the slot through `sample_into` makes this
 /// fail with 0.125.
 #[test]
 fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
@@ -215,13 +215,13 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
 
     // The three outcomes are distinct by construction, so the number reported on
     // failure names the defect. Verified: routing the slot through
-    // `get_sample_into` (the gained read) yields `source_only`, and a slot that
+    // `sample_into` (the gained read) yields `source_only`, and a slot that
     // gained on top of it would yield `both`.
     assert!(
         (got - slot_only).abs() < 1e-4,
         "output is {got:.6}. Expected {slot_only:.6} — Playback gain applied once, \
-         through the ungained `get_sample_raw_into`. \
-         {source_only:.6} means the slot read through `get_sample_into` and the \
+         through the ungained `sample_raw_into`. \
+         {source_only:.6} means the slot read through `sample_into` and the \
          source's own gain won instead; \
          {both:.6} means BOTH were applied, which is the squared-gain bug \
          `read_clip_sample_into` exists to prevent."
@@ -318,7 +318,7 @@ fn gain_scales_every_channel_equally() {
 /// A bare `MemorySource` applies its **own** gain.
 ///
 /// The other half of the two-field story. Ticked directly — not through a pool —
-/// the source is the only thing that can apply a gain, so `get_sample_into` must
+/// the source is the only thing that can apply a gain, so `sample_into` must
 /// do it. This is what makes the pooled case above a real distinction rather
 /// than a claim about a field nobody reads.
 #[test]

@@ -234,7 +234,7 @@ fn lane_graph(max: usize) -> (tutti_graph::Editor, tutti_graph::Executor) {
     elastic.add_point(AutomationPoint::new(0.45, 1.0));
     let key = ParamKey::<Hz>::CUTOFF;
     let lane = |curve: Arc<dyn Curve>| {
-        ControlLaneNode::for_param(key, ControlProgram::from_automation(curve), None, None)
+        ControlLaneNode::for_param(key, ControlProgram::from_curve(curve), None, None)
     };
     let lanes = [
         lane(Arc::new(shaped.clone())),

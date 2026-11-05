@@ -518,7 +518,7 @@ fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
         .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
         .expect("builds");
     let ports = Arc::clone(s.midi_io().expect("the OS MIDI layer").ports());
-    let mut handle = ports.create_input_port("Gone");
+    let mut handle = ports.open_input_port("Gone");
     let id = handle.port_id();
     assert!(handle.push(MidiEvent::noop(), Instant::now()));
     drop(handle);

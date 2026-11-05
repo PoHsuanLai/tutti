@@ -78,7 +78,7 @@ fn ramp() -> Arc<dyn Curve> {
 /// a knob.
 #[test]
 fn automation_replaces_the_knob() {
-    let p = ControlProgram::from_automation(ramp());
+    let p = ControlProgram::from_curve(ramp());
     assert_eq!(
         p.value_at(Some(1000.0), &at_beat(0.0), 100.0, &[]),
         Some(500.0)
@@ -89,7 +89,7 @@ fn automation_replaces_the_knob() {
     );
     assert_eq!(p.value_at(None, &at_beat(2.0), 100.0, &[]), Some(250.0));
     let empty: Arc<dyn Curve> = Arc::new(AutomationEnvelope::<()>::new(()));
-    let p = ControlProgram::from_automation(empty);
+    let p = ControlProgram::from_curve(empty);
     assert_eq!(
         p.value_at(Some(1000.0), &at_beat(2.0), 100.0, &[]),
         Some(1000.0)
@@ -372,7 +372,7 @@ fn the_left_limit_is_the_level_before_a_jump() {
     let mut e = AutomationEnvelope::new(());
     e.add_point(AutomationPoint::with_curve(0.0, 100.0, CurveType::Stepped));
     e.add_point(AutomationPoint::new(2.0, 300.0));
-    let a = ControlProgram::from_automation(Arc::new(e));
+    let a = ControlProgram::from_curve(Arc::new(e));
     assert_eq!(a.value_at(None, &at_beat(2.0), 1.0, &[]), Some(300.0));
     assert_eq!(a.value_before(None, &at_beat(2.0), 1.0, &[]), Some(100.0));
 }
@@ -424,12 +424,12 @@ impl Curve for Thawed {
 /// live cell through it.
 ///
 /// Mutations (run), each fails: `new` keeping the curve as given → 1.0;
-/// `from_automation` keeping it → 1.0.
+/// `from_curve` keeping it → 1.0.
 #[test]
 fn a_program_holds_the_frozen_curve() {
     let p = ControlProgram::new(Some(Arc::new(Thawed)), vec![], vec![]).expect("valid");
     assert_eq!(p.value_at(None, &at_beat(1.0), 1.0, &[]), Some(2.0));
-    let p = ControlProgram::from_automation(Arc::new(Thawed));
+    let p = ControlProgram::from_curve(Arc::new(Thawed));
     assert_eq!(p.value_at(None, &at_beat(1.0), 1.0, &[]), Some(2.0));
 }
 

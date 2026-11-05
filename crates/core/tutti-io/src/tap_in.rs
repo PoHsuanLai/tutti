@@ -43,7 +43,7 @@ use tutti_core::{ChannelLayout, Samples, TapCons};
 /// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
 /// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs
 /// // ... later ...
-/// rec.stop()
+/// rec.finish()
 /// # }
 /// ```
 #[derive(Debug)]

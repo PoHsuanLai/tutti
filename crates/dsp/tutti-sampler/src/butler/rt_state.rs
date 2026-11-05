@@ -252,7 +252,7 @@ impl RtState {
 
     #[cfg(test)]
     pub fn set_reverse(&self, reverse: bool) {
-        self.set_direction(Direction::from_reverse(reverse));
+        self.set_direction(Direction::from(reverse));
     }
 
     /// Sample-rate conversion ratio: file rate over session rate.

@@ -96,7 +96,7 @@ impl SeqClient {
     }
 
     /// Creates a port on this client.
-    pub fn create_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
+    pub fn open_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
         // SAFETY: `self.seq` is open; `cname` outlives the call.
         check(

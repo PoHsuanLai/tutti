@@ -6,7 +6,7 @@
 //!
 //! - [`VbapPannerNode`] and its [`VbapPannerControls`]: a stereo-in, N-out
 //!   loudspeaker panner.
-//! - [`build_vbap_mix`] and [`vbap_mix_parts`]: a whole multi-source VBAP mix,
+//! - [`build_vbap_mix`] and [`VbapMixParts::new`]: a whole multi-source VBAP mix,
 //!   with [`VbapSource`], [`VbapLfeSend`], [`VbapMixParts`], [`VbapMixNode`]
 //!   and [`VbapMixEdge`].
 //! - [`SpatialTarget`]: a source's bearing and height as lock-free cells.
@@ -32,7 +32,7 @@ pub use target::SpatialTarget;
 
 pub use vbap::{
     VbapError, VbapLfeSend, VbapMixEdge, VbapMixNode, VbapMixParts, VbapPannerControls,
-    VbapPannerNode, VbapSource, build_vbap_mix, vbap_mix_parts,
+    VbapPannerNode, VbapSource, build_vbap_mix,
 };
 
 #[cfg(feature = "hrtf")]

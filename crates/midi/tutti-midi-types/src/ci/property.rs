@@ -238,18 +238,6 @@ impl SubscriptionCommand {
         }
     }
 
-    /// Parses a `command` value, or `None` if it names no known command.
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "start" => Self::Start,
-            "partial" => Self::Partial,
-            "full" => Self::Full,
-            "notify" => Self::Notify,
-            "end" => Self::End,
-            _ => return None,
-        })
-    }
-
     /// Whether this command may be sent by an Initiator (`true`) or a Responder
     /// (`false`), per the per-command direction rules in §11.1.
     ///
@@ -262,6 +250,34 @@ impl SubscriptionCommand {
             Self::Partial | Self::Full | Self::Notify => !is_initiator,
             Self::End => true,
         }
+    }
+}
+
+/// A `command` value that names no [`SubscriptionCommand`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct UnknownSubscriptionCommand;
+
+impl core::fmt::Display for UnknownSubscriptionCommand {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("unknown subscription command")
+    }
+}
+
+impl core::error::Error for UnknownSubscriptionCommand {}
+
+impl core::str::FromStr for SubscriptionCommand {
+    type Err = UnknownSubscriptionCommand;
+
+    /// Parses a `command` value (see [`as_str`](Self::as_str)).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "start" => Self::Start,
+            "partial" => Self::Partial,
+            "full" => Self::Full,
+            "notify" => Self::Notify,
+            "end" => Self::End,
+            _ => return Err(UnknownSubscriptionCommand),
+        })
     }
 }
 
@@ -470,9 +486,12 @@ mod tests {
             SubscriptionCommand::Notify,
             SubscriptionCommand::End,
         ] {
-            assert_eq!(SubscriptionCommand::parse(cmd.as_str()), Some(cmd));
+            assert_eq!(cmd.as_str().parse(), Ok(cmd));
         }
-        assert_eq!(SubscriptionCommand::parse("subscribe"), None);
+        assert_eq!(
+            "subscribe".parse::<SubscriptionCommand>(),
+            Err(UnknownSubscriptionCommand)
+        );
         // The strings are the wire contract from M2-103 Table 39, so pin them.
         assert_eq!(SubscriptionCommand::Start.as_str(), "start");
         assert_eq!(SubscriptionCommand::Partial.as_str(), "partial");

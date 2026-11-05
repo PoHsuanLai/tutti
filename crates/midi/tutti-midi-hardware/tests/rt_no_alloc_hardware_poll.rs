@@ -94,7 +94,7 @@ fn feed(port: &mut InputProducerHandle, count: usize) {
 fn hardware_poll_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let mut port = inputs.create_input_port("Test Input");
+    let mut port = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
@@ -126,7 +126,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
     let mut ports: Vec<InputProducerHandle> = (0..4)
-        .map(|i| inputs.create_input_port(format!("Input {i}")))
+        .map(|i| inputs.open_input_port(format!("Input {i}")))
         .collect();
 
     let mut pre = Rig::new(inputs.clone());
@@ -160,7 +160,7 @@ fn hardware_poll_over_capacity_is_allocation_free() {
 fn hardware_poll_across_block_sizes_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let mut port = inputs.create_input_port("Test Input");
+    let mut port = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
@@ -189,7 +189,7 @@ fn hardware_poll_across_block_sizes_is_allocation_free() {
 fn hardware_poll_with_stale_timestamps_is_allocation_free() {
     let inputs = Arc::new(HardwareMidiInputs::new(256));
     inputs.set_sample_rate(48_000.0);
-    let mut handle = inputs.create_input_port("Test Input");
+    let mut handle = inputs.open_input_port("Test Input");
 
     let mut pre = Rig::new(inputs.clone());
 
@@ -226,7 +226,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 /// `tutti-types`' loom model.
 ///
 /// Mutation: putting the port set back on `ArcSwap` (`load()` in the drain,
-/// `load` + clone + `store` in `create_input_port`) aborts this test on its
+/// `load` + clone + `store` in `open_input_port`) aborts this test on its
 /// first block: the store turns the drain's guard into the old set's last
 /// strong count, and the guard's drop frees that `Vec` inside the gate.
 #[test]
@@ -235,7 +235,7 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     inputs.set_sample_rate(48_000.0);
     // The audio side's drain, as the input node owns it.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
-    let mut first = inputs.create_input_port("Input 0");
+    let mut first = inputs.open_input_port("Input 0");
 
     // Warm the scratch outside the gate, as the other gates do.
     feed(&mut first, 4);
@@ -253,7 +253,7 @@ fn hotplug_during_a_drain_frees_nothing_on_the_audio_thread() {
                     assert_no_alloc::permit_alloc(|| {
                         // The new port's producer is dropped at once: this
                         // test is about the set it lands in, not its ring.
-                        let _ = inputs.create_input_port(format!("Hotplug {block}"));
+                        let _ = inputs.open_input_port(format!("Hotplug {block}"));
                     });
                 }
             });
@@ -295,7 +295,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     let mut drain = HardwareMidiDrain::new(Arc::clone(&inputs));
 
     // Warm the scratch outside the gate, as the other gates do.
-    let mut warm = inputs.create_input_port("Warm");
+    let mut warm = inputs.open_input_port("Warm");
     feed(&mut warm, 4);
     drain.cycle_start_read_all_inputs(512, |_, _| {});
     assert!(inputs.remove_input_port(warm.port_id()));
@@ -304,7 +304,7 @@ fn unplug_during_a_drain_frees_nothing_on_the_audio_thread() {
     const BLOCKS: usize = 32;
     let mut visited = 0usize;
     for block in 0..BLOCKS {
-        let mut device = inputs.create_input_port(format!("Device {block}"));
+        let mut device = inputs.open_input_port(format!("Device {block}"));
         feed(&mut device, 4);
         let id = device.port_id();
         // The connection closed: the published set now owns the ring alone.

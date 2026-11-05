@@ -33,7 +33,10 @@ pub mod property;
 // caller could build the struct without being able to name the sentinel.
 pub use discovery::{CiCategories, DiscoveryData, NO_FUNCTION_BLOCK, Nak};
 pub use profile::{ProfileId, ProfileState};
-pub use property::{PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand};
+pub use property::{
+    PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand,
+    UnknownSubscriptionCommand,
+};
 
 /// Universal SysEx real-time/non-real-time id for MIDI-CI: `0x7E`
 /// (non-real-time). Every CI message begins with it.

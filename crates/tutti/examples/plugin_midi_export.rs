@@ -51,14 +51,14 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
     let file = MidiFile::read(midi)?; // an SMF or a Clip File
     let tempo = file.tempo().unwrap_or(Bpm(120.0)); // the tempo at beat 0
     s.midi()
-        .play_clip(synth, file.timed().map(TimedMidiEvent::from))?;
+        .play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
     s.transport().settings.set_tempo(tempo);
     s.update();
 
     let mut config = ExportConfig::default();
     config.render.sample_rate = RATE;
     // The file's length in seconds, integrated over its tempo map.
-    config.render.duration_seconds = file.seconds_at(file.end());
+    config.render.duration_seconds = file.seconds_at(file.end_beat());
     let job = s.export(
         ExportRequest::file(out, config)
             .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -160,7 +160,7 @@ mod tests {
     /// 6 bytes a frame, after a header of at least 44 bytes.
     ///
     /// Mutation (run, failed): the duration at the file's first tempo
-    /// throughout (`file.end()` at 120 BPM: 4 s) → 2 s short.
+    /// throughout (`file.end_beat()` at 120 BPM: 4 s) → 2 s short.
     #[test]
     fn the_example_plays() {
         let dir = std::env::temp_dir().join(format!("tutti-5-2-{}", std::process::id()));

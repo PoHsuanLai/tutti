@@ -902,7 +902,7 @@ s.graph().set_outputs_from(synth);
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
 let tempo = file.tempo().unwrap_or(Bpm(120.0));         // the tempo at beat 0; an SMF always has one
-s.midi().play_clip(synth, file.timed().map(TimedMidiEvent::from))?;
+s.midi().play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
 s.transport().set_tempo(tempo);
 
 let mut config = ExportConfig::default();
@@ -911,7 +911,7 @@ config.render.sample_rate = SampleRate(48_000.0);
 // it: in general the length integrates over `file.tempo_map()`. An f64
 // converter that does (`BeatDuration::to_seconds` is f32 `Seconds` at one
 // tempo) does not exist yet: §9.6's to add.
-config.render.duration_seconds = file_seconds(file.end(), &file.tempo_map());
+config.render.duration_seconds = file_seconds(file.end_beat(), &file.tempo_map());
 let job = s.export(
     ExportRequest::file("song.wav", config)
         .on_timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -1310,8 +1310,8 @@ through. What `AudioPump` had that `Recorder` lacked is now `Recorder`'s:
 - any `AudioOut<S>` and any element `S`, not only `WavOut` and `f32`;
 - `start_with_capacity` (frames per pass, zero taken as one) and
   `ThreadDriver::with_park` (the back-off; `IDLE_PARK` is now public);
-- the non-blocking end a frame loop needs: `request_stop`, `is_running`,
-  `is_finished` (`RunningPump::is_finished`), and `shutdown(&mut self)`,
+- the non-blocking end a frame loop needs: `stop`, `is_running`,
+  `is_finished` (`RunningPump::is_finished`), and `stop_and_join(&mut self)`,
   which joins in place and returns `None` once collected.
 
 `bevy_tutti::graph::AudioPump<S>` is a component holding a `Recorder`; its
@@ -1763,7 +1763,7 @@ Where the code differs from the text above:
   to an entity and `Name` (`NodeNames`, as before).
 - **The §5.2 example** sets the tempo through
   `s.transport().settings.set_tempo`, and its length is
-  `file.seconds_at(file.end())`.
+  `file.seconds_at(file.end_beat())`.
 - **`bevy-tutti`'s `plugin` feature no longer enables `tutti-plugin/bevy`**:
   nothing puts `PluginParamValues` on an entity. The derive itself stays in
   `tutti-plugin` (a cleanup can drop the feature).

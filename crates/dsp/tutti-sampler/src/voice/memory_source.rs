@@ -793,7 +793,7 @@ impl MemorySource {
     /// channel count need not match `out.len()` —
     /// [`read_frame`](super::interp::read_frame) owns that policy.
     #[inline]
-    pub fn get_sample_raw_into(&self, position: f64, out: &mut [f32]) {
+    pub fn sample_raw_into(&self, position: f64, out: &mut [f32]) {
         let len = self.wave.len() as f64;
         if position >= len {
             out.fill(0.0);
@@ -834,14 +834,14 @@ impl MemorySource {
                     out.fill(0.0);
                     return;
                 }
-                self.get_sample_raw_into((len - 1.0 - pos.get()).max(0.0), out);
+                self.sample_raw_into((len - 1.0 - pos.get()).max(0.0), out);
             }
             Direction::Forward => match self.loop_mode.span(self.wave.len()) {
                 Some(span) => {
                     let (p, looped) = span.place(pos.get());
                     self.read_looped_raw_into(&span, p, looped, out);
                 }
-                None => self.get_sample_raw_into(pos.get(), out),
+                None => self.sample_raw_into(pos.get(), out),
             },
         }
     }
@@ -976,7 +976,7 @@ impl MemorySource {
         let last = len - 1;
         let flen = len as f64;
         // Each frame's whole index and fraction, as `read_placed_into` →
-        // `get_sample_raw_into` → `read_frame` (or, on a loop,
+        // `sample_raw_into` → `read_frame` (or, on a loop,
         // `read_looped_raw_into` → `LoopSpan::taps`) derive them, written for
         // every frame: one with no sample gathers zeros at `t` = 0, which the
         // cubic returns as `0.0`. The taps are derived from the index per
@@ -1096,12 +1096,12 @@ impl MemorySource {
         }
     }
 
-    /// [`get_sample_raw_into`](Self::get_sample_raw_into) with this unit's gain
+    /// [`sample_raw_into`](Self::sample_raw_into) with this unit's gain
     /// applied. One scalar gain across every channel — per-channel level is the
     /// mixer strip's job, not the reader's.
     #[inline]
-    pub fn get_sample_into(&self, position: f64, out: &mut [f32]) {
-        self.get_sample_raw_into(position, out);
+    pub fn sample_into(&self, position: f64, out: &mut [f32]) {
+        self.sample_raw_into(position, out);
         let gain = self.block_gain();
         for s in out.iter_mut() {
             *s *= gain;
@@ -1209,7 +1209,7 @@ impl MemorySource {
                 self.read_looped_raw_into(span, pos, looped, out);
                 self.apply_gain(out);
             }
-            None => self.get_sample_into(pos, out),
+            None => self.sample_into(pos, out),
         }
 
         // One output sample's worth of source material.

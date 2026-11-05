@@ -67,20 +67,23 @@ pub struct LadderCoeffs {
     pub k: f64,
 }
 
-/// Computes ladder coefficients (pure function, no state).
-///
-/// The cutoff is clamped to `1.0..=0.998 * Nyquist`, since `tan` diverges at
-/// Nyquist itself, and the resonance to `0.0..=1.0`.
-pub fn compute_ladder_coeffs(
-    freq: impl Into<Hz>,
-    resonance: impl Into<Resonance>,
-    sample_rate: impl Into<SampleRate>,
-) -> LadderCoeffs {
-    let (freq, resonance, sample_rate) = (freq.into(), resonance.into(), sample_rate.into());
-    let fc = f64::from(freq.get()).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
-    LadderCoeffs {
-        g: (core::f64::consts::PI * fc / sample_rate.get()).tan(),
-        k: 4.0 * f64::from(resonance.get().clamp(0.0, 1.0)),
+impl LadderCoeffs {
+    /// Computes ladder coefficients (pure function, no state).
+    ///
+    /// The cutoff is clamped to `1.0..=0.998 * Nyquist`, since `tan` diverges at
+    /// Nyquist itself, and the resonance to `0.0..=1.0`.
+    pub fn new(
+        freq: impl Into<Hz>,
+        resonance: impl Into<Resonance>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> LadderCoeffs {
+        let (freq, resonance, sample_rate) = (freq.into(), resonance.into(), sample_rate.into());
+        let fc =
+            f64::from(freq.get()).clamp(1.0, f64::from(sample_rate.nyquist_scaled(0.998).get()));
+        LadderCoeffs {
+            g: (core::f64::consts::PI * fc / sample_rate.get()).tan(),
+            k: 4.0 * f64::from(resonance.get().clamp(0.0, 1.0)),
+        }
     }
 }
 
@@ -99,7 +102,7 @@ struct LadderCoefficients<F: Real> {
 
 impl<F: Real> LadderCoefficients<F> {
     fn solve(freq: Hz, resonance: Resonance, sample_rate: SampleRate) -> Self {
-        let c = compute_ladder_coeffs(freq, resonance, sample_rate);
+        let c = LadderCoeffs::new(freq, resonance, sample_rate);
         let g = F::from_f64(c.g);
         Self {
             g1: g / (F::from_f64(1.0) + g),

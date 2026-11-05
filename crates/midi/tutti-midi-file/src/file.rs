@@ -1,11 +1,11 @@
-//! [`MidiFile`]: a MIDI file of either container, sniffed by magic, read as
+//! [`MidiFile`]: a MIDI file of either container, detected by magic, read as
 //! one timed event stream.
 //!
 //! `.mid` is worn by a Standard MIDI File and a MIDI 2.0 Clip File alike, so
-//! which decoder runs is decided by the leading bytes ([`MidiFileKind::sniff`]),
+//! which decoder runs is decided by the leading bytes ([`MidiFileKind::detect`]),
 //! never by the name. The two containers keep their own shapes (an SMF's named
 //! tracks with 7-bit velocities, a Clip File's one stream with 16-bit ones);
-//! [`MidiFile::timed`] is where they meet, as the engine's MIDI 2.0
+//! [`MidiFile::iter`] is where they meet, as the engine's MIDI 2.0
 //! [`MidiEvent`]s in [`Beat`]s.
 
 use std::path::Path;
@@ -14,7 +14,7 @@ use midly::Smf;
 use midly::live::LiveEvent;
 use tutti_core::{Beat, Bpm};
 use tutti_midi_types::ump::flex_tempo_bpm;
-use tutti_midi_types::{MidiEvent, ParsedClipFile, normalize, read_clip_file};
+use tutti_midi_types::{MidiEvent, ParsedClipFile, normalize};
 
 use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
 use crate::{Error, MidiFileKind, Result};
@@ -24,13 +24,13 @@ use crate::{Error, MidiFileKind, Result};
 /// Two variants because the formats differ in what they hold: an SMF is a
 /// list of named tracks with 7-bit velocities, a Clip File is one stream that
 /// keeps 16 bits. Collapsing them here would discard whichever half the other
-/// lacks; [`timed`](Self::timed) is the one view both have.
+/// lacks; [`iter`](Self::iter) is the one view both have.
 ///
 /// ```
 /// use tutti_core::Beat;
-/// use tutti_midi_file::{encode_midi_file, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
+/// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///
-/// let bytes = encode_midi_file(
+/// let bytes = smf::to_bytes(
 ///     &[vec![SmfTimedEvent {
 ///         time_beats: Beat(2.0),
 ///         channel: 0,
@@ -40,11 +40,11 @@ use crate::{Error, MidiFileKind, Result};
 /// )?;
 ///
 /// let file = MidiFile::from_bytes(&bytes)?;
-/// let (beat, note) = file.timed().next().expect("one note");
+/// let (beat, note) = file.iter().next().expect("one note");
 /// assert_eq!(beat, Beat(2.0));
 /// // Widened to MIDI 2.0: full-scale 7-bit velocity is full-scale 16-bit.
 /// assert_eq!(note.velocity_u16(), Some(0xFFFF));
-/// assert_eq!(file.end(), Beat(2.0));
+/// assert_eq!(file.end_beat(), Beat(2.0));
 /// # Ok::<(), tutti_midi_file::Error>(())
 /// ```
 #[derive(Debug, Clone)]
@@ -56,11 +56,11 @@ pub enum MidiFile {
 }
 
 /// A Standard MIDI File read two ways from one parse: its tracks with notes
-/// paired, and the merged event stream [`MidiFile::timed`] reads.
+/// paired, and the merged event stream [`MidiFile::iter`] reads.
 ///
 /// Both halves come from the same `midly` parse and cannot be set apart, so
 /// they never disagree: the fields are private, read through
-/// [`tracks`](Self::tracks) and [`stream`](Self::stream).
+/// [`tracks`](Self::tracks) and [`as_parsed`](Self::as_parsed).
 #[derive(Debug, Clone)]
 pub struct SmfFile {
     tracks: Vec<SmfTrack>,
@@ -69,7 +69,14 @@ pub struct SmfFile {
 
 impl SmfFile {
     /// Parses SMF bytes once into both views.
-    fn parse(bytes: &[u8]) -> Result<Self> {
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::MidiUnsupportedTiming`] if the header declares SMPTE/timecode
+    ///   division rather than metrical.
+    /// - [`Error::MidiFileParse`] if the division is zero, or `midly` rejects the
+    ///   bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let smf = Smf::parse(bytes)?;
         Ok(Self {
             tracks: tracks_of(&smf)?,
@@ -77,16 +84,31 @@ impl SmfFile {
         })
     }
 
-    /// The tracks, notes paired, as [`smf::tracks`](crate::smf::tracks)
-    /// reads them.
+    /// Reads and parses the SMF at `path`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Io`] if the file cannot be read; otherwise as
+    /// [`from_bytes`](Self::from_bytes).
+    pub fn read(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_bytes(&std::fs::read(path.as_ref())?)
+    }
+
+    /// The tracks, one [`SmfTrack`] per SMF track with note-on/off paired into
+    /// whole notes. Tracks with no notes are still present.
     pub fn tracks(&self) -> &[SmfTrack] {
         &self.tracks
+    }
+
+    /// The tracks, by value.
+    pub fn into_tracks(self) -> Vec<SmfTrack> {
+        self.tracks
     }
 
     /// The file as one merged event stream: every channel-voice message, its
     /// tempo at beat 0 and its tempo changes. The paired notes alone would
     /// drop every controller, bend and program change.
-    pub fn stream(&self) -> &ParsedMidiFile {
+    pub fn as_parsed(&self) -> &ParsedMidiFile {
         &self.stream
     }
 }
@@ -96,22 +118,24 @@ impl MidiFile {
     ///
     /// `.mid` and `.midi` are the Standard MIDI File's; `.mid2` and `.midi2`
     /// are in use for Clip Files. A reader handles all four the same way,
-    /// sniffing rather than trusting any of them.
+    /// detecting rather than trusting any of them.
     pub const EXTENSIONS: &'static [&'static str] = &["mid", "midi", "mid2", "midi2"];
 
-    /// Decodes a complete MIDI file from its bytes, sniffing the container
+    /// Decodes a complete MIDI file from its bytes, detecting the container
     /// from its magic: `MThd` for an SMF, `SMF2CLIP` for a Clip File.
     ///
     /// # Errors
     ///
     /// [`Error::UnknownFormat`] when the magic matches neither container (no
     /// decoder runs). Otherwise the matching decoder's error: an SMF's as
-    /// [`smf::tracks`](crate::smf::tracks) returns it, a Clip File's as
+    /// [`SmfFile::from_bytes`] returns it, a Clip File's as
     /// [`Error::Clip`].
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        match MidiFileKind::sniff(bytes) {
-            Some(MidiFileKind::StandardMidiFile) => Ok(Self::Smf(SmfFile::parse(bytes)?)),
-            Some(MidiFileKind::ClipFile) => Ok(Self::Clip(Box::new(read_clip_file(bytes)?))),
+        match MidiFileKind::detect(bytes) {
+            Some(MidiFileKind::StandardMidiFile) => Ok(Self::Smf(SmfFile::from_bytes(bytes)?)),
+            Some(MidiFileKind::ClipFile) => {
+                Ok(Self::Clip(Box::new(ParsedClipFile::from_bytes(bytes)?)))
+            }
             // Its own error rather than a parse failure: "this is not a MIDI
             // file" is a different thing to fix than "this MIDI file is
             // malformed".
@@ -153,26 +177,32 @@ impl MidiFile {
     /// track's name is in its tracks); a Clip File every UMP in its sequence,
     /// Flex Data (a Set Tempo, a time signature) included. The tempo map is not
     /// applied.
-    pub fn timed(&self) -> Box<dyn Iterator<Item = (Beat, MidiEvent)> + '_> {
-        match self {
-            Self::Smf(smf) => {
-                // Reused across events: midly writes the message's wire bytes
-                // here, and `from_midi1_bytes` reads them back as a UMP.
-                let mut wire = Vec::with_capacity(3);
-                Box::new(smf.stream.events.iter().filter_map(move |e| {
-                    wire.clear();
-                    LiveEvent::Midi {
-                        channel: e.channel.into(),
-                        message: e.msg,
-                    }
-                    .write(&mut wire)
-                    .ok()?;
-                    let event = MidiEvent::from_midi1_bytes(0, &wire)?;
-                    Some((e.time_beats, normalize(&event)))
-                }))
-            }
-            Self::Clip(clip) => Box::new(clip.timed().map(|(beat, e)| (beat, normalize(&e)))),
-        }
+    pub fn iter(&self) -> impl Iterator<Item = (Beat, MidiEvent)> + '_ {
+        let (smf, clip) = match self {
+            Self::Smf(smf) => (Some(smf), None),
+            Self::Clip(clip) => (None, Some(clip)),
+        };
+        // One arm of each is empty: a single return type without boxing.
+        let smf_events = smf.into_iter().flat_map(|smf| {
+            // Reused across events: midly writes the message's wire bytes
+            // here, and `from_midi1_bytes` reads them back as a UMP.
+            let mut wire = Vec::with_capacity(3);
+            smf.stream.events.iter().filter_map(move |e| {
+                wire.clear();
+                LiveEvent::Midi {
+                    channel: e.channel.into(),
+                    message: e.msg,
+                }
+                .write(&mut wire)
+                .ok()?;
+                let event = MidiEvent::from_midi1_bytes(0, &wire)?;
+                Some((e.time_beats, normalize(&event)))
+            })
+        });
+        let clip_events = clip
+            .into_iter()
+            .flat_map(|clip| clip.timed().map(|(beat, e)| (beat, normalize(&e))));
+        smf_events.chain(clip_events)
     }
 
     /// The tempo at beat 0, `None` if the file does not say.
@@ -217,7 +247,7 @@ impl MidiFile {
     /// [`tempo`](Self::tempo), or the 120 BPM an SMF's specification assumes
     /// when it declares none (a Clip File without a tempo at beat 0 gets the
     /// same). What an offline render of the file lasts:
-    /// `seconds_at(end())` is `RenderConfig::duration_seconds`.
+    /// `seconds_at(end_beat())` is `RenderConfig::duration_seconds`.
     ///
     /// `f64`, not `Seconds`: `Seconds` is `f32`, which cannot carry an
     /// hour-long file to the frame (and `duration_seconds` is `f64`).
@@ -241,10 +271,10 @@ impl MidiFile {
     }
 
     /// Where the last event lands: the position of the final event
-    /// [`timed`](Self::timed) yields (`Beat(0.0)` for an empty file). A
+    /// [`iter`](Self::iter) yields (`Beat(0.0)` for an empty file). A
     /// note-off is an event too, so this is where the last message lands,
     /// not necessarily where sound stops.
-    pub fn end(&self) -> Beat {
+    pub fn end_beat(&self) -> Beat {
         let length = match self {
             Self::Smf(smf) => smf.stream.duration_beats,
             Self::Clip(clip) => clip.duration_beats(),

@@ -11,6 +11,9 @@ change the running node without a lock.
 
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
+- **Crossover** — `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split
+  (the bands sum to flat magnitude; IIR, so not linear-phase and no latency),
+  and `CrossoverNode`, which makes `bands × channels` outputs from it.
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
   matrix), over the inner `DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,

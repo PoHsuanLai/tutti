@@ -32,7 +32,8 @@ where the results go:
   `notes_from_track` takes your own pitch track.
 - `chroma` / `step_chroma` — harmonic pitch class profile (Gomez 2006) of spectral
   peaks, with an estimated tuning in cents; `estimate_key` — Krumhansl-Schmuckler
-  key with a confidence and a runner-up.
+  key with a confidence and a runner-up; `detect_chords` — major and minor
+  triads smoothed by Viterbi, as spans in samples.
 - `stft` / `istft_transform` — the short-time Fourier transform, in three result
   types so invertibility is a compile-time question.
 

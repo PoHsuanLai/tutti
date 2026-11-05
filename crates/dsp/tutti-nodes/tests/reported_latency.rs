@@ -9,12 +9,12 @@
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
 
-use tutti_core::ChannelLayout;
+use tutti_core::{ChannelLayout, Hz};
 use tutti_core::{SampleRate, Samples};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{GraphBuilder, Node, Prepare};
 use tutti_nodes::testing::Through;
-use tutti_nodes::{DelayLineNode, ModDelayNode};
+use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode};
 use tutti_types::Latency;
 
 const SR: SampleRate = SampleRate(48_000.0);
@@ -58,6 +58,27 @@ fn onsets(ch: &[f32]) -> Vec<usize> {
         .filter(|(_, s)| s.abs() > 1e-4)
         .map(|(i, _)| i)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// An IIR crossover reports zero latency.
+// ---------------------------------------------------------------------------
+
+/// The Linkwitz-Riley split is IIR and not linear-phase: it is not delayed,
+/// so it declares none, and every band answers an impulse on the impulse's
+/// own frame. A low band's first sample is tiny (a 300 Hz low-pass has
+/// `b0^4` of order 1e-14) but never zero, so the check is on exactly that.
+///
+/// Mutation (run): `with_latency(Latency::new(Samples(1)))` in
+/// `CrossoverNode::shape` fails the declared-latency assertion; delaying a
+/// band by a frame in `process` fails the frame-0 one.
+#[test]
+fn crossover_reports_zero_latency_and_responds_at_frame_0() {
+    let xo = CrossoverNode::new(ChannelLayout::MONO, &[Hz(300.0), Hz(3_000.0)]).unwrap();
+    assert_eq!(declared(&xo), Latency::ZERO);
+    for (b, band) in impulse_response(xo, 64).iter().enumerate() {
+        assert!(band[0] > 0.0, "band {b} is silent at frame 0");
+    }
 }
 
 // ---------------------------------------------------------------------------

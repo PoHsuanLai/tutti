@@ -51,11 +51,12 @@ use crate::error::{BridgeError, Result};
 #[cfg(feature = "json")]
 use crate::host::discovery::JsonCatalog;
 use crate::host::discovery::{
-    CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
+    CatalogExt, FileFacts, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
 };
 use crate::host::plugin::Plugin;
 use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tutti_core::SampleRate;
 
@@ -293,8 +294,10 @@ impl Plugins {
     /// [`CatalogExt::is_blacklisted`]: crate::catalog::CatalogExt::is_blacklisted
     /// [`CatalogExt::is_blacklisted_and_unchanged`]: crate::catalog::CatalogExt::is_blacklisted_and_unchanged
     #[must_use]
-    pub fn is_blacklisted(&self, path: &Path) -> bool {
-        self.catalog.is_blacklisted_and_unchanged(path)
+    pub fn is_blacklisted(&self, path: impl AsRef<Path>) -> bool {
+        let path = path.as_ref();
+        self.catalog
+            .is_blacklisted_and_unchanged(path, &FileFacts::read(path))
     }
 
     /// Opens a plugin with this catalog's audio settings, refusing one that is
@@ -314,8 +317,13 @@ impl Plugins {
     /// [`Plugin::open_with`].
     ///
     /// [`Plugin::open`]: crate::catalog::Plugin::open
-    pub fn open(&self, path: &Path, sample_rate: impl Into<SampleRate>) -> Result<Plugin> {
-        if self.catalog.is_blacklisted_and_unchanged(path) {
+    pub fn open(
+        &self,
+        path: impl AsRef<Path>,
+        sample_rate: impl Into<SampleRate>,
+    ) -> Result<Plugin> {
+        let path = path.as_ref();
+        if self.is_blacklisted(path) {
             let reason = self
                 .catalog
                 .get(path)
@@ -332,8 +340,10 @@ impl Plugins {
 
     /// Blacklists a plugin by path, hiding it from `iter`, `records` and `find`
     /// and making [`open`](Self::open) refuse it.
-    pub fn blacklist(&mut self, path: &Path, reason: impl Into<String>) {
-        self.catalog.blacklist(path, reason.into());
+    pub fn blacklist(&mut self, path: impl AsRef<Path>, reason: impl Into<String>) {
+        let path = path.as_ref();
+        self.catalog
+            .blacklist(path, reason.into(), &FileFacts::read(path));
     }
 
     /// Clears one blacklist entry so the plugin is re-probed on the next scan.
@@ -341,7 +351,7 @@ impl Plugins {
     /// Returns `true` if a blacklisted record was found and cleared. Offer this
     /// to users: crash recovery also blacklists after a force-quit, power loss
     /// or out-of-memory kill, so false positives are expected.
-    pub fn unblacklist(&mut self, path: &Path) -> bool {
+    pub fn unblacklist(&mut self, path: impl AsRef<Path>) -> bool {
         self.catalog.unblacklist(path)
     }
 
@@ -354,8 +364,8 @@ impl Plugins {
     ///
     /// Unlike [`Self::unblacklist`] this forgets the plugin entirely, so the
     /// next scan treats it as new.
-    pub fn remove(&mut self, path: &Path) {
-        self.catalog.remove(path);
+    pub fn remove(&mut self, path: impl AsRef<Path>) {
+        self.catalog.remove(path.as_ref());
     }
 
     /// Probes one plugin file and adds it to the catalog, returning its
@@ -372,7 +382,7 @@ impl Plugins {
     ///
     /// Returns any error of [`PluginRecord::probe`], for example when the file
     /// extension is not a plugin format or the probe fails.
-    pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
+    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> Result<PluginId> {
         let record = PluginRecord::probe(plugin_path)?;
         Ok(self.register_record(record))
     }
@@ -434,16 +444,13 @@ impl Plugins {
     /// temporarily unavailable directory (an unmounted volume, a network share)
     /// would lose all its records and need a full re-probe.
     pub fn prune_missing(&mut self) -> Vec<PathBuf> {
-        let missing: Vec<PathBuf> = self
+        let present: HashSet<PathBuf> = self
             .catalog
             .iter()
-            .filter(|r| !r.path.exists())
+            .filter(|r| FileFacts::read(&r.path).exists)
             .map(|r| r.path.clone())
             .collect();
-        for path in &missing {
-            self.catalog.remove(path);
-        }
-        missing
+        self.catalog.prune_missing(&present)
     }
 }
 
@@ -552,7 +559,7 @@ mod tests {
             path: path.to_path_buf(),
             format: crate::host::discovery::record::PluginFormat::Vst3,
             descriptor: PluginDescriptor::default(),
-            modification_time: crate::host::discovery::file_modification_time(path).unwrap_or(0),
+            modification_time: FileFacts::read(path).mtime.unwrap_or(0),
             blacklist: Blacklist::Blacklisted {
                 reason: reason.to_string(),
             },
@@ -661,7 +668,7 @@ mod tests {
 
         // Now the vendor ships a fix. Backdating the *record* rather than
         // rewriting the file is what the sibling test does, and for a reason:
-        // `file_modification_time` is second-resolution, so a rewrite inside
+        // the modification time is second-resolution, so a rewrite inside
         // the same second leaves the times equal and the test proves nothing.
         let mut stale = blacklisted_record(&path, "SIGSEGV during probe");
         stale.modification_time = stale.modification_time.saturating_sub(1_000);
@@ -702,5 +709,34 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    /// The real edge: `prune_missing` stats each record's path and removes only
+    /// the absent one. Mutation: drop the `.filter(|r| FileFacts::read(..).exists)`
+    /// so every record counts as present (nothing is pruned).
+    #[test]
+    fn prune_missing_removes_only_records_whose_file_is_gone() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let here = dir.path().join("here.vst3");
+        std::fs::write(&here, b"x").unwrap();
+        let gone = dir.path().join("gone.vst3");
+
+        let mut mem = MemCatalog::default();
+        for path in [&here, &gone] {
+            mem.upsert(PluginRecord {
+                path: path.clone(),
+                format: crate::host::discovery::record::PluginFormat::Vst3,
+                descriptor: PluginDescriptor::default(),
+                modification_time: 0,
+                blacklist: Blacklist::Ok,
+            });
+        }
+        let mut plugins = Plugins::with_catalog(
+            Box::new(mem),
+            CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
+        );
+
+        assert_eq!(plugins.prune_missing(), vec![gone]);
+        assert_eq!(plugins.iter().count(), 1);
     }
 }

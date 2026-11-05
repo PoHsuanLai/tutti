@@ -5,7 +5,8 @@
 //! dead-man's pedal auto-blacklists plugins that crash during scanning.
 
 use super::catalog::{CatalogExt, PluginCatalog};
-use super::fs::{discover_plugins, file_modification_time};
+use super::facts::{self, FileFacts, ScanDecision};
+use super::fs::discover_plugins;
 use super::pedal::Pedal;
 use super::record::{Blacklist, PluginClass, PluginDescriptor, PluginFormat, PluginRecord};
 use crossbeam_channel::{Receiver, Sender};
@@ -227,9 +228,17 @@ impl PluginScanner {
                     current_path: path.clone(),
                     phase: ScanPhase::Scanning,
                 });
-                match classify(self.catalog.as_ref(), path) {
-                    ScanDecision::Skip(outcome) => outcome,
-                    ScanDecision::Probe => self.probe_and_record(path, *format),
+                let facts = FileFacts::read(path);
+                match facts::classify(self.catalog.get(path), &facts) {
+                    ScanDecision::Blacklisted => {
+                        debug!("skipping blacklisted plugin: {:?}", path);
+                        ScanOutcome::Blacklisted
+                    }
+                    ScanDecision::UpToDate => {
+                        debug!("skipping up-to-date plugin: {:?}", path);
+                        ScanOutcome::UpToDate
+                    }
+                    ScanDecision::Probe => self.probe_and_record(path, *format, &facts),
                 }
             })
             .fold(ScanResult::with_total(total), ScanResult::tally);
@@ -273,7 +282,12 @@ impl PluginScanner {
     /// The mtime stamp is what makes this safe to be wrong about — reinstalling or
     /// updating the plugin re-admits it automatically, without the user knowing the
     /// blacklist exists.
-    fn probe_and_record(&mut self, path: &Path, format: PluginFormat) -> ScanOutcome {
+    fn probe_and_record(
+        &mut self,
+        path: &Path,
+        format: PluginFormat,
+        facts: &FileFacts,
+    ) -> ScanOutcome {
         if let Err(e) = self.pedal.arm(path) {
             warn!("failed to arm dead-man's pedal: {e}");
         }
@@ -283,7 +297,7 @@ impl PluginScanner {
                     path: path.to_path_buf(),
                     format,
                     descriptor,
-                    modification_time: file_modification_time(path).unwrap_or(0),
+                    modification_time: facts.mtime.unwrap_or(0),
                     blacklist: Blacklist::Ok,
                 });
                 ScanOutcome::New
@@ -294,7 +308,7 @@ impl PluginScanner {
                     // The blacklist stamps the file's current mtime, so a
                     // reinstall or update re-admits the plugin (see
                     // `CatalogExt::is_blacklisted_and_unchanged`).
-                    self.catalog.blacklist(path, failure.reason);
+                    self.catalog.blacklist(path, failure.reason, facts);
                     ScanOutcome::NewlyBlacklisted
                 } else {
                     // Environmental failure — no plugin-server, an IO error, a
@@ -310,12 +324,6 @@ impl PluginScanner {
         self.pedal.disarm();
         outcome
     }
-}
-
-/// What the scanner decided to do with a discovered plugin.
-enum ScanDecision {
-    Skip(ScanOutcome),
-    Probe,
 }
 
 /// Per-plugin outcome tallied into `ScanResult`.
@@ -374,25 +382,6 @@ impl ProbeFailure {
                 blacklistable: false,
             },
         }
-    }
-}
-
-/// Pure classification: inspects the catalog, no side effects.
-///
-/// The blacklist check is mtime-aware
-/// ([`CatalogExt::is_blacklisted_and_unchanged`]): a blacklisted plugin whose
-/// file changed on disk — reinstall, vendor update — is re-probed rather than
-/// skipped forever. Checking the raw flag first meant nothing short of
-/// hand-editing the DB could clear a false positive.
-fn classify(catalog: &dyn PluginCatalog, path: &Path) -> ScanDecision {
-    if catalog.is_blacklisted_and_unchanged(path) {
-        debug!("skipping blacklisted plugin: {:?}", path);
-        ScanDecision::Skip(ScanOutcome::Blacklisted)
-    } else if !catalog.needs_rescan(path) {
-        debug!("skipping up-to-date plugin: {:?}", path);
-        ScanDecision::Skip(ScanOutcome::UpToDate)
-    } else {
-        ScanDecision::Probe
     }
 }
 
@@ -573,7 +562,7 @@ mod tests {
         create_fake_plugin(&plugins_dir, "good.vst3");
 
         let mut db = MemoryCatalog::default();
-        db.blacklist(&bad, "known crasher".into());
+        db.blacklist(&bad, "known crasher".into(), &FileFacts::read(&bad));
 
         let mut scanner = PluginScanner::new(Box::new(db), dir.path().join(".scanning"));
         let result = scanner.scan(&[plugins_dir]);
@@ -611,7 +600,7 @@ mod tests {
         let plugins_dir = dir.path().join("plugins");
         std::fs::create_dir(&plugins_dir).unwrap();
         let plugin = create_fake_plugin(&plugins_dir, "cached.vst3");
-        let mtime = file_modification_time(&plugin).unwrap();
+        let mtime = FileFacts::read(&plugin).mtime.unwrap();
 
         let mut db = MemoryCatalog::default();
         db.upsert(PluginRecord {
@@ -795,16 +784,16 @@ mod tests {
         let bad = create_fake_plugin(&plugins_dir, "crashy.vst3");
 
         let mut db = MemoryCatalog::default();
-        db.blacklist(&bad, "crashed during probe".into());
+        db.blacklist(&bad, "crashed during probe".into(), &FileFacts::read(&bad));
 
         assert!(db.is_blacklisted(&bad));
         assert_eq!(db.plugins().count(), 0);
         // The blacklist stamps the *current* mtime, so the plugin is skipped
         // while unchanged...
-        assert!(db.is_blacklisted_and_unchanged(&bad));
+        assert!(db.is_blacklisted_and_unchanged(&bad, &FileFacts::read(&bad)));
         assert!(matches!(
-            classify(&db, &bad),
-            ScanDecision::Skip(ScanOutcome::Blacklisted)
+            facts::classify(db.get(&bad), &FileFacts::read(&bad)),
+            ScanDecision::Blacklisted
         ));
     }
 
@@ -820,10 +809,10 @@ mod tests {
         let bad = create_fake_plugin(&plugins_dir, "was-crashy.vst3");
 
         let mut db = MemoryCatalog::default();
-        db.blacklist(&bad, "crashed during probe".into());
+        db.blacklist(&bad, "crashed during probe".into(), &FileFacts::read(&bad));
         assert!(matches!(
-            classify(&db, &bad),
-            ScanDecision::Skip(ScanOutcome::Blacklisted)
+            facts::classify(db.get(&bad), &FileFacts::read(&bad)),
+            ScanDecision::Blacklisted
         ));
 
         // Simulate a reinstall: the file's mtime moves.
@@ -835,11 +824,14 @@ mod tests {
 
         assert!(db.is_blacklisted(&bad), "flag is still set");
         assert!(
-            !db.is_blacklisted_and_unchanged(&bad),
+            !db.is_blacklisted_and_unchanged(&bad, &FileFacts::read(&bad)),
             "but the file changed, so it must be re-probed"
         );
         assert!(
-            matches!(classify(&db, &bad), ScanDecision::Probe),
+            matches!(
+                facts::classify(db.get(&bad), &FileFacts::read(&bad)),
+                ScanDecision::Probe
+            ),
             "a changed blacklisted plugin must be re-probed, not skipped forever"
         );
     }
@@ -856,26 +848,29 @@ mod tests {
         let b = create_fake_plugin(&plugins_dir, "b.vst3");
 
         let mut db = MemoryCatalog::default();
-        db.blacklist(&a, "pedal misfire".into());
-        db.blacklist(&b, "pedal misfire".into());
+        db.blacklist(&a, "pedal misfire".into(), &FileFacts::read(&a));
+        db.blacklist(&b, "pedal misfire".into(), &FileFacts::read(&b));
         assert_eq!(db.blacklisted().count(), 2);
         assert_eq!(db.plugins().count(), 0);
         // Blacklisting stamps the live mtime, so the entry is "unchanged".
-        assert!(!db.needs_rescan(&a));
+        assert!(!db.needs_rescan(&a, &FileFacts::read(&a)));
 
         assert!(db.unblacklist(&a));
         assert!(!db.is_blacklisted(&a));
         // Cleared records are forced to re-probe: the blacklisted stub's
         // descriptor is a placeholder, so it must not be served as-is.
-        assert!(db.needs_rescan(&a));
-        assert!(matches!(classify(&db, &a), ScanDecision::Probe));
+        assert!(db.needs_rescan(&a, &FileFacts::read(&a)));
+        assert!(matches!(
+            facts::classify(db.get(&a), &FileFacts::read(&a)),
+            ScanDecision::Probe
+        ));
         // Second call is a no-op, not a lie.
         assert!(!db.unblacklist(&a));
 
         let cleared = db.clear_blacklist();
         assert_eq!(cleared, vec![b.clone()]);
         assert_eq!(db.blacklisted().count(), 0);
-        assert!(db.needs_rescan(&b));
+        assert!(db.needs_rescan(&b, &FileFacts::read(&b)));
     }
 
     #[test]
@@ -908,13 +903,13 @@ mod tests {
             reason: "dlopen failed".into(),
         });
         assert!(failure.blacklistable);
-        db.blacklist(&broken, failure.reason);
+        db.blacklist(&broken, failure.reason, &FileFacts::read(&broken));
 
         // The re-probe loop is closed.
         assert!(
             matches!(
-                classify(&db, &broken),
-                ScanDecision::Skip(ScanOutcome::Blacklisted)
+                facts::classify(db.get(&broken), &FileFacts::read(&broken)),
+                ScanDecision::Blacklisted
             ),
             "a recorded load failure must be skipped, not re-probed at full \
              subprocess cost on every scan"
@@ -938,7 +933,10 @@ mod tests {
             ..record
         });
         assert!(
-            matches!(classify(&db, &broken), ScanDecision::Probe),
+            matches!(
+                facts::classify(db.get(&broken), &FileFacts::read(&broken)),
+                ScanDecision::Probe
+            ),
             "a rebuilt or reinstalled plugin must be re-probed"
         );
     }

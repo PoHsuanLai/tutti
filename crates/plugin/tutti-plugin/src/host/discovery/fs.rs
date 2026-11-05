@@ -1,5 +1,6 @@
 //! Filesystem primitives for plugin discovery.
 
+use super::facts::FileFacts;
 use super::record::PluginFormat;
 use std::path::{Path, PathBuf};
 use tracing::debug;
@@ -28,8 +29,8 @@ pub(super) const FORMAT_BY_EXTENSION: &[(&str, PluginFormat)] = &[
 /// a real and common case. Matching case-sensitively would make those bundles
 /// invisible — and since a `.VST3` bundle *is* a directory, the scanner would
 /// recurse *into* it and silently find nothing.
-pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
-    let ext = path.extension().and_then(|s| s.to_str())?;
+pub fn format_from_path(path: impl AsRef<Path>) -> Option<PluginFormat> {
+    let ext = path.as_ref().extension().and_then(|s| s.to_str())?;
     let ext = ext.to_ascii_lowercase();
     FORMAT_BY_EXTENSION
         .iter()
@@ -37,13 +38,53 @@ pub fn format_from_path(path: &Path) -> Option<PluginFormat> {
         .map(|(_, format)| *format)
 }
 
-/// Returns a file's modification time as seconds since the Unix epoch.
-pub fn file_modification_time(path: &Path) -> Option<u64> {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
+impl FileFacts {
+    /// Reads the facts for `path`.
+    ///
+    /// The scan's filesystem edge: every decision after it is a pure function of
+    /// the value. For a plugin bundle (a directory) the modification time
+    /// is the later of the directory's and its module's, since replacing the
+    /// binary inside leaves the directory's own time alone. The module is found
+    /// by `tutti_plugin_types::bundle`, the one bundle walk.
+    pub fn read(path: impl AsRef<Path>) -> Self {
+        let path = path.as_ref();
+        let metadata = std::fs::metadata(path);
+        let format = format_from_path(path);
+        let mut mtime = metadata.as_ref().ok().and_then(modified_secs);
+        if metadata.as_ref().is_ok_and(|m| m.is_dir())
+            && let Some(module) = module_in_bundle(path, format)
+        {
+            let inner = std::fs::metadata(module)
+                .ok()
+                .and_then(|m| modified_secs(&m));
+            mtime = mtime.max(inner);
+        }
+        Self {
+            exists: metadata.is_ok(),
+            mtime,
+            format,
+        }
+    }
+}
+
+fn modified_secs(metadata: &std::fs::Metadata) -> Option<u64> {
+    metadata
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
+}
+
+/// The module inside a bundle directory, preferring the one this target loads.
+fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathBuf> {
+    use tutti_plugin_types::bundle::{ModuleKind, any_module_in_bundle, native_module_in_bundle};
+    let kind = match format? {
+        PluginFormat::Vst3 => ModuleKind::Vst3,
+        PluginFormat::Vst2 => ModuleKind::Vst2,
+        PluginFormat::Clap => ModuleKind::Clap,
+        PluginFormat::AudioUnit => ModuleKind::Au,
+    };
+    native_module_in_bundle(bundle, kind).or_else(|| any_module_in_bundle(bundle, kind))
 }
 
 /// Recursively discovers plugin files across `dirs`, with the format each
@@ -64,8 +105,10 @@ pub fn file_modification_time(path: &Path) -> Option<u64> {
 ///
 /// Unreadable directories are skipped, not reported — discovery over a list of
 /// standard install locations must not fail because one of them is absent.
-pub fn discover(dirs: &[PathBuf]) -> Vec<(PathBuf, PluginFormat)> {
-    dirs.iter().flat_map(|dir| discover_plugins(dir)).collect()
+pub fn discover(dirs: impl IntoIterator<Item = impl AsRef<Path>>) -> Vec<(PathBuf, PluginFormat)> {
+    dirs.into_iter()
+        .flat_map(|dir| discover_plugins(dir.as_ref()))
+        .collect()
 }
 
 /// Recursively discover plugin files in `dir`.
@@ -219,5 +262,61 @@ mod tests {
 
         let found = discover_plugins(dir.path());
         assert_eq!(found.len(), 1);
+    }
+
+    /// A bundle directory holding one bare-stem binary, with the binary's and the
+    /// directory's times set; returns the facts read.
+    #[cfg(unix)]
+    fn facts_of_bundle(name: &str, module_secs: u64, dir_secs: u64) -> FileFacts {
+        use std::time::{Duration, UNIX_EPOCH};
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join(name);
+        let arch = bundle
+            .join("Contents")
+            .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
+        std::fs::create_dir_all(&arch).unwrap();
+        let module = arch.join(name.split('.').next().unwrap());
+        std::fs::write(&module, b"x").unwrap();
+        let set = |p: &Path, secs: u64| {
+            std::fs::File::open(p)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        set(&module, module_secs);
+        set(&bundle, dir_secs);
+        FileFacts::read(&bundle)
+    }
+
+    /// Replacing a bundle's binary leaves the directory's own time alone; the
+    /// facts must still move, for every bundle format. Mutation: drop the `max`
+    /// with the module's in `FileFacts::read`; and, per format, map that format
+    /// to `return None` in `module_in_bundle`.
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_whose_binary_changed_reads_as_changed() {
+        for name in ["Reverb.vst3", "Legacy.vst", "Synth.clap", "Verb.component"] {
+            let facts = facts_of_bundle(name, 2_000_000_000, 1_000_000_000);
+            assert_eq!(facts.mtime, Some(2_000_000_000), "{name}");
+            // The directory later than the binary still wins.
+            let facts = facts_of_bundle(name, 1_000_000_000, 3_000_000_000);
+            assert_eq!(facts.mtime, Some(3_000_000_000), "{name}");
+        }
+    }
+
+    #[test]
+    fn file_facts_read_reports_a_file_a_missing_path_and_the_extension() {
+        let dir = TempDir::new().unwrap();
+        let file = create_fake_plugin(dir.path(), "a.clap");
+
+        let present = FileFacts::read(&file);
+        assert!(present.exists);
+        assert!(present.mtime.is_some_and(|t| t > 0));
+        assert_eq!(present.format, Some(PluginFormat::Clap));
+
+        let absent = FileFacts::read(dir.path().join("gone.vst3"));
+        assert!(!absent.exists);
+        assert_eq!(absent.mtime, None);
+        assert_eq!(absent.format, Some(PluginFormat::Vst3));
     }
 }

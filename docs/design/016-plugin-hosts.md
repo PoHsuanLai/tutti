@@ -131,13 +131,12 @@ are tested only by `real_stall_tests.rs`, against a real server.
 
 ### 1.5 Discovery reads the filesystem inside decisions
 
-`CatalogExt::is_blacklisted_and_unchanged` and `needs_rescan`
-(`host/discovery/catalog.rs:63,117`) call `file_modification_time(path)`;
-`blacklist` (`:131`) calls it and `format_from_path`; `prune_missing` (`:149`)
-calls `path.exists()`. `scanner.rs:376` `classify` is therefore a decision plus
-stat calls, stat-ed twice per file, and its tests build real directories and rely
-on mtime moving. `JsonCatalog::load` (`database.rs:32`) and the dead-man's pedal
-`recover` (`pedal.rs:36`) mix read, parse, decide, rename and log.
+Before this change, `CatalogExt::is_blacklisted_and_unchanged` and `needs_rescan`
+called `file_modification_time(path)`; `blacklist` called it and
+`format_from_path`; `prune_missing` called `path.exists()`. The scanner's
+`classify` was therefore a decision plus stat calls, stat-ed twice per file, and
+its tests built real directories and relied on mtime moving. `JsonCatalog::load`
+and the dead-man's pedal `recover` mixed read, parse, decide, rename and log.
 
 ### 1.6 Unsafe on the public surface
 
@@ -1047,20 +1046,30 @@ pub struct FileFacts {
 
 pub fn classify(record: Option<&PluginRecord>, facts: &FileFacts) -> ScanDecision;
 pub fn needs_rescan(record: &PluginRecord, facts: &FileFacts) -> bool;
-pub fn blacklist_record(existing: Option<&PluginRecord>, reason: String, facts: &FileFacts) -> PluginRecord;
+pub fn is_blacklisted_and_unchanged(record: &PluginRecord, facts: &FileFacts) -> bool;
+pub fn blacklist_record(existing: Option<&PluginRecord>, path: &Path, reason: String, facts: &FileFacts) -> PluginRecord;
 pub fn missing<'a>(records: impl Iterator<Item = &'a PluginRecord>, present: &HashSet<PathBuf>) -> Vec<PathBuf>;
-pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error>;
-pub fn parse_pedal(text: &str) -> Option<PathBuf>;
+pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error>; // `json` feature
+fn parse_pedal(text: &str) -> Option<PathBuf>;                                                    // private to the pedal
 ```
 
-`scan` is the IO: it walks the directories (`discover`, `fs.rs:67`), stats each
-file once into `FileFacts`, and calls `classify`. The catalog's default methods
-that read the filesystem go; they take facts instead. `JsonCatalog::load` and
-`Pedal::recover` keep the read, the rename and the remove, and call
-`parse_records` and `parse_pedal` for the decision. **`tutti_plugin_types::bundle`
-stays the one bundle walk**; the scan's `discover` and `FileFacts` use
-`native_module_in_bundle` and `any_module_in_bundle`, and nothing writes another
-copy (fp-edge F5, F6).
+`ScanDecision` is `Blacklisted | UpToDate | Probe`. `scan` is the IO: it walks the
+directories (`discover`, `fs.rs`), reads each file's `FileFacts` once
+(`FileFacts::read`, one `stat`), and calls `classify`, then probes with the same
+facts, so the record is stamped with the time the decision saw. The catalog's
+default methods that read the filesystem take the facts instead
+(`needs_rescan(path, &facts)`, `blacklist(path, reason, &facts)`), and
+`prune_missing` takes the set of paths the caller found present. `JsonCatalog::load`
+and `Pedal::recover` keep the read, the rename and the remove, and call
+`parse_records` and `parse_pedal` for the decision. `blacklist_record` always
+stamps the facts' time, existing record or stub: keeping the old time left a
+blacklisted record whose file had changed looking changed, so it was re-probed on
+every scan. `discover` keys on the path's extension. `FileFacts::read` takes a
+plugin bundle's time as the later of the directory's and its module's, the module found
+by `tutti_plugin_types::bundle` (`native_module_in_bundle`, then
+`any_module_in_bundle`), because replacing the binary leaves the directory's time
+alone. Nothing in discovery writes another copy of the bundle walk (fp-edge F5,
+F6).
 
 ### 2.9 Safety
 

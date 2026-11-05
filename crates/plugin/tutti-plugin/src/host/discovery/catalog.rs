@@ -5,8 +5,9 @@
 //! who want SQLite, an in-memory map for tests, or any other store impl
 //! this trait and pass it to `Plugins::with_catalog`.
 
-use super::fs::{file_modification_time, format_from_path};
-use super::record::{Blacklist, PluginFormat, PluginRecord};
+use super::facts::{self, FileFacts};
+use super::record::{Blacklist, PluginRecord};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// A pluggable store for discovered plugin records.
@@ -14,7 +15,9 @@ use std::path::{Path, PathBuf};
 /// Implement these primitives over any store (a JSON file, SQLite, an
 /// in-memory map) and pass it to `Plugins::with_catalog`. The derived
 /// operations (`is_blacklisted`, `needs_rescan`, `plugins`, `blacklist`,
-/// `prune_missing`, …) come from the [`CatalogExt`] blanket extension.
+/// `prune_missing`, …) come from the [`CatalogExt`] blanket extension. Those that
+/// depend on the filesystem take a [`FileFacts`] read by the caller and never
+/// touch the disk themselves.
 pub trait PluginCatalog: Send + Sync {
     /// Returns the record for a filesystem path, if any.
     fn get(&self, path: &Path) -> Option<&PluginRecord>;
@@ -47,8 +50,9 @@ pub trait PluginCatalog: Send + Sync {
 /// PluginCatalog>` and any concrete store both get them.
 pub trait CatalogExt: PluginCatalog {
     /// Returns `true` if the plugin at `path` is recorded and blacklisted.
-    fn is_blacklisted(&self, path: &Path) -> bool {
-        self.get(path).is_some_and(|r| r.blacklist.is_blacklisted())
+    fn is_blacklisted(&self, path: impl AsRef<Path>) -> bool {
+        self.get(path.as_ref())
+            .is_some_and(|r| r.blacklist.is_blacklisted())
     }
 
     /// Returns `true` if `path` is blacklisted **and** its file has not changed
@@ -60,11 +64,9 @@ pub trait CatalogExt: PluginCatalog {
     /// blacklist without that escape hatch is permanent, and false positives
     /// are expected (the dead-man's pedal fires on force-quit, power loss, and
     /// OOM-kill just as readily as on a real plugin crash).
-    fn is_blacklisted_and_unchanged(&self, path: &Path) -> bool {
-        self.get(path).is_some_and(|r| {
-            r.blacklist.is_blacklisted()
-                && file_modification_time(path).unwrap_or(0) == r.modification_time
-        })
+    fn is_blacklisted_and_unchanged(&self, path: impl AsRef<Path>, facts: &FileFacts) -> bool {
+        self.get(path.as_ref())
+            .is_some_and(|r| facts::is_blacklisted_and_unchanged(r, facts))
     }
 
     /// Clears the blacklist flag on one record, keeping its other fields.
@@ -75,8 +77,8 @@ pub trait CatalogExt: PluginCatalog {
     ///
     /// The inverse of [`Self::blacklist`]. Without it a single pedal misfire
     /// hides a plugin forever, remediable only by hand-editing the DB.
-    fn unblacklist(&mut self, path: &Path) -> bool {
-        let Some(existing) = self.get(path) else {
+    fn unblacklist(&mut self, path: impl AsRef<Path>) -> bool {
+        let Some(existing) = self.get(path.as_ref()) else {
             return false;
         };
         if !existing.blacklist.is_blacklisted() {
@@ -113,12 +115,10 @@ pub trait CatalogExt: PluginCatalog {
     }
 
     /// Returns `true` if `path` has no record or its file's modification time
-    /// has changed since the last scan.
-    fn needs_rescan(&self, path: &Path) -> bool {
-        self.get(path).is_none_or(|record| {
-            let current_mtime = file_modification_time(path).unwrap_or(0);
-            current_mtime != record.modification_time
-        })
+    /// (in `facts`) has changed since the last scan.
+    fn needs_rescan(&self, path: impl AsRef<Path>, facts: &FileFacts) -> bool {
+        self.get(path.as_ref())
+            .is_none_or(|record| facts::needs_rescan(record, facts))
     }
 
     /// Iterates the records that are not blacklisted.
@@ -127,34 +127,24 @@ pub trait CatalogExt: PluginCatalog {
     }
 
     /// Marks a path as blacklisted with a reason, inserting a stub record if
-    /// the path has none yet.
-    fn blacklist(&mut self, path: &Path, reason: String) {
-        let record = match self.get(path) {
-            Some(existing) => PluginRecord {
-                blacklist: Blacklist::Blacklisted { reason },
-                ..existing.clone()
-            },
-            None => PluginRecord {
-                path: path.to_path_buf(),
-                format: format_from_path(path).unwrap_or(PluginFormat::Vst3),
-                descriptor: super::record::PluginDescriptor::default(),
-                modification_time: file_modification_time(path).unwrap_or(0),
-                blacklist: Blacklist::Blacklisted { reason },
-            },
-        };
+    /// the path has none yet, and stamps it with the file's time in `facts`.
+    fn blacklist(&mut self, path: impl AsRef<Path>, reason: String, facts: &FileFacts) {
+        let path = path.as_ref();
+        let record = facts::blacklist_record(self.get(path), path, reason, facts);
         self.upsert(record);
     }
 
-    /// Removes every record whose path does not exist on disk.
-    fn prune_missing(&mut self) {
-        let missing: Vec<PathBuf> = self
-            .iter()
-            .filter(|r| !r.path.exists())
-            .map(|r| r.path.clone())
-            .collect();
-        for path in missing {
-            self.remove(&path);
+    /// Removes every record whose path is not in `present` and returns the
+    /// removed paths.
+    ///
+    /// `present` is the set of record paths that exist on disk, gathered by the
+    /// caller.
+    fn prune_missing(&mut self, present: &HashSet<PathBuf>) -> Vec<PathBuf> {
+        let missing = facts::missing(self.iter(), present);
+        for path in &missing {
+            self.remove(path);
         }
+        missing
     }
 
     /// Total record count (including blacklisted).
@@ -196,5 +186,108 @@ impl PluginCatalog for MemoryCatalog {
 
     fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
         Box::new(self.records.values())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::discovery::record::{PluginDescriptor, PluginFormat};
+
+    const T: u64 = 1_700_000_000;
+
+    fn facts(mtime: u64) -> FileFacts {
+        FileFacts {
+            exists: true,
+            mtime: Some(mtime),
+            format: Some(PluginFormat::Vst3),
+        }
+    }
+
+    fn rec(path: &str, mtime: u64, blacklist: Blacklist) -> PluginRecord {
+        PluginRecord {
+            path: PathBuf::from(path),
+            format: PluginFormat::Vst3,
+            descriptor: PluginDescriptor::default(),
+            modification_time: mtime,
+            blacklist,
+        }
+    }
+
+    fn bad() -> Blacklist {
+        Blacklist::Blacklisted {
+            reason: "crashed".into(),
+        }
+    }
+
+    // Mutation records: the edit that breaks each test.
+
+    /// Mutation: return `false` for an absent record.
+    #[test]
+    fn a_path_with_no_record_needs_a_rescan() {
+        let db = MemoryCatalog::default();
+        assert!(db.needs_rescan("/p/unknown.vst3", &facts(T)));
+    }
+
+    /// Mutation: pass `FileFacts` through unread (compare to `0`), or invert the
+    /// comparison.
+    #[test]
+    fn needs_rescan_follows_the_facts_time() {
+        let mut db = MemoryCatalog::default();
+        db.upsert(rec("/p/a.vst3", T, Blacklist::Ok));
+        assert!(!db.needs_rescan("/p/a.vst3", &facts(T)));
+        assert!(db.needs_rescan("/p/a.vst3", &facts(T + 1)));
+    }
+
+    /// Mutation: ignore the facts and report `is_blacklisted()` alone.
+    #[test]
+    fn a_blacklist_holds_only_while_the_file_is_unchanged() {
+        let mut db = MemoryCatalog::default();
+        db.upsert(rec("/p/a.vst3", T, bad()));
+        assert!(db.is_blacklisted_and_unchanged("/p/a.vst3", &facts(T)));
+        assert!(!db.is_blacklisted_and_unchanged("/p/a.vst3", &facts(T + 1)));
+        assert!(db.is_blacklisted("/p/a.vst3"), "the flag outlives the file");
+        assert!(!db.is_blacklisted_and_unchanged("/p/other.vst3", &facts(T)));
+    }
+
+    /// Mutation: stamp `0` or the old record's time in `blacklist`.
+    #[test]
+    fn blacklist_stamps_the_facts_time_on_a_stub_and_on_an_existing_record() {
+        let mut db = MemoryCatalog::default();
+        db.blacklist("/p/new.vst3", "boom".into(), &facts(T));
+        assert!(db.is_blacklisted_and_unchanged("/p/new.vst3", &facts(T)));
+
+        db.upsert(rec("/p/old.vst3", T, Blacklist::Ok));
+        db.blacklist("/p/old.vst3", "boom".into(), &facts(T + 7));
+        assert!(db.is_blacklisted_and_unchanged("/p/old.vst3", &facts(T + 7)));
+        assert_eq!(db.len(), 2);
+    }
+
+    /// Mutation: set `modification_time` to anything but `0` in `unblacklist`
+    /// (e.g. `1`), or skip the clearing.
+    #[test]
+    fn unblacklist_forces_a_rescan_without_reading_the_disk() {
+        let mut db = MemoryCatalog::default();
+        db.blacklist("/p/a.vst3", "boom".into(), &facts(T));
+        assert!(db.unblacklist("/p/a.vst3"));
+        assert_eq!(db.get(Path::new("/p/a.vst3")).unwrap().modification_time, 0);
+        assert!(db.needs_rescan("/p/a.vst3", &facts(T)));
+        assert!(!db.unblacklist("/p/a.vst3"));
+        assert!(!db.unblacklist("/p/absent.vst3"));
+    }
+
+    /// Mutation: remove the records that are present, or return an empty list.
+    #[test]
+    fn prune_missing_removes_and_reports_exactly_the_absent_records() {
+        let mut db = MemoryCatalog::default();
+        db.upsert(rec("/p/here.vst3", T, Blacklist::Ok));
+        db.upsert(rec("/p/gone.vst3", T, bad()));
+        let present: HashSet<PathBuf> = [PathBuf::from("/p/here.vst3")].into();
+
+        let pruned = db.prune_missing(&present);
+
+        assert_eq!(pruned, vec![PathBuf::from("/p/gone.vst3")]);
+        assert_eq!(db.len(), 1);
+        assert!(db.get(Path::new("/p/here.vst3")).is_some());
     }
 }

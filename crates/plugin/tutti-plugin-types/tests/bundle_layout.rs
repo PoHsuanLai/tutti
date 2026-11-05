@@ -38,6 +38,8 @@ fn bundle_ext(kind: ModuleKind) -> &'static str {
     match kind {
         ModuleKind::Vst2 => "vst",
         ModuleKind::Vst3 => "vst3",
+        ModuleKind::Clap => "clap",
+        ModuleKind::Au => "component",
     }
 }
 
@@ -57,6 +59,9 @@ fn module_name(stem: &str, arch: &str, kind: ModuleKind) -> String {
         match kind {
             ModuleKind::Vst2 => format!("{stem}.dll"),
             ModuleKind::Vst3 => format!("{stem}.vst3"),
+            ModuleKind::Clap => format!("{stem}.clap"),
+            // An AU bundle ships on macOS only; no other directory names one.
+            ModuleKind::Au => stem.to_string(),
         }
     }
 }
@@ -125,7 +130,7 @@ fn dirs_this_target_can_load() -> Vec<String> {
 #[test]
 fn every_arch_directory_in_the_list_resolves_its_own_module() {
     let tmp = TempDir::new().expect("tmp");
-    for kind in [ModuleKind::Vst2, ModuleKind::Vst3] {
+    for kind in [ModuleKind::Vst2, ModuleKind::Vst3, ModuleKind::Clap] {
         for arch in ALL_ARCH_SUBDIRS {
             let stem = format!("plug-{arch}");
             let bundle = tmp.path().join(format!("{stem}.{}", bundle_ext(kind)));
@@ -231,7 +236,7 @@ fn a_directory_that_holds_no_module_is_none_rather_than_a_panic() {
     arch_dir(&empty_arch, "x86_64-linux");
 
     for candidate in [&not_a_bundle, &empty_contents, &empty_arch] {
-        for kind in [ModuleKind::Vst2, ModuleKind::Vst3] {
+        for kind in [ModuleKind::Vst2, ModuleKind::Vst3, ModuleKind::Clap] {
             assert_eq!(
                 any_module_in_bundle(candidate, kind),
                 None,

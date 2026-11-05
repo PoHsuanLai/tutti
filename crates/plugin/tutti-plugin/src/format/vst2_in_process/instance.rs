@@ -40,8 +40,18 @@ struct Declared {
 
 /// A VST2 plugin, activated.
 pub(super) struct Instance {
-    /// `None` only while a reconfiguration holds the halves.
+    /// `None` only while a reconfiguration holds the halves, or after the
+    /// plugin was lost (see `lost`).
     halves: Option<(Vst2Processor, Vst2Controller)>,
+    /// The plugin, suspended, when no activation would take it again. Every
+    /// block then renders silence; the control side is told by
+    /// [`is_lost`](Self::is_lost).
+    lost: Option<Vst2Loaded>,
+    /// Nothing, for a block a lost plugin did not render.
+    no_events: MidiEventVec,
+    /// What the plugin runs at. Its `mode` follows the live render mode
+    /// ([`set_offline_render`](Self::set_offline_render)), so a rate change
+    /// re-activates in the mode the plugin was told.
     prepare: Prepare,
     declared: Declared,
     /// A rate change happened since the last [`poll_changes`](Self::poll_changes):
@@ -77,6 +87,8 @@ impl Instance {
                 };
                 Ok(Self {
                     halves: Some(halves),
+                    lost: None,
+                    no_events: MidiEventVec::new(),
                     prepare,
                     declared,
                     reread: false,
@@ -89,12 +101,39 @@ impl Instance {
         }
     }
 
+    /// The Controller. Panics on a lost plugin: the control side asks
+    /// [`is_lost`](Self::is_lost) first (it cannot happen unless a rate
+    /// rollback fails twice, which `set_sample_rate`'s up-front check rules out).
     fn controller(&self) -> &Vst2Controller {
-        &self.halves.as_ref().expect("the halves are whole").1
+        &self.halves.as_ref().expect("the plugin is not lost").1
     }
 
-    fn processor(&mut self) -> &mut Vst2Processor {
-        &mut self.halves.as_mut().expect("the halves are whole").0
+    /// Whether the plugin could not be activated again and renders silence.
+    #[must_use]
+    pub(super) fn is_lost(&self) -> bool {
+        self.halves.is_none()
+    }
+
+    /// The latency and tail as the control side last read them
+    /// ([`poll_changes`](Self::poll_changes)). Dispatches nothing, so the graph
+    /// compile may call it.
+    pub(super) fn figures(&self) -> (Samples, PluginTail) {
+        (self.declared.latency, self.declared.tail)
+    }
+
+    /// Tells the plugin whether it renders offline, and keeps the mode a rate
+    /// change activates it in.
+    pub(super) fn set_offline_render(&mut self, offline: bool) {
+        self.prepare.mode = if offline {
+            RenderMode::Offline
+        } else {
+            RenderMode::Realtime
+        };
+        if let Some((_, controller)) = &self.halves {
+            controller.set_offline_render(offline);
+        } else if let Some(plugin) = &self.lost {
+            plugin.set_offline_render(offline);
+        }
     }
 
     /// One block through the plugin: [`Vst2Processor::process_f32`].
@@ -105,20 +144,33 @@ impl Instance {
         num_samples: usize,
         ctx: &Vst2ProcessContext,
     ) -> &MidiEventVec {
-        self.processor()
-            .process_f32(inputs, outputs, num_samples, ctx)
+        match self.halves.as_mut() {
+            Some((processor, _)) => processor.process_f32(inputs, outputs, num_samples, ctx),
+            None => {
+                for out in outputs.iter_mut() {
+                    let n = num_samples.min(out.len());
+                    out[..n].fill(0.0);
+                }
+                &self.no_events
+            }
+        }
     }
 
     /// The block's parameter changes, written before it renders:
     /// [`Vst2Processor::write_automation`]. Returns how many were refused.
     pub(super) fn write_automation(&mut self, changes: &crate::protocol::ParameterChanges) -> u32 {
-        self.processor().write_automation(changes)
+        match self.halves.as_mut() {
+            Some((processor, _)) => processor.write_automation(changes),
+            None => 0,
+        }
     }
 
     /// SysEx messages dropped whole: [`Vst2Processor::dropped_sysex`].
     #[cfg(test)]
     pub(super) fn dropped_sysex(&mut self) -> u64 {
-        self.processor().dropped_sysex()
+        self.halves
+            .as_mut()
+            .map_or(0, |(processor, _)| processor.dropped_sysex())
     }
 
     /// Tells the plugin its rate: a rejoin and an activation at the new
@@ -129,9 +181,16 @@ impl Instance {
     /// already accepted. The figures the plugin recomputes for the new rate are
     /// read by the next [`poll_changes`](Self::poll_changes).
     pub(super) fn set_sample_rate(&mut self, rate: f64) {
+        // The same test `activate` makes, before the plugin is taken apart: a
+        // refusal after the rejoin would leave a plugin to put back.
+        if !(rate.is_finite() && rate > 0.0) {
+            return;
+        }
+        let Some((processor, controller)) = self.halves.take() else {
+            return;
+        };
         let mut wanted = self.prepare;
         wanted.rate = SampleRate(rate);
-        let (processor, controller) = self.halves.take().expect("the halves are whole");
         let loaded = match Vst2Loaded::deactivate(processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => {
@@ -139,25 +198,34 @@ impl Instance {
                 return;
             }
         };
-        match loaded.activate(wanted) {
+        let halves = match loaded.activate(wanted) {
             Ok(halves) => {
-                self.halves = Some(halves);
                 self.prepare = wanted;
+                Some(halves)
             }
-            Err(refused) => {
-                let plugin = refused.plugin.expect("VST2 hands the plugin back");
-                match plugin.activate(self.prepare) {
-                    Ok(halves) => self.halves = Some(halves),
+            Err(refused) => match refused.plugin {
+                Some(plugin) => match plugin.activate(self.prepare) {
+                    Ok(halves) => Some(halves),
                     Err(refused) => {
-                        panic!(
-                            "the plugin would not run again at the rate it ran at: {}",
-                            refused.reason
-                        )
+                        self.lost = refused.plugin;
+                        None
                     }
-                }
-            }
-        }
+                },
+                None => None,
+            },
+        };
+        self.halves = halves;
         self.reread = true;
+    }
+
+    /// Takes the plugin out of its activation, as a failed rollback would.
+    #[cfg(test)]
+    pub(super) fn lose(&mut self) {
+        let (processor, controller) = self.halves.take().expect("the plugin is not lost");
+        let Ok(loaded) = Vst2Loaded::deactivate(processor, controller) else {
+            panic!("the halves are a pair");
+        };
+        self.lost = Some(loaded);
     }
 
     /// What the plugin changed about itself since the last call, and the moment
@@ -217,6 +285,44 @@ impl Deref for Instance {
 
 impl DerefMut for Instance {
     fn deref_mut(&mut self) -> &mut Vst2Controller {
-        &mut self.halves.as_mut().expect("the halves are whole").1
+        &mut self.halves.as_mut().expect("the plugin is not lost").1
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/support/probe_path.rs"]
+mod probe_path;
+
+#[cfg(test)]
+mod tests {
+    use super::probe_path;
+    use super::*;
+
+    /// **A plugin that is lost renders silence, and the audio thread does not
+    /// panic**: the block's outputs are zeroed, no event comes out, and the
+    /// automation is refused without a plugin to take it.
+    ///
+    /// Mutation (run): `process_f32`'s `None` arm panicking
+    /// (`unreachable!`) -> the block panics -> fails. Mutation (run): the arm
+    /// returning without zeroing -> the outputs keep 1.0 -> fails.
+    #[test]
+    fn a_lost_plugin_renders_silence_without_panicking() {
+        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64).expect("loads");
+        assert!(!instance.is_lost());
+        instance.lose();
+        assert!(instance.is_lost());
+
+        let inputs = [[0.0f32; 64], [0.0; 64]];
+        let inputs: Vec<&[f32]> = inputs.iter().map(|c| &c[..]).collect();
+        let mut out = [[1.0f32; 64], [1.0; 64]];
+        let mut outputs: Vec<&mut [f32]> = out.iter_mut().map(|c| &mut c[..]).collect();
+        let ctx = Vst2ProcessContext::new(48_000.0);
+        let events = instance.process_f32(&inputs, &mut outputs, 64, &ctx);
+        assert!(events.is_empty());
+        assert!(out.iter().flatten().all(|&x| x == 0.0), "silence");
+        assert_eq!(
+            instance.write_automation(&crate::protocol::ParameterChanges::default()),
+            0
+        );
     }
 }

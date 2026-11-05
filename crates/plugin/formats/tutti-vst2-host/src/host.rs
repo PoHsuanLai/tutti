@@ -553,11 +553,23 @@ mod tests {
     /// `audioMasterUpdateDisplay` asks for the parameters' names and values to
     /// be read again.
     ///
+    /// A host nobody called asks for nothing, and the request is consumed by
+    /// taking it, so one call is one re-read.
+    ///
     /// Mutation (run): `update_display` raising only the `Values` scope -> the
     /// `Info` request is missing and the names stay stale -> fails.
+    /// Mutation (run): `HostState::new` raising `IoChanged` -> the quiet host
+    /// reports a request -> fails.
+    /// Mutation (run): `RequestWord::take` loading the word instead of swapping
+    /// it to zero -> the second take sees the requests again -> fails.
     #[test]
     fn update_display_asks_for_a_reread_of_names_and_values() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "a quiet plugin has asked for nothing"
+        );
         host.update_display();
         let asked: Vec<_> = tutti_plugin_types::taken(host.requests()).collect();
         assert_eq!(
@@ -566,6 +578,11 @@ mod tests {
                 Request::RescanParams(RescanScope::Values),
                 Request::RescanParams(RescanScope::Info)
             ]
+        );
+        assert_eq!(
+            tutti_plugin_types::taken(host.requests()).count(),
+            0,
+            "consumed on read"
         );
     }
 

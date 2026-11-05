@@ -924,7 +924,13 @@ and from CLAP and VST3:
   `drain_async_events`). `Vst2Instance::probe` reads the identity without activating.
 - The in-process node keeps the one lock: a private `Instance` holds both halves under
   it, the audio thread `try_lock`s for the Processor, and a rate change is a rejoin and an
-  activation under the lock, on the editor pump as before. The scratch is the
+  activation under the lock, on the editor pump as before. The `Instance` keeps the
+  render mode in its own `Prepare` (`set_offline_render` records it), so a rate change
+  re-activates in the mode the plugin was told, which an export fork relies on. A rate
+  the plugin refuses is rolled back, and a plugin that then cannot be activated again is
+  lost: its blocks render silence and the pump skips it, with no panic on either thread.
+  The graph's `shape` reads the figures the control side last re-read
+  (`Instance::figures`) and dispatches nothing. The scratch is the
   Processor's, sized at the activation to the block the plugin was told (a longer
   graph block is split before it reaches the plugin), so the node's own scratch and
   `ensure_scratch_size` are gone.

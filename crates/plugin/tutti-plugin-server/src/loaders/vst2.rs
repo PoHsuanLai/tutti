@@ -682,6 +682,15 @@ mod tests {
             events.iter().any(|e| matches!(e, AsyncEvent::IoChanged)),
             "the I/O change was not reported: {events:?}"
         );
+        // Irrefutable while VST2 is the only format built.
+        #[cfg_attr(
+            not(any(
+                feature = "vst3",
+                feature = "clap",
+                all(feature = "au", target_os = "macos")
+            )),
+            expect(irrefutable_let_patterns, reason = "`Vst2` is the only variant built")
+        )]
         let Plugin::Vst2(p) = &plugin else {
             unreachable!("constructed as Vst2")
         };

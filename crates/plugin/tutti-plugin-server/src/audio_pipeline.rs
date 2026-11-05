@@ -212,7 +212,7 @@ impl AudioPipeline {
     }
 
     /// Blocks the plugin failed since the pipeline was built.
-    #[cfg(test)]
+    #[cfg(all(test, any(feature = "vst3", feature = "clap")))]
     pub(crate) fn failed_blocks(&self) -> u64 {
         self.failed_blocks
     }
@@ -256,7 +256,7 @@ impl AudioPipeline {
 
     /// The parameter queues the plugin's output holds, for the session's
     /// tests of when it is re-reserved.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "vst3"))]
     pub(crate) fn param_queues(&self) -> usize {
         self.plugin_output.param_changes.capacity()
     }

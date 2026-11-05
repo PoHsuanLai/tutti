@@ -58,7 +58,7 @@ use crate::loaded::Vst2Loaded;
 ///    the Controller. A Processor that finds itself the last holder (its
 ///    Controller was dropped first) does not destroy the plugin on the thread it
 ///    renders on: it hands the shell to a bounded retirement queue ([`retire`])
-///    that a control-side call empties ([`reap`]: `load`, `activate` and every
+///    that a control-side call empties ([`reap`]: `activate` and every
 ///    `flush_edits` tick). Until it is reaped the plugin stays resumed,
 ///    unreferenced and idle. Only when the queue is full (64 plugins retired and
 ///    never reaped) does the Processor's drop destroy the plugin in place.

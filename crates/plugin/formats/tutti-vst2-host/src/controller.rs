@@ -254,7 +254,10 @@ impl Loaded for Vst2Loaded {
         // The pins as the plugin has them now: it may have settled them in the
         // calls above.
         let (inputs, outputs) = self.pins();
-        let render = self.handle.instance.render_handle();
+        // SAFETY: the handle goes to the Processor, which holds an `Arc` of the
+        // shell that owns this instance, so the instance outlives the handle
+        // (shell clauses 1 and 4).
+        let render = unsafe { self.handle.instance.render_handle() };
         let scratch = RenderScratch::new(inputs, outputs, block);
         let params = SendParams(Arc::clone(&self.params.0));
         let param_count = self.initial_values.len();

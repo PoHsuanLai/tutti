@@ -868,9 +868,14 @@ impl PluginInstance {
     /// `AEffect` now: a plugin settles them in `effOpen` and may change them
     /// later, and a block must carry what it has at this moment.
     ///
-    /// The handle owns nothing. The instance must not be dropped (`effClose`)
-    /// while the handle can still render.
-    pub fn render_handle(&self) -> RenderHandle {
+    /// The handle owns nothing: it holds the plugin's raw `AEffect` pointer.
+    ///
+    /// # Safety
+    ///
+    /// The instance must outlive every use of the handle and of anything made
+    /// from it: it must not be dropped (`effClose`) while the handle can still
+    /// render.
+    pub unsafe fn render_handle(&self) -> RenderHandle {
         let (inputs, outputs) = self.read_pin_counts();
         RenderHandle {
             entry: RenderEntry {

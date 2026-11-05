@@ -210,6 +210,9 @@ impl HostEditor for InProcessVst2Backend {
 
         let (changes, param_changes) = {
             let mut instance = self.inner.lock();
+            if instance.is_lost() {
+                return;
+            }
             instance.editor_idle();
             // What the plugin changed about itself since the last pump: the
             // host's re-reads after the rate drained above, and an

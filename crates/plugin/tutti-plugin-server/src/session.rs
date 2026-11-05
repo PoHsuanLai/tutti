@@ -71,6 +71,7 @@ impl Reaction {
     }
 
     /// Every frame of a multi-frame answer, in order.
+    #[cfg(feature = "clap")]
     fn into_replies(self) -> Vec<BridgeMessage> {
         match self {
             Reaction::Reply(m) => vec![m],
@@ -1616,6 +1617,8 @@ mod tests {
     /// so the drain (its request pass and the editor-knob queue) allocates
     /// nothing.
     ///
+    /// Mutation (run): the staged probe named `.dylib` (the macOS cdylib
+    /// extension) -> `Plugin::open` refuses the format -> fails.
     /// Mutation (run): the bridge cloning its `State` for each `drive` again
     /// together with `serve` driving a tick on every pass aborts inside the
     /// gate; and `poll` collecting the plugin's parameter moves into a
@@ -1626,7 +1629,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
-            path: std::path::PathBuf::from(crate::test_utils::vst2_probe_path()),
+            path: crate::test_utils::vst2_probe_staged_path().to_path_buf(),
             sample_rate: 48_000.0,
             block_size: 512,
             preferred_format: SampleFormat::Float32,

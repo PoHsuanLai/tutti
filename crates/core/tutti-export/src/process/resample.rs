@@ -361,182 +361,119 @@ pub(crate) fn resample_rendered(
 mod tests {
     use super::*;
 
-    /// The streaming resampler as it was before its input carry kept a head
-    /// offset: every chunk shifted the rest of the carry down
-    /// (`drain(..need)`), which made a whole-signal push quadratic. Kept here
-    /// only as the reference for `the_head_offset_carry_is_bit_identical_to_the_shifting_one`.
-    mod shifting {
-        use super::super::*;
-
-        pub(super) struct OldResampler {
-            inner: FftFixedIn,
-            channels: usize,
-            ratio: f64,
-            carry: Vec<Vec<f32>>,
-            skip: usize,
-            fed: usize,
-            emitted: usize,
-            in_scratch: Vec<Vec<f32>>,
+    /// Push `planes` through a [`Resampler`] in blocks of `block` frames
+    /// (`None` is the whole signal at once, the two-pass path), then finish.
+    fn resample_blocked(
+        planes: &[Vec<f32>],
+        from: u32,
+        to: u32,
+        chunk: ChunkSize,
+        block: Option<usize>,
+    ) -> Vec<Vec<f32>> {
+        let n = planes[0].len();
+        let mut r = Resampler::new(planes.len(), from.into(), to.into(), chunk).unwrap();
+        let mut out = vec![Vec::new(); planes.len()];
+        match block {
+            None => r.push(planes, &mut out).unwrap(),
+            Some(len) => {
+                for start in (0..n).step_by(len) {
+                    let end = (start + len).min(n);
+                    let part: Vec<Vec<f32>> =
+                        planes.iter().map(|p| p[start..end].to_vec()).collect();
+                    r.push(&part, &mut out).unwrap();
+                }
+            }
         }
+        r.finish(&mut out).unwrap();
+        out
+    }
 
-        impl OldResampler {
-            pub(super) fn new(
-                channels: usize,
-                source_rate: SampleRate,
-                target_rate: SampleRate,
-                chunk: ChunkSize,
-            ) -> Result<Self> {
-                let (source_hz, target_hz) = (source_rate.get(), target_rate.get());
-                let inner = FftFixedIn::new(
-                    source_hz.round() as usize,
-                    target_hz.round() as usize,
-                    chunk.chunk().get(),
-                    chunk.sub_chunks(),
-                    channels,
-                )?;
-                let skip = inner.output_delay();
-                Ok(Self {
-                    inner,
-                    channels,
-                    ratio: target_hz / source_hz,
-                    carry: vec![Vec::new(); channels],
-                    skip,
-                    fed: 0,
-                    emitted: 0,
-                    in_scratch: vec![Vec::new(); channels],
-                })
-            }
+    const RATE_PAIRS: [(u32, u32); 3] = [(44_100, 48_000), (48_000, 44_100), (48_000, 96_000)];
+    const BLOCKINGS: [Option<usize>; 3] = [None, Some(64), Some(333)];
 
-            pub(super) fn push(&mut self, planes: &[Vec<f32>], out: &mut [Vec<f32>]) -> Result<()> {
-                let n = planes.first().map_or(0, |p| p.len());
-                for (c, p) in planes.iter().enumerate().take(self.channels) {
-                    self.carry[c].extend_from_slice(p);
-                }
-                self.fed += n;
-                self.drain(out, false)
-            }
-
-            pub(super) fn finish(&mut self, out: &mut [Vec<f32>]) -> Result<()> {
-                // Enough silence to clear the filter's delay plus one whole chunk,
-                // so the final partial chunk is emitted too.
-                let pad = self.inner.output_delay() + self.inner.input_frames_next();
-                let silence: Vec<Vec<f32>> = vec![vec![0.0; pad]; self.channels];
-                for (c, p) in silence.iter().enumerate().take(self.channels) {
-                    self.carry[c].extend_from_slice(p);
-                }
-                self.drain(out, true)
-            }
-
-            fn budget(&self) -> usize {
-                let want = (self.fed as f64 * self.ratio).round() as usize;
-                want.saturating_sub(self.emitted)
-            }
-
-            fn drain(&mut self, out: &mut [Vec<f32>], flushing: bool) -> Result<()> {
-                loop {
-                    let need = self.inner.input_frames_next();
-                    let have = self.carry.first().map_or(0, |c| c.len());
-                    if have < need {
-                        if !flushing {
-                            return Ok(());
+    /// The output length is `round(input * ratio)` however the input is
+    /// blocked, at every preset chunk size, in both directions, for lengths
+    /// that end mid-chunk or before the first one.
+    ///
+    /// Mutation (run): round the budget down (`.floor()` in `budget`) →
+    /// 44.1->48 k, n = 4410 yields 4799 frames, not 4800. (Reading chunks from
+    /// the wrong place keeps the length; `the_signal_survives_every_blocking`
+    /// catches that.)
+    #[test]
+    fn the_length_is_the_rounded_ratio_however_the_input_is_blocked() {
+        for (from, to) in RATE_PAIRS {
+            for chunk in ChunkSize::PRESETS {
+                for n in [0usize, 1, 1000, 4096, 4410, 10_007] {
+                    let planes: Vec<Vec<f32>> = (0..2).map(|_| vec![0.1f32; n]).collect();
+                    let want = (n as f64 * f64::from(to) / f64::from(from)).round() as usize;
+                    for block in BLOCKINGS {
+                        let out = resample_blocked(&planes, from, to, chunk, block);
+                        for (c, plane) in out.iter().enumerate() {
+                            assert_eq!(
+                                plane.len(),
+                                want,
+                                "{from}->{to} {chunk:?} n={n} block={block:?} ch{c}"
+                            );
                         }
-                        // Pad the last partial chunk so the converter can emit it.
-                        if have == 0 {
-                            return Ok(());
-                        }
-                        for c in self.carry.iter_mut() {
-                            c.resize(need, 0.0);
-                        }
-                    }
-
-                    for (c, scratch) in self.in_scratch.iter_mut().enumerate() {
-                        scratch.clear();
-                        scratch.extend_from_slice(&self.carry[c][..need]);
-                    }
-                    let mut produced =
-                        vec![vec![0.0f32; self.inner.output_frames_max()]; self.channels];
-                    let produced_len = self
-                        .inner
-                        .process_into_buffer(&self.in_scratch, &mut produced)?;
-                    for c in self.carry.iter_mut() {
-                        c.drain(..need);
-                    }
-
-                    // Drop warm-up frames at the head before anything is kept.
-                    let drop = self.skip.min(produced_len);
-                    self.skip -= drop;
-                    // Emit at most what is still owed, so the flush padding that
-                    // pushed the tail out does not itself become output.
-                    let take = (produced_len - drop).min(self.budget());
-                    for (c, p) in produced.iter().enumerate().take(out.len()) {
-                        out[c].extend_from_slice(&p[drop..drop + take]);
-                    }
-                    self.emitted += take;
-
-                    if flushing && self.carry.first().is_none_or(|c| c.is_empty()) {
-                        return Ok(());
                     }
                 }
             }
         }
     }
 
-    /// **A refactor-equivalence check of one algorithm, not a render compared
-    /// with a render.** The carry's head offset changes only where the input
-    /// waits between chunks, never which frames the converter is handed or what is
-    /// kept of its output, so the output must be bit for bit what the
-    /// shifting carry (kept above as `shifting::OldResampler`) produces.
-    /// Covered: a whole-signal push (the two-pass path), uneven block pushes
-    /// (the streaming encode), every preset chunk size, up- and down-sampling,
-    /// and lengths that end mid-chunk.
+    /// The signal itself survives every blocking: a 1 kHz sine of amplitude
+    /// 0.5 on one channel keeps its level (within 0.001 dB, the bound
+    /// `a_sine_keeps_its_frequency_and_amplitude` holds the default chunk to)
+    /// and matches the analytic waveform `0.5 sin(2 pi f j / to)` to 1e-4 (the
+    /// latency is compensated, so frame `j` is time `j / to`), and a 0.25
+    /// constant on the other stays within 1e-4 of it, measured in the middle
+    /// half, so a chunk read from the wrong place, a phase error or a seam
+    /// shows. The bounds sit above the worst error measured at every preset
+    /// (under 1e-5).
     ///
-    /// Mutation (run): read each chunk from the start of the carry instead
-    /// of the head (`let chunk = 0..need;`) → the outputs differ at the
-    /// second chunk of a whole-signal push (44.1→48 k, `N512`, n = 1000).
+    /// Mutation (run): read each chunk from the start of the carry instead of
+    /// the head (`let chunk = 0..need;`) → the second chunk repeats the first
+    /// and the waveform is off at the seam; delaying the head by one frame
+    /// (`output_delay() + 1` for `skip` in `Resampler::new`) → the level holds but the waveform
+    /// is off by about 0.07.
     #[test]
-    fn the_head_offset_carry_is_bit_identical_to_the_shifting_one() {
-        let signal = |n: usize, c: usize| -> Vec<f32> {
-            (0..n)
-                .map(|i| ((i * 7 + c * 13) % 101) as f32 / 101.0 - 0.5)
-                .collect()
-        };
-        for (from, to) in [(44_100u32, 48_000u32), (48_000, 44_100), (48_000, 96_000)] {
+    fn the_signal_survives_every_blocking() {
+        for (from, to) in RATE_PAIRS {
+            let n = from as usize;
+            let planes = vec![tone(1000.0, f64::from(from), n, 0.5), vec![0.25f32; n]];
             for chunk in ChunkSize::PRESETS {
-                for n in [0usize, 1, 1000, 4096, 10_007] {
-                    let planes: Vec<Vec<f32>> = (0..2).map(|c| signal(n, c)).collect();
-                    for block in [None, Some(64usize), Some(333)] {
-                        let mut new = Resampler::new(2, from.into(), to.into(), chunk).unwrap();
-                        let mut old =
-                            shifting::OldResampler::new(2, from.into(), to.into(), chunk).unwrap();
-                        let (mut a, mut b) = (vec![Vec::new(); 2], vec![Vec::new(); 2]);
-                        match block {
-                            None => {
-                                new.push(&planes, &mut a).unwrap();
-                                old.push(&planes, &mut b).unwrap();
-                            }
-                            Some(len) => {
-                                for start in (0..n).step_by(len) {
-                                    let end = (start + len).min(n);
-                                    let part: Vec<Vec<f32>> =
-                                        planes.iter().map(|p| p[start..end].to_vec()).collect();
-                                    new.push(&part, &mut a).unwrap();
-                                    old.push(&part, &mut b).unwrap();
-                                }
-                            }
-                        }
-                        new.finish(&mut a).unwrap();
-                        old.finish(&mut b).unwrap();
-                        let bits = |p: &[Vec<f32>]| -> Vec<Vec<u32>> {
-                            p.iter()
-                                .map(|c| c.iter().map(|s| s.to_bits()).collect())
-                                .collect()
-                        };
-                        assert_eq!(
-                            bits(&a),
-                            bits(&b),
-                            "{from}->{to} {chunk:?} n={n} block={block:?}"
-                        );
-                    }
+                for block in BLOCKINGS {
+                    let out = resample_blocked(&planes, from, to, chunk, block);
+                    let len = out[0].len();
+                    let (a, b) = (len / 4, 3 * len / 4);
+                    let db = 20.0 * (level_at(&out[0], f64::from(to), 1000.0, a, b) / 0.5).log10();
+                    assert!(
+                        db.abs() < 0.001,
+                        "{from}->{to} {chunk:?} block={block:?}: sine {db:+.4} dB"
+                    );
+                    // Latency is compensated, so output frame j is the input
+                    // tone at time j / to: compare the waveform, not only its
+                    // level, so a phase or chunk-offset error shows.
+                    let waveform = (a..b)
+                        .map(|j| {
+                            let want = 0.5
+                                * (2.0 * std::f64::consts::PI * 1000.0 * j as f64 / f64::from(to))
+                                    .sin();
+                            (f64::from(out[0][j]) - want).abs()
+                        })
+                        .fold(0.0f64, f64::max);
+                    assert!(
+                        waveform < 1e-4,
+                        "{from}->{to} {chunk:?} block={block:?}: waveform off by {waveform}"
+                    );
+                    let worst = out[1][a..b]
+                        .iter()
+                        .map(|s| (s - 0.25).abs())
+                        .fold(0.0f32, f32::max);
+                    assert!(
+                        worst < 1e-4,
+                        "{from}->{to} {chunk:?} block={block:?}: DC off by {worst}"
+                    );
                 }
             }
         }
@@ -766,7 +703,8 @@ mod tests {
     /// 0.5 amplitude at 48 kHz, converted to 44.1 kHz (Nyquist 22.05 kHz),
     /// would alias to `44.1 kHz - f`; the output holds under -120 dB re the
     /// input (`AMOUNT` below) at that frequency for every `f` from 22.3 kHz to
-    /// 23.9 kHz. A 15 kHz tone, well inside the band, passes within 0.01 dB.
+    /// 23.9 kHz, at every preset chunk size. A 15 kHz tone, well inside the
+    /// band, passes within 0.01 dB.
     ///
     /// Mutation (run): drop the anti-alias cut when downsampling, so the
     /// filter is cut at the output's Nyquist without the fit
@@ -777,25 +715,29 @@ mod tests {
         const AMOUNT: f64 = -120.0;
         let (from, to) = (48_000.0, 44_100.0);
         let n = 48_000;
-        for f in [22_300.0, 22_600.0, 23_000.0, 23_500.0, 23_900.0] {
-            let out = resample(&[tone(f, from, n, 0.5)], 48_000, 44_100, ChunkSize::N1024);
-            let x = &out[0];
-            let (a, b) = (x.len() / 4, 3 * x.len() / 4);
-            let alias = level_at(x, to, to - f, a, b);
-            let db = 20.0 * (alias / 0.5).log10();
-            assert!(db < AMOUNT, "{f} Hz: alias at {} Hz is {db:.1} dB", to - f);
-        }
+        for chunk in ChunkSize::PRESETS {
+            for f in [22_300.0, 22_600.0, 23_000.0, 23_500.0, 23_900.0] {
+                let out = resample(&[tone(f, from, n, 0.5)], 48_000, 44_100, chunk);
+                let x = &out[0];
+                let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+                let alias = level_at(x, to, to - f, a, b);
+                let db = 20.0 * (alias / 0.5).log10();
+                assert!(
+                    db < AMOUNT,
+                    "{chunk:?} {f} Hz: alias at {} Hz is {db:.1} dB",
+                    to - f
+                );
+            }
 
-        let inband = resample(
-            &[tone(15_000.0, from, n, 0.5)],
-            48_000,
-            44_100,
-            ChunkSize::N1024,
-        );
-        let x = &inband[0];
-        let (a, b) = (x.len() / 4, 3 * x.len() / 4);
-        let kept = 20.0 * (level_at(x, to, 15_000.0, a, b) / 0.5).log10();
-        assert!(kept.abs() < 0.01, "15 kHz moved by {kept:+.4} dB");
+            let inband = resample(&[tone(15_000.0, from, n, 0.5)], 48_000, 44_100, chunk);
+            let x = &inband[0];
+            let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+            let kept = 20.0 * (level_at(x, to, 15_000.0, a, b) / 0.5).log10();
+            assert!(
+                kept.abs() < 0.01,
+                "{chunk:?}: 15 kHz moved by {kept:+.4} dB"
+            );
+        }
     }
 
     /// The length is exactly `round(input * ratio)` for every input length, and

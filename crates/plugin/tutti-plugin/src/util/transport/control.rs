@@ -383,6 +383,10 @@ fn recv_by(
         // host itself declines is **not** a crash, because nothing was written and
         // the stream is still synchronised. See [`send`].
         if len > MAX_FRAME_BYTES {
+            tracing::warn!(
+                "plugin server sent a {len}-byte frame, over the {MAX_FRAME_BYTES}-byte limit; \
+                 treating it as a crash"
+            );
             return Err(BridgeError::ProcessCrashed);
         }
         partial.body = vec![0u8; len];

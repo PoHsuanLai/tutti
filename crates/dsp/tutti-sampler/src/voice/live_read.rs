@@ -116,7 +116,7 @@ struct State {
     old_k: usize,
     fade: Option<Fade>,
     /// The map epoch whose switch this reader has crossed.
-    applied_epoch: u64,
+    applied_epoch: Option<u64>,
     /// The straight position of the last frame read, `None` after silence.
     last: Option<f64>,
     /// The segment the last block read in.
@@ -176,7 +176,7 @@ impl LiveRead {
                 old_k: 0,
                 fade: None,
                 // A switch already published is crossed like any other.
-                applied_epoch: u64::MAX,
+                applied_epoch: None,
                 last: None,
                 segment: 0,
                 recover: None,
@@ -438,7 +438,7 @@ fn steady_lanes(
     }
     let lanes = &mut lanes[..lanes_n];
     // A switch to cross: `State::cross_switch` acts at some frame.
-    let switch = map.fade.is_some() && map.epoch != st.applied_epoch;
+    let switch = map.fade.is_some() && Some(map.epoch) != st.applied_epoch;
     let Gather { index, frac, y, .. } = gather;
     let mut base = 0u64;
     for (i, pos) in positions.iter().enumerate() {
@@ -539,10 +539,10 @@ impl State {
         let Some(record) = map.fade.as_ref() else {
             return;
         };
-        if map.epoch == self.applied_epoch || pos < map.at.saturating_sub(2) as f64 {
+        if Some(map.epoch) == self.applied_epoch || pos < map.at.saturating_sub(2) as f64 {
             return;
         }
-        self.applied_epoch = map.epoch;
+        self.applied_epoch = Some(map.epoch);
         if pos >= (record.start + record.frames as u64) as f64 {
             return;
         }

@@ -182,7 +182,7 @@ fn refill_one(
     // may cover until it claims again, so moving it every cycle would never
     // let the refill land.
     let far = (writer.frames() / 4) as u64;
-    if play < from || (play > to.saturating_add(far) && play < end) {
+    if play < from || (play > to.saturating_add(far) && end.is_none_or(|end| play < end)) {
         writer.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at != 0 {
             let mut content = Content::new(writer.content().current.clone());
@@ -193,7 +193,8 @@ fn refill_one(
     }
     let (_, to) = writer.window();
     let frames = writer.frames() as u64;
-    let limit = end.min(play + frames - frames / 8);
+    let ahead = play + frames - frames / 8;
+    let limit = end.map_or(ahead, |end| end.min(ahead));
     let fill = (to.saturating_sub(play) as f64 / frames as f64) as f32;
     rt_state.set_buffer_fill(fill);
     let fill_threshold = (0.75 / buffer_margin) as f32;

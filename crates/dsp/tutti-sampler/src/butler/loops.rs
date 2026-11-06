@@ -341,11 +341,11 @@ impl Mapping {
     }
 
     /// One past the last straight position worth writing: the file's length,
-    /// or never for a forward loop.
-    pub(crate) fn end(&self) -> u64 {
+    /// or `None` for a forward loop, which never ends.
+    pub(crate) fn end(&self) -> Option<u64> {
         match self.forward_loop() {
-            Some(_) => u64::MAX,
-            None => self.len as u64,
+            Some(_) => None,
+            None => Some(self.len as u64),
         }
     }
 
@@ -408,7 +408,9 @@ impl Mapping {
         read: &mut dyn FnMut(usize, &mut [f32]),
     ) {
         let frames = out.len() / ch;
-        let writable = (self.end().saturating_sub(pos) as usize).min(frames);
+        let writable = self
+            .end()
+            .map_or(frames, |end| (end.saturating_sub(pos) as usize).min(frames));
         out[writable * ch..].fill(0.0);
         let out = &mut out[..writable * ch];
         if self.reverse {

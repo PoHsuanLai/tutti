@@ -7,23 +7,30 @@
 //! - [`SoundFontUnit`]: the player, a stereo graph node with one MIDI event
 //!   input.
 //! - [`SYNTH_BLOCK_FRAMES`]: the 8-frame MIDI timing resolution.
-//! - [`SoundFont`], [`SynthesizerSettings`], [`SoundFontError`]: re-exported
-//!   from RustySynth to decode a file and configure the synthesizer.
+//! - [`Settings`]: what a unit's synthesizer is built with.
+//! - [`SoundFont`] and [`SoundFontError`]: re-exported from RustySynth to
+//!   decode a file.
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
 
 mod error;
 pub use error::{Error, Result};
+
+mod settings;
+pub use settings::Settings;
 
 // `SoundFontUnit::fork_instance`: the unit in a fork of the graph
 // (an export), with its clip.
 mod fork;
 mod node;
 
-pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
+pub use rustysynth::{SoundFont, SoundFontError};
 
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::SampleRate;
+use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_midi_types::MidiChannel;
+use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
@@ -33,25 +40,12 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 /// The RustySynth `block_size` every unit is built at, in frames: the
 /// resolution of the unit's MIDI timing.
 ///
-/// A block is split at each event's offset (see "How an event's offset is
-/// honoured" on [`SoundFontUnit`]), but RustySynth serves frames out of an
-/// internal `block_size` chunk that it fills whole: voices render a chunk at a
-/// time and mix gains ramp across it, so an event applied part-way into an
-/// already-rendered chunk cannot affect it. Two offsets inside one chunk
-/// therefore sound together.
-///
-/// 8 is the smallest `block_size` RustySynth accepts
-/// (`SynthesizerSettings::check_block_size` rejects anything outside
-/// `8..=1024`), so timing resolves to 8 frames: 0.18 ms at 44.1 kHz.
-/// [`SoundFontUnit::new`] overrides whatever `block_size` the caller passes
-/// with this value.
-///
-/// # Cost
-///
-/// Measured in a release build with 8 sustained voices, per 64-frame block:
-/// 10.7 µs at a `block_size` of 8 against 5.8 µs at 64 (0.74% against 0.40%
-/// of the real-time budget). The rendered audio differs from a 64-frame
-/// chunk by at most about 5% of signal RMS, from finer gain-ramp granularity.
+/// RustySynth fills an internal chunk of this many frames whole, so an event
+/// applied part-way into a rendered chunk cannot affect it, and two offsets
+/// inside one chunk sound together. 8 is the smallest size it accepts (0.18 ms
+/// at 44.1 kHz). Measured per 64-frame block with 8 sustained voices, it costs
+/// 10.7 µs against 5.8 µs at a size of 64, and the audio differs from the
+/// 64-frame render by at most about 5% of signal RMS.
 pub const SYNTH_BLOCK_FRAMES: usize = 8;
 
 /// A stereo graph node that renders MIDI through a decoded SoundFont.
@@ -73,45 +67,35 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use tutti_core::Arc;
-/// use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+/// use tutti_core::{Arc, SampleRate};
+/// use tutti_midi_types::MidiChannel;
+/// use tutti_midi_types::midi2::num::u7;
+/// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 ///
 /// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
-/// let mut unit = SoundFontUnit::new(soundfont, &SynthesizerSettings::new(48_000))?;
-/// unit.program_change(0, 0);
+/// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
+/// unit.program_change(MidiChannel::FIRST, u7::new(0));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
 /// # How an event's offset is honoured
 ///
-/// The block is **split at every distinct event offset**. For events at
-/// offsets `o1 < o2 < …`, the sequence is: render `[0, o1)`, apply every event
-/// at `o1`, render `[o1, o2)`, apply every event at `o2`, … , render the tail
-/// to the block's end. An event at offset `o` therefore affects the sample at
-/// `o` and every sample after it, and no sample before it.
+/// The block is split at every distinct event offset: render up to it, apply
+/// every event at it in arrival order, and carry on. An event at `o` affects
+/// the sample at `o` and every sample after it.
 ///
-/// **8 frames, not 1.** The split is exact, but rustysynth serves frames out
-/// of a [`SYNTH_BLOCK_FRAMES`]-frame internal chunk it fills whole, so two
-/// offsets inside one such chunk still collapse together. Offsets 0, 8, 16, …
-/// resolve distinctly and each shifts the output by exactly its own delta;
-/// offsets 16 and 20 do not. That is a floor rustysynth imposes — 8 is the
-/// smallest `block_size` it accepts — and the node declares it
-/// (`Resolution::Frames(8)`). Callers that need finer than 0.18 ms (at
-/// 44.1 kHz) cannot get it from this unit without a change inside the
-/// vendored synthesizer.
+/// The split is exact, but RustySynth fills a [`SYNTH_BLOCK_FRAMES`]-frame
+/// chunk whole, so offsets inside one chunk still sound together: 0, 8, 16, …
+/// resolve distinctly, 16 and 20 do not. The node declares this as
+/// `Resolution::Frames(8)`.
 ///
-/// Events at the same offset apply in the order they arrived, all of them
-/// before the first frame they govern is rendered.
+/// # The rate
 ///
-/// # The rate: fixed per synthesizer, followed per node
-///
-/// RustySynth builds its voice tables against a rate at construction and
-/// offers no way to re-rate them. [`new`](Self::new) builds at
-/// `SynthesizerSettings::sample_rate`; the node's `prepare` swaps in
-/// [`with_sample_rate`](Self::with_sample_rate) (on the control thread,
-/// keeping the preset) when its graph runs at another rate, so a graph never
-/// plays it at the wrong pitch. A rate RustySynth refuses (outside
-/// 16–192 kHz) leaves it at its own.
+/// RustySynth cannot re-rate a synthesizer. [`new`](Self::new) builds at
+/// `Settings::sample_rate`; the node's `prepare` swaps in
+/// [`with_sample_rate`](Self::with_sample_rate) (control thread, keeping the
+/// preset) when its graph runs at another rate. A rate RustySynth refuses
+/// (outside 16–192 kHz) leaves it at its own.
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,
@@ -135,68 +119,49 @@ impl std::fmt::Debug for SoundFontUnit {
 }
 
 impl SoundFontUnit {
-    /// Creates a unit over a decoded `SoundFont`.
+    /// Creates a unit over a decoded `SoundFont`, sharing it rather than
+    /// copying it.
     ///
-    /// The synthesizer is built at `settings.sample_rate` (in Hz). RustySynth
-    /// cannot re-rate a synthesizer, so a graph prepared at another rate has
-    /// the node build a new one ([`with_sample_rate`](Self::with_sample_rate)).
-    ///
-    /// `settings.block_size` is ignored: the synthesizer is always built at
-    /// [`SYNTH_BLOCK_FRAMES`]. Every other field of `settings` (sample rate,
-    /// polyphony, reverb and chorus) is used as given. The `SoundFont` is
-    /// shared, not copied. Allocates the synthesizer's voices and effect
-    /// lines, so call it off the audio thread.
+    /// RustySynth cannot re-rate a synthesizer, so a graph prepared at another
+    /// rate has the node build a new one
+    /// ([`with_sample_rate`](Self::with_sample_rate)). Allocates the
+    /// synthesizer's voices and effect lines, so call it off the audio thread.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` +
-    /// [`SynthesizerSettings`] pair.
-    pub fn new(soundfont: Arc<SoundFont>, settings: &SynthesizerSettings) -> Result<Self> {
-        // `SynthesizerSettings` is `#[non_exhaustive]`, so it is rebuilt from
-        // `new` rather than struct-updated from the caller's copy.
-        let mut settings_owned = SynthesizerSettings::new(settings.sample_rate);
-        settings_owned.maximum_polyphony = settings.maximum_polyphony;
-        settings_owned.enable_reverb_and_chorus = settings.enable_reverb_and_chorus;
-        settings_owned.block_size = SYNTH_BLOCK_FRAMES;
-
-        let synthesizer = Synthesizer::new(&soundfont, &settings_owned)
+    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` and
+    /// [`Settings`] pair.
+    pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
+        let synthesizer = Synthesizer::new(&soundfont, &settings.to_rustysynth())
             .map_err(|e| Error::SoundFont(e.to_string()))?;
 
         Ok(Self {
             synthesizer,
-            // `SynthesizerSettings::sample_rate` is rustysynth's `i32`. The
-            // conversion into the engine's vocabulary happens here rather than
-            // being pushed onto callers.
-            sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
+            sample_rate: SampleRate::from(settings.hz().max(0) as u32),
             left_buffer: Vec::new(),
             right_buffer: Vec::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         })
     }
 
-    /// Creates a unit over `soundfont` at `sample_rate`, playing `preset` on
-    /// `channel`: [`new`](Self::new) with the default
-    /// [`SynthesizerSettings`] at that rate, then
+    /// Creates a unit over `soundfont` at `sample_rate`, playing `program` on
+    /// `channel`: [`new`](Self::new) with the default [`Settings`], then
     /// [`program_change`](Self::program_change).
     ///
-    /// The rate is rounded to whole hertz (RustySynth's settings take an
-    /// `i32`). `channel` is 0..16 and `preset` the 7-bit program number,
-    /// as for `program_change`. Allocates, so call it off the audio thread.
+    /// Allocates, so call it off the audio thread.
     ///
     /// # Errors
     ///
     /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` at
-    /// that rate (outside 16–192 kHz).
+    /// that rate (outside 16 to 192 kHz).
     pub fn with_preset(
         soundfont: Arc<SoundFont>,
         sample_rate: SampleRate,
-        channel: i32,
-        preset: i32,
+        channel: MidiChannel,
+        program: u7,
     ) -> Result<Self> {
-        // rustysynth's settings field is `i32`; the cast is ours to make.
-        let hz = sample_rate.get().round() as i32;
-        let mut unit = Self::new(soundfont, &SynthesizerSettings::new(hz))?;
-        unit.program_change(channel, preset);
+        let mut unit = Self::new(soundfont, &Settings::new(sample_rate))?;
+        unit.program_change(channel, program);
         Ok(unit)
     }
 
@@ -220,9 +185,7 @@ impl SoundFontUnit {
     /// Returns [`Error::SoundFont`] if RustySynth refuses the rate (outside
     /// 16–192 kHz).
     pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        // RustySynth takes whole hertz; every rate a device or a render asks
-        // for is one.
-        let hz = sample_rate.get().round() as i32;
+        let hz = settings::hz(sample_rate);
         let synthesizer = self
             .synthesizer
             .with_sample_rate(hz)
@@ -243,43 +206,41 @@ impl SoundFontUnit {
     /// takes `&mut self`, so it cannot reach a unit that is already in a graph.
     /// It is useful for driving a unit by hand, before insertion or in tests.
     ///
-    /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
-    /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
-    /// A `velocity` of 0 reads as a note-off to RustySynth.
-    pub fn note_on(&mut self, channel: i32, key: i32, velocity: i32) {
-        self.synthesizer.note_on(channel, key, velocity);
+    /// These are MIDI 1.0 values, as RustySynth takes them. A `velocity` of 0
+    /// reads as a note-off.
+    pub fn note_on(&mut self, channel: MidiChannel, key: u7, velocity: u7) {
+        self.synthesizer.note_on(
+            i32::from(channel.get()),
+            i32::from(u8::from(key)),
+            i32::from(u8::from(velocity)),
+        );
     }
 
-    /// Releases a note directly, bypassing MIDI.
-    ///
-    /// Prefer the node's MIDI event input; see [`note_on`](Self::note_on).
-    ///
-    /// `channel` is 0..16 and `key` is 7-bit (0..128), per MIDI 1.0.
-    pub fn note_off(&mut self, channel: i32, key: i32) {
-        self.synthesizer.note_off(channel, key);
+    /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
+    /// input; see [`note_on`](Self::note_on).
+    pub fn note_off(&mut self, channel: MidiChannel, key: u7) {
+        self.synthesizer
+            .note_off(i32::from(channel.get()), i32::from(u8::from(key)));
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.
     ///
-    /// `channel` is 0..16 and `preset` is the 7-bit program number (0..128)
-    /// within the SoundFont's current bank. Call it before inserting the unit;
-    /// once in a graph, send a program change on the event input instead.
-    pub fn program_change(&mut self, channel: i32, preset: i32) {
-        self.synthesizer
-            .process_midi_message(channel, 0xC0, preset, 0);
+    /// `program` is the number within the SoundFont's current bank. Call it
+    /// before inserting the unit; once in a graph, send a program change on the
+    /// event input instead.
+    pub fn program_change(&mut self, channel: MidiChannel, program: u7) {
+        self.synthesizer.process_midi_message(
+            i32::from(channel.get()),
+            0xC0,
+            i32::from(u8::from(program)),
+            0,
+        );
     }
 
-    /// Render exactly `range` of this block's scratch buffers, advancing the
-    /// synthesizer by `range.len()` frames.
-    ///
-    /// `Synthesizer::render` accepts a buffer of any length and keeps its own
-    /// chunk cursor (`block_read`) across calls, refilling only when that
-    /// cursor runs out. Rendering `[0, 16)` then `[16, 64)` is therefore
-    /// sample-for-sample identical to rendering `[0, 64)` in one call given the
-    /// same synthesizer state, and a state change made between the two
-    /// segments takes effect at frame 16 (to the chunk resolution). No
-    /// buffering of our own sits in between, or it would delay events to the
-    /// next buffer refill.
+    /// Renders `range` of the scratch buffers, advancing the synthesizer by
+    /// `range.len()` frames. RustySynth keeps its own chunk cursor across
+    /// calls, so `[0, 16)` then `[16, 64)` equals `[0, 64)`, and a state change
+    /// between them takes effect at frame 16 (to the chunk size).
     fn render_range(&mut self, range: core::ops::Range<usize>) {
         if range.is_empty() {
             return;
@@ -290,36 +251,16 @@ impl SoundFontUnit {
         );
     }
 
-    /// Render `size` frames into the scratch, applying the first `count`
-    /// (sorted) events of `midi_buffer` at their offsets: the loop
-    /// [`SoundFontUnit`]'s "How an event's offset is honoured" documents. An
-    /// offset at or past `size` (which a graph's event input never carries)
-    /// is clamped to the last frame rather than dropped.
+    /// Renders `size` frames into the scratch, applying the first `count`
+    /// (sorted) events of `midi_buffer` at their offsets. An offset at or past
+    /// `size` is clamped to the last frame.
     fn render_events(&mut self, size: usize, count: usize) {
-        let mut event_idx = 0;
-        let mut pos = 0usize;
-        while pos < size {
-            // Apply every event due at or before `pos` — the equal-offset run
-            // lands in full before any of the frames it governs is rendered.
-            while event_idx < count
-                && (self.midi_buffer[event_idx].frame_offset as usize).min(size - 1) <= pos
-            {
-                let event = self.midi_buffer[event_idx];
-                self.apply_event(&event);
-                event_idx += 1;
+        let mut walk = BlockSplitter::new(size, Overrun::ClampToLastFrame);
+        while let Some(step) = walk.step(&self.midi_buffer[..count]) {
+            match step {
+                Step::Event(event) => self.apply_event(&event),
+                Step::Span(span) => self.render_range(span),
             }
-
-            // Render up to the next event's offset, so the segment [pos, next)
-            // carries exactly the state the events at `pos` established.
-            let next = if event_idx < count {
-                (self.midi_buffer[event_idx].frame_offset as usize)
-                    .min(size - 1)
-                    .max(pos + 1)
-            } else {
-                size
-            };
-            self.render_range(pos..next);
-            pos = next;
         }
     }
 

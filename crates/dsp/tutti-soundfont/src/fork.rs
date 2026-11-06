@@ -5,7 +5,7 @@
 //!
 //! # What this forks from
 //!
-//! A **template**: a clone of the unit taken when it is inserted, never
+//! A template: a clone of the unit taken when it is inserted, never
 //! processed. Its synthesizer is a clone too, and that clone shares the
 //! decoded SoundFont (`Arc<SoundFont>`, sample data included): nothing is
 //! reloaded or copied but the per-channel and voice state. Its preset is
@@ -14,12 +14,12 @@
 //! with every key released. The template never rendered, so it holds no
 //! voice to release, and the fork starts silent.
 //!
-//! **The fork follows its graph's rate**, as the live node does: the editor
+//! The fork follows its graph's rate, as the live node does: the editor
 //! prepares it at the render's rate, and the node's `prepare` swaps in
 //! [`SoundFontUnit::with_sample_rate`], keeping the preset. `prepare` runs on
 //! the control thread, where rebuilding is allowed.
 //!
-//! What the fork does **not** carry: sounding voices, and channel state the
+//! What the fork does not carry: sounding voices, and channel state the
 //! live unit reached through MIDI after the template was taken (a program
 //! change, a CC) — the clip replays whatever of that it holds.
 
@@ -82,7 +82,8 @@ mod tests {
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
-    use crate::{SoundFont, SoundFontUnit, SynthesizerSettings};
+    use crate::{Settings, SoundFont, SoundFontUnit};
+    use tutti_midi_types::midi2::num::u7;
 
     /// The live unit's rate.
     const LIVE: SampleRate = SampleRate(48_000.0);
@@ -102,12 +103,12 @@ mod tests {
     }
 
     /// A unit at `rate`, on preset `preset`.
-    fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: i32) -> SoundFontUnit {
-        let mut settings = SynthesizerSettings::new(rate.get() as i32);
-        settings.enable_reverb_and_chorus = false;
+    fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: u7) -> SoundFontUnit {
+        let mut settings = Settings::new(rate);
+        settings.reverb_and_chorus = false;
         let mut unit =
             SoundFontUnit::new(Arc::clone(soundfont), &settings).expect("the unit builds");
-        unit.program_change(0, preset);
+        unit.program_change(MidiChannel::FIRST, preset);
         unit
     }
 
@@ -142,8 +143,8 @@ mod tests {
         out
     }
 
-    /// **A fork plays at the render's rate, on the live unit's preset, and
-    /// shares the decoded SoundFont.** A 48 kHz unit on preset 24 (a guitar,
+    /// A fork plays at the render's rate, on the live unit's preset, and
+    /// shares the decoded SoundFont. A 48 kHz unit on preset 24 (a guitar,
     /// not the default piano), forked for a render at 48 and at 96 kHz: a
     /// note renders sample for sample what a fresh unit built at the render's
     /// rate on that preset renders.
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
-        let live = unit(&font, LIVE, 24);
+        let live = unit(&font, LIVE, u7::new(24));
         let source = live.fork_template();
 
         for rate in [LIVE, SampleRate(96_000.0)] {
@@ -167,14 +168,14 @@ mod tests {
                 "the fork shares the decoded SoundFont"
             );
             let out = render(fork, rate, 4_096);
-            let reference = render(Box::new(unit(&font, rate, 24)), rate, 4_096);
+            let reference = render(Box::new(unit(&font, rate, u7::new(24))), rate, 4_096);
             assert!(reference.iter().any(|&s| s != 0.0), "the note sounds");
             assert_eq!(out, reference, "{rate:?}: the note at the render's rate");
         }
         assert_eq!(live.sample_rate(), LIVE, "the live unit keeps its rate");
     }
 
-    /// **A fork releases every key**: a note held on the unit when it went
+    /// A fork releases every key: a note held on the unit when it went
     /// in (a `note_on` before insert, so the template carries the voice)
     /// is released in the fork, and dies away there, while the live unit
     /// holds it. An organ preset (16), which sustains while its key is down,
@@ -185,8 +186,8 @@ mod tests {
     #[test]
     fn a_fork_releases_every_held_key() {
         let font = soundfont();
-        let mut live = unit(&font, LIVE, 16);
-        live.note_on(0, 60, 100);
+        let mut live = unit(&font, LIVE, u7::new(16));
+        live.note_on(MidiChannel::FIRST, u7::new(60), u7::new(100));
         let fork = live
             .fork_template()
             .fork(ForkMode::Live)

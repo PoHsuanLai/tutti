@@ -95,7 +95,7 @@ pub enum FilterType {
         /// Filter [`Q`]. Around 0.707 is maximally flat; higher values put a
         /// resonant peak at cutoff and narrow the band of the band tabs.
         ///
-        /// Unlike `cutoff`, this one is **fixed for the life of the synth** —
+        /// Unlike `cutoff`, this one is fixed for the life of the synth —
         /// the SVF's output mix depends on it and is shared by every voice, so
         /// resonance modulation (CC71) reaches only [`Moog`](Self::Moog).
         q: Q,
@@ -144,7 +144,7 @@ impl fmt::Display for FilterType {
 
 /// Per-voice modulation routed onto the filter cutoff.
 ///
-/// All three sources **multiply** the [`FilterType`] base cutoff rather than
+/// All three sources multiply the [`FilterType`] base cutoff rather than
 /// replacing it, and they compound: with every depth at zero the whole block is
 /// skipped, which is the default and costs nothing per sample. Each voice runs
 /// its own LFO phase, so the sweep is not synchronised across a chord.

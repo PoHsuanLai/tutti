@@ -20,7 +20,7 @@ use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::{EventKind, Ump};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 /// Frames from a note's onset to its first non-zero sample on the fixture's
 /// preset 0 at 48 kHz.
@@ -44,8 +44,8 @@ fn soundfont_row() -> Row {
     Row::new(
         "SoundFontUnit",
         move || {
-            let mut settings = SynthesizerSettings::new(SAMPLE_RATE.get() as i32);
-            settings.enable_reverb_and_chorus = false;
+            let mut settings = Settings::new(SAMPLE_RATE);
+            settings.reverb_and_chorus = false;
             Box::new(SoundFontUnit::new(Arc::clone(&font), &settings).expect("the unit builds"))
         },
         Excite::Event {

@@ -31,6 +31,7 @@ tutti-rustysynth = { version = "1.3.6", path = "../tutti-rustysynth" }
 
 thiserror = "2"
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 # Finds the repo's `assets/` for the tests.

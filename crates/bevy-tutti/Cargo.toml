@@ -41,6 +41,7 @@ tutti-core = { path = "../tutti-core", default-features = false, features = ["be
 # `ChannelLayout` field; ignoring it in reflection would reset a surround
 # device config to Stereo on scene load.
 tutti-types = { path = "../tutti-types", default-features = false, features = ["bevy"] }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # The graph's vocabulary (`IntoNode`, `ParamSet`, `ForkByClone`): the node
 # contract a spawn path takes.

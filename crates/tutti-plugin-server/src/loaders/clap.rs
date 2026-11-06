@@ -635,11 +635,11 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::Ordering;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{
         NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
         ParameterQueue, TransportInfo,
     };
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     use tutti_clap_host::ClapLoaded as HostLoaded;
     use tutti_plugin_types::{Features, PluginTail, Request};

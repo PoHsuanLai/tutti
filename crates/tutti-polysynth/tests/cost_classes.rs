@@ -12,11 +12,12 @@ use tutti_graph::{
     Status, Transport, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_midi_types::MidiEvent;
 use tutti_nodes::ChannelSumNode;
 use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;

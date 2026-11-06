@@ -42,6 +42,7 @@ tutti-midi-types = { path = "../tutti-midi-types" }
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # Lock-free: each input port's SPSC ring, split into an owned producer and
 # consumer.

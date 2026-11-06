@@ -68,13 +68,8 @@ fn a_listener_takes_its_channel_and_the_channelless_port() {
 /// the channelless one.
 #[test]
 fn events_leave_on_their_channels_port() {
-    let on = MidiEvent::note_on_7bit(
-        tutti_midi_types::MidiGroup::FIRST,
-        MidiChannel::new(9),
-        60,
-        100,
-    );
+    let on = MidiEvent::note_on_7bit(tutti_ump::MidiGroup::FIRST, MidiChannel::new(9), 60, 100);
     assert_eq!(input_port_of(&on), 9);
-    let clock = MidiEvent::timing_clock(tutti_midi_types::MidiGroup::FIRST);
+    let clock = MidiEvent::timing_clock(tutti_ump::MidiGroup::FIRST);
     assert_eq!(input_port_of(&clock), CHANNELLESS_PORT);
 }

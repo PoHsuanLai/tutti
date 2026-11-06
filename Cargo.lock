@@ -412,6 +412,7 @@ dependencies = [
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst2-test-plugin",
 ]
 
@@ -4222,6 +4223,7 @@ dependencies = [
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4243,6 +4245,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4276,6 +4279,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4308,6 +4312,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-graph",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4380,6 +4385,7 @@ dependencies = [
  "ringbuf",
  "tutti-graph",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4411,6 +4417,7 @@ dependencies = [
  "tracing",
  "tutti-midi-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4431,6 +4438,7 @@ dependencies = [
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4444,6 +4452,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4459,6 +4468,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-midi-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4486,6 +4496,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-types",
+ "tutti-ump",
  "wide",
 ]
 
@@ -4525,6 +4536,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst2-host",
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
@@ -4555,6 +4567,7 @@ dependencies = [
  "tutti-plugin",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst2-host",
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
@@ -4576,6 +4589,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-midi-types",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4594,6 +4608,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-types",
+ "tutti-ump",
  "wide",
 ]
 
@@ -4663,6 +4678,7 @@ dependencies = [
  "tutti-soundfont",
  "tutti-spatial",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4686,6 +4702,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-rustysynth",
  "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4723,6 +4740,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-ump"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "serde",
+]
+
+[[package]]
 name = "tutti-vst2-host"
 version = "0.0.1"
 dependencies = [
@@ -4737,6 +4762,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst2-test-plugin",
  "vst-tutti",
 ]
@@ -4782,6 +4808,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
+ "tutti-ump",
  "tutti-vst3-ffi",
  "tutti-vst3-host",
  "vst3",

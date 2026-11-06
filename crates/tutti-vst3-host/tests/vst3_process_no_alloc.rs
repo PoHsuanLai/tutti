@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, ParameterChanges, TransportInfo};
 #[path = "support/active.rs"]
 mod active;

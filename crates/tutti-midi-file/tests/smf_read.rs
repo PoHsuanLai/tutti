@@ -32,7 +32,7 @@ mod support;
 use support::{Division, RawEvent, build_smf};
 use tutti_midi_file::SmfFile;
 use tutti_midi_file::smf::ParsedMidiFile;
-use tutti_midi_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;

@@ -1,10 +1,10 @@
 //! [`CCNumber`] — which Control Change controller a message addresses.
 //!
-//! An *address*, not a measure — so like [`MidiChannel`](super::MidiChannel) it
+//! An *address*, not a measure — so like [`MidiChannel`](crate::MidiChannel) it
 //! is an integer newtype rather than one of the float-backed units in
-//! [`super::units`], and it deliberately does not implement
-//! [`Unit`](super::Unit): "controller 74" is not an automatable DSP parameter
-//! and must not be reachable through [`Param`](super::Param). (The *value* a CC
+//! `tutti_types`, and it deliberately does not implement
+//! `Unit`: "controller 74" is not an automatable DSP parameter
+//! and must not be reachable through `Param`. (The *value* a CC
 //! carries is automatable; the *index* selecting it is not.)
 //!
 //! # Why a newtype and not `u8`
@@ -18,10 +18,9 @@
 //! worst kind.
 //!
 //! A `pub type CCNumber = u8` alias prevents none of that — an alias is the
-//! same type as what it aliases. This is a real newtype, re-exported by
-//! `tutti-midi-types` like [`MidiChannel`](super::MidiChannel), and
-//! serializable (feature `serde`) so a document can persist one (a CC
-//! automation lane is keyed by one).
+//! same type as what it aliases. This is a real newtype, serializable (feature
+//! `serde`) so a document can persist one (a CC automation lane is keyed by
+//! one).
 //!
 //! # Why 7-bit, in a MIDI 2.0 engine
 //!
@@ -138,7 +137,7 @@ impl CCNumber {
     /// format it addresses.
     ///
     /// ```
-    /// use tutti_types::CCNumber;
+    /// use tutti_ump::CCNumber;
     ///
     /// assert_eq!(CCNumber::new(74), CCNumber::BRIGHTNESS);
     /// assert_eq!(CCNumber::new(128).get(), 0); // masked, like the wire

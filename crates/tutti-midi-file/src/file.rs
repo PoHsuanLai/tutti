@@ -28,7 +28,7 @@ use crate::{Error, MidiFileKind, Result};
 ///
 /// ```
 /// use tutti_types::Beat;
-/// use tutti_midi_types::MidiChannel;
+/// use tutti_ump::MidiChannel;
 /// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///
 /// let bytes = smf::to_bytes(

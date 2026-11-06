@@ -61,7 +61,7 @@ pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
 // `MidiChannel` re-exports through `cc::mapping`, and the name resolves to the
 // `tutti_types` newtype — not a `u8` alias.
-pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
+pub use tutti_midi_types::cc::mapping::{CCMapping, CCTarget, MappingId};
 
 pub use tutti_midi_types::sync::{
     ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
@@ -105,6 +105,7 @@ pub use tutti_midi_runtime::{
 ///
 /// ```
 /// use tutti_midi_hardware::prelude::*;
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// // The types prelude comes along: build + decode an event.
 /// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);

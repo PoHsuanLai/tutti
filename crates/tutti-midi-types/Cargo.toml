@@ -31,12 +31,13 @@ default = []
 #
 # Forwards to `tutti-types`: `MpeZoneConfig` is built from that crate's
 # newtypes, so without the forward the derives here would fail to resolve.
-serde = ["dep:serde", "tutti-types/serde"]
+serde = ["dep:serde", "tutti-types/serde", "tutti-ump/serde"]
 
 [dependencies]
 bitflags = "2"
 # The unit vocabulary (`Beat`, `MidiChannel`, …) and `ArcLend`, re-exported.
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true
 

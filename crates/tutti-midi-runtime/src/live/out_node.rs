@@ -17,10 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tutti_graph::{
     Cx, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
-    Shape, Status, Ump,
+    Shape, Status,
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::ChannelLayout;
+use tutti_ump::Ump;
 
 use super::mailbox::{MidiMailbox, MidiReceiver, MidiSender};
 

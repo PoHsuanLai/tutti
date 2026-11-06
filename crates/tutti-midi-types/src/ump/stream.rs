@@ -8,7 +8,7 @@
 use bitflags::bitflags;
 use midi2::Data;
 use midi2::prelude::*;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use super::MidiEvent;
 

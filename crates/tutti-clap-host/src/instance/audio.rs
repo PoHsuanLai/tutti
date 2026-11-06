@@ -61,7 +61,7 @@ impl<'a> ProcessOutputRef<'a> {
 /// fields you don't need — compiles to zero-cost empty slices and None.
 ///
 /// ```no_run
-/// # use tutti_midi_types::{MidiChannel, MidiGroup};
+/// # use tutti_ump::{MidiChannel, MidiGroup};
 /// # use tutti_plugin_types::AudioBufferMut;
 /// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
 /// # fn ex(plugin: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
@@ -126,7 +126,7 @@ impl ClapProcessor {
     /// # Examples
     ///
     /// ```no_run
-    /// # use tutti_midi_types::{MidiChannel, MidiGroup};
+    /// # use tutti_ump::{MidiChannel, MidiGroup};
     /// # use tutti_plugin_types::AudioBufferMut;
     /// # use tutti_clap_host::{ClapProcessor, MidiEvent, ClapProcessContext, TransportInfo};
     /// # fn ex(active: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)

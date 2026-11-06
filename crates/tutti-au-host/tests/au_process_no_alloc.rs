@@ -57,7 +57,7 @@ use tutti_au_host::parameters::{self, ParamAddress};
 
 mod support;
 use support::corpus;
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 // The `assert_no_alloc` checks below are inert unless `AllocDisabler` is the
 // active global allocator for THIS test binary. The `#[cfg(test)]` decl in

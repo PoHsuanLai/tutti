@@ -42,8 +42,8 @@ use support::corpus::{
 use tutti_au_host::AuError;
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::Samples;
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry and several tests here open the

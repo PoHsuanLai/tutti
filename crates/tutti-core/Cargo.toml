@@ -70,6 +70,7 @@ insta = { version = "1.41", features = ["yaml"] }
 approx = "0.5"
 tempfile = "3.8"
 rand = "0.8"
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

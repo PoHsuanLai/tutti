@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// The ring's default capacity, in events.
 pub const MAILBOX_CAPACITY: usize = 256;

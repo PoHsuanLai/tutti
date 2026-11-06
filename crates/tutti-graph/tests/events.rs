@@ -24,10 +24,11 @@ use common::prepare;
 use proptest::prelude::*;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, GraphSpec, Io, Node,
-    Prepare, Reference, Shape, Shapes, Status, Transport, Ump, compile,
+    Prepare, Reference, Shape, Shapes, Status, Transport, compile,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
 use tutti_types::{At, ChannelLayout, Frame, Latency, NodeKey, Samples, Tail, Topology};
+use tutti_ump::Ump;
 
 type Ledger = Arc<Mutex<Vec<(u32, u64)>>>;
 type Inbox = Arc<Mutex<Vec<(u16, u32, u64, u64)>>>;

@@ -19,8 +19,9 @@ use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAll
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{CCNumber, MidiChannel, NoteId, cc};
+use tutti_midi_types::{NoteId, cc};
 use tutti_types::{Amplitude, Param, Tail};
+use tutti_ump::{CCNumber, MidiChannel};
 
 use std::sync::Arc;
 

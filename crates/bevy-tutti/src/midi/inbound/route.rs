@@ -11,7 +11,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::midi::{MidiRouteFallback, MidiRouteRule};
-//! use tutti_midi_types::MidiChannel;
+//! use tutti_ump::MidiChannel;
 //!
 //! /// The three synth entities a host already has. Real ones carry `AudioNode`;
 //! /// a rule names the entity either way, and `rebuild` resolves it.
@@ -63,7 +63,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 use tutti_core::AudioNode;
 

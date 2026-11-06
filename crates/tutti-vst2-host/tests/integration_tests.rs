@@ -14,8 +14,8 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2ProcessContext};
 
 #[path = "support/active.rs"]

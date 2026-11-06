@@ -6,7 +6,7 @@
 //! NRPN (M2-104 §7.4.7–7.4.8). The MPE Configuration Message is RPN 0x0000/0x06.
 
 use midi2::prelude::*;
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use super::MidiEvent;
 

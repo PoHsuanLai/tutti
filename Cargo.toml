@@ -36,6 +36,10 @@ members = [
     "crates/tutti-core",
     "crates/tutti-cpal",
     "crates/tutti-types",
+    # The Universal MIDI Packet and the group, channel and controller addresses
+    # it carries. Depends on no workspace crate, so `tutti-graph` can carry a
+    # packet without a MIDI codec.
+    "crates/tutti-ump",
     "crates/tutti-graph",
     "crates/tutti-mod",
     "crates/tutti-export",

@@ -5,8 +5,8 @@
 //! Here, not in the host's `src/`, because the plugin's side of these calls is
 //! `unsafe` COM and the host crate forbids `unsafe`.
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, SysExStep};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
 };

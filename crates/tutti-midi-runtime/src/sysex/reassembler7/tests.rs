@@ -1,7 +1,7 @@
 use super::*;
 use tutti_midi_types::ci::{CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION, CiCategories, Muid};
 use tutti_midi_types::ci::{CiHeader, CiMessage, DiscoveryData, ci_to_sysex7, sysex7_to_ci};
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 fn discovery(mfr: [u8; 3]) -> CiMessage {
     CiMessage::Discovery {

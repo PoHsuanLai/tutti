@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::mpsc;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 #[test]
 fn create_ump_destination() {

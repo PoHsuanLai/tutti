@@ -23,13 +23,14 @@ use bevy_tutti::graph::{
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
 use tutti_core::transport::Transport;
 use tutti_graph::{
-    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Ump, Unforkable,
+    Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Unforkable,
 };
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_types::{Beat, BeatDuration, Bpm, SampleRate};
+use tutti_ump::Ump;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// At 120 BPM and 48 kHz.

@@ -19,7 +19,7 @@
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::channel_voice2::ChannelVoice2;
 use midi2::{Channeled, Grouped, UmpMessage};
-use tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 use super::scaling::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
 use crate::ump::MidiEvent;

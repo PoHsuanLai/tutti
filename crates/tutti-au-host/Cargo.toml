@@ -56,6 +56,7 @@ assert_no_alloc = { version = "1", default-features = false }
 # and macOS requires it for AppKit. `main()` also calls `mark_main_thread()`,
 # which arms the affinity assert `AuEditor` makes. See the module docs; the test
 # bodies are shared with `tests/au_gui_lifecycle.rs`, not duplicated.
+tutti-ump = { path = "../tutti-ump", default-features = false }
 [[test]]
 name = "au_gui_lifecycle_main"
 path = "tests/au_gui_lifecycle_main.rs"

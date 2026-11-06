@@ -10,8 +10,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, TransportInfo};
 #[path = "support/active.rs"]
 mod active;

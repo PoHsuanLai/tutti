@@ -131,7 +131,7 @@
 //!
 //! # Events and timing
 //!
-//! Events ([`Event`], [`EventKind`]: MIDI 2.0 [`Ump`] packets,
+//! Events ([`Event`], [`EventKind`]: MIDI 2.0 [`Ump`](tutti_ump::Ump) packets,
 //! [`ParamRamp`] and [`ParamSegment`] automation, [`Harmony`]) travel on
 //! graph ports ([`EventIn`], [`EventOut`]), so the same delay compensation that aligns audio aligns
 //! them. An event input may have several sources, merged by offset and then
@@ -243,7 +243,7 @@ pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
     Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
-    ParamSegment, SegmentShape, SortedEvents, SubBlocks, Ump,
+    ParamSegment, SegmentShape, SortedEvents, SubBlocks,
 };
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};

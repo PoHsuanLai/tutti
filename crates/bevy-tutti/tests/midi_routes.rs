@@ -26,9 +26,9 @@ use bevy_tutti::midi::{MidiEngineNodes, MidiRouteFallback, MidiRouteRule, TuttiM
 use tutti_core::AudioNode;
 use tutti_core::transport::Transport;
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputNode};
-use tutti_midi_types::MidiChannel;
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_types::SampleRate;
+use tutti_ump::MidiChannel;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 

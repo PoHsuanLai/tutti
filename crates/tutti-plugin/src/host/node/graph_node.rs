@@ -479,8 +479,8 @@ mod loss_tests {
     use crate::host::node::param_delivery::DeliveryCounters;
     use std::sync::Arc;
     use tutti_graph::{Env, PlayClock, Transport, TransportChanges, TransportHistory};
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_types::{Beat, Bpm, Frame, Latency, SampleRate};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A 30-byte dump's five packets.
     fn dump() -> Vec<MidiEvent> {

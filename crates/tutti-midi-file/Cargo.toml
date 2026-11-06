@@ -24,6 +24,7 @@ tutti-midi-types = { path = "../tutti-midi-types" }
 # crate's SMF I/O relies on (midly's own default).
 midly = { workspace = true, features = ["std", "parallel"] }
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 # The path-based clip tests need a private directory. nextest runs each test in

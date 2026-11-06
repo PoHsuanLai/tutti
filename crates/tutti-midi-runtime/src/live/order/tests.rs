@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 fn at(note: u8, offset: u32) -> MidiEvent {
     MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::FIRST, note, 100)

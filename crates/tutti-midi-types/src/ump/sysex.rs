@@ -9,7 +9,7 @@
 //! `(status, [u8; 6], n)` per-packet view, not a whole-message payload iterator.
 
 use std::vec::Vec;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use midi2::prelude::*;
 use midi2::sysex7::Sysex7;

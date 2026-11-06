@@ -2,7 +2,7 @@
 //! [`MidiEvent`] and emit the MIDI-1 wire form back out.
 
 use midi2::prelude::*;
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::ump::MidiEvent;
 

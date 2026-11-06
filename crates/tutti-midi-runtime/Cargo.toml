@@ -27,6 +27,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 atomic_float = "1.1"
 crossbeam-queue = "0.3"
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
 # The worker pool of `tests/cost_classes.rs`.

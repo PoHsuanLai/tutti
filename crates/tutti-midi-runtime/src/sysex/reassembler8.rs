@@ -16,11 +16,11 @@
 //! flight on the same group at once, and only the Stream ID tells them apart.
 //! Buffering per group alone would concatenate them into one corrupt payload.
 
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{
     MidiEvent, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
     SYSEX8_STATUS_START, UmpMessageType, sysex8_message,
 };
+use tutti_ump::MidiGroup;
 
 /// Default cap on a reassembled SysEx8 payload, in bytes. See
 /// [`Sysex8PacketReassembler::with_max_bytes`].

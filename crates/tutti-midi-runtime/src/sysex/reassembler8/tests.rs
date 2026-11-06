@@ -1,6 +1,6 @@
 use super::*;
 use tutti_midi_types::ump::{SYSEX8_BYTES_ABORT, SYSEX8_STATUS_END};
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 fn payload_of(ev: Option<Sysex8Event>) -> Vec<u8> {
     match ev {

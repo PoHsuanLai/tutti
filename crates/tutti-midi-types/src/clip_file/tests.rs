@@ -1,5 +1,5 @@
 use super::*;
-use tutti_types::{CCNumber, MidiChannel};
+use tutti_ump::{CCNumber, MidiChannel};
 
 #[test]
 fn empty_clip_round_trips_dctpq() {

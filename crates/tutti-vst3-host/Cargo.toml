@@ -42,6 +42,7 @@ crossbeam-queue = "0.3"
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 vst3 = "0.3"
 tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
 

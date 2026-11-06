@@ -524,7 +524,7 @@ mod tests {
     use tutti_midi_types::convert::{
         midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
     };
-    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     #[test]
     fn note_on_off_roundtrip() {
@@ -772,7 +772,7 @@ mod tests {
     /// `delta_frames` and either the MIDI bytes or the SysEx bytes, read
     /// through the pointers it is handed.
     fn note(frame: u32, key: u8) -> MidiEvent {
-        use tutti_midi_types::{MidiChannel, MidiGroup};
+        use tutti_ump::{MidiChannel, MidiGroup};
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0x4000)
             .with_frame_offset(frame)
     }

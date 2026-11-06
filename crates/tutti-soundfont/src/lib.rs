@@ -27,11 +27,11 @@ pub use tutti_rustysynth::{SoundFont, SoundFontError};
 
 use std::sync::Arc;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
-use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_rustysynth::Synthesizer;
 use tutti_types::SampleRate;
+use tutti_ump::MidiChannel;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
 /// are dropped. Fully initialised, since events are written into its slots.
@@ -69,7 +69,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 /// use std::fs::File;
 /// use std::sync::Arc;
 /// use tutti_types::SampleRate;
-/// use tutti_midi_types::MidiChannel;
+/// use tutti_ump::MidiChannel;
 /// use tutti_midi_types::midi2::num::u7;
 /// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 ///

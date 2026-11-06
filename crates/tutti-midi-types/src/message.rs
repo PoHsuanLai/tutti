@@ -21,7 +21,7 @@
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
-use tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 use crate::note_id::NoteId;
 use crate::ump::MidiEvent;

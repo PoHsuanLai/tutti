@@ -1,10 +1,10 @@
 //! [`MidiChannel`] — which of a MIDI group's 16 channels a message addresses.
 //!
-//! An *address*, not a measure — so like [`Samples`](super::Samples) it is an
+//! An *address*, not a measure — so like `Samples` it is an
 //! integer newtype rather than one of the float-backed units in
-//! [`super::units`], and it deliberately does not implement
-//! [`Unit`](super::Unit): a channel is not an automatable DSP parameter and must
-//! not be reachable through [`Param`](super::Param).
+//! `tutti_types`, and it deliberately does not implement
+//! `Unit`: a channel is not an automatable DSP parameter and must
+//! not be reachable through `Param`.
 //!
 //! # Why a newtype and not `u8`
 //!
@@ -14,10 +14,9 @@
 //! *voice*, and per-note expression lands on a note nobody is holding.
 //!
 //! A `pub type MidiChannel = u8` alias prevents none of that — an alias is the
-//! same type. This is a real newtype, re-exported by `tutti-midi-types`, and
-//! serializable (feature `serde`) so a document can persist a channel.
+//! same type. This is a real newtype, serializable (feature `serde`) so a document can persist a channel.
 //!
-//! See [`MidiGroup`](super::MidiGroup) for the other half: typing a channel
+//! See [`MidiGroup`](crate::MidiGroup) for the other half: typing a channel
 //! alone still leaves `(group, channel)` transposable, since both are 4-bit and
 //! both mask silently.
 //!
@@ -57,7 +56,7 @@ impl MidiChannel {
     /// addresses.
     ///
     /// ```
-    /// use tutti_types::MidiChannel;
+    /// use tutti_ump::MidiChannel;
     ///
     /// assert_eq!(MidiChannel::new(9).get(), 9);
     /// assert_eq!(MidiChannel::new(16).get(), 0); // masked, like the wire

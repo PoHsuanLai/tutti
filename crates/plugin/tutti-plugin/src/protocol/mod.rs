@@ -505,12 +505,11 @@ mod tests {
         assert!(super::check_protocol_version(super::PROTOCOL_VERSION + 1).is_err());
     }
 
-    /// **`AudioProcessed` encodes its MIDI-out as it did when the wire carried
-    /// its own event type**: the variant index, `latency_us`, `seq`, then a
-    /// length and each event as `frame_offset` and four data words, all
-    /// little-endian. The bytes were recorded from that encoder, so a host and
-    /// a subprocess built on either side of the change read each other, and
-    /// `PROTOCOL_VERSION` did not move.
+    /// **`AudioProcessed` encodes its MIDI-out as a sequence**: the variant
+    /// index, `latency_us`, `seq`, then a length and each event as
+    /// `frame_offset` and four data words, all little-endian. The bytes are
+    /// written out, so a layout change fails here instead of as a desync
+    /// between two binaries built apart.
     ///
     /// Mutation (run): the adapter encoding each event as `(data,
     /// frame_offset)` → the bytes differ → fails.

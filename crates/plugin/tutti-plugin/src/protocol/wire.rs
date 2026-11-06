@@ -8,8 +8,8 @@
 /// adapter, used as `#[serde(with = "wire::midi")]`.
 ///
 /// Encoding walks the list in place and allocates nothing. Decoding builds the
-/// inline [`MidiEventVec`] and rejects a list longer than
-/// [`MIDI_STACK_CAPACITY`] instead of truncating it.
+/// inline [`MidiEventVec`](tutti_plugin_types::MidiEventVec) and rejects a list longer than
+/// [`MIDI_STACK_CAPACITY`](tutti_plugin_types::MIDI_STACK_CAPACITY) instead of truncating it.
 pub mod midi {
     use std::fmt;
 
@@ -61,8 +61,7 @@ pub mod midi {
 /// wire has always held, as `#[serde(with = "wire::normalized")]`.
 ///
 /// `Normalized` is an `f64`, and its own serde encoding is that `f64`; the
-/// parameter messages that predate it carry an `f32`, so they go through here
-/// and keep their bytes.
+/// parameter messages carry an `f32`, so they go through here.
 pub mod normalized {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tutti_plugin_types::Normalized;
@@ -135,12 +134,11 @@ mod tests {
         assert_eq!(back, at_cap);
     }
 
-    /// **The typed parameter and rate fields encode as the bare numbers they
-    /// replaced**: a `u32` id, an `f32` value (not the `f64` a `Normalized`
-    /// holds), an `f64` rate, an `i32`-width index, an `Option<f32>` as a tag
-    /// byte and the value. The expected bytes are written out from those
-    /// widths, so a host and a subprocess built on either side of the change
-    /// read each other, and `PROTOCOL_VERSION` did not move.
+    /// **The typed parameter and rate fields encode as bare numbers**: a `u32`
+    /// id, an `f32` value (not the `f64` a `Normalized` holds), an `f64` rate,
+    /// an `Option<f32>` as a tag byte and the value. The expected bytes are
+    /// written out from those widths, so a layout change fails here instead of
+    /// as a desync between two binaries built apart.
     ///
     /// Mutation (run): `normalized::serialize` writing the `f64` →
     /// `SetParameter`, `ParameterValue` and `ParameterChanged` differ → fails.

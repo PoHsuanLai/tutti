@@ -20,7 +20,7 @@
 //! stops. Deciding *how much* of a file to keep resident is the caller's policy;
 //! this only reports what the file allows.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tutti_core::{ChannelLayout, SampleRate, Samples};
 
@@ -77,21 +77,18 @@ impl SampleFacts {
     }
 }
 
-/// Errors a probe can report. Terminal — none of these fix themselves on retry.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// Errors a probe can report. Terminal: none of these fix themselves on retry.
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProbeError {
     /// The file could not be opened, or has no track this build can decode.
-    ///
-    /// Carries the decoder's message as a `String` rather than the error itself:
-    /// symphonia's `Error` is neither `Clone` nor `PartialEq`, and a probe result
-    /// is something a host caches and compares. Nothing branches on the text.
-    #[error("could not read {path}: {message}")]
+    #[error("could not read {}", path.display())]
     Unreadable {
-        /// The path that was probed, as displayed.
-        path: String,
-        /// The decoder's error message.
-        message: String,
+        /// The path that was probed.
+        path: PathBuf,
+        /// The decoder's error.
+        #[source]
+        source: tutti_io::WaveError,
     },
 }
 
@@ -120,9 +117,9 @@ pub enum ProbeError {
 /// ```
 pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     let path = path.as_ref();
-    let meta = tutti_io::Wave::read_metadata(path).map_err(|e| ProbeError::Unreadable {
-        path: path.display().to_string(),
-        message: e.to_string(),
+    let meta = tutti_io::Wave::read_metadata(path).map_err(|source| ProbeError::Unreadable {
+        path: path.to_path_buf(),
+        source,
     })?;
     Ok(SampleFacts {
         frames: meta.total_frames.map(|f| Samples(f as usize)),

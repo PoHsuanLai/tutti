@@ -9,16 +9,7 @@
 //! die with it — a feature-matrix artifact, not rot. CI builds that config, so
 //! the allow is scoped to it rather than blanket, keeping real dead-code
 //! detection live everywhere a codec is on.
-#![cfg_attr(
-    not(any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg",
-        test
-    )),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(codec, test)), allow(dead_code))]
 
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};

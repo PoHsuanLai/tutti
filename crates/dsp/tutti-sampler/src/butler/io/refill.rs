@@ -231,7 +231,7 @@ pub(in crate::butler) fn load_wave(
     // `Wave::read` is `tutti-io`'s decode path, which is compiled only when a
     // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     {
         if let Ok(w) = Wave::read(file_path) {
             let arc_wave = Arc::new(w);
@@ -244,7 +244,7 @@ pub(in crate::butler) fn load_wave(
 
     // Silences the unused-parameter warning in the codec-free build, where the
     // only way to reach this line is a cache miss with nothing able to fill it.
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    #[cfg(not(codec))]
     let _ = metrics;
 
     None

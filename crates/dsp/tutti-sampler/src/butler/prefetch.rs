@@ -53,7 +53,7 @@ use tutti_core::{
 };
 use tutti_io::Wave;
 
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(codec)]
 use tutti_io::FileIn;
 
 use super::command::RegionId;
@@ -262,11 +262,11 @@ pub(crate) struct RegionOut {
     content: Content,
     /// Incremental disk decoder for real streaming. `None` means this region
     /// reads the file resident whole (`resident`).
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     decoder: Option<FileIn>,
     /// Whether the decoder's current fault has been logged, so a stream that
     /// keeps reading past it logs once.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     fault_logged: bool,
     /// The file decoded whole, for a format that cannot seek. Held here, not
     /// only in the LRU cache, so a file too large to cache still streams.
@@ -289,7 +289,7 @@ impl RegionOut {
     }
 
     /// Install an incremental disk decoder.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
         self.decoder = Some(decoder);
     }
@@ -369,7 +369,7 @@ impl RegionOut {
     /// frames read before it are kept.
     pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
         let channels = self.ring.channels;
-        #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+        #[cfg(codec)]
         if let Some(decoder) = self.decoder.as_mut() {
             let ch = self.writer.stride();
             if decoder.cursor() != at as u64 && decoder.seek(at as u64).is_err() {
@@ -493,9 +493,9 @@ impl RegionBuffer {
             ring: Arc::clone(&ring),
             writer,
             content: Content::new(mapping),
-            #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+            #[cfg(codec)]
             decoder: None,
-            #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+            #[cfg(codec)]
             fault_logged: false,
             resident: None,
         };

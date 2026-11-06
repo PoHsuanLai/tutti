@@ -205,7 +205,7 @@ pub(super) fn handle_command(
 /// reach the same conclusion this function does — so "can the butler stream it"
 /// is asked in exactly one place. Re-deriving it here is how the two would drift
 /// the next time the conditions changed.
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(codec)]
 fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, tutti_io::FileIn)> {
     if !crate::probe(file_path).ok()?.streamable {
         return None;
@@ -240,7 +240,7 @@ fn handle_stream_file(
     // WITHOUT decoding the whole file. Prefer real incremental streaming; fall
     // back to the whole-file `load_wave` + `LruCache` path when the format
     // isn't seekable (no frame count) or opening the stream decoder fails.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     let (file_length, file_sr, file_channels, decoder, resident) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
@@ -263,7 +263,7 @@ fn handle_stream_file(
             )
         }
     };
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    #[cfg(not(codec))]
     let (file_length, file_sr, file_channels, resident) = {
         let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
             return;
@@ -295,7 +295,7 @@ fn handle_stream_file(
         file_length as usize,
     );
 
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     if let Some(decoder) = decoder {
         producer.set_decoder(decoder);
     }

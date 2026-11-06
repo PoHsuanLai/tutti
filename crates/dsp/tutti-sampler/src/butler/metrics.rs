@@ -13,7 +13,7 @@
 //! tests of its own, so a codec-free `--all-targets` build still finds no
 //! caller.)
 #![cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
+    not(codec),
     allow(
         dead_code,
         reason = "read-only without a codec feature: `record_read`'s sole caller is the codec-gated decode arm"

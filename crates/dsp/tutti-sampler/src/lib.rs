@@ -140,9 +140,9 @@ pub use ports::{Command, Commands, Source, Status};
 // there is no header to read. Absent rather than always-`false` — a host that
 // compiled out every codec cannot open files at all, and a probe that silently
 // answered "not streamable" would look like a property of the file.
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(codec)]
 mod probe;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(codec)]
 pub use probe::{ProbeError, SampleFacts, probe};
 
 // This crate exposes no Bevy plugin of its own. `DiskStreamer` is an engine

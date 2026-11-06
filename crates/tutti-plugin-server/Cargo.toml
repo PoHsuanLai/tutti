@@ -102,25 +102,20 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Threading",
 ] }
 
-[build-dependencies]
-# Shared with the other three crates that locate a reference plugin
-# cdylib; see that crate's docs for the newest-wins and never-skip rules.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
-
 [dev-dependencies]
-# The shared resolver; see its docs for the newest-wins rule.
+# Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather
 # than a build-time artifact so cargo builds the cdylib as part of the same
-# `cargo test` invocation (one target-dir lock, no nested cargo); build.rs
-# only resolves where it landed. This is what lets the CLAP suite run on any
+# `cargo test` invocation (one target-dir lock, no nested cargo), and the
+# tests find it beside the test binary. This is what lets the CLAP suite run on any
 # machine instead of naming an absolute macOS path.
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # The reference VST2 plugin, on the same terms as the CLAP one above: a
-# dev-dependency so the cdylib is built inside this `cargo test`, with build.rs
-# only resolving where it landed. Its behaviour is steered per-test through
+# dev-dependency so the cdylib is built inside this `cargo test`, and found the
+# same way. Its behaviour is steered per-test through
 # `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 # The same `tutti-vst3-host` the `vst3` feature pulls in, but with `conformance`

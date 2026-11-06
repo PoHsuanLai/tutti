@@ -157,10 +157,10 @@ reason.
 
 Cargo builds it. `tutti-vst2-host` takes this crate as a dev-dependency
 (`crate-type = ["cdylib", "rlib"]`), so the loadable artifact is produced by the
-same `cargo test` invocation that runs the tests. `tutti-vst2-host/build.rs`
-only computes where Cargo will have put it.
+same `cargo test` invocation that runs the tests. The tests find it beside
+their own binary (`tutti-fixture-resolve`).
 
-Shelling out to a nested `cargo build` from the build script instead would
+Shelling out to a nested `cargo build` from a test or build script instead would
 **deadlock**: the outer `cargo test` holds the target-directory lock for the
 whole build, and the nested `cargo` waits on that same lock forever. This
 workspace shares one external target dir across worktrees, so the lock is always

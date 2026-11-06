@@ -39,17 +39,12 @@ tutti-types = { path = "../tutti-types" }
 # `tutti-types`.
 tutti-graph = { path = "../tutti-graph" }
 
-[build-dependencies]
-# Shared with the other three crates that locate a reference plugin
-# cdylib; see that crate's docs for the newest-wins and never-skip rules.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
-
 [dev-dependencies]
 tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["test-support"] }
 # The integration tests re-open the reference plugin's library themselves (the
 # crate forbids `unsafe`; a test may use it).
 libloading = "0.8"
-# The shared resolver; see its docs for the newest-wins rule.
+# Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
 assert_no_alloc = { version = "1", default-features = false }
 # `WorkerPool`, the pool the `clap.thread-pool` suite serves requests on.
@@ -58,8 +53,8 @@ tempfile = "3"
 # The reference plugin used by the clap_conformance harness. As a
 # dev-dependency, Cargo builds its cdylib in the same `cargo test`
 # invocation (no nested cargo / no target-dir-lock deadlock); the rlib
-# side gives the test the `ProcessCapture` type directly. build.rs
-# resolves the cdylib artifact path for the test to dlopen.
+# side gives the test the `ProcessCapture` type directly. The test finds the
+# cdylib beside its own binary (`tutti-fixture-resolve`) and dlopens it.
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 
 [package.metadata.docs.rs]

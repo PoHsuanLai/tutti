@@ -353,10 +353,7 @@ mod owed_tests {
     fn probe() -> &'static PathBuf {
         static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
         RESOLVED.get_or_init(|| {
-            PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
-                env!("TUTTI_VST2_PROBE_CANDIDATES"),
-                "tutti-vst2-test-plugin",
-            ))
+            tutti_fixture_resolve::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
         })
     }
 

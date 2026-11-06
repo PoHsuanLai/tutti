@@ -1,7 +1,7 @@
 //! Host-conformance harness — an in-process pluginval for *our host*.
 //!
-//! Loads the reference plugin `tutti-clap-test-plugin` (built by this
-//! crate's `build.rs`), drives one `process` block through the real CLAP
+//! Loads the reference plugin `tutti-clap-test-plugin` (a dev-dependency
+//! cargo builds in the same run), drives one `process` block through the real CLAP
 //! FFI, then reads back what the plugin observed and asserts the host built
 //! the call correctly: buffer geometry, input-event ordering by sample
 //! offset, parameter points, transport, and the `clap_host` callback

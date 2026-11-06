@@ -8,9 +8,6 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// `;`-separated candidate paths, from `build.rs`.
-const CANDIDATES: &str = env!("TUTTI_VST2_PROBE_CANDIDATES");
-
 /// Absolute path to the freshest built copy of the reference plugin.
 ///
 /// Returns `&'static PathBuf` — it derefs to `&Path` for `Vst2Loaded::load`
@@ -23,9 +20,6 @@ const CANDIDATES: &str = env!("TUTTI_VST2_PROBE_CANDIDATES");
 pub fn probe_path() -> &'static PathBuf {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
     RESOLVED.get_or_init(|| {
-        PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
-            CANDIDATES,
-            "tutti-vst2-test-plugin",
-        ))
+        tutti_fixture_resolve::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
     })
 }

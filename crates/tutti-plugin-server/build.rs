@@ -1,35 +1,10 @@
-//! Resolve the path to the reference CLAP plugin cdylib
-//! (`tutti-clap-test-plugin`) and hand it to this crate's unit tests via the
-//! `TUTTI_CLAP_TEST_PLUGIN_CANDIDATES` env var.
+//! Forward `tutti-vst3-host`'s reference-plugin directory to this crate's tests.
 //!
-//! ## Why the crate next door emits the same variable
-//!
-//! `cargo:rustc-env` applies only to the crate whose build script emitted it —
-//! it does not propagate to dependents — and this crate compiles its own tests.
-//! Both call `tutti-fixture-resolve`, so the rules live in one place.
-//!
-//! ## Why we don't *build* the plugin here
-//!
-//! There is no stable Cargo mechanism to depend on a sibling *cdylib* artifact
-//! from a test (artifact-dependencies are nightly-only), and shelling out to a
-//! nested `cargo build` **deadlocks** against the outer `cargo test`'s
-//! target-directory lock. Instead this crate takes `tutti-clap-test-plugin` as
-//! a dev-dependency, so cargo builds the cdylib as part of the same `cargo
-//! test` invocation and drops it under the profile directory.
-//!
-//! The VST3 side is the exception: its reference plugin is C++ compiled by
-//! `tutti-vst3-host`, so rather than rebuild it, that crate's `links` metadata
-//! carries the location here. See [`forward_vst3_probe_dir`].
+//! The VST3 reference plugin is C++ compiled by `tutti-vst3-host`, so rather
+//! than rebuild it, that crate's `links` metadata carries the location here.
+//! See [`forward_vst3_probe_dir`].
 
 fn main() {
-    tutti_fixture_resolve::emit_candidates(
-        "TUTTI_CLAP_TEST_PLUGIN_CANDIDATES",
-        "tutti_clap_test_plugin",
-    );
-    tutti_fixture_resolve::emit_candidates(
-        "TUTTI_VST2_TEST_PLUGIN_CANDIDATES",
-        "tutti_vst2_test_plugin",
-    );
     forward_vst3_probe_dir();
 }
 

@@ -75,8 +75,8 @@
 
 // The reference CLAP probe, so this harness has something to drive on a bare
 // checkout. `clap_probe` is the same module the out-of-process CLAP suites
-// use; it resolves the cdylib and the `plugin-server` binary that `build.rs`
-// located, both of which cargo builds as dev-dependencies.
+// use; it resolves the cdylib (a dev-dependency) and the `plugin-server` binary
+// (built first, see `CLAUDE.md`) beside the test binary.
 // Also built for VST3 alone: `repeated_load_and_drop_leaves_no_subprocesses`
 // runs there too and checks its servers with `clap_probe::is_alive`, which is
 // a plain process check, not CLAP's. (Without this the `vst3`-only build of

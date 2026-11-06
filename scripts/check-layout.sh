@@ -9,8 +9,7 @@
 # - every workspace member under `testing/` is directly `testing/<dir>`;
 # - no member lives anywhere else, and `vendor/` holds no member;
 # - nothing under `crates/` has a normal or build dependency on anything under
-#   `testing/` (a dev-dependency is fine), except the edges in
-#   KNOWN_TESTING_BUILD_EDGES.
+#   `testing/` (a dev-dependency is fine).
 #
 # Layering (CLAUDE.md, "Workspace"): a normal or build dependency between
 # workspace crates points strictly down the LAYERS table. A crate missing from
@@ -31,8 +30,10 @@
 #   only";
 # - `tutti-spatial` as a `[dev-dependencies]` entry of `tutti-nodes`:
 #   "tutti-nodes must not depend on tutti-spatial";
-# - `tutti-fixture-resolve` as a `[dependencies]` entry of `tutti-dsp`:
-#   "normal dependency on tutti-fixture-resolve; crates/ depends on testing/";
+# - `tutti-fixture-resolve` as a `[dependencies]` entry of `tutti-dsp`, and as
+#   a `[build-dependencies]` entry of `tutti-plugin`: "normal dependency on
+#   tutti-fixture-resolve; crates/ depends on testing/" and "build dependency
+#   ...";
 # - `tutti-mod` moved to `crates/nest/tutti-mod`: "is a nested directory under
 #   crates/" (a nested directory under crates/ is refused);
 # - `tutti-mod` moved to `crates/modx`: "must be crates/tutti-mod";
@@ -77,19 +78,6 @@ LAYERS = [
 ]
 layer = {n: i for i, ns in enumerate(LAYERS) for n in ns}
 
-# crates/ -> testing/ build edges that exist today: each of these crates'
-# build.rs resolves the test plugin cdylib a dev-dependency builds, through
-# tutti-fixture-resolve. Real debt (a shipped crate builds a testing crate);
-# the edge is listed so the rule bites on every new one, and an entry whose
-# edge is gone fails, so the list cannot outlive the debt.
-KNOWN_TESTING_BUILD_EDGES = {
-    ("tutti-clap-ffi", "tutti-fixture-resolve"),
-    ("tutti-clap-host", "tutti-fixture-resolve"),
-    ("tutti-plugin", "tutti-fixture-resolve"),
-    ("tutti-plugin-server", "tutti-fixture-resolve"),
-    ("tutti-vst2-host", "tutti-fixture-resolve"),
-}
-
 errors = []
 def fail(msg):
     errors.append(msg)
@@ -124,19 +112,12 @@ def internal_deps(p):
             yield d["name"], (d["kind"] or "normal")
 
 # ---- crates/ never builds on testing/ -------------------------------------
-seen_known = set()
 for name, p in pkgs.items():
     if not rel(p).startswith("crates/"):
         continue
     for dep, kind in internal_deps(p):
-        if kind == "dev" or not rel(pkgs[dep]).startswith("testing/"):
-            continue
-        if (name, dep) in KNOWN_TESTING_BUILD_EDGES:
-            seen_known.add((name, dep))
-        else:
+        if kind != "dev" and rel(pkgs[dep]).startswith("testing/"):
             fail(f"{name}: {kind} dependency on {dep}; crates/ depends on testing/")
-for edge in sorted(KNOWN_TESTING_BUILD_EDGES - seen_known):
-    fail(f"KNOWN_TESTING_BUILD_EDGES lists {edge[0]} -> {edge[1]} but the edge is gone; remove it")
 
 # ---- layering --------------------------------------------------------------
 for name, p in pkgs.items():

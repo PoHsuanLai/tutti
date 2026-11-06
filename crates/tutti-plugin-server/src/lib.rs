@@ -46,7 +46,7 @@ pub(crate) mod test_utils {
     // Every import here belongs to the probe-path helpers, which are gated to
     // the loader whose reference plugin they find.
     // `Path`/`PathBuf` belong to the VST3 bundle walk; VST2 and CLAP only
-    // resolve a candidate string.
+    // resolve a path string.
     #[cfg(any(feature = "clap", feature = "vst3"))]
     use std::path::Path;
     #[cfg(feature = "vst3")]
@@ -75,16 +75,6 @@ pub(crate) mod test_utils {
         feature = "vst2"
     ))]
     pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
-
-    /// `;`-separated candidate paths for the reference CLAP plugin, emitted by
-    /// `build.rs`.
-    #[cfg(feature = "clap")]
-    const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
-
-    /// `;`-separated candidate paths for the reference VST2 plugin, emitted by
-    /// `build.rs`.
-    #[cfg(feature = "vst2")]
-    const VST2_PROBE_CANDIDATES: &str = env!("TUTTI_VST2_TEST_PLUGIN_CANDIDATES");
 
     /// The reference VST3 bundle's parent directory, forwarded from
     /// `tutti-vst3-host` by `build.rs`. Empty when that crate built no probe.
@@ -633,8 +623,8 @@ pub(crate) mod test_utils {
     ///
     /// The VST2 counterpart to [`clap_probe_path`], resolved the same way:
     /// `tutti-vst2-test-plugin` is a dev-dependency, so cargo builds the
-    /// cdylib during this same `cargo test` and `build.rs` only reports where
-    /// it landed. Its behaviour is steered per-test with the
+    /// cdylib during this same `cargo test`, and the resolver finds it beside the
+    /// test binary. Its behaviour is steered per-test with the
     /// `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
     ///
     /// # Panics
@@ -646,10 +636,9 @@ pub(crate) mod test_utils {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                tutti_fixture_resolve::resolve_or_panic(
-                    VST2_PROBE_CANDIDATES,
-                    "tutti-vst2-test-plugin",
-                )
+                tutti_fixture_resolve::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
+                    .to_string_lossy()
+                    .into_owned()
             })
             .as_str()
     }
@@ -682,10 +671,9 @@ pub(crate) mod test_utils {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                tutti_fixture_resolve::resolve_or_panic(
-                    CLAP_PROBE_CANDIDATES,
-                    "tutti-clap-test-plugin",
-                )
+                tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+                    .to_string_lossy()
+                    .into_owned()
             })
             .as_str()
     }

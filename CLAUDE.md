@@ -115,6 +115,10 @@ cargo test --doc --workspace       # nextest does NOT run doctests, silently
 just test-all                      # both
 ```
 
+- **Fixtures are found beside the test binary:** a test, bench or example
+  finds the reference plugins and `plugin-server` in its own profile directory
+  (`tutti-fixture-resolve`, a dev-dependency; no build script or env var, so it
+  holds under `CARGO_TARGET_DIR` and `--target`).
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
   `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
@@ -257,8 +261,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
 
 - A member is directly `crates/<package-name>` or `testing/<dir>`; a nested
   directory is refused. Nothing under `crates/` has a normal or build
-  dependency on `testing/` (one known set of build edges to
-  `tutti-fixture-resolve` is listed in the script as debt).
+  dependency on `testing/`; a test reaches `testing/` through a
+  dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
   Our own forks (`tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on

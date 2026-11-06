@@ -25,15 +25,14 @@ use tutti_clap_ffi::{
 use tutti_clap_test_plugin::{PLUGIN_ID, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_plugin_types::SampleFormat;
 
-/// `;`-separated candidate paths, from `build.rs`.
-const CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
-
 fn probe_path() -> &'static str {
     use std::sync::OnceLock;
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::resolve_or_panic(CANDIDATES, "tutti-clap-test-plugin")
+            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+                .to_string_lossy()
+                .into_owned()
         })
         .as_str()
 }

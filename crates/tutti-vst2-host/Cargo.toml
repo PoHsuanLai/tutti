@@ -34,13 +34,8 @@ tutti-types = { path = "../tutti-types" }
 # automation_state) that upstream vst-rs's host_dispatch swallowed.
 vst-tutti = { path = "../vst-tutti" }
 
-[build-dependencies]
-# Shared with the other three crates that locate a reference plugin
-# cdylib; see that crate's docs for the newest-wins and never-skip rules.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
-
 [dev-dependencies]
-# The shared resolver; see its docs for the newest-wins rule.
+# Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
 assert_no_alloc = { version = "1", default-features = false }
 # Used by the conformance harness to re-open the reference plugin and read
@@ -52,7 +47,7 @@ libloading = "0.8"
 tempfile = "3"
 # The reference plugin the conformance harness loads. As a dev-dependency,
 # Cargo builds its cdylib in the same `cargo test` invocation (no nested
-# cargo / no target-dir-lock deadlock — see build.rs); the rlib side gives
+# cargo / no target-dir-lock deadlock); the rlib side gives
 # the test the `ProcessCapture` type and the misbehaviour switches directly
 # instead of hand-mirroring them across the dlopen seam.
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }

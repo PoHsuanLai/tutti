@@ -33,8 +33,8 @@ use tutti_core::SampleRate;
 use tutti_graph::contract::Direct;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
 
-// The bench target gets dev-dependencies and the build script's env, so the
-// test suites' resolver works here unchanged rather than being copied.
+// The bench target gets dev-dependencies, and its binary sits in `deps/` like a
+// test's, so the test suites' resolver works here unchanged.
 #[path = "../tests/support/probe_path.rs"]
 mod probe_path;
 

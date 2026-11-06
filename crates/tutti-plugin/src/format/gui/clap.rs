@@ -280,10 +280,8 @@ mod tests {
     fn a_timer_the_editor_registers_ticks_on_idle() {
         use tutti_clap_test_plugin::{CMD_REGISTER_TIMER, Site, ThreadCapture};
 
-        let real = std::path::PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
-            env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES"),
-            "tutti-clap-test-plugin",
-        ));
+        let real =
+            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
         let path = tutti_fixture_resolve::publish_with_extension(&real, "clap");
         let mut gui = ClapGuiInstance::load(&path).expect("loads");
 

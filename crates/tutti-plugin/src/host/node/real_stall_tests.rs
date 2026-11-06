@@ -103,38 +103,19 @@ impl Drop for ProbeEnv {
     }
 }
 
-/// The exact command that builds the missing binary, printed by the panic below.
-///
-/// Run from the repository root, which is the one workspace every crate here
-/// belongs to (`CLAUDE.md`, "Build `plugin-server` first").
-const BUILD_COMMAND: &str = "cargo build -p tutti-plugin-server";
-
-/// The `plugin-server` binary these tests spawn, resolved from `build.rs`'s
-/// candidates.
+/// The `plugin-server` binary these tests spawn.
 ///
 /// # Panics
 ///
-/// If it has not been built. It is **not** a dev-dependency — `tutti-plugin-server`
-/// depends on `tutti-plugin`, so the edge would be a cycle — so cargo does not
-/// build it as a side effect of running these tests. The message prints
-/// [`BUILD_COMMAND`] verbatim so the fix is a copy-paste rather than a thing to
-/// look up.
+/// If it has not been built; the message names the command that builds it
+/// (`CLAUDE.md`, "Build `plugin-server` first").
 fn plugin_server_path() -> &'static str {
     static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::newest_existing(
-                env!("TUTTI_PLUGIN_SERVER_CANDIDATES").split(';'),
-            )
-            .unwrap_or_else(|| {
-                panic!(
-                    "`plugin-server` not built. It is NOT a dev-dependency of this \
-                     crate (that would be a dependency cycle: `tutti-plugin-server` \
-                     depends on `tutti-plugin`), so running these tests does not \
-                     build it. Build it first, then re-run:\n\n  {BUILD_COMMAND}\n"
-                )
-            })
-            .to_string()
+            tutti_fixture_resolve::plugin_server()
+                .to_string_lossy()
+                .into_owned()
         })
         .as_str()
 }
@@ -148,10 +129,8 @@ fn plugin_server_path() -> &'static str {
 fn clap_probe_path() -> &'static std::path::Path {
     static LINKED: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     LINKED.get_or_init(|| {
-        let real = std::path::PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
-            env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES"),
-            "tutti-clap-test-plugin",
-        ));
+        let real =
+            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
         tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }

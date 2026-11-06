@@ -9,8 +9,8 @@
 //!
 //! # The two artifacts, and why each is found rather than built
 //!
-//! `build.rs` names candidate paths for both; see there for why a nested
-//! `cargo build` is not an option.
+//! Both are looked up beside the test binary (`tutti-fixture-resolve`); a nested
+//! `cargo build` from a test would deadlock on the target-directory lock.
 //!
 //! # The dlopen seam
 //!
@@ -208,18 +208,6 @@ impl Node for Latent {
     fn reset(&mut self) {}
 }
 
-/// `;`-separated candidate paths for the reference CLAP cdylib, from `build.rs`.
-const CLAP_PROBE_CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
-
-/// `;`-separated candidate paths for the `plugin-server` binary, from `build.rs`.
-const PLUGIN_SERVER_CANDIDATES: &str = env!("TUTTI_PLUGIN_SERVER_CANDIDATES");
-
-/// The exact command that builds the missing binary, printed by the panic below.
-///
-/// Run from the repository root, which is the one workspace every crate here
-/// belongs to (`CLAUDE.md`, "Build `plugin-server` first").
-pub const BUILD_COMMAND: &str = "cargo build -p tutti-plugin-server";
-
 /// These tests must not run concurrently, and a `Mutex` cannot enforce it.
 ///
 /// Two things need serializing, and they need it at different scopes:
@@ -335,10 +323,8 @@ pub fn exclusive() -> cross_process_lock::Guard {
 pub fn clap_probe_path() -> &'static Path {
     static LINKED: OnceLock<PathBuf> = OnceLock::new();
     LINKED.get_or_init(|| {
-        let real = PathBuf::from(tutti_fixture_resolve::resolve_or_panic(
-            CLAP_PROBE_CANDIDATES,
-            "tutti-clap-test-plugin",
-        ));
+        let real =
+            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
         tutti_fixture_resolve::publish_with_extension(&real, "clap")
     })
 }
@@ -347,33 +333,17 @@ pub fn clap_probe_path() -> &'static Path {
 ///
 /// # Panics
 ///
-/// If it has not been built. Unlike the cdylibs this is **not** a
-/// dev-dependency — `tutti-plugin-server` depends on `tutti-plugin`, so the edge
-/// would be a cycle — so cargo does not build it as a side effect of running
-/// these tests, and the message says so rather than blaming the machine.
-///
-/// The panic prints [`BUILD_COMMAND`] verbatim so the fix is a copy-paste rather
-/// than a thing to look up.
+/// If it has not been built; the message names the command that builds it.
+/// `tutti-plugin-server` depends on `tutti-plugin`, so it is not a
+/// dev-dependency and running these tests does not build it
+/// (`CLAUDE.md`, "Build `plugin-server` first").
 pub fn plugin_server_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            let searched = PLUGIN_SERVER_CANDIDATES
-                .split(';')
-                .filter(|s| !s.is_empty())
-                .map(|s| format!("\n  - {s}"))
-                .collect::<String>();
-            tutti_fixture_resolve::newest_existing(PLUGIN_SERVER_CANDIDATES.split(';'))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "`plugin-server` not found.\nSearched:{searched}\n\
-                         It is NOT a dev-dependency of this crate (that would be a \
-                         dependency cycle: `tutti-plugin-server` depends on \
-                         `tutti-plugin`), so running these tests does not build it. \
-                         Build it first, then re-run:\n\n  {BUILD_COMMAND}\n"
-                    )
-                })
-                .to_string()
+            tutti_fixture_resolve::plugin_server()
+                .to_string_lossy()
+                .into_owned()
         })
         .as_str()
 }

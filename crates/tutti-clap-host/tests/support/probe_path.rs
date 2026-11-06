@@ -7,9 +7,6 @@
 
 use std::sync::OnceLock;
 
-/// `;`-separated candidate paths, from `build.rs`.
-const CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
-
 /// Absolute path to the freshest built copy of the reference plugin.
 ///
 /// # Panics
@@ -19,7 +16,9 @@ pub fn probe_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::resolve_or_panic(CANDIDATES, "tutti-clap-test-plugin")
+            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+                .to_string_lossy()
+                .into_owned()
         })
         .as_str()
 }

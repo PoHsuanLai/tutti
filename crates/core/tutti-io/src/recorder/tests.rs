@@ -1,6 +1,8 @@
 use super::*;
 use crate::WavOut;
+use crate::pump::{ManualDriver, PumpPass};
 use tutti_core::ChannelLayout;
+use tutti_core::io::pump;
 use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 

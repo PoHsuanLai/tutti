@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tutti_core::{AtomicF64, Ordering, SampleRate, SrcRatio};
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+use tutti_io::AudioIn;
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
@@ -246,7 +248,7 @@ fn handle_stream_file(
             meta.total_frames.unwrap_or(0),
             // Decoder metadata carries the header's integer rate.
             SampleRate::from(meta.sample_rate),
-            decoder.channels(),
+            usize::from(decoder.layout().count()),
             Some(decoder),
             None,
         ),

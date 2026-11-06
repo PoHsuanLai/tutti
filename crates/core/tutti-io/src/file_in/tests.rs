@@ -91,8 +91,8 @@ fn seek_then_poll_matches_slice() {
 
     let start = 12_345u64;
     let len = 2_000usize;
-    dec.seek(start).expect("seek");
-    assert_eq!(dec.cursor(), start);
+    dec.seek(Samples(start as usize)).expect("seek");
+    assert_eq!(dec.cursor(), Samples(start as usize));
     let mut got = vec![[0.0f32; 2]; len];
     let n = dec.poll_into(got.as_flattened_mut());
     assert_eq!(n, Samples(len));
@@ -122,7 +122,7 @@ fn poll_past_eof_returns_short_count() {
     // Straddle EOF: seek to 500 before the end, then ask for 1000 frames.
     let start = (frames - 500) as u64;
     let len = 1000usize;
-    dec.seek(start).expect("seek");
+    dec.seek(Samples(start as usize)).expect("seek");
     // Pre-fill with a sentinel so we can assert the untouched tail stays put.
     let mut got = vec![[1.0f32; 2]; len];
     let n = dec.poll_into(got.as_flattened_mut());
@@ -164,7 +164,7 @@ fn truncated_asset(name: &str, keep: f64) -> std::path::PathBuf {
 
 /// Frames a poll loop reads before `0`.
 fn drain(dec: &mut FileIn) -> usize {
-    let mut buf = vec![0.0f32; 1024 * dec.channels()];
+    let mut buf = vec![0.0f32; 1024 * usize::from(dec.layout().count())];
     let mut frames = 0;
     loop {
         let n = dec.poll_into(&mut buf).get();
@@ -187,13 +187,13 @@ fn drain(dec: &mut FileIn) -> usize {
 fn a_truncated_flac_is_a_fault_not_a_clean_end() {
     let path = truncated_asset("stereo.flac", 0.9);
     let mut dec = FileIn::open(&path).expect("a cut file still opens");
-    let total = dec.total_frames().expect("flac reports a length") as usize;
-    let mut buf = vec![0.0f32; 1024 * dec.channels()];
+    let total = dec.total_frames().expect("flac reports a length").get();
+    let mut buf = vec![0.0f32; 1024 * usize::from(dec.layout().count())];
     let mut frames = 0;
     loop {
         match dec.fill_sequential_interleaved(&mut buf) {
-            Ok(0) => panic!("a fault must surface as Err, not as a bare end"),
-            Ok(n) => frames += n,
+            Ok(Samples(0)) => panic!("a fault must surface as Err, not as a bare end"),
+            Ok(n) => frames += n.get(),
             Err(e) => {
                 assert!(e.to_string().contains("frame count"), "{e}");
                 break;
@@ -204,7 +204,7 @@ fn a_truncated_flac_is_a_fault_not_a_clean_end() {
     assert!(dec.error().is_some());
     assert!(dec.fill_sequential_interleaved(&mut buf).is_err(), "sticky");
     assert_eq!(dec.poll_into(&mut buf), Samples::ZERO);
-    dec.seek(0).expect("seek");
+    dec.seek(Samples(0)).expect("seek");
     assert!(dec.error().is_none(), "a successful seek clears the fault");
     let _ = std::fs::remove_file(&path);
 }
@@ -312,7 +312,8 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
     let mut buf = vec![0.0f32; 20_000 * 2];
     let got = dec
         .fill_sequential_interleaved(&mut buf)
-        .expect("frames first");
+        .expect("frames first")
+        .get();
     assert!(got > 0 && got < 20_000, "{got}");
     assert!(
         dec.error()
@@ -377,12 +378,13 @@ fn interleaved_read_delivers_every_channel() {
     let frames = 128;
     let path = write_indexed_wav(6, frames, "every_channel");
     let mut decoder = FileIn::open(&path).expect("open");
-    assert_eq!(decoder.channels(), 6);
+    assert_eq!(decoder.layout(), ChannelLayout::from(6u16));
 
     let mut out = vec![0.0f32; 16 * 6];
     let got = decoder
         .fill_sequential_interleaved(&mut out)
-        .expect("interleaved read");
+        .expect("interleaved read")
+        .get();
     assert_eq!(got, 16, "expected 16 frames of 6 channels");
 
     for i in 0..got {
@@ -414,7 +416,8 @@ fn interleaved_read_stays_frame_aligned_across_packets() {
     while produced < 2048 {
         let got = decoder
             .fill_sequential_interleaved(&mut chunk)
-            .expect("read");
+            .expect("read")
+            .get();
         if got == 0 {
             break;
         }
@@ -487,7 +490,6 @@ fn a_mono_file_is_not_widened() {
     let path = save_wav16(&wave, "tutti_stream_mono_native.wav");
 
     let mut decoder = FileIn::open(&path).expect("open");
-    assert_eq!(decoder.channels(), 1);
     assert_eq!(decoder.layout(), ChannelLayout::MONO, "no widening");
 
     let mut out = [0.0f32; 16];

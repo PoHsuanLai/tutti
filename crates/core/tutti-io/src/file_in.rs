@@ -33,10 +33,15 @@ use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::{ChannelLayout, Samples};
+use tutti_core::{ChannelLayout, SampleRate, Samples};
 
 use crate::WaveError;
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};
+
+/// A frame count from the file's `u64`, saturating where `usize` is narrower.
+fn frames(n: u64) -> Samples {
+    Samples(usize::try_from(n).unwrap_or(usize::MAX))
+}
 
 /// A copy of `error` for a call that reports a fault the stream already
 /// holds: symphonia's error is not `Clone`.
@@ -73,11 +78,12 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 ///
 /// ```no_run
 /// use tutti_io::{AudioIn, FileIn};
+/// use tutti_core::Samples;
 ///
 /// let mut file = FileIn::open("take.flac")?;
-/// let width = file.layout().count() as usize;
+/// let width = usize::from(file.layout().count());
 /// let mut buf = vec![0.0f32; 1024 * width];
-/// file.seek(48_000)?; // start one second in, at 48 kHz
+/// file.seek(Samples(48_000))?; // start one second in, at 48 kHz
 /// let frames = file.poll_into(&mut buf);
 /// println!("read {} frames of {width} channels", frames.get());
 /// # Ok::<(), tutti_io::WaveError>(())
@@ -86,18 +92,15 @@ pub struct FileIn {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
-    channels: usize,
-    sample_rate: u32,
+    layout: ChannelLayout,
+    sample_rate: SampleRate,
     total_frames: Option<u64>,
     /// Scratch buffer reused by `decode_packet_into` (allocated on first decode).
     convert_buf: Option<AudioBuffer<f32>>,
-    /// Decoded-but-unconsumed frames from the last packet, **interleaved at the
-    /// file's own [`channels`](Self::channels)** — not folded to stereo. Frame
-    /// `f` channel `c` is at `leftover[f * channels + c]`.
+    /// Decoded-but-unconsumed frames from the last packet, interleaved at the
+    /// file's own width. Frame `f` channel `c` is at `leftover[f * width + c]`.
     leftover: Vec<f32>,
-    /// Read offset into `leftover` in **frames** (not samples); frames
-    /// `[leftover_pos..]` are unconsumed. Kept frame-denominated because
-    /// [`seek`](Self::seek) advances it by a decoded frame count.
+    /// Read offset into `leftover` in frames; `[leftover_pos..]` is unconsumed.
     leftover_pos: usize,
     /// Next file sample-frame a sequential read produces.
     cursor: u64,
@@ -123,13 +126,10 @@ impl std::fmt::Debug for FileIn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileIn")
             .field("track_id", &self.track_id)
-            .field("channels", &self.channels)
+            .field("layout", &self.layout)
             .field("sample_rate", &self.sample_rate)
             .field("total_frames", &self.total_frames)
-            .field(
-                "leftover_frames",
-                &(self.leftover.len() / self.channels.max(1)),
-            )
+            .field("leftover_frames", &(self.leftover.len() / self.width()))
             .field("leftover_pos", &self.leftover_pos)
             .field("cursor", &self.cursor)
             .field("seekable", &self.seekable)
@@ -141,20 +141,19 @@ impl std::fmt::Debug for FileIn {
 
 impl FileIn {
     /// Returns the file's length in frames, if the container reports it.
-    pub fn total_frames(&self) -> Option<u64> {
-        self.total_frames
+    pub fn total_frames(&self) -> Option<Samples> {
+        self.total_frames.map(frames)
     }
 
-    /// Returns the file's channel count (2 if the container does not say).
-    /// The same number as [`AudioIn::layout`], as a `usize`.
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-
-    /// Returns the file's sample rate in Hz (44 100 if the container does not
+    /// Returns the file's sample rate (44 100 Hz if the container does not
     /// say). Nothing is resampled.
-    pub fn sample_rate(&self) -> u32 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
+    }
+
+    /// The interleave stride: the file's channel count.
+    fn width(&self) -> usize {
+        usize::from(self.layout.count())
     }
 
     /// Returns whether [`seek`](Self::seek) can serve arbitrary positions:
@@ -179,12 +178,14 @@ impl FileIn {
         let track_id = track.id;
 
         let total_frames = track.codec_params.n_frames;
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track
-            .codec_params
-            .channels
-            .map(|ch| ch.count())
-            .unwrap_or(2);
+        let sample_rate = SampleRate::from(track.codec_params.sample_rate.unwrap_or(44100));
+        // At least one channel, so the interleave stride is never zero.
+        let layout = ChannelLayout::from(
+            track
+                .codec_params
+                .channels
+                .map_or(2, |ch| ch.count().max(1)),
+        );
 
         let decode_opts = DecoderOptions::default();
         let decoder = symphonia::default::get_codecs().make(&track.codec_params, &decode_opts)?;
@@ -203,7 +204,7 @@ impl FileIn {
             reader,
             decoder,
             track_id,
-            channels,
+            layout,
             sample_rate,
             total_frames,
             convert_buf: None,
@@ -217,13 +218,10 @@ impl FileIn {
         })
     }
 
-    /// Unconsumed retained **frames** (not samples). `leftover` is interleaved,
-    /// so its raw length is a sample count and must be divided by the width to
-    /// stay in the same units as `leftover_pos`.
+    /// Unconsumed retained frames.
     #[inline]
     fn leftover_len(&self) -> usize {
-        let ch = self.channels.max(1);
-        (self.leftover.len() / ch).saturating_sub(self.leftover_pos)
+        (self.leftover.len() / self.width()).saturating_sub(self.leftover_pos)
     }
 
     /// Refill `leftover` from the next packet of the selected track that
@@ -265,19 +263,13 @@ impl FileIn {
 
             self.leftover.clear();
             self.leftover_pos = 0;
-            // Interleave every decoded channel at the file's own width; a
-            // caller wanting stereo folds.
-            //
-            // A packet whose channel count disagrees with the one read at
-            // `open` (rare, malformed) is trusted per-packet for the read and
-            // zero-filled up to `self.channels`, so the interleave stride stays
-            // constant and never runs past the buffer.
-            let ch = num_ch.min(self.channels);
-            // Channel by channel into a zeroed buffer, so the channels the
-            // packet lacks are already silence.
-            self.leftover.resize(frames * self.channels, 0.0);
+            // A packet whose channel count disagrees with `open`'s is
+            // zero-filled up to the file's width, so the stride stays constant.
+            let width = usize::from(self.layout.count());
+            let ch = num_ch.min(width);
+            self.leftover.resize(frames * width, 0.0);
             for c in 0..ch {
-                let dst = self.leftover[c..].iter_mut().step_by(self.channels);
+                let dst = self.leftover[c..].iter_mut().step_by(width);
                 for (d, &s) in dst.zip(&buf.chan(c)[..frames]) {
                     *d = s;
                 }
@@ -301,15 +293,15 @@ impl FileIn {
     }
 
     /// Returns the frame the next sequential read will produce.
-    pub fn cursor(&self) -> u64 {
-        self.cursor
+    pub fn cursor(&self) -> Samples {
+        frames(self.cursor)
     }
 
     /// Fills `out` with the next sequential frames at the file's **own**
     /// channel width, interleaved, and returns how many frames were produced
     /// (fewer than fit only at the end of the file).
     ///
-    /// `out.len()` should be a multiple of [`channels`](Self::channels); a
+    /// `out.len()` should be a multiple of the file's channel count; a
     /// partial trailing frame is not filled. This is the fallible form of
     /// [`poll_into`](AudioIn::poll_into).
     ///
@@ -319,7 +311,7 @@ impl FileIn {
     /// before the failure are returned as `Ok` first, and the failure comes
     /// with the next call (and stays, see [`error`](Self::error)). The same
     /// goes for a FLAC stream that ends before its frame count.
-    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<usize, WaveError> {
+    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<Samples, WaveError> {
         if let Some(fault) = &self.fault {
             return Err(repeat(fault));
         }
@@ -329,7 +321,7 @@ impl FileIn {
             // The frames before the fault are the caller's; the fault is
             // reported by the next call, which finds nothing more to read.
             Some(fault) if filled == 0 => Err(repeat(fault)),
-            _ => Ok(filled),
+            _ => Ok(Samples(filled)),
         }
     }
 
@@ -344,7 +336,7 @@ impl FileIn {
     /// [`fill_sequential_interleaved`](Self::fill_sequential_interleaved),
     /// keeping the frames filled before a decode error.
     fn fill(&mut self, out: &mut [f32]) -> (usize, Option<WaveError>) {
-        let ch = self.channels.max(1);
+        let ch = self.width();
         let capacity_frames = out.len() / ch;
         let mut filled = 0usize;
 
@@ -387,7 +379,8 @@ impl FileIn {
     ///
     /// A [`WaveError`] if the container cannot seek or a packet fails to
     /// decode.
-    pub fn seek(&mut self, start: u64) -> Result<(), WaveError> {
+    pub fn seek(&mut self, start: Samples) -> Result<(), WaveError> {
+        let start = start.get() as u64;
         // Accurate seek lands on the packet containing `target`; decoding then
         // discards the preroll up to `start`. Two things make that subtler
         // than `start - actual_ts`:
@@ -470,10 +463,9 @@ impl AudioIn for FileIn {
     /// [`FileIn::error`] says which.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
-    /// The file's own width — what [`poll_into`](Self::poll_into) actually
-    /// produces. [`FileIn::channels`] is the same number as a `usize`.
+    /// The file's own width, which is what [`poll_into`](Self::poll_into) produces.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(self.channels.max(1) as u16)
+        self.layout
     }
 
     /// Flat interleaved at [`layout`](Self::layout)'s width. `out` holds
@@ -482,11 +474,8 @@ impl AudioIn for FileIn {
     ///
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
-    ///
-    /// The inherent [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved)
-    /// returns the same count as a bare `usize`.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        Samples(self.fill_sequential_interleaved(out).unwrap_or(0))
+        self.fill_sequential_interleaved(out).unwrap_or(Samples(0))
     }
 }
 

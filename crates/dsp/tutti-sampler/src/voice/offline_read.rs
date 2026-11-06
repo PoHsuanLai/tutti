@@ -42,6 +42,10 @@ use std::sync::Arc;
 
 use super::fault::FaultLatch;
 use tutti_core::SamplePosition;
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+use tutti_core::Samples;
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+use tutti_io::AudioIn;
 use tutti_io::Wave;
 
 use super::LoopSetting;
@@ -264,17 +268,14 @@ impl Open {
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     fn open_path(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, String> {
         let decoder = tutti_io::FileIn::open(&file.path).map_err(|e| e.to_string())?;
-        let channels = decoder.channels();
-        if channels == 0 {
-            return Err("the file has no channels".into());
-        }
+        let channels = usize::from(decoder.layout().count());
         match decoder.total_frames().filter(|_| decoder.seekable()) {
             Some(len) => Ok(Self::Paged(Box::new(Pages {
                 decoder,
                 path: file.path.clone(),
                 fault,
                 channels,
-                len: len as usize,
+                len: len.get(),
                 slots: Default::default(),
                 recent: 0,
                 loads: 0,
@@ -457,8 +458,8 @@ impl Pages {
                 path: self.path.clone(),
                 what,
             };
-            if self.decoder.cursor() != start as u64
-                && let Err(e) = self.decoder.seek(start as u64)
+            if self.decoder.cursor() != Samples(start)
+                && let Err(e) = self.decoder.seek(Samples(start))
             {
                 self.fault
                     .latch(fail(format!("seek to frame {start}: {e}")));

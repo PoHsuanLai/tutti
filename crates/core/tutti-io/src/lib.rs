@@ -9,6 +9,7 @@ mod error;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 mod file_in;
 mod mic;
+mod pump;
 mod recorder;
 mod tap_in;
 mod wav_out;
@@ -16,10 +17,10 @@ mod wave;
 
 pub use error::{Error, Result};
 pub use mic::{MicMonitorNode, MicRing};
-pub use recorder::{
-    FinalizeStatus, IDLE_PARK, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, Recorder,
-    RunningPump, ThreadDriver,
+pub use pump::{
+    IDLE_PARK, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, RunningPump, ThreadDriver,
 };
+pub use recorder::{FinalizeStatus, Recorder};
 pub use tap_in::TapIn;
 // `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller
 // sizing a buffer for it has to name the same ceiling.

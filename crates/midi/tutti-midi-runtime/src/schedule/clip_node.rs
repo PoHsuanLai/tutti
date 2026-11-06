@@ -39,6 +39,7 @@
 //! ([`MidiClipControls::set_events`]); the node reads it once per block.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -71,13 +72,23 @@ struct ClipEvents {
 struct ClipEvent {
     timed: TimedMidiEvent,
     /// For a note-on, its own id; for a note-off, the id of the note-on it
-    /// ends; [`NO_NOTE`] for a note-off that ends none, and for any other
-    /// message. An id is the note-on's index in the sorted clip.
-    note: u32,
+    /// ends; `None` for a note-off that ends none, and for any other message.
+    note: Option<ClipNote>,
 }
 
-/// The [`ClipEvent::note`] of an event that belongs to no note.
-const NO_NOTE: u32 = u32::MAX;
+/// A note's id: the index of its note-on in the sorted clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClipNote(NonZeroU32);
+
+impl ClipNote {
+    fn from_index(index: u32) -> Self {
+        Self(NonZeroU32::new(index + 1).expect("clip index below u32::MAX"))
+    }
+
+    fn index(self) -> u32 {
+        self.0.get() - 1
+    }
+}
 
 /// What the node and its controls share.
 struct Shared {
@@ -121,15 +132,7 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         .into_iter()
         .filter(|e| e.beat.get().is_finite())
         .enumerate()
-        .map(|(i, timed)| {
-            (
-                i as u32,
-                ClipEvent {
-                    timed,
-                    note: NO_NOTE,
-                },
-            )
-        })
+        .map(|(i, timed)| (i as u32, ClipEvent { timed, note: None }))
         .collect();
     // Each key's note-ons in list order, and a cursor past the taken ones at
     // its head (so notes that do not overlap pair in one step each).
@@ -157,14 +160,15 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
             .find(|&o| !taken[o as usize] && v[o as usize].1.timed.beat.get() <= beat);
         if let Some(o) = found {
             taken[o as usize] = true;
-            v[o as usize].1.note = o;
-            v[i].1.note = o;
+            let id = Some(ClipNote::from_index(o));
+            v[o as usize].1.note = id;
+            v[i].1.note = id;
         }
     }
     // A note-on no note-off ends is a note too.
     for (i, (_, e)) in v.iter_mut().enumerate() {
-        if e.note == NO_NOTE && matches!(note_of(&e.timed.event), Some((.., true))) {
-            e.note = i as u32;
+        if e.note.is_none() && matches!(note_of(&e.timed.event), Some((.., true))) {
+            e.note = Some(ClipNote::from_index(i as u32));
         }
     }
     v.sort_by(|a, b| a.1.timed.beat.get().total_cmp(&b.1.timed.beat.get()));
@@ -175,9 +179,9 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
     }
     v.into_iter()
         .map(|(_, mut e)| {
-            if e.note != NO_NOTE {
-                e.note = to_sorted[e.note as usize];
-            }
+            e.note = e
+                .note
+                .map(|id| ClipNote::from_index(to_sorted[id.index() as usize]));
             e
         })
         .collect()
@@ -424,7 +428,7 @@ struct HeldNotes {
     /// The note that owns each held key, `owner[(group * 16 + channel) *
     /// 128 + note]`: only its note-off ends the key. Read only while the
     /// key's bit is set; allocated once, with the node.
-    owner: Box<[u32]>,
+    owner: Box<[Option<ClipNote>]>,
     count: usize,
     /// A release the port refused part of: the rest goes out at the next
     /// block's first frame, and every block's after, until none is held.
@@ -464,7 +468,7 @@ impl HeldNotes {
     fn new() -> Self {
         Self {
             bits: Box::new([0; 256]),
-            owner: vec![NO_NOTE; 256 * 128].into_boxed_slice(),
+            owner: vec![None; 256 * 128].into_boxed_slice(),
             count: 0,
             owed: false,
         }
@@ -499,7 +503,13 @@ impl HeldNotes {
     /// note-off leaves the key held by its owner (the port is full, and the
     /// note-on after it is refused and counted too), a refused note-on
     /// leaves the key unheld.
-    fn play(&mut self, out: &mut EventWriter<'_>, at: Offset, e: &MidiEvent, note: u32) {
+    fn play(
+        &mut self,
+        out: &mut EventWriter<'_>,
+        at: Offset,
+        e: &MidiEvent,
+        note: Option<ClipNote>,
+    ) {
         if let Some((g, c, n, on)) = note_of(e) {
             let (i, bit) = (g * 16 + c, 1u128 << n);
             let key = i * 128 + n as usize;
@@ -529,10 +539,10 @@ impl HeldNotes {
                 }
                 return;
             }
-            if note != NO_NOTE {
+            if note.is_some() {
                 if held && self.owner[key] == note && out.push(Event::midi(at, e.data)).is_ok() {
                     self.bits[i] &= !bit;
-                    self.owner[key] = NO_NOTE;
+                    self.owner[key] = None;
                     self.count -= 1;
                 }
                 return;
@@ -564,7 +574,7 @@ impl HeldNotes {
                     return;
                 }
                 *slot &= !(1u128 << n);
-                self.owner[i * 128 + n as usize] = NO_NOTE;
+                self.owner[i * 128 + n as usize] = None;
                 self.count -= 1;
             }
         }
@@ -573,38 +583,11 @@ impl HeldNotes {
 
     fn clear(&mut self) {
         self.bits.fill(0);
-        self.owner.fill(NO_NOTE);
+        self.owner.fill(None);
         self.count = 0;
         self.owed = false;
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tutti_core::Beat;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
-
-    /// **A clip a block still held when `set_events` replaced it is freed by
-    /// the next `reclaim`**, with no further publish.
-    ///
-    /// Mutation (run): `MidiClipControls::reclaim` returning 0 without
-    /// reclaiming → the first clip is still alive, fails.
-    #[test]
-    fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
-        let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
-        let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on)]);
-        let controls = MidiClipControls {
-            shared: Arc::clone(&node.shared),
-        };
-        let gone = Arc::downgrade(&node.shared.current());
-        {
-            // A block in progress across the replacement.
-            let _held = node.clip.lend();
-            controls.clear();
-        }
-        assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
-        assert_eq!(controls.reclaim(), 0);
-        assert!(gone.upgrade().is_none(), "freed by the reclaim");
-    }
-}
+mod tests;

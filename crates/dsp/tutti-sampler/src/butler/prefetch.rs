@@ -41,7 +41,7 @@
 //!
 //! # Frames, not samples
 //!
-//! Every count crossing this module is in **frames**; the stride never leaks
+//! Every count crossing this module is in frames; the stride never leaks
 //! out.
 
 use std::path::{Path, PathBuf};
@@ -413,7 +413,7 @@ impl RegionOut {
         });
     }
 
-    /// Append frames at the window's end, returning how many **frames**
+    /// Append frames at the window's end, returning how many frames
     /// landed: short where a slot the reader's block in flight may read would
     /// be written, or where the ring is full ahead of the reader
     /// (`PosRing::push`). A trailing partial frame is ignored.
@@ -447,7 +447,7 @@ impl tutti_core::AudioOut<f32> for RegionOut {
 pub(crate) struct RegionBuffer;
 
 impl RegionBuffer {
-    /// Build a region's ring of `capacity` **frames** of `channels` each
+    /// Build a region's ring of `capacity` frames of `channels` each
     /// (floored at 4096 frames and one channel, capped at
     /// [`MAX_POS_RING_FRAMES`]), holding nothing, read as an unlooped forward
     /// stream of a file `len` frames long (`usize::MAX` for a length not
@@ -537,7 +537,7 @@ mod tests {
         RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), capacity, channels)
     }
 
-    /// **Frames written through the `AudioOut` trait land by position**,
+    /// Frames written through the `AudioOut` trait land by position,
     /// every channel in its place at six channels, a trailing partial frame
     /// dropped. (The ring's own protocol is `PosRing`'s tests and loom model.)
     ///
@@ -559,7 +559,7 @@ mod tests {
         }
     }
 
-    /// **A ring holds a whole number of frames**: the capacity asked for,
+    /// A ring holds a whole number of frames: the capacity asked for,
     /// floored at 4096 and capped at what the window word can say.
     #[test]
     fn a_ring_holds_a_whole_number_of_frames() {
@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_POS_RING_FRAMES);
     }
 
-    /// **A ring serves one live reader**: it
+    /// A ring serves one live reader: it
     /// has one `PosReader` (not `Clone`), and taking a second is refused,
     /// naming why.
     ///
@@ -587,7 +587,7 @@ mod tests {
         assert!(ring.placed(), "a refused take changes nothing");
     }
 
-    /// **`read_file` reports a damaged file.** The repo's FLAC fixture cut to
+    /// `read_file` reports a damaged file. The repo's FLAC fixture cut to
     /// its first 90% ends short of its frame count; `read_file` keeps the
     /// frames decoded before the cut, zero-fills the rest, returns `false` and
     /// sets the `fault_logged` flag (the log line itself is not captured). A

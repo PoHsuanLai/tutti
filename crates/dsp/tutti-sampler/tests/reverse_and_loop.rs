@@ -55,7 +55,7 @@ fn index_of(value: f32, len: usize) -> f64 {
 /// A rolling transport advanced by hand, once per block, handed to each
 /// block in its `Env`.
 ///
-/// Needed because reverse only reaches its code path on a **placed** voice:
+/// Needed because reverse only reaches its code path on a placed voice:
 /// `PlaybackSlot` derives the read position from the playhead
 /// (`MemorySource::placed_positions`), which gives none for a free-running
 /// source, and the slot then emits silence. A free-running
@@ -124,7 +124,7 @@ fn render(node: &mut dyn Node, blocks: usize) -> Vec<f32> {
 /// pool, which is also the assembly a real render uses.
 fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock>) {
     let clock = Clock::new();
-    // **Placed**, not free-running. `PlaybackSlot` reads `seated_position()`, which
+    // Placed, not free-running. `PlaybackSlot` reads `seated_position()`, which
     // needs a timeline; without one the slot returns early and emits silence, so
     // the reverse arm is never reached.
     let source = MemorySource::with_config(
@@ -257,7 +257,7 @@ fn reverse_does_not_read_outside_the_source() {
     }
 }
 
-/// **Reverse falls silent past the source's first frame** (the memory tier),
+/// Reverse falls silent past the source's first frame (the memory tier),
 /// as forward falls silent past its last: the mirror of
 /// a read past the end is a read before the start. Holding frame 0 there
 /// played the source's first sample as DC for as long as the voice's window
@@ -338,7 +338,7 @@ fn largest_step(x: &[f32]) -> (f32, usize) {
         .fold((0.0, 0), |a, b| if b.0 > a.0 { b } else { a })
 }
 
-/// **A crossfaded loop is continuous at its wrap** (the memory tier): on a sine whose loop points would click cut hard, no step in
+/// A crossfaded loop is continuous at its wrap (the memory tier): on a sine whose loop points would click cut hard, no step in
 /// the output is larger than the sine's own, round the loop three times. The
 /// fade leads into the loop's start — the last blended frame is almost all
 /// the frame before `start`, and the wrap plays `start` next — so the seam is
@@ -511,7 +511,7 @@ fn a_loop_wraps_to_its_start_not_to_zero() {
 /// A crossfaded loop must not leave a hole at the seam.
 ///
 /// This is the property that matters and the one nothing checked. The crossfade
-/// is **linear** (`fade_out = 1-t`, `fade_in = t`), not equal-power, so on
+/// is linear (`fade_out = 1-t`, `fade_in = t`), not equal-power, so on
 /// *uncorrelated* material the seam dips ~3 dB by construction. On the material
 /// used here — a constant either side of the loop point — a linear fade is
 /// exactly flat, so any dip is a defect rather than the known trade-off.

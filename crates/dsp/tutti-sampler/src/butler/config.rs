@@ -6,7 +6,7 @@
 /// `Default` + struct-update to change one field.
 #[derive(Debug, Clone, Copy)]
 pub struct BufferConfig {
-    /// Baseline refill size in **frames**, before the varifill strategy scales
+    /// Baseline refill size in frames, before the varifill strategy scales
     /// it by buffer urgency, disk throughput and playback speed. 16384 by
     /// default, chosen to align a stereo `f32` read on 16 KB.
     pub chunk_size: usize,
@@ -19,7 +19,7 @@ pub struct BufferConfig {
     /// too is a target rather than a hard bound — but a single wave larger than
     /// the whole ceiling is refused.
     pub cache_max_bytes: u64,
-    /// Crossfade length in **frames** applied when the butler repositions a live
+    /// Crossfade length in frames applied when the butler repositions a live
     /// stream (timeline seek or a PDC preroll change). 512 by default, about
     /// 12 ms at 44.1 kHz — long enough to hide the discontinuity, short enough
     /// not to smear the seek target.

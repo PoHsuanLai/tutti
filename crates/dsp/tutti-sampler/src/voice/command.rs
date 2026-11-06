@@ -66,7 +66,7 @@ pub(super) const COMMAND_CAPACITY: usize = 64;
 /// One control-plane message from the host to a reader's audio-thread unit.
 ///
 /// Drained inside the audio callback, so every variant must be built and
-/// allocated **control-side**: that is why the two stretch-carrying variants
+/// allocated control-side: that is why the two stretch-carrying variants
 /// have the filter handed to them rather than constructing one. A
 /// [`VoicePool`](super::pool::VoicePool) is the one receiver, and honours all
 /// of them; a [`VoiceNode`](super::node::VoiceNode) takes none (its
@@ -85,7 +85,7 @@ pub enum VoiceCommand {
     /// `apply_loop`) — no allocation or I/O on the hot path, since the source is
     /// built entirely on the ECS/butler side before the send.
     ///
-    /// **One add command for both tiers.** The tier rides inside `source` and
+    /// One add command for both tiers. The tier rides inside `source` and
     /// the butler channel inside `Voice::channel_index`, so a host does not fork
     /// on in-memory versus streaming to spawn a voice.
     AddVoice {
@@ -123,7 +123,7 @@ pub enum VoiceCommand {
     /// [`stretch::Unit`] frees its vocoder bank. See
     /// [`VoicePoolHandle::collect_retired`].
     Remove(SlotId),
-    /// Point an **in-memory** slot at a different wave, keeping its placement,
+    /// Point an in-memory slot at a different wave, keeping its placement,
     /// gain and loop.
     ///
     /// Ignored, and counted
@@ -179,7 +179,7 @@ pub enum VoiceCommand {
     /// [`VoicePoolHandle::send`] on the calling thread, before the command is
     /// queued. A streaming voice whose forward fails (no butler channel, a
     /// butler that exited) is not queued: the loss is counted
-    /// ([`PoolDrops`]), **and the intent is not recorded** — a `Playback`
+    /// ([`PoolDrops`]), and the intent is not recorded — a `Playback`
     /// claiming a loop the stream never set would be replayed as real on the
     /// next insert. The drain records a streaming slot's loop only when the
     /// handle forwarded it to that slot's own stream
@@ -203,7 +203,7 @@ pub enum VoiceCommand {
         direction: Direction,
     },
     /// Set the voice's time-stretch factor and pitch shift — the two controls
-    /// that change duration and pitch **independently**, unlike
+    /// that change duration and pitch independently, unlike
     /// [`UpdateSpeed`](Self::UpdateSpeed).
     ///
     /// Pool-only: a [`VoiceNode`](super::node::VoiceNode) has no command to
@@ -233,7 +233,7 @@ pub enum VoiceCommand {
         /// `None` when the slot already holds a processor (the update is then
         /// pure atomics) or when the update turns stretching off.
         ///
-        /// **Unboxed, unlike [`AddVoice::stretch`](Self::AddVoice::stretch).**
+        /// Unboxed, unlike [`AddVoice::stretch`](Self::AddVoice::stretch).
         /// `PlaybackSlot::stretch` is an `Option<stretch::Unit>`, so a `Box` here
         /// would have to be unboxed to install it — and moving out of a `Box`
         /// frees the box, in the drain, on the audio thread. That is a 56-byte
@@ -341,7 +341,7 @@ pub enum SendError {
     /// The [`VoicePool`](super::pool::VoicePool) has been dropped, so nothing
     /// will ever drain the queue again.
     ///
-    /// **Permanent** — every subsequent send fails the same way, so a caller
+    /// Permanent — every subsequent send fails the same way, so a caller
     /// that sees this should stop rather than retry. Reporting it is what makes
     /// a dead pool distinguishable from a working one.
     Disconnected(VoiceCommand),
@@ -467,7 +467,7 @@ impl VoiceNodeHandle {
     /// window set twice between two blocks plays the second). A fork of the
     /// node taken after this call starts from it.
     ///
-    /// **Control thread**: publishing allocates the new value and frees the
+    /// Control thread: publishing allocates the new value and frees the
     /// one it replaces, here, so the node never does either.
     pub fn set_placement(&self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
         let window = Some(VoiceWindow {
@@ -513,7 +513,7 @@ impl VoiceNodeHandle {
 /// Held by the host (an ECS system, typically) and cloned freely — the sender is
 /// multi-producer. It mirrors the reader's width, and shares the rate the
 /// reader was last prepared at, so [`send`](Self::send) can build a stretch
-/// filter that matches, on **this** thread. It holds the pool's butler (the
+/// filter that matches, on this thread. It holds the pool's butler (the
 /// pool gives it up in [`with_handle`](super::pool::VoicePool::with_handle)),
 /// and knows which butler stream each streaming voice it added reads, so
 /// `send` forwards a streaming loop to the butler itself: the pool's drain
@@ -613,7 +613,7 @@ impl VoicePoolHandle {
         self.counters.snapshot()
     }
 
-    /// Queues a command, doing any allocation it implies **here**, on the calling
+    /// Queues a command, doing any allocation it implies here, on the calling
     /// (control) thread. A streaming loop whose forward cannot be made, or
     /// whose slot was removed while it was forwarded, returns `Ok` without
     /// being queued (see below).
@@ -622,7 +622,7 @@ impl VoicePoolHandle {
     /// right place to keep the audio thread clean: `drain_commands` runs from
     /// `process`, so anything expensive left for the drain is an allocation
     /// in the callback. That means materialising the stretch filter for an
-    /// `AddVoice` **or an `UpdateStretch`** that needs one.
+    /// `AddVoice` or an `UpdateStretch` that needs one.
     ///
     /// `Ok` means only that the command was *queued* — the pool applies it on the
     /// audio thread, and that outcome is not available synchronously.
@@ -657,7 +657,7 @@ impl VoicePoolHandle {
     ///
     /// # Errors
     ///
-    /// `Err` means the command is **gone**: a dropped `AddVoice` is a note that
+    /// `Err` means the command is gone: a dropped `AddVoice` is a note that
     /// never sounds, a dropped `Remove` a voice that never stops. For a
     /// streaming loop or add, the butler is left on the loop it had: a full
     /// queue is refused before the forward, and a forward whose command then

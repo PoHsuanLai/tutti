@@ -9,7 +9,7 @@
 //! stands to the audio callback) and compare it with a placed `MemorySource`
 //! on its own copy of the clock, given the same edits at the same blocks.
 //!
-//! **Bit for bit, from the first frame, at any rate.** Both read the same
+//! Bit for bit, from the first frame, at any rate. Both read the same
 //! positions (the same gate and seat) through the same tap layout and kernel,
 //! from the same frames, so there is no lag to line up and no tolerance to
 //! take — a 44.1 kHz file at 48 kHz included. Where the two differ is only
@@ -301,8 +301,8 @@ fn assert_same_outside(what: &str, live: &[f32], memory: &[f32], allowed: &[(usi
     }
 }
 
-/// **A live looped voice plays the memory tier's loop bit for bit, from its
-/// first frame**, across many wraps: crossfaded, hard, from frame 0 (the fade
+/// A live looped voice plays the memory tier's loop bit for bit, from its
+/// first frame, across many wraps: crossfaded, hard, from frame 0 (the fade
 /// into the loop's head, `LoopSpan`'s fallback), a loop whose end is past the
 /// file (clamped to it, on both tiers), at unity, 1.5×, 0.75× and a 44.1 kHz
 /// file at 48 kHz. The
@@ -396,7 +396,7 @@ fn a_live_looped_voice_plays_the_memory_tiers_loop_bit_for_bit() {
     }
 }
 
-/// **A live crossfaded loop is continuous at its wrap** (the live tier): on a sine whose loop points click when cut hard — the loop
+/// A live crossfaded loop is continuous at its wrap (the live tier): on a sine whose loop points click when cut hard — the loop
 /// starts on a rising zero crossing and ends a quarter period later in the
 /// cycle — no step in the output is larger than the sine's own (`2 sin(π /
 /// PERIOD)`), round the loop three times; and a loop from frame 0 `[0,
@@ -441,8 +441,8 @@ fn a_live_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// **Entering the clip past the loop's end, and with a PDC preroll, plays
-/// the memory tier's frames there**, bit for bit: the stream's position counts
+/// Entering the clip past the loop's end, and with a PDC preroll, plays
+/// the memory tier's frames there, bit for bit: the stream's position counts
 /// the file straight on and the ring places it, so a voice entering at beat 1
 /// (24 000 frames in, well past a loop `[3000, 7001)`) plays what a memory
 /// voice plays there — and with a 12 000-frame preroll on its channel, what
@@ -474,8 +474,8 @@ fn an_entry_past_the_loop_and_a_preroll_land_where_the_memory_tier_plays() {
     }
 }
 
-/// **Reverse ignores the loop, and mirrors the file as the memory tier's
-/// reverse does**: a reversed voice entering at beat 1 plays file frame
+/// Reverse ignores the loop, and mirrors the file as the memory tier's
+/// reverse does: a reversed voice entering at beat 1 plays file frame
 /// `len - 1 - p` at position `p`, straight through a loop `[3000, 7001)` and
 /// on to silence past the file's first frame — exactly as the same voice with
 /// no loop, frame for frame, and as a reversed memory voice once the turn
@@ -528,8 +528,8 @@ fn a_reversed_voice_ignores_its_loop_and_mirrors_the_file() {
     }
 }
 
-/// **A loop change takes effect where the memory tier's does, never lags,
-/// and costs no frame**: the memory tier changes its loop at the edit; the
+/// A loop change takes effect where the memory tier's does, never lags,
+/// and costs no frame: the memory tier changes its loop at the edit; the
 /// live ring switches a guard past the block its reader is in and crossfades
 /// there from the butler's record of the old loop. Outside that span the two
 /// are bit-identical, before and after — the live voice is on the clock — and
@@ -577,8 +577,8 @@ fn a_loop_change_takes_effect_on_the_clock_with_no_frame_lost() {
     );
 }
 
-/// **N loop edits and transport jumps leave the live voice exactly on the
-/// clock**: with the default crossfade, a
+/// N loop edits and transport jumps leave the live voice exactly on the
+/// clock: with the default crossfade, a
 /// sequence of loop edits, jumps inside and outside the ring's window, and a
 /// varispeed change, each applied at the same block to a live voice and a
 /// memory voice. Outside a bounded span after each event the two are
@@ -642,8 +642,8 @@ fn edits_and_jumps_leave_the_live_voice_on_the_clock() {
     assert_same_outside("edits and jumps", &got, &want, &allowed);
 }
 
-/// **Two loop changes in one butler cycle, and a jump with a loop change in
-/// one cycle, settle to the last loop at the clock**, rather than a second
+/// Two loop changes in one butler cycle, and a jump with a loop change in
+/// one cycle, settle to the last loop at the clock, rather than a second
 /// reposition reading the ring's head off a pending flush and resuming at
 /// frame 0. The second change supersedes the first before the
 /// reader reaches it; the jump is the reader's own, the loop the butler's.
@@ -683,7 +683,7 @@ fn two_changes_in_one_cycle_settle_to_the_last() {
     }
 }
 
-/// **A loop edit that changes nothing near the playhead is not heard**: the
+/// A loop edit that changes nothing near the playhead is not heard: the
 /// same loop set again is nothing at all (no switch, the ring does not move),
 /// and a loop end moved far ahead switches exactly where the two loops part —
 /// so the output is bit-identical to the memory tier with the edit throughout
@@ -734,7 +734,7 @@ fn an_edit_that_changes_nothing_near_the_playhead_is_not_heard() {
     );
 }
 
-/// **A looped stream refilled in parallel loops as one refilled serially**
+/// A looped stream refilled in parallel loops as one refilled serially
 /// (three streams, so the butler's parallel refill runs): bit-identical to
 /// the memory tier, with the loop travelling with its writer.
 ///
@@ -762,8 +762,8 @@ fn a_looped_stream_refilled_in_parallel_plays_the_memory_tiers_loop() {
     assert_same_outside("parallel refill", &got, &want, &[]);
 }
 
-/// **An export fork taken after a loop edit renders the loop the edit ends
-/// on, and agrees with the live voice past its switch**: a fork of the live
+/// An export fork taken after a loop edit renders the loop the edit ends
+/// on, and agrees with the live voice past its switch: a fork of the live
 /// voice (`fork_copy`, as a graph fork takes it, rendered on its own
 /// transport from beat 0) plays the edited loop from the start of its render
 /// — the stream's record holds the loop the butler runs — and, frame for
@@ -811,7 +811,7 @@ fn max_step(v: &[f32]) -> (f32, usize) {
         .fold((0.0f32, 0), |a, b| if b.0 > a.0 { b } else { a })
 }
 
-/// **A jump back behind a loop edit's switch plays the new loop, not the old**
+/// A jump back behind a loop edit's switch plays the new loop, not the old
 /// (a DAW's cycle mode): after `[1000, 3000)`
 /// is edited to `[200, 1400)`, the clock set back to beat 0 lands inside the
 /// window, below the switch, where the ring still held the old loop. The
@@ -853,7 +853,7 @@ fn sine_bound() -> f32 {
     (2.0 * (std::f64::consts::PI / PERIOD as f64).sin()) as f32 + 2.0 / (FADE + 1) as f32 + 1e-4
 }
 
-/// **Fades chain without a step**: a loop
+/// Fades chain without a step: a loop
 /// edit during another edit's fade, a transport jump during an edit's fade,
 /// and an edit during a jump's fade. Each discontinuity fades from the
 /// continuation of what was playing — the fade in progress included — so on
@@ -915,7 +915,7 @@ fn fades_chain_without_a_step() {
     }
 }
 
-/// **A starved reader ramps out and back in**: a jump outside the window
+/// A starved reader ramps out and back in: a jump outside the window
 /// with the butler stalled plays the old continuation, which runs out after `OLD_FRAMES`; it ramps to silence over
 /// its last frames instead of cutting, and when the butler resumes the ring
 /// ramps back in. On a sine, no step exceeds the sine's own plus a ramp's
@@ -958,7 +958,7 @@ fn a_starved_reader_ramps_out_and_back_in() {
     );
 }
 
-/// **A `Command::Seek` on a stream a placed voice reads moves nothing**:
+/// A `Command::Seek` on a stream a placed voice reads moves nothing:
 /// the voice follows its clock and is the one
 /// that says where the butler fills; the seek, meant for a free-running
 /// reader, must not drag the window away. The voice plays on, bit for bit
@@ -991,7 +991,7 @@ fn a_seek_does_not_move_a_placed_voices_window() {
     assert_same_outside("across a relayed seek", &got, &want, &[]);
 }
 
-/// **A seek inside a block is a jump on its frame**: the
+/// A seek inside a block is a jump on its frame: the
 /// block's `Env` carries it as a transport change on frame 32, the voice's
 /// clock reports a jump there (a new generation), and the live read
 /// crossfades from its continuation on that frame — not at the block's
@@ -1043,7 +1043,7 @@ fn a_seek_inside_a_block_is_a_jump_on_its_frame() {
     assert_same_outside("across a seek inside a block", &got, &want, &[fade]);
 }
 
-/// **A paused source holds no refill back.**
+/// A paused source holds no refill back.
 /// A free-running source plays four blocks, stops, and is sought to where
 /// the slots its last block claimed come round again; the butler moves the
 /// window there while it is stopped. Resumed, it plays the target at once,
@@ -1120,7 +1120,7 @@ fn a_seek_while_paused_resumes_without_an_underrun() {
     );
 }
 
-/// **A stream serves one live voice**: a
+/// A stream serves one live voice: a
 /// second `take_disk_voice` on the same channel is refused, naming why.
 ///
 /// Mutation (run): the ring's reader put back after a take (the slot
@@ -1182,8 +1182,8 @@ fn streaming(path: &Path) -> DiskStreamer {
     streamer
 }
 
-/// **A loop set through a pool's handle on a live streaming voice reaches
-/// the butler, and the voice loops.** The handle forwards it on the
+/// A loop set through a pool's handle on a live streaming voice reaches
+/// the butler, and the voice loops. The handle forwards it on the
 /// control thread; the pool only records it. On a ramp whose every frame
 /// is distinct, a hard loop `[1000, 3001)` played at unity: once the
 /// first wrap and its fades are behind it, every frame the pool puts out
@@ -1236,8 +1236,8 @@ fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
     );
 }
 
-/// **A loop set on a voice whose channel has since been restarted on
-/// another stream leaves the new stream alone.** The handle forwards the
+/// A loop set on a voice whose channel has since been restarted on
+/// another stream leaves the new stream alone. The handle forwards the
 /// loop naming the voice's stream; the butler, finding the channel on
 /// another one, ignores it. A host's own `Command::Loop`, which names only
 /// the channel, still loops whatever the channel streams.

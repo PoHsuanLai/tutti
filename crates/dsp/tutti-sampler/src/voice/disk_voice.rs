@@ -10,8 +10,8 @@
 //! one kernel — so a clip plays what the same clip in memory plays at the same
 //! clock frame, and a jump is a crossfade from where it was, not a flush.
 //!
-//! Every count crossing the ring is in **frames**. Nothing on the `process`
-//! path allocates, locks, or blocks — but a **fork**'s: it reads its file
+//! Every count crossing the ring is in frames. Nothing on the `process`
+//! path allocates, locks, or blocks — but a fork's: it reads its file
 //! (`offline_read`), which is why a disk voice forks only for an offline
 //! render.
 
@@ -58,7 +58,7 @@ const BLOCK_FRAMES: usize = 256;
 /// the ring's one `PosReader`, which this source owns and a clone does not
 /// get (`LiveRead`'s module docs): every access is an atomic.
 ///
-/// As a graph node it **refuses every fork**
+/// As a graph node it refuses every fork
 /// ([`ForkError::NotForkable`](tutti_graph::ForkError::NotForkable)): a copy
 /// cannot read the live ring, and it knows neither where on the timeline it
 /// plays nor its file, so the only copy it could give is silence — which an
@@ -541,7 +541,7 @@ impl DiskVoice {
         self.window
     }
 
-    /// A copy of this voice for an **offline** render, sharing nothing with
+    /// A copy of this voice for an offline render, sharing nothing with
     /// it: cut off from the stream (no ring reader, no control cell — a
     /// private snapshot of the controls' values, `RtState::detached`), and
     /// handed the stream's file, as the butler's record of it names it now
@@ -589,7 +589,7 @@ impl DiskVoice {
     /// `RtState::read_rate` for why the factor lands there rather than at the
     /// per-sample advance.
     ///
-    /// **Callers must publish unity when they stop stretching.** The rate
+    /// Callers must publish unity when they stop stretching. The rate
     /// belongs to the filter, not to the voice, so a voice returned to 1.0x
     /// that never re-published would keep reading at the old factor. Both
     /// branches of the pool's read set it every block for exactly that reason.
@@ -697,7 +697,7 @@ impl DiskVoice {
     ///
     /// Returns `false` when no frame of a live voice has a position (its
     /// window is closed, or the transport stands): every frame is +0.0, the
-    /// lanes are **not** written and the ring is not read. The reader's
+    /// lanes are not written and the ring is not read. The reader's
     /// state is left as a block of silent frames leaves it, so the next
     /// sounding block starts where it would have had the silence been
     /// rendered. A fork always returns `true`.

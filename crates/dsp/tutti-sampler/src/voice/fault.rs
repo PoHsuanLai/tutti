@@ -53,7 +53,7 @@ mod tests {
     }
     impl Error for E {}
 
-    /// **The first error is kept**: a later one does not replace it, and an
+    /// The first error is kept: a later one does not replace it, and an
     /// untouched latch reports nothing.
     ///
     /// Mutation (run): drop the `is_none` guard and `set` unconditionally →

@@ -1,7 +1,7 @@
 //! The audio thread's read of a live stream's ring.
 //!
 //! A live disk voice reads the butler's ring (`butler::prefetch::Ring`) by
-//! **position**: its seat gives the straight position each output frame plays
+//! position: its seat gives the straight position each output frame plays
 //! (the memory tier's, less the channel's PDC preroll), the ring's published
 //! map says which four slots that position's taps are (`Arrangement::taps`, the
 //! memory tier's tap layout), and the one kernel interpolates them. So what it
@@ -12,13 +12,13 @@
 //!
 //! A position that jumps (a seek, a transport loop, a varispeed change, a PDC
 //! change) is read at its new place — a jump being a position off the last
-//! one's continuation, **or a new segment** (the clock's
+//! one's continuation, or a new segment (the clock's
 //! `segment_generation`, a free-running source's seek epoch): a seek that
 //! lands exactly on the continuation is a jump too, as it is to the seat
 //! (`interp::Seat`); a loop or direction edit switches what
 //! the ring holds at a position the butler publishes (`loops::RingMap`). The
 //! memory tier cuts at either. The live reader crossfades, over the ring's
-//! fade length, from the **continuation of what it was playing**, rendered
+//! fade length, from the continuation of what it was playing, rendered
 //! the moment the discontinuity arrives into a buffer of its own:
 //!
 //! - at a jump, the old position's continuation, read from the ring while its
@@ -47,7 +47,7 @@
 //! # The one reader
 //!
 //! The ring has one `PosReader`, and the voice that took it owns it, by
-//! value. **A clone of the voice has no reader**, and renders silence: the
+//! value. A clone of the voice has no reader, and renders silence: the
 //! graph renders the unit it was given, never a clone of it. The one copy
 //! the graph takes, a fork, never reads the live ring anyway: it severs
 //! itself (`DiskVoice::fork_copy` → [`LiveRead::sever`]) and reads the file
@@ -145,7 +145,7 @@ pub(crate) struct LiveRead {
 }
 
 impl Clone for LiveRead {
-    /// The same ring and read state, **without the reader**: a clone renders
+    /// The same ring and read state, without the reader: a clone renders
     /// silence until it is severed and handed a file (see the module docs).
     fn clone(&self) -> Self {
         Self {
@@ -258,7 +258,7 @@ impl LiveRead {
     /// put to `out` as its frame `at + i` (`width` samples). Frames the ring
     /// cannot supply are counted as underruns on `state`.
     ///
-    /// **Steady blocks read along time.** Into lanes ([`Out::Lanes`]), a
+    /// Steady blocks read along time. Into lanes ([`Out::Lanes`]), a
     /// block with nothing in flight (no jump, no fade, no ramp, no switch to
     /// cross) whose every frame reads four consecutive positions the ring
     /// holds is read a channel at a time: the taps gathered into lanes and

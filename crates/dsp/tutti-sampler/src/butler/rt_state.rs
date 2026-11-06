@@ -8,12 +8,12 @@
 //!
 //! # Which side writes what
 //!
-//! * **Butler (or control) writes, audio reads** — speed, direction,
+//! * Butler (or control) writes, audio reads — speed, direction,
 //!   `src_ratio`, gain, the stretch rate. `src_ratio` is re-derived by the
 //!   control thread when the session rate moves (`SessionRate::set`, a device
 //!   restart), under the plan's lock, which the butler also holds when it
 //!   writes one.
-//! * **Audio writes, butler reads** — `underrun_count`; the butler writes
+//! * Audio writes, butler reads — `underrun_count`; the butler writes
 //!   `buffer_fill_level` for its own pacing.
 //!
 //! Where a stream stands and how to read it is the ring's, not this cell's
@@ -192,7 +192,7 @@ impl RtState {
     /// same [`PlaybackRate::read_rate`] so neither tier can drop a factor or
     /// swap the pair.
     ///
-    /// The stretch term is folded in **here**, at the one composition point, for
+    /// The stretch term is folded in here, at the one composition point, for
     /// the reason the other two are: this rate has three consumers in
     /// `DiskSource` — the per-sample advance in `tick`, the per-sample advance in
     /// `process`, and the `samples_needed` fetch estimate that has to agree with

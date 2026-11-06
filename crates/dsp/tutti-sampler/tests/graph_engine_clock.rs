@@ -1,4 +1,4 @@
-//! **A sampler voice plays in time through the live graph engine.**
+//! A sampler voice plays in time through the live graph engine.
 //!
 //! A placed voice (a `MemorySource` in a `VoicePool`) derives its read
 //! position from the playhead, which it reads from each block's `Env` — per
@@ -225,7 +225,7 @@ fn a_voice_plays_in_time_at_2048_frame_blocks() {
     plays_in_time(2048);
 }
 
-/// **Two nodes over one transport** (two clones of one pool) both render the
+/// Two nodes over one transport (two clones of one pool) both render the
 /// tone. Each reads the transport from its own block's `Env` and keeps its
 /// own record of where the playhead was (its `Clock`), so neither sees the
 /// other's render as a jump: the nodes share no cursor to get wrong.
@@ -249,7 +249,7 @@ fn two_voices_over_one_transport_both_play_the_tone() {
     }
 }
 
-/// **A crossfade of a voice** (the pool replaced by a clone of itself over
+/// A crossfade of a voice (the pool replaced by a clone of itself over
 /// 4096 frames) renders what the voice renders uncrossfaded, to rounding (the
 /// two gains sum to one), and the tone throughout: both halves read the
 /// transport from their blocks' `Env` during the fade.
@@ -289,10 +289,10 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
     }
 }
 
-/// **A loop wrap** (beats 1–1.51, reached at frame 36 240, inside a
+/// A loop wrap (beats 1–1.51, reached at frame 36 240, inside a
 /// 512-frame block; 12 240 frames long, not a whole number of the tone's
 /// periods, so a wrap on the wrong frame reads the wrong phase): the wrap is the clock's, not a cut, and the voice reads the
-/// wrapped beat **from the wrap's frame on** — the tone to the bit up to it,
+/// wrapped beat from the wrap's frame on — the tone to the bit up to it,
 /// and the tone a loop length back from it (within 1e-3: a wrap re-seats the
 /// read through the beat, which the wrapped segments carry to rounding, so
 /// the later passes read a hair off the whole frame). (Until the voice
@@ -326,8 +326,8 @@ fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     }
 }
 
-/// **A locate scheduled inside a block** (`At::Frame(10 037)`, to beat ¼,
-/// immediate) lands **on its frame**: the tone up to it, and the target at
+/// A locate scheduled inside a block (`At::Frame(10 037)`, to beat ¼,
+/// immediate) lands on its frame: the tone up to it, and the target at
 /// its frame from it. The engine cuts the transport on the locate's frame
 /// (a change in the block's `Env`), and the voice reads it there, not at the
 /// first frame of its 64-frame piece (53 frames early).

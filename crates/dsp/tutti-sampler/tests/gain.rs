@@ -2,13 +2,13 @@
 //!
 //! The last `Playback` axis with no end-to-end coverage. It looks like the
 //! least interesting — one multiply — and the arithmetic is indeed trivial. What
-//! is not trivial is **where** the multiply happens, because there are two gain
+//! is not trivial is where the multiply happens, because there are two gain
 //! fields and two entry points, and the failure mode is applying gain twice.
 //!
 //! - [`MemorySource`] owns a `gain`, applied by `sample_into`.
 //! - [`Playback`] owns a `gain`, applied by `PlaybackSlot::read_clip_sample_into`.
 //!
-//! A voice played through a pool must take the second and **not** the first:
+//! A voice played through a pool must take the second and not the first:
 //! the slot deliberately calls `sample_raw_into` (ungained) so gain lands
 //! exactly once. Its own doc says so — "gain is applied ONCE at this
 //! Voice/Playback level" — which is the kind of invariant that holds until
@@ -47,7 +47,7 @@ const LEVEL: f32 = 0.5;
 /// block in its `Env`.
 ///
 /// Gain reaches the memory tier through `PlaybackSlot`, which only reads a
-/// **placed** voice — on a stopped transport the gate gives no position and
+/// placed voice — on a stopped transport the gate gives no position and
 /// the slot emits silence. Same reason `reverse_and_loop.rs` needs one.
 struct Clock {
     beat: AtomicU64,
@@ -162,7 +162,7 @@ fn voice_gain_scales_the_output_by_exactly_its_value() {
     }
 }
 
-/// Gain is applied exactly **once**.
+/// Gain is applied exactly once.
 ///
 /// The specific hazard this file exists for. `MemorySource` carries its own
 /// `gain` and `PlaybackSlot` carries `Playback::gain`; the slot reads through
@@ -315,7 +315,7 @@ fn gain_scales_every_channel_equally() {
     }
 }
 
-/// A bare `MemorySource` applies its **own** gain.
+/// A bare `MemorySource` applies its own gain.
 ///
 /// The other half of the two-field story. Ticked directly — not through a pool —
 /// the source is the only thing that can apply a gain, so `sample_into` must

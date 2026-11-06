@@ -1,5 +1,5 @@
-//! **A voice's gain reaches the node that renders, lands on the next block
-//! whole, survives a commit, and is what a fork of the node starts from.**
+//! A voice's gain reaches the node that renders, lands on the next block
+//! whole, survives a commit, and is what a fork of the node starts from.
 //!
 //! `tutti-nodes`' `live_controls_reach_the_node` pins the *rule* — a live
 //! control value lives in shared storage, reached through the controls the
@@ -13,7 +13,7 @@
 //! `VoiceNodeHandle` — its gain a `Param<Amplitude>` cell, addressable as
 //! `UnitParam::Volume` through the handle's `ParamSet` — and the node reads
 //! the cell once per block into its `Playback` record and its source. A fork
-//! starts from the value last **set** (the authored value).
+//! starts from the value last set (the authored value).
 //!
 //! # Why the assertion is on rendered audio
 //!
@@ -60,7 +60,7 @@ fn rolling(frame: Frame) -> Transport {
 /// rolling transport.
 ///
 /// The transport is mandatory, not decoration: a placed voice on a stopped
-/// transport renders **silence**, and every gain comparison in this file would
+/// transport renders silence, and every gain comparison in this file would
 /// compare 0.0 against 0.0. A setup without a rolling clock fails on the
 /// guard below, which is what it is for.
 fn solo_voice() -> Solo<VoiceNodeHandle> {
@@ -86,7 +86,7 @@ fn all_at(samples: &[f32], gain: f32) -> bool {
     samples.iter().all(|&x| (x - gain).abs() < 1e-4)
 }
 
-/// **The probe can see the wave at all.**
+/// The probe can see the wave at all.
 ///
 /// The guard against the whole file passing for the wrong reason: if a
 /// fixture change ever leaves the voice gated or silent, a test asserting
@@ -105,8 +105,8 @@ fn a_voice_at_unity_renders_its_wave() {
     );
 }
 
-/// **A gain set through the node's controls lands on the next block, whole,
-/// and survives a commit.** Addressed as a host addresses any node's param —
+/// A gain set through the node's controls lands on the next block, whole,
+/// and survives a commit. Addressed as a host addresses any node's param —
 /// `UnitParam::Volume` through its `ParamSet` — with no knowledge that it is
 /// a sampler voice; and through the typed door, `set_gain`.
 ///
@@ -138,7 +138,7 @@ fn a_gain_set_through_the_controls_reaches_the_running_voice() {
     assert_eq!(s.controls().gain(), Amplitude::new(0.5));
 }
 
-/// **A fork of the node starts from the gain last set**: an export renders
+/// A fork of the node starts from the gain last set: an export renders
 /// the fader the user set. And the fork shares nothing: a live move after the
 /// fork does not reach it.
 ///
@@ -178,7 +178,7 @@ fn a_fork_starts_from_the_gain_last_set_and_shares_nothing() {
     );
 }
 
-/// **A param the voice does not own is refused, not misapplied.**
+/// A param the voice does not own is refused, not misapplied.
 ///
 /// The convention that lets a host push a param without dispatching on node
 /// type: `ParamSet::set` answers `false` and writes nothing, and the voice
@@ -196,7 +196,7 @@ fn an_unowned_param_is_ignored() {
     );
 }
 
-/// **A control lane drives the voice's gain around its own cell** (doc
+/// A control lane drives the voice's gain around its own cell (doc
 /// 014 §4.2): the knob at 0.25 plus a constant half of a 0..1 range renders
 /// every sample of the flat wave at 0.75, the cell still holds 0.25 (the
 /// lane sends to the port and never writes it), and a knob write rides
@@ -278,7 +278,7 @@ fn drive_volume(ed: &mut tutti_graph::Editor, at: ParamIn, knob: Arc<AtomicF32>,
     ed.commit().expect("the lane commits");
 }
 
-/// **A control lane drives a standalone memory source's gain too**: a
+/// A control lane drives a standalone memory source's gain too: a
 /// `MemorySource` inserted as its own node addresses its gain as `Volume`
 /// and declares it as a port, so the knob at 0.25 plus a
 /// constant half of a 0..1 range renders the flat wave at 0.75, and the
@@ -315,7 +315,7 @@ fn a_lane_drives_a_memory_sources_gain_around_its_cell() {
     );
 }
 
-/// **A voice's gain is a port, its base the cell**
+/// A voice's gain is a port, its base the cell
 /// ([`VOICE_PARAMS`](tutti_sampler::VOICE_PARAMS)): the value a driven port
 /// starts its connect crossfade from.
 ///

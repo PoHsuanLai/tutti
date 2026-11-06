@@ -43,7 +43,7 @@ pub enum LoopSetting {
     /// Loop over `[start, end)` in file frames, with `crossfade_frames` of loop
     /// crossfade (0 = hard loop, no crossfade).
     ///
-    /// **The fade actually used.** The points are whole frames (truncated),
+    /// The fade actually used. The points are whole frames (truncated),
     /// and `end` is clamped to the file. The fade is linear, over the last
     /// `crossfade_frames` before `end`, and continuous at the wrap:
     ///
@@ -57,7 +57,7 @@ pub enum LoopSetting {
     ///
     /// Every tier reads the same rule.
     ///
-    /// **When a change is heard.** On the memory tier a change is a store,
+    /// When a change is heard. On the memory tier a change is a store,
     /// heard at the next frame. On a live disk stream (`Command::Loop`) the
     /// butler rewrites the ring it has read ahead, from where the old and new
     /// loops first differ: when that is far enough ahead of the playhead, the
@@ -81,7 +81,7 @@ pub enum LoopSetting {
 /// The span of timeline a voice occupies: where it starts, and how long it
 /// lasts.
 ///
-/// **Pure geometry — no clock.** A window is a value a voice owns; the
+/// Pure geometry — no clock. A window is a value a voice owns; the
 /// clock is the block's (`tutti_graph::Env`), read where the window is
 /// gated. So this is `Copy`, and a fork of a voice reads its render's `Env`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -175,9 +175,9 @@ impl Default for MemorySourceConfig {
 ///
 /// # Two position models
 ///
-/// A **placed** voice ([`is_placed`](Self::is_placed)) derives its position
+/// A placed voice ([`is_placed`](Self::is_placed)) derives its position
 /// from the playhead every frame, read from its block's `Env`, and cannot drift
-/// from the transport; a **free-running** one advances its own cursor by
+/// from the transport; a free-running one advances its own cursor by
 /// [`read_rate`](Self::read_rate). Which applies decides whether
 /// [`position`](Self::position) or [`window_position`](Self::window_position) is
 /// the meaningful reading, and which rate the caller must step by.
@@ -203,7 +203,7 @@ pub struct MemorySource {
     /// Defaults to true (auto-play).
     playing: AtomicBool,
 
-    /// Linear output gain — **shared across clones**, unlike every other
+    /// Linear output gain — shared across clones, unlike every other
     /// control field here: the cell the node's [`ParamSet`] addresses, so a
     /// host's write reaches the node the graph renders. A fork detaches it
     /// ([`fork_fresh`](ParamNode::fork_fresh)).
@@ -249,7 +249,7 @@ pub struct MemorySource {
 
     /// Output width — the node's audio outputs, fixed at construction.
     ///
-    /// Deliberately **not** derived from `wave.channels()`: a node whose arity
+    /// Deliberately not derived from `wave.channels()`: a node whose arity
     /// followed its content would re-arity itself in the graph the moment a
     /// wider file was loaded, and edges are wired against its shape.
     /// The wave's own width is reconciled against this one by
@@ -311,7 +311,7 @@ impl Clone for MemorySource {
 }
 
 impl MemorySource {
-    /// A **stereo** sampler over `wave`.
+    /// A stereo sampler over `wave`.
     ///
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
     /// Use [`with_channels`](Self::with_channels) to declare a different width.
@@ -418,7 +418,7 @@ impl MemorySource {
     /// Rewinds to sample 0 and starts playing. Two relaxed atomic stores, so this
     /// is safe from the audio thread.
     ///
-    /// Only affects the **free-running** path: a placed voice derives its
+    /// Only affects the free-running path: a placed voice derives its
     /// position from the transport, so triggering one changes nothing audible.
     pub fn trigger(&self) {
         self.trigger_at(SamplePosition::new(0.0));
@@ -496,7 +496,7 @@ impl MemorySource {
         self.placement
     }
 
-    /// Length of the loaded wave in **frames** — one per output sample at unity
+    /// Length of the loaded wave in frames — one per output sample at unity
     /// read rate, regardless of the wave's channel count.
     pub fn duration_samples(&self) -> usize {
         self.wave.len()
@@ -526,8 +526,8 @@ impl MemorySource {
 
     /// Stop sharing the gain cell with whoever this was cloned from.
     ///
-    /// A fork renders on a worker thread **while the original keeps
-    /// playing**, so a shared control cell would let the two fight: a fader
+    /// A fork renders on a worker thread while the original keeps
+    /// playing, so a shared control cell would let the two fight: a fader
     /// move during an export would change the exported audio. Sharing the
     /// gain is what gives this tier something to sever on a fork.
     ///
@@ -560,7 +560,7 @@ impl MemorySource {
 
     /// Source samples consumed per output sample: varispeed × conversion.
     ///
-    /// **The step, on both paths.** A free-running cursor advances by it once
+    /// The step, on both paths. A free-running cursor advances by it once
     /// per output sample, and a placed read steps by it from the origin the gate
     /// gives (see `placed_positions`): an output frame is
     /// `1 / session_rate` seconds, which is `file_rate / session_rate` file
@@ -576,7 +576,7 @@ impl MemorySource {
     /// measures elapsed seconds in this wave's own frames, so the conversion
     /// is complete before any ratio applies.
     ///
-    /// **The origin only, never the step.** Within the clock's move a read steps
+    /// The origin only, never the step. Within the clock's move a read steps
     /// by output frames, and an output frame is `src_ratio` file frames at unit
     /// speed: stepping by this instead reads a 24 kHz file on a 48 kHz clock at
     /// one file frame per output frame, then jumps back at every block (frames
@@ -641,7 +641,7 @@ impl MemorySource {
     }
 
     /// Loops over `[loop_start, loop_end)` in source samples, with
-    /// `crossfade_frames` **frames** of loop crossfade (0 = a hard loop).
+    /// `crossfade_frames` frames of loop crossfade (0 = a hard loop).
     ///
     /// The loop plays whole frames (its points are truncated, as the butler
     /// takes a stream's), and the fade leads into the loop's start: the last
@@ -651,7 +651,7 @@ impl MemorySource {
     /// after it ([`LoopSetting::On`] has the rule). The whole rule is
     /// `LoopSpan`'s, which every tier reads through.
     ///
-    /// **Allocation-free, and it has to be**: `VoiceCommand::UpdateLoop` is
+    /// Allocation-free, and it has to be: `VoiceCommand::UpdateLoop` is
     /// drained by `VoicePool::drain_commands`, which `tick`/`process` call — so
     /// this runs inside the audio callback. It is a store: the fade is read from
     /// the wave in place, never copied.
@@ -691,7 +691,7 @@ impl MemorySource {
     }
 
     /// The current loop as a public [`LoopSetting`] intent, with the crossfade
-    /// length in **frames** as it was asked for (0 for a hard loop).
+    /// length in frames as it was asked for (0 for a hard loop).
     ///
     /// Lets a caller that built this unit imperatively read its loop back as a
     /// value — the `VoicePool` add shim uses it to fold a pre-configured
@@ -718,14 +718,14 @@ impl MemorySource {
         super::interp::read_frame(&self.wave, position, out);
     }
 
-    /// Read one un-gained frame of a **placed** voice at `pos`, the position
+    /// Read one un-gained frame of a placed voice at `pos`, the position
     /// the gate and the step give (see [`placed_positions`](Self::placed_positions)),
     /// into `out`, writing every element.
     ///
-    /// - **Forward**, on a loop: a position at or past the loop's end plays
+    /// - Forward, on a loop: a position at or past the loop's end plays
     ///   inside it, and the loop's fade and seam are read as `LoopSpan` has
     ///   them, as the offline disk reader reads the same stream's loop.
-    /// - **Reverse** mirrors the position about the last frame (`len - 1 -
+    /// - Reverse mirrors the position about the last frame (`len - 1 -
     ///   pos`) and ignores the loop, as the butler's reverse refill does. It is
     ///   silent where a forward read would be, at and past `len`: the mirror
     ///   of a read past the end is a read before the start, and it must fall
@@ -789,7 +789,7 @@ impl MemorySource {
     /// frame into `out`; `None`s outside its window, on a standing
     /// transport, or when unplaced.
     ///
-    /// **Gated per frame, seated from the clock, stepped by the read rate**
+    /// Gated per frame, seated from the clock, stepped by the read rate
     /// (`interp::place`): the read enters and leaves its window on the
     /// frames the transport reaches its edges, and in between seats where
     /// the gate puts the playhead and steps by
@@ -824,7 +824,7 @@ impl MemorySource {
     /// `n` lanes, every frame written. Un-gained, as `read_placed_into` is.
     ///
     /// A read of a wave that is mono or as wide as the lanes runs the kernel
-    /// **along time**: each frame's four taps are gathered into four lanes
+    /// along time: each frame's four taps are gathered into four lanes
     /// (a scattered read, one per voice position — the gather is the cost
     /// that stays scalar), then the cubic runs over the lanes, where the
     /// compiler vectorises it. Same taps, same fraction, same arithmetic per
@@ -1058,7 +1058,7 @@ impl MemorySource {
         )
     }
 
-    /// [`window_position`](Self::window_position) for a **stretched** read, where
+    /// [`window_position`](Self::window_position) for a stretched read, where
     /// the source is consumed at `stretch_rate` rather than at wall-clock rate.
     ///
     /// The rate must reach the *origin*, not only the within-block step, and that
@@ -1096,7 +1096,7 @@ impl MemorySource {
         )
     }
 
-    /// One **free-running** output frame into `out`, advancing the cursor:
+    /// One free-running output frame into `out`, advancing the cursor:
     /// nothing else owns this voice's time, so it steps its own cursor by
     /// `read_rate`. (A placed voice's frames come from
     /// [`placed_positions`](Self::placed_positions) instead.)
@@ -1160,7 +1160,7 @@ impl MemorySource {
     /// into frame `i - range.start` of each of `out`'s channels: the node's
     /// own read, gained by its own gain.
     ///
-    /// **One algorithm per position model.** Placed: the positions
+    /// One algorithm per position model. Placed: the positions
     /// [`placed_positions`](Self::placed_positions) gives, each read forward
     /// ([`read_placed_into`](Self::read_placed_into)) and gained, silence
     /// outside the window; a block at a time

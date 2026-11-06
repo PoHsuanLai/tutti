@@ -12,14 +12,14 @@
 //! 1` again, forever (`resume` rather than `start` when the fade has to go into
 //! the loop's head, below). Two things follow:
 //!
-//! - **The crossfade leads into `start`, it does not replay it.** Frame `end -
+//! - The crossfade leads into `start`, it does not replay it. Frame `end -
 //!   fade + k` (for `k` in `0..fade`) is blended toward frame `start - fade +
 //!   k`: the material that leads into `start`. The last blended frame is almost
 //!   all `start - 1`, and the next frame played is `start`, so the join is the
 //!   file's own step from `start - 1` to `start`. Blending toward `start + k`
 //!   and then playing `start` again would play the loop's head twice, a jump
 //!   of `fade` frames at every wrap.
-//! - **Taps near the end read through the wrap.** The cubic kernel reads two
+//! - Taps near the end read through the wrap. The cubic kernel reads two
 //!   frames ahead of a position; a position within two frames of `end` reads
 //!   `start`, `start + 1` there, which are the frames the loop plays next, not
 //!   `end`, `end + 1` from the file past the loop. Behind a position on the
@@ -51,7 +51,7 @@
 //! every fade). The fade is at most half the loop in that mode, so the head and
 //! the tail never overlap.
 //!
-//! Both modes are one rule with a **resume** frame: the tail blends toward the
+//! Both modes are one rule with a resume frame: the tail blends toward the
 //! `fade` frames that lead into `resume`, and the wrap lands on `resume`.
 //! `resume` is `start` when the lead-in exists, `start + fade` when it does not.
 //! A fade is never longer than the loop, and the loop's end is clamped to the
@@ -276,8 +276,8 @@ mod tests {
 
     const ANY: usize = usize::MAX;
 
-    /// **`plain` is exactly the frames whose looped taps are the file's
-    /// own `idx - 1 ..= idx + 2`, none in the fade**: a looped block read
+    /// `plain` is exactly the frames whose looped taps are the file's
+    /// own `idx - 1 ..= idx + 2`, none in the fade: a looped block read
     /// takes those four straight from the wave, so a `plain` frame whose
     /// taps wrap or fade would read the wrong frames, and one missed is only
     /// slower. Exhaustive over small loops in both fade modes, before and
@@ -319,7 +319,7 @@ mod tests {
         assert!(plain > 0, "some frames are plain");
     }
 
-    /// **The fade leads into `start`.** A 4-frame fade on `[10, 20)` blends
+    /// The fade leads into `start`. A 4-frame fade on `[10, 20)` blends
     /// frames 16..20 toward 6..10, weighted 1/5 … 4/5, and nothing else; the
     /// wrap lands on 10.
     ///
@@ -337,8 +337,8 @@ mod tests {
         assert_eq!(span.place(20.0), (10.0, true));
     }
 
-    /// **With too little before `start`, the fade goes into the loop's head
-    /// and the wrap resumes after it.** A 4-frame fade on `[2, 20)` (two
+    /// With too little before `start`, the fade goes into the loop's head
+    /// and the wrap resumes after it. A 4-frame fade on `[2, 20)` (two
     /// frames before the start) blends frames 16..20 toward the head 2..6 and
     /// wraps to 6, so the last blended frame (almost all 5) is followed by 6.
     /// A loop from frame 0 fades too; the fade is at most half the loop there.
@@ -366,7 +366,7 @@ mod tests {
         assert_eq!((short.fade(), short.resume()), (50, 50));
     }
 
-    /// **A fade is clamped to the loop, and the loop to the file.**
+    /// A fade is clamped to the loop, and the loop to the file.
     ///
     /// Mutation (run): the `min(len)` clamp on `end` removed → a loop past a
     /// 1 000-frame file keeps its end at 5 000 → fails.
@@ -382,8 +382,8 @@ mod tests {
         assert_eq!(LoopSpan::new(2_000, 5_000, 0, 1_000), None);
     }
 
-    /// **A position before the loop reads the file behind it, even from a
-    /// cursor that has been round a loop** — the cursor a loop change leaves
+    /// A position before the loop reads the file behind it, even from a
+    /// cursor that has been round a loop — the cursor a loop change leaves
     /// behind the new loop's start. Every tap of 1 500.5 is the file's own
     /// 1 499..1 502 on a loop `[2000, 4000)`, looped or not.
     ///
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// **Taps wrap through the loop**: ahead of a position near `end` they read
+    /// Taps wrap through the loop: ahead of a position near `end` they read
     /// `start`, `start + 1`; behind one on `start`, after a wrap, `end - 1`.
     ///
     /// Mutation (run): the forward wrap removed (taps clamped to the file) →

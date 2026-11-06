@@ -181,8 +181,8 @@ fn looping_clock_at(rate: f64, looping: Option<LoopRange>) -> Clock {
     }
 }
 
-/// **A fork plays the file's own samples, from the frame its beat falls
-/// on**: silent before beat 2 (frame 48 000 at 120 BPM), then frame `k` of
+/// A fork plays the file's own samples, from the frame its beat falls
+/// on: silent before beat 2 (frame 48 000 at 120 BPM), then frame `k` of
 /// the file on render frame `48 000 + k`, exactly, on both channels. As a bare
 /// voice and inside a `VoiceNode`.
 ///
@@ -231,7 +231,7 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
     }
 }
 
-/// **A fork at another rate resamples**: a 24 kHz file rendered at 48 kHz
+/// A fork at another rate resamples: a 24 kHz file rendered at 48 kHz
 /// reads file frame `n / 2` on render frame `n` of the clip, and ends one
 /// second of file later (48 000 render frames), silent after. The file is a
 /// ramp, which the cubic kernel reproduces between frames up to rounding.
@@ -273,7 +273,7 @@ fn a_fork_at_another_rate_resamples() {
     );
 }
 
-/// **A fork loops as the stream is looped when it is taken** — a loop set on
+/// A fork loops as the stream is looped when it is taken — a loop set on
 /// the live stream after the voice was built, which the voice itself never
 /// saw: it plays frames `0..3000`, then `1000..3000` over and over.
 ///
@@ -356,7 +356,7 @@ fn write_sine(path: &Path, frames: usize) {
 /// The period of [`write_sine`]'s sine, in frames.
 const PERIOD: usize = 100;
 
-/// **A fork's crossfaded loop is continuous at its wrap**:
+/// A fork's crossfaded loop is continuous at its wrap:
 /// on a sine whose loop points click when cut hard — the loop starts on a
 /// rising zero crossing and ends a quarter period later in the cycle, so the
 /// frame before the wrap is the crest and the one after it zero — no step in
@@ -428,7 +428,7 @@ fn a_forks_crossfaded_loop_is_continuous_at_its_wrap() {
     }
 }
 
-/// **A reversed fork falls silent past the file's first frame**, as a
+/// A reversed fork falls silent past the file's first frame, as a
 /// forward one does past its last: the file backwards, then
 /// silence — not frame 0 held as DC.
 ///
@@ -458,7 +458,7 @@ fn a_reversed_fork_is_silent_past_the_first_frame() {
     }
 }
 
-/// **A varispeed change lands on a fork's next block**, at the position the
+/// A varispeed change lands on a fork's next block, at the position the
 /// new speed gives: 32 frames at 1×, then — the live voice set to 2× and
 /// forked again — 32 more, seated where the gate puts the playhead at 2× (32
 /// frames in at 2× is file frame 64) and stepping two file frames a frame.
@@ -490,7 +490,7 @@ fn a_varispeed_change_lands_on_a_forks_next_block() {
     }
 }
 
-/// **A fork of a stream that is gone plays nothing, and says so**: the live
+/// A fork of a stream that is gone plays nothing, and says so: the live
 /// voice's channel restarted on another file, so the live voice is on a ring
 /// the butler no longer feeds, and so is its fork — it must not pick up the
 /// other file from the channel, and its render fails rather than pass the
@@ -528,7 +528,7 @@ fn a_fork_of_a_stream_that_is_gone_plays_nothing() {
     assert!(fault.contains("ended"), "{fault}");
 }
 
-/// **A fork whose file cannot be read fails, naming the file.** The file is
+/// A fork whose file cannot be read fails, naming the file. The file is
 /// removed after the stream started (the butler keeps its own handle), so the
 /// fork, which re-opens it by its path, cannot: it renders silence and latches
 /// the failure its render reports (the fork's health probe, which the
@@ -555,8 +555,8 @@ fn a_fork_whose_file_cannot_be_read_fails_naming_it() {
     assert!(fault.contains("gone.wav"), "names the file: {fault}");
 }
 
-/// **A fork rendered before it is prepared with a sample rate renders
-/// nothing, and says so**, rather than read at a default rate and play off
+/// A fork rendered before it is prepared with a sample rate renders
+/// nothing, and says so, rather than read at a default rate and play off
 /// pitch. (The graph prepares every fork before it renders; a fork source
 /// used by hand may not.)
 ///
@@ -577,7 +577,7 @@ fn a_fork_told_no_rate_fails_rather_than_guess() {
     assert!(fault.contains("sample rate"), "{fault}");
 }
 
-/// **A reversed fork plays the file backwards**, across its pages: frame `k`
+/// A reversed fork plays the file backwards, across its pages: frame `k`
 /// of the clip is the file's frame `len - 1 - k`, exactly, over a file three
 /// pages long. (Past the file's first frame is
 /// `a_reversed_fork_is_silent_past_the_first_frame`'s.)
@@ -601,7 +601,7 @@ fn a_reversed_fork_plays_the_file_backwards() {
     }
 }
 
-/// **A stretched fork reads its file at the stretcher's rate**, from the
+/// A stretched fork reads its file at the stretcher's rate, from the
 /// seat as well as along it: at a read rate of 0.5 (a 2× stretch), frame `k`
 /// of the clip reads file frame `k / 2`, across every chunk. The file is a
 /// ramp, which the kernel reproduces between frames up to rounding.
@@ -630,7 +630,7 @@ fn a_stretched_fork_reads_at_the_stretchers_rate() {
     }
 }
 
-/// **A fork reads across its pages at a converted rate**: a 44.1 kHz file
+/// A fork reads across its pages at a converted rate: a 44.1 kHz file
 /// three pages long, rendered at 48 kHz, reads file frame `n × 44.1 / 48` on
 /// every render frame `n`, through each page boundary, to its last frame.
 ///
@@ -659,9 +659,9 @@ fn a_fork_reads_across_pages_at_a_converted_rate() {
     }
 }
 
-/// **A fork follows its render's timeline when it loops**: on a render clock
+/// A fork follows its render's timeline when it loops: on a render clock
 /// looping beats `[0, 1.01)` (24 240 frames at 120 BPM), a clip at beat 0
-/// starts again from its first frame at every wrap, **on the wrap's frame**
+/// starts again from its first frame at every wrap, on the wrap's frame
 /// — the read re-seats where the render's `Env` wraps, rather than count on
 /// from where it was. The loop is not a whole number of blocks, so the
 /// wraps fall inside blocks (the first 48 frames into one).
@@ -687,18 +687,18 @@ fn a_fork_follows_a_looping_render_timeline() {
     }
 }
 
-/// **A fork is bit-identical to the memory tier**: the same file in memory
+/// A fork is bit-identical to the memory tier: the same file in memory
 /// and on disk, placed at beat 1, render the same samples, bit for bit, at
 /// every frame of every block — the two tiers read through one placement,
 /// one step, one loop and one kernel.
 ///
-/// - **At 1.5× varispeed**, on fractional positions.
-/// - **A 24 kHz file at 48 kHz** (a non-unity conversion): the memory tier
+/// - At 1.5× varispeed, on fractional positions.
+/// - A 24 kHz file at 48 kHz (a non-unity conversion): the memory tier
 ///   must step by the conversion as well as the varispeed.
-/// - **A crossfaded loop at 1.5×**, through the fade, the seam and many
+/// - A crossfaded loop at 1.5×, through the fade, the seam and many
 ///   wraps, on fractional positions: the fade toward the lead-in and the
 ///   taps through the seam, which a placed memory voice honours too.
-/// - **The same loop, paged**: the rows above fork onto the butler's cached
+/// - The same loop, paged: the rows above fork onto the butler's cached
 ///   wave (`Open::Resident`, the butler decodes the file whole to capture a
 ///   loop's fade), which reads through the very `read_looped_frame` the
 ///   memory tier does — so there the two sides share their loop code, and a
@@ -706,10 +706,10 @@ fn a_fork_follows_a_looping_render_timeline() {
 ///   (a one-entry cache, and a second stream whose loop loads its own file)
 ///   so the fork decodes pages (`Pages::read_looped_into`), an independent
 ///   fetch-and-blend. A hard loop at 1.5× runs the paged seam taps too.
-/// - **Reversed** (the memory voice in a `VoiceNode`, where direction lives),
+/// - Reversed (the memory voice in a `VoiceNode`, where direction lives),
 ///   past the file's first frame into silence.
 ///
-/// **What this does not pin**: anything the two tiers share — `LoopSpan`'s
+/// What this does not pin: anything the two tiers share — `LoopSpan`'s
 /// fade weight, lead-in and tap layout, the seat, the kernel. Agreement
 /// there is by construction. Those are pinned against hand-computed
 /// oracles: `loop_span`'s own tests, `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`

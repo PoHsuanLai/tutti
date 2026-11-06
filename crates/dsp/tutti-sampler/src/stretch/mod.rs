@@ -32,9 +32,9 @@
 //!
 //! # Algorithm
 //!
-//! 1. **Analysis** — window the input with a periodic Hann, forward FFT.
-//! 2. **Phase unwrapping** — instantaneous frequency from phase differences.
-//! 3. **Synthesis** — scale phases for pitch, inverse FFT, overlap-add.
+//! 1. Analysis — window the input with a periodic Hann, forward FFT.
+//! 2. Phase unwrapping — instantaneous frequency from phase differences.
+//! 3. Synthesis — scale phases for pitch, inverse FFT, overlap-add.
 //!
 //! # RT-safety
 //!
@@ -49,7 +49,7 @@
 
 /// Per-channel RT scratch capacity, in samples.
 ///
-/// **Deliberately not a block size.** This is the *scratch* the vocoder
+/// Deliberately not a block size. This is the *scratch* the vocoder
 /// pre-reserves so `process` never reallocates, and it is sized for the FFT
 /// window rather than the block: at 8192 it covers the largest `FftSize` with
 /// headroom. Sizing it to a 64-frame block instead would silently cut the reservation 128x — the tests
@@ -69,9 +69,9 @@ use tutti_core::{SampleRate, Samples, Seconds};
 /// Two invariants hold for every instance, and both are enforced in `new`
 /// rather than argued about at the use site:
 ///
-/// - **A power of two between 4 and 32768**, because the vocoder's FFT
+/// - A power of two between 4 and 32768, because the vocoder's FFT
 ///   plans (the private `fft` module) are built for exactly those lengths.
-/// - **Divisible by 4**, so [`hop`](Self::hop) is `size / 4` exactly — 75%
+/// - Divisible by 4, so [`hop`](Self::hop) is `size / 4` exactly — 75%
 ///   overlap, the minimum Hann² constant-overlap-add requires. Any power of two
 ///   ≥ 4 satisfies this; it is stated because the hop, not the window, is what
 ///   COLA constrains.

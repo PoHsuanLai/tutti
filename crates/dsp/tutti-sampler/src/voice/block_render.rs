@@ -1,5 +1,5 @@
-//! The block read is the same **whatever the block length, and wherever a
-//! transport change falls**, bit for bit.
+//! The block read is the same whatever the block length, and wherever a
+//! transport change falls, bit for bit.
 //!
 //! A voice reads block-at-a-time (`PlaybackSlot::render_into`), and the
 //! transport reaches it through each block's `Env`. A host hands the graph
@@ -10,7 +10,7 @@
 //! same events at block starts, on one host clock, and every output sample
 //! must have the same bits.
 //!
-//! **What it isolates is the block machinery and the clock.** The two sides
+//! What it isolates is the block machinery and the clock. The two sides
 //! share every kernel; a bug inside one shows on both and is the kernel's own
 //! tests' (`interp`, `loop_span`, `stretch`, the tier tables) to catch. This
 //! pins the pieces (a 256-frame block, read in one piece through scratch
@@ -129,9 +129,9 @@ fn play(f: impl FnOnce(&mut Playback)) -> Playback {
     p
 }
 
-/// **The block read is the same in 256-frame blocks with the transport
+/// The block read is the same in 256-frame blocks with the transport
 /// changing inside them as in 64-frame blocks with it changing at their
-/// starts**, bit for bit, summed over a pool of voices covering every arm the
+/// starts, bit for bit, summed over a pool of voices covering every arm the
 /// read forks on: in memory at unity, at 1.37x varispeed and half gain,
 /// reversed, on a crossfaded loop, stretched 0.5x, pitched +700 cents,
 /// stretched and pitched at half gain, a mono wave fanned out, a 24 kHz wave

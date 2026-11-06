@@ -117,7 +117,7 @@ pub fn prepared<N: Node>(node: N, rate: impl Into<SampleRate>, max_block: usize)
 }
 
 /// One block of `frames` of `node` (no inputs) under `t` at `rate`; the
-/// transport is **not** moved. One `Vec` per output channel.
+/// transport is not moved. One `Vec` per output channel.
 pub fn block(
     node: &mut dyn Node,
     t: &MockTransport,

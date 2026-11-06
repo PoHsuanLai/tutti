@@ -7,8 +7,8 @@
 //! the refill cuts its reads at the loop's end and places each run
 //! (`loops::Mapping::fill`), so a `WaveIn` always reads the file straight on.
 //!
-//! Both ends speak flat interleaved `&[f32]` at a **runtime** width, with the
-//! stride owned by the type and every count denominated in **frames**. The sink
+//! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
+//! stride owned by the type and every count denominated in frames. The sink
 //! end, [`RegionOut`](crate::butler::prefetch::RegionOut), states that shape as
 //! the engine's [`AudioOut`](tutti_core::AudioOut) trait. `WaveIn` deliberately
 //! does not implement the matching [`AudioIn`](tutti_core::AudioIn) — see its
@@ -25,7 +25,7 @@ use tutti_io::Wave;
 ///
 /// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s: a
 /// mono source fans to every channel; anything else folds through
-/// [`fold_frame`]. The two tiers **must** agree here — this is the butler's
+/// [`fold_frame`]. The two tiers must agree here — this is the butler's
 /// unpack and that is the RT reader, and a voice that unpacked differently on
 /// disk than in memory is precisely the divergence the shared kernel exists to
 /// prevent.
@@ -78,13 +78,13 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
 /// inherent for a different reason, about what a short count *means*.
 ///
 /// [`AudioIn::poll_into`](tutti_core::AudioIn::poll_into)'s contract is entirely
-/// about what a **short or zero count means**: `0` is either "the producer has
+/// about what a short or zero count means: `0` is either "the producer has
 /// not caught up" ([`Starved`](tutti_core::OnEmpty::Starved)) or "there will
 /// never be more" ([`EndOfStream`](tutti_core::OnEmpty::EndOfStream)), and
 /// `ON_EMPTY` is the source answering that question once, on the type, so a
 /// generic consumer can branch on it.
 ///
-/// **`WaveIn` cannot answer it, because it never asks it.**
+/// `WaveIn` cannot answer it, because it never asks it.
 /// [`fill_interleaved`](Self::fill_interleaved) always fills the whole buffer
 /// and always returns `out.len() / channels` — it is unbounded by construction,
 /// yielding silence forever past the end of the wave. Neither verdict is true of
@@ -134,7 +134,7 @@ impl<'w> WaveIn<'w> {
     ///
     /// It looks like one and it is not. The loop below is over
     /// `chunks_exact_mut`, with no early exit, so this returns
-    /// `out.len() / ch` **unconditionally** — a pure function of the buffer the
+    /// `out.len() / ch` unconditionally — a pure function of the buffer the
     /// caller passed in, carrying no information back about the source. It is a
     /// convenience, not a signal, and the production callers
     /// (`loops::Mapping::fill`'s runs) discard it; the refill takes its frame

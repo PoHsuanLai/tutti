@@ -46,8 +46,8 @@ pub enum StepOutcome {
     /// Every streaming ring is at or above its refill threshold. The work ran,
     /// and none of it was urgent — park on the command queue.
     Healthy,
-    /// At least one ring is below its refill threshold **and this cycle moved
-    /// frames into one**. Come straight back; there is more to do.
+    /// At least one ring is below its refill threshold and this cycle moved
+    /// frames into one. Come straight back; there is more to do.
     Busy,
     /// A ring is below its refill threshold and this cycle could put nothing
     /// into it.
@@ -262,8 +262,8 @@ mod tests {
     use super::super::prefetch::RegionBuffer;
     use super::*;
 
-    /// **A map the reader held across the butler's last publish is freed by
-    /// the butler's next cycle**, with no further publish, while no channel
+    /// A map the reader held across the butler's last publish is freed by
+    /// the butler's next cycle, with no further publish, while no channel
     /// streams (the cycle returns `Idle`).
     ///
     /// Mutation (run): the cycle's per-ring `reclaim_maps` loop removed → the

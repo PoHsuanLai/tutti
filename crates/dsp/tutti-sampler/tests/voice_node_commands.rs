@@ -1,5 +1,5 @@
-//! **A standalone voice can be told to move, and the telling reaches the node
-//! the graph renders.**
+//! A standalone voice can be told to move, and the telling reaches the node
+//! the graph renders.
 //!
 //! Placement is not a scalar param: a window is a [`Beat`] (`f64`) plus an
 //! optional duration, and truncating a beat position to `f32` re-introduces
@@ -13,23 +13,23 @@
 //!
 //! All are silent.
 //!
-//! 1. **The node the graph renders must read the handle's cell.** The graph
+//! 1. The node the graph renders must read the handle's cell. The graph
 //!    renders the unit it was given, across commits and re-prepares (units
 //!    move, they are not cloned), so the cell is the node's own.
 //!    [`a_command_reaches_a_node_across_a_commit`] fails if the rendering unit
 //!    stops hearing its handle.
 //!
-//! 2. **A fork must not take the live node's edits.** With the old command
+//! 2. A fork must not take the live node's edits. With the old command
 //!    queue a fork sharing the receiver would have *stolen* moves from the
 //!    audio thread. A read of a published cell consumes nothing, so this is
 //!    now structural; [`a_fork_steals_no_commands`] stays as the end-to-end
 //!    check.
 //!
-//! 3. **A fork must still play where the clip was last moved to**: the
+//! 3. A fork must still play where the clip was last moved to: the
 //!    node's fork source reads the same cell when the fork is taken.
 //!    [`a_placement_sent_after_the_insert_reaches_a_fork`] pins it.
 //!
-//! 4. **Only the latest window is heard.** Two moves between blocks play the
+//! 4. Only the latest window is heard. Two moves between blocks play the
 //!    second; [`the_latest_placement_wins`] pins it.
 
 use std::sync::Arc;
@@ -96,7 +96,7 @@ fn render_peak(exec: &mut Executor, beat: f64) -> f32 {
     out.iter().fold(0.0f32, |a, s| a.max(s.abs()))
 }
 
-/// **The guard: the fixture can tell inside-the-window from outside.**
+/// The guard: the fixture can tell inside-the-window from outside.
 ///
 /// Every assertion below is "did the window move", which is meaningless unless
 /// the probe distinguishes the two states in the first place. If a fixture
@@ -116,7 +116,7 @@ fn the_probe_can_tell_inside_from_outside_a_window() {
     );
 }
 
-/// **A published placement reaches the voice**, on its next block.
+/// A published placement reaches the voice, on its next block.
 ///
 /// The claim the cell exists to make, at its simplest: the window starts
 /// where the playhead is not, a placement moves it, and the voice starts
@@ -143,7 +143,7 @@ fn a_queued_placement_moves_a_live_voice() {
     );
 }
 
-/// **A command reaches a node across a commit and a re-prepare.**
+/// A command reaches a node across a commit and a re-prepare.
 ///
 /// The graph renders the unit it was given: a commit that adds a node
 /// leaves it in place, and a re-prepare (a rate change) checks the unit out,
@@ -192,7 +192,7 @@ fn a_command_reaches_a_node_across_a_commit() {
     );
 }
 
-/// **A fork steals nothing from the live node.**
+/// A fork steals nothing from the live node.
 ///
 /// A fork renders on a worker *while the audio thread plays the original*.
 /// When the placement rode a crossbeam queue, a fork draining the live
@@ -231,7 +231,7 @@ fn a_fork_steals_no_commands() {
     );
 }
 
-/// **A node no handle was taken for still works.**
+/// A node no handle was taken for still works.
 ///
 /// A node driven by hand (`with_channels`, never inserted, `with_handle`
 /// never called) has an empty placement cell, and must keep the window it
@@ -250,7 +250,7 @@ fn a_node_with_no_handle_renders_normally() {
     );
 }
 
-/// **A clip moved after the node was inserted reaches a fork of it.**
+/// A clip moved after the node was inserted reaches a fork of it.
 ///
 /// The node's fork source keeps a copy of the voice as it was inserted, so a
 /// placement set after the insert reaches a fork only because the fork source
@@ -288,7 +288,7 @@ fn a_placement_sent_after_the_insert_reaches_a_fork() {
     );
 }
 
-/// **Only the latest placement is heard.** Two moves set between two blocks
+/// Only the latest placement is heard. Two moves set between two blocks
 /// play the second: the node reads one published window per block, it does
 /// not replay a history.
 ///

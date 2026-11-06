@@ -230,7 +230,7 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
     assert!(heard, "silence proves nothing");
 }
 
-/// **A pool's fork shares nothing with the live pool.** It is an empty
+/// A pool's fork shares nothing with the live pool. It is an empty
 /// pool at the live one's width: it holds none of the live voices, drains
 /// none of the live handle's commands, and preparing it at another rate
 /// does not move the rate the live handle builds its stretch filters at.
@@ -304,7 +304,7 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
 /// per-bin phase accumulators still tracking the old material — unless
 /// the node flushes it on the jump's frame.
 ///
-/// The wave is loud in its first half and **exactly silent** in its second,
+/// The wave is loud in its first half and exactly silent in its second,
 /// which is what makes the assertion about the leak rather than about
 /// liveness. Every other stretch test on this path asserts only `!= 0.0` or
 /// `> 1e-6` (`clips_sum_together`, `six_channel_clip_with_stretch_...`), and
@@ -414,7 +414,7 @@ fn a_transport_seek_flushes_stretch_state() {
     );
 }
 
-/// **The same seek flush, for a STANDALONE voice.** `VoiceNode` is the other
+/// The same seek flush, for a STANDALONE voice. `VoiceNode` is the other
 /// node that plays a stretched voice, and it had no cursor at all — so the
 /// pool-level fix covered one of the two paths and left this one smearing.
 ///
@@ -548,7 +548,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
     );
 }
 
-/// **A stretched placed voice must not transpose**, across block boundaries.
+/// A stretched placed voice must not transpose, across block boundaries.
 ///
 /// What this pins is the *assembly*, not the DSP: if `VoicePool` did not
 /// apply [`stretch::Unit::input_rate`], the vocoder would be fed one source
@@ -556,7 +556,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
 /// (2.0x turning 440 Hz into 880 Hz with the duration unchanged), while
 /// every unit test of [`stretch::Unit`] still passed.
 ///
-/// **Why this renders many blocks.** The failure lives at block boundaries.
+/// Why this renders many blocks. The failure lives at block boundaries.
 /// A placed voice re-derives its origin from the playhead each block, and the
 /// playhead runs at wall clock, so a stretched read that covers
 /// `block / stretch` source samples gets re-seated a full `block` further on
@@ -623,8 +623,8 @@ fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
     }
 }
 
-/// **A voice node reads a placed wave at another rate the same in
-/// one-frame blocks as in 64-frame ones**, the clock moving by each
+/// A voice node reads a placed wave at another rate the same in
+/// one-frame blocks as in 64-frame ones, the clock moving by each
 /// block: a 24 kHz ramp on a 48 kHz clock reads file frame `n / 2` on
 /// output frame `n`, forward and reversed, across every block boundary.
 ///
@@ -670,14 +670,14 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
     }
 }
 
-/// The **disk** tier must consume its source at the stretched rate too.
+/// The disk tier must consume its source at the stretched rate too.
 ///
 /// The memory tier's fix scales a cursor; the disk tier has no cursor to
 /// scale. It pops from a butler-fed ring, advancing an internal
 /// `fractional_pos` by `RtState::read_rate` (speed × src_ratio), so the rate
 /// has to reach *that* accumulator instead.
 ///
-/// Asserted as **source consumption**, not as pitch. A ring-fed reader has no
+/// Asserted as source consumption, not as pitch. A ring-fed reader has no
 /// absolute position to measure a frequency against — it renders whatever the
 /// butler last handed it — so the observable property is how fast the ring
 /// drains: at 2x stretch a block of output must consume half a block of
@@ -1297,11 +1297,11 @@ fn voice_node_is_a_standalone_graph_node() {
     );
 }
 
-/// **A voice's fork keeps its window and reads its render's transport**
+/// A voice's fork keeps its window and reads its render's transport
 /// — the offline render's path: the fork is `Voice::fork_copy`, and there is no clock to swap, because a
 /// voice reads the transport from each block's `Env`.
 ///
-/// Asserted **behaviourally**, on what the fork plays under the render's
+/// Asserted behaviourally, on what the fork plays under the render's
 /// transport: silent before its window (beat 1), sounding inside it (beat
 /// 3), silent on a stopped render.
 ///
@@ -1486,7 +1486,7 @@ fn looped(mut voice: Voice) -> Voice {
     voice
 }
 
-/// **A loop the butler takes is recorded**, and it was sent by the
+/// A loop the butler takes is recorded, and it was sent by the
 /// handle, before the drain ran: the add's own loop and the update's,
 /// each naming the voice's stream.
 ///
@@ -1539,7 +1539,7 @@ fn a_loop_the_butler_takes_is_recorded() {
     assert_eq!(handle.drops(), PoolDrops::default());
 }
 
-/// **The drain sends nothing to the butler.** Everything a streaming
+/// The drain sends nothing to the butler. Everything a streaming
 /// voice's loop needs from the butler is sent by the handle as it
 /// queues the command; once queued, the butler can be gone and the
 /// drain records the loop all the same, counting nothing.
@@ -1572,7 +1572,7 @@ fn the_drain_sends_nothing_to_the_butler() {
     assert_eq!(handle.drops(), PoolDrops::default());
 }
 
-/// **A loop a gone butler never received is not recorded**, on an add
+/// A loop a gone butler never received is not recorded, on an add
 /// or an update, and the loss is counted.
 ///
 /// Mutation (run): `forward_loop` answering `true` when the send fails
@@ -1613,7 +1613,7 @@ fn a_loop_a_gone_butler_never_received_is_not_recorded() {
     );
 }
 
-/// **A handle knows the streaming voices inserted before it was made**:
+/// A handle knows the streaming voices inserted before it was made:
 /// a loop sent for one is forwarded to its stream, not handed to the
 /// drain unforwarded.
 ///
@@ -1647,7 +1647,7 @@ fn a_handle_knows_the_voices_inserted_before_it() {
     ));
 }
 
-/// **The drain's other silent drops are counted**, not logged: a loop
+/// The drain's other silent drops are counted, not logged: a loop
 /// turned on for a streaming voice with no butler, and a `ReplaceWave`
 /// aimed at a streaming voice. Clearing a loop there (the add's own
 /// `Off`) loses nothing and is not counted.
@@ -1696,7 +1696,7 @@ fn the_drains_silent_drops_are_counted() {
     );
 }
 
-/// **A loop sent through the handle waits for the butler's room**
+/// A loop sent through the handle waits for the butler's room
 /// rather than dropping it: the handle is control-thread code, and
 /// sends as the control thread does.
 ///
@@ -1736,8 +1736,8 @@ fn a_handle_send_waits_for_the_butler() {
     ));
 }
 
-/// **A control-thread `insert_voice` waits for the butler's room rather
-/// than dropping its loop.** It is control-thread code (it allocates the
+/// A control-thread `insert_voice` waits for the butler's room rather
+/// than dropping its loop. It is control-thread code (it allocates the
 /// slot's box), so it sends as the control thread does.
 ///
 /// Mutation (run): `forward_loop` sending with `try_send` (refusing on
@@ -1775,8 +1775,8 @@ fn add(id: SlotId, voice: Voice) -> VoiceCommand {
     }
 }
 
-/// **A voice out of its window adds nothing at a finite gain and NaN at
-/// an infinite one**, as reading it would: its frames read +0.0, which a
+/// A voice out of its window adds nothing at a finite gain and NaN at
+/// an infinite one, as reading it would: its frames read +0.0, which a
 /// finite gain keeps a zero (and a zero added to the mix changes no bit)
 /// and an infinite one turns to NaN. A pool skips the read only in the
 /// first case.
@@ -1866,8 +1866,8 @@ fn fill_queue(handle: &VoicePoolHandle, queued: usize, room: usize) {
     }
 }
 
-/// **A loop for a streaming voice the handle does not know is not
-/// recorded**: a voice inserted with `insert_voice` after the handle was
+/// A loop for a streaming voice the handle does not know is not
+/// recorded: a voice inserted with `insert_voice` after the handle was
 /// taken. The handle has no stream to forward to, so the drain must
 /// refuse it from the command alone, and count it. The pool gave its
 /// butler to the handle, so the insert itself sends nothing either.
@@ -1897,8 +1897,8 @@ fn a_loop_for_a_voice_inserted_after_the_handle_is_not_recorded() {
     assert_eq!(handle.drops().loops_not_forwarded, 1);
 }
 
-/// **A loop forwarded to a stream the slot no longer reads is not
-/// recorded**: the handle's table names the stream the slot held when
+/// A loop forwarded to a stream the slot no longer reads is not
+/// recorded: the handle's table names the stream the slot held when
 /// the handle was made, and the slot has since been replaced by
 /// `insert_voice` with another stream on the same channel.
 ///
@@ -1926,8 +1926,8 @@ fn a_loop_forwarded_to_a_replaced_stream_is_not_recorded() {
     assert_eq!(handle.drops().loops_not_forwarded, 1);
 }
 
-/// **A streaming loop or add that meets a full command queue is refused
-/// before the butler hears of it**: `Err` means the command is gone, and
+/// A streaming loop or add that meets a full command queue is refused
+/// before the butler hears of it: `Err` means the command is gone, and
 /// the butler stays on the loop it had.
 ///
 /// Mutation (run): deleting `send_loop`'s full-queue check → the loop
@@ -1978,8 +1978,8 @@ fn wait_for_forward(handle: &VoicePoolHandle) {
     }
 }
 
-/// **A forward whose command another thread's send then crowds out of
-/// the queue is undone**: the butler is put back on the loop the slot
+/// A forward whose command another thread's send then crowds out of
+/// the queue is undone: the butler is put back on the loop the slot
 /// had, so `Err` leaves both the butler and the pool where they were.
 ///
 /// The race is staged: the butler's one-slot queue is full, so the
@@ -2052,8 +2052,8 @@ fn a_loop_crowded_out_of_the_queue_rolls_the_butler_back() {
     ));
 }
 
-/// **A remove, and an in-memory add, never wait on another thread's
-/// butler forward**: they touch no butler, so a stalled one must not
+/// A remove, and an in-memory add, never wait on another thread's
+/// butler forward: they touch no butler, so a stalled one must not
 /// hold them. The loop whose forward was waiting is ordered before the
 /// remove: it is not queued once its slot is gone.
 ///
@@ -2123,7 +2123,7 @@ fn reader_and_voice_node_default_to_stereo() {
     assert_eq!(unit.shape().audio_out, ChannelLayout::STEREO);
 }
 
-/// **A pool wider than the sampler reads is refused**, by name, where one
+/// A pool wider than the sampler reads is refused, by name, where one
 /// at the ceiling is built: past `MAX_SAMPLER_CHANNELS` it would declare
 /// outputs its read never writes.
 ///
@@ -2138,8 +2138,8 @@ fn a_pool_wider_than_the_sampler_reads_is_refused() {
     assert_eq!(err.channels, ChannelLayout::from(ceiling + 1));
 }
 
-/// **A voice node wider than the sampler reads writes silence on the
-/// channels past it**, not what the buffer held: the node's constructor
+/// A voice node wider than the sampler reads writes silence on the
+/// channels past it, not what the buffer held: the node's constructor
 /// cannot refuse (it is infallible, and hosts clamp the width first), so
 /// its `process` clears every output it declares.
 ///

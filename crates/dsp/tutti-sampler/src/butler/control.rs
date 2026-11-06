@@ -20,7 +20,7 @@ use crate::voice::disk_voice::DiskSource;
 
 /// The butler thread is gone, so a stream-control command was discarded.
 ///
-/// There is one failure mode and it is **permanent**: a blocking send waits
+/// There is one failure mode and it is permanent: a blocking send waits
 /// out a full queue and fails only once the queue is closed, which happens
 /// when the butler thread exits or its streamer is dropped. Every later
 /// command fails the same way, so a caller that sees this should stop rather
@@ -178,7 +178,7 @@ impl StreamOrigin {
     /// ended (stopped, or its channel restarted on another file): a voice on
     /// it then plays nothing live either.
     ///
-    /// **Control thread only**: it takes the record's lock, and a cache
+    /// Control thread only: it takes the record's lock, and a cache
     /// lookup.
     pub(crate) fn describe(&self) -> Option<StreamFile> {
         let record = &self.0;
@@ -206,8 +206,8 @@ mod tests {
     use super::*;
     use crate::butler::cache::LruCache;
 
-    /// **A fork is handed the butler's decoded copy of the file when its cache
-    /// holds one** — the same `Arc`, not a second decode — and nothing once
+    /// A fork is handed the butler's decoded copy of the file when its cache
+    /// holds one — the same `Arc`, not a second decode — and nothing once
     /// the cache is gone. A file that cannot seek is always there (the stream
     /// pins it), so a fork of one never decodes it again.
     ///

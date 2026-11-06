@@ -11,7 +11,7 @@
 //! butler ring rather than an indexable `Wave`, so it feeds the same kernel from
 //! its own 4-tap history. Same interpolation, different fetch.
 //!
-//! `read_frame` also owns the crate's **channel policy** (see its docs); the
+//! `read_frame` also owns the crate's channel policy (see its docs); the
 //! butler's planar unpack in `wave_io` follows the same rule. Two
 //! implementations of a channel policy is how the two tiers drift apart — the
 //! same failure mode this module exists to prevent for interpolation.
@@ -43,7 +43,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 ///
 /// # A placed voice has no position of its own
 ///
-/// Position is **derived** from the playhead, never accumulated here — the same
+/// Position is derived from the playhead, never accumulated here — the same
 /// model `tutti_core`'s transport uses, where the engine's `TransportClock` is
 /// the one thing that advances time (it counts frames and derives the beat
 /// from them) and every node reads the result from its block's `Env`. A
@@ -196,14 +196,14 @@ impl Gate {
 /// frame into `out` (`out.len() == range.len()`): `None` outside the
 /// window, or while the transport stands.
 ///
-/// **Frame-exact at the window's edges.** Each run of the block
+/// Frame-exact at the window's edges. Each run of the block
 /// ([`BlockClock::runs`]) is gated frame by frame by the one beat→frame
 /// rule: the read enters on the first frame whose beat reaches the window's
 /// start and leaves on the first that reaches its end, wherever in the block
 /// they fall — a clip placed mid-block starts on its frame, not at the next
 /// block.
 ///
-/// **Seated, then stepped.** At the first frame of the range a run sounds
+/// Seated, then stepped. At the first frame of the range a run sounds
 /// on (or its entry frame), the read seats where the gate puts the
 /// playhead ([`window_position`]'s origin) and steps from there by `step`
 /// per frame: `origin + step × k`. The owner renders a block in one piece
@@ -289,26 +289,26 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 /// each clamped to the wave bounds so edges reuse the nearest valid sample.
 /// Pure arithmetic: no allocation, so this is safe on the RT thread.
 ///
-/// **Writes every element of `out`**, including the silent cases — a caller
+/// Writes every element of `out`, including the silent cases — a caller
 /// never has to pre-zero, and a partial write can never leave a stale channel
 /// from the previous block in a trailing slot.
 ///
 /// # Channel policy
 ///
-/// One rule: **a mono source has no channel identity and fans to every channel;
-/// anything else has one and folds through [`fold_frame`].**
+/// One rule: a mono source has no channel identity and fans to every channel;
+/// anything else has one and folds through [`fold_frame`].
 ///
-/// - **mono wave → N-wide frame**: fans to all N. A mono sample is a point
+/// - mono wave → N-wide frame: fans to all N. A mono sample is a point
 ///   source whose speaker placement is the panner's job, not the reader's, so
 ///   dropping it into channel 0 alone would be wrong. This is also what the
 ///   stereo kernel always did (mono duplicated to both sides), so the behaviour
 ///   at width 2 is unchanged.
-/// - **wider wave → narrower frame**: [`fold_frame`], i.e. the ITU-R BS.775
+/// - wider wave → narrower frame: [`fold_frame`], i.e. the ITU-R BS.775
 ///   matrix at width 2. Front-pair passthrough would silently drop the centre
 ///   (dialogue) and the surrounds (ambience). The engine already owns these
 ///   coefficients in exactly one place, and a sampler that folded differently
 ///   would make the same file sound different depending on the node's width.
-/// - **narrower (but not mono) wave → wider frame**: [`fold_frame`], which
+/// - narrower (but not mono) wave → wider frame: [`fold_frame`], which
 ///   copies straight through and zero-fills the extra channels. Deliberately
 ///   asymmetric with the mono case: stereo carries a real L/R image, and fanning
 ///   it into the centre and surrounds would smear that image and invent phantom
@@ -421,7 +421,7 @@ pub(crate) fn read_looped_frame(
 /// [`tap_indices`] orders them), applying the crate's channel policy (see
 /// [`read_frame`]).
 ///
-/// **Writes every element of `out`.** `src_ch` must be non-zero.
+/// Writes every element of `out`. `src_ch` must be non-zero.
 #[inline]
 pub(crate) fn interpolate_taps(
     src_ch: usize,
@@ -483,7 +483,7 @@ mod tests {
     use tutti_core::{PlaybackRate, SrcRatio};
     use tutti_graph::{Env, Offset, Transport, TransportChanges};
 
-    /// **A position a hair under a whole frame reads that frame exactly.**
+    /// A position a hair under a whole frame reads that frame exactly.
     /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns
     /// the next tap only to within an ulp, so the read lands on the next frame
     /// at `t` = 0 instead, where the tap is returned as it is.
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(out[0], wave.at(0, 5));
     }
 
-    /// **Gate parity.** Both tiers must derive the SAME source position from the
+    /// Gate parity. Both tiers must derive the SAME source position from the
     /// same transport reading — asserted on the value, not on liveness.
     ///
     /// Both tiers reach the gate with a rate argument that is already the *file*
@@ -659,7 +659,7 @@ mod tests {
         Arc::new(w)
     }
 
-    /// Golden-vector gate: width-2 output must be **bit-identical** to what the
+    /// Golden-vector gate: width-2 output must be bit-identical to what the
     /// pre-width-generic stereo kernel produced.
     ///
     /// `assert_eq` on `f32::to_bits`, not an epsilon compare: a reassociated
@@ -667,8 +667,8 @@ mod tests {
     /// bit, and that is a real (if inaudible) divergence worth knowing about.
     ///
     /// These constants were captured by running the stereo kernel on `main`
-    /// before any part of the width change existed. **Regenerating them is not
-    /// the fix if this fails** — it would erase the only evidence that stereo
+    /// before any part of the width change existed. Regenerating them is not
+    /// the fix if this fails — it would erase the only evidence that stereo
     /// still behaves as it did, which is the load-bearing claim for every
     /// unchanged app-side call site.
     #[test]
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(got.as_slice(), &EXPECTED[..]);
     }
 
-    /// A 6-channel wave must deliver **all six** channels, each to its own slot —
+    /// A 6-channel wave must deliver all six channels, each to its own slot —
     /// not channel 0 fanned, not the front pair with four zeros. A width match
     /// arm collapsing to `(at(0), at(1))` truncates exactly that way, and every
     /// stereo fixture in the crate passes over it.
@@ -780,7 +780,7 @@ mod tests {
     }
 
     /// Narrowing goes through the engine's ITU-R BS.775 matrix, not a front-pair
-    /// truncation: a centre-only 5.1 source must reach **both** stereo outputs at
+    /// truncation: a centre-only 5.1 source must reach both stereo outputs at
     /// −3 dB. Cross-checked against `fold_frame` directly so the assertion is
     /// "the engine's matrix was used", not a hand-picked constant.
     #[test]
@@ -884,7 +884,7 @@ mod tests {
         out.into_iter().map(|p| p.map(|p| p.get())).collect()
     }
 
-    /// **`place` reports a sound iff some frame has a position**: the
+    /// `place` reports a sound iff some frame has a position: the
     /// slot skips the read of a range it calls silent, so a `false` with a
     /// position in it drops audio and a `true` over silence wastes the skip.
     /// Over a window before, across and after the block, entered and left
@@ -928,8 +928,8 @@ mod tests {
         );
     }
 
-    /// **A window that opens and closes inside a block does so on its
-    /// frames**: a clip placed 10 frames into a 64-frame block reads its
+    /// A window that opens and closes inside a block does so on its
+    /// frames: a clip placed 10 frames into a 64-frame block reads its
     /// frame 0 there, and one lasting 30 frames is silent from frame 40 on. A
     /// gate asked once per 64-frame chunk would let it enter at the next
     /// chunk instead.
@@ -952,7 +952,7 @@ mod tests {
         }
     }
 
-    /// **A seek inside a block moves the read on its frame**, re-seated at
+    /// A seek inside a block moves the read on its frame, re-seated at
     /// the gate there: a clip playing from beat 0 is at source frame
     /// `24 000 + i` at frame `i` of a block at beat 1, and after a seek to
     /// beat 2 on frame 32, at `48 000 + (i - 32)`. A stop on frame 48 silences
@@ -975,8 +975,8 @@ mod tests {
         }
     }
 
-    /// **A loop wrap inside a block re-seats the read at the loop's start on
-    /// the wrap's frame**, and the clock reports it as a jump (a new
+    /// A loop wrap inside a block re-seats the read at the loop's start on
+    /// the wrap's frame, and the clock reports it as a jump (a new
     /// generation): the buffered state behind a read — a stretch filter, the
     /// live disk reader — is flushed or crossfaded there.
     ///

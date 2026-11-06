@@ -35,7 +35,7 @@ fn block(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<(f
     (0..n).map(|i| (p[0][i], p[r][i])).collect()
 }
 
-/// `n` one-frame blocks, the transport **not** moved between them.
+/// `n` one-frame blocks, the transport not moved between them.
 fn frames(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<(f32, f32)> {
     (0..n).map(|_| block(unit, t, 1)[0]).collect()
 }
@@ -275,8 +275,8 @@ fn placed_clip_block_step_follows_playback_rate() {
     );
 }
 
-/// **A placed wave at another rate than the clock's steps by the
-/// conversion**, across block boundaries, in 64-frame blocks and in
+/// A placed wave at another rate than the clock's steps by the
+/// conversion, across block boundaries, in 64-frame blocks and in
 /// one-frame ones: a 24 kHz ramp on a 48 kHz clock reads file frame
 /// `n / 2` on output frame `n`, a monotone read half a frame per frame,
 /// with no jump where a block starts.
@@ -307,8 +307,8 @@ fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
     }
 }
 
-/// **A stretched placed read seats and steps with the stretch, at another
-/// rate too** — the positions the stretched slot branch feeds its filter.
+/// A stretched placed read seats and steps with the stretch, at another
+/// rate too — the positions the stretched slot branch feeds its filter.
 /// A 24 kHz wave on a 48 kHz clock at a stretch read rate of 0.5: each
 /// block seats where the gate puts it with the stretch (16 file frames per
 /// 64-frame block) and steps a quarter frame per output frame (the
@@ -350,7 +350,7 @@ fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
     }
 }
 
-/// **The interpolator's taps wrap through the loop** (the memory tier): at
+/// The interpolator's taps wrap through the loop (the memory tier): at
 /// half speed over a hard loop `[10, 20)`, a
 /// position half a frame before the end interpolates frames 18, 19, then
 /// 10, 11 — what the loop plays next — not 20, 21 from past it; and after
@@ -385,8 +385,8 @@ fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
     );
 }
 
-/// **A rate change lands on the next block, at the position the new
-/// speed gives**: 16 frames at 1×, then 2× on the next block, and the
+/// A rate change lands on the next block, at the position the new
+/// speed gives: 16 frames at 1×, then 2× on the next block, and the
 /// read is seated where the gate puts the playhead at 2× (elapsed time at
 /// the new speed — what a varispeed change on a placed voice means) and
 /// steps 2 from there. A block reads its rates once, so there is no moment between two frames
@@ -418,7 +418,7 @@ fn a_rate_change_lands_on_the_next_block() {
     );
 }
 
-/// **A crossfaded loop plays the hand-computed frames** — the memory
+/// A crossfaded loop plays the hand-computed frames — the memory
 /// tier's oracle, independent of `LoopSpan`'s arithmetic (the disk fork's
 /// is `a_fork_loops_as_the_stream_is_looped_when_it_is_taken`). A ramp
 /// (value = frame + 1) at unit speed from frame 0, round the loop twice:
@@ -463,7 +463,7 @@ fn a_crossfaded_loop_plays_the_hand_computed_frames() {
     }
 }
 
-/// **A stopped clock silences a placed read mid-clip**, in a 64-frame
+/// A stopped clock silences a placed read mid-clip, in a 64-frame
 /// block and in one-frame ones: the clock stops where it stands (its
 /// beat does not move), and the read must not run on as if it still
 /// rolled.
@@ -495,7 +495,7 @@ fn a_stopped_clock_silences_a_placed_read() {
     }
 }
 
-/// **A stop inside a block silences the read on its frame**: the block's `Env` carries the stop as a change at frame 40, and
+/// A stop inside a block silences the read on its frame: the block's `Env` carries the stop as a change at frame 40, and
 /// the clip plays frames 0..40 and not one more.
 ///
 /// Mutation (run): `place` reading the block's first transport for every
@@ -527,8 +527,8 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     );
 }
 
-/// **A loop moved under a cursor that has been round the old one reads
-/// the file where the cursor is**: wrapped once on
+/// A loop moved under a cursor that has been round the old one reads
+/// the file where the cursor is: wrapped once on
 /// `[1000, 3000)` to frame 1500, then the loop moved to `[2000, 4000)` —
 /// what `VoiceCommand::UpdateLoop` does while a loop point is dragged — the
 /// next frames are the file's 1500, 1501, …, not 3500, …. The same after
@@ -715,7 +715,7 @@ fn speed_2x_advances_twice_as_fast() {
     assert!((fast_pos - normal_pos * 2.0).abs() < 1e-6);
 }
 
-/// **The placement gate must apply `src_ratio` exactly once** — at the unit,
+/// The placement gate must apply `src_ratio` exactly once — at the unit,
 /// not just at the kernel.
 ///
 /// The in-memory mirror of `disk_voice`'s
@@ -1237,7 +1237,7 @@ fn six_channel_loop_crossfade_covers_every_channel() {
     }
 }
 
-/// **A gain change reaches the node the graph renders.**
+/// A gain change reaches the node the graph renders.
 ///
 /// The memory tier's half of the live-value rule: a control a host writes
 /// through the node's controls (its [`ParamSet`], or a clone of the
@@ -1268,8 +1268,8 @@ fn a_gain_change_reaches_the_rendering_node() {
     );
 }
 
-/// **A fork of the node shares nothing with it, and starts from the gain
-/// last set** — the graph's fork check (`assert_param_fork`): gain is
+/// A fork of the node shares nothing with it, and starts from the gain
+/// last set — the graph's fork check (`assert_param_fork`): gain is
 /// this node's one cell.
 ///
 /// Mutation (run): `fork_fresh` without `detach_gain` → "a live write
@@ -1279,7 +1279,7 @@ fn the_fork_shares_no_gain() {
     tutti_graph::contract::assert_param_fork(MemorySource::new(ramp_wave(48_000, 48_000.0)));
 }
 
-/// **Its gain is a port, its base the cell**
+/// Its gain is a port, its base the cell
 /// ([`VOICE_PARAMS`](super::super::VOICE_PARAMS)).
 ///
 /// Mutation (run): `param_base` answering unity → fails.
@@ -1295,7 +1295,7 @@ fn the_shape_declares_its_gain() {
     assert_eq!(Node::param_base(&s, 1), None);
 }
 
-/// **A fork plays from the render's transport**:
+/// A fork plays from the render's transport:
 /// a placed source forked out of a live graph reads its window of the
 /// fork's own blocks' `Env`.
 ///

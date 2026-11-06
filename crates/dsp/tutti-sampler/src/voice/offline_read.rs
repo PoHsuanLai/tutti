@@ -1,7 +1,7 @@
 //! A disk voice's file, read on demand for an offline render.
 //!
 //! A [`DiskVoice`](super::disk_voice::DiskVoice) plays what the butler streams
-//! into its ring. A **fork** of one for an export cannot: the ring has one
+//! into its ring. A fork of one for an export cannot: the ring has one
 //! consumer, the live audio thread, and a seek asked of the butler moves the
 //! live stream. So a forked voice reads the file itself, through this: the
 //! file the butler's record names ([`StreamFile`]), re-opened by its path and
@@ -532,7 +532,7 @@ mod tests {
         )
     }
 
-    /// **A reversed read decodes a page per page of frames**, as a forward
+    /// A reversed read decodes a page per page of frames, as a forward
     /// one does: reading the whole file backwards loads about `LEN / PAGE`
     /// pages, not one every few frames (a page laid out ahead of a forward
     /// read leaves a backward one below its start almost at once). Counted,
@@ -564,7 +564,7 @@ mod tests {
         }
     }
 
-    /// **The taps wrap through the loop** (the disk fork): on a
+    /// The taps wrap through the loop (the disk fork): on a
     /// hard loop `[10, 20)`, half a frame before the end interpolates frames
     /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
     /// ring holds there — not 20, 21 from past it; half a frame into a later
@@ -602,7 +602,7 @@ mod tests {
         assert!(read.page_loads() > 0, "read through the pages");
     }
 
-    /// **A forward read past the end of an unlooped file closes it**: there
+    /// A forward read past the end of an unlooped file closes it: there
     /// is nothing more to read, so the render stops holding the file, and a
     /// later read past the end does not open it again.
     ///
@@ -630,7 +630,7 @@ mod tests {
         assert!(!read.is_open(), "a read past the end opened it again");
     }
 
-    /// **`OfflineRead::read_into` latches a damaged file's fault.** The FLAC
+    /// `OfflineRead::read_into` latches a damaged file's fault. The FLAC
     /// fixture cut to 90% ends short of its frame count; a read before the
     /// cut returns frames, and the `FaultLatch` holds the decode failure.
     /// Called on the reader directly, not through a voice render.

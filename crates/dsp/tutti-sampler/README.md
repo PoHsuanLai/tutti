@@ -14,8 +14,8 @@ Bevy plugin and asset loader.
 
 ## Two playback tiers
 
-A voice plays either from memory or streamed from disk, and **the tier is the
-caller's choice**; the sampler never picks one on its own.
+A voice plays either from memory or streamed from disk, and the tier is the
+caller's choice; the sampler never picks one on its own.
 
 - `MemorySource` plays a decoded `Wave` held in memory. It needs no thread and
   no file, and is a graph node on its own.

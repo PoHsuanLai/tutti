@@ -5,7 +5,7 @@
 //! renderer hands it. What these tests pin is the
 //! outcome, for every node shape (`VoicePool`, `VoiceNode`, a bare
 //! `MemorySource`, one behind another node): a fork rendered on a
-//! **stopped** render transport is silent while the live graph, on a rolling
+//! stopped render transport is silent while the live graph, on a rolling
 //! one, sounds; a fork holds nothing the live graph's handles reach; and a
 //! node that reads no transport is unaffected.
 //!
@@ -97,8 +97,8 @@ fn fork(ed: &Editor) -> Executor {
     exec
 }
 
-/// **A fork of a pool is born empty and channel-less, and steals no command
-/// the live pool needs** — each command is delivered to exactly one consumer,
+/// A fork of a pool is born empty and channel-less, and steals no command
+/// the live pool needs — each command is delivered to exactly one consumer,
 /// so a shared channel means the worker steals playback.
 ///
 /// Mutation (run): `PoolFork` building its pool over the live pool's
@@ -129,7 +129,7 @@ fn a_forked_pool_steals_no_commands_from_the_live_one() {
     );
 }
 
-/// **A forked `VoiceNode` plays on its render's transport, not the live one.**
+/// A forked `VoiceNode` plays on its render's transport, not the live one.
 /// The live graph rolls and sounds; the fork, rendered on a stopped
 /// transport, renders exact silence.
 ///
@@ -158,7 +158,7 @@ fn a_forked_voice_node_reads_its_renders_transport_not_the_live_one() {
     );
 }
 
-/// **A bare `MemorySource`** sitting directly in the graph, wrapped in neither
+/// A bare `MemorySource` sitting directly in the graph, wrapped in neither
 /// a pool nor a voice node. It forks through `param_parts`, and reads its
 /// render's transport like the others.
 ///
@@ -196,7 +196,7 @@ impl Node for Const {
     fn reset(&mut self) {}
 }
 
-/// **A node that reads no transport is unaffected by the render's.** A fork
+/// A node that reads no transport is unaffected by the render's. A fork
 /// of a constant renders the constant, stopped or rolling.
 ///
 /// A control for the tests above: no sampler code runs here, so no
@@ -232,7 +232,7 @@ impl Node for Pass {
     fn reset(&mut self) {}
 }
 
-/// **The fork reaches a voice behind another node.** The graph's fork walks
+/// The fork reaches a voice behind another node. The graph's fork walks
 /// every node an output reaches, and each reads its own `Env`. A voice feeding a
 /// pass-through, forked, renders silence on a stopped render transport.
 ///

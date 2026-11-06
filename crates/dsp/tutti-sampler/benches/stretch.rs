@@ -1,4 +1,4 @@
-//! **What does the phase vocoder cost per block?**
+//! What does the phase vocoder cost per block?
 //!
 //! A stereo `stretch::Unit` processing 512-frame blocks of a sine, engaged
 //! (stretch 1.5, +200 cents), at each preset window. The vocoder runs one

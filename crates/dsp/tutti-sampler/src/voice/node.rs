@@ -38,10 +38,10 @@ use tutti_graph::{
 ///
 /// Inserted into a graph (`IntoNode`), it hands back a [`VoiceNodeHandle`]:
 ///
-/// - **gain** — a `Param<Amplitude>` cell, also addressable as
+/// - gain — a `Param<Amplitude>` cell, also addressable as
 ///   [`UnitParam::Volume`] through the handle's [`ParamSet`]. The node reads
 ///   it once per block into the voice's `Playback` record and its source.
-/// - **placement** — a [`Beat`](tutti_core::Beat) and an optional duration:
+/// - placement — a [`Beat`](tutti_core::Beat) and an optional duration:
 ///   not a scalar, so the handle publishes it to an `ArcLend` cell the
 ///   node reads once per block, latest wins, allocation-free.
 ///
@@ -81,7 +81,7 @@ pub struct VoiceNode {
 }
 
 impl VoiceNode {
-    /// Wraps a single [`Voice`] as a standalone **stereo** graph node. Builds the
+    /// Wraps a single [`Voice`] as a standalone stereo graph node. Builds the
     /// resident stretch processor once (like a mixer slot), off any hot path.
     pub fn new(voice: Voice) -> Self {
         Self::with_channels(voice, ChannelLayout::STEREO)
@@ -89,7 +89,7 @@ impl VoiceNode {
 
     /// Wraps a single [`Voice`] as a `channels`-wide graph node.
     ///
-    /// **Builds the stretch filter here** when `voice.play` asks for one. This
+    /// Builds the stretch filter here when `voice.play` asks for one. This
     /// is a control-thread constructor, so the allocation is free; the
     /// audio-thread drain in [`VoicePool`](super::pool::VoicePool) cannot do the
     /// same and takes a pre-built filter from the sender instead.
@@ -347,7 +347,7 @@ struct VoiceNodeFork {
     /// taken (an owning read on the control side, never a lend).
     placement: PlacementCell,
     /// The node's params: a fork starts from the gain cell, which holds the
-    /// gain last **set** (a modulation lane sends its composite to the
+    /// gain last set (a modulation lane sends its composite to the
     /// port and never writes the cell).
     params: ParamSet,
 }
@@ -400,8 +400,8 @@ mod tests {
     use crate::{MemorySource, Playback, VoiceSource};
     use tutti_core::Beat;
 
-    /// **A window the node held across the next `set_placement` is freed by
-    /// the next `reclaim`**, with no further publish.
+    /// A window the node held across the next `set_placement` is freed by
+    /// the next `reclaim`, with no further publish.
     ///
     /// Mutation (run): `VoiceNodeHandle::reclaim` returning 0 without
     /// reclaiming → one window is still retired, fails.

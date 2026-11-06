@@ -1,4 +1,4 @@
-//! Regression gate: the pool's command drain must not **free** on the audio
+//! Regression gate: the pool's command drain must not free on the audio
 //! thread.
 //!
 //! `tests/rt_no_alloc.rs` guards allocation, and says why it cannot see a
@@ -51,7 +51,7 @@ fn frees_during(f: impl FnOnce()) -> usize {
     FREES.with(|c| c.get())
 }
 
-/// **Adding voices, and replacing one, frees nothing in the drain.** Three
+/// Adding voices, and replacing one, frees nothing in the drain. Three
 /// `AddVoice`s — two stretched (their filters built by the sender), then a
 /// second add at the first one's id, which replaces that slot — are drained
 /// by one `process`, counting frees on this thread. The replaced slot comes

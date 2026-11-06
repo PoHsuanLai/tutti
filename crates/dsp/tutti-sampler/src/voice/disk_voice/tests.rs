@@ -49,8 +49,8 @@ fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
     (unit, state)
 }
 
-/// **At unity rate a free-running source reads one file frame per output
-/// frame**, exactly: output frame `i` is the ring's frame `i`, and after 8
+/// At unity rate a free-running source reads one file frame per output
+/// frame, exactly: output frame `i` is the ring's frame `i`, and after 8
 /// blocks of 64 it stands on frame 511.
 ///
 /// A reader that popped four frames of interpolation head-room per block
@@ -115,7 +115,7 @@ fn make_clip_reader_at(
     )
 }
 
-/// **A disk voice sizes its block positions from `Prepare::max_block`**,
+/// A disk voice sizes its block positions from `Prepare::max_block`,
 /// and a re-prepare resizes them (512, then 1024, then 64); a voice
 /// never prepared (one that only plays in a pool) carries none, and
 /// neither does a clone.
@@ -184,8 +184,8 @@ fn placement_gate_applies_src_ratio_exactly_once() {
     );
 }
 
-/// **A varispeed change moves where the voice reads, without any beat
-/// discontinuity.**
+/// A varispeed change moves where the voice reads, without any beat
+/// discontinuity.
 ///
 /// A cursor watching beats is blind to it: at beat 20 of a 120 BPM
 /// timeline, 1.0x -> 2.0x relocates the file position by 441 000 frames
@@ -223,7 +223,7 @@ fn a_varispeed_change_moves_the_read_without_any_beat_discontinuity() {
     assert_eq!(ring.play(), 882_002, "a frame later, two file frames on");
 }
 
-/// **A fork past its window closes its file**, and one inside it holds it
+/// A fork past its window closes its file, and one inside it holds it
 /// open: a render of many voices keeps a file open per voice sounding.
 /// Mutation (run): the close removed from `offline_render`'s past-the-window
 /// branch → still open → fails.
@@ -281,7 +281,7 @@ fn a_fork_closes_its_file_once_past_its_window() {
     assert!(!is_open(&copy), "the file is still open past the window");
 }
 
-/// **A stopped clock silences a fork mid-clip**, in a 64-frame block and
+/// A stopped clock silences a fork mid-clip, in a 64-frame block and
 /// in one-frame ones: the clock stops where it stands (its beat does not
 /// move), and the read must not run on as if it still rolled. The
 /// placement is the memory tier's too (`memory_source`'s
@@ -346,7 +346,7 @@ fn a_stopped_clock_silences_a_fork() {
     }
 }
 
-/// **A severed source lets go of the live reader.** A clone never holds
+/// A severed source lets go of the live reader. A clone never holds
 /// it (the reader is the live source's alone), so the one
 /// way a severed copy could still speak for the live ring is a source
 /// severed in place (what a disk voice's fork does to its copy's source).
@@ -383,12 +383,12 @@ fn a_severed_copy_holds_no_live_reader() {
     );
 }
 
-/// **A fork of a disk voice never touches the live stream**: rendered
+/// A fork of a disk voice never touches the live stream: rendered
 /// inside its window on the render's transport, it tells the live butler
 /// no position (so the live window stays where the live voice reads), and
 /// its controls are its own. What it plays instead is
 /// `tests/offline_disk_voice.rs`'s. The node's fork source forks it for an
-/// offline render and **refuses a live one**, which would read the file
+/// offline render and refuses a live one, which would read the file
 /// on the audio thread.
 ///
 /// Mutation (run): `fork_copy` keeping the live `shared_state` → the
@@ -555,8 +555,8 @@ fn clip_reader_single_frame_steady_state_is_allocation_free() {
     });
 }
 
-/// **A disk voice re-prepared at a 512-frame `max_block` renders ragged
-/// blocks up to it without allocating**: prepared at 64 first, then at
+/// A disk voice re-prepared at a 512-frame `max_block` renders ragged
+/// blocks up to it without allocating: prepared at 64 first, then at
 /// 512 (its positions resized on the control thread), then driven in
 /// blocks of 1 to 512 frames — the longest in one piece through its own
 /// positions — on a transport that moves and winds back inside the
@@ -637,8 +637,8 @@ fn wide_expected(width: usize, k: u64, c: usize) -> f32 {
     if c < width { wide_value(k, c) } else { 0.0 }
 }
 
-/// **A steady block read writes the caller's lanes as the frame path's
-/// `put` does**, for a reader wider than the caller (stereo into mono, 6
+/// A steady block read writes the caller's lanes as the frame path's
+/// `put` does, for a reader wider than the caller (stereo into mono, 6
 /// channels into stereo), as wide, narrower, and mono: each lane is the
 /// reader's channel and a lane past the reader is silent. Every run is
 /// read along time (`steady_lanes`), and after the first block the read
@@ -699,7 +699,7 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
     }
 }
 
-/// **A streamed clip wider than its pool renders through the pool**, the
+/// A streamed clip wider than its pool renders through the pool, the
 /// pool's channels taking the clip's first ones: a stereo clip in a mono
 /// pool, a 6-channel clip in a stereo pool, over 8 rolling blocks.
 ///
@@ -865,7 +865,7 @@ fn reset_clears_state() {
     );
 }
 
-/// **A free-running source follows a relayed seek**, from its next block
+/// A free-running source follows a relayed seek, from its next block
 /// (`Command::Seek` reaches it as `Ring::request_seek`), and a source taken
 /// after a seek starts there, not at the stream's origin.
 ///
@@ -1047,11 +1047,11 @@ fn cached_stride_reads_every_channel_at_width_six() {
     }
 }
 
-/// **A gain change must reach a voice that is already rendering**, written
+/// A gain change must reach a voice that is already rendering, written
 /// through a clone of it — and the clone renders nothing.
 ///
 /// The clone half of the live-value rule, at the disk tier: a gain stored
-/// **by value** in `DiskSource` would be written on one copy and never
+/// by value in `DiskSource` would be written on one copy and never
 /// reach the one that renders. The gain lives in the stream's control
 /// cell (`RtState`), which every clone shares (a fork detaches it,
 /// `fork_copy`).
@@ -1160,8 +1160,8 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
     blocks
 }
 
-/// **A streamed voice that is silent, then audible, then silent, then
-/// audible renders the same bits with the skip as without it**, and
+/// A streamed voice that is silent, then audible, then silent, then
+/// audible renders the same bits with the skip as without it, and
 /// what it plays is the frame the clock names: a stopped transport holds
 /// the playhead, so the voice resumes at the frame it stopped on, and a
 /// seek lands on its own frame. Silent blocks are exactly +0.0.
@@ -1221,7 +1221,7 @@ fn a_silent_streamed_voice_resumes_at_the_right_frame_and_matches_the_unskipped_
     }
 }
 
-/// **A block with no frame to play skips the lanes and the ring**, and
+/// A block with no frame to play skips the lanes and the ring, and
 /// one with a frame does not: `render_lanes` answers `false` and leaves
 /// the caller's lanes as they were while the transport stands, and
 /// `true` (every lane written) once it rolls.
@@ -1267,7 +1267,7 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
     assert!(voice.inner.read.read_to() > 22_000.0);
 }
 
-/// **A skipped block forgets a crossfade in progress**, as the rendered
+/// A skipped block forgets a crossfade in progress, as the rendered
 /// zeros do: a jump starts a fade, a silent block ends it and the
 /// position it continued.
 ///
@@ -1319,7 +1319,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     assert!(voice.inner.read.forgot(), "a silent block forgets");
 }
 
-/// **A skipped block lets go of the ring**, as a rendered silent block
+/// A skipped block lets go of the ring, as a rendered silent block
 /// does: the reader's last claim is cleared and every shrink so far
 /// acknowledged, so a butler that moved the window while the voice was
 /// silent is not held off by the stale claim. The ring is 4 096 frames
@@ -1461,7 +1461,7 @@ fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
     (blocks, underruns, skipped)
 }
 
-/// **The butler's ring stays consistent across skipped blocks**: a
+/// The butler's ring stays consistent across skipped blocks: a
 /// stream played, held silent for 300 blocks (the butler stepping all
 /// the while), then resumed where it stopped and after a seek 20 s on,
 /// renders the same bits and counts the same underruns with the skip as

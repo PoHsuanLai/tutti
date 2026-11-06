@@ -10,7 +10,7 @@
 //! stay valid for their positions, so a jump back inside the window costs
 //! nothing.
 //!
-//! **Every count here is denominated in frames.** The `* ch` at each scratch
+//! Every count here is denominated in frames. The `* ch` at each scratch
 //! resize is the only place the interleave stride enters.
 
 use super::super::cache::LruCache;
@@ -26,16 +26,16 @@ use std::path::Path;
 use std::sync::Arc;
 use tutti_io::Wave;
 
-/// How many **frames** to read this cycle, under the varifill strategy.
+/// How many frames to read this cycle, under the varifill strategy.
 ///
 /// Scales `base_chunk` by three independent factors, then clamps their product
 /// to `0.25..=4.0` and floors the result at 1024 frames:
 ///
-/// - **Urgency** — `1.0 - buffer_fill`, so an empty ring pulls harder.
-/// - **Bandwidth** — the square root of `read_rate_bytes_per_sec` against a
+/// - Urgency — `1.0 - buffer_fill`, so an empty ring pulls harder.
+/// - Bandwidth — the square root of `read_rate_bytes_per_sec` against a
 ///   10 MB/s baseline, clamped to `0.5..=2.0`. A non-positive or unmeasured rate
 ///   contributes a neutral 1.0.
-/// - **Speed** — `playback_speed`, floored at 1.0: playing faster consumes the
+/// - Speed — `playback_speed`, floored at 1.0: playing faster consumes the
 ///   ring faster, but playing slower is no reason to read in smaller pieces.
 ///
 /// Robust to a nonsensical `buffer_fill` (negative, above one, or NaN) because

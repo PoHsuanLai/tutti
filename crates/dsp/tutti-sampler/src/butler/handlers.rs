@@ -53,7 +53,7 @@ impl SessionRate {
 
     /// Move the rate, then re-derive the ratio of every stream that is open.
     ///
-    /// **Why the ratio is derived under the plan's lock on both sides.**
+    /// Why the ratio is derived under the plan's lock on both sides.
     /// `handle_stream_file` reads the rate and sets the ratio while it holds
     /// the plan's entry; this stores the rate first and then takes each entry.
     /// So a stream the butler opens concurrently either set its ratio before
@@ -200,8 +200,8 @@ pub(super) fn handle_command(
 /// codec feature isn't compiled in, the probe fails, or the format is
 /// non-seekable.
 ///
-/// **The verdict comes from [`crate::probe()`], not from a local copy of the
-/// rule.** A host picks a playback tier before any of this runs, and it must
+/// The verdict comes from [`crate::probe()`], not from a local copy of the
+/// rule. A host picks a playback tier before any of this runs, and it must
 /// reach the same conclusion this function does — so "can the butler stream it"
 /// is asked in exactly one place. Re-deriving it here is how the two would drift
 /// the next time the conditions changed.
@@ -221,7 +221,7 @@ fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, t
 /// Start streaming `file_path` on `channel_index` from frame `offset_samples`.
 ///
 /// Probes metadata for ring sizing and the conversion ratio *without* decoding
-/// the whole file, builds the region ring at the **file's own width**, installs
+/// the whole file, builds the region ring at the file's own width, installs
 /// the reader on the channel's plan, and pins the wave in the cache for the
 /// stream's lifetime. Falls back to the whole-file `load_wave` path when the
 /// format is not seekable.

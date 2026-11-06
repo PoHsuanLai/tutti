@@ -37,7 +37,7 @@ impl Ring {
         i & (self.data.len() - 1)
     }
 
-    /// Samples written but not yet consumed, **capped at the capacity**.
+    /// Samples written but not yet consumed, capped at the capacity.
     ///
     /// The cap is the load-bearing part. The cursors are monotonic so the raw
     /// subtraction keeps counting past the ring end, and a reader that trusted it
@@ -122,14 +122,14 @@ impl SampleFifo {
 /// Not a FIFO, which is why it is its own type. Synthesis *sums into* a whole
 /// window starting at the write cursor — overlapping the tails of the previous
 /// three frames — and only then advances by one synthesis hop. So writes land
-/// **ahead** of the cursor and are revisited by later frames, while reads drain
+/// ahead of the cursor and are revisited by later frames, while reads drain
 /// behind it. A FIFO's `push` cannot express that.
 ///
 /// # Two rings, and why the window sum is not a constant
 ///
 /// Windowing twice — once on analysis, once on synthesis — means the overlapped
 /// frames sum to `Σw²` per sample rather than to unity, so synthesis has to
-/// divide it back out. A **precomputed scalar** (`1 / (4 · mean(hann²))`) is
+/// divide it back out. A precomputed scalar (`1 / (4 · mean(hann²))`) is
 /// correct only for a Hann window at exactly 75% overlap.
 ///
 /// So the sum is accumulated the same way `tutti_dsp::istft_transform` does it:
@@ -238,7 +238,7 @@ impl OverlapAdd {
 
     pub(super) fn reset(&mut self) {
         self.data.reset();
-        // **Both**, or the next stream's first frames divide by the previous
+        // Both, or the next stream's first frames divide by the previous
         // stream's denominator — silent, and only at a boundary.
         self.window_sum.reset();
     }

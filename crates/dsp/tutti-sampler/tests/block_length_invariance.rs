@@ -1,4 +1,4 @@
-//! **A voice renders the same frames whatever its blocks.**
+//! A voice renders the same frames whatever its blocks.
 //!
 //! A voice node sizes its scratch from `Prepare::max_block` and renders each
 //! block in one piece. Nothing a voice computes per frame depends on where a
@@ -174,7 +174,7 @@ fn assert_same(case: &str, name: &str, got: &[Vec<f32>; 2], want: &[Vec<f32>; 2]
 }
 
 /// Renders `build()` under every schedule and asserts the renders are equal
-/// bit for bit, and that they sound. Also the **cold path**, a block longer
+/// bit for bit, and that they sound. Also the cold path, a block longer
 /// than the node's scratch, rendered in pieces: prepared at 64 but handed
 /// 512-frame blocks (against the 64-frame render), and never prepared, in
 /// 512-frame blocks (against the same, unprepared, in 64-frame blocks: an
@@ -284,8 +284,8 @@ fn playbacks() -> Vec<(&'static str, Playback)> {
     ]
 }
 
-/// **A pool's memory voices, and a lone `VoiceNode`, render the same frames
-/// at 64, 512 and ragged blocks**: plain, varispeed, reversed, looped across
+/// A pool's memory voices, and a lone `VoiceNode`, render the same frames
+/// at 64, 512 and ragged blocks: plain, varispeed, reversed, looped across
 /// a crossfade, stretched and pitched (the phase vocoder fed and drained
 /// across every block edge).
 #[test]
@@ -303,8 +303,8 @@ fn memory_voices_render_the_same_frames_at_any_block_length() {
     }
 }
 
-/// **A `MemorySource` as its own node renders the same frames at any block
-/// length**, placed (the gate's read) and free-running (its cursor).
+/// A `MemorySource` as its own node renders the same frames at any block
+/// length, placed (the gate's read) and free-running (its cursor).
 #[test]
 fn a_memory_source_node_renders_the_same_frames_at_any_block_length() {
     let wave = tone(1.5);
@@ -359,7 +359,7 @@ fn disk_voice(path: &Path) -> (DiskStreamer, tutti_sampler::DiskVoice) {
     (s, v)
 }
 
-/// **A live disk voice renders the same frames at any block length**: as
+/// A live disk voice renders the same frames at any block length: as
 /// its own node and in a pool (the ring claimed once per run of the block,
 /// its positions in the owner's scratch).
 #[test]

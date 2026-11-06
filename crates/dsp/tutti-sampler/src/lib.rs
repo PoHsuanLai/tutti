@@ -38,7 +38,7 @@ pub use error::{Error, Result};
 /// it here ([`PoolTooWide`]).
 pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
-/// Reject the empty layout for anything that is a **graph node**.
+/// Reject the empty layout for anything that is a graph node.
 ///
 /// [`ChannelLayout`](tutti_core::ChannelLayout) can represent an empty bus
 /// (`Multi(0)`) — deliberately, because a plugin port genuinely can be zero

@@ -1,10 +1,10 @@
-//! **How many sample voices fit in a block?**
+//! How many sample voices fit in a block?
 //!
 //! `voices/plain` is the answer to read first. A 64-frame block at 48 kHz has
-//! **1.333 ms**; divide a case's time by that for the fraction of the budget
+//! 1.333 ms; divide a case's time by that for the fraction of the budget
 //! one pool consumes, before any other track, effect or plugin.
 //!
-//! Memory sources only — **no butler, no disk, no page cache.** Streaming
+//! Memory sources only — no butler, no disk, no page cache. Streaming
 //! from disk is dominated by the filesystem and by prefetch state, which is
 //! not something criterion can summarise honestly; a counting-allocator and
 //! sampling-profiler harness is the instrument for anything shaped like that
@@ -143,7 +143,7 @@ fn drive(rig: &mut Rig) {
     black_box(rig.block());
 }
 
-/// **The headline: plain playback against voice count.**
+/// The headline: plain playback against voice count.
 fn bench_voices(c: &mut Criterion) {
     let mut group = c.benchmark_group("voices/plain");
     group.throughput(Throughput::Elements(BLOCK as u64));
@@ -156,7 +156,7 @@ fn bench_voices(c: &mut Criterion) {
     group.finish();
 }
 
-/// **What engaging the phase vocoder costs.** `StretchFactor(1.0)` is a
+/// What engaging the phase vocoder costs. `StretchFactor(1.0)` is a
 /// bypass, so the gap between it and any other factor is the whole price.
 fn bench_stretch(c: &mut Criterion) {
     let mut group = c.benchmark_group("voices/stretch");
@@ -389,7 +389,7 @@ fn drive64(p: &mut Pool64) -> f32 {
     p.rig.block()
 }
 
-/// **Many voices, both tiers, varispeed and stretch.** One block of `n`
+/// Many voices, both tiers, varispeed and stretch. One block of `n`
 /// voices per iteration, on a transport that moves (see [`Rig`]).
 fn bench_pool64(c: &mut Criterion) {
     let mut group = c.benchmark_group("pool64");
@@ -502,7 +502,7 @@ impl Clips {
     }
 }
 
-/// **A clip per `VoiceNode`**, as `bevy-tutti` spawns them: 64 stereo
+/// A clip per `VoiceNode`, as `bevy-tutti` spawns them: 64 stereo
 /// nodes, at 64- and 512-frame blocks (each node's scratch sized for its
 /// block: 57 bytes a stereo frame).
 fn bench_clips(c: &mut Criterion) {
@@ -520,7 +520,7 @@ fn bench_clips(c: &mut Criterion) {
     group.finish();
 }
 
-/// **A `MemorySource` as a graph node of its own**: 64 placed stereo
+/// A `MemorySource` as a graph node of its own: 64 placed stereo
 /// sources, each driven as the graph drives it, in 64-frame blocks on the
 /// moving transport. One block of every source per iteration.
 fn bench_sources(c: &mut Criterion) {

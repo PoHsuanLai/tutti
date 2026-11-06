@@ -224,7 +224,7 @@ fn overlap_add_clear_at_zeroes_a_future_slot() {
     assert_eq!(out[3], 0.0, "cleared slot must not carry stale audio");
 }
 
-/// **The window-sum normalization, asserted directly.**
+/// The window-sum normalization, asserted directly.
 ///
 /// The vocoder divides by the accumulated window sum rather than a hardcoded
 /// COLA gain. Two frames landing
@@ -268,7 +268,7 @@ fn overlap_add_does_not_divide_by_a_vanishing_window_sum() {
     assert!(out[0].is_finite());
 }
 
-/// **`reset` must clear the window sum too**, or the first frames of the next
+/// `reset` must clear the window sum too, or the first frames of the next
 /// stream divide by the previous stream's denominator.
 ///
 /// Silent, and only at a boundary — the shape of bug that ships. Mutation
@@ -319,7 +319,7 @@ fn ring_available_saturates_at_capacity_and_reports_the_overrun() {
     assert_eq!(o.drain(&mut out), 4, "drain is bounded by available()");
 }
 
-/// **The rate contract.** A one-in/one-out feed keeps both rings bounded and
+/// The rate contract. A one-in/one-out feed keeps both rings bounded and
 /// the output audible, at every stretch factor.
 ///
 /// This is the invariant the design rests on, and it asserts both halves:
@@ -391,11 +391,11 @@ fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
     }
 }
 
-/// The intake loop is **bounded**, which is an RT-safety property rather than
+/// The intake loop is bounded, which is an RT-safety property rather than
 /// a performance one: it runs inside the audio callback, and an unbounded
 /// `while` there is a dropout waiting for the right parameter value.
 ///
-/// The loop is paced by [`Unit::intake_rate`], which is the **pitch** ratio —
+/// The loop is paced by [`Unit::intake_rate`], which is the pitch ratio —
 /// not `input_rate`, which is the caller's stretch half and never reaches
 /// this loop. [`MAX_PITCH`] is +2400, so the rate cannot exceed 4.0 and
 /// the loop cannot run more than four times per tick. The bound comes from
@@ -509,7 +509,7 @@ fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
 
 /// `input_rate` is `1.0` while bypassing, so a caller can apply it
 /// unconditionally without branching on `is_processing`.
-/// **A clone is a fresh filter on the same tables**: its own vocoders, with
+/// A clone is a fresh filter on the same tables: its own vocoders, with
 /// none of the original's running state, the same width and parameters, and
 /// the immutable window and phase tables shared by `Arc`.
 ///
@@ -557,7 +557,7 @@ fn a_clone_is_a_fresh_filter_on_the_shared_tables() {
     }
 }
 
-/// **A clone and its original tick independently.** Cloned from a running
+/// A clone and its original tick independently. Cloned from a running
 /// unit, each then renders exactly what a unit of its own renders from the
 /// same input — the original what its never-cloned twin renders, the clone
 /// what a fresh unit renders — interleaved tick for tick. That is what an
@@ -613,7 +613,7 @@ fn a_clone_and_its_original_tick_independently() {
     );
 }
 
-/// **A clone arrives with its block scratch sized.** There is no `allocate`
+/// A clone arrives with its block scratch sized. There is no `allocate`
 /// hook any more to size what a clone left empty: the clone builds its own,
 /// so `process` on it has nothing to grow (the no-alloc gate is
 /// `tests/rt_no_alloc.rs`'s `cloned_time_stretch_process_is_allocation_free`).
@@ -682,7 +682,7 @@ fn a_clone_renders_identically() {
     );
 }
 
-/// **`filter_lanes` is `tick` per frame, bit for bit**: the slot's block read
+/// `filter_lanes` is `tick` per frame, bit for bit: the slot's block read
 /// through the filter against the frame-at-a-time read (`tick`), at every
 /// width relation the slot can hand it (narrower, equal, wider than the
 /// unit), stretched, pitched, stretched and pitched, and bypassing; the block
@@ -800,8 +800,8 @@ fn rms(x: &[f32]) -> f32 {
     (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
 }
 
-/// Render a 440 Hz source through a unit, **observing the crate's feed
-/// contract**: one source sample in per output sample out, with the unit
+/// Render a 440 Hz source through a unit, observing the crate's feed
+/// contract: one source sample in per output sample out, with the unit
 /// pacing its own intake.
 ///
 /// That contract is what every voice path does and what
@@ -822,7 +822,7 @@ fn render_440(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
     out
 }
 
-/// Render a 440 Hz **wave table** through a unit the way a placed voice does:
+/// Render a 440 Hz wave table through a unit the way a placed voice does:
 /// the caller advances a source cursor by [`Unit::input_rate`] and reads the
 /// table at that fractional index.
 ///
@@ -854,9 +854,9 @@ fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
     out
 }
 
-/// **Pitch shift transposes, and stretch does not.**
+/// Pitch shift transposes, and stretch does not.
 ///
-/// The assertion that has to be about **frequency**. A pitch test checking only
+/// The assertion that has to be about frequency. A pitch test checking only
 /// that the atomic round-trips and clamps is passed in full by a unit that
 /// ignores pitch entirely — which is a shape this code reached: +1200 cents
 /// moving 440 Hz to 411 and -1200 moving it to 408, the *same* wrong answer in
@@ -885,7 +885,7 @@ fn pitch_shift_transposes_by_the_requested_interval() {
     }
 }
 
-/// **A one-per-tick feed makes the stretch factor behave as varispeed** — it
+/// A one-per-tick feed makes the stretch factor behave as varispeed — it
 /// moves pitch — and that is correct, not a bug.
 ///
 /// This surprises, so it is pinned. A unit fed one source sample per output
@@ -917,7 +917,7 @@ fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
     }
 }
 
-/// A **placed** read — the caller advancing its cursor by
+/// A placed read — the caller advancing its cursor by
 /// [`Unit::input_rate`] — changes duration without moving pitch.
 ///
 /// This is the shape a timeline voice uses (`MemorySource` derives its
@@ -942,7 +942,7 @@ fn stretching_a_placed_read_changes_duration_not_pitch() {
     }
 }
 
-/// Pitch and stretch **compose** on a placed read: each lands on target with
+/// Pitch and stretch compose on a placed read: each lands on target with
 /// the other engaged.
 ///
 /// Composition is where this design could plausibly fail, because both halves
@@ -1078,7 +1078,7 @@ fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
 /// summing. Unity was clean (the offset is identically zero there), which is
 /// why `vocoder_reconstructs_its_input_at_unity` never caught it.
 ///
-/// **Asserted as an RMS ratio, not liveness.** Every other stretch test in
+/// Asserted as an RMS ratio, not liveness. Every other stretch test in
 /// this file checks `> 0.01` or `!= 0.0`, and the broken output was 0.0895 —
 /// audible, non-zero, and 12 dB wrong. This is the same blind spot that hid
 /// the 60 dB bug documented above.
@@ -1359,17 +1359,17 @@ fn reset_clears_buffered_audio() {
 /// Stale audio survives a source discontinuity until something calls
 /// [`Unit::reset`] — and `reset` is sufficient to clear it.
 ///
-/// This is a **characterization** test: it passes today and documents the
+/// This is a characterization test: it passes today and documents the
 /// mechanism behind the seek bug rather than gating it. The gate lives one
 /// level up, where a transport can actually seek
 /// (`voice::voice_pool::tests::a_transport_seek_flushes_stretch_state`).
 ///
 /// What it pins is the two halves of the fix:
 ///
-/// - the leak is **large** — the FIFOs hold up to `window * 4` samples and
+/// - the leak is large — the FIFOs hold up to `window * 4` samples and
 ///   the phase accumulators keep resynthesising from them, so the output
 ///   after the input goes silent is at signal level, not at noise level;
-/// - `reset()` clears it **exactly**, to zero, not merely to something
+/// - `reset()` clears it exactly, to zero, not merely to something
 ///   small.
 ///
 /// The second half is why this test earns its place: if a later change makes
@@ -1494,7 +1494,7 @@ fn vocoder_reconstructs_its_input_at_unity() {
     );
 }
 
-/// **The vocoder reconstructs under a window it was never tuned for.**
+/// The vocoder reconstructs under a window it was never tuned for.
 ///
 /// This is what the accumulated window-sum denominator bought, and it is the
 /// test that makes the change load-bearing rather than merely equivalent.
@@ -1502,7 +1502,7 @@ fn vocoder_reconstructs_its_input_at_unity() {
 /// A constant gain of `1/1.5`, which is `1 / (4 · mean(hann²))`, is a Hann
 /// fact at a 75% fact. Under Hamming the same grid sums to
 /// `4 · mean(hamming²) = 1.5896`, so that constant would leave the output
-/// **0.8 dB hot** with nothing erroring; the numbers are all finite and
+/// 0.8 dB hot with nothing erroring; the numbers are all finite and
 /// the audio merely sounds wrong.
 ///
 /// Blackman is deliberately *not* tested here: it needs 8x overlap
@@ -1701,7 +1701,7 @@ fn isolate_snapshots_stretch_and_pitch() {
     }
 }
 
-/// **A block longer than the scratch is split, not truncated.** One
+/// A block longer than the scratch is split, not truncated. One
 /// `process` of 8192 + 300 frames renders exactly what a fresh twin renders
 /// from two calls of 8192 and 300, processing and bypassing alike: every
 /// output frame is written, with none left stale past the scratch.
@@ -1751,7 +1751,7 @@ fn a_block_past_the_scratch_is_rendered_in_runs() {
     }
 }
 
-/// **A rate change keeps the configured window.** The grid is rebuilt at the
+/// A rate change keeps the configured window. The grid is rebuilt at the
 /// new rate from the vocoder's own window and hop, not the default size: a
 /// 1024 or 4096 window that came back as 2048 would disagree with the
 /// buffers the vocoder allocated for its real size.

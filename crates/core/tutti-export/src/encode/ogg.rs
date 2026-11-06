@@ -39,15 +39,14 @@ impl OggEncoder {
             .and_then(|n| NonZeroU8::new(n).ok_or(ConfigError::ZeroChannels))?;
 
         let writer = BufWriter::new(std::fs::File::create(path)?);
-        let mut builder = VorbisEncoderBuilder::new(sr, ch, writer).map_err(|e| {
-            Error::encoding(Codec::Ogg, format!("failed to create encoder: {e}"))
-        })?;
+        let mut builder = VorbisEncoderBuilder::new(sr, ch, writer)
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to create encoder: {e}")))?;
         builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
             target_quality: opts.quality,
         });
-        let encoder = builder.build().map_err(|e| {
-            Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}"))
-        })?;
+        let encoder = builder
+            .build()
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}")))?;
         Ok(Self { encoder })
     }
 }

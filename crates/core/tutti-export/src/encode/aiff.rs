@@ -89,9 +89,9 @@ impl Encoder for AiffEncoder {
             .map_err(|e| Error::encoding(Codec::Aiff, format!("write failed: {e:?}")))
         })?;
 
-        self.writer.finalize().map_err(|e| {
-            Error::encoding(Codec::Aiff, format!("finalization failed: {e:?}"))
-        })?;
+        self.writer
+            .finalize()
+            .map_err(|e| Error::encoding(Codec::Aiff, format!("finalization failed: {e:?}")))?;
         Ok(())
     }
 }

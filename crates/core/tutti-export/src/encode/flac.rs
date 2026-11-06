@@ -318,8 +318,8 @@ impl FrameWriter {
         let Some((n, frame, mut buf)) = got else {
             return Ok(false);
         };
-        let frame = frame
-            .map_err(|e| Error::encoding(Codec::Flac, format!("encoding failed: {e}")))?;
+        let frame =
+            frame.map_err(|e| Error::encoding(Codec::Flac, format!("encoding failed: {e}")))?;
         buf.resize(BLOCK_SIZE);
         self.free.push(buf);
         self.pending.insert(n, frame);

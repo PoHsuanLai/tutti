@@ -85,10 +85,11 @@ pub use tutti_soundfont as soundfont;
 #[cfg(feature = "spatial")]
 pub use tutti_spatial as spatial;
 
-/// Audio analysis (`tutti-analysis`): waveform, onsets, pitch, loudness.
-/// Feature `analysis`.
-#[cfg(feature = "analysis")]
-pub use tutti_analysis as analysis;
+/// Pure DSP over slices (`tutti-dsp`): the real FFT, waveform, onsets, pitch,
+/// loudness.
+/// Feature `dsp`.
+#[cfg(feature = "dsp")]
+pub use tutti_dsp as dsp;
 
 /// Modulation (`tutti-mod`): sources, routes and the compiler that turns
 /// them into one control program per param. Feature

@@ -11,7 +11,7 @@ use tutti_core::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor
 
 use std::f32::consts::PI;
 use std::sync::Arc;
-use tutti_analysis::CosineWindow;
+use tutti_dsp::CosineWindow;
 
 /// `size` frames of planar `input` through `Unit::process` into `output`.
 fn planar(u: &mut Unit, size: usize, input: &[Vec<f32>], output: &mut [Vec<f32>]) {

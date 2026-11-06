@@ -1,7 +1,7 @@
 //! Sample-rate conversion, as a streaming stage.
 //!
 //! The converter is a *block* resampler (an FFT overlap-add one,
-//! [`FftFixedIn`], on `tutti_types::RealFft`, so its bits do not depend on the
+//! [`FftFixedIn`], on `tutti_dsp::RealFft`, so its bits do not depend on the
 //! CPU) — `input_frames_next()` / `process_into_buffer()` in a loop — so this
 //! never needs the whole signal, which is why nothing in this crate buffers for
 //! it.

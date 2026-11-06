@@ -435,11 +435,11 @@ fn buffers_report_their_own_shape() {
     assert!(out.planes.iter().all(|p| p.len() == out.frames().get()));
 }
 
-/// Normalization composes: measure with tutti-analysis, apply the gain it
+/// Normalization composes: measure with tutti-dsp, apply the gain it
 /// reports. The crate does not hide this, which is why it can stream.
 #[test]
 fn a_caller_can_compose_normalization() {
-    use tutti_analysis::{LoudnessConfig, measure_loudness};
+    use tutti_dsp::{LoudnessConfig, measure_loudness};
     use tutti_types::{Db, Interleaved};
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
@@ -696,7 +696,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 /// the amount the feature is supposed to catch.
 #[test]
 fn peak_normalization_lands_on_the_requested_dbtp() {
-    use tutti_analysis::{LoudnessConfig, measure_loudness};
+    use tutti_dsp::{LoudnessConfig, measure_loudness};
     use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::{Db, Interleaved};
 
@@ -936,7 +936,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
 /// exactly how this bug survived its first test.
 #[test]
 fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
-    use tutti_analysis::{LoudnessConfig, measure_loudness};
+    use tutti_dsp::{LoudnessConfig, measure_loudness};
     use tutti_export::{Normalize, render_normalized_to_file};
     use tutti_types::{Db, Interleaved};
 

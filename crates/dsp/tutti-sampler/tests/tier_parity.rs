@@ -868,7 +868,7 @@ fn rms(x: &[f32]) -> f64 {
 
 /// Dominant frequency by DFT peak with parabolic interpolation.
 ///
-/// Hand-rolled rather than pulled from `tutti-analysis`: this test exists to
+/// Hand-rolled rather than pulled from `tutti-dsp`: this test exists to
 /// second-guess the engine's DSP, and measuring it with the engine's own FFT
 /// would share whatever blind spot that code has.
 fn dominant_hz(x: &[f32]) -> f64 {

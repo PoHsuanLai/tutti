@@ -69,7 +69,7 @@
 
 use std::sync::Arc;
 
-use tutti_types::{Complex32, StagedRealFft};
+use tutti_dsp::{Complex32, StagedRealFft};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.

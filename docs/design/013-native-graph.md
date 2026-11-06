@@ -835,12 +835,12 @@ below). What each item became:
     `tutti-polysynth`'s own `kernel.rs`/`bank.rs` rather than a
     `tutti-nodes::kernel`; moog and the SVF modes are the bank's own ladder
     and SVF, the same topologies as `LadderFilterNode`/`SvfFilterNode`.
-  - `real_fft`/`inverse_fft`: `tutti_types::RealFft` (`tutti-types/src/real_fft.rs`),
+  - `real_fft`/`inverse_fft`: `tutti_dsp::RealFft` (`tutti-dsp/src/fft/real.rs`),
     realfft's even-length passes over rustfft's *scalar* planner (and a
     scalar complex transform for an odd size), so the FFT arithmetic is
     CPU-independent: a result is bit-identical across CPUs on one OS and
     libm, not across libms. The sampler's vocoder, the convolver,
-    tutti-analysis, the binaural panner and the export resampler
+    tutti-dsp, the binaural panner and the export resampler
     (`tutti-export`'s `fft_resample.rs`, rubato's `FftFixedIn` algorithm)
     all use it. The
     vocoder plans a pair at construction and shares the plans across its
@@ -889,7 +889,7 @@ or example.
 | `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`) |
 | `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until `Net` is deleted |
 | `unit_param` (fundsp glue, `unit_param.rs`) + `Setting`/`Parameter`/`Address` | `tutti_types::UnitParam` is the real vocabulary | `Parameter`'s nine fundsp variants (`Center`, `Biquad`, `Roughness`, `Pan`, …, `tutti-node/src/setting.rs:144-198`) have no tutti callers beyond `Value`. Trim to `Value` now; delete the whole channel when params go through `Controls` |
-| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; `tutti_types::RealFft` (rustfft's scalar planner), which the sampler, the convolver and tutti-analysis share |
+| `Complex32`, `real_fft`, `inverse_fft` (a `microfft` wrapper) | none | vocoder is the only user; `tutti_dsp::RealFft` (rustfft's scalar planner), which the sampler, the convolver and tutti-dsp share |
 
 **No tutti equivalent yet.** These must be written or rehomed rather than
 dropped:
@@ -3227,7 +3227,7 @@ FFT size.
   offsets in that slack. A tail transform whose inner complex FFT has more than
   1024 points (`MAX_SUB_FFT`) is cut by decimation in time into sub-FFTs of at
   most that many points plus radix-2 combine passes
-  (`tutti_types::StagedRealFft`, rustfft's scalar planner and plain `f32`
+  (`tutti_dsp::StagedRealFft`, rustfft's scalar planner and plain `f32`
   butterflies, so the bits stay CPU-independent), one sub-FFT or combine pass
   a step: a 2048-frame partition's 4096-point transform is three forward steps
   (a gather and a 1024-point FFT, a 1024-point FFT, the combine and the
@@ -6498,7 +6498,7 @@ reference):
   merge's leftover: per-block reads only, mute a cell), downmix and sum; the delay,
   chorus/flanger, phaser, convolver, LFO and automation lane. The
   convolver's IR spectra are stored once, read-only, behind an `Arc` that a
-  fork shares (its partitioned FFT is now tutti's own over `tutti_types::RealFft`;
+  fork shares (its partitioned FFT is now tutti's own over `tutti_dsp::RealFft`;
   it was bit-identical to `fft-convolver`'s while both ran `realfft`, and is
   CPU-independent now). The LFO and the lane read the beat
   from `Env` (`Env::for_each_beat`), no longer from `EnvClock`'s ports.

@@ -11,15 +11,15 @@
 //! the reading, gate on it, or apply a gain of its own writes the four steps
 //! directly ([`render_to_buffers`],
 //! [`measure_loudness`],
-//! [`Loudness::gain_to`](tutti_analysis::Loudness::gain_to),
+//! [`Loudness::gain_to`](tutti_dsp::Loudness::gain_to),
 //! [`Rendered::apply_gain`](crate::Rendered::apply_gain),
 //! [`write_buffers`]). This function exists because every
 //! host was otherwise writing the same five lines.
 
 use std::path::Path;
 
-use tutti_analysis::{LoudnessConfig, measure_loudness};
 use tutti_core::transport::RenderClock;
+use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_types::Db;
 use tutti_types::Interleaved;
 
@@ -90,9 +90,9 @@ impl Normalize {
     /// Split out so it is testable without rendering, and so the two arms sit
     /// next to each other: both are "move a measured dB figure to a target",
     /// and only the loudness arm has a ceiling to respect (which
-    /// [`Loudness::gain_to`](tutti_analysis::Loudness::gain_to) already
+    /// [`Loudness::gain_to`](tutti_dsp::Loudness::gain_to) already
     /// applies).
-    fn gain_for(&self, measured: &tutti_analysis::Loudness) -> Db {
+    fn gain_for(&self, measured: &tutti_dsp::Loudness) -> Db {
         match *self {
             // `Db - Db` is a gain difference, which is why `Db` implements
             // `Sub` — see the `unit_additive!(Db)` note in `units.rs`.
@@ -204,7 +204,7 @@ pub fn render_normalized_to_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_analysis::Loudness;
+    use tutti_dsp::Loudness;
 
     fn reading(lufs: f32, true_peak: f32) -> Loudness {
         Loudness {

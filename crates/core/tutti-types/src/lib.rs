@@ -22,9 +22,7 @@ mod channels;
 mod downmix;
 mod interleaved;
 mod interp;
-mod real_fft;
 mod rt;
-mod staged_real_fft;
 mod topology;
 
 // Public: `tutti-core` re-exports each of these AS A MODULE
@@ -142,8 +140,3 @@ pub use pcm::{f32_to_i16, f32_to_i24};
 
 // Interpolation.
 pub use interp::cubic_hermite;
-
-// The real-input FFT every engine user shares, on rustfft's scalar planner so
-// its arithmetic is the same on every CPU.
-pub use real_fft::{Complex32, RealFft};
-pub use staged_real_fft::StagedRealFft;

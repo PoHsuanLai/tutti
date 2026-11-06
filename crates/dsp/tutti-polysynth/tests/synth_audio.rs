@@ -80,7 +80,7 @@ fn render_stereo(synth: &mut Hand, blocks: usize) -> (Vec<f32>, Vec<f32>) {
 
 /// Dominant frequency by parabolic-interpolated DFT peak.
 ///
-/// Hand-rolled rather than pulled from `tutti-analysis`: that crate is not a
+/// Hand-rolled rather than pulled from `tutti-dsp`: that crate is not a
 /// dependency here, and adding one so a test can measure would make the
 /// dependency graph answer to the test suite. The parabolic step is what buys
 /// sub-bin resolution — a bare `argmax` over 4096 samples at 48 kHz quantises to

@@ -93,7 +93,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
 | `tutti::soundfont` | `tutti-soundfont` | SoundFont (.sf2) playback node | `soundfont` |
 | `tutti::spatial` | `tutti-spatial` | VBAP speaker panning, binaural HRTF | `spatial` |
-| `tutti::analysis` | `tutti-analysis` | waveform, onsets, pitch, loudness, correlation, STFT | `analysis` |
+| `tutti::dsp` | `tutti-dsp` | real FFT, waveform, onsets, pitch, loudness, correlation, STFT | `dsp` |
 | `tutti::modulation` | `tutti-mod` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
 | `tutti::midi` | `tutti-midi-types` | MIDI value types, MIDI 2.0 / UMP native | `midi` |
 | `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, MPE, MIDI-CI, SysEx | `midi` |
@@ -119,7 +119,7 @@ None are on by default.
 - `export` — `tutti::export`.
 - `midi` — `tutti::midi`, `tutti::midi_runtime`, `tutti::midi_file`.
 - `midi-hardware` — `tutti::midi_hardware` (implies `midi`).
-- `synth`, `soundfont`, `sampler`, `spatial`, `analysis`, `modulation` — the
+- `synth`, `soundfont`, `sampler`, `spatial`, `dsp`, `modulation` — the
   matching module. `soundfont` implies `midi`; `sampler` implies `wav`.
 - `convolution` — the convolution reverb nodes in `tutti::nodes`.
 - `plugin` — `tutti::plugin` (implies `midi`), with one or more formats:

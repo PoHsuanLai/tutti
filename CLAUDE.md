@@ -212,14 +212,16 @@ crates/
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-types.
   core/          tutti-core (graph runtime, transport, metering, PDC)
-                 tutti-types (value vocabulary, units, io edges, rt primitives, Topology)
+                 tutti-types (vocabulary only: units, channel layouts, io edge traits, rt
+                 primitives, Topology; no DSP algorithm)
                  tutti-cpal (device),
                  tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
                  tutti-graph (doc 013: the `Node` contract, Topology→Plan compiler,
                  serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
-                 tutti-polysynth, tutti-soundfont, tutti-analysis
+                 tutti-polysynth, tutti-soundfont, tutti-dsp (pure algorithms over
+                 slices: the real FFT, analyzers; depends only on tutti-types)
   midi/          tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
@@ -232,6 +234,14 @@ crates/
 - `tutti-types` names no other tutti crate. Its one workspace-member
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.
+- `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
+  rustfft and ebur128; `tutti-core` is a dev-dependency only), keeps every
+  module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
+  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
+  graph or runtime. `tutti-nodes`, `tutti-sampler`, `tutti-spatial` and
+  `tutti-export` are adapters over it.
+- **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
+  the `Node` adapter.**
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
@@ -417,7 +427,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   to a new app-side path.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
+  crates, `tutti-analysis` → `tutti-dsp`, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
   `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'), and
   tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and

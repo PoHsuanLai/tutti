@@ -56,6 +56,7 @@ impl BlockSplitter {
     }
 
     /// Where `event` takes effect in this block.
+    #[inline]
     fn offset_of(&self, event: &MidiEvent) -> usize {
         let at = event.frame_offset as usize;
         match self.overrun {
@@ -66,6 +67,7 @@ impl BlockSplitter {
 
     /// The next step over `events` (sorted by offset, the same slice every
     /// call), or `None` when the block is done.
+    #[inline]
     pub fn step(&mut self, events: &[MidiEvent]) -> Option<Step> {
         let due = events.get(self.next_event);
         if let Some(event) = due

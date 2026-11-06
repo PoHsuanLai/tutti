@@ -43,7 +43,8 @@ impl<N: Node> Node for Undeclared<N> {
 /// A stereo panner aimed by `k`.
 fn panner(k: u64) -> VbapPannerNode {
     let node = VbapPannerNode::stereo().expect("stereo preset");
-    node.set_position(Azimuth(-30.0 + 4.0 * k as f32), Elevation(0.0));
+    node.controls()
+        .set_position(Azimuth(-30.0 + 4.0 * k as f32), Elevation(0.0));
     node
 }
 

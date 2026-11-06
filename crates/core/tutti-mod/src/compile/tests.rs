@@ -1,4 +1,4 @@
-//! `compile`'s properties (doc 014 §12.3), against analytic figures.
+//! `compile`'s properties, against analytic figures.
 //! Each test carries the mutations it was seen to fail under.
 
 use super::*;
@@ -571,7 +571,7 @@ fn an_anchor_is_carried_until_a_play_start() {
 /// with a lower key does not renumber the existing ones (the new one takes
 /// the next id never given). Removing one frees nothing: no later compile
 /// gives its id again, so no lane can read a removed source's last segment
-/// as a new source's (doc 014 §7).
+/// as a new source's.
 ///
 /// Changed in doc 014 §12.4: a removed source's id was reusable from the
 /// compile after the one that removed it (the last assertion read
@@ -810,7 +810,7 @@ fn each_refusal_fires_by_name() {
     assert!(run(&one_lfo, &routes, &t1).is_ok());
 }
 
-/// What `bevy-tutti` expressed before the compiler (doc 014 §12) compiles
+/// What `bevy-tutti` expressed before the compiler compiles
 /// with no runtime (no driver, no target), each feature as a declaration:
 ///
 /// - a `ModSource { shape }` at `ModClock::Free { hz }` or
@@ -826,7 +826,7 @@ fn each_refusal_fires_by_name() {
 ///   parameter: automation and a layer.
 ///
 /// A custom `ModSourceKind` (an arbitrary `Modulator`) has no closed form;
-/// it declares one with `declare() -> Source` (doc 014 §8.1).
+/// it declares one with `declare() -> Source`.
 ///
 /// Mutation: none applies (it pins that the declarations compile, which
 /// the type checker and the run assert; removing a source kind fails to
@@ -924,7 +924,7 @@ fn anchor_of(clock: Clock) -> Option<RateAnchor> {
     }
 }
 
-/// One LFO is phase-coherent across its targets (doc 014 §4.3): a route
+/// One LFO is phase-coherent across its targets: a route
 /// added to an LFO after its rate edit reads the anchor the LFO's other
 /// layers read, so at any frame both targets are at one phase.
 ///

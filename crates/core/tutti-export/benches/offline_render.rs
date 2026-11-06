@@ -1,6 +1,6 @@
 //! Offline render throughput — how much faster than realtime a bounce runs.
 //!
-//! The number to read is **× realtime**: a case rendering 1 second of audio
+//! The number to read is × realtime: a case rendering 1 second of audio
 //! in 10 ms runs at 100× realtime, so an hour-long project bounces in about
 //! 36 seconds. Criterion's `Throughput::Elements(frames)` prints elem/s;
 //! divide by the sample rate.
@@ -12,7 +12,7 @@
 //! can regress.
 //!
 //! `encode/` writes real files into a `tempfile::TempDir`, and is
-//! **track-only: never gate it.** Its cost is dominated by the page cache and
+//! track-only: never gate it. Its cost is dominated by the page cache and
 //! by third-party encoders (`hound`, `flacenc`, `vorbis_rs`), so a regression
 //! in it usually says something about the machine. It is here because the
 //! render/encode split is the useful diagnostic: when an export is slow,
@@ -136,7 +136,7 @@ fn bench_render(c: &mut Criterion) {
     group.finish();
 }
 
-/// Encoder cost, by format. **Track-only — never gate this.**
+/// Encoder cost, by format. Track-only — never gate this.
 fn bench_encode(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("a temp dir");
     let mut group = c.benchmark_group("encode");

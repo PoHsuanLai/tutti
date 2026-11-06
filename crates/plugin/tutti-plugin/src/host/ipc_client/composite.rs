@@ -12,6 +12,7 @@ use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHa
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use tutti_types::SampleRate;
 
 /// Composites an out-of-process audio bridge with a lazily-loaded in-process
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
@@ -40,7 +41,7 @@ impl PluginBridge {
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         plugin_path: PathBuf,
-        sample_rate: f64,
+        sample_rate: SampleRate,
     ) -> Result<(Arc<Self>, BridgeThread)> {
         let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         let bridge = Arc::new(Self {
@@ -61,7 +62,7 @@ impl PluginBridge {
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         plugin_path: PathBuf,
-        sample_rate: f64,
+        sample_rate: SampleRate,
         state_progress_timeout: std::time::Duration,
     ) -> Result<(Arc<Self>, BridgeThread)> {
         let (mut audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
@@ -132,7 +133,7 @@ impl PluginBridge {
             gui.set_parameter(param_id, value);
         }
         // The wire carries `f32`; the domain is enforced up to this point.
-        self.audio.set_parameter_rt(param_id, value.get() as f32)
+        self.audio.set_parameter_rt(param_id, value)
     }
 
     pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> Delivered {
@@ -156,7 +157,7 @@ impl PluginBridge {
         self.audio.set_automation_state_rt(mode)
     }
 
-    pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
+    pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         self.audio.set_sample_rate_rt(rate)
     }
 
@@ -217,7 +218,7 @@ impl PluginBridge {
 
     /// The refused rate and reason, while the plugin is refused. See
     /// [`AudioBridge::rate_refusal`](super::audio::AudioBridge::rate_refusal).
-    pub fn rate_refusal(&self) -> Option<(f64, String)> {
+    pub fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         self.audio.rate_refusal()
     }
 
@@ -354,7 +355,8 @@ impl PluginBridge {
         if let Some(gui) = guard.as_mut() {
             // Flush pending GUI param changes before closing.
             for (param_id, value) in gui.poll_gui_param_changes() {
-                self.audio.set_parameter_rt(param_id, value);
+                self.audio
+                    .set_parameter_rt(param_id, Normalized::new(f64::from(value)));
             }
             gui.close_editor();
             true
@@ -371,7 +373,8 @@ impl PluginBridge {
             gui.editor_idle();
             // Forward GUI-originated parameter changes to the audio bridge.
             for (param_id, value) in gui.poll_gui_param_changes() {
-                self.audio.set_parameter_rt(param_id, value);
+                self.audio
+                    .set_parameter_rt(param_id, Normalized::new(f64::from(value)));
             }
         }
     }
@@ -402,7 +405,7 @@ impl PluginBridge {
         self.audio.parameters()
     }
 
-    pub fn parameter(&self, param_id: ParamId) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamId) -> Option<Normalized> {
         self.audio.parameter(param_id)
     }
 
@@ -503,7 +506,7 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.parameters()
     }
 
-    fn parameter_value(&self, id: ParamId) -> Option<f32> {
+    fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
         self.bridge.parameter(id)
     }
 
@@ -523,10 +526,10 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
     }
 
     fn set_parameter_value(&self, id: ParamId, value: Normalized) {
-        // Stays `Normalized` all the way to the bridge, which narrows to the
-        // `f32` the wire carries. The subprocess re-clamps on receipt — it
-        // must, since the wire is a foreign boundary and the peer is another
-        // process — but the value leaving here is already on the unit interval.
+        // Stays `Normalized` all the way to the wire, which narrows it to an
+        // `f32`. The subprocess re-clamps on receipt — it must, since the wire
+        // is a foreign boundary and the peer is another process — but the value
+        // leaving here is already on the unit interval.
         self.bridge.set_parameter_rt(id, value);
     }
 
@@ -538,7 +541,7 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.crash_cause()
     }
 
-    fn rate_refusal(&self) -> Option<(f64, String)> {
+    fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         self.bridge.rate_refusal()
     }
 

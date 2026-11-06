@@ -25,9 +25,9 @@
 //! # Tolerance rationale — and why the lossless cases use integers
 //!
 //! WAV, FLAC and AIFF at the same bit depth are *lossless*, so the honest claim
-//! is bit equality, and **a float tolerance cannot express it**. The first draft
+//! is bit equality, and a float tolerance cannot express it. The first draft
 //! of this file compared WAV against FLAC with a `<= 1 LSB` float tolerance and
-//! **passed** with the FLAC quantizer mutated back to truncation — the exact
+//! passed with the FLAC quantizer mutated back to truncation — the exact
 //! historical bug the export README documents. A round-versus-truncate
 //! disagreement is *precisely* one LSB (0.7 → 22937 vs 22936), so any tolerance
 //! wide enough to absorb a decoder's normalization is also wide enough to
@@ -442,7 +442,7 @@ fn decode_flac_verified(path: &std::path::Path) -> (Vec<f32>, usize, Option<bool
     (out, channels, decoder.finalize().verify_ok)
 }
 
-/// **A FLAC decodes to exactly the frames rendered, and its MD5 checks.**
+/// A FLAC decodes to exactly the frames rendered, and its MD5 checks.
 ///
 /// The render is `tail` frames with no duration, so its length is that
 /// figure, analytically. Every length here either fills its last 4096-frame

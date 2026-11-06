@@ -53,9 +53,10 @@ impl ExponentialSmoother {
     /// Step toward a target *height* along the number line.
     ///
     /// Correct for a quantity with two ends and no seam. **Wrong for a
-    /// bearing**: see [`process_angle`](Self::process_angle). The pair is the
+    /// bearing**: see `process_angle`. The pair is the
     /// point — one entry per space, each typed, so a bearing cannot reach the
     /// linear form by accident.
+    #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process(&mut self, target: Elevation) -> Elevation {
         self.value += self.coeff * (target.get() - self.value);
@@ -72,6 +73,7 @@ impl ExponentialSmoother {
     ///
     /// [`Azimuth::shortest_arc_to`] is the correct difference, and the running
     /// value is re-wrapped each step so it never drifts out of `-180..180`.
+    #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process_angle(&mut self, target: Azimuth) -> Azimuth {
         let current = Azimuth(self.value).wrap();
@@ -92,7 +94,7 @@ impl ExponentialSmoother {
         (1.0 - retained.powi(steps)) as f32
     }
 
-    /// [`process`](Self::process) `steps` times toward the same target, in
+    /// `process` `steps` times toward the same target, in
     /// one move: the analytic `v + (target - v)(1 - (1 - coeff)^steps)`
     /// instead of the loop.
     ///
@@ -111,7 +113,7 @@ impl ExponentialSmoother {
         Elevation(self.value)
     }
 
-    /// [`process_angle`](Self::process_angle) `steps` times toward the same
+    /// `process_angle` `steps` times toward the same
     /// target, in one move along the short arc (see
     /// [`advance`](Self::advance) for the error bound). The short arc to a
     /// target does not change direction as the value closes on it, so one
@@ -130,7 +132,7 @@ impl ExponentialSmoother {
 
     /// The running value, in whichever space the caller steps it in (see
     /// [`seed_at`](Self::seed_at) for why it is a bare `f32`). Already
-    /// wrapped when stepped with [`process_angle`](Self::process_angle).
+    /// wrapped when stepped with `process_angle`.
     #[inline]
     pub fn value(&self) -> f32 {
         self.value
@@ -146,8 +148,8 @@ impl ExponentialSmoother {
     /// front-centre.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
-    /// degrees of bearing under [`process_angle`](Self::process_angle), degrees
-    /// of height under [`process`](Self::process) — so no single unit describes
+    /// degrees of bearing under `process_angle`, degrees
+    /// of height under `process` — so no single unit describes
     /// it. Callers seed it in whichever space they then step in.
     pub fn seed_at(&mut self, value: f32) {
         self.value = value;
@@ -155,119 +157,4 @@ impl ExponentialSmoother {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A smoother that moves the whole way in one step, so the *path* is
-    /// visible without waiting out an exponential ramp.
-    fn instant() -> ExponentialSmoother {
-        let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        s.coeff = 1.0;
-        s
-    }
-
-    #[test]
-    fn angular_smoothing_crosses_the_seam_instead_of_going_around() {
-        let mut s = instant();
-        s.seed_at(170.0);
-        // 170 -> -170 is +20 degrees. The linear form would travel -340.
-        assert_eq!(s.process_angle(Azimuth(-170.0)), Azimuth(-170.0));
-    }
-
-    #[test]
-    fn angular_smoothing_takes_the_short_arc_at_partial_coefficient() {
-        let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        s.coeff = 0.5;
-        s.seed_at(170.0);
-        // Half of the +20 degree arc lands at 180, not back down near 0.
-        let next = s.process_angle(Azimuth(-170.0));
-        assert_eq!(next, Azimuth(-180.0));
-
-        // The linear smoother, for contrast, heads the wrong way entirely.
-        let mut linear = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        linear.coeff = 0.5;
-        linear.seed_at(170.0);
-        assert_eq!(linear.process(Elevation(-170.0)), Elevation(0.0));
-    }
-
-    #[test]
-    fn angular_smoothing_stays_on_the_circle_over_a_long_sweep() {
-        let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        s.coeff = 0.3;
-        s.seed_at(0.0);
-        for _ in 0..2_000 {
-            let v = s.process_angle(Azimuth(179.0));
-            assert!(
-                (-180.0..=180.0).contains(&v.get()),
-                "bearing {v:?} left the circle"
-            );
-        }
-    }
-
-    /// **A zero smoothing time is instant**, stepped per sample or per
-    /// frame: the first step lands on the target, in either space. A
-    /// negative time is instant too (it used to clamp to a frozen 0).
-    ///
-    /// Mutation (run): `coeff` returning 0 for a non-positive time (the
-    /// freeze) → fails.
-    #[test]
-    fn a_zero_smoothing_time_is_instant() {
-        for tau in [0.0, -0.05] {
-            for stride in [Samples(1), Samples(64)] {
-                let mut s = ExponentialSmoother::new(Seconds(tau), SampleRate(48_000.0), stride);
-                s.seed_at(10.0);
-                assert_eq!(s.process(Elevation(40.0)), Elevation(40.0));
-                s.seed_at(170.0);
-                assert_eq!(s.process_angle(Azimuth(-170.0)), Azimuth(-170.0));
-            }
-        }
-    }
-
-    #[test]
-    fn linear_smoothing_still_converges_for_elevation() {
-        // Elevation has no seam, so the plain form remains correct there.
-        let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        s.coeff = 0.5;
-        s.seed_at(0.0);
-        assert_eq!(s.process(Elevation(90.0)), Elevation(45.0));
-        assert_eq!(s.process(Elevation(90.0)), Elevation(67.5));
-    }
-
-    /// **`advance` is the closed form of `steps` steps**: from a gap `g`
-    /// the remainder is `g * (1 - coeff)^steps`, for a height and for a
-    /// bearing across the seam, within the bound `advance` documents; zero
-    /// steps move nothing and an instant smoother lands on the target.
-    ///
-    /// Mutations (each run, each fails): the retention `1 - coeff`
-    /// replaced by `coeff` in `gap_closed`; `advance_angle` taking the arc
-    /// as `target - current`.
-    #[test]
-    fn advance_is_the_closed_form_of_repeated_steps() {
-        for steps in [1usize, 64, 1024, 48_000] {
-            let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-            let coeff = f64::from(s.coeff);
-            let left = (1.0 - coeff).powi(steps as i32);
-            s.seed_at(10.0);
-            let h = s.advance(Elevation(70.0), steps).get();
-            assert!(
-                (f64::from(h) - (70.0 - 60.0 * left)).abs() < 1e-3,
-                "{steps}: {h}"
-            );
-            // 170 toward -170: a +20 degree arc, remainder `20 * left`.
-            s.seed_at(170.0);
-            let b = s.advance_angle(Azimuth(-170.0), steps).get();
-            let want = Azimuth((170.0 + 20.0 * (1.0 - left)) as f32).wrap().get();
-            let err = Azimuth(b).shortest_arc_to(Azimuth(want)).get().abs();
-            assert!(err < 1e-3, "{steps}: {b} vs {want}");
-        }
-        let mut s = ExponentialSmoother::new(Seconds(0.05), SampleRate(48_000.0), Samples(1));
-        s.seed_at(10.0);
-        assert_eq!(s.advance(Elevation(70.0), 0), Elevation(10.0));
-        assert_eq!(s.advance_angle(Azimuth(-170.0), 0), Azimuth(10.0));
-        let mut i = instant();
-        i.seed_at(10.0);
-        assert_eq!(i.advance(Elevation(70.0), 1), Elevation(70.0));
-        i.seed_at(170.0);
-        assert_eq!(i.advance_angle(Azimuth(-170.0), 5), Azimuth(-170.0));
-    }
-}
+mod tests;

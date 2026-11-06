@@ -841,7 +841,7 @@ below). What each item became:
     CPU-independent: a result is bit-identical across CPUs on one OS and
     libm, not across libms. The sampler's vocoder, the convolver,
     tutti-dsp, the binaural panner and the export resampler
-    (`tutti-export`'s `fft_resample.rs`, rubato's `FftFixedIn` algorithm)
+    (`tutti_dsp::FftResampler`, rubato's `FftFixedIn` algorithm)
     all use it. The
     vocoder plans a pair at construction and shares the plans across its
     channels and clones (`stretch/fft.rs`, a scratch owner over `RealFft`).

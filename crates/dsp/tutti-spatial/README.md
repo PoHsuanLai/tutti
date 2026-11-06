@@ -61,7 +61,7 @@ assert_eq!(panner.num_channels(), 6);
 
 // 45° to the left, level with the listener. `store` normalizes: the bearing
 // wraps, the height clamps.
-panner.set_position(Azimuth(45.0), Elevation(0.0));
+panner.controls().set_position(Azimuth(45.0), Elevation(0.0));
 
 // Alone in a graph (`Solo`, for tests and examples; a host inserts it with
 // `GraphBuilder::add_with_controls` or `Editor::insert`, and keeps the

@@ -316,7 +316,7 @@ mod tests {
         fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
             None
         }
-        fn parameter_value(&self, _id: ParamId) -> Option<f32> {
+        fn parameter_value(&self, _id: ParamId) -> Option<Normalized> {
             None
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}

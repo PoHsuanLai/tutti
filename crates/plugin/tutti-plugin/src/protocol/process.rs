@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::midi::IpcMidiEventVec;
+use tutti_plugin_types::MidiEventVec;
+
 use super::{
     ChordChanges, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
     ParameterChanges, ScaleChanges, TransportInfo,
@@ -26,9 +27,10 @@ pub struct ProcessAudioData {
     /// channel count.
     pub num_samples: usize,
     /// MIDI to deliver at the top of the block: at most
-    /// `MIDI_STACK_CAPACITY` from the host, and the server keeps at most that
-    /// many of a longer one.
-    pub midi_events: IpcMidiEventVec,
+    /// `MIDI_STACK_CAPACITY` from the host; the server
+    /// refuses a longer list at decode.
+    #[serde(with = "super::wire::midi")]
+    pub midi_events: MidiEventVec,
     /// Sample-accurate automation points to apply across the block.
     pub param_changes: ParameterChanges,
     /// Per-note expression (pitch, pressure, brightness) for the block.
@@ -55,7 +57,7 @@ mod tests {
     /// expression.
     fn golden_block() -> ProcessAudioData {
         use crate::protocol::{
-            ChordValue, IpcMidiEvent, NoteExpressionIntValue, NoteExpressionTextValue,
+            ChordValue, MidiEvent, NoteExpressionIntValue, NoteExpressionTextValue,
             NoteExpressionType, NoteExpressionValue, ParamId, ScaleValue,
         };
         let mut param_changes = ParameterChanges::reserved(2, 2);
@@ -111,11 +113,11 @@ mod tests {
             seq: 42,
             num_samples: 64,
             midi_events: [
-                IpcMidiEvent {
+                MidiEvent {
                     frame_offset: 0,
                     data: [0x2090_3C40, 0, 0, 0],
                 },
-                IpcMidiEvent {
+                MidiEvent {
                     frame_offset: 63,
                     data: [0x2080_3C00, 0, 0, 0],
                 },

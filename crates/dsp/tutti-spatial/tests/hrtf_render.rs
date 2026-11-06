@@ -180,7 +180,7 @@ fn ir_of(
     rate: u32,
     len: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.set_position(azimuth, elevation);
+    node.controls().set_position(azimuth, elevation);
     Node::reset(node);
     let latency = node.shape().latency.samples().get();
     let lead = STEP + 100;
@@ -357,7 +357,8 @@ fn resampling_the_sphere_keeps_its_dc_gain() {
     let mut node = node(&bytes, TO);
     // A vertex's own direction, so the blend is that vertex alone.
     let v = 8;
-    node.set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
+    node.controls()
+        .set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -415,7 +416,8 @@ fn downsampling_low_passes_below_the_new_nyquist() {
     });
     let mut node = node(&bytes, TO);
     let v = 8;
-    node.set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
+    node.controls()
+        .set_position(bearing_of(verts[v]).0, bearing_of(verts[v]).1);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     let mut last = [0.0f32; 2];
@@ -483,7 +485,7 @@ fn the_tail_is_the_ring_out_after_the_latency() {
     for offset in [0, 1, 100, STEP - 1] {
         let mut node = node(&bytes, RATE);
         let (azimuth, elevation) = bearing_of(verts[0]);
-        node.set_position(azimuth, elevation);
+        node.controls().set_position(azimuth, elevation);
         Node::reset(&mut node);
         let shape = node.shape();
         let latency = shape.latency.samples().get();
@@ -829,13 +831,13 @@ fn render_in_blocks(
     moves: &[(usize, (Azimuth, Elevation))],
 ) -> (Vec<f32>, Vec<f32>) {
     let mut node = node(bytes, RATE);
-    node.set_position(start.0, start.1);
+    node.controls().set_position(start.0, start.1);
     Node::reset(&mut node);
     let (mut left, mut right) = (Vec::new(), Vec::new());
     for (i, chunk) in input.chunks(block).enumerate() {
         for &(at, (az, el)) in moves {
             if at == i * block {
-                node.set_position(az, el);
+                node.controls().set_position(az, el);
             }
         }
         let out = drive(&mut node, SampleRate(f64::from(RATE)), &[chunk, chunk], &[]);

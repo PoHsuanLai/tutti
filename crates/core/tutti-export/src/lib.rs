@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{Error, Result, UnsupportedReason};
+pub use error::{Codec, ConfigError, Error, Result, UnsupportedReason};
 
 mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
@@ -56,7 +56,7 @@ pub struct Rendered {
     /// One `Vec` per channel, all the same length. Planar, not interleaved —
     /// [`interleaved`](Self::interleaved) is the conversion.
     pub planes: Vec<Vec<f32>>,
-    /// The rate these samples are **at**, which is not necessarily the rate a
+    /// The rate these samples are at, which is not necessarily the rate a
     /// config asked to write: [`render_to_buffers`] does not resample, so this
     /// is always the render rate. An encoder must read it from here rather than
     /// from a config, or it converts from a rate the samples were never at.
@@ -90,7 +90,7 @@ impl Rendered {
     ///
     /// [`channels`](Self::channels) is the same number as a raw stride.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(self.planes.len() as u16)
+        ChannelLayout::from(u16::try_from(self.planes.len()).unwrap_or(u16::MAX))
     }
 
     /// Multiplies every sample by `gain` — the apply half of a
@@ -106,7 +106,7 @@ impl Rendered {
 
     /// Returns the planes interleaved — the shape a meter or an encoder takes.
     ///
-    /// **Allocates the whole render.** A `Rendered` holds an entire offline
+    /// Allocates the whole render. A `Rendered` holds an entire offline
     /// pass in memory, so this doubles that for the duration of the call; on a
     /// long export it is the largest single allocation in the crate. Prefer
     /// [`interleaved_into`](Self::interleaved_into) wherever the interleaved
@@ -135,7 +135,7 @@ impl Rendered {
 /// The frame width an export config asks for, as the interleave stride.
 ///
 /// The one place a [`ChannelLayout`] becomes the `usize` stride the render and
-/// the encoders use, and **zero is the only rejected width**. That the check is
+/// the encoders use, and zero is the only rejected width. That the check is
 /// a bound rather than a list of enumerated widths is what lets a 3- or 5-wide
 /// master export at all: nothing here is generic over the count.
 fn frame_width(layout: ChannelLayout) -> Result<usize> {
@@ -217,7 +217,7 @@ pub fn render_to_file(
 /// actually rendered at. `graph` by value or as `&mut RenderGraph`, as there. Only `config.render` and `config.encode.channels` are
 /// read.
 ///
-/// **Neither resampled nor dithered**, for the same reason in both cases: they
+/// Neither resampled nor dithered, for the same reason in both cases: they
 /// are *output* steps, and these planes are not an output. `config.resample`
 /// belongs at the file boundary (a caller holding planes can resample them
 /// itself, and reporting a rate the samples are not at is the bug this shape

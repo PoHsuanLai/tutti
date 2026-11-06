@@ -280,9 +280,8 @@ mod tests {
     fn a_timer_the_editor_registers_ticks_on_idle() {
         use tutti_clap_test_plugin::{CMD_REGISTER_TIMER, Site, ThreadCapture};
 
-        let real =
-            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-        let path = tutti_fixture_resolve::publish_with_extension(&real, "clap");
+        let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        let path = tutti_fixtures::publish_with_extension(&real, "clap");
         let mut gui = ClapGuiInstance::load(&path).expect("loads");
 
         // The probe's switches are `extern "C"` symbols in the image this

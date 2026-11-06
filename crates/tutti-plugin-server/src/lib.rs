@@ -196,14 +196,14 @@ pub(crate) mod test_utils {
     ///
     /// A symlink beside the artifact rather than a copy, so it cannot go
     /// stale against a rebuilt plugin. The link path is shared by every test
-    /// process; `tutti_fixture_resolve::publish_with_extension` says how it is
+    /// process; `tutti_fixtures::publish_with_extension` says how it is
     /// published without a reader ever missing it.
     #[cfg(feature = "clap")]
     pub fn clap_probe_path_dot_clap() -> &'static str {
         static LINKED: OnceLock<String> = OnceLock::new();
         LINKED
             .get_or_init(|| {
-                tutti_fixture_resolve::publish_with_extension(Path::new(clap_probe_path()), "clap")
+                tutti_fixtures::publish_with_extension(Path::new(clap_probe_path()), "clap")
                     .to_string_lossy()
                     .into_owned()
             })
@@ -618,7 +618,7 @@ pub(crate) mod test_utils {
     /// by the same `cargo test` run, so the suite works on any machine.
     ///
     /// Resolution (newest candidate wins) and the panic-on-absence rule are
-    /// `tutti_fixture_resolve`'s; see that crate for why each matters.
+    /// `tutti_fixtures`'s; see that crate for why each matters.
     /// Absolute path to the reference VST2 cdylib the loader tests drive.
     ///
     /// The VST2 counterpart to [`clap_probe_path`], resolved the same way:
@@ -636,7 +636,7 @@ pub(crate) mod test_utils {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                tutti_fixture_resolve::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
+                tutti_fixtures::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
                     .to_string_lossy()
                     .into_owned()
             })
@@ -671,7 +671,7 @@ pub(crate) mod test_utils {
         static RESOLVED: OnceLock<String> = OnceLock::new();
         RESOLVED
             .get_or_init(|| {
-                tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+                tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
                     .to_string_lossy()
                     .into_owned()
             })

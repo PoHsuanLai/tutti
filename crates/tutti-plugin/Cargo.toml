@@ -135,7 +135,7 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-mod = { path = "../tutti-mod", default-features = false }
 criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 tempfile = "3"
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types" }

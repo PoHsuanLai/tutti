@@ -9,7 +9,7 @@
 //!
 //! # The two artifacts, and why each is found rather than built
 //!
-//! Both are looked up beside the test binary (`tutti-fixture-resolve`); a nested
+//! Both are looked up beside the test binary (`tutti-fixtures`); a nested
 //! `cargo build` from a test would deadlock on the target-directory lock.
 //!
 //! # The dlopen seam
@@ -312,7 +312,7 @@ pub fn exclusive() -> cross_process_lock::Guard {
 /// fails with `NotAPlugin`.
 ///
 /// The link path is shared by every test process of every suite;
-/// `tutti_fixture_resolve::publish_with_extension` says how it is published
+/// `tutti_fixtures::publish_with_extension` says how it is published
 /// without a reader ever missing it. A symlink rather than a copy so it cannot
 /// go stale against a rebuilt plugin.
 ///
@@ -323,9 +323,8 @@ pub fn exclusive() -> cross_process_lock::Guard {
 pub fn clap_probe_path() -> &'static Path {
     static LINKED: OnceLock<PathBuf> = OnceLock::new();
     LINKED.get_or_init(|| {
-        let real =
-            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-        tutti_fixture_resolve::publish_with_extension(&real, "clap")
+        let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        tutti_fixtures::publish_with_extension(&real, "clap")
     })
 }
 
@@ -341,7 +340,7 @@ pub fn plugin_server_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::plugin_server()
+            tutti_fixtures::plugin_server()
                 .to_string_lossy()
                 .into_owned()
         })

@@ -115,10 +115,15 @@ cargo test --doc --workspace       # nextest does NOT run doctests, silently
 just test-all                      # both
 ```
 
-- **Fixtures are found beside the test binary:** a test, bench or example
-  finds the reference plugins and `plugin-server` in its own profile directory
-  (`tutti-fixture-resolve`, a dev-dependency; no build script or env var, so it
-  holds under `CARGO_TARGET_DIR` and `--target`).
+- **A test finds a repo file through `tutti_fixtures`, never a relative `..`
+  path:** `asset("audio/stereo.flac")` and `repo_root()` for the repo's files
+  (`scripts/check-layout.sh` greps for depth-dependent paths), and `cdylib`
+  and `plugin_server` for the reference plugins and `plugin-server`, which it
+  finds in the test binary's own profile directory (no build script or env
+  var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
+  dev-dependency and absence is a failure, never a skip. A crate-local file
+  (`tutti-rustysynth`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
+  `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
   `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
@@ -236,7 +241,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   vst-tutti (our fork of the vst crate; its split is a later lane)
 testing/         never shipped
-  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixture-resolve,
+  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
   tutti-shm-model (loom), arc-lend-compare
 vendor/          third-party code we never edit
   vst3-sdk/      the three Steinberg submodules

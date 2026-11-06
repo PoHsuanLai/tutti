@@ -147,9 +147,7 @@ fn poll_past_eof_returns_short_count() {
 }
 
 fn asset(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/audio")
-        .join(name)
+    tutti_fixtures::asset(&format!("audio/{name}"))
 }
 
 /// The repo's `name` fixture cut to its first `keep` fraction.

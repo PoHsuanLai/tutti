@@ -3,7 +3,7 @@
 //
 // The rules — absence panics rather than skipping, and the *newest* candidate
 // wins so a stale uplifted copy cannot shadow a fresh one — live in
-// `tutti-fixture-resolve`, along with what each costs when it is broken.
+// `tutti-fixtures`, along with what each costs when it is broken.
 
 use std::sync::OnceLock;
 
@@ -16,7 +16,7 @@ pub fn probe_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+            tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
                 .to_string_lossy()
                 .into_owned()
         })

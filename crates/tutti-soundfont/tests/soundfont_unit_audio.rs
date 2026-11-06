@@ -18,16 +18,8 @@ use tutti_nodes::testing::assert_golden;
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 /// Path to the committed test SoundFont.
-///
-/// `CARGO_MANIFEST_DIR` is `crates/tutti-soundfont`; the asset lives three
-/// levels up, under the repo root's `assets/`.
 fn test_soundfont_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent() // crates/
-        .unwrap()
-        .parent() // repo root
-        .unwrap()
-        .join("assets/soundfonts/TimGM6mb.sf2")
+    tutti_fixtures::asset("soundfonts/TimGM6mb.sf2")
 }
 
 /// Load the test SoundFont, failing loudly if the checkout lacks it.

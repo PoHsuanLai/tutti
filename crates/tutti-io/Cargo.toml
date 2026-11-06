@@ -59,6 +59,8 @@ bevy_asset = { workspace = true, optional = true }
 bevy_reflect = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Finds the repo's `assets/` for the tests.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # Every codec, for this crate's own tests. A dev-dependency on self is how a
 # feature reaches the test targets unconditionally; `required-features` would
 # instead *skip* `tests/decode_golden.rs` on a plain run and report green

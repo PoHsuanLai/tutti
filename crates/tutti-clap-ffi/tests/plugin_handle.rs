@@ -30,7 +30,7 @@ fn probe_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
+            tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin")
                 .to_string_lossy()
                 .into_owned()
         })

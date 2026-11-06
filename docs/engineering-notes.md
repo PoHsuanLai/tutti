@@ -124,7 +124,7 @@ crates/             everything shipped, directory name = package name
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
   vst-tutti         # Our fork of the vst crate (VST2 bindings)
 testing/            never shipped
-  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixture-resolve
+  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures
   tutti-shm-model   # Test-only loom model of tutti-plugin's shm header
                     #   protocol. A separate crate because `--cfg loom` is
                     #   global and reaches every dep of tutti-plugin.

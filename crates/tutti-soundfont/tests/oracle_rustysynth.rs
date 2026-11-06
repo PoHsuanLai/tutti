@@ -31,7 +31,6 @@
 use std::fs::File;
 use std::sync::Arc;
 
-const SF2: &str = "../../assets/soundfonts/TimGM6mb.sf2";
 const SR: i32 = 44_100;
 const FRAMES: usize = 44_100; // 1 s: attack, sustain and the start of release.
 
@@ -41,15 +40,7 @@ const FRAMES: usize = 44_100; // 1 s: attack, sustain and the start of release.
 /// checkout where it verified nothing — the failure mode this whole file exists
 /// to rule out for the synth itself.
 fn sf2_path() -> std::path::PathBuf {
-    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SF2);
-    assert!(
-        p.is_file(),
-        "the SoundFont fixture is missing: {}\n\
-         (resolved from CARGO_MANIFEST_DIR + {SF2}). Fetch it with \
-         `assets/soundfonts/download-timgm6mb.sh`.",
-        p.display()
-    );
-    p
+    tutti_fixtures::asset("soundfonts/TimGM6mb.sf2")
 }
 
 /// Render one note through the **forked** synth.

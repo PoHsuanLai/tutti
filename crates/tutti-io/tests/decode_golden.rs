@@ -15,9 +15,7 @@ use tutti_core::Samples;
 use tutti_io::{AudioIn, FileIn, Wave};
 
 fn asset(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../assets/audio")
-        .join(name)
+    tutti_fixtures::asset(&format!("audio/{name}"))
 }
 
 struct Fnv(u64);

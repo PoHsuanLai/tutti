@@ -271,7 +271,7 @@ tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # separate statics. The same pair, for the same reason, as `tutti-plugin`'s.
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 libloading = "0.8"
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 # `modulated_fader`: an `AudioParam` driven by modulation, showing the
 # modulation-aware read path an app cannot reconstruct on its own.

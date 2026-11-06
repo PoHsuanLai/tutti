@@ -21,7 +21,6 @@
 //! and construction (which does allocate, heavily) is deliberately outside
 //! every gate.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
@@ -38,12 +37,7 @@ static A: AllocDisabler = AllocDisabler;
 
 /// Load the committed test SoundFont, failing loudly if the checkout lacks it.
 fn load_test_soundfont() -> Arc<SoundFont> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("assets/soundfonts/TimGM6mb.sf2");
+    let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
     Arc::new(

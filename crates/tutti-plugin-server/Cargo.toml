@@ -104,7 +104,7 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }
 # The reference CLAP plugin the loader tests drive. A dev-dependency rather

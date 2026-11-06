@@ -3,7 +3,7 @@
 //
 // The rules — absence panics rather than skipping, and the *newest* candidate
 // wins so a stale uplifted copy cannot shadow a fresh one — live in
-// `tutti-fixture-resolve`, along with the reasons for each.
+// `tutti-fixtures`, along with the reasons for each.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -19,7 +19,6 @@ use std::sync::OnceLock;
 /// If none of the candidates exists — deliberate; see above.
 pub fn probe_path() -> &'static PathBuf {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
-    RESOLVED.get_or_init(|| {
-        tutti_fixture_resolve::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin")
-    })
+    RESOLVED
+        .get_or_init(|| tutti_fixtures::cdylib("tutti_vst2_test_plugin", "tutti-vst2-test-plugin"))
 }

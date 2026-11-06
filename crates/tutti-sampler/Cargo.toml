@@ -94,6 +94,8 @@ thread-priority = "1.1"
 
 
 [dev-dependencies]
+# Finds the repo's `assets/` for the tests.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 criterion.workspace = true
 # The crate's own `test-support` surface, for the integration tests.
 #

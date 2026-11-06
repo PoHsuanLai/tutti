@@ -23,7 +23,7 @@
 //! the realtime multiple, and a 64-frame block has 1.333 ms.
 //!
 //! Requires the `vst2` feature; the reference plugin is a dev-dependency that
-//! cargo builds, resolved through `tutti-fixture-resolve` (absence is a hard
+//! cargo builds, resolved through `tutti-fixtures` (absence is a hard
 //! failure, never a skip).
 
 use std::hint::black_box;
@@ -45,7 +45,7 @@ const BLOCK: usize = 64;
 
 fn unit() -> Direct<InProcessVst2Client> {
     let (unit, _handle) = in_process_vst2_client(probe_path::probe_path(), SR)
-        .expect("the reference VST2 plugin must be built — see tutti-fixture-resolve");
+        .expect("the reference VST2 plugin must be built — see tutti-fixtures");
     Direct::new(unit, SampleRate(SR), BLOCK)
 }
 

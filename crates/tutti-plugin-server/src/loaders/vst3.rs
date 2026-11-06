@@ -1277,12 +1277,7 @@ mod tests {
 
     /// Resolve fixture path relative to workspace root.
     fn fixture_path(relative: &str) -> std::path::PathBuf {
-        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // Go up from crates/tutti-plugin-server to the workspace root (crates/tutti)
-        p.pop();
-        p.pop();
-        p.push(relative);
-        p
+        tutti_fixtures::repo_root().join(relative)
     }
 
     #[test]

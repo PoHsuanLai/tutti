@@ -600,8 +600,7 @@ mod tests {
     /// `out`, as the old `Err` arm did) fails the kept-frames assertion.
     #[test]
     fn a_damaged_file_keeps_its_frames_and_reports_the_fault() {
-        let source =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio/stereo.flac");
+        let source = tutti_fixtures::asset("audio/stereo.flac");
         let bytes = std::fs::read(source).expect("fixture");
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("cut.flac");

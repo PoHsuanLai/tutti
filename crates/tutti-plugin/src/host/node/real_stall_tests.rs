@@ -113,7 +113,7 @@ fn plugin_server_path() -> &'static str {
     static RESOLVED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RESOLVED
         .get_or_init(|| {
-            tutti_fixture_resolve::plugin_server()
+            tutti_fixtures::plugin_server()
                 .to_string_lossy()
                 .into_owned()
         })
@@ -125,13 +125,12 @@ fn plugin_server_path() -> &'static str {
 /// The extension is load-bearing: the server dispatches format by file
 /// extension, and cargo's `libtutti_clap_test_plugin.so` reads as **VST2** in
 /// that table, so the CLAP loader is never reached. The path is shared between
-/// test processes (`tutti_fixture_resolve::publish_with_extension`).
+/// test processes (`tutti_fixtures::publish_with_extension`).
 fn clap_probe_path() -> &'static std::path::Path {
     static LINKED: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     LINKED.get_or_init(|| {
-        let real =
-            tutti_fixture_resolve::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
-        tutti_fixture_resolve::publish_with_extension(&real, "clap")
+        let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+        tutti_fixtures::publish_with_extension(&real, "clap")
     })
 }
 

@@ -1,5 +1,8 @@
-//! Finding the reference plugin cdylibs and the `plugin-server` binary the
-//! host test suites load.
+//! Where the test suites find things: the repo's `assets/`, the reference plugin
+//! cdylibs and the `plugin-server` binary.
+//!
+//! A test finds a repo file through [`repo_root`] and [`asset`], never through
+//! a relative `..` path, so moving a crate never changes what a test reads.
 //!
 //! A test, bench or example binary lives at `<profile>/deps/<exe>` (examples at
 //! `<profile>/examples/<exe>`), under `<target>` or `<target>/<triple>`, and
@@ -30,6 +33,63 @@
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// The first ancestor of `start` (itself included) that holds a `Cargo.lock`.
+///
+/// Pure over the filesystem it is given, so the walk is testable on a temp tree.
+pub fn find_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| dir.join("Cargo.lock").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// The repository root: the first ancestor holding `Cargo.lock`, walking up
+/// from this crate's own manifest directory, then from the current directory.
+///
+/// # Panics
+///
+/// If neither start has such an ancestor, naming both.
+pub fn repo_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let own = Path::new(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = find_root(own) {
+            return root;
+        }
+        let cwd = std::env::current_dir().unwrap_or_default();
+        find_root(&cwd).unwrap_or_else(|| {
+            panic!(
+                "no Cargo.lock above {} or above {}; the repo root cannot be found",
+                own.display(),
+                cwd.display()
+            )
+        })
+    })
+}
+
+/// A file under the repo's `assets/`, e.g. `asset("audio/stereo.flac")`.
+///
+/// # Panics
+///
+/// If the file is absent, naming the full path (and, for a soundfont, how to
+/// fetch it). A missing asset fails the test; it never skips it.
+pub fn asset(rel: &str) -> PathBuf {
+    let path = repo_root().join("assets").join(rel);
+    assert!(
+        path.is_file(),
+        "test asset missing at {}.{}",
+        path.display(),
+        if rel.starts_with("soundfonts/") {
+            " Fetch it with `assets/soundfonts/download-timgm6mb.sh` (see \
+             `assets/soundfonts/README.md`)."
+        } else {
+            ""
+        }
+    );
+    path
+}
 
 /// The profile directory a binary at `exe` belongs to: its parent, or its
 /// grandparent when the parent is `deps` or `examples`.
@@ -266,6 +326,56 @@ mod tests {
             p("/t/aarch64-apple-darwin/release/examples/ex"),
             Path::new("/t/aarch64-apple-darwin/release")
         );
+    }
+
+    /// The root is the nearest ancestor with a `Cargo.lock`, not the farthest,
+    /// and the start itself counts.
+    ///
+    /// Mutation: walk `ancestors().skip(1)` -> the start-is-root case fails;
+    /// pick the last match instead of the first -> the nested case returns the
+    /// outer lock -> fails.
+    #[test]
+    fn the_root_is_the_nearest_ancestor_with_a_lockfile() {
+        let base = std::env::temp_dir().join(format!("tfx-root-{}", std::process::id()));
+        let inner = base.join("outer/inner/deep");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(base.join("outer/Cargo.lock"), "").unwrap();
+        assert_eq!(find_root(&inner), Some(base.join("outer")));
+        std::fs::write(base.join("outer/inner/Cargo.lock"), "").unwrap();
+        assert_eq!(find_root(&inner), Some(base.join("outer/inner")));
+        assert_eq!(
+            find_root(&base.join("outer/inner")),
+            Some(base.join("outer/inner")),
+            "the start itself counts"
+        );
+        std::fs::remove_file(base.join("outer/Cargo.lock")).unwrap();
+        std::fs::remove_file(base.join("outer/inner/Cargo.lock")).unwrap();
+        // A tree with no lockfile below the temp dir's own ancestors: only an
+        // ancestor outside `base` could answer, never `base` itself.
+        assert_ne!(find_root(&inner).as_deref(), Some(base.as_path()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_repo_root_holds_the_assets() {
+        assert!(repo_root().join("Cargo.lock").is_file());
+        assert!(asset("audio/stereo.flac").is_file());
+    }
+
+    /// A missing asset fails, naming the full path.
+    ///
+    /// Mutation: return the path without the `is_file` assert -> no panic ->
+    /// fails.
+    #[test]
+    #[should_panic(expected = "assets/audio/no_such_file.wav")]
+    fn a_missing_asset_panics_with_its_path() {
+        asset("audio/no_such_file.wav");
+    }
+
+    #[test]
+    #[should_panic(expected = "download-timgm6mb.sh")]
+    fn a_missing_soundfont_names_how_to_fetch_it() {
+        asset("soundfonts/no_such_font.sf2");
     }
 
     #[test]

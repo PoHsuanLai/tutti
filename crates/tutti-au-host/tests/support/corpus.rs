@@ -18,7 +18,7 @@
 //! ## Absence is a hard failure, not a skip
 //!
 //! [`Corpus::require`] panics when a unit is missing. That is deliberate and it
-//! is the same rule `tutti-fixture-resolve` documents: these units ship
+//! is the same rule `tutti-fixtures` documents: these units ship
 //! with macOS, so their absence means the environment is broken, not that the
 //! machine merely lacks an optional plugin — and a suite that quietly reports
 //! `ok` having executed nothing is worse than one that fails.

@@ -30,15 +30,23 @@
 #   only";
 # - `tutti-spatial` as a `[dev-dependencies]` entry of `tutti-nodes`:
 #   "tutti-nodes must not depend on tutti-spatial";
-# - `tutti-fixture-resolve` as a `[dependencies]` entry of `tutti-dsp`, and as
+# - `tutti-fixtures` as a `[dependencies]` entry of `tutti-dsp`, and as
 #   a `[build-dependencies]` entry of `tutti-plugin`: "normal dependency on
-#   tutti-fixture-resolve; crates/ depends on testing/" and "build dependency
+#   tutti-fixtures; crates/ depends on testing/" and "build dependency
 #   ...";
 # - `tutti-mod` moved to `crates/nest/tutti-mod`: "is a nested directory under
 #   crates/" (a nested directory under crates/ is refused);
 # - `tutti-mod` moved to `crates/modx`: "must be crates/tutti-mod";
 # - `mkdir crates/stray`: "crates/stray is not a workspace member";
 # - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS".
+#
+# - a test finds a repo file through `tutti_fixtures`, never through a path
+#   that depends on its own depth: no statement in a `.rs` file under `crates/`
+#   or `testing/` joins a `".."` literal or a `.parent()` onto
+#   `CARGO_MANIFEST_DIR`, and no `"../…assets"` literal appears. Build scripts
+#   are exempt (their path is a build-script path).
+#   Mutation: `.join("../../assets/x")` after `env!("CARGO_MANIFEST_DIR")` in a
+#   test, and a `.parent()` chain on it -> exit 1, "depth-dependent path".
 #
 # Needs a Rust toolchain (cargo metadata) and python3. No build.
 set -euo pipefail
@@ -166,4 +174,33 @@ if errors:
         print("  " + e)
     sys.exit(1)
 print(f"check-layout: ok ({len(pkgs)} members, {len(layer)} ranked)")
+PY
+
+python3 -I - <<'PY'
+import os, re, sys
+
+root = os.getcwd()
+# One statement: from the `CARGO_MANIFEST_DIR` read to the next `;`.
+manifest_stmt = re.compile(r'CARGO_MANIFEST_DIR[^;]*;', re.S)
+depth_dependent = re.compile(r'"\.\./|\.parent\(\)')
+assets_up = re.compile(r'"(?:\.\./)+[^"]*assets')
+bad = []
+for top in ("crates", "testing"):
+    for dirpath, _, files in os.walk(os.path.join(root, top)):
+        for name in files:
+            if not name.endswith(".rs") or name == "build.rs":
+                continue
+            path = os.path.join(dirpath, name)
+            text = open(path, encoding="utf-8").read()
+            for m in manifest_stmt.finditer(text):
+                if depth_dependent.search(m.group(0)):
+                    bad.append((path, text.count("\n", 0, m.start()) + 1))
+            for m in assets_up.finditer(text):
+                bad.append((path, text.count("\n", 0, m.start()) + 1))
+if bad:
+    print("check-layout: FAIL")
+    for path, line in bad:
+        print(f"  {os.path.relpath(path, root)}:{line}: depth-dependent path; use tutti_fixtures::asset or repo_root")
+    sys.exit(1)
+print("check-layout: no depth-dependent test paths")
 PY

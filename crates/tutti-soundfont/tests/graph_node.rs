@@ -5,7 +5,6 @@
 //! Against the committed `TimGM6mb.sf2`; a missing fixture fails, as in the
 //! other suites here. 120 BPM: a beat is half a second.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
@@ -20,8 +19,7 @@ use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 const BLOCK: usize = 256;
 
 fn font() -> Arc<SoundFont> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/soundfonts/TimGM6mb.sf2");
+    let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path)
         .unwrap_or_else(|e| panic!("test soundfont missing at {}: {e}", path.display()));
     Arc::new(SoundFont::new(&mut file).expect("parses"))

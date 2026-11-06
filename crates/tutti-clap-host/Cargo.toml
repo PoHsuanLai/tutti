@@ -45,7 +45,7 @@ tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["test-support"] }
 # crate forbids `unsafe`; a test may use it).
 libloading = "0.8"
 # Finds the reference plugins and the plugin-server beside the test binary.
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 # `WorkerPool`, the pool the `clap.thread-pool` suite serves requests on.
 tutti-core = { path = "../tutti-core", default-features = false }
@@ -54,7 +54,7 @@ tempfile = "3"
 # dev-dependency, Cargo builds its cdylib in the same `cargo test`
 # invocation (no nested cargo / no target-dir-lock deadlock); the rlib
 # side gives the test the `ProcessCapture` type directly. The test finds the
-# cdylib beside its own binary (`tutti-fixture-resolve`) and dlopens it.
+# cdylib beside its own binary (`tutti-fixtures`) and dlopens it.
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 
 [package.metadata.docs.rs]

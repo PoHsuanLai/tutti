@@ -395,7 +395,7 @@ dependencies = [
  "tutti-core",
  "tutti-cpal",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -4206,7 +4206,7 @@ dependencies = [
  "tutti-cpal",
  "tutti-dsp",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -4254,7 +4254,7 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "tutti-clap-test-plugin",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-plugin-types",
 ]
 
@@ -4271,7 +4271,7 @@ dependencies = [
  "tutti-clap-ffi",
  "tutti-clap-test-plugin",
  "tutti-core",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
@@ -4366,7 +4366,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-fixture-resolve"
+name = "tutti-fixtures"
 version = "0.0.1"
 
 [[package]]
@@ -4395,6 +4395,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
 ]
@@ -4514,7 +4515,7 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-core",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
@@ -4546,7 +4547,7 @@ dependencies = [
  "tutti-clap-host",
  "tutti-clap-test-plugin",
  "tutti-core",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-types",
@@ -4621,6 +4622,7 @@ dependencies = [
  "tracing-subscriber",
  "tutti-core",
  "tutti-dsp",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-mod",
@@ -4639,7 +4641,7 @@ dependencies = [
  "tutti-core",
  "tutti-cpal",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -4672,6 +4674,7 @@ dependencies = [
  "rustysynth",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
@@ -4724,7 +4727,7 @@ dependencies = [
  "parking_lot",
  "tempfile",
  "thiserror 2.0.21",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",

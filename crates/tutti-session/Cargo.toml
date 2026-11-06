@@ -95,7 +95,7 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 # not a dev-dependency, which would be a cycle through `tutti-plugin`).
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # Finds both beside the running binary (`tests/support`).
-tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [package.metadata.docs.rs]
 all-features = true

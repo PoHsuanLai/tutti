@@ -72,10 +72,11 @@ pub(crate) struct OfflineReadError {
 /// What went wrong reading a file for an offline voice.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReadFault {
+    #[cfg(codec)]
     #[error("the file has no channels")]
     NoChannels,
+    #[cfg(not(codec))]
     #[error("no audio codec feature is enabled")]
-    #[cfg_attr(codec, allow(dead_code))]
     NoCodec,
     #[cfg(codec)]
     #[error("seek to frame {frame}: {source}")]

@@ -139,7 +139,7 @@ pub enum Error {
 }
 
 /// A config the export cannot act on ([`Error::InvalidConfig`]).
-#[derive(Error, Debug, Clone, Copy, PartialEq)]
+#[derive(Error, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ConfigError {
     /// The graph's editor does not feed its executor.
@@ -164,6 +164,15 @@ pub enum ConfigError {
         /// The file's layout.
         file: tutti_types::ChannelLayout,
     },
+    /// The export's target node has no audio outputs.
+    #[error("export target node has no audio outputs")]
+    TargetHasNoOutputs,
+    /// The graph has no outputs to export.
+    #[error("the graph has no outputs to export")]
+    GraphHasNoOutputs,
+    /// A prepare hook left the forked graph in a state that cannot commit.
+    #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
+    PrepareHookUncommittable(tutti_graph::CommitError),
     /// More channels than the container's header can count.
     #[error("{channels} channels exceed the format's limit of {max}")]
     TooManyChannels {

@@ -10,7 +10,7 @@
 //! [`WetDry`] parameter group (the user-facing knobs), shared across channels.
 //!
 //! **An IR's FFT partitions are stored once**, in its
-//! [`IrSpectra`](super::IrSpectra) behind an `Arc`: under
+//! [`IrSpectra`](tutti_dsp::IrSpectra) behind an `Arc`: under
 //! [`IrChannelConfig::Mono`] every channel reads the one set, and a fork of
 //! the node ([`ParamNode::fork_fresh`]) reads the live node's, since nothing
 //! writes them after they are built. Each channel and each fork keeps only

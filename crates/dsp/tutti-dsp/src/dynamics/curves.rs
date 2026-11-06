@@ -98,7 +98,7 @@ pub fn compute_compressor_gain_reduction(
 }
 
 /// One-pole IIR envelope smoothing: `coeff` is the fraction of the gap
-/// closed ([`tutti_core::Seconds::one_pole_coeff`];
+/// closed ([`Seconds::one_pole_coeff`](tutti_types::Seconds::one_pole_coeff);
 /// 1 is instant, 0 holds).
 ///
 /// At `coeff = 1` the result is `target` only to within half an ulp of the
@@ -178,7 +178,7 @@ pub fn compute_limiter_gain(
 /// silence takes the `below` gain `10^((ceiling - threshold)/20)` (the dB
 /// form pinned it at -144 dB instead, which differs only for thresholds
 /// below that). To keep that boost finite (`0 * inf` is NaN), the gap
-/// `ceiling - threshold` is clamped to [`Self::MAX_GAP_DB`] and the threshold
+/// `ceiling - threshold` is clamped to `MAX_GAP_DB` and the threshold
 /// amplitude to `f32::MIN_POSITIVE`; neither moves a threshold at or above
 /// -144 dB.
 #[derive(Clone, Copy, Debug)]

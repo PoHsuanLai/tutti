@@ -73,8 +73,8 @@ impl DelayLine {
     ///
     /// The length is rounded **up**, so the line always holds at least the
     /// requested duration. Note that the size is baked in here: a node changing
-    /// its sample rate has to rebuild the line, which is what
-    /// [`DelayLineNode`]'s `prepare` does.
+    /// its sample rate has to rebuild the line, which is what the delay node's
+    /// `prepare` does.
     #[must_use]
     pub fn from_seconds(
         max_delay_secs: impl Into<Seconds>,

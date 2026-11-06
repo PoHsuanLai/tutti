@@ -17,16 +17,17 @@
 //!
 //! - Filters: [`SvfFilterNode`] ([`SvfType`]), [`LadderFilterNode`]
 //!   ([`LadderType`]), [`EqBandNode`]; the coefficient solvers
-//!   [`SvfCoeffs::new`] and [`LadderCoeffs::new`]; [`Real`], the
+//!   [`SvfCoeffs::new`](tutti_dsp::SvfCoeffs::new) and
+//!   [`LadderCoeffs::new`](tutti_dsp::LadderCoeffs::new); [`Real`], the
 //!   `f32`/`f64` state type.
-//! - Crossover: [`Crossover`], a 2 to 6 band Linkwitz-Riley 4th-order split
+//! - Crossover: [`Crossover`](tutti_dsp::Crossover), a 2 to 6 band Linkwitz-Riley 4th-order split
 //!   (a plain struct, `f64` state, ramped frequency changes), and
 //!   [`CrossoverNode`] over it, each crossover frequency an indexed
 //!   [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with [`CrossoverError`].
 //! - Delay: [`DelayLineNode`] over `tutti_dsp::DelayLine`, with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
-//!   bands over a [`Crossover`], every setting an indexed param: see
+//!   bands over a [`Crossover`](tutti_dsp::Crossover), every setting an indexed param: see
 //!   [`BAND_PARAMS`]) with its [`MultibandControls`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].

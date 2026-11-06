@@ -222,7 +222,8 @@ crates/
                  serial executor + reference interpreter; `Engine` renders it)
   dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
                  tutti-polysynth, tutti-soundfont, tutti-dsp (pure algorithms over
-                 slices: the real FFT, analyzers; depends only on tutti-types)
+                 slices: the real FFT, analyzers, filters, dynamics, convolver,
+                 delay lines, waveshapers; depends only on tutti-types)
   midi/          tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
@@ -236,14 +237,28 @@ crates/
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128 and thiserror; `tutti-core` is a dev-dependency only), keeps every
+  rustfft, ebur128, libm and thiserror; `tutti-core` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
-  graph or runtime. `tutti-nodes`, `tutti-sampler`, `tutti-spatial` and
-  `tutti-export` are to become adapters over it.
+  graph or runtime, no `Arc`-published state and no atomics for control: every
+  control arrives per call as a plain typed value. It holds the real FFT, the
+  analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
+  float), the dynamics curves, followers and kernels, the partitioned
+  convolver, the delay line and swept-delay kernel, the ring buffers and the
+  waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
+  them (shape, prepare, process, params, fork), and re-exports only the
+  algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
+  `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
+  `tutti-sampler`, `tutti-spatial` and `tutti-export` are still to become
+  adapters over it.
 - **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
-  the `Node` adapter.** This is for new code; existing algorithms in node
-  crates (the convolver, filters, the sampler vocoder) migrate in later PRs.
+  the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
+  a non-finite guard (`LastGood`), the node reads and guards it and hands the
+  algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
+  What has not moved yet: the sampler vocoder, and `tutti-nodes`'
+  `LfoDrive`/`LinearModMix`/`TimeModMix` groupings, the phaser's all-pass
+  chain, the delay node's coupled-channel loop and the multiband compressor's
+  band logic, all of which read graph buffers or `Param` cells in their loops.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs

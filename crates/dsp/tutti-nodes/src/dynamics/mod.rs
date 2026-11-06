@@ -10,7 +10,7 @@
 //! [`CompressorNode`] and [`GateNode`] take an **external sidechain**: their level
 //! detector reads separate inputs, so the signal being measured need not be the
 //! signal being shaped. [`MultibandCompressorNode`] runs one compressor core per
-//! band of a [`Crossover`](crate::Crossover), each detecting on its own band.
+//! band of a [`Crossover`](tutti_dsp::Crossover), each detecting on its own band.
 
 mod utils;
 

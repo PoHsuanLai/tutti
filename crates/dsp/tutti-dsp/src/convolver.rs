@@ -4,7 +4,7 @@
 //!
 //! Each level of the convolution is the uniformly partitioned overlap-add
 //! convolution `fft-convolver` 0.3 runs (its `FFTConvolver`), with the same
-//! arithmetic in the same order, over [`tutti_dsp::RealFft`], the engine's
+//! arithmetic in the same order, over [`RealFft`](crate::RealFft), the engine's
 //! CPU-independent real FFT (rustfft's scalar planner, where
 //! `fft-convolver`'s `realfft` picks SIMD at run time). An output is
 //! therefore bit-identical across CPUs on one OS and libm. It is written here

@@ -51,7 +51,7 @@ const DEFAULT_LANE: usize = 512;
 /// graph's PDC compensates a dry path mixed against it.
 ///
 /// The minimum gain over the lookahead window is tracked with a
-/// [`MonotonicMinDeque`], so each sample costs O(1) amortized regardless of
+/// [`MonotonicMinDeque`](tutti_dsp::MonotonicMinDeque), so each sample costs O(1) amortized regardless of
 /// lookahead length. Nothing in the RT path allocates: the rings and the gain
 /// lane are sized at construction, and again when the graph prepares it.
 ///

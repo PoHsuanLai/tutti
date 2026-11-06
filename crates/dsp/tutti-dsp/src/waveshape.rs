@@ -3,7 +3,7 @@
 
 use tutti_types::Drive;
 
-/// Selects which waveshaping curve a [`DistortionNode`] applies.
+/// Selects which waveshaping curve the distortion node applies.
 ///
 /// Discriminants are stable — they persist in saved projects via
 /// `EffectKind::Distortion`. Append new kinds at the end.
@@ -63,7 +63,7 @@ impl ShapeKind {
     /// Shapes one sample: `x` through this curve at `drive`.
     ///
     /// `drive` is input gain into the curve, floored at 0 — the same
-    /// normalization [`DistortionNode`] applies to its param. For the two
+    /// normalization the distortion node applies to its param. For the two
     /// staircases it is instead the number of **levels per unit**, floored at 1
     /// (fewer than one level per unit is not a staircase).
     ///

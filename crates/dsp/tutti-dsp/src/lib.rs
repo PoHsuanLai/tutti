@@ -54,6 +54,20 @@
 //! - FFT: [`RealFft`], a real-input FFT on rustfft's scalar planner whose
 //!   arithmetic does not depend on the CPU; [`StagedRealFft`], the same
 //!   transform in steps; [`FftScratch`], reusable plans and buffers.
+//! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
+//!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
+//!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
+//!   [`Real`], the `f32` or `f64` their state runs in.
+//! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
+//!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
+//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`] and
+//!   [`GateKernel`] with their [`CompressorBlock`] and [`GateBlock`]; the
+//!   limiter's [`LookaheadRing`]; and the ring buffers [`CircularBuffer`] and
+//!   [`MonotonicMinDeque`].
+//! - Convolution: [`Convolver`] over a shared [`IrSpectra`].
+//! - Delay: [`DelayLine`] with an [`InterpolationMode`], and [`SweptLines`], the
+//!   chorus and flanger kernel.
+//! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
@@ -106,6 +120,6 @@ pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 ///
 /// `num_complex::Complex<f32>`, the type [`RealFft`] works in, so
 /// bins cross the FFT boundary without conversion. The vocoder in
-/// `tutti-sampler` and the convolver in `tutti-nodes` work in the same type, so
-/// values cross freely between them.
+/// `tutti-sampler` and the [`Convolver`] work in the same type, so values cross
+/// freely between them.
 pub use Complex32 as Complex;

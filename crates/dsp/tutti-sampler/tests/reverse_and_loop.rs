@@ -639,7 +639,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
 
 /// A one-shot source stops at the end rather than looping or reading past it.
 ///
-/// The `LoopMode::OneShot` arm of the same wrap logic. Its failure mode is the
+/// The `LoopSetting::Off` arm of the same wrap logic. Its failure mode is the
 /// mirror of a broken loop: instead of wrapping it should clear `playing` and
 /// hold position at the end.
 #[test]

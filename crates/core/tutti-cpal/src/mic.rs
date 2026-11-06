@@ -41,6 +41,7 @@ use tutti_core::io::{AudioIn, OnEmpty};
 use tutti_core::pcm::BitDepth;
 use tutti_io::{MicMonitorNode, MicRing, WavOut};
 
+use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
 use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
 use crate::owner::Owned;
@@ -250,16 +251,13 @@ impl MicIn {
         WavOut::create(path, self.sample_rate, AudioIn::layout(self), depth)
     }
 
-    /// Lists the default host's input devices as `(index, name)` pairs; the
-    /// index is what [`open`](Self::open) takes as a selector.
+    /// Lists the default host's input devices; a [`DeviceInfo::index`] is what
+    /// [`open`](Self::open) takes as a selector.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn input_devices() -> Result<impl Iterator<Item = (usize, String)>> {
-        Ok(DeviceHost::open(AudioHost::Default)?
-            .input_devices()?
-            .into_iter()
-            .map(|d| (d.index, d.name)))
+    pub fn input_devices() -> Result<Vec<DeviceInfo>> {
+        DeviceHost::open(AudioHost::Default)?.input_devices()
     }
 }
 

@@ -297,8 +297,8 @@ fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
         })
         .expect("restarts");
     assert_eq!(seen, Some(new.clone()), "the hook saw the new config");
-    assert_eq!(driver.spec(), &new, "and the driver reports it");
-    assert!(s2.is_open() && driver.is_running());
+    assert_eq!(driver.engine().spec(), &new, "and the driver reports it");
+    assert!(s2.is_open() && driver.engine().is_running());
     assert_eq!(s2.channels(), Some(6), "opened at the new width");
 }
 
@@ -323,6 +323,6 @@ fn a_restart_whose_hook_fails_stays_stopped() {
         })
         .expect_err("the hook's error");
     assert!(matches!(err, tutti_cpal::Error::InvalidConfig(_)));
-    assert!(!driver.is_running());
+    assert!(!driver.engine().is_running());
     assert!(!s2.is_open());
 }

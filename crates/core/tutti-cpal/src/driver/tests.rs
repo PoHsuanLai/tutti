@@ -55,11 +55,14 @@ fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
             ),
             "attempt {attempt}: {err}"
         );
-        assert!(!driver.is_running(), "nothing plays at the wrong rate");
+        assert!(
+            !driver.engine().is_running(),
+            "nothing plays at the wrong rate"
+        );
         assert!(!stream.is_open());
         assert_eq!(driver.graph_rate(), graph, "the graph did not move");
         assert_eq!(
-            driver.spec().sample_rate,
+            driver.engine().spec().sample_rate,
             graph,
             "the spec does not claim the refused rate"
         );
@@ -69,6 +72,6 @@ fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
     driver
         .restart_on(spec_at(44_100.0), d, refuse_rate_change(graph))
         .expect("the same rate restarts");
-    assert!(driver.is_running() && stream.is_open());
+    assert!(driver.engine().is_running() && stream.is_open());
     drop(ed);
 }

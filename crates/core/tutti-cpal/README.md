@@ -17,10 +17,10 @@ the same types from a Bevy plugin.
 List the output devices:
 
 ```rust,no_run
-use tutti_cpal::TuttiDriver;
+use tutti_cpal::AudioEngine;
 
 # fn main() -> tutti_cpal::Result<()> {
-for device in TuttiDriver::devices()? {
+for device in AudioEngine::output_devices()? {
     println!("{}: {}", device.index, device.name);
 }
 # Ok(())
@@ -63,7 +63,7 @@ let state = Arc::new(AudioCallbackState::new(
 
 audio_engine.start(Arc::clone(&state))?;
 let driver = TuttiDriver::new(audio_engine, state);
-assert!(driver.is_running());
+assert!(driver.engine().is_running());
 # Ok(())
 # }
 ```

@@ -11,6 +11,7 @@ use tutti_core::{AudioTap, MasterMeter};
 use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 use crate::block::OutputBlock;
+use crate::driver::DeviceInfo;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
@@ -100,13 +101,12 @@ impl std::fmt::Debug for AudioEngine {
 
 impl AudioEngine {
     /// Opens a device on the default host and reads its default output config,
-    /// without starting a stream. `None` selects the host's default device.
+    /// without starting a stream.
     ///
     /// # Errors
-    /// [`Error::InvalidDevice`] if `device_index` is out of range, or
-    /// [`Error::DeviceNotAvailable`] if the device has no default output config.
-    pub fn new(device_index: Option<usize>) -> Result<Self> {
-        Self::open(DeviceHost::open(AudioHost::Default)?, device_index.into())
+    /// As [`open`](Self::open).
+    pub fn new(sel: impl Into<DeviceSelector>) -> Result<Self> {
+        Self::open(DeviceHost::open(AudioHost::Default)?, sel.into())
     }
 
     /// Opens a device on the given host and reads its default output config,
@@ -160,7 +160,7 @@ impl AudioEngine {
     /// stream is already running.
     ///
     /// Re-reads the device's default config first, so after a
-    /// [`set_device`](Self::set_device) the [`spec`](Self::spec),
+    /// [`select_device`](Self::select_device) the [`spec`](Self::spec),
     /// [`sample_rate`](Self::sample_rate) and [`channels`](Self::channels)
     /// describe the device that is actually playing. The stream is opened with
     /// a fixed buffer of [`PREFERRED_QUANTUM`](crate::PREFERRED_QUANTUM) frames
@@ -268,14 +268,6 @@ impl AudioEngine {
         self.running.is_some() && !self.faults.is_disconnected()
     }
 
-    /// Selects the device the next [`start`](Self::start) opens, by position
-    /// in the enumeration; `None` means the host default. Does not disturb a
-    /// running stream, and does nothing on an engine built with
-    /// [`from_spec`](Self::from_spec).
-    pub fn set_device(&mut self, index: Option<usize>) {
-        self.select_device(index.into());
-    }
-
     /// Selects the device the next [`start`](Self::start) opens, by name or
     /// index. Does not disturb a running stream, and does nothing on an engine
     /// built with [`from_spec`](Self::from_spec).
@@ -300,16 +292,13 @@ impl AudioEngine {
         Ok(host.device(Direction::Output, sel)?.name()?)
     }
 
-    /// Lists the default host's output devices as `(index, name)` pairs.
-    /// The index is positional — see [`DeviceSelector::Index`].
+    /// Lists the default host's output devices. Each
+    /// [`DeviceInfo::index`] is positional, see [`DeviceSelector::Index`].
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
-        Ok(DeviceHost::open(AudioHost::Default)?
-            .output_devices()?
-            .into_iter()
-            .map(|d| (d.index, d.name)))
+    pub fn output_devices() -> Result<Vec<DeviceInfo>> {
+        DeviceHost::open(AudioHost::Default)?.output_devices()
     }
 }
 

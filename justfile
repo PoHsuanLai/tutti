@@ -329,6 +329,12 @@ check-guards:
 check-plugin-ffi:
     scripts/check-plugin-ffi.sh
 
+# The repo layout and the crate layering: every member directly in
+# `crates/<package>` or `testing/<dir>`, no shipped crate builds on `testing/`,
+# dependencies point down the layers in CLAUDE.md. `cargo metadata`, no build.
+check-layout:
+    scripts/check-layout.sh
+
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant
 # path, and doc comments in ```text / ```ignore blocks are never compiled — so
@@ -429,4 +435,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-features check-loom test test-features test-editor test-doc doc
+ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-features check-loom test test-features test-editor test-doc doc

@@ -88,71 +88,53 @@ sudo dnf install -y alsa-lib-devel pkgconf-pkg-config  # Fedora
 
 ## Workspace Structure
 
-One workspace, rooted at the repo root. 33 members, grouped by subsystem.
+One workspace, rooted at the repo root. Three roots, all flat: a member is
+directly `crates/<package-name>` or `testing/<dir>`, and `scripts/check-layout.sh`
+refuses anything nested.
 
 ```
-crates/
-  tutti               # THE BEVY-FREE UMBRELLA. Re-exports only — see below.
-  bevy-tutti          # THE BEVY UMBRELLA. Adapter + engine re-exports; the only
-                      #   Bevy-mandatory member.
-  tutti-session       # Bevy-free API layer: the cross-crate composition both
-                      #   umbrellas use (design 015: Session, Graph,
-                      #   SessionBuilder, Device). Not an umbrella itself.
-  core/
-    tutti-core        # Engine runtime (Engine, Transport, Metering)
-    tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
-    tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
-    tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the
-                      #   file side (Wave, FileIn, the symphonia decoder).
-                      #   Device-free, so tutti-cpal depends on it, not vice
-                      #   versa. Peer of tutti-export (the offline edge).
-    tutti-mod         # Pure modulation: the route compiler (one control
-                      #   program per param, played by a control lane in
-                      #   tutti-nodes), curves. Audio-free.
-    tutti-graph       # The graph: `Node` contract, Topology→Plan compiler
-                      #   (PDC), executor. Design doc 013.
-    tutti-export      # Offline rendering and export
-  dsp/
-    tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).
-                      #   Infallible — it exports no error type at all.
-    tutti-spatial     # The engine's only geometry. Two renderers, each named for
-                      #   its ALGORITHM, not the category: `vbap` (speakers, N
-                      #   out) and `hrtf` (headphones, 2 out). Each owns its error
-                      #   type — there is no crate-level `Error`, and nothing is
-                      #   called `SpatialPanner`. Depends on tutti-nodes; the
-                      #   arrow runs geometry → DSP and never back.
-    tutti-sampler     # Sample playback (streaming, audition)
-    tutti-polysynth   # Polyphonic subtractive/wavetable synth
-    tutti-soundfont   # SoundFont (.sf2) playback. Its own crate, not a polysynth
-                      #   feature: a .sf2 player shares no voice engine with a
-                      #   subtractive synth.
-    tutti-dsp    # Pure algorithms over slices: the real FFT and the analyzers
-                 #   (waveform, transient, pitch, loudness). Names only tutti-types.
-  midi/
-    tutti-midi-types    # MIDI value types (MIDI 2.0 / UMP native)
-    tutti-midi-runtime  # MIDI engine (routing, allocation, expression)
-    tutti-midi-hardware # OS MIDI I/O, native UMP (CoreMIDI / ALSA seq-UMP).
-                        #   No features — the crate IS the OS edge. midir is gone.
-    tutti-midi-file     # SMF + MIDI 2.0 Clip File codecs. OS-free, so a consumer
-                        #   that only reads .mid does not link CoreMIDI.
-  plugin/
-    tutti-plugin        # Plugin hosting core
-    tutti-plugin-types / tutti-plugin-server
-    tutti-shm-model     # Test-only loom model of tutti-plugin's shm header
-                        #   protocol. A separate crate because `--cfg loom` is
-                        #   global and reaches every dep of tutti-plugin.
-    formats/            # vst2-host / vst3-host / clap-host / au-host
-    vendor/vst-tutti    # Vendored VST2 bindings
-    vendor/vst3-sdk     # The three Steinberg submodules
-  vendor/
-    rustysynth-tutti/rustysynth   # SoundFont synth (inner crate is the member)
-    tutti-clap-test-plugin
+crates/             everything shipped, directory name = package name
+  tutti             # THE BEVY-FREE UMBRELLA. Re-exports only.
+  bevy-tutti        # THE BEVY UMBRELLA. Adapter + engine re-exports; the only
+                    #   Bevy-mandatory member.
+  tutti-session     # Bevy-free API layer: the cross-crate composition both
+                    #   umbrellas use (design 015). Not an umbrella itself.
+  arc-lend          # The publish cell. No dependencies.
+  tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
+  tutti-graph       # The graph: `Node` contract, Topology->Plan compiler (PDC),
+                    #   executor. Design doc 013.
+  tutti-core        # Engine runtime (Engine, Transport, Metering)
+  tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
+  tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the file
+                    #   side (Wave, FileIn, the symphonia decoder). Device-free,
+                    #   so tutti-cpal depends on it, not vice versa.
+  tutti-mod         # Pure modulation: the route compiler, curves. Audio-free.
+  tutti-export      # Offline rendering and export
+  tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
+  tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).
+  tutti-spatial     # The engine's only geometry: `vbap` and `hrtf`. Depends on
+                    #   tutti-nodes; the arrow never runs back.
+  tutti-sampler     # Sample playback (streaming, audition)
+  tutti-polysynth   # Polyphonic subtractive/wavetable synth
+  tutti-soundfont   # SoundFont (.sf2) playback
+  tutti-rustysynth  # Our fork of rustysynth (SoundFont synth). Excluded from
+                    #   clippy and rustdoc in CI.
+  tutti-midi-types / -runtime / -hardware / -file, tutti-alsa-ump-sys
+  tutti-plugin / -types / -server
+  tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
+  vst-tutti         # Our fork of the vst crate (VST2 bindings)
+testing/            never shipped
+  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixture-resolve
+  tutti-shm-model   # Test-only loom model of tutti-plugin's shm header
+                    #   protocol. A separate crate because `--cfg loom` is
+                    #   global and reaches every dep of tutti-plugin.
+  arc-lend-compare  # arc-lend's comparison benchmark
+vendor/             third-party code we never edit
+  vst3-sdk          # The three Steinberg submodules
 ```
 
-The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc in
-CI: it is third-party code we do not restyle, and it carries pre-existing lint
-debt that is not ours to pay. (The FunDSP fork, `fundsp-tutti`, was the other
-until design doc 013 deleted it.)
+`tutti-rustysynth` is excluded from clippy and rustdoc in CI: it carries
+pre-existing lint debt that is not ours to pay yet.
 
 ## Unit Types (MANDATORY)
 

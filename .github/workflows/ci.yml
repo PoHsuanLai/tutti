@@ -99,6 +99,11 @@ jobs:
       # and the server and GUI code that drive them carry none
       # (python3 over the source, no build).
       - run: scripts/check-plugin-ffi.sh
+      # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
+      # shipped crate builds on a `testing/` crate, and dependencies point down
+      # the layers in CLAUDE.md (`cargo metadata`, no build).
+      - run: rustup toolchain install
+      - run: scripts/check-layout.sh
 
   clippy:
     name: clippy

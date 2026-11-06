@@ -26,7 +26,7 @@ are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
 - **Connections as a state machine.** M2-100's connection steps are a no-I/O
   `Connection`, driven by tests with no device (§5).
 - **Crates follow the layers** (§6).
-- **`midi2` becomes a test-only oracle** (§7).
+- **`midi2` is removed** (§7).
 - **Events are not silently lost.** Capacity follows the block size, note-offs
   have priority and are retried, drops are counted exactly, and an export reports
   them (§8).
@@ -279,8 +279,10 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
 - `tutti-graph` depends on `tutti-ump`, so `midi2` and its build tree (`fixed`,
   `typenum`, `half`, `zerocopy`, `derive_more`) cannot be a normal dependency. Every
   message, including Flex and Stream, is written directly.
-- It stays as a dev-dependency: a test-only oracle where random words go through
-  both decoders, and each disagreement is settled by reading the specification.
+- It is removed from the workspace at stage 5, with the old types. Until then, while
+  the old types still depend on it anyway, it serves as a test-only oracle: random
+  words go through both decoders, and each disagreement is settled by reading the
+  specification and pinned as an analytic test, so its removal loses no coverage.
 
 `midly` stays in `tutti-midi-file`. `tutti-midi-types` uses it only for about 12
 lines of live MIDI 1.0 parsing, which `tutti-midi-protocol` does itself.
@@ -351,14 +353,15 @@ a behaviour change.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
    here and the rest of `ci`/`negotiate` is deleted.
 5. **Remove the old types:** `tutti-midi-types`, `MidiEvent`, `MidiMessage`, the
-   re-exports.
+   re-exports, and `midi2` from the workspace and `Cargo.lock`.
 6. **Capabilities** (§9).
 
 ## 11. Testing
 
 - **Spec tables.** Each message's words from M2-104 App. F and the tables in M2-115
   are analytic tests.
-- **`midi2` as an oracle** for stage 1, a dev-dependency.
+- **`midi2` as an oracle** until stage 5, a dev-dependency. What it finds becomes
+  spec-pinned tests.
 - **Properties.** `decode` never panics on any words, and `encode(decode(x)) == x`
   for a canonical `x`.
 - **Fuzzing.** `cargo-fuzz` targets for UMP, SysEx, MIDI-CI and clip files, none of

@@ -25,13 +25,13 @@ mod node;
 
 pub use tutti_rustysynth::{SoundFont, SoundFontError};
 
-use tutti_rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::SampleRate;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_rustysynth::Synthesizer;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
 /// are dropped. Fully initialised, since events are written into its slots.

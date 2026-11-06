@@ -1,7 +1,7 @@
 //! How a unit's synthesizer is built.
 
-use tutti_rustysynth::SynthesizerSettings;
 use tutti_core::SampleRate;
+use tutti_rustysynth::SynthesizerSettings;
 
 /// The synthesizer settings a [`SoundFontUnit`](crate::SoundFontUnit) is built
 /// with. The block size is not one of them: every unit is built at

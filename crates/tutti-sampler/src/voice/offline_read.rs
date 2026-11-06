@@ -638,8 +638,8 @@ mod tests {
     /// the latch empty and fails.
     #[test]
     fn a_damaged_file_latches_a_fault_and_keeps_its_frames() {
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/audio/stereo.flac");
+        let source =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/audio/stereo.flac");
         let bytes = std::fs::read(source).expect("fixture");
         let dir = tempfile::tempdir().expect("a temp dir");
         let path = dir.path().join("cut.flac");

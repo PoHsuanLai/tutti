@@ -257,6 +257,7 @@ pub fn publish_with_extension(real: &Path, extension: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::io::Write;
 
     /// The rule the module docs call load-bearing: newest wins, so a stale

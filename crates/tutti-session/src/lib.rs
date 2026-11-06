@@ -59,6 +59,8 @@ mod modulation;
 mod node;
 #[cfg(feature = "plugin")]
 mod plugin;
+#[cfg(feature = "plugin")]
+mod recovery;
 mod session;
 
 pub use builder::{SessionBuilder, root_width};
@@ -88,11 +90,13 @@ pub use modulation::{
 pub use node::{Reclaimer, SessionNode};
 #[cfg(feature = "plugin")]
 pub use plugin::{
-    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginSnapshot,
-    PluginSnapshotTaken, SNAPSHOT_INTERVAL,
+    HostedPlugin, PluginLiveness, PluginLoad, PluginLoadRequest, PluginLoaded, PluginReload,
+    PluginReloaded, PluginSnapshot, PluginSnapshotTaken, SNAPSHOT_INTERVAL, StateRestore,
 };
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
+#[cfg(feature = "plugin")]
+pub use recovery::{Action, Event, GiveUp, Recovery, RecoveryPolicy};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

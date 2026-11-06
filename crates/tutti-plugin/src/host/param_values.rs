@@ -127,6 +127,14 @@ impl PluginParamValues {
             .push((id, value));
     }
 
+    /// Every value held, by id; empty until the read has landed.
+    pub fn values(&self) -> impl Iterator<Item = (ParamId, Normalized)> + '_ {
+        self.values
+            .iter()
+            .flatten()
+            .map(|(&id, &value)| (id, value))
+    }
+
     /// Whether the load-time read has landed.
     #[must_use]
     pub fn is_ready(&self) -> bool {

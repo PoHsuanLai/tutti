@@ -47,6 +47,14 @@ fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
 /// An offline stereo session at 48 kHz, its servers' environment set:
 /// the server's path, the offline extra, and `extra`.
 fn session(extra: &[(&str, &str)]) -> Session {
+    session_built(extra, |b| b)
+}
+
+/// [`session`] with the builder `build` shapes.
+fn session_built(
+    extra: &[(&str, &str)],
+    build: impl FnOnce(tutti_session::SessionBuilder) -> tutti_session::SessionBuilder,
+) -> Session {
     set_env("TUTTI_PLUGIN_SERVER", plugin_server());
     set_env(
         "TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY",
@@ -55,7 +63,7 @@ fn session(extra: &[(&str, &str)]) -> Session {
     for (key, value) in extra {
         set_env(key, value);
     }
-    Session::builder()
+    build(Session::builder())
         .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
         .expect("an offline session builds")
 }
@@ -252,7 +260,8 @@ fn a_plugin_added_mid_export_is_told_offline() {
     await_latency(&s, late, base, "told Realtime once the export ends");
 }
 
-/// **A plugin dead for the window is removed, and reported once.** The probe
+/// **With recovery off, a plugin dead for the window is removed, and reported
+/// once.** The probe
 /// aborts on its first block; once the engine latches the death, the
 /// debounce counts unhealthy observations at the `now`s the test passes:
 /// `Liveness::DEATHS` of them inside the window (50 ms) are still Failing,
@@ -268,7 +277,9 @@ fn a_plugin_added_mid_export_is_told_offline() {
 /// record check, so the two last asserts guard a regression in that order.
 #[test]
 fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
-    let mut s = session(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")]);
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
+        b.plugin_recovery(None)
+    });
     let (node, _) = wired_probe(&mut s);
 
     // Render until the engine latches the death (the server aborted on its
@@ -425,4 +436,345 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     }
     s.update();
     assert_eq!(meter.retired_len(), 0, "the update freed it");
+}
+
+// --- Recovery ---------------------------------------------------------------
+
+/// The reference plugin's applied `Gain` parameter.
+fn gain_param(_s: &Session, _node: AudioNode) -> tutti_plugin::handles::ParamId {
+    tutti_plugin::handles::ParamId::new(tutti_clap_test_plugin::params_state::GAIN_PARAM_ID)
+}
+
+fn param(s: &Session, node: AudioNode, id: tutti_plugin::handles::ParamId) -> Option<f64> {
+    s.plugin(node)
+        .expect("hosted")
+        .handle()
+        .params()
+        .parameter_value(id)
+        .map(|v| v.get())
+}
+
+/// Whether a read-back value is the 0.25 that was set (it passes through the
+/// plugin's f32 and dB range).
+fn is_quarter(v: Option<f64>) -> bool {
+    v.is_some_and(|v| (v - 0.25).abs() < 1e-4)
+}
+
+/// A marker path for `TUTTI_CLAP_PROBE_ONCE_FILE`, free now: the first server
+/// to start fails, replacements do not.
+fn once_file(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_file(&path);
+    path.to_string_lossy().into_owned()
+}
+
+/// The reference plugin in `TagPassthrough`: with nothing wired it renders a
+/// constant (its tag), so a block of silence is a plugin that is not there.
+const PASSTHROUGH: (&str, &str) = ("TUTTI_CLAP_PROBE_RENDER_MODE", "1");
+
+/// The probe applies the parameter writes it is sent (its `Gain`) to its
+/// audio, which is also what makes it take them from the host at all.
+const APPLY_GAIN: (&str, &str) = ("TUTTI_CLAP_PROBE_APPLY_GAIN", "1");
+
+/// Renders one block and returns whether any sample was non-zero.
+fn renders_sound(s: &mut Session) -> bool {
+    let mut out = vec![0.0f32; BLOCK * 2];
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    out.iter().any(|&x| x != 0.0)
+}
+
+/// A virtual clock for the session's phases, and every event they and the
+/// reload jobs reported.
+struct Drive {
+    now: Instant,
+    events: Vec<SessionEvent>,
+}
+
+impl Drive {
+    fn new() -> Self {
+        Self {
+            now: Instant::now(),
+            events: Vec::new(),
+        }
+    }
+
+    /// One frame: a block rendered (the server gets real time to act), the
+    /// plugins' phase at the clock 20 ms on, and any reload job run and
+    /// landed at once, as a host would on a worker.
+    fn step(&mut self, s: &mut Session) {
+        let _ = renders_sound(s);
+        std::thread::sleep(Duration::from_millis(5));
+        self.now += Duration::from_millis(20);
+        let mut out = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(self.now), &mut out);
+        for event in out {
+            if let SessionEvent::PluginReloadDue(job) = event {
+                let landed = s.land_reload(job.run(), self.now);
+                self.events.extend(landed);
+            } else {
+                self.events.push(event);
+            }
+        }
+        // The commit that puts a replacement into the executor's plan.
+        s.run_phase(Phase::Commit, PhaseCx::at(self.now), &mut Vec::new());
+    }
+
+    /// Steps until an event satisfies `stop` (10 s of wall time at most).
+    fn until(&mut self, s: &mut Session, why: &str, stop: impl Fn(&SessionEvent) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.events.iter().any(&stop) {
+            assert!(Instant::now() < deadline, "{why}: {:?}", self.events);
+            self.step(s);
+        }
+    }
+
+    fn count(&self, f: impl Fn(&SessionEvent) -> bool) -> usize {
+        self.events.iter().filter(|e| f(e)).count()
+    }
+}
+
+/// **A crashed plugin comes back at its node with its last state.** The
+/// probe's first server aborts on its 60th block (a replacement does not: the
+/// once-file); before that a parameter is set and a snapshot captured. The
+/// death is reported as `PluginReloading` with the node kept, and the load
+/// is handed out as a job; landing it puts the replacement at the same node
+/// with its wiring (the outputs still read it, so the render is sound again
+/// with no re-wiring), the parameter back at the snapshot's value, and
+/// `PluginRecovered` saying the state was restored, how old, and that the
+/// latency moved by the replacement's extra (the plan's total with it: the
+/// commit re-plans PDC).
+///
+/// Mutations (each run, each failed): `install_reload` not calling
+/// `replace_plugin` (the node stays dead: no sound, no `PluginRecovered`);
+/// the job built with `state: None` (the parameter reads its default);
+/// `HostedPlugin::adopt`'s snapshot clearing left in place of the carry-over
+/// (the second recovery in `a_recovered_plugin_keeps_its_snapshot` restores
+/// nothing); the latency pair not read from the editor (`(before, before)`).
+#[test]
+fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
+    const EXTRA: usize = 48;
+    let once = once_file("recovery-crash.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            APPLY_GAIN,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "60"),
+            ("TUTTI_CLAP_PROBE_RESTART_LATENCY", &EXTRA.to_string()),
+        ],
+        |b| b.snapshot_interval(Duration::from_secs(1)),
+    );
+    let (node, _) = wired_probe(&mut s);
+    // The graph's figure for the node: the probe's own and the pipeline's.
+    let base = s.graph_ref().node_latency(node);
+    let id = gain_param(&s, node);
+
+    // A value worth restoring, and a snapshot of it.
+    s.plugin(node)
+        .unwrap()
+        .handle()
+        .params()
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(
+            Instant::now() < deadline,
+            "the probe never took the value: {:?}",
+            param(&s, node, id)
+        );
+        // The write rides the next block to the server.
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let t0 = Instant::now();
+    for at in [0, 2_000] {
+        let mut out = Vec::new();
+        s.run_phase(
+            Phase::Plugins,
+            PhaseCx::at(t0 + Duration::from_millis(at)),
+            &mut out,
+        );
+        for event in out {
+            if let SessionEvent::PluginSnapshotDue(job) = event {
+                assert!(s.land_snapshot(job.run()), "the snapshot is stored");
+            }
+        }
+    }
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    let total_before = s.latency();
+
+    // Render into the crash, then through the recovery.
+    let mut drive = Drive::new();
+    drive.now = t0 + Duration::from_secs(3);
+    drive.until(&mut s, "recovered", |e| {
+        matches!(e, SessionEvent::PluginRecovered { .. })
+    });
+    let kinds: Vec<&str> = drive
+        .events
+        .iter()
+        .map(|e| match e {
+            SessionEvent::PluginReloading { .. } => "reloading",
+            SessionEvent::PluginRecovered { .. } => "recovered",
+            _ => "other",
+        })
+        .filter(|k| *k != "other")
+        .collect();
+    assert_eq!(kinds, ["reloading", "recovered"], "{:?}", drive.events);
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+    let Some(SessionEvent::PluginRecovered {
+        node: at,
+        state,
+        latency,
+        attempts,
+    }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginRecovered { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(*at, node, "the same node");
+    assert!(
+        matches!(state, tutti_session::StateRestore::Restored { .. }),
+        "{state:?}"
+    );
+    assert_eq!(*attempts, 1);
+    assert_eq!(latency.0, base);
+    assert_eq!(
+        latency.1,
+        Samples(base.0 + EXTRA),
+        "the replacement's latency"
+    );
+    assert!(s.graph_ref().contains(node));
+    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+
+    // The state came back.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(
+            Instant::now() < deadline,
+            "the replacement's parameter is {:?}, not the snapshot's 0.25",
+            param(&s, node, id)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // The commit re-plans PDC for the new latency, and the outputs (never
+    // re-wired) read the replacement.
+    s.update();
+    let total_after = s.latency();
+    assert_eq!(
+        total_after.0,
+        total_before.0 + EXTRA,
+        "PDC follows the latency"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !renders_sound(&mut s) {
+        assert!(
+            Instant::now() < deadline,
+            "the recovered plugin renders nothing"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A plugin that fails every load is given up on, and its node removed.**
+/// Every server aborts on its first block, so each reload comes up and dies:
+/// two reloads (the policy's budget), then `PluginGaveUp` naming the failures,
+/// the node and its record gone, and no `PluginDied`.
+///
+/// Mutations (each run, each failed): the budget compared past its limit (a
+/// third reload); `GiveUp` not removing the node (`contains` still true).
+#[test]
+fn a_plugin_that_crashes_every_time_is_given_up_on() {
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
+        b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+            max_failures: 2,
+            backoff: Duration::from_millis(1),
+            ..Default::default()
+        }))
+    });
+    let (node, _) = wired_probe(&mut s);
+    let mut drive = Drive::new();
+    drive.until(&mut s, "given up", |e| {
+        matches!(e, SessionEvent::PluginGaveUp { .. })
+    });
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginReloading { .. })),
+        2,
+        "{:?}",
+        drive.events
+    );
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+    let Some(SessionEvent::PluginGaveUp { node: at, why }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(*at, node);
+    assert_eq!(why.failures, 3);
+    assert!(!s.graph_ref().contains(node), "the node is removed");
+    assert!(s.plugin(node).is_none(), "and its record");
+}
+
+/// **A reload job dropped unrun is a failed attempt**, and the next one is
+/// handed out: nothing waits on a job that will never land.
+///
+/// Mutation (run, failed): the sole-owner check of the job's token removed
+/// (no second `PluginReloading`, the first job's slot waits forever).
+#[test]
+fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
+    let once = once_file("recovery-dropped.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| {
+            b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                backoff: Duration::from_millis(1),
+                ..Default::default()
+            }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    let mut now = Instant::now();
+    let mut reloadings = 0;
+    let mut dropped = 0;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reloadings < 2 {
+        assert!(Instant::now() < deadline, "no second attempt");
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+        now += Duration::from_millis(20);
+        let mut out = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(now), &mut out);
+        for event in out {
+            match event {
+                SessionEvent::PluginReloading { node: n, .. } => {
+                    assert_eq!(n, node);
+                    reloadings += 1;
+                }
+                // Dropped: the host never ran it.
+                SessionEvent::PluginReloadDue(job) => {
+                    dropped += 1;
+                    drop(job);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(dropped, 1);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Recovering { .. }
+    ));
 }

@@ -38,6 +38,8 @@ pub struct SessionBuilder {
     unresolved_warning: std::time::Duration,
     #[cfg(feature = "plugin")]
     snapshot_interval: std::time::Duration,
+    #[cfg(feature = "plugin")]
+    recovery: Option<crate::RecoveryPolicy>,
 }
 
 impl Default for SessionBuilder {
@@ -54,6 +56,8 @@ impl Default for SessionBuilder {
             unresolved_warning: crate::UNRESOLVED_WARNING,
             #[cfg(feature = "plugin")]
             snapshot_interval: crate::SNAPSHOT_INTERVAL,
+            #[cfg(feature = "plugin")]
+            recovery: Some(crate::RecoveryPolicy::default()),
         }
     }
 }
@@ -133,6 +137,18 @@ impl SessionBuilder {
     #[must_use]
     pub fn snapshot_interval(mut self, every: std::time::Duration) -> Self {
         self.snapshot_interval = every;
+        self
+    }
+
+    /// What a hosted plugin's death or hang does. Default
+    /// `Some(RecoveryPolicy::default())`: the plugin reloads at its node with
+    /// its last snapshot. `None`: its node is removed
+    /// ([`SessionEvent::PluginDied`](crate::SessionEvent::PluginDied)) and the
+    /// host decides, a prompt to the user for instance.
+    #[cfg(feature = "plugin")]
+    #[must_use]
+    pub fn plugin_recovery(mut self, policy: Option<crate::RecoveryPolicy>) -> Self {
+        self.recovery = policy;
         self
     }
 
@@ -260,6 +276,8 @@ impl SessionBuilder {
             faults: None,
             #[cfg(feature = "plugin")]
             snapshot_interval: self.snapshot_interval,
+            #[cfg(feature = "plugin")]
+            recovery: self.recovery,
             #[cfg(feature = "plugin")]
             render_mode: Default::default(),
             #[cfg(feature = "export")]

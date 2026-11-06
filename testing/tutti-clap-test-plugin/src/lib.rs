@@ -1846,7 +1846,10 @@ fn current_latency() -> u32 {
     } else {
         0
     };
-    (REPORTED_LATENCY_SAMPLES + extra + LATENCY_ACTIVE_EXTRA.load(Ordering::SeqCst))
+    (REPORTED_LATENCY_SAMPLES
+        + extra
+        + subprocess::restart_latency()
+        + LATENCY_ACTIVE_EXTRA.load(Ordering::SeqCst))
         .min(MAX_DELAY_LEN as u32)
 }
 

@@ -106,6 +106,9 @@ static BLOCKS_SEEN: AtomicU64 = AtomicU64::new(0);
 /// [`tutti_test_plugin_parked_blocks`].
 static PARKED_BLOCKS: AtomicU64 = AtomicU64::new(0);
 
+/// Frames a replacement server (see `configure`) adds to its latency.
+static RESTART_LATENCY: AtomicU32 = AtomicU32::new(0);
+
 /// The environment-selected switch state, for a test to assert its own spelling
 /// against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,14 +132,33 @@ pub(crate) fn configure() {
         std::env::var(key).ok()?.parse().ok()
     }
 
-    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK") {
+    // `TUTTI_CLAP_PROBE_ONCE_FILE=<path>`: the crash and park switches fire in
+    // the first server to start only. It creates the file exclusively; a server
+    // that finds it there is a replacement, with those two switches off and
+    // `TUTTI_CLAP_PROBE_RESTART_LATENCY` frames added to its latency. A host
+    // that reloads a failed plugin spawns it with the same environment, which
+    // would otherwise fail it again.
+    let replacement = std::env::var_os("TUTTI_CLAP_PROBE_ONCE_FILE").is_some_and(|path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .is_err()
+    });
+    if replacement {
+        if let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_LATENCY") {
+            RESTART_LATENCY.store(n, Ordering::SeqCst);
+        }
+    }
+
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK").filter(|_| !replacement) {
         CRASH_ON_BLOCK.store(n, Ordering::SeqCst);
     }
     if let Ok(path) = std::env::var("TUTTI_CLAP_PROBE_RELEASE_FILE") {
         let mut slot = RELEASE_FILE.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(std::path::PathBuf::from(path));
     }
-    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_BLOCK_FROM") {
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_BLOCK_FROM").filter(|_| !replacement) {
         BLOCK_FROM.store(n, Ordering::SeqCst);
         // Arm the park here rather than on the first qualifying block: the
         // release switch may be called from another thread at any time, and a
@@ -197,6 +219,12 @@ pub fn switches() -> Switches {
 /// do: `TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY`.
 pub(crate) fn offline_extra_latency() -> u32 {
     OFFLINE_EXTRA_LATENCY.load(Ordering::SeqCst)
+}
+
+/// The frames a replacement server adds to its reported latency:
+/// `TUTTI_CLAP_PROBE_RESTART_LATENCY`.
+pub(crate) fn restart_latency() -> u32 {
+    RESTART_LATENCY.load(Ordering::SeqCst)
 }
 
 pub(crate) fn apply_gain() -> bool {

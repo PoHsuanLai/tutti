@@ -45,6 +45,31 @@
 //!   with [`Session::land_snapshot`]. One is in flight per plugin at most:
 //!   the job holds the plugin's snapshot token, and a dropped job frees it.
 //!
+//! # Recovery
+//!
+//! With a [`RecoveryPolicy`] (the default; `SessionBuilder::plugin_recovery`),
+//! an out-of-process plugin that dies, or hangs (stops answering blocks), is
+//! reloaded at its own node instead of removed. The policy is the pure
+//! [`Recovery`]; this module carries out what it decides:
+//!
+//! - **Hang.** `PluginHandle::starved_blocks` is observed each phase; a
+//!   verdict ends the server (`PluginHandle::terminate`), so a hung plugin
+//!   dies like a crashed one, and the load below never races a live server.
+//! - **Death.** The node stays in the graph, silent, with its wiring and
+//!   every lane fed to it; [`SessionEvent::PluginReloading`].
+//! - **Load.** When the backoff passes, [`SessionEvent::PluginReloadDue`]
+//!   hands the host a [`PluginReload`] job: the existing [`PluginLoad`] with
+//!   the last snapshot as its state. [`Session::land_reload`] swaps the
+//!   loaded plugin in at the same node (`Graph::replace_plugin`) and keeps
+//!   the record: the snapshot, its age, the failure history.
+//! - **Reported.** [`SessionEvent::PluginRecovered`] says whether the state
+//!   came back and how old it was; a spent budget is
+//!   [`SessionEvent::PluginGaveUp`] and the node is removed.
+//!
+//! An in-process plugin (VST2) is not recovered: a crash in it takes the
+//! process, and a hang in it blocks the audio thread itself, which nothing
+//! here observes (`starved_blocks` is `0` for it).
+//!
 //! # `Phase::RenderMode` (with `export`)
 //!
 //! Offline while an export token lives (§4.3), Realtime otherwise; each
@@ -59,9 +84,10 @@ use tutti_core::AudioNode;
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
 use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
 use tutti_plugin::{BridgeError, Liveness, Verdict};
-use tutti_types::SampleRate;
+use tutti_types::{SampleRate, Samples, Seconds};
 
-use crate::{Session, SessionEvent};
+use crate::recovery::{Action as RecoveryAction, Event as RecoveryEvent};
+use crate::{GiveUp, Recovery, RecoveryPolicy, Session, SessionEvent};
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
 /// 512 frames at 60 Hz `bevy-tutti` counted before (design 015 §4.4).
@@ -142,27 +168,35 @@ impl PluginLoad {
     /// instance's init, with no subprocess to wait for).
     pub fn run(self) -> PluginLoaded {
         let path = self.path.clone();
+        let config = self.config.clone();
         let opened = if self.opens_in_process() {
             Opened::OnMain(self)
         } else {
             Opened::Done(Box::new(self.open()))
         };
-        PluginLoaded { path, opened }
+        PluginLoaded {
+            path,
+            config,
+            opened,
+        }
     }
 
     /// [`run`](Self::run)'s open, on this thread.
     fn open(self) -> Open {
         let plugin = Plugin::open_with(&self.config, &self.path, self.rate);
+        let mut restore = None;
         if let (Ok(plugin), Some(state)) = (&plugin, &self.state) {
             // A refusal does not abort the load: a plugin at its defaults
             // beats no plugin. But it is not silent.
-            if let Err(e) = plugin.handle().state().load_state(state) {
+            let outcome = plugin.handle().state().load_state(state);
+            if let Err(e) = &outcome {
                 tracing::warn!(
                     "{}: saved state was not restored ({e}); the plugin is loaded at its \
                      defaults",
                     plugin.handle().name()
                 );
             }
+            restore = Some(outcome.map_err(|e| e.to_string()));
         }
         #[cfg(feature = "modulation")]
         let mirror = plugin.as_ref().ok().map(|plugin| {
@@ -172,6 +206,7 @@ impl PluginLoad {
         });
         Open {
             plugin,
+            restore,
             #[cfg(feature = "modulation")]
             mirror,
         }
@@ -182,6 +217,8 @@ impl PluginLoad {
 /// parameter values.
 struct Open {
     plugin: Result<Plugin, BridgeError>,
+    /// The state restore, if one was asked for: the plugin's refusal, as text.
+    restore: Option<Result<(), String>>,
     #[cfg(feature = "modulation")]
     mirror: Option<tutti_plugin::PluginParamValues>,
 }
@@ -195,11 +232,33 @@ enum Opened {
     OnMain(PluginLoad),
 }
 
+/// What became of the state a reload was to restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateRestore {
+    /// The plugin took the snapshot, captured `age` before the failure was
+    /// handled. Anything it changed since is lost.
+    Restored {
+        /// How old the snapshot was when the replacement loaded.
+        age: Duration,
+    },
+    /// The plugin refused the snapshot and loads at its defaults.
+    Refused {
+        /// How old the snapshot was.
+        age: Duration,
+        /// The plugin's refusal.
+        reason: String,
+    },
+    /// No snapshot had been captured yet: the replacement loads at its
+    /// defaults.
+    NoSnapshot,
+}
+
 /// A finished [`PluginLoad`]: the plugin, or why it did not load. `Send`;
 /// [`Session::add_plugin`] takes it on the control thread.
 #[must_use = "a loaded plugin goes into the graph with `Session::add_plugin`"]
 pub struct PluginLoaded {
     path: PathBuf,
+    config: AudioConfig,
     opened: Opened,
 }
 
@@ -240,8 +299,16 @@ pub enum PluginLiveness {
         /// How many observations in a row found it unhealthy.
         consecutive: u8,
     },
-    /// Written off: its node was removed. The engine offers no relaunch;
-    /// load a replacement from its last [`snapshot`](HostedPlugin::snapshot).
+    /// Dead or hung, and being replaced at its node (recovery on): the node
+    /// stays, silent, until [`SessionEvent::PluginRecovered`] or
+    /// [`SessionEvent::PluginGaveUp`].
+    Recovering {
+        /// Why it needs a replacement.
+        cause: String,
+    },
+    /// Written off: its node was removed (recovery off, or its budget
+    /// spent). Load a replacement from its last
+    /// [`snapshot`](HostedPlugin::snapshot) to bring it back by hand.
     Dead {
         /// The engine's latched reason.
         cause: String,
@@ -258,6 +325,12 @@ pub struct HostedPlugin {
     /// Told a render mode since it was added (or crossfaded in).
     pub(crate) told: bool,
     snapshot: Option<Vec<u8>>,
+    /// When the snapshot's capture was asked for.
+    snapshot_from: Option<Instant>,
+    /// How this plugin was loaded, for a reload; `None`: not recoverable.
+    origin: Option<Origin>,
+    recovery: Option<Recovery>,
+    reload: Reload,
     /// Held by the snapshot job in flight, if one is.
     snapshot_token: Arc<()>,
     /// When the last snapshot was asked for, or (until the first) when the
@@ -275,6 +348,37 @@ pub struct HostedPlugin {
     mirror_token: Arc<()>,
 }
 
+/// How a plugin was loaded: what a reload needs.
+#[derive(Debug, Clone)]
+struct Origin {
+    path: PathBuf,
+    config: AudioConfig,
+}
+
+/// A recovering plugin's reload, between its death and its replacement.
+#[derive(Default)]
+struct Reload {
+    /// Why the plugin needs a replacement.
+    cause: String,
+    /// When to hand the load out.
+    due: Option<Instant>,
+    /// Held by the job in flight; a new one per job, so a late landing of an
+    /// earlier job is recognised.
+    token: Arc<()>,
+    in_flight: bool,
+    /// The node's latency before the failure.
+    latency_before: Samples,
+    /// A loaded replacement waiting for the graph to stop re-preparing.
+    ready: Option<Ready>,
+}
+
+struct Ready {
+    client: Box<tutti_plugin::handles::PluginClient>,
+    restore: StateRestore,
+    #[cfg(feature = "modulation")]
+    mirror: Option<tutti_plugin::PluginParamValues>,
+}
+
 impl std::fmt::Debug for HostedPlugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut d = f.debug_struct("HostedPlugin");
@@ -285,7 +389,9 @@ impl std::fmt::Debug for HostedPlugin {
             .field("status", &self.status)
             .field("told", &self.told)
             .field("snapshot_token", &self.snapshot_token)
-            .field("snapshot_at", &self.snapshot_at);
+            .field("snapshot_at", &self.snapshot_at)
+            .field("recovery", &self.recovery)
+            .field("reload_due", &self.reload.due);
         #[cfg(feature = "modulation")]
         d.field("mirror", &self.mirror)
             .field("param_read", &self.param_read)
@@ -304,6 +410,10 @@ impl HostedPlugin {
             status: PluginLiveness::Healthy,
             told: false,
             snapshot: None,
+            snapshot_from: None,
+            origin: None,
+            recovery: None,
+            reload: Reload::default(),
             snapshot_token: Arc::new(()),
             snapshot_at: None,
             #[cfg(feature = "modulation")]
@@ -357,8 +467,37 @@ impl HostedPlugin {
         self.status = PluginLiveness::Healthy;
         self.told = false;
         self.snapshot = None;
+        self.snapshot_from = None;
+        self.recovery = self.recovery.as_ref().map(|r| Recovery::new(r.policy()));
+        self.reload = Reload::default();
         self.snapshot_token = Arc::new(());
         self.snapshot_at = None;
+    }
+
+    /// Records a scheduled reload and tells the host. The node stays.
+    fn begin_reload(
+        &mut self,
+        cause: String,
+        now: Instant,
+        delay: Duration,
+        attempt: u32,
+        node: AudioNode,
+        out: &mut Vec<SessionEvent>,
+    ) {
+        self.status = PluginLiveness::Recovering {
+            cause: cause.clone(),
+        };
+        self.reload.cause = cause.clone();
+        self.reload.due = Some(now + delay);
+        self.reload.in_flight = false;
+        // A job of an earlier attempt lands nowhere.
+        self.reload.token = Arc::new(());
+        out.push(SessionEvent::PluginReloading {
+            node,
+            cause,
+            attempt,
+            delay,
+        });
     }
 
     /// The plugin's control surface: editor, parameters, state.
@@ -419,6 +558,7 @@ pub struct PluginSnapshot {
     /// Boxed: a `SessionEvent` carries the job, and a handle is large.
     handle: Box<PluginHandle>,
     token: Arc<()>,
+    asked: Instant,
 }
 
 impl PluginSnapshot {
@@ -433,6 +573,7 @@ impl PluginSnapshot {
             node: self.node,
             state: self.handle.state().save_state(),
             token: self.token,
+            asked: self.asked,
         }
     }
 }
@@ -453,6 +594,7 @@ pub struct PluginSnapshotTaken {
     /// The record's token when the job was asked for: a crossfade to
     /// another plugin mints a new one, and the job no longer lands.
     token: Arc<()>,
+    asked: Instant,
 }
 
 impl std::fmt::Debug for PluginSnapshotTaken {
@@ -465,6 +607,71 @@ impl std::fmt::Debug for PluginSnapshotTaken {
 }
 
 impl PluginSnapshotTaken {
+    /// The plugin's node.
+    pub fn node(&self) -> AudioNode {
+        self.node
+    }
+}
+
+/// A replacement for a dead or hung plugin, as a job: `Send`, and
+/// [`run`](Self::run) blocks like [`PluginLoad::run`] (it is one), so the host
+/// runs it off its control thread and lands the result with
+/// [`Session::land_reload`]. Dropped unrun, the attempt counts as failed.
+#[must_use = "a reload does nothing until it is run and landed"]
+pub struct PluginReload {
+    node: AudioNode,
+    load: PluginLoad,
+    token: Arc<()>,
+    /// How old the snapshot it restores is, if it restores one.
+    snapshot_age: Option<Duration>,
+}
+
+impl PluginReload {
+    /// The plugin's node.
+    pub fn node(&self) -> AudioNode {
+        self.node
+    }
+
+    /// Launches the replacement and restores the snapshot. Any thread; it
+    /// blocks.
+    pub fn run(self) -> PluginReloaded {
+        PluginReloaded {
+            node: self.node,
+            loaded: self.load.run(),
+            token: self.token,
+            snapshot_age: self.snapshot_age,
+        }
+    }
+}
+
+impl std::fmt::Debug for PluginReload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginReload")
+            .field("node", &self.node)
+            .field("load", &self.load)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A finished [`PluginReload`], for [`Session::land_reload`].
+#[must_use = "land it with `Session::land_reload`"]
+pub struct PluginReloaded {
+    node: AudioNode,
+    loaded: PluginLoaded,
+    token: Arc<()>,
+    snapshot_age: Option<Duration>,
+}
+
+impl std::fmt::Debug for PluginReloaded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginReloaded")
+            .field("node", &self.node)
+            .field("loaded", &self.loaded)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PluginReloaded {
     /// The plugin's node.
     pub fn node(&self) -> AudioNode {
         self.node
@@ -593,8 +800,10 @@ impl Session {
     pub fn add_plugin(&mut self, loaded: PluginLoaded) -> Result<AudioNode, BridgeError> {
         crate::main_thread();
         let path = loaded.path;
+        let config = loaded.config;
         let Open {
             plugin,
+            restore: _,
             #[cfg(feature = "modulation")]
             mirror,
         } = match loaded.opened {
@@ -608,7 +817,15 @@ impl Session {
         let node = match plugin.into_client() {
             Ok(client) => {
                 client.controls().set_meter(meter);
-                self.graph.insert_plugin(client)
+                let node = self.graph.insert_plugin(client);
+                if let Some(hosted) = self.graph.plugins.get_mut(&node) {
+                    hosted.origin = Some(Origin {
+                        path: path.clone(),
+                        config,
+                    });
+                    hosted.recovery = self.recovery.map(Recovery::new);
+                }
+                node
             }
             Err(plugin) => {
                 let plugin_meter = plugin.meter();
@@ -647,7 +864,12 @@ impl Session {
     /// to another plugin since the job was asked for) lands nowhere: it is
     /// the outgoing plugin's state, not a recovery point for the node.
     pub fn land_snapshot(&mut self, taken: PluginSnapshotTaken) -> bool {
-        let PluginSnapshotTaken { node, state, token } = taken;
+        let PluginSnapshotTaken {
+            node,
+            state,
+            token,
+            asked,
+        } = taken;
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return false;
         };
@@ -658,6 +880,7 @@ impl Session {
         match state {
             Ok(state) => {
                 hosted.snapshot = Some(state);
+                hosted.snapshot_from = Some(asked);
                 true
             }
             Err(e) => {
@@ -694,6 +917,323 @@ impl Session {
         true
     }
 
+    /// What a hosted plugin's death or hang does from now on
+    /// ([`SessionBuilder::plugin_recovery`](crate::SessionBuilder::plugin_recovery)).
+    /// Plugins already hosted start over with the new policy (their failure
+    /// history is dropped); a plugin already being replaced finishes that
+    /// first. `None` removes a dead plugin's node.
+    pub fn set_plugin_recovery(&mut self, policy: Option<RecoveryPolicy>) {
+        self.recovery = policy;
+        for hosted in self.graph.plugins.values_mut() {
+            if hosted.origin.is_none() || matches!(hosted.status, PluginLiveness::Recovering { .. })
+            {
+                continue;
+            }
+            hosted.recovery = policy.map(Recovery::new);
+        }
+    }
+
+    /// Lands a finished reload at `now`: the replacement takes the dead
+    /// plugin's node, with its wiring (`Graph::replace_plugin`), its snapshot
+    /// and failure history, and (`modulation`) the parameter values the old
+    /// one's GUI had reported since. Returns what happened, as the events
+    /// `Phase::Plugins` would have reported.
+    ///
+    /// A reload of a node no longer being recovered (removed, replaced by
+    /// another plugin, or an earlier attempt's) lands nowhere and returns
+    /// nothing; the loaded plugin is dropped, which ends its server. A
+    /// failed load is the next attempt's backoff, or
+    /// [`SessionEvent::PluginGaveUp`] and the node's removal.
+    ///
+    /// A main-thread call.
+    pub fn land_reload(&mut self, done: PluginReloaded, now: Instant) -> Vec<SessionEvent> {
+        crate::main_thread();
+        let PluginReloaded {
+            node,
+            loaded,
+            token,
+            snapshot_age,
+        } = done;
+        let mut out = Vec::new();
+        let mut gave_up = Vec::new();
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return out;
+        };
+        if !Arc::ptr_eq(&token, &hosted.reload.token)
+            || !matches!(hosted.status, PluginLiveness::Recovering { .. })
+        {
+            tracing::debug!("plugin {node:?}: a reload that no longer applies was discarded");
+            return out;
+        }
+        hosted.reload.in_flight = false;
+        let opened = match loaded.opened {
+            Opened::Done(open) => *open,
+            Opened::OnMain(load) => load.open(),
+        };
+        let Open {
+            plugin,
+            restore,
+            #[cfg(feature = "modulation")]
+            mirror,
+        } = opened;
+        let client = match plugin.map(Plugin::into_client) {
+            Ok(Ok(client)) => client,
+            Ok(Err(_in_process)) => {
+                self.fail_reload(
+                    node,
+                    "the replacement opened in process".into(),
+                    now,
+                    &mut out,
+                    &mut gave_up,
+                );
+                self.finish_gave_up(gave_up, &mut out);
+                return out;
+            }
+            Err(e) => {
+                self.fail_reload(node, e.to_string(), now, &mut out, &mut gave_up);
+                self.finish_gave_up(gave_up, &mut out);
+                return out;
+            }
+        };
+        let restore = match (restore, snapshot_age) {
+            (Some(Ok(())), Some(age)) => StateRestore::Restored { age },
+            (Some(Err(reason)), Some(age)) => StateRestore::Refused { age, reason },
+            _ => StateRestore::NoSnapshot,
+        };
+        let ready = Ready {
+            client,
+            restore,
+            #[cfg(feature = "modulation")]
+            mirror,
+        };
+        self.install_reload(node, ready, now, &mut out);
+        out
+    }
+
+    /// Puts a loaded replacement into the graph at `node`, or keeps it until
+    /// the graph stops re-preparing.
+    fn install_reload(
+        &mut self,
+        node: AudioNode,
+        ready: Ready,
+        now: Instant,
+        out: &mut Vec<SessionEvent>,
+    ) {
+        let Ready {
+            client,
+            restore,
+            #[cfg(feature = "modulation")]
+            mirror,
+        } = ready;
+        let meter = self.click_settings.project_meter();
+        client.controls().set_meter(meter);
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return;
+        };
+        // What the replacement carries over from the record, which a swap
+        // resets (`HostedPlugin::replace`).
+        let snapshot = hosted.snapshot.take();
+        let snapshot_from = hosted.snapshot_from;
+        let recovery = hosted.recovery.take();
+        let latency_before = hosted.reload.latency_before;
+        #[cfg(feature = "modulation")]
+        let old_mirror = hosted.mirror.take();
+        let attempts = recovery.as_ref().map_or(1, Recovery::failures);
+        match self.graph.replace_plugin(
+            node,
+            client,
+            Seconds(0.01),
+            tutti_graph::CrossfadeCurve::default(),
+        ) {
+            Ok(()) => {}
+            Err(crate::ReplaceRefused::Busy(client)) => {
+                // Between a re-prepare's two commits: try again next phase.
+                if let Some(hosted) = self.graph.plugins.get_mut(&node) {
+                    hosted.snapshot = snapshot;
+                    hosted.recovery = recovery;
+                    #[cfg(feature = "modulation")]
+                    {
+                        hosted.mirror = old_mirror;
+                    }
+                    hosted.reload.ready = Some(Ready {
+                        client,
+                        restore,
+                        #[cfg(feature = "modulation")]
+                        mirror,
+                    });
+                }
+                return;
+            }
+            Err(crate::ReplaceRefused::Failed(refused)) => {
+                tracing::error!("plugin {node:?}: the replacement was refused: {refused}");
+                if let Some(hosted) = self.graph.plugins.get_mut(&node) {
+                    hosted.snapshot = snapshot;
+                    hosted.recovery = recovery;
+                    #[cfg(feature = "modulation")]
+                    {
+                        hosted.mirror = old_mirror;
+                    }
+                }
+                let mut gave_up = Vec::new();
+                self.fail_reload(node, refused.to_string(), now, out, &mut gave_up);
+                self.finish_gave_up(gave_up, out);
+                return;
+            }
+        }
+        let latency_after = self.graph.node_latency(node);
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return;
+        };
+        hosted.snapshot = snapshot;
+        hosted.snapshot_from = snapshot_from;
+        hosted.recovery = recovery;
+        if let Some(recovery) = hosted.recovery.as_mut() {
+            recovery.step(RecoveryEvent::Loaded, now);
+        }
+        #[cfg(feature = "modulation")]
+        {
+            hosted.param_read = None;
+            hosted.mirror = mirror;
+            if let (Some(old), Some(new)) = (old_mirror.as_ref(), hosted.mirror.as_mut()) {
+                // The GUI edits the old plugin reported since its last
+                // snapshot are not in the snapshot: set them again.
+                let params = hosted.handle.params();
+                let mut values: std::collections::HashMap<_, _> = new.values().collect();
+                for (id, value) in old.values() {
+                    params.set_parameter_value(id, value);
+                    values.insert(id, value);
+                }
+                new.land(values);
+            }
+        }
+        hosted.status = PluginLiveness::Healthy;
+        hosted.reload = Reload::default();
+        out.push(SessionEvent::PluginRecovered {
+            node,
+            state: restore,
+            latency: (latency_before, latency_after),
+            attempts,
+        });
+    }
+
+    /// One reload attempt failed (or its job was dropped): the next backoff,
+    /// or the end of trying.
+    fn fail_reload(
+        &mut self,
+        node: AudioNode,
+        reason: String,
+        now: Instant,
+        out: &mut Vec<SessionEvent>,
+        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+    ) {
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return;
+        };
+        hosted.reload.in_flight = false;
+        let Some(recovery) = hosted.recovery.as_mut() else {
+            return;
+        };
+        let action = recovery.step(
+            RecoveryEvent::LoadFailed {
+                reason: reason.clone(),
+            },
+            now,
+        );
+        self.apply_failure(node, action, reason, now, out, gave_up);
+    }
+
+    /// Carries out the answer to a failed attempt.
+    fn apply_failure(
+        &mut self,
+        node: AudioNode,
+        action: RecoveryAction,
+        reason: String,
+        now: Instant,
+        out: &mut Vec<SessionEvent>,
+        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+    ) {
+        match action {
+            RecoveryAction::Reload { delay, attempt } => {
+                tracing::warn!("plugin {node:?}: reload failed ({reason}); again in {delay:?}");
+                if let Some(hosted) = self.graph.plugins.get_mut(&node) {
+                    hosted.begin_reload(reason, now, delay, attempt, node, out);
+                }
+            }
+            RecoveryAction::GiveUp(why) => {
+                tracing::error!("plugin {node:?}: reload failed ({reason}); giving up: {why}");
+                gave_up.push((node, why));
+            }
+            RecoveryAction::Wait | RecoveryAction::Terminate { .. } => {}
+        }
+    }
+
+    fn finish_gave_up(&mut self, gave_up: Vec<(AudioNode, GiveUp)>, out: &mut Vec<SessionEvent>) {
+        for (node, why) in gave_up {
+            self.remove(node);
+            out.push(SessionEvent::PluginGaveUp { node, why });
+        }
+    }
+
+    /// One phase's work on a plugin being replaced: install a replacement
+    /// that was waiting, count a dropped or overdue job as failed, or hand
+    /// the load out when its backoff has passed.
+    fn drive_reload(
+        &mut self,
+        node: AudioNode,
+        now: Instant,
+        out: &mut Vec<SessionEvent>,
+        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+    ) {
+        let rate = self.graph.prepared().sample_rate();
+        let Some(hosted) = self.graph.plugins.get_mut(&node) else {
+            return;
+        };
+        if let Some(ready) = hosted.reload.ready.take() {
+            self.install_reload(node, ready, now, out);
+            return;
+        }
+        if hosted.reload.in_flight {
+            // The token is the job's alone while it is out: sole owner means
+            // the job was dropped.
+            if Arc::strong_count(&hosted.reload.token) == 1 {
+                self.fail_reload(node, "the reload job was dropped".into(), now, out, gave_up);
+                return;
+            }
+        }
+        let tick = hosted
+            .recovery
+            .as_mut()
+            .map_or(RecoveryAction::Wait, |r| r.step(RecoveryEvent::Tick, now));
+        if tick != RecoveryAction::Wait {
+            // The attempt ran out of time.
+            let reason = "the reload timed out".to_string();
+            self.apply_failure(node, tick, reason, now, out, gave_up);
+            return;
+        }
+        let (Some(origin), Some(due)) = (hosted.origin.clone(), hosted.reload.due) else {
+            return;
+        };
+        if hosted.reload.in_flight || now < due {
+            return;
+        }
+        hosted.reload.due = None;
+        hosted.reload.in_flight = true;
+        let load = PluginLoad {
+            path: origin.path,
+            rate,
+            config: origin.config,
+            state: hosted.snapshot.clone(),
+        };
+        out.push(SessionEvent::PluginReloadDue(PluginReload {
+            node,
+            load,
+            token: Arc::clone(&hosted.reload.token),
+            snapshot_age: hosted
+                .snapshot_from
+                .map(|t| now.saturating_duration_since(t)),
+        }));
+    }
+
     /// The render mode last announced to the hosted plugins.
     pub fn render_mode(&self) -> tutti_plugin::RenderMode {
         self.render_mode.announced
@@ -707,6 +1247,7 @@ impl Session {
         let now = cx.now;
         let interval = self.snapshot_interval;
         let mut dead = Vec::new();
+        let mut gave_up = Vec::new();
         let nodes: Vec<AudioNode> = self.graph.plugins.keys().copied().collect();
         for node in nodes {
             let Some(hosted) = self.graph.plugins.get_mut(&node) else {
@@ -719,6 +1260,10 @@ impl Session {
                 PluginStatus::Dead { cause } => Some(cause),
                 _ => None,
             };
+            if matches!(hosted.status, PluginLiveness::Recovering { .. }) {
+                self.drive_reload(node, now, out, &mut gave_up);
+                continue;
+            }
             match hosted.liveness.observe(cause.is_none(), now) {
                 Verdict::Healthy => hosted.status = PluginLiveness::Healthy,
                 Verdict::Failing { consecutive } => {
@@ -729,6 +1274,42 @@ impl Session {
                     // observation, and every unhealthy one carries the
                     // engine's latched cause.
                     let cause = cause.unwrap_or_default();
+                    let latency = self.graph.node_latency(node);
+                    let hosted = self
+                        .graph
+                        .plugins
+                        .get_mut(&node)
+                        .expect("looked up above, and nothing between removes it");
+                    let action = hosted.recovery.as_mut().map(|r| {
+                        r.step(
+                            RecoveryEvent::Died {
+                                cause: cause.clone(),
+                            },
+                            now,
+                        )
+                    });
+                    match action {
+                        Some(RecoveryAction::Reload { delay, attempt }) => {
+                            tracing::error!(
+                                "plugin '{}' declared dead ({cause}); reloading {node:?} in \
+                                 {delay:?}",
+                                hosted.handle.name()
+                            );
+                            hosted.reload.latency_before = latency;
+                            hosted.begin_reload(cause, now, delay, attempt, node, out);
+                            continue;
+                        }
+                        Some(RecoveryAction::GiveUp(why)) => {
+                            tracing::error!(
+                                "plugin '{}' declared dead ({cause}); giving up on {node:?}: {why}",
+                                hosted.handle.name()
+                            );
+                            hosted.status = PluginLiveness::Dead { cause };
+                            gave_up.push((node, why));
+                            continue;
+                        }
+                        _ => {}
+                    }
                     tracing::error!(
                         "plugin '{}' declared dead ({cause}); removing {node:?}",
                         hosted.handle.name()
@@ -739,6 +1320,23 @@ impl Session {
                     dead.push((node, cause));
                     continue;
                 }
+            }
+            // A plugin that is alive but never returns from `process()` is
+            // ended here, and dies by the path above.
+            if cause.is_none()
+                && let Some(recovery) = hosted.recovery.as_mut()
+                && let RecoveryAction::Terminate { cause } = recovery.step(
+                    RecoveryEvent::Starved {
+                        blocks: hosted.handle.starved_blocks(),
+                    },
+                    now,
+                )
+            {
+                tracing::error!(
+                    "plugin '{}' ({node:?}): {cause}; ending its server",
+                    hosted.handle.name()
+                );
+                hosted.handle.terminate(&cause);
             }
 
             // The figure its node declares now, onto the graph when it moved.
@@ -757,6 +1355,7 @@ impl Session {
                     node,
                     handle: Box::new(hosted.handle.clone()),
                     token: Arc::clone(&hosted.snapshot_token),
+                    asked: now,
                 }
             });
 
@@ -793,6 +1392,10 @@ impl Session {
         for (node, cause) in dead {
             self.remove(node);
             out.push(SessionEvent::PluginDied { node, cause });
+        }
+        for (node, why) in gave_up {
+            self.remove(node);
+            out.push(SessionEvent::PluginGaveUp { node, why });
         }
     }
 

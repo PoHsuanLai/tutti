@@ -1,7 +1,7 @@
 //! Getting a node into the graph, and swapping the node behind one.
 //!
 //! Both operations queue a deferred world command, for the same reason:
-//! [`AudioGraphRes::insert`] returns the node's handle *inside* the
+//! [`Graph::insert`](crate::graph::Graph::insert) returns the node's handle *inside* the
 //! command, so binding it to an entity cannot be done from outside. That is what
 //! makes [`SpawnAudioNode`] irreducible rather than a convenience — it is the
 //! only place the entity↔node binding can be formed.
@@ -77,7 +77,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, NodeControls};
 /// let graph = app.world().resource::<AudioGraphRes>();
 /// // Port 0 of the filter is fed by the oscillator — the declaration reached
 /// // the engine. Without the `PortSources`, this would still read `Silence`.
-/// assert!(matches!(graph.source(filt, 0), GraphSource::Node(_, 0)));
+/// assert!(matches!(graph.graph_ref().source(filt, 0), GraphSource::Node(_, 0)));
 /// ```
 ///
 /// The entity is bound to the node via [`AudioNode`] only. A host that needs to
@@ -120,7 +120,7 @@ impl InsertAudioNode for EntityCommands<'_> {
         N::Controls: Send + Sync + 'static,
     {
         let entity = self.id();
-        // Same deferred shape as `spawn_audio_node`: `AudioGraphRes::insert`
+        // Same deferred shape as `spawn_audio_node`: `Graph::insert`
         // returns the handle inside the command, so the binding cannot be observed from outside.
         self.commands()
             .queue(move |world: &mut World| insert_and_bind(world, entity, node));
@@ -160,7 +160,7 @@ where
         );
         return;
     };
-    let (id, controls) = graph.add(node);
+    let (id, controls) = graph.graph().add(node);
     if let Ok(mut e) = world.get_entity_mut(entity) {
         e.insert(NodeControls(controls));
         CapturedControls::default().bind(&mut e, id);
@@ -172,7 +172,7 @@ where
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode`].
-/// 2. Calls [`AudioGraphRes::crossfade`] with a 5 ms equal-amplitude fade
+/// 2. Calls [`Graph::crossfade`](crate::graph::Graph::crossfade) with a 5 ms equal-amplitude fade
 ///    when `node`'s shape fits the running one's, else a plain swap on the
 ///    next commit. The session addresses the incoming node's params
 ///    ([`SessionNode::params`]) and marks itself edited, so the per-frame
@@ -212,7 +212,7 @@ where
         };
         // `graph` borrows `world`; its last use ends the borrow (a `Mut` has
         // no `Drop`), so `land` can take `world` back.
-        let landed = graph.crossfade(node_key, node, FADE, CURVE);
+        let landed = graph.graph().crossfade(node_key, node, FADE, CURVE);
         land(
             world,
             entity,
@@ -245,7 +245,9 @@ pub fn crossfade_plugin_node(
         let Some((node_key, mut graph)) = crossfade_target(world, entity) else {
             return;
         };
-        let landed = graph.crossfade_plugin(node_key, Box::new(client), FADE, CURVE);
+        let landed = graph
+            .graph()
+            .crossfade_plugin(node_key, Box::new(client), FADE, CURVE);
         land(world, entity, node_key, captured, landed, |_, ()| {});
     });
 }
@@ -376,7 +378,7 @@ impl PendingCrossfades {
         for event in events {
             let (node, id, landed) = match event {
                 SessionEvent::CrossfadeLanded { node, id, controls } => (node, id, Ok(controls)),
-                SessionEvent::CrossfadeFailed { node, id, why } => (node, id, Err(why)),
+                SessionEvent::CrossfadeFailed { node, id, refused } => (node, id, Err(refused)),
                 _ => continue,
             };
             let Some(at) = self.0.iter().position(|w| w.id == id) else {

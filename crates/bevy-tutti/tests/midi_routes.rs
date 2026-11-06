@@ -36,7 +36,7 @@ const SAMPLE_RATE: f64 = 48_000.0;
 fn app() -> App {
     let mut app = App::new();
     let mut graph = AudioGraphRes::headless(0, 2);
-    let (input_node, _) = graph.insert(MidiInputNode::new(None));
+    let (input_node, _) = graph.graph().insert(MidiInputNode::new(None));
     app.insert_resource(graph);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
@@ -84,6 +84,7 @@ mod routes {
         let input = app.world().resource::<MidiEngineNodes>().input_node;
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .event_sources(node_of(app, entity), 0)
             .into_iter()
             .filter(|s| s.node == input)
@@ -182,7 +183,7 @@ mod routes {
         let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(synth).0
+            graph.graph().insert(synth).0
         };
         app.world_mut().entity_mut(lead).insert(node);
         app.update();
@@ -213,6 +214,7 @@ mod keyboard {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .event_sources(node_of(&app, lead), 0),
             vec![queue.into()]
         );
@@ -220,14 +222,24 @@ mod keyboard {
         app.world_mut().entity_mut(lead).remove::<LiveMidiInput>();
         app.update();
         assert!(app.world().get::<LiveMidi>(lead).is_none());
-        assert!(!app.world().resource::<AudioGraphRes>().contains(queue));
+        assert!(
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(queue)
+        );
 
         app.world_mut().entity_mut(lead).insert(LiveMidiInput);
         app.update();
         let queue = app.world().get::<LiveMidi>(lead).unwrap().node();
         app.world_mut().despawn(lead);
         app.update();
-        assert!(!app.world().resource::<AudioGraphRes>().contains(queue));
+        assert!(
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(queue)
+        );
     }
 
     /// **A keyboard follows its entity onto a new node bound after the old
@@ -270,6 +282,7 @@ mod keyboard {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .event_sources(new, 0),
             vec![queue.into()],
             "the keyboard feeds the new node"
@@ -309,6 +322,7 @@ mod keyboard {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .event_sources(node_of(&app, lead), 0),
             vec![queue.into()]
         );
@@ -358,6 +372,7 @@ mod keyboard {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .event_sources(node_of(&app, lead), 0),
             vec![queue.into()]
         );
@@ -372,6 +387,7 @@ mod keyboard {
         let node = node_of(&app, lead);
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
+            .graph()
             .set_outputs_from(node);
         app.world_mut().entity_mut(lead).insert(LiveMidiInput);
         app.update();
@@ -396,7 +412,10 @@ mod unwire {
     use super::*;
 
     fn graph_has(app: &App, node: AudioNode) -> bool {
-        app.world().resource::<AudioGraphRes>().contains(node)
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .contains(node)
     }
 
     #[test]

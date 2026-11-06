@@ -127,16 +127,33 @@ pub enum ReplaceRefused<U> {
     Busy(U),
     /// Never: the graph is poisoned (a re-prepare failed with its units out),
     /// or the node is not in it. The incoming node was dropped.
-    Failed(String),
+    Failed(CrossfadeRefused),
 }
 
 impl<U> std::fmt::Debug for ReplaceRefused<U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy(_) => f.write_str("Busy(..)"),
-            Self::Failed(why) => f.debug_tuple("Failed").field(why).finish(),
+            Self::Failed(refused) => f.debug_tuple("Failed").field(refused).finish(),
         }
     }
+}
+
+/// Who feeds a sink's event input 0 through [`Graph::set_feed`]. Each feeder
+/// owns its own entry, so feeders never overwrite each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum Feeder {
+    /// A clip the session's sequencer plays.
+    Sequencer,
+    /// A live input the session made.
+    LiveInput,
+    /// The session's MIDI route rules.
+    Routes,
+    /// The clock the hardware out carries.
+    Clock,
+    /// A host's declarations (bevy-tutti's `EventSources`).
+    Declared,
 }
 
 /// A crossfade waiting for a re-prepare, named so its landing can be told
@@ -156,11 +173,22 @@ pub enum Crossfade<C> {
     Waiting(CrossfadeId),
 }
 
-/// Why [`Graph::crossfade`] took nothing: the graph is poisoned, or the node
-/// is not in it. The incoming node was dropped.
+/// Why a swap ([`Graph::replace`], [`Graph::crossfade`]) took nothing. The
+/// incoming node was dropped.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("crossfade refused: {0}")]
-pub struct CrossfadeRefused(pub String);
+#[non_exhaustive]
+pub enum CrossfadeRefused {
+    /// The graph is poisoned (a re-prepare failed with its units out); the
+    /// cause is the editor's.
+    #[error("the graph is poisoned ({0}); build a new one")]
+    Poisoned(String),
+    /// The node is not in the graph.
+    #[error("{0:?} is not in the graph")]
+    NoSuchNode(AudioNode),
+    /// The editor refused the swap.
+    #[error("the graph refused the swap: {0}")]
+    Editor(tutti_graph::CommitError),
+}
 
 /// One node's handle, and its params by address when it has any.
 struct Entry {
@@ -213,7 +241,7 @@ where
                 Ok(Box::new(controls))
             }
             Err(ReplaceRefused::Busy(n)) => Err(ReplaceRefused::Busy(Box::new(Swap(n)))),
-            Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
+            Err(ReplaceRefused::Failed(refused)) => Err(ReplaceRefused::Failed(refused)),
         }
     }
 }
@@ -233,7 +261,7 @@ impl ErasedSwap for PluginSwap {
         match graph.replace_plugin(node, self.0, fade, curve) {
             Ok(()) => Ok(Box::new(())),
             Err(ReplaceRefused::Busy(c)) => Err(ReplaceRefused::Busy(Box::new(PluginSwap(c)))),
-            Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
+            Err(ReplaceRefused::Failed(refused)) => Err(ReplaceRefused::Failed(refused)),
         }
     }
 }
@@ -268,7 +296,7 @@ pub(crate) enum Retried {
     Failed {
         node: AudioNode,
         id: CrossfadeId,
-        why: String,
+        refused: CrossfadeRefused,
     },
 }
 
@@ -297,7 +325,7 @@ pub struct Graph {
     render_workers: usize,
     /// Each sink's event input 0, by feeder: the sources each feeder feeds
     /// it. Written into the spec as their union.
-    feeds: BTreeMap<NodeKey, BTreeMap<&'static str, Vec<EventSource>>>,
+    feeds: BTreeMap<NodeKey, BTreeMap<Feeder, Vec<EventSource>>>,
     /// Each fed sink's event input 0: the sources on it that the feeds put
     /// there and the host did not wire itself, which are all a change of the
     /// feeds may take away. Every other edge on the input is the host's.
@@ -341,6 +369,10 @@ pub enum Committed {
     /// re-prepare is between its halves. The edit flag stays set, and the
     /// next update retries.
     Retry,
+}
+
+fn compensation_of(plan: &tutti_graph::Plan) -> Compensation {
+    Compensation::new(plan.compensation().to_vec(), plan.total_latency().samples())
 }
 
 /// `node`'s key. [`AudioNode::fresh`] draws it from [`NodeKey::fresh`]'s
@@ -663,8 +695,8 @@ impl Graph {
         // Asked here, before binding: `replace` hands back what it refuses,
         // and a bound plugin cannot be unbound.
         if let Some(cause) = self.editor.poison_cause() {
-            return Err(ReplaceRefused::Failed(format!(
-                "the graph is poisoned ({cause}); build a new one"
+            return Err(ReplaceRefused::Failed(CrossfadeRefused::Poisoned(
+                cause.to_owned(),
             )));
         }
         if self.editor.is_repreparing() {
@@ -690,7 +722,7 @@ impl Graph {
                 }
                 Ok(())
             }
-            Err(ReplaceRefused::Failed(why)) => Err(ReplaceRefused::Failed(why)),
+            Err(ReplaceRefused::Failed(refused)) => Err(ReplaceRefused::Failed(refused)),
             Err(ReplaceRefused::Busy(_)) => unreachable!("checked above"),
         }
     }
@@ -815,8 +847,8 @@ impl Graph {
         curve: CrossfadeCurve,
     ) -> Result<N::Controls, ReplaceRefused<N>> {
         if let Some(cause) = self.editor.poison_cause() {
-            return Err(ReplaceRefused::Failed(format!(
-                "the graph is poisoned ({cause}); build a new one"
+            return Err(ReplaceRefused::Failed(CrossfadeRefused::Poisoned(
+                cause.to_owned(),
             )));
         }
         if self.editor.is_repreparing() {
@@ -824,15 +856,13 @@ impl Graph {
         }
         let k = key(node);
         if !self.nodes.contains_key(&k) {
-            return Err(ReplaceRefused::Failed(format!(
-                "{node:?} is not in the graph"
-            )));
+            return Err(ReplaceRefused::Failed(CrossfadeRefused::NoSuchNode(node)));
         }
         let rate = self.editor.prepare().sample_rate();
         let controls = self
             .editor
             .replace_or_swap(k, incoming, Fade::seconds(fade, rate, curve))
-            .map_err(|e| ReplaceRefused::Failed(e.to_string()))?;
+            .map_err(|e| ReplaceRefused::Failed(CrossfadeRefused::Editor(e)))?;
         if let Some(entry) = self.nodes.get_mut(&k) {
             entry.params = None;
             entry.reclaimer = None;
@@ -882,7 +912,7 @@ impl Graph {
                 fade,
                 curve,
             ))),
-            Err(ReplaceRefused::Failed(why)) => Err(CrossfadeRefused(why)),
+            Err(ReplaceRefused::Failed(refused)) => Err(refused),
         }
     }
 
@@ -917,7 +947,7 @@ impl Graph {
                 fade,
                 curve,
             ))),
-            Err(ReplaceRefused::Failed(why)) => Err(CrossfadeRefused(why)),
+            Err(ReplaceRefused::Failed(refused)) => Err(refused),
         }
     }
 
@@ -977,9 +1007,9 @@ impl Graph {
                     fade,
                     curve,
                 }),
-                Err(ReplaceRefused::Failed(why)) => {
-                    tracing::error!("graph: crossfade of {node:?} refused: {why}");
-                    out.push(Retried::Failed { node, id, why });
+                Err(ReplaceRefused::Failed(refused)) => {
+                    tracing::error!("graph: crossfade of {node:?} refused: {refused}");
+                    out.push(Retried::Failed { node, id, refused });
                 }
             }
         }
@@ -1078,15 +1108,15 @@ impl Graph {
     /// feeder's sources that are in the graph, written when it changes; a
     /// sink with no event input takes nothing, and keeps the feed.
     ///
-    /// Each feeder (a clip, a route rule, a declaration) owns only its own
-    /// entry, so feeders never overwrite each other.
-    pub fn set_feed(&mut self, sink: AudioNode, feeder: &'static str, sources: Vec<EventSource>) {
+    /// Each [`Feeder`] owns only its own entry, so feeders never overwrite
+    /// each other.
+    pub fn set_feed(&mut self, sink: AudioNode, feeder: Feeder, sources: Vec<EventSource>) {
         if sources.is_empty() {
             // No entry is made for a feeder that feeds nothing.
             let Some(feeds) = self.feeds.get_mut(&key(sink)) else {
                 return;
             };
-            if feeds.remove(feeder).is_none() {
+            if feeds.remove(&feeder).is_none() {
                 return;
             }
             if feeds.is_empty() {
@@ -1094,7 +1124,7 @@ impl Graph {
             }
         } else {
             let feeds = self.feeds.entry(key(sink)).or_default();
-            if feeds.get(feeder) == Some(&sources) {
+            if feeds.get(&feeder) == Some(&sources) {
                 return;
             }
             feeds.insert(feeder, sources);
@@ -1103,10 +1133,10 @@ impl Graph {
     }
 
     /// What `feeder` feeds `sink`: empty when nothing.
-    pub fn feed(&self, sink: AudioNode, feeder: &'static str) -> &[EventSource] {
+    pub fn feed(&self, sink: AudioNode, feeder: Feeder) -> &[EventSource] {
         self.feeds
             .get(&key(sink))
-            .and_then(|f| f.get(feeder))
+            .and_then(|f| f.get(&feeder))
             .map_or(&[], Vec::as_slice)
     }
 
@@ -1536,10 +1566,10 @@ impl Graph {
     }
 
     /// The compensation the next commit's plan carries: the spec compiled
-    /// against the shapes, as the commit will compile it, as the per-channel
-    /// pre-roll and the total. Nothing is inserted — PDC is the compiler's.
-    /// `None` when the spec does not compile (the commit will say why).
-    pub fn planned_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
+    /// against the shapes, as the commit will compile it. Nothing is
+    /// inserted — PDC is the compiler's. `None` when the spec does not
+    /// compile (the commit will say why).
+    pub fn planned_compensation(&self) -> Option<Compensation> {
         let valid = self.editor.spec().validate().ok()?;
         let (plan, _) = tutti_graph::compile(
             &valid,
@@ -1548,7 +1578,7 @@ impl Graph {
             self.editor.base().map(|p| &**p),
         )
         .ok()?;
-        Some((plan.compensation().to_vec(), plan.total_latency().samples()))
+        Some(compensation_of(&plan))
     }
 
     /// The plan last sent to the audio thread (`Editor::base`).
@@ -1567,12 +1597,10 @@ impl Graph {
         self.edited
     }
 
-    /// The compensation of the plan sent last, as the per-channel pre-roll
-    /// and the total: what the session publishes, since it is what the
-    /// executor is handed.
-    pub fn sent_compensation(&self) -> Option<(Vec<Samples>, Samples)> {
-        let plan = self.editor.base()?;
-        Some((plan.compensation().to_vec(), plan.total_latency().samples()))
+    /// The compensation of the plan sent last: what the session publishes,
+    /// since it is what the executor is handed.
+    pub fn sent_compensation(&self) -> Option<Compensation> {
+        self.editor.base().map(|plan| compensation_of(plan))
     }
 
     /// A node's latency moved at runtime (a plugin's latency cell): hand

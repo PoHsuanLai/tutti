@@ -29,9 +29,9 @@
 //! let mut graph = AudioGraphRes::headless(0, 1);
 //! // A `ParamNode`: its controls are its `ParamSet`, addressed on the node so
 //! // a param write lands on its cell (what `spawn_audio_node` does).
-//! let (node, params) = graph.insert(unit);
-//! graph.set_node_params(node, Some(params));
-//! graph.set_sample_rate(SampleRate(48_000.0));
+//! let (node, params) = graph.graph().insert(unit);
+//! graph.graph().set_node_params(node, Some(params));
+//! graph.graph().set_sample_rate(SampleRate(48_000.0));
 //!
 //! let mut app = App::new();
 //! app.insert_resource(graph);
@@ -52,7 +52,7 @@
 //! # Why this can be generic at all
 //!
 //! Pushing a param needs no node-type dispatch:
-//! [`AudioGraphRes::set_param`] writes a `(param, value)` pair through the
+//! [`Graph::set_param`](crate::graph::Graph::set_param) writes a `(param, value)` pair through the
 //! node's [`ParamSet`](tutti_graph::ParamSet), and a node without that param
 //! takes nothing.
 //!
@@ -130,7 +130,7 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// The one path by which a value reaches a node's param. It is public for
 /// params whose address is known only at runtime, which an [`AudioParam`]
 /// cannot carry; the [`AudioParam`] reconciler calls it too. The value goes
-/// to the node's own control ([`AudioGraphRes::set_param`]), and a fork of the
+/// to the node's own control ([`Graph::set_param`](crate::graph::Graph::set_param)), and a fork of the
 /// node starts from it. A modulated param is no different: its control lane
 /// reads that control as its knob and adds the modulation to it (doc 014
 /// §8.2, "one writer per knob").
@@ -150,7 +150,7 @@ pub fn write_param(
     // Through the node's `ParamSet`, never a handle captured from the unit:
     // that would move the live unit and leave a fork at the value it was
     // built with.
-    graph.set_param(*node, param, value);
+    graph.graph().set_param(*node, param, value);
 }
 
 /// Pushes every changed [`AudioParam<U, P>`] into its node.

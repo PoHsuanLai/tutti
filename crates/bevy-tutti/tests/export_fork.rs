@@ -72,7 +72,7 @@ fn app_over(graph: AudioGraphRes) -> App {
 /// A graph at the export's rate.
 fn graph_on() -> AudioGraphRes {
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(SampleRate(RATE));
+    graph.graph().set_sample_rate(SampleRate(RATE));
     graph
 }
 
@@ -147,15 +147,21 @@ fn buffers(source: ExportSource, seconds: f64) -> ExportRequest {
 /// two cannot pass for each other.
 fn chain(app: &mut App) -> Entity {
     let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-    let (osc, _) = graph.insert(Osc::saw(Hz(110.0)));
-    let (filter, _params) = graph.insert(SvfFilterNode::<f64>::new(
+    let (osc, _) = graph.graph().insert(Osc::saw(Hz(110.0)));
+    let (filter, _params) = graph.graph().insert(SvfFilterNode::<f64>::new(
         SvfType::LowPass,
         Hz(800.0),
         Q(1.0),
     ));
-    graph.set_source(filter, 0, GraphSource::Node(osc, 0));
-    graph.set_output_source(0, GraphSource::Node(filter, 0));
-    graph.set_output_source(1, GraphSource::Node(osc, 0));
+    graph
+        .graph()
+        .set_source(filter, 0, GraphSource::Node(osc, 0));
+    graph
+        .graph()
+        .set_output_source(0, GraphSource::Node(filter, 0));
+    graph
+        .graph()
+        .set_output_source(1, GraphSource::Node(osc, 0));
     app.world_mut().spawn(osc);
     app.world_mut().spawn(filter).id()
 }
@@ -215,7 +221,7 @@ fn chain_fresh(seconds: f64) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
 fn exports_render_their_graph_as_wired_fresh() {
     let mut app = app_over(graph_on());
     let filter = chain(&mut app);
-    let forked_master = export(&mut app, buffers(ExportSource::Master, 0.25)).planes();
+    let forked_master = export(&mut app, buffers(ExportSource::Mix, 0.25)).planes();
     let forked_node = export(&mut app, buffers(ExportSource::Node(filter), 0.25)).planes();
     let (fresh_master, fresh_node) = chain_fresh(0.25);
     for (what, fresh, forked) in [
@@ -300,14 +306,14 @@ fn latency_and_tail_come_from_the_graph() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (late, _) = graph.insert(ForkByClone(Late { pos: 0 }));
-        graph.set_outputs_from(late);
+        let (late, _) = graph.graph().insert(ForkByClone(Late { pos: 0 }));
+        graph.graph().set_outputs_from(late);
     }
     let seconds = 0.01;
     let frames = (seconds * RATE) as usize;
     let planes = export(
         &mut app,
-        buffers(ExportSource::Master, seconds)
+        buffers(ExportSource::Mix, seconds)
             .trim_reported_latency()
             .with_reported_tail(Samples(48_000)),
     )
@@ -319,14 +325,14 @@ fn latency_and_tail_come_from_the_graph() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (unknown, _) = graph.insert(Counter {
+        let (unknown, _) = graph.graph().insert(Counter {
             n: Arc::new(AtomicU64::new(0)),
         });
-        graph.set_outputs_from(unknown);
+        graph.graph().set_outputs_from(unknown);
     }
     let planes = export(
         &mut app,
-        buffers(ExportSource::Master, seconds).with_reported_tail(Samples(4_800)),
+        buffers(ExportSource::Mix, seconds).with_reported_tail(Samples(4_800)),
     )
     .planes();
     assert_eq!(
@@ -353,10 +359,10 @@ fn the_trim_is_read_after_the_prepare_hook() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
-        graph.set_outputs_from(dc);
+        let (dc, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.5));
+        graph.graph().set_outputs_from(dc);
     }
-    let request = buffers(ExportSource::Master, 0.01)
+    let request = buffers(ExportSource::Mix, 0.01)
         .trim_reported_latency()
         .with_prepare(|_world: &World| {
             |prepared: PreparedGraph<'_>| {
@@ -387,14 +393,14 @@ fn the_trim_is_read_after_the_prepare_hook() {
 #[test]
 fn a_graph_with_no_outputs_says_so() {
     let mut graph = AudioGraphRes::headless(0, 0);
-    graph.set_sample_rate(SampleRate(RATE));
+    graph.graph().set_sample_rate(SampleRate(RATE));
     let mut app = app_over(graph);
     let node = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert(Osc::sine(Hz(220.0)))
+        graph.graph().insert(Osc::sine(Hz(220.0)))
     };
     let entity = app.world_mut().spawn(node).id();
-    for source in [ExportSource::Master, ExportSource::Node(entity)] {
+    for source in [ExportSource::Mix, ExportSource::Node(entity)] {
         match export(&mut app, buffers(source, 0.01)) {
             Got::Other(why) => assert!(
                 why.contains("the graph has no outputs"),
@@ -436,8 +442,8 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let voice = {
         let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(3.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, _params) = graph.insert(source);
-        graph.set_outputs_from(node);
+        let (node, _params) = graph.graph().insert(source);
+        graph.graph().set_outputs_from(node);
         app.world_mut().spawn(node).id()
     };
     let zero = {
@@ -447,7 +453,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         }
         let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (node, _params) = graph.insert(source);
+        let (node, _params) = graph.graph().insert(source);
         app.world_mut().spawn(node).id()
     };
 
@@ -574,13 +580,13 @@ impl Node for Counter {
 #[test]
 fn live_playback_continues_unaffected_while_an_export_renders() {
     let mut graph = graph_on();
-    let (node, _) = graph.insert(Counter {
+    let (node, _) = graph.graph().insert(Counter {
         n: Arc::new(AtomicU64::new(0)),
     });
-    graph.set_outputs_from(node);
+    graph.graph().set_outputs_from(node);
     // Commit on this side, then hand the audio side to the "device".
     graph.render_frame(&mut [0.0, 0.0]);
-    let mut live = graph.take_audio_side();
+    let mut live = graph.graph().take_audio_side();
     let mut app = app_over(graph);
 
     let done = AtomicBool::new(false);
@@ -600,7 +606,7 @@ fn live_playback_continues_unaffected_while_an_export_renders() {
             }
             heard
         });
-        let got = export(&mut app, buffers(ExportSource::Master, 1.0));
+        let got = export(&mut app, buffers(ExportSource::Mix, 1.0));
         done.store(true, Ordering::Release);
         (device.join().expect("the live side"), got)
     });
@@ -646,11 +652,13 @@ fn an_unrouted_unforkable_node_does_not_refuse_a_master_export() {
     let mut app = app_over(graph_on());
     {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (_mic, _) = graph.insert(tutti_graph::Unforkable(Mic));
-        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.25));
-        graph.set_outputs_from(dc);
+        let (_mic, _) = graph.graph().insert(tutti_graph::Unforkable(Mic));
+        let (dc, _) = graph
+            .graph()
+            .insert(tutti_nodes::testing::Const::mono(0.25));
+        graph.graph().set_outputs_from(dc);
     }
-    let planes = export(&mut app, buffers(ExportSource::Master, 0.01)).planes();
+    let planes = export(&mut app, buffers(ExportSource::Mix, 0.01)).planes();
     assert!(planes[0].iter().all(|&s| s == 0.25));
 }
 
@@ -666,16 +674,20 @@ fn an_unforkable_node_refuses_the_export_by_name() {
     let mut app = app_over(graph_on());
     let (mic, osc) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (mic, _) = graph.insert(tutti_graph::Unforkable(Mic));
-        let (osc, _) = graph.insert(Osc::sine(Hz(220.0)));
-        graph.set_output_source(0, GraphSource::Node(mic, 0));
-        graph.set_output_source(1, GraphSource::Node(osc, 0));
+        let (mic, _) = graph.graph().insert(tutti_graph::Unforkable(Mic));
+        let (osc, _) = graph.graph().insert(Osc::sine(Hz(220.0)));
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(mic, 0));
+        graph
+            .graph()
+            .set_output_source(1, GraphSource::Node(osc, 0));
         (mic, osc)
     };
     let mic_entity = app.world_mut().spawn((mic, Name::new("Mic"))).id();
     let osc_entity = app.world_mut().spawn(osc).id();
 
-    match export(&mut app, buffers(ExportSource::Master, 0.05)) {
+    match export(&mut app, buffers(ExportSource::Mix, 0.05)) {
         Got::NotForkable(node) => {
             assert_eq!(node.entity, Some(mic_entity));
             assert_eq!(node.name.as_deref(), Some("Mic"));
@@ -794,7 +806,7 @@ mod plugin {
     fn feed_with(app: &mut App, probe: Entity, node: impl IntoNode<Controls = ()>) {
         let (dc, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(node)
+            graph.graph().insert(node)
         };
         let dc = app.world_mut().spawn(dc).id();
         app.world_mut().entity_mut(probe).insert(
@@ -862,7 +874,7 @@ mod plugin {
         feed_with(&mut app, probe, ForkByClone(Ramp { n: 0 }));
         let planes = match export(
             &mut app,
-            buffers(ExportSource::Master, 0.1).trim_reported_latency(),
+            buffers(ExportSource::Mix, 0.1).trim_reported_latency(),
         ) {
             Got::Planes(p) => p,
             other => panic!("the export failed: {other:?}"),
@@ -908,7 +920,7 @@ mod plugin {
         let (mut app, _probe) = app_with_probe_at(TAG_PASSTHROUGH, own.clone());
         std::fs::remove_file(&own).expect("remove the plugin's file");
         let cause = named(
-            export(&mut app, buffers(ExportSource::Master, 0.05)),
+            export(&mut app, buffers(ExportSource::Mix, 0.05)),
             "a plugin file gone since it loaded",
         );
         assert!(
@@ -1032,7 +1044,7 @@ mod plugin {
         feed(&mut app, probe);
         probe_env("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", 8);
         let started = Instant::now();
-        match export(&mut app, buffers(ExportSource::Master, 2.0)) {
+        match export(&mut app, buffers(ExportSource::Mix, 2.0)) {
             Got::ForkFailed(node, kind, _) => {
                 assert_eq!(node.entity, Some(probe));
                 assert_eq!(node.name.as_deref(), Some("Probe"));
@@ -1259,7 +1271,7 @@ mod synths {
         for rate in [RATE, 2.0 * RATE] {
             let (mut app, synth) = app_with(poly());
             install_clip(&mut app, synth);
-            let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
+            let planes = export(&mut app, request(ExportSource::Mix, rate)).planes();
             // Prepared at the render's rate, as the fork is.
             let reference = reference(poly(), rate);
             assert_note_at_beat_1("PolySynth", rate, &planes, &reference);
@@ -1306,7 +1318,7 @@ mod synths {
                 );
             }
             install_clip(&mut app, synth);
-            let planes = export(&mut app, request(ExportSource::Master, RATE)).planes();
+            let planes = export(&mut app, request(ExportSource::Mix, RATE)).planes();
             planes[0].iter().fold(0.0f32, |a, s| a.max(s.abs()))
         };
         let full = peak(None);
@@ -1332,7 +1344,7 @@ mod synths {
         for rate in [RATE, 2.0 * RATE] {
             let (mut app, synth) = app_with(sf2(&font, RATE));
             install_clip(&mut app, synth);
-            let planes = export(&mut app, request(ExportSource::Master, rate)).planes();
+            let planes = export(&mut app, request(ExportSource::Mix, rate)).planes();
             let reference = reference(sf2(&font, rate), rate);
             assert_note_at_beat_1("SoundFontUnit", rate, &planes, &reference);
             assert_live_untouched(&mut app, synth);
@@ -1508,9 +1520,12 @@ mod disk {
                 None,
             )));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (bare, _) = graph.insert(bare);
-            graph.set_outputs_from(bare);
-            let (wrapped, memory) = (graph.insert(wrapped).0, graph.insert(memory).0);
+            let (bare, _) = graph.graph().insert(bare);
+            graph.graph().set_outputs_from(bare);
+            let (wrapped, memory) = (
+                graph.graph().insert(wrapped).0,
+                graph.graph().insert(memory).0,
+            );
             app.world_mut().spawn(bare);
             (
                 app.world_mut().spawn(wrapped).id(),
@@ -1519,7 +1534,7 @@ mod disk {
         };
 
         let render = |app: &mut App, source| export(app, on(3.0, source, &timeline(90.0))).planes();
-        let master = render(&mut app, ExportSource::Master);
+        let master = render(&mut app, ExportSource::Mix);
         let disk = render(&mut app, ExportSource::Node(disk_node));
         for (what, planes) in [("master", &master), ("node", &disk)] {
             assert!(
@@ -1568,7 +1583,7 @@ mod disk {
         let voice = {
             let voice = node_of(VoiceSource::Disk(disk_voice(&streamer, 1.0)));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(voice);
+            let (node, _) = graph.graph().insert(voice);
             app.world_mut().spawn(node).id()
         };
         let planes = export(
@@ -1606,10 +1621,10 @@ mod disk {
         {
             let voice = disk_voice(&streamer, 1.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(voice);
-            graph.set_outputs_from(node);
+            let (node, _) = graph.graph().insert(voice);
+            graph.graph().set_outputs_from(node);
         }
-        let planes = export(&mut app, on(2.0, ExportSource::Master, &timeline(120.0))).planes();
+        let planes = export(&mut app, on(2.0, ExportSource::Mix, &timeline(120.0))).planes();
         assert!(
             planes[0][..AT].iter().all(|&s| s == 0.0),
             "sounded before beat 1"
@@ -1662,10 +1677,10 @@ mod disk {
         let live_clock = timeline(120.0);
 
         let mut graph = graph_on();
-        let (node, _) = graph.insert(disk_voice(&streamer, 0.0));
-        graph.set_outputs_from(node);
+        let (node, _) = graph.graph().insert(disk_voice(&streamer, 0.0));
+        graph.graph().set_outputs_from(node);
         graph.render_frame(&mut [0.0, 0.0]);
-        let mut live = graph.take_audio_side();
+        let mut live = graph.graph().take_audio_side();
         let mut app = app_over(graph);
 
         let (settled, done) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -1701,7 +1716,7 @@ mod disk {
             while !settled.load(Ordering::Acquire) {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            let got = export(&mut app, on(1.0, ExportSource::Master, &timeline(120.0)));
+            let got = export(&mut app, on(1.0, ExportSource::Mix, &timeline(120.0)));
             done.store(true, Ordering::Release);
             (device.join().expect("the live side"), got)
         });
@@ -1759,11 +1774,11 @@ mod disk {
         {
             let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(voice);
-            graph.set_outputs_from(node);
+            let (node, _) = graph.graph().insert(voice);
+            graph.graph().set_outputs_from(node);
         }
         let before = open_handles(&path);
-        let planes = export(&mut app, on(0.2, ExportSource::Master, &timeline(120.0))).planes();
+        let planes = export(&mut app, on(0.2, ExportSource::Mix, &timeline(120.0))).planes();
         assert_eq!(planes[0][100], value(100), "the export played the clip");
         assert_eq!(
             open_handles(&path),
@@ -1792,12 +1807,12 @@ mod disk {
         let clip = {
             let voice = disk_voice(&streamer, 0.0);
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(voice);
-            graph.set_outputs_from(node);
+            let (node, _) = graph.graph().insert(voice);
+            graph.graph().set_outputs_from(node);
             app.world_mut().spawn((node, Name::new("Clip"))).id()
         };
         std::fs::remove_file(&path).expect("removes");
-        match export(&mut app, on(0.2, ExportSource::Master, &timeline(120.0))) {
+        match export(&mut app, on(0.2, ExportSource::Mix, &timeline(120.0))) {
             Got::ForkFailed(node, kind, message) => {
                 assert_eq!(node.entity, Some(clip));
                 assert_eq!(node.name.as_deref(), Some("Clip"));
@@ -2044,13 +2059,17 @@ mod off_thread {
     fn an_export_does_not_wait_for_a_slow_fork_and_takes_no_later_edit() {
         let mut graph = graph_on();
         let (node, cell, release, built) = slow(0.5);
-        let (slow_node, _) = graph.insert(node);
-        let (level, params) = graph.insert(Level(Param::new(Amplitude::new(0.5))));
-        graph.set_node_params(level, Some(params));
-        graph.set_param(level, UnitParam::Volume, 0.75);
-        let (other, _) = graph.insert(tutti_nodes::testing::Const::mono(9.0));
-        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
-        graph.set_output_source(1, GraphSource::Node(level, 0));
+        let (slow_node, _) = graph.graph().insert(node);
+        let (level, params) = graph.graph().insert(Level(Param::new(Amplitude::new(0.5))));
+        graph.graph().set_node_params(level, Some(params));
+        graph.graph().set_param(level, UnitParam::Volume, 0.75);
+        let (other, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(9.0));
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph
+            .graph()
+            .set_output_source(1, GraphSource::Node(level, 0));
 
         let mut app = app_watching(graph);
         let threaded = threaded();
@@ -2068,15 +2087,15 @@ mod off_thread {
             then: Mutex::new(Some(Box::new(
                 move |graph: &mut AudioGraphRes, _: &mut Commands| {
                     cell.store(0.25f32.to_bits(), Ordering::SeqCst);
-                    graph.set_param(level, UnitParam::Volume, 0.25);
-                    graph.set_outputs_from(other);
+                    graph.graph().set_param(level, UnitParam::Volume, 0.25);
+                    graph.graph().set_outputs_from(other);
                     if let Some(release) = release {
                         let _ = release.send(());
                     }
                 },
             ))),
         });
-        let planes = export(&mut app, buffers(ExportSource::Master, 0.05)).planes();
+        let planes = export(&mut app, buffers(ExportSource::Mix, 0.05)).planes();
 
         let seen = *app.world().resource::<Seen>().0.lock().unwrap();
         assert_eq!(
@@ -2199,15 +2218,19 @@ mod off_thread {
     fn a_main_thread_only_fork_builds_and_drops_on_the_main_thread() {
         let mut graph = graph_on();
         let threads = Arc::<Threads>::default();
-        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
+        let (pinned, _) = graph.graph().insert(PinnedNode(Arc::clone(&threads)));
         let (node, _cell, release, _built) = slow(0.5);
-        let (slow_node, _) = graph.insert(node);
-        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
-        graph.set_output_source(1, GraphSource::Node(pinned, 0));
+        let (slow_node, _) = graph.graph().insert(node);
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph
+            .graph()
+            .set_output_source(1, GraphSource::Node(pinned, 0));
         drop(release); // the slow build goes straight through
         let mut app = app_over(graph);
 
-        let planes = export(&mut app, buffers(ExportSource::Master, 0.05)).planes();
+        let planes = export(&mut app, buffers(ExportSource::Mix, 0.05)).planes();
         assert!(
             planes[1].iter().all(|&s| s == 1.0),
             "the pinned unit renders"
@@ -2237,11 +2260,15 @@ mod off_thread {
     fn a_cancelled_export_drops_its_fork_on_the_main_thread() {
         let mut graph = graph_on();
         let threads = Arc::<Threads>::default();
-        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
+        let (pinned, _) = graph.graph().insert(PinnedNode(Arc::clone(&threads)));
         let (node, _cell, release, built) = slow(0.5);
-        let (slow_node, _) = graph.insert(node);
-        graph.set_output_source(0, GraphSource::Node(slow_node, 0));
-        graph.set_output_source(1, GraphSource::Node(pinned, 0));
+        let (slow_node, _) = graph.graph().insert(node);
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(slow_node, 0));
+        graph
+            .graph()
+            .set_output_source(1, GraphSource::Node(pinned, 0));
         let mut app = app_watching(graph);
         // Without pool threads the export runs to completion inside
         // `start_exports`, before it is cancelled: let its build through.
@@ -2251,7 +2278,7 @@ mod off_thread {
         let seen = Arc::clone(&reported);
         let entity = app
             .world_mut()
-            .spawn(buffers(ExportSource::Master, 0.05))
+            .spawn(buffers(ExportSource::Mix, 0.05))
             .observe(move |_: On<ExportDone>| seen.store(true, Ordering::SeqCst))
             .id();
         app.insert_resource(AtStart {
@@ -2353,14 +2380,18 @@ mod off_thread {
     fn a_fork_build_that_fails_names_its_node_and_drops_on_the_main_thread() {
         let mut graph = graph_on();
         let threads = Arc::<Threads>::default();
-        let (pinned, _) = graph.insert(PinnedNode(Arc::clone(&threads)));
-        let (broken, _) = graph.insert(Broken);
-        graph.set_output_source(0, GraphSource::Node(pinned, 0));
-        graph.set_output_source(1, GraphSource::Node(broken, 0));
+        let (pinned, _) = graph.graph().insert(PinnedNode(Arc::clone(&threads)));
+        let (broken, _) = graph.graph().insert(Broken);
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(pinned, 0));
+        graph
+            .graph()
+            .set_output_source(1, GraphSource::Node(broken, 0));
         let mut app = app_over(graph);
         let entity = app.world_mut().spawn((broken, Name::new("Server"))).id();
 
-        match export(&mut app, buffers(ExportSource::Master, 0.05)) {
+        match export(&mut app, buffers(ExportSource::Mix, 0.05)) {
             Got::ForkSource(node, cause) => {
                 assert_eq!(node.entity, Some(entity));
                 assert_eq!(node.name.as_deref(), Some("Server"));
@@ -2416,11 +2447,11 @@ mod off_thread {
     fn a_prepare_edit_that_never_runs_drops_on_the_main_thread() {
         // A build that fails.
         let mut graph = graph_on();
-        let (broken, _) = graph.insert(Broken);
-        graph.set_outputs_from(broken);
+        let (broken, _) = graph.graph().insert(Broken);
+        graph.graph().set_outputs_from(broken);
         let mut app = app_over(graph);
         let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
-        match export(&mut app, witnessed(ExportSource::Master, &drops)) {
+        match export(&mut app, witnessed(ExportSource::Mix, &drops)) {
             Got::ForkSource(..) => {}
             other => panic!("expected the failing build, got {other:?}"),
         }
@@ -2428,8 +2459,8 @@ mod off_thread {
 
         // A task cancelled before it ran.
         let mut graph = graph_on();
-        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.5));
-        graph.set_outputs_from(dc);
+        let (dc, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.5));
+        graph.graph().set_outputs_from(dc);
         let mut app = app_over(graph);
         let threaded = threaded();
         // Hold every pool thread, so the export's task waits in the queue.
@@ -2456,7 +2487,7 @@ mod off_thread {
         let drops: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
         let entity = app
             .world_mut()
-            .spawn(witnessed(ExportSource::Master, &drops))
+            .spawn(witnessed(ExportSource::Mix, &drops))
             .id();
         app.update(); // starts: gathers, and queues the task
         app.world_mut().despawn(entity);

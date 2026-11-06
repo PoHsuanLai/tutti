@@ -48,16 +48,14 @@ pub mod wire;
 pub use capture::CapturedControls;
 pub use commit::{collect_graph, commit_graph, reclaim_graph};
 pub use despawn::reconcile_node_despawn;
-pub use events::{
-    DECLARED, EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls,
-};
+pub use events::{EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls};
 pub use metering::MeteringRes;
 pub use param::{AudioParam, AudioParamAppExt, reconcile_audio_param, write_param};
 pub use plugin::GraphReconcilePlugin;
 pub use pump::{
     AudioPump, AudioPumpAppExt, IDLE_PARK, PumpFinished, drain_audio_pumps, finalize_removed_pumps,
 };
-pub use resources::{AudioConfig, AudioGraphRes};
+pub use resources::{AudioConfig, AudioGraphRes, GraphRef};
 pub use schedule::{GraphReconcileSystems, SessionPhaseSystems, engine_ready};
 #[cfg(feature = "plugin")]
 pub use spawn::crossfade_plugin_node;
@@ -72,8 +70,8 @@ pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};
 // The session's items this crate's own signatures take, one by one: the
 // session crate itself is not re-exported (design 015 §6).
 pub use tutti_session::{
-    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, GraphSource, Phase, Reclaimer,
-    ReplaceRefused, SessionNode,
+    AudioSide, Crossfade, CrossfadeId, CrossfadeRefused, Feeder, Graph, GraphSource, Phase,
+    Reclaimer, ReplaceRefused, SessionNode,
 };
 
 #[cfg(test)]

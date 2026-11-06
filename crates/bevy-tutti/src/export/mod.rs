@@ -38,8 +38,8 @@
 //! };
 //!
 //! let mut graph = AudioGraphRes::headless(0, 2);
-//! let (node, _) = graph.insert(Const::mono(0.5));
-//! graph.set_outputs_from(node);
+//! let (node, _) = graph.graph().insert(Const::mono(0.5));
+//! graph.graph().set_outputs_from(node);
 //!
 //! let mut app = App::new();
 //! app.add_plugins((bevy_app::TaskPoolPlugin::default(), ExportPlugin));
@@ -58,7 +58,7 @@
 //! let seen = channels.clone();
 //! app.world_mut()
 //!     .spawn(ExportRequest::new(
-//!         ExportSource::Master,
+//!         ExportSource::Mix,
 //!         ExportTarget::Buffers,
 //!         config,
 //!         ExportClock::frozen(),
@@ -89,7 +89,7 @@
 //! # Which graph is rendered
 //!
 //! An export renders a **fork** of the live graph (`Editor::fork`): what the
-//! global outputs hear for [`ExportSource::Master`], or exactly the sub-graph
+//! global outputs hear for [`ExportSource::Mix`], or exactly the sub-graph
 //! feeding one node for [`ExportSource::Node`], every node isolated and
 //! reset, reading the request's [`ExportClock`] through its `Env`. The live
 //! graph is not touched and keeps playing while the render runs on the pool.

@@ -1,5 +1,5 @@
 //! The modulation properties that need the plan the graph sent
-//! (`AudioGraphRes::sent_plan`, crate-private): a program edit sends none,
+//! (`Graph::sent_plan`): a program edit sends none,
 //! a new signal node sends one. The rest are `tests/mod_lanes.rs`.
 
 use std::sync::Arc;
@@ -34,8 +34,8 @@ const BLOCK: usize = 128;
 
 fn app() -> (App, AudioSide) {
     let mut graph = AudioGraphRes::headless(0, 1);
-    graph.set_sample_rate(SampleRate(RATE));
-    let side = graph.take_audio_side();
+    graph.graph().set_sample_rate(SampleRate(RATE));
+    let side = graph.graph().take_audio_side();
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.insert_resource(graph);
@@ -78,12 +78,16 @@ fn frame(app: &mut App, side: &mut AudioSide) {
 fn sent(app: &App) -> Arc<tutti_graph::Plan> {
     app.world()
         .resource::<AudioGraphRes>()
+        .graph_ref()
         .sent_plan()
         .expect("a plan was sent")
 }
 
 fn idle(app: &App) -> bool {
-    !app.world().resource::<AudioGraphRes>().is_edited()
+    !app.world()
+        .resource::<AudioGraphRes>()
+        .graph_ref()
+        .is_edited()
 }
 
 /// A cutoff probe (knob 500, range `0..=1000`) on output 0, a sine at
@@ -114,8 +118,8 @@ fn lfo_scene(app: &mut App, side: &mut AudioSide, rate: f32, depth: f32) -> [Ent
 }
 
 /// **A range or depth edit sends no plan; a follower route sends one.**
-/// Doc 014 §8.2: a program edit is a store into the lane (the old driver
-/// rebuilt per-route nodes); a follower is a node, so routing one is one
+/// Doc 014 §8.2: a program edit is a store into the lane, not a rebuilt
+/// node; a follower is a node, so routing one is one
 /// commit, and the frames after it send nothing more.
 ///
 /// Each edit is checked to have reached the render, so "no plan" is not an
@@ -220,8 +224,8 @@ fn range_and_depth_edits_send_no_plan_and_a_follower_route_one_commit() {
 
 /// **A depth slider keeps the LFO's phase.** Dragging a route's depth
 /// is a store into the lane's program: the wave goes on from where it was,
-/// at the new depth, on the frame the next block starts. The old driver
-/// rebuilt the source's node on a depth change, restarting the wave.
+/// at the new depth, on the frame the next block starts; a rebuilt source
+/// node would restart the wave.
 ///
 /// The edit lands at a block boundary; every frame after it reads
 /// `500 + 1000 · 0.1 · sin(2π · 4 · t)` with `t` counted from frame 0,

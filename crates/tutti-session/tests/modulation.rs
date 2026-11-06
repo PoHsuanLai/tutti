@@ -512,8 +512,7 @@ fn a_re_apply_that_moves_the_latency_publishes_it() {
         s.graph_ref()
             .sent_compensation()
             .expect("a plan was sent")
-            .0
-            .as_slice(),
+            .channels(),
         "and its per-channel figures"
     );
 }

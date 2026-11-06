@@ -103,7 +103,7 @@ impl crate::graph::SessionNode for Knob {
 ///
 /// The paths, one knob each, rendered on one global output each:
 /// `AudioParam` on an unmodulated param (`write_param` → `set_param`);
-/// `AudioGraphRes::set_param` directly; `AudioParam` on a modulated param
+/// `Graph::set_param` directly; `AudioParam` on a modulated param
 /// (the knob under a macro's `+2`); and a modulated param with no write
 /// (the knob it was built with, under the same `+2`).
 ///
@@ -113,7 +113,7 @@ impl crate::graph::SessionNode for Knob {
 /// modulation lanes.
 ///
 /// Mutations (run; each fails its channel):
-/// - `insert_and_bind` inserting with `AudioGraphRes::insert`, not `add`
+/// - `insert_and_bind` inserting with `Graph::insert`, not `add`
 ///   (the params never addressed) → channels 0 and 1 stay at 1;
 /// - `write_param` not calling `set_param` → channel 0 stays at 1;
 /// - (`modulation`) `Declared`'s `ModKeys::node` answering `None` → the
@@ -121,7 +121,9 @@ impl crate::graph::SessionNode for Knob {
 #[test]
 fn every_param_write_path_reaches_a_fork() {
     let mut graph = AudioGraphRes::headless(0, 4);
-    graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    graph
+        .graph()
+        .set_sample_rate(tutti_core::SampleRate(48_000.0));
     let mut app = App::new();
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
@@ -153,6 +155,7 @@ fn every_param_write_path_reaches_a_fork() {
     let node = *app.world().get::<AudioNode>(knobs[1]).unwrap();
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .set_param(node, UnitParam::Drive, 5.0);
     #[cfg(feature = "modulation")]
     {
@@ -184,7 +187,10 @@ fn every_param_write_path_reaches_a_fork() {
     assert_eq!(live[0], 4.0, "an AudioParam write reaches the live node");
     assert_eq!(live[1], 5.0, "a set_param write reaches the live node");
     let graph = app.world().resource::<AudioGraphRes>();
-    let mut fork = graph.fork().expect("every knob is forkable");
+    let mut fork = graph
+        .graph_ref()
+        .fork_live()
+        .expect("every knob is forkable");
     let mut forked = [0.0f32; 4];
     fork.tick(&[], &mut forked);
     assert_eq!(forked[0], 4.0, "an AudioParam write reaches the fork");
@@ -223,8 +229,10 @@ fn every_param_write_path_reaches_a_fork() {
 #[test]
 fn a_crossfade_during_a_re_prepare_lands_after_it() {
     let mut graph = AudioGraphRes::headless(0, 1);
-    graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
-    let mut side = graph.take_audio_side();
+    graph
+        .graph()
+        .set_sample_rate(tutti_core::SampleRate(48_000.0));
+    let mut side = graph.graph().take_audio_side();
     let mut app = App::new();
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
@@ -254,6 +262,7 @@ fn a_crossfade_during_a_re_prepare_lands_after_it() {
     // the executor has not run it yet.
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .set_sample_rate(tutti_core::SampleRate(44_100.0));
     crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));
     app.world_mut().flush();
@@ -327,7 +336,9 @@ impl tutti_graph::Node for Grenade {
 #[test]
 fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     let mut graph = AudioGraphRes::headless(0, 1);
-    graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+    graph
+        .graph()
+        .set_sample_rate(tutti_core::SampleRate(48_000.0));
     let mut app = App::new();
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
@@ -348,6 +359,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     // the grenade's `prepare` and poisons the editor.
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .set_sample_rate(tutti_core::SampleRate(96_000.0));
     let before = handle_ptr(&app, knob);
 

@@ -146,7 +146,7 @@ impl PluginHealth {
 /// observers take the sender off the MIDI bus (their graph removal is a
 /// no-op by then). Any entity holding the node is unwired, with or without
 /// a [`PluginHealth`] (a plugin a host inserted through
-/// [`AudioGraphRes::insert_plugin`] is watched too).
+/// [`Graph::insert_plugin`](crate::graph::Graph::insert_plugin) is watched too).
 pub fn plugin_health_poll(
     _main: bevy_ecs::system::NonSendMarker,
     #[cfg(feature = "modulation")] mut reads: Local<Vec<Task<tutti_session::PluginParamsRead>>>,
@@ -371,8 +371,6 @@ mod tests {
     /// nothing else in this app edits the graph). Every node carries
     /// `AudioNode`, so a phase that treated each as a plugin would mark
     /// the graph edited every frame and re-plan compensation forever.
-    /// (Ported from the old `plugin_latency_poll`'s
-    /// `a_non_plugin_node_never_marks_the_graph_edited`.)
     ///
     /// Mutation (run, failed): `Phase::Plugins` handing every graph node's
     /// latency to the graph as moved (`plugins_phase` setting the graph's
@@ -382,10 +380,10 @@ mod tests {
         let mut app = app_over(AudioGraphRes::headless(0, 2));
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+            let (node, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.0));
             // The insert is an edit: send it, so the flag starts clear.
             graph.session().commit();
-            assert!(!graph.is_edited(), "precondition: committed");
+            assert!(!graph.graph_ref().is_edited(), "precondition: committed");
             node
         };
         app.world_mut().spawn(node);
@@ -393,7 +391,10 @@ mod tests {
             app.update();
         }
         assert!(
-            !app.world().resource::<AudioGraphRes>().is_edited(),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited(),
             "a dc node is not a plugin and has no latency to compensate"
         );
     }
@@ -401,8 +402,7 @@ mod tests {
     /// **With no graph resource both systems are inert**, not a panic:
     /// `AudioGraphRes` belongs to `engine::build_into`, and a host that
     /// adds the plugin host alone must not crash. The property is the
-    /// absence of a panic; there is nothing else to observe. (Ported from
-    /// the old `plugin_latency_poll`'s `the_poll_is_inert_without_a_graph`.)
+    /// absence of a panic; there is nothing else to observe.
     ///
     /// Mutation (run, failed): `plugin_health_poll` taking
     /// `ResMut<AudioGraphRes>` (not an `Option`) → Bevy panics on the
@@ -430,7 +430,7 @@ mod tests {
     fn host(app: &mut App, handle: PluginHandle) -> Entity {
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
+            let (node, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.0));
             assert!(graph.session().graph().host_plugin(node, handle.clone()));
             node
         };
@@ -560,9 +560,7 @@ mod tests {
     //
     // The cadence (one per interval, one in flight, restarted on each job)
     // and the declined save's rule are the session's and pinned there
-    // (`tutti-session`'s `plugin::tests`), with the in-flight guard the old
-    // Bevy test could not hold open on a single-threaded pool. These pin the
-    // placing: the job onto the pool, the landing, the copy.
+    // (`tutti-session`'s `plugin::tests`). These pin the placing: the job onto the pool, the landing, the copy.
 
     /// An app whose session asks for a snapshot on every phase (interval
     /// zero), with a plugin that answers `state` and counts its saves.

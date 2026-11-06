@@ -80,7 +80,7 @@ fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) {
 
 | Resource | Feature | What it is |
 |----------|---------|------------|
-| `AudioGraphRes` | always | The editable DSP graph |
+| `AudioGraphRes` | always | The editable DSP graph: `graph()` to edit, `graph_ref()` to read |
 | `AudioConfig` | always | Sample rate and channel layout |
 | `TransportRes` | always | Play, stop, seek, tempo and loop |
 | `MetronomeRes` | always | The metronome click state |

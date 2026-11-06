@@ -67,28 +67,13 @@ const SCRATCH_FRAMES: Samples = Samples(1024);
 /// # }
 /// ```
 pub struct Recorder {
-    /// Cleared by [`request_stop`](Self::request_stop) (and so by every
-    /// shutdown) to break the pump loop.
+    /// Cleared by [`request_stop`](Self::request_stop) to break the pump loop.
     running: Arc<AtomicBool>,
-    /// The running pump, joinable for the `finalize` result. `Option` because
-    /// taking it is what makes the shutdown once-only: `finish`, `wait`,
-    /// `finish_in_place` and `drop` all join through it, and whichever runs first
-    /// leaves `None` behind for the others.
-    ///
-    /// Boxed rather than generic on the driver: `Recorder` is one type a caller
-    /// stores in a field, and making it `Recorder<D>` would push the choice of
-    /// driver into every signature that holds a take. The endpoints and the
-    /// sample element are erased into the driver for the same reason.
+    /// The running pump. Taking it makes the shutdown once-only: whichever of
+    /// `finish`, `wait`, `finish_in_place` and `drop` runs first leaves `None`.
+    /// Boxed so the driver choice does not leak into `Recorder`'s type.
     handle: Option<Box<dyn RunningPump>>,
-    /// Where a shutdown that cannot return its result leaves it.
-    ///
-    /// Only `drop` writes here — every other shutdown returns the same value to
-    /// its caller instead. It is a *shared* cell rather than a plain field so a
-    /// caller can hold `finalize_status` across the drop and read the outcome
-    /// afterwards, which is the only moment the answer exists on that path.
-    ///
-    /// `None` means no drop-path finalize has completed: either another
-    /// shutdown ran, or the recorder is still alive.
+    /// Written only by `drop`; every other shutdown returns its result.
     status: Arc<FinalizeStatus>,
 }
 
@@ -245,8 +230,6 @@ impl Recorder {
     /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
     /// unpatched and the file is unreadable) or the pump thread panicked.
     pub fn finish(mut self) -> Result<()> {
-        // `self` is consumed, so the `Drop` that follows finds `handle` already
-        // taken and does nothing — the join happens exactly once.
         Ok(self.finish_in_place().unwrap_or(Ok(()))?)
     }
 
@@ -268,8 +251,7 @@ impl Recorder {
     ///
     /// [`Error::Io`] if finalizing failed or the pump thread panicked.
     pub fn wait(mut self) -> Result<()> {
-        // Deliberately not `finish_in_place()`: the one line that differs is the one
-        // that would truncate the take.
+        // Not `finish_in_place`: that clears the stop flag and truncates the take.
         Ok(self.join_pump().unwrap_or(Ok(()))?)
     }
 
@@ -346,22 +328,11 @@ impl Recorder {
     }
 }
 
-/// Stop, join and finalize a recorder nobody shut down.
-///
-/// Without this, dropping a live recorder leaks the pump thread *and* the
-/// take: the loop only breaks on `running`, so a
-/// [`Starved`](tutti_core::io::OnEmpty::Starved) source parks and re-polls forever,
-/// `finalize` never runs, and the WAV header is never back-patched, which
-/// leaves the file unreadable.
-///
-/// The finalize `Result` has nowhere to go from here, and this workspace does
-/// not panic in `Drop`. It is stored in [`FinalizeStatus`] instead, which a
-/// caller reads through a handle taken before the drop.
+/// Stops, joins and finalizes a recorder nobody shut down; the result goes to
+/// [`FinalizeStatus`].
 impl Drop for Recorder {
     fn drop(&mut self) {
-        // `finish`, `wait` and `finish_in_place` already took `handle`, so this is a
-        // no-op on those paths and must not overwrite the status they
-        // deliberately left clear.
+        // Those paths already took `handle`, so the status stays unset for them.
         if let Some(result) = self.finish_in_place() {
             self.status.set(result);
         }

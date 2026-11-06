@@ -56,20 +56,10 @@ impl Stopped<'_> {
     /// block at the new rate renders the re-prepared graph instead of the
     /// silent block a re-prepare otherwise costs.
     pub fn apply_pending(&self) -> bool {
-        // `Engine::apply_pending` panics if a callback renders this engine at
-        // the same moment (the engine's cells refuse the second borrow), and
-        // none can: a `Stopped` is constructed only in
-        // `TuttiDriver::rerate_or_restore` (its field is private to this
-        // module), which only `restart_with` and `restart_on` call, after
-        // `AudioEngine::stop` has dropped the running stream and before
-        // `start_with` opens the next one; the borrow of `self` keeps the
-        // token inside the hook. Dropping the stream is the stop: a
-        // `cpal::Stream`'s callback does not run once its drop returns, and
-        // `ManualRunning`'s drop takes the slot lock a callback renders
-        // under. What this driver's type cannot see is a host rendering the
-        // same `AudioCallbackState` by hand (`process_audio` on a clone of
-        // the `Arc` it handed `new`) during a restart; `new`
-        // documents that the driver's streams are the state's only renderer.
+        // `Engine::apply_pending` panics if a callback renders at the same
+        // moment. None can: a `Stopped` exists only inside a restart hook, after
+        // `AudioEngine::stop` dropped the stream and before the next opens, and
+        // `TuttiDriver::new` makes the driver's streams the state's only renderer.
         self.state.engine.apply_pending()
     }
 }

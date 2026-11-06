@@ -142,16 +142,17 @@ Rules:
 - **Unknown stays intact.** `Err(Unknown(ump))` keeps the words, so a message from
   a later revision is forwarded unchanged. Reserved message types and a defined
   message type with an unknown status both land here.
-- **Only the codec shifts bits.** The helpers are private. A consumer matches on
-  `Message`.
+- **Only the codec shifts bits.** The helpers are private, and a consumer matches
+  on `Message`. The exception is `Ump::words` and `Ump::is_note_off` in
+  `tutti-types`, which the graph needs and `tutti-ump` calls rather than repeats.
 - **Hand-written match arms, not a macro or a proc macro.** There are few messages
   and each arm is short. A reader checks them against the specification's table,
   and a macro would hide what they are checking.
-- **Fields are typed.** `Note`, `Velocity`, `Group`, `Channel` and `U7` have a
+- **Fields are typed.** Note, velocity, group, channel and 7-bit values have a
   public constructor that refuses out-of-range values and a private one masked
   off the wire. A note of 200 cannot be built, where today it silently becomes 72
-  in release. `MidiGroup`, `MidiChannel` and `CCNumber` already exist in
-  `tutti-types`. Types are added under the rules in CLAUDE.md: a distinct range or
+  in release. `MidiGroup`, `MidiChannel`, `CCNumber` and `Note` already exist in
+  `tutti-types`, and are reused. Types are added under the rules in CLAUDE.md: a distinct range or
   a distinct algebra.
 
 `NoteId` is an engine concept: `MidiMessage` mints one on decode and the wire has
@@ -245,7 +246,7 @@ the core set.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-types` | Vocabulary | `Ump`, `Group`, `Channel`, `CCNumber` | No tutti crate |
+| `tutti-types` | Vocabulary | `Ump`; already `MidiGroup`, `MidiChannel`, `CCNumber`, `Note` | No tutti crate |
 | `tutti-ump` | Packet | `Message`, codec, field types | `tutti-types` |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |

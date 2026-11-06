@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 
+use tutti_core::Samples;
 use tutti_io::{AudioIn, FileIn, Wave};
 
 fn asset(name: &str) -> PathBuf {
@@ -351,8 +352,8 @@ fn seek_lands_on_the_whole_file_load_frames() {
         let starts = [1, 700, len / 3, len - 100];
 
         let check = |dec: &mut FileIn, start: usize, how: &str| {
-            dec.seek(start as u64).expect("seek");
-            assert_eq!(dec.cursor(), start as u64, "{name}: cursor after seek");
+            dec.seek(Samples(start)).expect("seek");
+            assert_eq!(dec.cursor(), Samples(start), "{name}: cursor after seek");
             let want = 257.min(len - start);
             let mut out = vec![0.0f32; want * ch];
             assert_eq!(

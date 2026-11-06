@@ -229,7 +229,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
                  dynamics, convolver, delay lines, waveshapers
   tutti-mod      modulation compiler
-  tutti-core     graph runtime, transport, metering, PDC
+  tutti-core     graph runtime, transport, metering
   tutti-io       I/O edge: live + file decode
   tutti-cpal     device
   tutti-export   offline render

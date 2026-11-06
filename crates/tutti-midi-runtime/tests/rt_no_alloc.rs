@@ -291,3 +291,80 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
     assert!(sent >= 100 * 16, "every block walked its passes: {sent}");
     assert_eq!(out.dropped(), 0);
 }
+
+/// A clip that overflows its port, refuses note-offs and retries them, in
+/// blocks the loss log and its ring are written in, without allocating: 300
+/// notes on a 64-frame block's port of 256 (44 note-ons refused, their
+/// note-offs withheld), then 200 notes ended and 200 started at once (104
+/// note-offs refused, owed, retried on the next block).
+///
+/// Mutation (run): a `Vec` collected per refusal in `HeldNotes::play` or a
+/// `push` past the log's capacity in `Dropped::note` → the gate panics.
+#[test]
+fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
+    const RATE: f64 = 48_000.0;
+    let beat = |frame: f64| Beat(frame / 24_000.0);
+    let note = |i: u32| note_on((i / 128) as u8, (i % 128) as u8);
+    let off = |i: u32| {
+        MidiEvent::note_off(
+            MidiGroup::FIRST,
+            MidiChannel::new((i / 128) as u8),
+            (i % 128) as u8,
+            0,
+        )
+    };
+    let mut events = Vec::new();
+    for i in 0..300 {
+        events.push(TimedMidiEvent::new(beat(10.0), note(i)));
+        events.push(TimedMidiEvent::new(beat(500.0), off(i)));
+    }
+    // 200 notes that start where 200 others end, in one block.
+    for i in 300..500 {
+        events.push(TimedMidiEvent::new(beat(1_000.0), note(i - 300 + 1_000)));
+        events.push(TimedMidiEvent::new(beat(1_100.0), off(i - 300 + 1_000)));
+    }
+    for i in 0..200 {
+        events.push(TimedMidiEvent::new(beat(1_040.0), note(i + 2_000)));
+        events.push(TimedMidiEvent::new(beat(1_041.0), off(i + 2_000)));
+    }
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(64)));
+    ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
+    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.commit().unwrap();
+    let mut drain = [MidiEvent::noop(); 1024];
+    let mut polled = 0;
+    let mut f = 0u64;
+    let mut block = |exec: &mut tutti_graph::Executor| {
+        exec.process(
+            64,
+            &Transport::new(true, Bpm(120.0), beat(f as f64), None),
+            &[],
+            &mut [],
+        );
+        f += 64;
+        out.poll_into(&mut drain)
+    };
+    // The first block outside the gate: lazy state, if any.
+    polled += block(&mut exec);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..24 {
+            polled += block(&mut exec);
+        }
+    });
+    assert!(polled > 0);
+    assert!(
+        exec.dropped_event_count() >= 88,
+        "{} refused",
+        exec.dropped_event_count()
+    );
+}

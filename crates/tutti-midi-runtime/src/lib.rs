@@ -32,7 +32,7 @@ pub use outbound::{
     JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest, Translated,
 };
 pub use schedule::{
-    CLIP_EVENT_CAPACITY, HARMONY_EVENT_CAPACITY, HarmonyControls, HarmonyNode, MidiClipControls,
+    CLIP_EVENT_DENSITY, HARMONY_EVENT_CAPACITY, HarmonyControls, HarmonyNode, MidiClipControls,
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
 pub use split::{BlockSplitter, Overrun, Step};

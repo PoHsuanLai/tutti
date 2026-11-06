@@ -1490,7 +1490,8 @@ impl Executor {
                     max,
                     cap,
                     inputs,
-                    outputs,
+                    // The claim table is sized for the plan's width.
+                    outputs: &mut outputs[..plan.global_outputs()],
                     arena,
                     flags,
                     events,

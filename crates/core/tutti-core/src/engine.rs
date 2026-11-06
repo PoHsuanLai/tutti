@@ -1439,8 +1439,7 @@ mod tests {
     /// renders at 512, and the next is bound at 256.
     ///
     /// Mutation (run): `render` calls `process_with_changes` → "block of 512
-    /// frames against a max of 256" on the audio thread → fails (observed on
-    /// the unfixed engine).
+    /// frames against a max of 256" → fails.
     #[test]
     fn a_resume_between_settle_and_render_waits_for_the_next_block() {
         use std::cell::RefCell;

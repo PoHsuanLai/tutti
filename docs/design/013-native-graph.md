@@ -4757,14 +4757,15 @@ class impossible; each `route` was fixed to report processing latency only.
 `process` applies queued commits first, so a caller that sized a block from
 `Executor::plan` / `prepare` (output width, block bound, rate) and then called
 `process` rendered with whatever a commit sent in between installed: a wider
-plan indexed an empty or short `outputs` (the macOS CI abort), a smaller
-`MaxBlock` from a re-prepare's resume tripped the block-length assert, and a
-narrower plan folded stale scratch. The contract is now: `Executor::render_applied`
-renders the plan, prepare and rate the executor holds without applying, and
-`Engine::settle` applies once and sizes from the result, so a later commit
-waits for the next block. `outputs` and `inputs` need a slice per global channel
-of the plan; fewer is a caller bug (a `debug_assert`, silence in release). The
-regressions are `engine::tests::*_between_settle_and_render_*`.
+plan indexed an empty or short `outputs`, a smaller `MaxBlock` from a
+re-prepare's resume tripped the block-length assert, and a narrower plan
+folded stale scratch. `Executor::render_applied` renders the plan, prepare and
+rate the executor holds without applying, and `Engine::settle` applies once
+and sizes from the result, so a later commit waits for the next block.
+`outputs` and `inputs` need a slice per global channel of the plan; extra
+slices are ignored on every path, and fewer is a caller bug (a
+`debug_assert`, silence in release). The regressions are
+`engine::tests::*_between_settle_and_render_*`.
 
 ### Verdicts
 

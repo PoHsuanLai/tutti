@@ -1323,6 +1323,7 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        let _ftz = ScopedNoDenormals::new();
         self.apply_pending();
         self.render_applied(frames, transport, changes, inputs, outputs);
     }
@@ -1341,8 +1342,10 @@ impl Executor {
     /// re-prepare's resume) would change what the sizes were read from.
     ///
     /// `inputs` and `outputs` must have one slice per global input and output
-    /// channel of the plan. Fewer of either is a caller bug: it panics in debug builds, and in release the
-    /// block renders silence into what was given, running no node.
+    /// channel of the plan. Slices past those are ignored, serial or on a
+    /// pool. Fewer of either is a caller bug: it panics in debug builds, and
+    /// in release the block renders silence into what was given, running no
+    /// node.
     ///
     /// # Panics
     ///
@@ -1510,7 +1513,9 @@ impl Executor {
                     max,
                     cap,
                     inputs,
-                    outputs,
+                    // The claim table is sized for the plan's width; slices
+                    // past it are ignored here as on the serial path.
+                    outputs: &mut outputs[..plan.global_outputs()],
                     arena,
                     flags,
                     events,

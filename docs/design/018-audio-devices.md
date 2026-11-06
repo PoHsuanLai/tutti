@@ -1,0 +1,109 @@
+# 018: audio devices that come and go
+
+A sound card that is unplugged, replugged or replaced as the system default
+leaves the engine silent today, and what the host must do about it is not
+written anywhere. This design gives the engine a model of which devices exist,
+a policy for what to do when that changes, and the same behaviour headless and
+in Bevy. It shares a pattern, `Phase::Poll` and the `SessionEvent` family with
+the MIDI design (017) and no code: MIDI identity is an endpoint with function
+blocks, audio identity is a name and a direction.
+
+## 1. What is wrong today
+
+Read in the code on `main`; nothing was run against a real card.
+
+- The device list is enumerated once (`device_state_init_system`) and never
+  refreshed.
+- Nothing watches the default device. `DeviceSelector::Default` is resolved
+  only inside `start` and `restart`. cpal 0.15.3 has `Device::name` and no id,
+  and no change notification on any host, so polling is the only portable way.
+- An output that vanishes sets `StreamFaults::disconnected`, and
+  `SessionEvent::DeviceFault` is reported once. Then the callback stops, the
+  transport and graph freeze, and nothing restarts, even though the device
+  layer supports a restart after a disconnect.
+- A startup failure is terminal (`AudioEngineState::Failed`): an app launched
+  with no card never gets audio when one is plugged in.
+- `DeviceSelector::Index` is the position in one enumeration. A hot-plug
+  renumbers it, so a saved index can open a different card.
+- `MicIn` is opened at the graph's rate by the host. The session never sees it
+  and `Session::restart` cannot reopen it, so after a 44.1 to 48 kHz restart
+  its old-rate frames feed the new-rate graph: pitch and speed shift, no
+  error.
+
+## 2. Four layers
+
+1. **Pure core, `tutti-cpal::DeviceRoster`.** `apply(Snapshot) ->
+   Vec<DeviceChange>` with no OS, thread or clock. It sits in `tutti-cpal`:
+   `tutti-types` is vocabulary only, `tutti-core` has no device concept, and
+   `tutti-session` (the policy) and `bevy-tutti` already reach the device
+   through `tutti-cpal`. A new crate for one table would be a layer with one
+   resident. The module imports nothing from cpal.
+2. **OS layer, `tutti-cpal::DevicePoller`.** A thread owned by the poller
+   enumerates the host on a cadence and publishes the latest `Snapshot`;
+   `SnapshotSource::poll` takes it without blocking. Enumeration can block on
+   ALSA and WASAPI, so it never runs on the audio thread or in `update`. The
+   thread opens its own `DeviceHost`, waits on a stop channel with a timeout
+   (no sleeps), and ends when the poller drops.
+3. **Policy, `tutti-session`.** `DeviceWatch` owns a source, a roster and a
+   `Follow`. `Follow::step(Input, Instant) -> Option<DeviceRestart>` is pure:
+   the time is a value. The session runs the watch in `Phase::Poll`.
+4. **Adapter, `bevy-tutti`.** Translates `SessionEvent`s into
+   `AudioDeviceState` and messages, and calls the one restart function the
+   session offers. No timers, no diffs.
+
+## 3. API
+
+```rust
+// tutti-cpal
+pub struct DeviceId { name: String, ordinal: usize }   // among same-named, same direction
+pub enum DeviceSelector { Default, Id(DeviceId) }      // Index and Name are removed
+pub enum Direction { Output, Input }
+pub struct Snapshot { outputs, inputs: Vec<DeviceId>, default_output, default_input: Option<DeviceId> }
+pub enum DeviceChange { Appeared(Direction, DeviceId), Vanished(Direction, DeviceId),
+                        DefaultChanged(Direction, Option<DeviceId>) }
+pub trait SnapshotSource { fn poll(&mut self) -> Option<Snapshot>; }
+
+// tutti-session
+pub struct DevicePolicy { follow_default, reconnect, retry_startup: bool, backoff: Backoff }
+Session::watch_devices(source, policy)
+Session::restart_followed(device, request, now)   // runs a wanted restart, reports the outcome
+SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted,
+               DeviceRestarted { previous_rate, rate }, RestartFailed}
+```
+
+## 4. Decisions
+
+- **Identity is name, direction and ordinal.** cpal gives a name and nothing
+  else, so two identical USB cards are told apart by their order among
+  devices with that name. The ordinal is stable while the set of same-named
+  devices is, which is the best an id-less API allows; it is documented as
+  such. `Index` goes, `Name(s)` becomes `Id(DeviceId::new(s))`. The default
+  device is matched by name, ordinal 0.
+- **All automatic behaviour is opt-in and off by default.** `follow_default`
+  moves a stream whose selector is `Default` when the default changes or the
+  device it runs on vanishes. `reconnect` reopens the device the user chose
+  explicitly when it returns. `retry_startup` retries a failed start. The
+  session never replaces an explicit choice with another device: a lost
+  explicit device waits, silent, for its own return or for the host.
+- **Backoff holds against flapping.** Every attempt, successful or not, counts
+  a strike; the delay before the next doubles from `base` to `max`; strikes
+  clear after `settle` with no attempt. A device that flaps faster than
+  `settle` is retried at `max`, not on every change.
+- **A failed follow keeps the old spec.** It is the documented state of
+  `Session::restart` (the stream stopped, the old spec and rate kept); the
+  watch records a strike and tries again after the delay.
+- **The session decides, the host executes.** `Device` is `!Send` and the
+  host owns it, so `Poll` reports `RestartWanted` and the host calls
+  `restart_followed`, which restarts and tells the watch the outcome. Bevy's
+  system is that call.
+- **The mic is the host's.** The session holds no `MicIn`, so it cannot reopen
+  one. After a successful restart it reports `DeviceRestarted` with both
+  rates; the host reopens its mic when `rate_changed()`. Mic stream faults
+  are the input-faults lane's.
+- **Startup retry is a watch with no session.** `DeviceWatch` runs alone for
+  an app that has no device yet; the adapter builds the engine when it says
+  to, and `AudioEngineState::Failed` is no longer terminal when the policy is
+  on.
+- **What this does not claim.** Nothing here was exercised on real hardware,
+  and the cost of enumeration on WASAPI, CoreAudio and JACK is unknown. The
+  poll interval is therefore a policy value, 2 s by default.

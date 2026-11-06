@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::ContentScale;
+use super::MidiEventVec;
 use super::Normalized;
 use super::ParamId;
 use super::SampleFormat;
 use super::Samples;
-use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
@@ -195,6 +195,10 @@ pub enum HostMessage {
 /// A reply or notification travelling subprocess → host.
 ///
 /// Variant order is wire-significant; see the module docs.
+// `AudioProcessed` holds the inline `MidiEventVec` (~5 KB). A reply is decoded
+// into one stack value and moved once to the bridge thread's queue; boxing it
+// would put a heap allocation on every block's reply.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     /// The plugin was probed or loaded successfully.
@@ -217,8 +221,8 @@ pub enum BridgeMessage {
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted
     /// travel here. (Parameter / note-expression output is not routed back.)
-    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side, and the host
-    /// keeps at most that many of a longer one.
+    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side; the host
+    /// refuses a longer list at decode.
     ///
     /// **This message is not what makes the audio readable.** The slab carries a
     /// per-slot generation counter and answers that itself, so the host emits
@@ -231,8 +235,8 @@ pub enum BridgeMessage {
         #[serde(default)]
         seq: u64,
         /// MIDI the plugin emitted during the block.
-        #[serde(default)]
-        midi_out: IpcMidiEventVec,
+        #[serde(default, with = "super::wire::midi")]
+        midi_out: MidiEventVec,
     },
     /// One parameter's normalized value, or `None` if the plugin declined.
     ParameterValue {

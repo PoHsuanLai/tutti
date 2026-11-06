@@ -12,26 +12,28 @@ use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::Result;
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, ContentScale, HostMessage, IpcMidiEvent, IpcMidiEventVec,
-    MAX_STATE_BYTES, MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle,
-    midi_from_wire,
+    AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
+    ParameterQueue, SampleFormat, WindowHandle,
 };
 
-/// Convert a block's plugin MIDI-out for the wire. Already capped at
+/// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
 /// carries at most that many; `dropped` is what the cap cost this block, from
 /// a pathological plugin, and is logged.
-fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> IpcMidiEventVec {
+fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> MidiEventVec {
     if dropped > 0 {
         tracing::warn!(
             "plugin emitted {} MIDI events this block; dropped {dropped} past the cap",
             events.len() + dropped,
         );
     }
-    events.iter().map(IpcMidiEvent::from).collect()
+    events.clone()
 }
 
 /// What [`Session::handle`] asks the transport loop to do.
+// One value per message, moved once to the transport loop; a `BridgeMessage`
+// carries a block's inline MIDI list.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
@@ -159,7 +161,7 @@ impl Session {
             }
 
             M::ProcessAudio(data) => {
-                let midi = midi_from_wire(&data.midi_events);
+                let midi = &data.midi_events;
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
@@ -172,7 +174,7 @@ impl Session {
                 self.handle_process(AudioBlock {
                     seq: data.seq,
                     num_samples: data.num_samples,
-                    midi: &midi,
+                    midi,
                     extras: Some(extras),
                 })
             }
@@ -455,7 +457,7 @@ impl Session {
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
                 seq,
-                midi_out: IpcMidiEventVec::new(),
+                midi_out: MidiEventVec::new(),
             }
             .into());
         }
@@ -474,7 +476,7 @@ impl Session {
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
                 seq,
-                midi_out: IpcMidiEventVec::new(),
+                midi_out: MidiEventVec::new(),
             }
             .into());
         };
@@ -622,7 +624,7 @@ mod tests {
     #[cfg(feature = "clap")]
     use tutti_plugin::server::Features;
     use tutti_plugin::server::{
-        IpcMidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
+        MidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -695,7 +697,7 @@ mod tests {
                 HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 256,
-                    midi_events: IpcMidiEventVec::new(),
+                    midi_events: MidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
@@ -1450,7 +1452,7 @@ mod tests {
                 tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 512,
-                    midi_events: IpcMidiEventVec::new(),
+                    midi_events: MidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),

@@ -1497,10 +1497,12 @@ fn stamped_server(
                             }
                             server_slab.publish_output(seq);
                         }
-                        let midi_out = vec![crate::protocol::IpcMidiEvent {
+                        let midi_out = [crate::protocol::MidiEvent {
                             frame_offset: 0,
                             data: [seq as u32, 0, 0, 0],
-                        }];
+                        }]
+                        .into_iter()
+                        .collect();
                         BridgeMessage::AudioProcessed {
                             latency_us: 0,
                             seq,
@@ -1760,11 +1762,7 @@ fn two_stale_blocks(
         );
         while let Some(msg) = recv_host_msg(&server_stream) {
             if let HostMessage::ProcessAudio(data) = msg {
-                let midi: Vec<crate::protocol::MidiEvent> = data
-                    .midi_events
-                    .iter()
-                    .map(crate::protocol::IpcMidiEvent::to_midi_event)
-                    .collect();
+                let midi: Vec<crate::protocol::MidiEvent> = data.midi_events.to_vec();
                 let _ = got_tx.send((data.seq, midi));
                 send_bridge_msg(
                     &server_stream,

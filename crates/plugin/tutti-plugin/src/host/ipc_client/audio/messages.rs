@@ -132,10 +132,9 @@ pub(super) enum Command {
 /// strength of the slab, and emits silence for an unpublished block even if a
 /// reply for it arrives.
 ///
-/// What remains is the plugin's MIDI-out. The `IpcMidiEvent → MidiEvent`
-/// conversion happens on the bridge thread (off-RT, see `dispatch`), so the
-/// list moves through the queue already built; the RT thread only drains it
-/// into caller storage.
+/// What remains is the plugin's MIDI-out. The wire adapter decodes it on the
+/// bridge thread (off-RT, see `dispatch`), so the list moves through the queue
+/// already built; the RT thread only drains it into caller storage.
 // `AudioProcessed` holds an inline-256 `MidiEventVec` (~5 KB) vs the zero-size
 // `Error`. Intentional: the list is inline so popping + dropping it on the
 // RT audio thread never touches the heap (see `submit`). Boxing would defeat

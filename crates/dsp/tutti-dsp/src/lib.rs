@@ -54,19 +54,62 @@
 //! - FFT: [`RealFft`], a real-input FFT on rustfft's scalar planner whose
 //!   arithmetic does not depend on the CPU; [`StagedRealFft`], the same
 //!   transform in steps; [`FftScratch`], reusable plans and buffers.
+//! - Filters: [`SvfCoeffs`] and [`SvfCoefficients`] with [`svf_step`]
+//!   ([`SvfType`]); [`LadderCoeffs`] and [`LadderCoefficients`] with
+//!   [`ladder_step`] ([`LadderType`]); the Linkwitz-Riley [`Crossover`]; and
+//!   [`Real`], the `f32` or `f64` their state runs in.
+//! - Dynamics: [`EnvelopeFollower`] and [`GateEnvelopeFollower`]; the gain
+//!   curves [`compute_compressor_gain_reduction`], [`compute_gate_gain`],
+//!   [`compute_limiter_gain`] and [`LimiterCurve`]; [`CompressorKernel`] and
+//!   [`GateKernel`] with their [`CompressorBlock`] and [`GateBlock`]; the
+//!   limiter's [`LookaheadRing`]; and the ring buffers [`CircularBuffer`] and
+//!   [`MonotonicMinDeque`].
+//! - Convolution: [`Convolver`] over a shared [`IrSpectra`].
+//! - Delay: [`DelayLine`] with an [`InterpolationMode`], and [`SweptLines`], the
+//!   chorus and flanger kernel.
+//! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
 //!   same scalar FFT, failing with a [`ResampleError`].
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
+mod allpass;
 mod analysis;
+mod buffer;
+mod control;
+mod convolver;
+mod delay;
+mod dynamics;
 mod fft;
-mod resample;
+mod filter;
+mod swept_delay;
+mod waveshape;
 
+mod resample;
+#[cfg(test)]
+mod test_support;
+
+pub use allpass::{allpass_chain, allpass_coeff};
 pub use analysis::*;
+pub use buffer::{CircularBuffer, MonotonicMinDeque};
+pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
+pub use convolver::{Convolver, IrSpectra};
+pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
+pub use dynamics::{
+    CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
+    GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
+    compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain, db_to_amplitude,
+    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
+};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
+pub use filter::{
+    Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
+    SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
+};
 pub use resample::{FftResampler, ResampleError};
+pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
+pub use waveshape::{ShapeKind, Shaper};
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a
 /// [`Pitch`] names one, and callers should not need a second import to read it.
@@ -83,6 +126,6 @@ pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 ///
 /// `num_complex::Complex<f32>`, the type [`RealFft`] works in, so
 /// bins cross the FFT boundary without conversion. The vocoder in
-/// `tutti-sampler` and the convolver in `tutti-nodes` work in the same type, so
-/// values cross freely between them.
+/// `tutti-sampler` and the [`Convolver`] work in the same type, so values cross
+/// freely between them.
 pub use Complex32 as Complex;

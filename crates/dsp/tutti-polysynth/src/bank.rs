@@ -34,7 +34,7 @@
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
 use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
-use tutti_nodes::{LadderCoeffs, SvfCoeffs, SvfType};
+use tutti_dsp::{LadderCoeffs, SvfCoeffs, SvfType};
 use wide::u32x8;
 
 /// The longest run of frames rendered between two control steps.

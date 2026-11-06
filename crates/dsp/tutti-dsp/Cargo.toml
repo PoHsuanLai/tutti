@@ -3,7 +3,7 @@ name = "tutti-dsp"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Pure DSP algorithms for Tutti over plain sample slices: a CPU-independent real FFT and audio analysis (waveform blocks, onsets, pitch, loudness, stereo correlation, STFT)"
+description = "Pure DSP algorithms for Tutti over plain sample slices: a CPU-independent real FFT, audio analysis (waveform blocks, onsets, pitch, loudness, stereo correlation, STFT) and the filter, dynamics, convolution, delay and waveshaping algorithms behind the built-in effect nodes"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-dsp"
@@ -32,13 +32,17 @@ ebur128 = "0.1"
 # CPUs. Same version as `Cargo.lock`'s.
 rustfft = { version = "6.4", default-features = false }
 
+# The filters' `Real` (`filter/real.rs`) calls `libm`'s pure-Rust
+# transcendentals, so results do not depend on the platform's C math library.
+libm = "0.2.15"
+
 # The `Error` enum's Display/Error impls.
 thiserror.workspace = true
 
 [features]
 # No `bevy` feature, and no default features. This crate is a library of
-# analysis algorithms over `&[f32]`; a host that wants these results in an ECS
-# wires them up on its own side.
+# algorithms over `&[f32]` (analysis, filters, dynamics, convolution, delay);
+# a host that wants these results in an ECS wires them up on its own side.
 default = []
 
 [dev-dependencies]

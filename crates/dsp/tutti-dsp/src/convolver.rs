@@ -4,7 +4,7 @@
 //!
 //! Each level of the convolution is the uniformly partitioned overlap-add
 //! convolution `fft-convolver` 0.3 runs (its `FFTConvolver`), with the same
-//! arithmetic in the same order, over [`tutti_dsp::RealFft`], the engine's
+//! arithmetic in the same order, over [`RealFft`](crate::RealFft), the engine's
 //! CPU-independent real FFT (rustfft's scalar planner, where
 //! `fft-convolver`'s `realfft` picks SIMD at run time). An output is
 //! therefore bit-identical across CPUs on one OS and libm. It is written here
@@ -69,7 +69,7 @@
 
 use std::sync::Arc;
 
-use tutti_dsp::{Complex32, StagedRealFft};
+use crate::{Complex32, StagedRealFft};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.
@@ -357,6 +357,7 @@ impl IrSpectra {
 
     /// The partition size and partition count of each level, head first.
     #[cfg(test)]
+    #[must_use]
     pub(super) fn shape(&self) -> Vec<(usize, usize)> {
         self.levels
             .iter()
@@ -1639,6 +1640,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A 6000-tap IR at a 32-frame head is cut into more than one level (the
+    /// node's long-IR render test relies on it).
+    ///
+    /// Mutation (run): `MIN_GAIN` lowered to 0.0 keeps the layout uniform →
+    /// fails.
+    #[test]
+    fn a_long_ir_is_cut_into_levels() {
+        let ir = vec![0.1f32; 6000];
+        assert!(Convolver::new(&ir, 32).spectra().shape().len() > 1);
     }
 
     /// The cost model keeps the uniform layout where an extra level does not

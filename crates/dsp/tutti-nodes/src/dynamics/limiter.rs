@@ -12,87 +12,17 @@ use tutti_core::AtomicF32;
 use tutti_core::ChannelLayout;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 
-use super::envelope::EnvelopeFollower;
-use super::utils::{
-    LimiterCurve, amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope,
-};
-use crate::buffer::{CircularBuffer, MonotonicMinDeque};
 use crate::ramp::LastGood;
 use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
+use tutti_dsp::{
+    EnvelopeFollower, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
+    compute_limiter_gain, db_to_amplitude, fold_peak, smooth_envelope,
+};
 use tutti_types::Latency;
 use tutti_types::UnitParam;
 
 /// The lane's length before the graph prepares the node.
 const DEFAULT_LANE: usize = 512;
-
-/// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
-/// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
-/// block, not a flat field soup.
-#[derive(Clone, Debug)]
-struct LookaheadRing {
-    /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
-    /// construction — never resized in the RT path.
-    buffers: Vec<CircularBuffer<f32>>,
-    min_deque: MonotonicMinDeque,
-    sample_counter: u64,
-    lookahead_samples: usize,
-}
-
-impl LookaheadRing {
-    fn new(channels: usize, lookahead_samples: usize) -> Self {
-        let n = lookahead_samples.max(1);
-        Self {
-            buffers: (0..channels.max(1))
-                .map(|_| CircularBuffer::new(n))
-                .collect(),
-            // n + 1 frames: the one delayed out now and the n after it.
-            min_deque: MonotonicMinDeque::new(n + 1),
-            sample_counter: 0,
-            lookahead_samples: n,
-        }
-    }
-
-    fn resize(&mut self, lookahead_samples: usize) {
-        *self = Self::new(self.buffers.len(), lookahead_samples);
-    }
-
-    fn clear(&mut self) {
-        for b in &mut self.buffers {
-            b.clear();
-        }
-        self.min_deque.clear();
-        self.sample_counter = 0;
-    }
-
-    /// Feeds `gain` to the sliding minimum and returns the window-min gain
-    /// (the linked gain reduction all channels share). The window is the
-    /// delayed sample's own frame and the `lookahead_samples` after it, so the
-    /// gain that scales a sample is never later than its own target's: the
-    /// push drops the gain leaving the window before adding this one.
-    #[inline]
-    fn push_gain(&mut self, gain: f32) -> f32 {
-        self.min_deque.push(self.sample_counter, gain);
-        self.sample_counter = self.sample_counter.wrapping_add(1);
-        self.min_deque.min().unwrap_or(gain)
-    }
-
-    /// Delays `input` by the lookahead through channel `c`'s ring and writes
-    /// it to `out` scaled by the matching frame of `gains`. Each ring holds
-    /// `lookahead_samples`, so its oldest slot is the sample that many pushes
-    /// back. The channels' rings are independent, so a block runs one
-    /// channel at a time.
-    #[inline]
-    fn delay_scaled(&mut self, c: usize, input: &[f32], gains: &[f32], out: &mut [f32]) {
-        let ring = &mut self.buffers[c];
-        for ((o, &x), &g) in out.iter_mut().zip(input).zip(gains) {
-            let d = ring.replace_oldest(x);
-            // A NaN in both operands: x86 returns the first one's and which
-            // is first is up to the compiler, so pick the delayed sample's
-            // (as the per-frame product did) to keep the sign bit.
-            *o = if d.is_nan() { d + d } else { d * g };
-        }
-    }
-}
 
 /// Lookahead limiter with gain reduction linked across channels. 2 inputs, 2
 /// outputs by default.
@@ -121,7 +51,7 @@ impl LookaheadRing {
 /// graph's PDC compensates a dry path mixed against it.
 ///
 /// The minimum gain over the lookahead window is tracked with a
-/// [`MonotonicMinDeque`], so each sample costs O(1) amortized regardless of
+/// [`MonotonicMinDeque`](tutti_dsp::MonotonicMinDeque), so each sample costs O(1) amortized regardless of
 /// lookahead length. Nothing in the RT path allocates: the rings and the gain
 /// lane are sized at construction, and again when the graph prepares it.
 ///
@@ -394,13 +324,6 @@ impl LimiterNode {
     }
 }
 
-/// The linked-peak fold: `max` returns the other operand for a NaN, so a NaN
-/// sample never reaches the peak.
-#[inline]
-fn fold_peak(peak: f32, x: f32) -> f32 {
-    peak.max(x.abs())
-}
-
 impl Node for LimiterNode {
     /// `channels` in and out, ceiling, threshold and release modulatable
     /// ([`LIMITER_PARAMS`]). Its latency is the lookahead ring's, at the
@@ -414,7 +337,7 @@ impl Node for LimiterNode {
     fn shape(&self) -> Shape {
         Shape::audio(self.layout, self.layout)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_latency(Latency::new(Samples(self.ring.lookahead_samples)))
+            .with_latency(Latency::new(Samples(self.ring.lookahead_samples())))
             .with_tail(Tail::None)
             .with_params(&LIMITER_PARAMS)
     }
@@ -681,13 +604,13 @@ impl BrickwallLimiterNode {
 
     #[inline]
     fn clip(&self, sample: f32) -> f32 {
-        sample.clamp(-self.ceiling_linear, self.ceiling_linear)
+        brickwall_clip(sample, self.ceiling_linear)
     }
 
     /// Clip against an explicit linear ceiling (the modulated path).
     #[inline]
     fn clip_at(sample: f32, ceiling_linear: f32) -> f32 {
-        sample.clamp(-ceiling_linear, ceiling_linear)
+        brickwall_clip(sample, ceiling_linear)
     }
 }
 
@@ -876,7 +799,7 @@ mod tests {
 
         // Born at the placeholder: the count is right for 44100 and wrong for
         // the device the node is about to run on.
-        let born = lim.ring.lookahead_samples;
+        let born = lim.ring.lookahead_samples();
         assert_eq!(
             born,
             LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
@@ -893,7 +816,7 @@ mod tests {
 
         // The correction: same wall-clock window, more frames.
         lim.prepare(&Prepare::new(device, Samples(64)));
-        let fixed = lim.ring.lookahead_samples;
+        let fixed = lim.ring.lookahead_samples();
         assert_eq!(
             fixed,
             LOOKAHEAD.to_samples_ceil(device).get(),
@@ -925,12 +848,14 @@ mod tests {
         for _ in 0..4 {
             lim.prepare(&Prepare::new(SampleRate::DEFAULT, Samples(64)));
             assert_eq!(
-                lim.ring.lookahead_samples, born,
+                lim.ring.lookahead_samples(),
+                born,
                 "returning to the original rate must return the original count"
             );
             lim.prepare(&Prepare::new(device, Samples(64)));
             assert_eq!(
-                lim.ring.lookahead_samples, fixed,
+                lim.ring.lookahead_samples(),
+                fixed,
                 "a rate change must not accumulate rounding across calls"
             );
         }
@@ -1424,7 +1349,7 @@ mod tests {
             if let Some(n) = lane {
                 lim.lane.truncate(n);
             }
-            let latency = lim.ring.lookahead_samples;
+            let latency = lim.ring.lookahead_samples();
             let input: Vec<f32> = (0..1024).map(|i| if i < 600 { 0.2 } else { 0.8 }).collect();
             let out = drive(&mut lim, RATE_44K, &[&input, &input], &[]).remove(0);
             let gain = out[1023] / input[1023 - latency];
@@ -1474,7 +1399,7 @@ mod tests {
             if let Some(n) = lane {
                 lim.lane.truncate(n);
             }
-            let latency = lim.ring.lookahead_samples;
+            let latency = lim.ring.lookahead_samples();
             let input: Vec<f32> = (0..1200)
                 .map(|i| if (300..700).contains(&i) { 0.8 } else { 0.05 })
                 .collect();
@@ -1534,7 +1459,7 @@ mod tests {
         let ceiling = Db(-6.0);
         let limit = db_to_amplitude(ceiling).get();
         let mut lim = prepared_at(LimiterNode::new(ceiling, ceiling), RATE_44K);
-        let latency = lim.ring.lookahead_samples;
+        let latency = lim.ring.lookahead_samples();
         let mut seed = 7;
         let (mut input, mut output) = (Vec::new(), Vec::new());
         for _ in 0..40 {
@@ -1722,7 +1647,7 @@ mod tests {
             LimiterNode::new(ceiling, ceiling).with_release(0.001),
             RATE_44K,
         );
-        let latency = lim.ring.lookahead_samples;
+        let latency = lim.ring.lookahead_samples();
         let mut x = vec![1.0f32; 1024];
         x[10] = f32::NAN;
         let out = drive(&mut lim, RATE_44K, &[&x, &x], &[]).remove(0);

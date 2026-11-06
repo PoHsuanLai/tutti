@@ -123,7 +123,7 @@ fn the_master_declaration_becomes_the_values_outputs() {
 /// **An imperative write to a declared port is detected and reverted.**
 ///
 /// A host can write a declared port imperatively through
-/// `AudioGraphRes::set_source`. The dirty gate watches ECS change ticks, so a
+/// `Graph::set_source`. The dirty gate watches ECS change ticks, so a
 /// write nothing in the ECS touched does not by itself trigger a rebuild.
 ///
 /// With the value owning edges, the repair falls out of [`apply`]: it compares

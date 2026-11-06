@@ -16,8 +16,8 @@ mod common;
 /// Wiring declared in the ECS reaches the graph, and stops reaching it when the
 /// declaration goes away.
 ///
-/// Every assertion reads the engine back through `AudioGraphRes::source` /
-/// `AudioGraphRes::output_source` rather than trusting the component, because the diff
+/// Every assertion reads the engine back through `Graph::source` /
+/// `Graph::output_source` rather than trusting the component, because the diff
 /// this layer performs is only meaningful if the engine is the thing being
 /// compared against.
 mod graph_wire {

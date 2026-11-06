@@ -5,7 +5,7 @@
 //! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
-//! (`AudioGraphRes::take_audio_side`) and plays it in device-sized blocks.
+//! (`Graph::take_audio_side`) and plays it in device-sized blocks.
 //!
 //! # The oracles
 //!

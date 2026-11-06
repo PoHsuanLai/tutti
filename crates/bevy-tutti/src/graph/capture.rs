@@ -26,7 +26,7 @@
 //! different node bound to the entity; it cannot see a node replaced *under the
 //! same key*.
 //! `crossfade_audio_node` is such a replacement and re-captures, so it is safe;
-//! a host that calls [`Graph::replace`](crate::graph::Graph::replace)(crate::graph::AudioGraphRes::replace)
+//! a host that calls [`Graph::replace`](crate::graph::Graph::replace)
 //! directly bypasses both the capture and the guard, and the entity keeps
 //! driving the outgoing node's controls. Go through `crossfade_audio_node`, or
 //! capture (`CapturedControls::for_plugin` for a plugin, the default for
@@ -67,7 +67,7 @@ impl CapturedControls {
     /// Captures the controls of a loaded out-of-process plugin.
     ///
     /// Call it on the unbound client before it is bound and inserted
-    /// ([`Graph::insert_plugin`](crate::graph::Graph::insert_plugin)(crate::graph::AudioGraphRes::insert_plugin)):
+    /// ([`Graph::insert_plugin`](crate::graph::Graph::insert_plugin)):
     /// its [`PluginControls`](tutti_plugin::handles::PluginControls) become the
     /// entity's `PluginShadow` once [bound](Self::bind).
     #[cfg(feature = "plugin")]

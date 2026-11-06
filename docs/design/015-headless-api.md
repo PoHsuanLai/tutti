@@ -1743,7 +1743,7 @@ Where the code differs from the text above:
   `plugin_health_poll` is `NonSendMarker`-pinned. It runs in
   `GraphReconcileSystems::Spawn`, after `plugin_load_promote`.
 - **Any plugin the graph hosts is watched**, including one a host inserts
-  with `AudioGraphRes::insert_plugin`: it has a record.
+  with `Graph::insert_plugin`: it has a record.
 - **`Phase::RenderMode` needs `export`**; with `plugin` alone it is a
   no-op (nothing can be in flight).
 - **`ExportPlugin` schedules `plugin_render_mode`**, after `poll_exports`

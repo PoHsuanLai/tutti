@@ -1,5 +1,5 @@
 //! The modulation properties that need the plan the graph sent
-//! (`AudioGraphRes::sent_plan`, crate-private): a program edit sends none,
+//! (`Graph::sent_plan`): a program edit sends none,
 //! a new signal node sends one. The rest are `tests/mod_lanes.rs`.
 
 use std::sync::Arc;

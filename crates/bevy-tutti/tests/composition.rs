@@ -174,7 +174,7 @@ mod plugins_without_engine {
 
 /// What reaches the speakers, and who decides.
 ///
-/// "This node is the master" is not a mix. `AudioGraphRes::set_outputs_from`
+/// "This node is the master" is not a mix. `Graph::set_outputs_from`
 /// walks *every* global output channel and overwrites that channel's source,
 /// so two callers do not layer — the second silently disconnects the first.
 ///

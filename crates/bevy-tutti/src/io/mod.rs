@@ -16,7 +16,7 @@
 //!
 //! The rest is already the right shape to hold directly: [`WavOut`] is handed
 //! to a pump, and [`MicMonitorNode`] is a graph node
-//! ([`Graph::insert`](crate::graph::Graph::insert)(crate::graph::AudioGraphRes::insert),
+//! ([`Graph::insert`](crate::graph::Graph::insert),
 //! unforkable: an export of a graph holding the live mic is refused, naming
 //! it) declared through [`PortSources`](crate::graph::PortSources) like any
 //! other node.

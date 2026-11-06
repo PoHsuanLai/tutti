@@ -63,7 +63,7 @@ bundle on disk.
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Prepare, RenderMode, SampleFormat, SampleRate, Samples};
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, MidiEvent, TransportInfo, InputEvents, Vst3Loaded,
+    AudioBuffer, InputEvents, LoadOptions, MidiEvent, TransportInfo, Vst3Loaded,
 };
 
 // Initialized. Parameters and the editor are reachable here, with no
@@ -126,11 +126,11 @@ reason as above.
 let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 
 // Parameters are addressed by an opaque, plugin-chosen `ParamID`, never by
-// position: `parameter_info` reads one by enumeration index, and the `id` it
-// hands back is what `Control::set_parameter` takes. The titles are UTF-16 in the ABI,
-// so they are read through the `_string` accessors rather than as fields.
-for index in 0..plugin.parameter_count() {
-    let Some(info) = plugin.parameter_info(index) else {
+// position: `parameter_ids` lists them, `parameter_info` reads one by id, and
+// the id is what `Control::set_parameter` takes. The titles are UTF-16 in the
+// ABI, so they are read through the `_string` accessors rather than as fields.
+for id in plugin.parameter_ids() {
+    let Some(info) = plugin.parameter_info(id) else {
         continue;
     };
     println!(
@@ -142,8 +142,8 @@ for index in 0..plugin.parameter_count() {
 }
 
 // The write takes the id and a normalized `0..=1` value.
-if let Some(info) = plugin.parameter_info(0) {
-    plugin.set_parameter(ParamId::new(info.id), Normalized::new(0.75));
+if let Some(&id) = plugin.parameter_ids().first() {
+    plugin.set_parameter(id, Normalized::new(0.75));
 }
 
 // State save/restore is legal before any buffer exists — a project load

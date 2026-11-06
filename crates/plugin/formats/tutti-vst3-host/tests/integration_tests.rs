@@ -675,6 +675,28 @@ fn test_set_parameter() {
             .find(|c| !listed.contains(c))
             .expect("some id is unlisted");
         assert!(plugin.parameter_info(unlisted).is_none());
+        // Not silently written: `getParamNormalized` answers 0 for an unknown
+        // id, so it reads as `Some(0.0)` (the controller has no way to say
+        // "unknown"), and a write to it must leave every listed parameter and
+        // that read unchanged.
+        assert_eq!(
+            Control::parameter(&*plugin, unlisted),
+            Some(Normalized::new(0.0))
+        );
+        let before: Vec<_> = listed
+            .iter()
+            .map(|i| plugin.get_parameter(i.get()))
+            .collect();
+        Control::set_parameter(&mut *plugin, unlisted, Normalized::new(0.25));
+        assert_eq!(
+            Control::parameter(&*plugin, unlisted),
+            Some(Normalized::new(0.0))
+        );
+        let after: Vec<_> = listed
+            .iter()
+            .map(|i| plugin.get_parameter(i.get()))
+            .collect();
+        assert_eq!(before, after);
     }
 }
 
@@ -769,7 +791,8 @@ fn plain_range_probe_recovers_real_ranges() {
 
         let mut probed = 0usize;
         let mut non_unit = 0usize;
-        for id in loaded.parameter_ids().into_iter().take(64) {
+        for entry in loaded.parameter_list().into_iter().take(64) {
+            let id = entry.id;
             let Some(info) = loaded.parameter_info(id) else {
                 continue;
             };

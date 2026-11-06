@@ -1469,3 +1469,48 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     render(&mut inst, 64, &rest, None, |_, _, _| 0.0);
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }
+
+/// An id the plugin never listed has no descriptor, reads as 0 (what
+/// `getParamNormalized` answers for an unknown id), and a write to it changes
+/// no listed parameter and does not stick.
+///
+/// This covers what the `#[ignore]`d `test_set_parameter` (which needs an
+/// installed third-party plugin) also checks, on the repo's own probe.
+///
+/// Mutation (run): making `parameter_info` return the first descriptor whatever
+/// the id fails the descriptor assertion; routing the write to the first listed
+/// parameter fails the final comparison.
+#[test]
+fn an_unlisted_parameter_id_is_reported_not_written() {
+    use tutti_plugin_types::{Control, Normalized};
+
+    let _guard = plugin_guard();
+    let mut loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+
+    let listed = loaded.parameter_ids();
+    let unlisted = (0..=u32::MAX)
+        .map(ParamId::new)
+        .find(|c| !listed.contains(c))
+        .expect("some id is unlisted");
+
+    assert!(loaded.parameter_info(unlisted).is_none());
+    assert_eq!(
+        Control::parameter(&loaded, unlisted),
+        Some(Normalized::new(0.0))
+    );
+
+    let before: Vec<_> = listed
+        .iter()
+        .map(|i| loaded.get_parameter(i.get()))
+        .collect();
+    Control::set_parameter(&mut loaded, unlisted, Normalized::new(0.25));
+    assert_eq!(
+        Control::parameter(&loaded, unlisted),
+        Some(Normalized::new(0.0))
+    );
+    let after: Vec<_> = listed
+        .iter()
+        .map(|i| loaded.get_parameter(i.get()))
+        .collect();
+    assert_eq!(before, after);
+}

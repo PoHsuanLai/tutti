@@ -155,6 +155,11 @@ impl std::fmt::Debug for Vst3Loaded {
 /// A host that drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) reads the
 /// same flags as the core's requests
 /// ([`Vst3Loaded::take_requests`]); this is for a plugin held without one.
+///
+/// The last six restart fields (`note_expression_changed` through
+/// `param_id_mapping_changed`) stop at this format layer: carrying them further
+/// needs new `AsyncEvent` variants, and appending one is a `PROTOCOL_VERSION`
+/// bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RestartOutcome {
     /// `kLatencyChanged` fired — the caller should call

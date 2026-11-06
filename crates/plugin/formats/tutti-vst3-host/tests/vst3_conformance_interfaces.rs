@@ -27,12 +27,12 @@ fn context_requirements_are_read_from_the_plugin() {
     let checker = require_sample("host-checker.vst3");
 
     let req = checker.context_requirements();
-    assert_ne!(
-        req, None,
-        "host-checker implements IProcessContextRequirements, so the host must \
-         have its real flags rather than the everything-fallback"
-    );
-    let req = req.unwrap_or_default();
+    let Some(req) = req else {
+        panic!(
+            "host-checker implements IProcessContextRequirements, so the host must \
+             have its real flags rather than the everything-fallback"
+        );
+    };
     assert!(
         checker.wants_transport(),
         "host-checker requests tempo/playhead/bar fields ({req:#x}), so \

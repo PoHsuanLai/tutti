@@ -25,7 +25,8 @@ impl Vst3Loaded {
 
     /// The descriptor of parameter `id`; `None` if the plugin has no such
     /// parameter or no controller. Walks the list, so prefer
-    /// [`parameter_list`](Self::parameter_list) for more than one.
+    /// [`parameter_list`](Self::parameter_list) for more than one. Each call is
+    /// an O(n) walk of FFI calls into the plugin.
     pub fn parameter_info(&self, id: ParamId) -> Option<Vst3ParameterInfo> {
         (0..self.parameter_count())
             .filter_map(|i| self.plugin.parameter_info(i))
@@ -131,27 +132,14 @@ impl Vst3Loaded {
     /// transport snapshot each block; one that doesn't implement the interface
     /// wants everything.
     pub fn wants_transport(&self) -> bool {
-        use crate::types::process_context_flags as f;
-        let Some(req) = self.context_requirements() else {
-            return true;
-        };
-        const TRANSPORT_BITS: u32 = f::NEED_TEMPO
-            | f::NEED_PROJECT_TIME_MUSIC
-            | f::NEED_BAR_POSITION_MUSIC
-            | f::NEED_CYCLE_MUSIC
-            | f::NEED_TIME_SIGNATURE
-            | f::NEED_TRANSPORT_STATE
-            | f::NEED_CONTINOUS_TIME_SAMPLES;
-        req & TRANSPORT_BITS != 0
+        wants_transport(self.context_requirements())
     }
 
     /// `true` if the plugin asked for the host-track chord field
     /// (`kNeedChord`) — the VST3 signal that it consumes sequencer context
     /// (chord / scale). Distinct from note-expression.
     pub fn wants_sequencer_context(&self) -> bool {
-        use crate::types::process_context_flags as f;
-        self.context_requirements()
-            .is_none_or(|req| req & f::NEED_CHORD != 0)
+        wants_sequencer_context(self.context_requirements())
     }
 
     /// Descriptor for the note-expression type at `index` on the given event
@@ -297,6 +285,25 @@ impl Vst3Loaded {
         self.plugin
             .set_automation_state(tutti_vst3_ffi::automation_state::from_mode(mode))
     }
+}
+
+/// Whether `req` asks for any transport field; no interface wants everything.
+fn wants_transport(req: Option<u32>) -> bool {
+    use crate::types::process_context_flags as f;
+    const TRANSPORT_BITS: u32 = f::NEED_TEMPO
+        | f::NEED_PROJECT_TIME_MUSIC
+        | f::NEED_BAR_POSITION_MUSIC
+        | f::NEED_CYCLE_MUSIC
+        | f::NEED_TIME_SIGNATURE
+        | f::NEED_TRANSPORT_STATE
+        | f::NEED_CONTINOUS_TIME_SAMPLES;
+    req.is_none_or(|req| req & TRANSPORT_BITS != 0)
+}
+
+/// Whether `req` asks for the chord field; no interface wants everything.
+fn wants_sequencer_context(req: Option<u32>) -> bool {
+    use crate::types::process_context_flags as f;
+    req.is_none_or(|req| req & f::NEED_CHORD != 0)
 }
 
 /// `None` for the sentinel the FFI layer keeps for "interface not
@@ -475,7 +482,7 @@ mod unit_group_tests {
 
 #[cfg(test)]
 mod requirements_tests {
-    use super::requirements;
+    use super::{requirements, wants_sequencer_context, wants_transport};
     use crate::types::process_context_flags as f;
 
     /// The FFI layer keeps `u32::MAX` for "interface not implemented"; every
@@ -489,5 +496,22 @@ mod requirements_tests {
         assert_eq!(requirements(u32::MAX), None);
         assert_eq!(requirements(0), Some(0));
         assert_eq!(requirements(f::NEED_TEMPO), Some(f::NEED_TEMPO));
+    }
+
+    /// A plugin without the interface wants every field; one that has it wants
+    /// exactly what it flags.
+    ///
+    /// Mutation (run): replacing `is_none_or` with `is_some_and` in the transport
+    /// predicate fails the `None` row; dropping `NEED_CHORD` from the
+    /// sequencer predicate (testing `req != 0`) fails the tempo-only row.
+    #[test]
+    fn no_interface_wants_everything() {
+        assert!(wants_transport(None));
+        assert!(wants_sequencer_context(None));
+        assert!(!wants_transport(Some(0)));
+        assert!(!wants_sequencer_context(Some(0)));
+        assert!(wants_transport(Some(f::NEED_TEMPO)));
+        assert!(!wants_sequencer_context(Some(f::NEED_TEMPO)));
+        assert!(wants_sequencer_context(Some(f::NEED_CHORD)));
     }
 }

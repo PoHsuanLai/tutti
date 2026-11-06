@@ -50,9 +50,7 @@ impl PrefetchSupport {
     /// The `ePrefetchableSupport` value the plugin returned.
     #[must_use]
     pub fn from_raw(raw: u32) -> Self {
-        // `ePrefetchableSupport_` is `u32` on unix and `c_int` on Windows.
-        #[allow(clippy::unnecessary_cast)]
-        let is = |sdk| raw == sdk as u32;
+        let is = |sdk| raw == sdk_enum_i32(sdk) as u32;
         if is(Prefetch::kIsNeverPrefetchable) {
             Self::Never
         } else if is(Prefetch::kIsYetPrefetchable) {

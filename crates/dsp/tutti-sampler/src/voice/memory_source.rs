@@ -404,6 +404,9 @@ impl MemorySource {
 
     /// Places the source on the transport at `window`, or moves its window.
     /// The next frame reads at the new window.
+    ///
+    /// A free-running source that is sent this (a free-running voice given
+    /// `UpdatePlacement`) becomes transport-gated, as a `DiskVoice` always is.
     pub fn set_window(&mut self, window: VoiceWindow) {
         self.placement = Some(window);
     }

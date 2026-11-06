@@ -762,6 +762,9 @@ fn placement_gate_applies_src_ratio_exactly_once() {
 
 /// A window set on a free-running source places it, and placing it
 /// afterwards at that window leaves it as it was.
+///
+/// Mutation (run): `set_window` storing the window only when already placed
+/// → `window()` stays `None` after the set → fails.
 #[test]
 fn setting_a_window_places_the_source() {
     let wave = ramp_wave(100, 44_100.0);

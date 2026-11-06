@@ -1306,8 +1306,9 @@ fn voice_node_is_a_standalone_graph_node() {
 /// 3), silent on a stopped render.
 ///
 /// Mutation (run): `Voice::fork_copy` not keeping the memory source's
-/// window (`set_window(VoiceWindow::default())` on the copy) → the fork
-/// sounds at beat 1 → fails.
+/// window (`set_window(VoiceWindow::default())` on the copy, which places it
+/// at beat 0 whether or not it was placed) → the fork sounds at beat 1 →
+/// fails.
 #[test]
 fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
     let wave = make_wave(44_100);

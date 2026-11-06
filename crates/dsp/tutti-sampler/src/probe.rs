@@ -82,7 +82,7 @@ impl SampleFacts {
 #[non_exhaustive]
 pub enum ProbeError {
     /// The file could not be opened, or has no track this build can decode.
-    #[error("could not read {}", path.display())]
+    #[error("could not read {}: {source}", path.display())]
     Unreadable {
         /// The path that was probed.
         path: PathBuf,

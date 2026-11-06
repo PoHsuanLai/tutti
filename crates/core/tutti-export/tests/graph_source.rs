@@ -963,7 +963,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
 ///
 /// Mutation (run): the graph path's output scaled by `1.0 + f32::EPSILON`
 /// → the render is not the tone. Mutation (run): the `MemorySource`'s
-/// `ParamNode::fork_fresh` leaving the fork unplaced (`fork.placed = false`)
+/// `ParamNode::fork_fresh` leaving the fork unplaced (`fork.placement = None`)
 /// → it ignores the render's transport → silent → fails. (Not caught: the
 /// fork not rewinding — a placed read derives every position from the
 /// transport, so it has no cursor to carry.)

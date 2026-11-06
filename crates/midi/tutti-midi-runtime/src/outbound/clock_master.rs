@@ -113,7 +113,7 @@ struct MtcGrid {
     /// `4p..4p+4`. Set once at piece 0, so one cycle carries one position.
     cycle: AtomicU32,
     /// The grid was just restarted: its first piece 0 is still to be placed
-    /// on an even frame ([`tick_mtc`](Self::tick_mtc)).
+    /// on an even frame ([`ClockMaster::tick_mtc`]).
     align: AtomicBool,
 }
 

@@ -14,8 +14,17 @@
 //!   a plugin dead after at least [`Liveness::DEATHS`] consecutive unhealthy
 //!   observations spanning at least [`Liveness::DEFAULT_WINDOW`] (50 ms), on
 //!   the wall clock each frame passes, so it holds at any frame rate. A
-//!   dead plugin's node is removed and reported once, with the engine's
+//!   dead plugin is reloaded at its node (the default; see below), or, with
+//!   recovery off, its node is removed and reported once, with the engine's
 //!   cause.
+//! - **Recovery.** `tutti_session::Recovery` decides, on `Instant`s the
+//!   session is given: a death or a hang (blocks abandoned with no reply for
+//!   seconds, `PluginHandle::starved_blocks`) keeps the node, reloads the
+//!   plugin with its last snapshot after a backoff, and gives up after
+//!   too many failures in a window. This module holds none of that: it runs
+//!   the reload jobs the session hands out on the task pool, and puts what
+//!   the session reports on the entity ([`PluginReloading`], [`PluginRecovered`],
+//!   [`PluginGaveUp`]; the replacement's handle into [`PluginEmitter`](super::PluginEmitter)).
 //! - **Latency.** A plugin may change its latency while loaded (a
 //!   linear-phase EQ switched into an oversampling mode); the figure its node
 //!   declares now (`PluginControls::declared_latency`) is handed to the
@@ -139,9 +148,10 @@ impl std::fmt::Debug for PluginHealth {
 impl PluginHealth {
     /// The last state captured while this plugin was healthy.
     ///
-    /// Feed it to a fresh [`PluginRequest`](super::PluginRequest) to reinstate a
-    /// crashed plugin — there is no in-place recovery, so a replacement entity
-    /// is the only route back.
+    /// Recovery restores it by itself while it is on (the default,
+    /// `TuttiPlugin::plugin_recovery`). With recovery off, or after
+    /// [`PluginGaveUp`], feed it to a fresh [`PluginRequest`](super::PluginRequest)
+    /// to reinstate the plugin by hand.
     pub fn snapshot(&self) -> Option<&Vec<u8>> {
         self.last_snapshot.as_ref()
     }

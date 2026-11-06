@@ -880,12 +880,14 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
 /// takes the probe 80 ms, far over the bridge's budget for a 512-frame block:
 /// blocks are abandoned all the time, and every one's reply comes back late.
 /// The run of abandoned blocks never reaches the policy's 16 (a reply, even
-/// an owed one, ends it), so the plugin is left alone for three seconds of
-/// the driven clock, and the count did rise (else the test proves nothing).
+/// an owed one, ends it), so the plugin is left alone for four seconds, and
+/// the count did rise (else the test proves nothing).
 ///
-/// Mutation (run, failed): `Channels::note_settled` not clearing the count
-/// (an owed reply is no answer): the run climbs, the verdict ends the server,
-/// `PluginReloading` appears.
+/// Mutation (run, failed): `Channels::note_replied` not clearing the count
+/// (no reply is an answer): the run climbs past 16 and the verdict ends the
+/// server. (Not clearing it on an owed reply alone survives here: this
+/// plugin's replies also reach the bridge as the answer to the next block;
+/// the owed path is pinned by `Channels`' own test.)
 #[test]
 fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     let mut s = session_built(
@@ -895,7 +897,10 @@ fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     let (node, _) = wired_probe(&mut s);
     let mut drive = Drive::new();
     let mut most = 0;
-    for _ in 0..150 {
+    // Four seconds of wall time: at 80 ms a block, with the bridge's budget
+    // missed on most, far more than 16 blocks are abandoned over it.
+    let until = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < until {
         drive.step(&mut s);
         most = most.max(s.plugin(node).unwrap().handle().starved_blocks());
     }

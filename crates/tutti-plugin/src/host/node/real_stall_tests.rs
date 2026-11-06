@@ -445,6 +445,24 @@ fn a_parked_plugin_shows_as_starved_blocks_and_can_be_terminated() {
         handle.status().cause(),
         Some("test: the plugin stopped answering")
     );
+    // And the server is gone, not merely written off.
+    #[cfg(target_os = "linux")]
+    {
+        let pid = handle.server_pid().expect("a subprocess plugin");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ended = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+                stat.rsplit(')')
+                    .next()
+                    .is_some_and(|rest| rest.trim_start().starts_with(['Z', 'X']))
+            });
+            if ended {
+                break;
+            }
+            assert!(Instant::now() < deadline, "server {pid} is still running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 /// The park switch is armed only when asked for.

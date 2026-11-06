@@ -1850,7 +1850,7 @@ fn current_latency() -> u32 {
         + extra
         + subprocess::restart_latency()
         + LATENCY_ACTIVE_EXTRA.load(Ordering::SeqCst))
-        .min(MAX_DELAY_LEN as u32)
+    .min(MAX_DELAY_LEN as u32)
 }
 
 /// Whether the plugin offers `clap.tail` at all. On by default.

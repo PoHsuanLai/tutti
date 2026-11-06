@@ -19,7 +19,7 @@ default = []
 # No `bevy` feature: ECS bindings are host-side. No `spatial` feature: the
 # panners are `tutti-spatial`, which depends on this crate.
 # FFT convolution reverb (partitioned IR).
-# (The transforms are `tutti_types::RealFft`; the convolution itself is this
+# (The transforms are `tutti_dsp::RealFft`; the convolution itself is this
 # crate's, so its IR spectra can be stored once and shared.)
 convolution = []
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and

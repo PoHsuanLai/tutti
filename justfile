@@ -420,7 +420,7 @@ check-loom:
 verify-audio OUT="/tmp/tutti-verify":
     cargo run --locked --release -p tutti-sampler   --example render_cases           -- {{OUT}}/sampler
     cargo run --locked --release -p tutti-export    --example render_export_cases    -- {{OUT}}/export
-    cargo run --locked --release -p tutti-dsp  --example render_analysis_cases  -- {{OUT}}/analysis
+    cargo run --locked --release -p tutti-dsp --example render_analysis_cases  -- {{OUT}}/analysis
     cargo run --locked --release -p tutti-polysynth --example render_synth_cases     -- {{OUT}}/synth
     uv sync --quiet
     uv run python crates/dsp/tutti-sampler/examples/verify_sampler.py   {{OUT}}/sampler

@@ -252,7 +252,7 @@ fn overlap_add_divides_by_the_accumulated_window_energy() {
 /// amplification of whatever numerical dust is there.
 ///
 /// This is the ramp-in and ramp-out case: at the very start of a stream too few
-/// frames overlap to normalize meaningfully. `istft` uses the same `1e-8`.
+/// frames overlap to normalize meaningfully. `istft_transform` uses the same `1e-8`.
 #[test]
 fn overlap_add_does_not_divide_by_a_vanishing_window_sum() {
     let mut o = OverlapAdd::new(8);

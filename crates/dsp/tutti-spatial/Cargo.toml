@@ -18,7 +18,7 @@ workspace = true
 default = []
 # HRTF (head-related transfer function) binaural rendering via FFT
 # convolution against a measured HRIR sphere (`HrtfBinauralNode`), on
-# `tutti_types::RealFft`. The HRIR dataset is supplied by the caller as bytes
+# `tutti_dsp::RealFft`. The HRIR dataset is supplied by the caller as bytes
 # (see `HrtfBinauralNode::new`).
 hrtf = []
 

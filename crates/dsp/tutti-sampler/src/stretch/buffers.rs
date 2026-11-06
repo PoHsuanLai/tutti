@@ -132,7 +132,7 @@ impl SampleFifo {
 /// divide it back out. A **precomputed scalar** (`1 / (4 · mean(hann²))`) is
 /// correct only for a Hann window at exactly 75% overlap.
 ///
-/// So the sum is accumulated the same way `tutti_dsp::istft` does it:
+/// So the sum is accumulated the same way `tutti_dsp::istft_transform` does it:
 /// a parallel ring holding `Σw²`, divided out per sample at the read. That
 /// makes the vocoder correct for *any* window shape, and it costs one extra
 /// ring — sized once, in `new`, and
@@ -215,7 +215,7 @@ impl OverlapAdd {
     /// energy that landed on it. Returns how many were available; the rest of
     /// `out` is left untouched.
     ///
-    /// The guard matches `istft`'s: below `1e-8` of accumulated window energy
+    /// The guard matches `istft_transform`'s: below `1e-8` of accumulated window energy
     /// the sample is ramp-in or ramp-out, where too few frames overlap to
     /// normalize meaningfully, and dividing would amplify whatever is there by
     /// an unbounded factor.

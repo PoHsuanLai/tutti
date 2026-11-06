@@ -1,8 +1,8 @@
 # tutti-dsp
 
-Audio analysis over `&[f32]` for the Tutti audio engine: waveform blocks,
-onsets, pitch, loudness, stereo correlation, spectral shape, silence regions and
-vectorscope points.
+Pure DSP algorithms over `&[f32]` for the Tutti audio engine: a CPU-independent
+real FFT, and audio analysis (waveform blocks, onsets, pitch, loudness, stereo
+correlation, spectral shape, silence regions and vectorscope points).
 
 Use it for offline or background analysis of audio you already hold as
 samples: drawing a waveform, finding transients, tracking pitch, measuring
@@ -182,8 +182,8 @@ audio callback.
 
 None: `default = []`.
 
-The `tutti` crate re-exports this one as `tutti::analysis` behind its
-`analysis` feature. `tutti-export` uses it for loudness measurement and
+The `tutti` crate re-exports this one as `tutti::dsp` behind its
+`dsp` feature. `tutti-export` uses it for loudness measurement and
 `tutti-sampler` for its analysis needs.
 
 ## License

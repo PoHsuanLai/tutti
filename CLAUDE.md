@@ -213,7 +213,8 @@ crates/
                  no dependencies, `publish = false`, re-exported by tutti-types.
   core/          tutti-core (graph runtime, transport, metering, PDC)
                  tutti-types (vocabulary only: units, channel layouts, io edge traits, rt
-                 primitives, Topology; no DSP algorithm)
+                 primitives, Topology; no FFT and no new algorithms. Downmix, interp
+                 and sample conversion stay until a follow-up moves them)
                  tutti-cpal (device),
                  tutti-io (I/O edge: live + file decode)
                  tutti-mod (modulation), tutti-export (offline render)
@@ -235,13 +236,14 @@ crates/
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft and ebur128; `tutti-core` is a dev-dependency only), keeps every
+  rustfft, ebur128 and thiserror; `tutti-core` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime. `tutti-nodes`, `tutti-sampler`, `tutti-spatial` and
-  `tutti-export` are adapters over it.
+  `tutti-export` are to become adapters over it.
 - **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
-  the `Node` adapter.**
+  the `Node` adapter.** This is for new code; existing algorithms in node
+  crates (the convolver, filters, the sampler vocoder) migrate in later PRs.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
@@ -427,9 +429,9 @@ read the `Cargo.toml`, grep for the type, run the probe.
   to a new app-side path.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-analysis` → `tutti-dsp`, `tutti-node` and `fundsp-tutti` → deleted (the node contract is
-  `tutti_graph::Node`; the filters' `Real` is `tutti-nodes`'), and
-  tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  crates, `tutti-analysis` → `tutti-dsp`, `tutti-node` and `fundsp-tutti` →
+  deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
+  `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.

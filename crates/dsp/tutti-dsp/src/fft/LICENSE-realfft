@@ -1,4 +1,4 @@
-The even-length real-FFT passes and twiddle construction in real_fft.rs are
+The even-length real-FFT passes and twiddle construction in real.rs are
 adapted from the realfft crate, version 3.5.0 (https://github.com/HEnquist/realfft).
 
 MIT License

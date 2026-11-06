@@ -79,6 +79,7 @@ use tutti_types::{
 use crate::arena::{Arena, Line};
 use crate::command::Deliveries;
 use crate::event::Event;
+use crate::loss::Dropped;
 use crate::exec::{
     Head, Inject, OpState, Ring, Unit, audio_ring, capture_op, delay_op, event_delay_op,
     event_merge_op, event_ring, global_in, node_dispatch, output_op,
@@ -152,8 +153,8 @@ pub(crate) struct Worker {
     held_events: Held,
     /// Where a node's scheduled events are merged into its inputs.
     overlay: Vec<Event>,
-    /// Events refused this block.
-    dropped: u64,
+    /// Events refused this block, and where.
+    dropped: Dropped,
     /// Whether a crossfade ended this block.
     fade_ended: bool,
 }
@@ -241,7 +242,7 @@ impl Par {
                     held_audio: Held::new(held),
                     held_events: Held::new(held),
                     overlay: Vec::with_capacity(overlay),
-                    dropped: 0,
+                    dropped: Dropped::new(),
                     fade_ended: false,
                 })
                 .collect(),
@@ -279,6 +280,8 @@ pub(crate) struct Block<'b, 'o> {
     pub(crate) has_inject: &'b mut [bool],
     pub(crate) has_due: &'b mut [bool],
     pub(crate) due: Deliveries<'b>,
+    /// Where the block's lost events are added up.
+    pub(crate) dropped: &'b mut Dropped,
 }
 
 /// What every participant shares while the block runs: `Sync`, so the pool
@@ -311,17 +314,17 @@ struct Shared<'s, 'o> {
     waits: BlockWaits,
 }
 
-/// Run one block's ops on `pool`. Returns the events dropped and whether a
-/// crossfade ended.
+/// Run one block's ops on `pool`. The events dropped are added to
+/// `b.dropped`; returns whether a crossfade ended.
 ///
 /// # Panics
 ///
 /// If a node panicked on any participant (after every participant has left
 /// the block).
-pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -> (u64, bool) {
+pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -> bool {
     par.graph.begin();
     for w in &mut par.workers {
-        w.dropped = 0;
+        w.dropped.reset();
         w.fade_ended = false;
     }
     // Slot 0 and the feedback reads were set before the ops; the rest is
@@ -385,9 +388,12 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         "a node panicked on a parallel worker (its message is above), or the pool \
          returned before the block's tasks were done"
     );
-    workers
-        .iter()
-        .fold((0, false), |(d, f), w| (d + w.dropped, f || w.fade_ended))
+    let mut ended = false;
+    for w in workers.iter_mut() {
+        b.dropped.absorb(&mut w.dropped);
+        ended |= w.fade_ended;
+    }
+    ended
 }
 
 impl Shared<'_, '_> {
@@ -452,13 +458,15 @@ impl Shared<'_, '_> {
                 let mut e = EventsView {
                     view: self.events.view(held_events),
                 };
-                *dropped += event_delay_op(event_ring(&mut ring), &mut e, src, dst, frames);
+                let lost = event_delay_op(event_ring(&mut ring), &mut e, src, dst, frames);
+                dropped.from_delay(self.plan, delay, lost);
             }
             Op::EventMerge { srcs, dst } => {
                 let mut e = EventsView {
                     view: self.events.view(held_events),
                 };
-                *dropped += event_merge_op(&self.plan.event_list[srcs.range()], dst, &mut e);
+                let lost = event_merge_op(&self.plan.event_list[srcs.range()], dst, &mut e);
+                dropped.count(lost);
             }
             Op::Node { unit, .. } => {
                 let rec = &self.plan.nodes.recs[unit as usize];
@@ -531,7 +539,8 @@ impl Shared<'_, '_> {
                 let e = EventsView {
                     view: self.events.view(held_events),
                 };
-                *dropped += fifo.push(e.ev(src)) as u64;
+                let lost = fifo.push(e.ev(src));
+                dropped.from_feedback(self.plan, feedback, u64::from(lost));
             }
         }
     }

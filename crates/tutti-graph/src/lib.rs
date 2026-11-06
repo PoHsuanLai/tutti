@@ -225,6 +225,7 @@ mod fork;
 mod history;
 mod io;
 mod kernels;
+mod loss;
 mod node;
 mod par;
 mod param;
@@ -242,10 +243,12 @@ pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts}
 pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
-    Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
-    ParamSegment, SegmentShape, SortedEvents, SubBlocks, Ump,
+    Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
+    HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
+    SegmentShape, SortedEvents, SubBlocks, Ump, note_off_room,
 };
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
+pub use loss::EventLoss;
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,

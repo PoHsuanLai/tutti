@@ -9,7 +9,7 @@
 //! A step costs one real forward FFT of the input history and, per ear, one
 //! real inverse FFT of the product with the blended spectrum (see
 //! [`HrtfSet`]), plus another per ear while the direction moves. The
-//! transforms are [`tutti_types::RealFft`]'s, so the arithmetic does not
+//! transforms are [`tutti_dsp::RealFft`]'s, so the arithmetic does not
 //! depend on the CPU.
 //!
 //! ## Direction changes
@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use tutti_core::{Azimuth, Elevation, Mix, Radians, SampleRate, Samples, fold_frame_to_mono};
-use tutti_types::Complex32;
+use tutti_dsp::Complex32;
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::AngleSmoother;

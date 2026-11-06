@@ -46,11 +46,7 @@ use crate::view::{Editor, EditorError};
 /// A component created by the factory and not yet made a [`Plugin`].
 pub(crate) struct Component(ComPtr<IComponent>);
 
-impl std::fmt::Debug for Component {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Component").finish_non_exhaustive()
-    }
-}
+opaque_debug!(Component);
 
 impl Component {
     pub(crate) fn new(ptr: ComPtr<IComponent>) -> Self {
@@ -71,11 +67,7 @@ pub struct MidiLearn {
     _module: Arc<Module>,
 }
 
-impl std::fmt::Debug for MidiLearn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MidiLearn").finish_non_exhaustive()
-    }
-}
+opaque_debug!(MidiLearn);
 
 // SAFETY: the interface pointer is to an object of the same instance as the
 // `Plugin` it came from, moves with it and is used by one thread at a time. It
@@ -215,39 +207,17 @@ impl std::fmt::Debug for Plugin {
     }
 }
 
-// SAFETY: every field is a `ComPtr` into the plugin's module, and COM gives
-// the compiler nothing to infer from: `ComPtr` is a raw pointer, so it is
-// neither `Send` nor `Sync` by default whatever the object behind it promises.
-//
-// What makes moving a `Plugin` sound is who can call what, and when:
-//
-// - Main-thread entries are methods of `Plugin`. It is not `Sync`, so they are
-//   reached through `&Plugin` / `&mut Plugin` held by one thread at a time, and
-//   never overlap each other.
-// - The audio half, `AudioSide`, calls only `IAudioProcessor::process` and
-//   `setProcessing`, through a raw pointer to the processor that `Shared` holds
-//   (not an owning reference: the processor `ComPtr` here is the only owner).
-//   Both run under `Shared`'s claim, which every state change on this type
-//   (`set_active`, `set_processing`, `setup_processing`, `set_bus_arrangements`,
-//   `activate_bus`) and `Drop` take too, and the state changes are refused
-//   while an `AudioSide` exists. So the transitions the SDK reserves for the
-//   non-processing states cannot run beside a block.
-// - What does run beside `process`, from the main thread, is what the SDK lets
-//   run in the `Processing` state: the `[UI-thread]` `IEditController` calls,
-//   `IComponent::getState`/`setState`, the latency, tail and bus-arrangement
-//   reads. A plugin that races one against its own `process` breaks the SDK's
-//   contract, not this type's.
-// - The host objects (`handler`, `application`) are `ComWrapper`s of `Send +
-//   Sync` classes, shared with the plugin, which calls them from whatever thread
-//   it likes; they touch atomics, queues and mutexes only.
-// - The editor view is the strongest affinity: `IPlugView` is UI-thread only by
-//   spec, and a toolkit behind it may hold thread-local X11 or Cocoa state.
-//   `Send` lets it sit in a `Plugin` that moves; the host asserts the main
-//   thread before each editor call. The one deliberate exception is `Drop`,
-//   which has no main-thread guarantee (an owner may drop the instance on any
-//   thread), so it detaches the view without the assert: a known, accepted
-//   deviation from the spec's UI-thread rule, not something this impl makes
-//   safe.
+// SAFETY: every field is a `ComPtr` into the plugin's module, which is a raw
+// pointer and so neither `Send` nor `Sync` by inference. Main-thread entries are
+// methods of `Plugin`, which is not `Sync`, so they never overlap. The audio
+// half calls only `process` and `setProcessing` through a pointer under
+// `Shared`'s claim, which every state change here and `Drop` also take, and those
+// are refused while an `AudioSide` exists. What runs beside `process` is what the
+// SDK allows in the `Processing` state; a plugin that races its own `process`
+// breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
+// and touch atomics, queues and mutexes only. The editor view is UI-thread by
+// spec: the host asserts the main thread before each editor call, except in
+// `Drop`, which detaches the view on whatever thread drops the plugin.
 unsafe impl Send for Plugin {}
 
 impl Plugin {

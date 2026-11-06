@@ -24,7 +24,8 @@ use vst3::Steinberg::Vst::{
     ParamID,
 };
 
-use crate::types::{MidiEvent, ParameterChanges, Vst3InputEvents};
+use crate::events::{Stager, Vst3InputEvents};
+use crate::types::{MidiEvent, ParameterChanges};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
 use tutti_types::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
@@ -233,6 +234,7 @@ pub(crate) fn route_cc_events(
 /// reaches the plugin with a gap in it. Never allocates.
 pub(crate) fn stage_input_events<'a>(
     cc: &'a mut CcRoute,
+    stager: &mut Stager,
     list: &EventList,
     events: &Vst3InputEvents<'_>,
     param_changes: Option<&'a ParameterChanges>,
@@ -245,7 +247,7 @@ pub(crate) fn stage_input_events<'a>(
     if effective.is_empty() {
         list.clear();
     } else {
-        list.update_from_sources(&effective);
+        stager.stage(list, &effective);
     }
     if lost_tail {
         list.lose_sysex_tail();

@@ -9,8 +9,8 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
-use tutti_analysis::{LoudnessConfig, measure_loudness};
 use tutti_core::{Amplitude, FrozenClock, Hz, SampleRate};
+use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
     render_to_buffers, render_to_file,
@@ -132,7 +132,7 @@ fn main() -> tutti_export::Result<()> {
     // This crate does not normalize, and that is deliberate. Choosing a gain
     // means measuring the whole signal first, and a stage that hides two passes
     // has to hold the signal to do it. Split apart, the measurement streams
-    // (`tutti_analysis` wraps an online R128 meter) and the gain is one value
+    // (`tutti_dsp` wraps an online R128 meter) and the gain is one value
     // you apply where you like — including on a second render, without ever
     // holding the audio.
     let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;

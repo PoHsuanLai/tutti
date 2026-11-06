@@ -4208,10 +4208,10 @@ name = "tutti"
 version = "0.0.1"
 dependencies = [
  "tempfile",
- "tutti-analysis",
  "tutti-clap-test-plugin",
  "tutti-core",
  "tutti-cpal",
+ "tutti-dsp",
  "tutti-export",
  "tutti-fixture-resolve",
  "tutti-graph",
@@ -4234,19 +4234,6 @@ dependencies = [
 [[package]]
 name = "tutti-alsa-ump-sys"
 version = "0.0.1"
-
-[[package]]
-name = "tutti-analysis"
-version = "0.0.1"
-dependencies = [
- "criterion",
- "ebur128",
- "pitch-detection",
- "rand 0.8.8",
- "thiserror 2.0.21",
- "tutti-core",
- "tutti-types",
-]
 
 [[package]]
 name = "tutti-au-host"
@@ -4347,6 +4334,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-dsp"
+version = "0.0.1"
+dependencies = [
+ "criterion",
+ "ebur128",
+ "pitch-detection",
+ "rand 0.8.8",
+ "rustfft",
+ "thiserror 2.0.21",
+ "tutti-core",
+ "tutti-types",
+]
+
+[[package]]
 name = "tutti-export"
 version = "0.0.1"
 dependencies = [
@@ -4359,8 +4360,8 @@ dependencies = [
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
- "tutti-analysis",
  "tutti-core",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-io",
  "tutti-nodes",
@@ -4483,6 +4484,7 @@ dependencies = [
  "criterion",
  "libm",
  "tutti-core",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-mod",
  "tutti-nodes",
@@ -4615,8 +4617,8 @@ dependencies = [
  "thread-priority",
  "tracing",
  "tracing-subscriber",
- "tutti-analysis",
  "tutti-core",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-io",
  "tutti-mod",
@@ -4684,6 +4686,7 @@ dependencies = [
  "criterion",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-nodes",
  "tutti-spatial",
@@ -4704,7 +4707,6 @@ dependencies = [
  "libc",
  "libm",
  "loom",
- "rustfft",
  "serde",
  "serde_json",
 ]
@@ -4748,8 +4750,6 @@ dependencies = [
  "libloading 0.9.0",
  "parking_lot",
  "tempfile",
- "tutti-clap-host",
- "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",
  "vst3",
@@ -4767,6 +4767,7 @@ dependencies = [
  "raw-window-handle",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-clap-host",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",

@@ -1,195 +1,198 @@
-//! VST3 event types and bidirectional conversion to/from the Tutti
-//! [`tutti_midi_types::MidiEvent`] UMP representation.
+//! VST3 events: the SDK's tagged union as a Rust enum.
 //!
-//! VST3's native event list is richer than raw MIDI-1 wire data (typed
-//! note-on/off/poly-pressure structs with `f32` velocity plus generic
-//! `Data` events for CC / ProgramChange / ChannelPressure / PitchBend). The
-//! plugin's event list encodes the workspace's canonical [`MidiEvent`] UMP
-//! type into it (at the stream's per-note bend ranges), and
-//! [`Vst3Event::to_midi`] decodes it back — one `MidiEvent` maps to one
-//! [`Vst3Event`] and round-trips losslessly for the MIDI-representable
-//! variants.
-
-//! # Narrowing casts are denied in this module
+//! An [`Event`] is a header plus a [`Payload`]; the wire tag ([`EventKind`]) is
+//! derived from the payload, so the two cannot disagree. Payloads that are
+//! plain data wrap the SDK struct unchanged; the ones that carry a pointer
+//! (`Data`, chord, scale, text) hold an index into the owning list's storage
+//! instead, which keeps [`Event`] `Copy`.
 //!
-//! This file is a boundary between the engine's vocabulary and the VST3 C ABI, and every
-//! bug it has had was a cast that silently changed a value's meaning: a `u32`
-//! frame offset wrapping negative into an `i32` `sampleOffset`, and a release
-//! velocity dropped on the way through. Both compiled without complaint.
+//! Translation to and from MIDI lives in `tutti-vst3-host`.
 //!
-//! So truncating and sign-changing casts are denied here. Where a cast is
-//! genuinely safe, the `#[allow(..., reason = "...")]` states why — the
-//! justification is the point, not the lint. A cast nobody can justify is the
-//! bug.
-//!
-//! Scoped to this module deliberately. Enabling these lints crate-wide produces
-//! hundreds of warnings that get scrolled past, which is how the two above
-//! survived review; a small denied surface that must be argued with is worth
-//! more than a large warned one that is not read.
+//! Narrowing casts are denied here: this is the boundary with the C ABI, where
+//! a silent `u32` to `i32` wrap or a dropped field is a bug in the plugin's
+//! view of the event. A cast that is sound says why in its `#[allow]`.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-pub use tutti_midi_types::MidiEvent;
-
-use tutti_plugin_types::{
-    NoteExpressionType, NoteExpressionValue, SysExRef, is_usable, note_id_for,
-};
-
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
-use vst3::Steinberg::Vst::Event_::EventTypes_;
+use tutti_plugin_types::SysExRef;
+use vst3::Steinberg::Vst::{self as sdk, Event_::EventTypes_};
 
 mod c_event;
-mod data;
-mod event;
-mod harmony;
-mod legacy_cc;
-mod midi;
-mod note_expression;
-mod notes;
+mod payload;
 mod text;
 
-pub use c_event::*;
-pub use data::*;
-pub use event::*;
-pub use harmony::*;
-pub use legacy_cc::*;
-pub use midi::*;
-pub use note_expression::*;
-pub use notes::*;
-pub use text::*;
+pub use payload::{
+    Chord, Data, ExpressionInt, ExpressionText, ExpressionValue, LegacyCcOut, NoteOff, NoteOn,
+    PolyPressure, Scale,
+};
+pub use text::{TextArena, TextRef};
 
-/// Borrowed bundle of every input event stream staged into a VST3 plugin's
-/// event list for one processing block: MIDI plus the four per-note-expressive
-/// families (chords, scales, expression texts, integer expressions). Grouping
-/// them keeps the `process` / `update_from_sources` signatures readable rather
-/// than threading six parallel slices.
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Vst3InputEvents<'a> {
-    /// UMP MIDI for the block, in ascending frame-offset order.
-    pub midi: &'a [MidiEvent],
-    /// Continuous per-note expression values, addressed by note id.
-    pub note_expressions: &'a [NoteExpressionValue],
-    /// Chord context changes (root, bass, degree mask) for chord-aware plugins.
-    pub chords: &'a [ChordValue],
-    /// Scale/key context changes (root plus a 12-bit degree mask).
-    pub scales: &'a [ScaleValue],
-    /// Per-note text annotations; the strings are copied into the event list's
-    /// UTF-16 arena during staging.
-    pub expr_texts: &'a [NoteExpressionText],
-    /// Stepped/enumerated per-note expressions carrying an `i64` rather than a
-    /// normalized `f64`.
-    pub expr_ints: &'a [NoteExpressionIntValue],
+pub(crate) use text::MAX_EVENT_TEXT_LEN;
+
+/// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
+///
+/// The bindings type this `u32` on Unix and `i32` on Windows.
+#[allow(clippy::unnecessary_cast)]
+pub const K_DATA_TYPE_MIDI_SYSEX: u32 = sdk::DataEvent_::DataTypes_::kMidiSysEx as u32;
+
+/// An SDK event ordinal as the `u16` of `Event::type`, which every ordinal fits.
+#[allow(clippy::cast_possible_truncation)]
+const fn tag(ordinal: crate::SdkEnum) -> u16 {
+    ordinal as u16
 }
 
-impl Vst3InputEvents<'_> {
-    /// True when no stream carries an event this block, so staging can be
-    /// skipped entirely.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.midi.is_empty()
-            && self.note_expressions.is_empty()
-            && self.chords.is_empty()
-            && self.scales.is_empty()
-            && self.expr_texts.is_empty()
-            && self.expr_ints.is_empty()
+macro_rules! event_kinds {
+    ($($(#[$m:meta])* $name:ident = $sdk:ident),* $(,)?) => {
+        /// The `type` tag of an SDK event.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(u16)]
+        pub enum EventKind {
+            $($(#[$m])* $name = tag(EventTypes_::$sdk)),*
+        }
+
+        impl TryFrom<u16> for EventKind {
+            type Error = UnknownEventKind;
+
+            fn try_from(tag: u16) -> Result<Self, UnknownEventKind> {
+                match tag {
+                    $(t if t == Self::$name as u16 => Ok(Self::$name),)*
+                    other => Err(UnknownEventKind(other)),
+                }
+            }
+        }
+    };
+}
+
+event_kinds! {
+    /// A note started.
+    NoteOn = kNoteOnEvent,
+    /// A note ended.
+    NoteOff = kNoteOffEvent,
+    /// Raw bytes (`DataEvent`): CC, pitch bend, program change or SysEx.
+    Data = kDataEvent,
+    /// Per-note aftertouch.
+    PolyPressure = kPolyPressureEvent,
+    /// A continuous per-note expression value.
+    NoteExpressionValue = kNoteExpressionValueEvent,
+    /// A per-note text annotation.
+    NoteExpressionText = kNoteExpressionTextEvent,
+    /// A chord context change.
+    Chord = kChordEvent,
+    /// A scale context change.
+    Scale = kScaleEvent,
+    /// A stepped per-note expression carrying an integer.
+    NoteExpressionIntValue = kNoteExpressionIntValueEvent,
+    /// A legacy MIDI CC the plugin sends to the host.
+    LegacyMidiCcOut = kLegacyMIDICCOutEvent,
+}
+
+/// An `Event::type` tag the SDK does not define.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownEventKind(pub u16);
+
+impl std::fmt::Display for UnknownEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown VST3 event type {}", self.0)
     }
 }
 
-/// `type_` discriminant for note-on events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_NOTE_ON_EVENT: u16 = EventTypes_::kNoteOnEvent as u16;
-/// `type_` discriminant for note-off events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_NOTE_OFF_EVENT: u16 = EventTypes_::kNoteOffEvent as u16;
-/// `type_` discriminant for raw-data events (CC, pitch bend, program change, …).
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_DATA_EVENT: u16 = EventTypes_::kDataEvent as u16;
-/// `type_` discriminant for poly-pressure events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_POLY_PRESSURE_EVENT: u16 = EventTypes_::kPolyPressureEvent as u16;
-/// `type_` discriminant for note-expression value events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_NOTE_EXPRESSION_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionValueEvent as u16;
-/// `type_` discriminant for note-expression *text* events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_NOTE_EXPRESSION_TEXT_EVENT: u16 = EventTypes_::kNoteExpressionTextEvent as u16;
-/// `type_` discriminant for chord events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_CHORD_EVENT: u16 = EventTypes_::kChordEvent as u16;
-/// `type_` discriminant for scale events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_SCALE_EVENT: u16 = EventTypes_::kScaleEvent as u16;
-/// `type_` discriminant for note-expression integer-value events.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_NOTE_EXPRESSION_INT_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionIntValueEvent as u16;
-/// `type_` discriminant for legacy-MIDI-CC-out events (plugin → host, value 0xFFFF).
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "SDK event-type ordinals, all < 16"
-)]
-pub const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = EventTypes_::kLegacyMIDICCOutEvent as u16;
-/// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
-///
-/// Cast explicitly like the discriminants above: the generated `vst3` bindings
-/// give this constant `u32` on Unix but `i32` on Windows, so an uncast
-/// initializer only compiles on one of them.
-// The cast is a no-op on Unix (where the binding is already `u32`) and a real
-// `i32 as u32` on Windows; allow the former's `unnecessary_cast` lint.
-#[allow(clippy::unnecessary_cast)]
-pub const K_DATA_TYPE_MIDI_SYSEX: u32 =
-    vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx as u32;
+impl std::error::Error for UnknownEventKind {}
 
-/// Flat Rust-facing header merging the `busIndex` / `sampleOffset` /
-/// `ppqPosition` / `flags` / `type_` fields of `vst3::Steinberg::Vst::Event`
-/// so callers can construct events literally.
-#[derive(Debug, Clone, Copy, Default)]
+/// The fields every SDK event shares.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EventHeader {
-    /// Event bus index (0 for typical single-bus plugins).
+    /// Event bus index (0 for a single-bus plugin).
     pub bus_index: i32,
-    /// Frame offset within the current processing block.
+    /// Frame offset within the block.
     pub sample_offset: i32,
     /// Musical position in quarter notes, or 0 if unknown.
     pub ppq_position: f64,
-    /// Flags bitfield (see VST3 `EventFlags`).
+    /// `EventFlags` bits.
     pub flags: u16,
-    /// One of the `K_*_EVENT` discriminants.
-    pub event_type: u16,
 }
 
-/// MIDI round-trip tests through `vst3_event_from_midi` + `Vst3Event::to_midi`.
-///
-/// Tests build SDK structs by hand, so they repeat the same bounded narrowings
-/// the production code justifies above (SDK ordinals, text sizes clamped to
-/// `MAX_EVENT_TEXT_LEN`). Allowed at module scope rather than per case: a test
-/// that overflows one of these fails loudly on its own assertion, so the lint
-/// adds nothing here, and the deny is kept meaningful by staying tight in the
-/// code that actually crosses the ABI.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+impl EventHeader {
+    /// A header at `sample_offset` on bus 0 with no position or flags.
+    #[must_use]
+    pub fn at(sample_offset: i32) -> Self {
+        Self {
+            sample_offset,
+            ..Self::default()
+        }
+    }
+}
+
+/// What an [`Event`] carries; its variant is the event's [`EventKind`], except
+/// that [`SysEx`](Self::SysEx) is a `Data` event too.
+#[derive(Debug, Clone, Copy)]
+pub enum Payload {
+    /// A note started.
+    NoteOn(NoteOn),
+    /// A note ended, with its release velocity.
+    NoteOff(NoteOff),
+    /// Up to 16 raw bytes, inline.
+    Data(Data),
+    /// A SysEx message held in the owning list's buffer.
+    SysEx(SysExRef),
+    /// Per-note aftertouch.
+    PolyPressure(PolyPressure),
+    /// A continuous per-note expression value.
+    ExpressionValue(ExpressionValue),
+    /// A per-note text annotation, held in the list's arena.
+    ExpressionText(ExpressionText),
+    /// A chord context change.
+    Chord(Chord),
+    /// A scale context change.
+    Scale(Scale),
+    /// A stepped per-note expression.
+    ExpressionInt(ExpressionInt),
+    /// A legacy MIDI CC the plugin sent to the host.
+    LegacyCcOut(LegacyCcOut),
+}
+
+impl Payload {
+    /// The wire tag this payload is sent under.
+    #[must_use]
+    pub fn kind(&self) -> EventKind {
+        match self {
+            Self::NoteOn(_) => EventKind::NoteOn,
+            Self::NoteOff(_) => EventKind::NoteOff,
+            Self::Data(_) | Self::SysEx(_) => EventKind::Data,
+            Self::PolyPressure(_) => EventKind::PolyPressure,
+            Self::ExpressionValue(_) => EventKind::NoteExpressionValue,
+            Self::ExpressionText(_) => EventKind::NoteExpressionText,
+            Self::Chord(_) => EventKind::Chord,
+            Self::Scale(_) => EventKind::Scale,
+            Self::ExpressionInt(_) => EventKind::NoteExpressionIntValue,
+            Self::LegacyCcOut(_) => EventKind::LegacyMidiCcOut,
+        }
+    }
+}
+
+/// A VST3 event.
+#[derive(Debug, Clone, Copy)]
+pub struct Event {
+    /// Bus, frame offset, position and flags.
+    pub header: EventHeader,
+    /// The event's data.
+    pub payload: Payload,
+}
+
+impl Event {
+    /// An event with `payload` at `sample_offset`.
+    #[must_use]
+    pub fn at(sample_offset: i32, payload: Payload) -> Self {
+        Self {
+            header: EventHeader::at(sample_offset),
+            payload,
+        }
+    }
+
+    /// Frame offset within the block.
+    #[must_use]
+    pub fn sample_offset(&self) -> i32 {
+        self.header.sample_offset
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -256,11 +256,7 @@ impl IPlugInterfaceSupportTrait for HostApplication {
     }
 }
 
-impl std::fmt::Debug for HostApplication {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostApplication").finish_non_exhaustive()
-    }
-}
+opaque_debug!(HostApplication);
 
 #[cfg(test)]
 mod tests {

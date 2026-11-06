@@ -19,7 +19,7 @@ default = []
 # No `bevy` feature: ECS bindings are host-side. No `spatial` feature: the
 # panners are `tutti-spatial`, which depends on this crate.
 # FFT convolution reverb (partitioned IR).
-# (The transforms are `tutti_types::RealFft`; the convolution itself is this
+# (The transforms are `tutti_dsp::RealFft`; the convolution itself is this
 # crate's, so its IR spectra can be stored once and shared.)
 convolution = []
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
@@ -47,6 +47,10 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # reconcile (`Modulation`) calls the compiler. `default-features = false`
 # keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false }
+
+# The convolver's FFT: `tutti_dsp::StagedRealFft`. tutti-dsp names no tutti
+# crate but `tutti-types`, so the edge adds no cycle.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 # The node contract every node here implements. tutti-graph depends on no
 # tutti crate but tutti-types, so the edge adds no cycle.

@@ -50,7 +50,7 @@ members = [
     "crates/dsp/tutti-soundfont",
     "crates/dsp/tutti-nodes",
     "crates/dsp/tutti-spatial",
-    "crates/dsp/tutti-analysis",
+    "crates/dsp/tutti-dsp",
     "crates/plugin/tutti-plugin",
     "crates/plugin/tutti-plugin-server",
     "crates/plugin/tutti-plugin-types",

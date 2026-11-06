@@ -5,7 +5,7 @@
 //! geometry expresses both, and [`Unit::input_rate`] tells the caller how fast
 //! to feed it.
 
-use tutti_analysis::StftGeometry;
+use tutti_dsp::StftGeometry;
 
 use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};

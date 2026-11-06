@@ -162,7 +162,7 @@ impl Resample {
 /// There is no `normalize` field: normalization needs the whole signal
 /// measured before a gain can be chosen, which is two passes. Use
 /// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
-/// with [`tutti_analysis::measure_loudness`], take `Loudness::gain_to` and
+/// with [`tutti_dsp::measure_loudness`], take `Loudness::gain_to` and
 /// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExportConfig {

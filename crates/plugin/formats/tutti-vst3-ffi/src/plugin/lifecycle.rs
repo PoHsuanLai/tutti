@@ -97,13 +97,9 @@ impl Plugin {
     /// error — the plugin simply runs unconnected, as it does when either half
     /// declines to expose `IConnectionPoint` at all.
     ///
-    /// The two `connect` calls have to succeed or fail together. `connect`
-    /// returns a `tresult` and both returns were discarded, so a plugin that
-    /// accepted the first and refused the second was left asymmetrically wired
-    /// — the component believing it has a peer, the controller not — and
-    /// `initialize()` continued regardless. The plugin's private
-    /// component↔controller messages then flow one way only, which surfaces
-    /// much later as an editor that does not track the processor.
+    /// The two `connect` calls succeed or fail together: a plugin that accepted
+    /// the first and refused the second would be wired one way only, which
+    /// surfaces much later as an editor that does not track the processor.
     #[must_use]
     pub fn connect_controller(&self) -> bool {
         let ControllerLink::Separate(ctrl) = &self.controller else {

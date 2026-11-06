@@ -77,11 +77,10 @@ fn concurrent_reads_of_the_list_both_succeed() {
     let (taken, done) = (Barrier::new(2), Barrier::new(2));
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            let read = list.queues.borrow();
-            let live = list.live.borrow();
+            let read = list.inner.borrow();
             taken.wait();
             done.wait();
-            assert_eq!((read.len(), *live), (2, 2));
+            assert_eq!((read.queues.len(), read.live), (2, 2));
         });
         taken.wait();
         let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
@@ -109,7 +108,7 @@ fn a_read_during_a_write_fails_at_the_com_level() {
     list.refill_from_changes(&changes_with(1, 1));
     let ptr = list.to_com_ptr::<IParameterChanges>().unwrap();
     {
-        let _adding = list.live.borrow_mut();
+        let _adding = list.inner.borrow_mut();
         // SAFETY: the test calls a COM method on a live object it owns, with arguments valid
         // for the call.
         assert_eq!(unsafe { ptr.getParameterCount() }, 0);
@@ -215,7 +214,7 @@ fn a_presized_list_takes_its_first_dense_block_without_allocating() {
         wrapper.refill_from_changes(&block);
     });
     assert_eq!(wrapper.len(), 50);
-    assert!(wrapper.queues.borrow().iter().all(|q| q.len() == 140));
+    assert!(wrapper.inner.borrow().queues.iter().all(|q| q.len() == 140));
 }
 
 /// The plugin's own `addParameterData` on the output list reuses the

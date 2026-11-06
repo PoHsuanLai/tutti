@@ -70,7 +70,7 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.
-tutti-analysis = { path = "../tutti-analysis", default-features = false }
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 # The entity-as-node marker derives on the voice-pool handles. Optional,
 # gated by the `bevy` feature.

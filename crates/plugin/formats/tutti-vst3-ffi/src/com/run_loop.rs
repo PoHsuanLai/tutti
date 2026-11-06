@@ -86,11 +86,7 @@ pub(crate) struct RunLoop {
     state: Mutex<State>,
 }
 
-impl std::fmt::Debug for RunLoop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunLoop").finish_non_exhaustive()
-    }
-}
+opaque_debug!(RunLoop);
 
 /// One handler due this iteration, copied out from under the lock.
 enum Due {

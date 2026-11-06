@@ -558,7 +558,7 @@ mod audio_param {
 /// `build_into` created an `AudioTap`, handed a clone to the RT callback, and
 /// dropped the local. Nothing else held a handle, so `open()` — the only way to
 /// get the consumer end — was unreachable, and the callback pushed every block
-/// into a ring nobody could ever read. `tutti-analysis`, the documented
+/// into a ring nobody could ever read. `tutti-dsp`, the documented
 /// consumer, had no route in at all.
 ///
 /// These drive the wrapper directly. The build-time publish itself needs a real

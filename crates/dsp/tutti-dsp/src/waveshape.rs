@@ -105,8 +105,10 @@ impl ShapeKind {
     /// (`output.len()` frames of `input` are read).
     ///
     /// The loop is compiled for the kind, so the curve inlines.
-    #[inline]
+    #[inline(always)]
     pub fn shape_block(self, hardness: f32, input: &[f32], output: &mut [f32]) {
+        let n = output.len().min(input.len());
+        let (output, input) = (&mut output[..n], &input[..n]);
         with_kind!(self, |K| {
             for (o, &x) in output.iter_mut().zip(input) {
                 *o = K.curve(hardness, x);
@@ -115,8 +117,10 @@ impl ShapeKind {
     }
 
     /// `input` through the curve at a hardness per frame, into `output`.
-    #[inline]
+    #[inline(always)]
     pub fn shape_block_per_frame(self, hardness: &[f32], input: &[f32], output: &mut [f32]) {
+        let n = output.len().min(input.len()).min(hardness.len());
+        let (output, input, hardness) = (&mut output[..n], &input[..n], &hardness[..n]);
         with_kind!(self, |K| {
             for ((o, &x), &h) in output.iter_mut().zip(input).zip(hardness) {
                 *o = K.curve(h, x);
@@ -126,8 +130,10 @@ impl ShapeKind {
 
     /// `input` through the curve with each frame's hardness held in `inout`,
     /// which the shaped sample replaces.
-    #[inline]
+    #[inline(always)]
     pub fn shape_block_in_place(self, input: &[f32], inout: &mut [f32]) {
+        let n = inout.len().min(input.len());
+        let (inout, input) = (&mut inout[..n], &input[..n]);
         with_kind!(self, |K| {
             for (o, &x) in inout.iter_mut().zip(input) {
                 *o = K.curve(*o, x);

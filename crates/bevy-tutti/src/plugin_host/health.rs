@@ -24,7 +24,7 @@
 //!   too many failures in a window. This module holds none of that: it runs
 //!   the reload jobs the session hands out on the task pool, and puts what
 //!   the session reports on the entity ([`PluginReloading`], [`PluginRecovered`],
-//!   [`PluginGaveUp`]; the replacement's handle into [`PluginEmitter`](super::PluginEmitter)).
+//!   [`PluginGaveUp`]; the replacement's handle into [`PluginEmitter`]).
 //! - **Latency.** A plugin may change its latency while loaded (a
 //!   linear-phase EQ switched into an oversampling mode); the figure its node
 //!   declares now (`PluginControls::declared_latency`) is handed to the
@@ -113,7 +113,7 @@ pub struct PluginGaveUp {
 /// Liveness and last-known-good state for one loaded plugin.
 ///
 /// Inserted by the load path alongside
-/// [`PluginEmitter`](crate::plugin_host::PluginEmitter).
+/// [`PluginEmitter`].
 ///
 /// Not `Debug`: the in-flight snapshot is a `Task`, which is not.
 #[derive(Component, Default)]

@@ -96,7 +96,7 @@ pub use plugin::{
 #[cfg(all(feature = "plugin", feature = "modulation"))]
 pub use plugin::{PluginParamRead, PluginParamsRead};
 #[cfg(feature = "plugin")]
-pub use recovery::{Action, Event, GiveUp, Recovery, RecoveryPolicy};
+pub use recovery::{GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy};
 #[cfg(feature = "midi")]
 pub use session::MidiNodes;
 #[cfg(feature = "modulation")]

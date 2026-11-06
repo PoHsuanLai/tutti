@@ -145,10 +145,8 @@ pub(crate) fn configure() {
             .open(path)
             .is_err()
     });
-    if replacement {
-        if let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_LATENCY") {
-            RESTART_LATENCY.store(n, Ordering::SeqCst);
-        }
+    if replacement && let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_LATENCY") {
+        RESTART_LATENCY.store(n, Ordering::SeqCst);
     }
 
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK").filter(|_| !replacement) {

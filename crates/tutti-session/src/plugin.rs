@@ -86,8 +86,9 @@ use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginSta
 use tutti_plugin::{BridgeError, Liveness, Verdict};
 use tutti_types::{SampleRate, Samples, Seconds};
 
-use crate::recovery::{Action as RecoveryAction, Event as RecoveryEvent};
-use crate::{GiveUp, Recovery, RecoveryPolicy, Session, SessionEvent};
+use crate::{
+    GiveUp, Recovery, RecoveryAction, RecoveryEvent, RecoveryPolicy, Session, SessionEvent,
+};
 
 /// How often a healthy plugin's state is captured, by default: 8 s, the
 /// 512 frames at 60 Hz `bevy-tutti` counted before (design 015 §4.4).

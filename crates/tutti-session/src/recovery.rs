@@ -3,7 +3,7 @@
 //! plugin in it.
 //!
 //! It only decides. The session (`plugin.rs`) feeds it what it observed and
-//! carries out the [`Action`]: it loads the replacement through the existing
+//! carries out the [`RecoveryAction`]: it loads the replacement through the existing
 //! [`PluginLoad`](crate::PluginLoad) job, ends a hung server, or removes the
 //! node. The snapshot bytes stay with the session's record, so the core never
 //! holds them.
@@ -69,7 +69,7 @@ impl Default for RecoveryPolicy {
 
 /// What the session observed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Event {
+pub enum RecoveryEvent {
     /// The plugin was declared dead, with the engine's latched cause.
     Died {
         /// Why.
@@ -94,11 +94,11 @@ pub enum Event {
 
 /// What the session does next.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
+pub enum RecoveryAction {
     /// Nothing.
     Wait,
     /// End the plugin's server: it is hung. Its death follows as
-    /// [`Event::Died`].
+    /// [`RecoveryEvent::Died`].
     Terminate {
         /// Why, as the death will read.
         cause: String,
@@ -208,19 +208,21 @@ impl Recovery {
     }
 
     /// Takes one observation at `now` and says what to do.
-    pub fn step(&mut self, event: Event, now: Instant) -> Action {
+    pub fn step(&mut self, event: RecoveryEvent, now: Instant) -> RecoveryAction {
         match (&mut self.phase, event) {
-            (State::GaveUp, _) => Action::Wait,
-            (State::Running { .. }, Event::Died { cause }) => self.fail(cause, now),
-            (State::Running { .. }, Event::LoadFailed { .. } | Event::Loaded) => Action::Wait,
-            (State::Running { .. }, Event::Tick) => Action::Wait,
+            (State::GaveUp, _) => RecoveryAction::Wait,
+            (State::Running { .. }, RecoveryEvent::Died { cause }) => self.fail(cause, now),
+            (State::Running { .. }, RecoveryEvent::LoadFailed { .. } | RecoveryEvent::Loaded) => {
+                RecoveryAction::Wait
+            }
+            (State::Running { .. }, RecoveryEvent::Tick) => RecoveryAction::Wait,
             (
                 State::Running {
                     since,
                     last,
                     terminating,
                 },
-                Event::Starved { blocks },
+                RecoveryEvent::Starved { blocks },
             ) => {
                 if blocks == 0 {
                     *since = None;
@@ -235,26 +237,28 @@ impl Recovery {
                     && held.is_some_and(|h| h >= self.policy.hang_window);
                 if hung && !*terminating {
                     *terminating = true;
-                    Action::Terminate {
+                    RecoveryAction::Terminate {
                         cause: format!(
                             "the plugin stopped answering ({blocks} blocks abandoned over {:?})",
                             held.unwrap_or_default()
                         ),
                     }
                 } else {
-                    Action::Wait
+                    RecoveryAction::Wait
                 }
             }
-            (State::Reloading { .. }, Event::Loaded) => {
+            (State::Reloading { .. }, RecoveryEvent::Loaded) => {
                 self.phase = State::Running {
                     since: None,
                     last: 0,
                     terminating: false,
                 };
-                Action::Wait
+                RecoveryAction::Wait
             }
-            (State::Reloading { .. }, Event::LoadFailed { reason }) => self.fail(reason, now),
-            (State::Reloading { started }, Event::Tick) => {
+            (State::Reloading { .. }, RecoveryEvent::LoadFailed { reason }) => {
+                self.fail(reason, now)
+            }
+            (State::Reloading { started }, RecoveryEvent::Tick) => {
                 if now.saturating_duration_since(*started) >= self.policy.load_timeout {
                     let reason = format!(
                         "the reload did not finish in {:?}",
@@ -262,15 +266,18 @@ impl Recovery {
                     );
                     self.fail(reason, now)
                 } else {
-                    Action::Wait
+                    RecoveryAction::Wait
                 }
             }
-            (State::Reloading { .. }, Event::Died { .. } | Event::Starved { .. }) => Action::Wait,
+            (
+                State::Reloading { .. },
+                RecoveryEvent::Died { .. } | RecoveryEvent::Starved { .. },
+            ) => RecoveryAction::Wait,
         }
     }
 
     /// Records a failure at `now`: another reload, or the end of trying.
-    fn fail(&mut self, reason: String, now: Instant) -> Action {
+    fn fail(&mut self, reason: String, now: Instant) -> RecoveryAction {
         while self
             .failures
             .front()
@@ -282,7 +289,7 @@ impl Recovery {
         let failures = u32::try_from(self.failures.len()).unwrap_or(u32::MAX);
         if failures > self.policy.max_failures {
             self.phase = State::GaveUp;
-            return Action::GiveUp(GiveUp {
+            return RecoveryAction::GiveUp(GiveUp {
                 failures,
                 window: self.policy.window,
                 last: reason,
@@ -297,7 +304,7 @@ impl Recovery {
         self.phase = State::Reloading {
             started: now + delay,
         };
-        Action::Reload {
+        RecoveryAction::Reload {
             delay,
             attempt: failures,
         }
@@ -324,20 +331,20 @@ mod tests {
         }
     }
 
-    fn died(cause: &str) -> Event {
-        Event::Died {
+    fn died(cause: &str) -> RecoveryEvent {
+        RecoveryEvent::Died {
             cause: cause.into(),
         }
     }
 
-    fn failed(reason: &str) -> Event {
-        Event::LoadFailed {
+    fn failed(reason: &str) -> RecoveryEvent {
+        RecoveryEvent::LoadFailed {
             reason: reason.into(),
         }
     }
 
-    fn reload(delay_ms: u64, attempt: u32) -> Action {
-        Action::Reload {
+    fn reload(delay_ms: u64, attempt: u32) -> RecoveryAction {
+        RecoveryAction::Reload {
             delay: Duration::from_millis(delay_ms),
             attempt,
         }
@@ -351,7 +358,7 @@ mod tests {
         let mut r = Recovery::new(policy());
         assert_eq!(r.step(died("segv"), t0), reload(250, 1));
         assert!(r.is_reloading());
-        assert_eq!(r.step(Event::Loaded, t0 + S), Action::Wait);
+        assert_eq!(r.step(RecoveryEvent::Loaded, t0 + S), RecoveryAction::Wait);
         assert!(!r.is_reloading());
         // Dying again later is the second failure in the window.
         assert_eq!(r.step(died("segv"), t0 + 2 * S), reload(500, 2));
@@ -370,7 +377,7 @@ mod tests {
         for i in 0..5 {
             let event = if i == 0 { died("no") } else { failed("no") };
             match r.step(event, t0 + i * S) {
-                Action::Reload { delay, .. } => got.push(delay.as_millis()),
+                RecoveryAction::Reload { delay, .. } => got.push(delay.as_millis()),
                 other => panic!("{other:?}"),
             }
         }
@@ -389,14 +396,17 @@ mod tests {
         assert_eq!(r.step(died("segv"), t0), reload(250, 1));
         assert_eq!(r.step(failed("a"), t0 + S), reload(500, 2));
         assert_eq!(r.step(failed("b"), t0 + 2 * S), reload(1000, 3));
-        let Action::GiveUp(why) = r.step(failed("c"), t0 + 3 * S) else {
+        let RecoveryAction::GiveUp(why) = r.step(failed("c"), t0 + 3 * S) else {
             panic!("the fourth failure in the window gives up");
         };
         assert_eq!(why.failures, 4);
         assert_eq!(why.last, "c");
         assert!(r.has_given_up());
-        assert_eq!(r.step(died("late"), t0 + 4 * S), Action::Wait);
-        assert_eq!(r.step(Event::Loaded, t0 + 5 * S), Action::Wait);
+        assert_eq!(r.step(died("late"), t0 + 4 * S), RecoveryAction::Wait);
+        assert_eq!(
+            r.step(RecoveryEvent::Loaded, t0 + 5 * S),
+            RecoveryAction::Wait
+        );
     }
 
     /// Failures older than the window no longer count: a plugin that runs
@@ -410,7 +420,7 @@ mod tests {
         for i in 0..20u32 {
             let now = t0 + 61 * S * i;
             assert_eq!(r.step(died("segv"), now), reload(250, 1), "death {i}");
-            assert_eq!(r.step(Event::Loaded, now + S), Action::Wait);
+            assert_eq!(r.step(RecoveryEvent::Loaded, now + S), RecoveryAction::Wait);
         }
     }
 
@@ -422,12 +432,18 @@ mod tests {
         r.step(died("segv"), t0);
         let started = r.reload_started().expect("reloading");
         assert_eq!(started, t0 + Duration::from_millis(250));
-        assert_eq!(r.step(Event::Tick, started + 29 * S), Action::Wait);
-        assert_eq!(r.step(Event::Tick, started + 30 * S), reload(500, 2));
+        assert_eq!(
+            r.step(RecoveryEvent::Tick, started + 29 * S),
+            RecoveryAction::Wait
+        );
+        assert_eq!(
+            r.step(RecoveryEvent::Tick, started + 30 * S),
+            reload(500, 2)
+        );
     }
 
-    fn starved(r: &mut Recovery, at: Instant, blocks: u32) -> Action {
-        r.step(Event::Starved { blocks }, at)
+    fn starved(r: &mut Recovery, at: Instant, blocks: u32) -> RecoveryAction {
+        r.step(RecoveryEvent::Starved { blocks }, at)
     }
 
     /// A hang is declared only when the suspicion holds, unbroken, for the
@@ -440,17 +456,25 @@ mod tests {
     fn a_hang_needs_blocks_and_time() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 100), Action::Wait, "first sight");
+        assert_eq!(
+            starved(&mut r, t0, 100),
+            RecoveryAction::Wait,
+            "first sight"
+        );
         assert_eq!(
             starved(&mut r, t0 + 4 * S, 400),
-            Action::Wait,
+            RecoveryAction::Wait,
             "not yet 5 s"
         );
         assert!(matches!(
             starved(&mut r, t0 + 5 * S, 500),
-            Action::Terminate { .. }
+            RecoveryAction::Terminate { .. }
         ));
-        assert_eq!(starved(&mut r, t0 + 6 * S, 600), Action::Wait, "once");
+        assert_eq!(
+            starved(&mut r, t0 + 6 * S, 600),
+            RecoveryAction::Wait,
+            "once"
+        );
         // Its death then follows the ordinary path.
         assert_eq!(r.step(died("terminated"), t0 + 7 * S), reload(250, 1));
     }
@@ -464,11 +488,11 @@ mod tests {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
         for i in 0..20 {
-            assert_eq!(starved(&mut r, t0 + i * S, 15), Action::Wait);
+            assert_eq!(starved(&mut r, t0 + i * S, 15), RecoveryAction::Wait);
         }
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 5_000), Action::Wait);
-        assert_eq!(starved(&mut r, t0 + S, 9_000), Action::Wait);
+        assert_eq!(starved(&mut r, t0, 5_000), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0 + S, 9_000), RecoveryAction::Wait);
     }
 
     /// A slow plugin that still answers is not hung: its count keeps
@@ -484,23 +508,39 @@ mod tests {
         let mut r = Recovery::new(policy());
         // Sawtooth: 20 blocks lost, a reply, again, for a minute.
         for i in 0..60 {
-            assert_eq!(starved(&mut r, t0 + i * S, 20), Action::Wait, "i {i}");
-            assert_eq!(starved(&mut r, t0 + i * S + S / 2, 0), Action::Wait);
+            assert_eq!(
+                starved(&mut r, t0 + i * S, 20),
+                RecoveryAction::Wait,
+                "i {i}"
+            );
+            assert_eq!(starved(&mut r, t0 + i * S + S / 2, 0), RecoveryAction::Wait);
         }
         // A plugin that answered for a while (zeros) and then lost blocks
         // is a new suspicion, not a continuing one.
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 0), Action::Wait);
-        assert_eq!(starved(&mut r, t0 + S, 0), Action::Wait);
-        assert_eq!(starved(&mut r, t0 + 7 * S, 20), Action::Wait, "fresh");
+        assert_eq!(starved(&mut r, t0, 0), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0 + S, 0), RecoveryAction::Wait);
+        assert_eq!(
+            starved(&mut r, t0 + 7 * S, 20),
+            RecoveryAction::Wait,
+            "fresh"
+        );
         // Reset and regrown between two observations: 90 then 30.
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 90), Action::Wait);
-        assert_eq!(starved(&mut r, t0 + 4 * S, 30), Action::Wait, "a drop");
-        assert_eq!(starved(&mut r, t0 + 8 * S, 60), Action::Wait, "4 s since");
+        assert_eq!(starved(&mut r, t0, 90), RecoveryAction::Wait);
+        assert_eq!(
+            starved(&mut r, t0 + 4 * S, 30),
+            RecoveryAction::Wait,
+            "a drop"
+        );
+        assert_eq!(
+            starved(&mut r, t0 + 8 * S, 60),
+            RecoveryAction::Wait,
+            "4 s since"
+        );
         assert!(matches!(
             starved(&mut r, t0 + 9 * S, 70),
-            Action::Terminate { .. }
+            RecoveryAction::Terminate { .. }
         ));
     }
 
@@ -525,40 +565,43 @@ mod tests {
                 now += Duration::from_millis(next() % 4_000);
                 let event = match next() % 5 {
                     0 => died("d"),
-                    1 => Event::Loaded,
+                    1 => RecoveryEvent::Loaded,
                     2 => failed("f"),
-                    3 => Event::Starved {
+                    3 => RecoveryEvent::Starved {
                         blocks: (next() % 600) as u32,
                     },
-                    _ => Event::Tick,
+                    _ => RecoveryEvent::Tick,
                 };
                 let was_reloading = r.is_reloading();
                 let was_over = r.has_given_up();
                 let action = r.step(event.clone(), now);
                 match action {
-                    Action::Reload { delay, attempt } => {
+                    RecoveryAction::Reload { delay, attempt } => {
                         assert!(!was_over);
                         assert!(delay <= policy().backoff_cap);
                         assert!((1..=policy().max_failures).contains(&attempt));
                         assert!(r.is_reloading());
                         assert!(
                             !was_reloading
-                                || matches!(event, Event::LoadFailed { .. } | Event::Tick),
+                                || matches!(
+                                    event,
+                                    RecoveryEvent::LoadFailed { .. } | RecoveryEvent::Tick
+                                ),
                             "a reload under way is only retried on its failure"
                         );
                     }
-                    Action::GiveUp(_) => {
+                    RecoveryAction::GiveUp(_) => {
                         assert!(!was_over);
                         assert!(r.has_given_up());
                     }
-                    Action::Terminate { .. } => {
+                    RecoveryAction::Terminate { .. } => {
                         assert!(!was_reloading && !was_over);
-                        assert!(matches!(event, Event::Starved { .. }));
+                        assert!(matches!(event, RecoveryEvent::Starved { .. }));
                     }
-                    Action::Wait => {}
+                    RecoveryAction::Wait => {}
                 }
                 if was_over {
-                    assert_eq!(action, Action::Wait);
+                    assert_eq!(action, RecoveryAction::Wait);
                     assert!(r.has_given_up());
                 }
             }

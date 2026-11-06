@@ -67,40 +67,54 @@ pub struct ClockMaster {
     /// SMPTE frame rate for MTC, as [`SmpteFrameRate`] discriminant.
     mtc_fps: AtomicU8,
 
+    /// What the previous tick saw of the transport.
+    prev: PrevTick,
+    /// The MTC quarter-frame grid.
+    mtc: MtcGrid,
+}
+
+/// The transport as the previous tick saw it, for edge and locate detection.
+#[derive(Debug)]
+struct PrevTick {
     /// `is_playing()` at the previous tick — for stopped↔playing edge detection
     /// (the transport exposes no edges of its own).
-    prev_playing: AtomicBool,
+    playing: AtomicBool,
     /// `current_beat()` at the previous tick — for seek detection and to carry
     /// the fractional clock-tick phase across blocks.
-    prev_beat: AtomicF64,
+    beat: AtomicF64,
     /// How far the previous tick's block was due to move the beat, in beats:
     /// what the beat is compared with at the next tick to tell a locate from
     /// ordinary playback. The previous block's figure, not this one's — they
     /// differ when the block size, the tempo or (on a device restart) the
     /// sample rate moved in between, and comparing with this block's called
     /// that a seek.
-    prev_advance: AtomicF64,
+    advance: AtomicF64,
+}
+
+/// The MTC quarter-frame grid.
+#[derive(Debug)]
+struct MtcGrid {
     /// The MTC quarter-frame grid, in closed form rather than accumulated
     /// (the frame, not the beat, is the source of truth): quarter-frame `k`
     /// (counted from the last transport edge or locate, so `k & 7` is its
-    /// nibble) is due `mtc_lead + (k - mtc_base) × rate / (4 × fps)` frames
-    /// into the current grid segment, whose frames `mtc_frames` counts. A
+    /// nibble) is due `lead + (k - base) × rate / (4 × fps)` frames
+    /// into the current grid segment, whose frames `frames` counts. A
     /// rate or fps change starts a new segment at the next quarter-frame due,
     /// with its lead rescaled to the same wall-clock time; an edge or locate
     /// restarts at quarter-frame 0 on the block's first frame.
-    mtc_base: AtomicU64,
-    /// The next quarter-frame to emit (see `mtc_base`).
-    mtc_next: AtomicU64,
+    base: AtomicU64,
+    /// The next quarter-frame to emit (see `base`).
+    next: AtomicU64,
     /// Frames rolled in the current grid segment.
-    mtc_frames: AtomicU64,
-    /// Where quarter-frame `mtc_base` is due in the segment, in frames.
-    mtc_lead: AtomicF64,
+    frames: AtomicU64,
+    /// Where quarter-frame `base` is due in the segment, in frames.
+    lead: AtomicF64,
     /// The eight nibbles of the timecode being sent, piece `p` in bits
     /// `4p..4p+4`. Set once at piece 0, so one cycle carries one position.
-    mtc_cycle: AtomicU32,
+    cycle: AtomicU32,
     /// The grid was just restarted: its first piece 0 is still to be placed
     /// on an even frame ([`tick_mtc`](Self::tick_mtc)).
-    mtc_align: AtomicBool,
+    align: AtomicBool,
 }
 
 impl ClockMaster {
@@ -115,15 +129,19 @@ impl ClockMaster {
             send_mtc: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
-            prev_playing: AtomicBool::new(false),
-            prev_beat: AtomicF64::new(0.0),
-            prev_advance: AtomicF64::new(0.0),
-            mtc_base: AtomicU64::new(0),
-            mtc_next: AtomicU64::new(0),
-            mtc_frames: AtomicU64::new(0),
-            mtc_lead: AtomicF64::new(0.0),
-            mtc_cycle: AtomicU32::new(0),
-            mtc_align: AtomicBool::new(true),
+            prev: PrevTick {
+                playing: AtomicBool::new(false),
+                beat: AtomicF64::new(0.0),
+                advance: AtomicF64::new(0.0),
+            },
+            mtc: MtcGrid {
+                base: AtomicU64::new(0),
+                next: AtomicU64::new(0),
+                frames: AtomicU64::new(0),
+                lead: AtomicF64::new(0.0),
+                cycle: AtomicU32::new(0),
+                align: AtomicBool::new(true),
+            },
         }
     }
 
@@ -189,8 +207,8 @@ impl ClockMaster {
     /// Frames from the MTC grid segment's first frame to quarter-frame `k`,
     /// at `rate` and `fps`: closed form, never accumulated.
     fn mtc_due(&self, k: u64, rate: f64, fps: SmpteFrameRate) -> f64 {
-        let base = self.mtc_base.load(Ordering::Acquire);
-        let lead = self.mtc_lead.load(Ordering::Acquire);
+        let base = self.mtc.base.load(Ordering::Acquire);
+        let lead = self.mtc.lead.load(Ordering::Acquire);
         lead + (k.saturating_sub(base) as f64 * rate) / (fps.fps() * 4.0)
     }
 
@@ -200,24 +218,25 @@ impl ClockMaster {
     /// due). `old_fps` only places the pending one: a new fps spaces the
     /// ones after it.
     fn rebase_mtc(&self, old_rate: f64, old_fps: SmpteFrameRate, new_rate: f64) {
-        let next = self.mtc_next.load(Ordering::Acquire);
-        let at = self.mtc_frames.load(Ordering::Acquire) as f64;
+        let next = self.mtc.next.load(Ordering::Acquire);
+        let at = self.mtc.frames.load(Ordering::Acquire) as f64;
         let left = self.mtc_due(next, old_rate, old_fps) - at;
-        self.mtc_base.store(next, Ordering::Release);
-        self.mtc_lead
+        self.mtc.base.store(next, Ordering::Release);
+        self.mtc
+            .lead
             .store(left * new_rate / old_rate, Ordering::Release);
-        self.mtc_frames.store(0, Ordering::Release);
+        self.mtc.frames.store(0, Ordering::Release);
     }
 
     /// Restart the MTC grid at quarter-frame 0 (piece 0, what a decoder
     /// needs to lock) on the next block's first frame: a transport edge or
     /// a locate.
     fn restart_mtc(&self) {
-        self.mtc_base.store(0, Ordering::Release);
-        self.mtc_next.store(0, Ordering::Release);
-        self.mtc_frames.store(0, Ordering::Release);
-        self.mtc_lead.store(0.0, Ordering::Release);
-        self.mtc_align.store(true, Ordering::Release);
+        self.mtc.base.store(0, Ordering::Release);
+        self.mtc.next.store(0, Ordering::Release);
+        self.mtc.frames.store(0, Ordering::Release);
+        self.mtc.lead.store(0.0, Ordering::Release);
+        self.mtc.align.store(true, Ordering::Release);
     }
 
     /// The rate [`tick`](Self::tick) places events at.
@@ -263,15 +282,16 @@ impl ClockMaster {
             // Keep prev_playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
             // under way.
-            self.prev_playing
+            self.prev
+                .playing
                 .store(transport.playing, Ordering::Release);
             return;
         }
 
         let playing = transport.playing;
-        let was_playing = self.prev_playing.swap(playing, Ordering::AcqRel);
+        let was_playing = self.prev.playing.swap(playing, Ordering::AcqRel);
         let beat = transport.beat();
-        let prev_beat = Beat(self.prev_beat.swap(beat.get(), Ordering::AcqRel));
+        let prev_beat = Beat(self.prev.beat.swap(beat.get(), Ordering::AcqRel));
 
         // --- transport edges -------------------------------------------------
         if playing && !was_playing {
@@ -311,7 +331,8 @@ impl ClockMaster {
         let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
         let expected_advance = beats_per_sample * block_size as f64;
         let prev_advance = BeatDuration(
-            self.prev_advance
+            self.prev
+                .advance
                 .swap(expected_advance.get(), Ordering::AcqRel),
         );
         let is_edge = playing && !was_playing;
@@ -408,8 +429,8 @@ impl ClockMaster {
         // long it runs. An edge or locate restarts it at quarter-frame 0 on
         // the block's first frame: piece 0 first, which is what a decoder
         // needs to lock.
-        let at = self.mtc_frames.load(Ordering::Acquire);
-        let mut next = self.mtc_next.load(Ordering::Acquire);
+        let at = self.mtc.frames.load(Ordering::Acquire);
+        let mut next = self.mtc.next.load(Ordering::Acquire);
 
         // The sample position of the block's first frame, from beat 0.
         let block_pos = if beats_per_sample > BeatDuration(0.0) {
@@ -423,7 +444,7 @@ impl ClockMaster {
         // runs in frames from there: exact at a steady tempo, while a tempo
         // change moves the timeline under a grid fixed in samples, and the
         // label (read from the beat at each piece 0) follows within a frame.
-        if self.mtc_align.swap(false, Ordering::AcqRel) {
+        if self.mtc.align.swap(false, Ordering::AcqRel) {
             let (num, den) = fps.ratio();
             let period = 2.0 * rate * den as f64 / num as f64;
             let cycles = block_pos / period;
@@ -432,10 +453,11 @@ impl ClockMaster {
             } else {
                 cycles.ceil()
             };
-            self.mtc_lead
+            self.mtc
+                .lead
                 .store((k * period - block_pos).max(0.0), Ordering::Release);
         }
-        let mut cycle = self.mtc_cycle.load(Ordering::Acquire);
+        let mut cycle = self.mtc.cycle.load(Ordering::Acquire);
 
         // Quarter-frames due inside [0, block_size), each on the frame it
         // falls in (the floor of its position, as the MTC grid always was).
@@ -457,9 +479,10 @@ impl ClockMaster {
             next += 1;
         }
 
-        self.mtc_cycle.store(cycle, Ordering::Release);
-        self.mtc_next.store(next, Ordering::Release);
-        self.mtc_frames
+        self.mtc.cycle.store(cycle, Ordering::Release);
+        self.mtc.next.store(next, Ordering::Release);
+        self.mtc
+            .frames
             .store(at + block_size as u64, Ordering::Release);
     }
 }

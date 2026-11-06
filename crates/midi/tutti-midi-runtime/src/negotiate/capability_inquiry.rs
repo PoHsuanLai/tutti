@@ -56,6 +56,15 @@ fn header_str_field<'a>(header: &'a [u8], key: &str) -> Option<&'a str> {
     Some(&rest[..close])
 }
 
+/// Whether a profile a [`CiResponder`] exposes is currently on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileSwitch {
+    /// The profile is enabled.
+    Enabled,
+    /// The profile is exposed but disabled.
+    Disabled,
+}
+
 /// The **responder** half of MIDI-CI — this device's declared identity, MUID,
 /// supported profiles, and exposed properties. [`respond_to`](Self::respond_to)
 /// turns an inbound [`CiMessage`] into the reply stream, exactly as
@@ -65,7 +74,7 @@ pub struct CiResponder {
     muid: Muid,
     identity: DiscoveryData,
     /// Profiles this device exposes, and whether each is currently enabled.
-    profiles: Vec<(ProfileId, bool)>,
+    profiles: Vec<(ProfileId, ProfileSwitch)>,
     /// Properties this device answers Get requests for.
     properties: Vec<CiProperty>,
     /// What this device reports for a Property Exchange Capabilities inquiry.
@@ -105,9 +114,9 @@ impl CiResponder {
         self
     }
 
-    /// Declare the profiles this device exposes as `(id, enabled)` pairs.
+    /// Declare the profiles this device exposes, each with whether it is on.
     #[must_use]
-    pub fn with_profiles(mut self, profiles: Vec<(ProfileId, bool)>) -> Self {
+    pub fn with_profiles(mut self, profiles: Vec<(ProfileId, ProfileSwitch)>) -> Self {
         self.profiles = profiles;
         self
     }
@@ -173,13 +182,13 @@ impl CiResponder {
                 let enabled: Vec<ProfileId> = self
                     .profiles
                     .iter()
-                    .filter(|(_, on)| *on)
+                    .filter(|(_, switch)| *switch == ProfileSwitch::Enabled)
                     .map(|(id, _)| *id)
                     .collect();
                 let disabled: Vec<ProfileId> = self
                     .profiles
                     .iter()
-                    .filter(|(_, on)| !*on)
+                    .filter(|(_, switch)| *switch == ProfileSwitch::Disabled)
                     .map(|(id, _)| *id)
                     .collect();
                 vec![CiMessage::Profile {
@@ -193,11 +202,11 @@ impl CiResponder {
             CiMessage::Profile {
                 state: ProfileState::SetOn(id),
                 ..
-            } => self.profile_report(src, *id, true),
+            } => self.profile_report(src, *id, ProfileSwitch::Enabled),
             CiMessage::Profile {
                 state: ProfileState::SetOff(id),
                 ..
-            } => self.profile_report(src, *id, false),
+            } => self.profile_report(src, *id, ProfileSwitch::Disabled),
 
             // A property Get this device can satisfy → its reply; else NAK.
             CiMessage::Property {
@@ -343,12 +352,11 @@ impl CiResponder {
 
     /// The Enabled/Disabled report for a profile this device exposes, or a NAK
     /// for one it does not.
-    fn profile_report(&self, dest: Muid, id: ProfileId, enable: bool) -> Vec<CiMessage> {
+    fn profile_report(&self, dest: Muid, id: ProfileId, switch: ProfileSwitch) -> Vec<CiMessage> {
         if self.profiles.iter().any(|(p, _)| *p == id) {
-            let state = if enable {
-                ProfileState::Enabled(id)
-            } else {
-                ProfileState::Disabled(id)
+            let state = match switch {
+                ProfileSwitch::Enabled => ProfileState::Enabled(id),
+                ProfileSwitch::Disabled => ProfileState::Disabled(id),
             };
             vec![CiMessage::Profile {
                 header: self.reply_header(dest),

@@ -24,7 +24,7 @@ pub use live::{
 };
 pub use negotiate::{
     CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,
-    EndpointInquiry, EndpointNegotiator, FunctionBlock,
+    EndpointInquiry, EndpointNegotiator, FunctionBlock, ProfileSwitch,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,

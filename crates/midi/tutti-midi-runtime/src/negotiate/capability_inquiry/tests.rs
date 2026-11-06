@@ -14,8 +14,8 @@ fn identity(mfr: [u8; 3]) -> DiscoveryData {
 fn responder() -> CiResponder {
     CiResponder::new(Muid(0x0011_2233), identity([0x00, 0x21, 0x09]))
         .with_profiles(vec![
-            (ProfileId([0x7E, 1, 2, 3, 4]), true),
-            (ProfileId([0x7E, 5, 6, 7, 8]), false),
+            (ProfileId([0x7E, 1, 2, 3, 4]), ProfileSwitch::Enabled),
+            (ProfileId([0x7E, 5, 6, 7, 8]), ProfileSwitch::Disabled),
         ])
         .with_properties(vec![CiProperty {
             header: br#"{"resource":"DeviceInfo"}"#.to_vec(),

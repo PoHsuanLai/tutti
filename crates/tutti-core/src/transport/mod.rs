@@ -153,7 +153,7 @@ pub trait TransportState: Timeline {
     /// Whether the transport is armed and recording. Always `false` offline.
     fn is_recording(&self) -> bool;
     /// The active loop region, or `None` when not looping. Always a valid,
-    /// non-empty region — see [`LoopRange`].
+    /// non-empty region — see [`LoopRange`](tutti_types::LoopRange).
     fn loop_range(&self) -> Option<tutti_types::LoopRange>;
     /// Samples elapsed since the stream started — free-running, never reset by
     /// a loop, seek, or stop.

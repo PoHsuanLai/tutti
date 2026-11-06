@@ -104,7 +104,7 @@ pub fn first_frame_at_or_after(frames_ahead: f64) -> i64 {
 /// **No clock steps by it.** A playhead that adds this per frame or per block
 /// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
 /// frame 96 000, which is beat 3): the clocks count frames and derive the
-/// beat in closed form ([`TimelineSegment`](TimelineSegment)).
+/// beat in closed form ([`TimelineSegment`]).
 ///
 /// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
 /// by it divides by the same `f64`.

@@ -331,9 +331,51 @@ Each is its own lane after its dependency stage.
    than one output.
 5. **Clock, MTC and MMC slave** with tempo follow, and a `ClockMaster` that handles
    a loop wrap inside a block.
-6. **SMF:** tempo map, track names and SysEx on export; strict import that reports
-   truncation; SMPTE division. Clip File moves to `tutti-midi-file`, its only
-   production consumer.
+6. **Files** (below).
+
+### Files
+
+`tutti-midi-file` adds real work on top of `midly`: musical time, a tempo map, note
+pairing, and one reader for SMF and Clip File. The rest is thin or awkward. There
+are two read models from one parse, `pub use midly` and `SmfMessage` expose
+`midly`'s types, and `iter()` writes each parsed message to wire bytes in order to
+parse it again. Reading drops SysEx, time and key signatures and markers, merges
+Format 2 as if parallel, rejects SMPTE division, and returns `Ok` on a truncated
+file. Writing has no tempo map, track names or SysEx.
+
+```rust
+pub struct MidiFile { kind: MidiFileKind, tracks: Vec<Track>, tempo_map: TempoMap }
+pub struct Track { name: Option<String>, events: Vec<(Tick, FileEvent)> }
+
+pub enum FileEvent {
+    Message(Message),      // SMF: Midi1 on group 0. Clip File: as stored.
+    SysEx(Box<[u8]>),      // any length, unlike a packet
+    Meta(Meta),            // text, markers, key signature, Other with raw bytes
+}
+
+impl MidiFile {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error>;  // reports truncation
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error>;
+    pub fn events(&self) -> impl Iterator<Item = (Beat, &FileEvent)>;  // merged
+}
+impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
+```
+
+- **Our types in the API, `midly` private.** Its events borrow the input bytes, and
+  exposing them would make it a public dependency. It stays as the SMF byte parser,
+  and swapping it would touch one file.
+- **The file layer does not translate.** An SMF reads as `Midi1`, and a MIDI 1.0 Note
+  On at velocity 0 stays one. `Translator` runs when a clip is loaded for playback.
+- **`FileEvent` is not a mirror of `Message`.** It adds what a packet cannot hold.
+  It allocates, and files do not reach the audio thread: the clip node holds a
+  compiled form.
+- **Integer ticks.** Events keep their tick and the track its division, so a write is
+  exact with no rounding, and `events()` gives callers `Beat`.
+- **A lossless round trip** is the test: a file read and written holds the same
+  events, including SysEx and meta. Running status and event spelling may differ.
+- **Clip File moves here** from `tutti-midi-types`, its only production consumer.
+- Measure `midly`'s `parallel` feature, which pulls in `rayon`, and check its `strict`
+  feature for truncated files.
 
 ## 10. Stages
 

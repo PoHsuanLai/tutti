@@ -1027,7 +1027,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     .expect_err("an unmeasurable rate must not report success");
 
     assert!(
-        matches!(err, tutti_export::Error::Unmeasurable(_)),
+        matches!(err, tutti_export::Error::Unmeasurable { .. }),
         "expected Unmeasurable, got {err:?}"
     );
 }

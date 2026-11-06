@@ -177,7 +177,7 @@ pub fn rebuild(
         .iter()
         .filter_map(|&t| {
             let &node = nodes.get(t).ok()?;
-            (graph.node_event_inputs(node) > 0).then_some((t, node))
+            (graph.graph_ref().node_event_inputs(node) > 0).then_some((t, node))
         })
         .collect();
 

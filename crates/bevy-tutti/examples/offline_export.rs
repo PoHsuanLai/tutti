@@ -39,7 +39,9 @@ fn main() {
     // Same headless engine as `graph_wiring`, plus the export plugin. Each
     // export renders a fork of the live graph.
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    graph
+        .graph()
+        .set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
@@ -121,7 +123,7 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     let mix_path = dir.join("bevy-tutti-mix.wav");
     commands
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::File {
                 path: mix_path.clone(),
                 // Two passes: the signal is measured, then a gain applied.

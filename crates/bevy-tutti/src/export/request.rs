@@ -36,45 +36,41 @@ pub use tutti_session::PreparedGraph;
 
 use super::run::NodeNames;
 
-/// Which audio to render.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportSource {
-    /// The whole live graph, as the master hears it.
-    ///
-    /// A **fork** of what the global outputs hear (`ForkTarget::Master`: a
-    /// node no output reaches is not copied, and need not be forkable): every
-    /// node isolated and reset, reading the request's [`ExportClock`], so
-    /// it renders what the graph is *driven* to play from that timeline,
-    /// starting silent — not a copy of what is sounding now.
-    Master,
-    /// One node's output, isolated from everything downstream of it — "what
-    /// does this point in the graph actually sound like".
-    ///
-    /// Names the **entity**, not its `NodeKey`, for the same reason every other
-    /// edge in this crate does (`PortSources`, `MasterSources`): the id is
-    /// resolved when the render starts, so a node replaced between spawning the
-    /// request and starting it — a crossfade, a rebuilt chain — is followed
-    /// rather than rendered from a stale id.
-    ///
-    /// # Cost
-    ///
-    /// Each export **gathers** its fork on the main thread in the frame it
-    /// starts (`Editor::fork_gather`): the graph as it is then, a clone of
-    /// each node's shadow, a hosted plugin's saved state, and an in-process
-    /// VST2 plugin's second instance (built there because VST2 confines it
-    /// to the main thread). The slow part of a hosted plugin's fork, a fresh
-    /// instance in a new `plugin-server` process loaded with that state (half
-    /// a second or more), is built on the compute pool with the render, so
-    /// the frame does not wait for it. A gather is still main-thread work,
-    /// and several back to back could stall the frame.
-    ///
-    /// That is why only one export starts per frame (see [`ExportInFlight`]).
-    /// Requests wait their turn as entities; nothing is dropped. A caller with
-    /// several pending that cares which goes first should spawn the best one
-    /// and recompute next frame, rather than spawning all of them and hoping
-    /// for an ordering this crate does not promise.
-    Node(Entity),
-}
+/// Which audio to render: the session's [`ExportSource`](tutti_session::ExportSource)
+/// naming a node by its **entity**.
+///
+/// - `Mix` is a **fork** of what the global outputs hear
+///   (`ForkTarget::Master`: a node no output reaches is not copied, and need
+///   not be forkable): every node isolated and reset, reading the request's
+///   [`ExportClock`], so it renders what the graph is *driven* to play from
+///   that timeline, starting silent — not a copy of what is sounding now.
+/// - `Node(entity)` is one node's output, isolated from everything downstream
+///   of it — "what does this point in the graph actually sound like".
+///
+/// An entity rather than a `NodeKey`, for the same reason every other edge in
+/// this crate names one (`PortSources`, `MasterSources`): the id is resolved
+/// when the render starts, so a node replaced between spawning the request
+/// and starting it — a crossfade, a rebuilt chain — is followed rather than
+/// rendered from a stale id.
+///
+/// # Cost
+///
+/// Each export **gathers** its fork on the main thread in the frame it
+/// starts (`Editor::fork_gather`): the graph as it is then, a clone of each
+/// node's shadow, a hosted plugin's saved state, and an in-process VST2
+/// plugin's second instance (built there because VST2 confines it to the main
+/// thread). The slow part of a hosted plugin's fork, a fresh instance in a
+/// new `plugin-server` process loaded with that state (half a second or
+/// more), is built on the compute pool with the render, so the frame does not
+/// wait for it. A gather is still main-thread work, and several back to back
+/// could stall the frame.
+///
+/// That is why only one export starts per frame (see [`ExportInFlight`]).
+/// Requests wait their turn as entities; nothing is dropped. A caller with
+/// several pending that cares which goes first should spawn the best one and
+/// recompute next frame, rather than spawning all of them and hoping for an
+/// ordering this crate does not promise.
+pub type ExportSource = tutti_session::ExportSource<Entity>;
 
 /// Spawn an entity with this to run an export.
 ///
@@ -305,7 +301,7 @@ impl ExportInFlight {
 /// fn request_export(In(view_entity): In<Entity>, mut commands: Commands) {
 ///     commands
 ///         .spawn(ExportRequest::new(
-///             ExportSource::Master,
+///             ExportSource::Mix,
 ///             ExportTarget::Buffers,
 ///             ExportConfig::default(),
 ///             ExportClock::frozen(),
@@ -350,6 +346,19 @@ pub enum ExportError {
     /// refused.
     #[error(transparent)]
     Render(#[from] tutti_export::Error),
+
+    /// The world has no audio engine to render from.
+    #[error("no audio engine to export from")]
+    NoEngine,
+
+    /// A [`Node`](tutti_session::ExportSource::Node) export named an entity
+    /// that is not bound to a graph node.
+    #[error("export target {0} is not a graph node")]
+    NotANode(Entity),
+
+    /// The session refused to start the export: another is in flight.
+    #[error("the session refused the export: {0}")]
+    Session(tutti_session::Error),
 
     /// `node` cannot be forked for an offline render, so the graph could not
     /// be copied: it shares live state a copy would
@@ -441,7 +450,7 @@ impl std::fmt::Display for ExportNode {
 /// struct Level(f32);
 ///
 /// let request = ExportRequest::new(
-///     ExportSource::Master,
+///     ExportSource::Mix,
 ///     ExportTarget::Buffers,
 ///     ExportConfig::default(),
 ///     ExportClock::frozen(),

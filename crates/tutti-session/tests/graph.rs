@@ -16,7 +16,8 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Const, Osc, Through};
 use tutti_session::{
-    Crossfade, EventSource, GraphSource, Session, SessionEvent, SessionNode, root_width,
+    Crossfade, CrossfadeRefused, EventSource, Feeder, GraphSource, Session, SessionEvent,
+    SessionNode, root_width,
 };
 use tutti_types::{Latency, Param, UnitParam};
 
@@ -350,6 +351,28 @@ fn an_update_with_no_edit_sends_no_plan() {
 
 // ---- crossfades ---------------------------------------------------------------
 
+/// **A crossfade on a node that is gone is refused with the node named**, not
+/// with a message to parse: the caller matches `NoSuchNode(node)`.
+///
+/// Mutations (run):
+/// - `swap_unit` answering `Poisoned` for the missing node → fails.
+#[test]
+fn a_crossfade_on_a_removed_node_is_refused_naming_it() {
+    let mut s = detached(1);
+    let (knob, _) = s.graph().add(Knob::new());
+    s.graph().remove(knob);
+    let refused = s
+        .graph()
+        .crossfade(
+            knob,
+            Knob::at(3.0),
+            Seconds(0.005),
+            CrossfadeCurve::EqualAmplitude,
+        )
+        .expect_err("the node is gone");
+    assert_eq!(refused, CrossfadeRefused::NoSuchNode(knob));
+}
+
 /// **A crossfade refused `Busy` during a re-prepare lands on a later
 /// update**, and its controls come with the landing: the graph an engine
 /// runs (the audio side is taken) changing rate, and a crossfade before the
@@ -515,8 +538,8 @@ fn move_feeds_moves_every_feeders_sources() {
     let (new, _) = g.insert(ForkByClone(Events::<1, 0>));
     let (clip, _) = g.insert(ForkByClone(Events::<0, 1>));
     let (route, _) = g.insert(ForkByClone(Events::<0, 1>));
-    g.set_feed(old, "clip", vec![clip.into()]);
-    g.set_feed(old, "route", vec![EventSource::new(route, 0)]);
+    g.set_feed(old, Feeder::Sequencer, vec![clip.into()]);
+    g.set_feed(old, Feeder::Routes, vec![EventSource::new(route, 0)]);
     let both = {
         let mut v = vec![EventSource::from(clip), EventSource::from(route)];
         v.sort_by_key(|e| e.node.key().0);
@@ -528,8 +551,8 @@ fn move_feeds_moves_every_feeders_sources() {
     assert_eq!(edges, both, "the union is the sink's event edges");
 
     g.move_feeds(old, new);
-    assert_eq!(g.feed(new, "clip"), [EventSource::from(clip)]);
-    assert_eq!(g.feed(new, "route"), [EventSource::from(route)]);
+    assert_eq!(g.feed(new, Feeder::Sequencer), [EventSource::from(clip)]);
+    assert_eq!(g.feed(new, Feeder::Routes), [EventSource::from(route)]);
     assert!(g.fed(old).is_empty(), "the old sink is fed by nothing");
     let mut edges = g.event_sources(new, 0);
     edges.sort_by_key(|e| e.node.key().0);

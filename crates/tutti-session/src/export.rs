@@ -47,15 +47,32 @@ use crate::graph::AudioNodeTarget;
 use crate::graph::PendingExport;
 use crate::{Error, Session};
 
-/// Which audio an export renders.
+/// Which audio an export renders. `N` names a node: the graph's
+/// [`AudioNode`] in the session, a host's own key (an entity) where the host
+/// resolves it to one ([`try_map`](Self::try_map)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportSource {
+pub enum ExportSource<N = AudioNode> {
     /// What the global outputs hear: a fork of every node an output
     /// reaches (a node none reaches is not copied, and need not be
     /// forkable).
     Mix,
     /// One node's outputs, isolated from everything downstream of it.
-    Node(AudioNode),
+    Node(N),
+}
+
+impl<N> ExportSource<N> {
+    /// The same source with its node named by `f`, or the first error `f`
+    /// returns for it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `f` fails with, for [`Node`](Self::Node) only.
+    pub fn try_map<M, E>(self, f: impl FnOnce(N) -> Result<M, E>) -> Result<ExportSource<M>, E> {
+        match self {
+            Self::Mix => Ok(ExportSource::Mix),
+            Self::Node(n) => f(n).map(ExportSource::Node),
+        }
+    }
 }
 
 /// Where the rendered audio goes.
@@ -821,6 +838,30 @@ mod tests {
             .insert(tutti_nodes::testing::Const::mono(0.0));
         session.graph().set_outputs_from(dc);
         session
+    }
+
+    /// **`try_map` names only a node source's node, and stops at the first
+    /// error**: a mix has none to resolve.
+    ///
+    /// Mutation (run): the `Node` arm returning `Mix` → the node check fails.
+    #[test]
+    fn try_map_resolves_the_node_and_only_the_node() {
+        let name = |n: u8| -> Result<u16, &'static str> {
+            if n == 0 {
+                Err("unbound")
+            } else {
+                Ok(u16::from(n) * 10)
+            }
+        };
+        assert_eq!(
+            ExportSource::<u8>::Mix.try_map(|_| Err("called")),
+            Ok(ExportSource::<u16>::Mix)
+        );
+        assert_eq!(
+            ExportSource::Node(2u8).try_map(name),
+            Ok(ExportSource::Node(20))
+        );
+        assert_eq!(ExportSource::Node(0u8).try_map(name), Err("unbound"));
     }
 
     /// **An unannounced finish leaves the mode to the next

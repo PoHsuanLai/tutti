@@ -187,7 +187,7 @@ impl SessionBuilder {
                 graph.add(tutti_midi_runtime::MidiInputNode::new(wire).with_mpe(self.mpe_mode));
             let (clock, clock_master) = graph.insert(tutti_midi_runtime::ClockNode::new());
             let (hardware_out, out_controls) = graph.insert(tutti_midi_runtime::MidiOutNode::new());
-            graph.set_feed(hardware_out, "clock", vec![clock.into()]);
+            graph.set_feed(hardware_out, crate::Feeder::Clock, vec![clock.into()]);
             Some(crate::MidiNodes {
                 input,
                 input_controls,

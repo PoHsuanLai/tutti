@@ -7,14 +7,14 @@
 //! on their frames, in the same block. What feeds an entity's event input is
 //! declared with [`EventSources`] on that entity, as [`PortSources`] declares
 //! its audio: the declaration is keyed by the sink, and [`reconcile`] writes
-//! it into the session's graph (its `"declared"` feed) before the frame's
+//! it into the session's graph (its [`Feeder::Declared`] feed) before the frame's
 //! commit.
 //!
 //! **Unlike audio, event inputs fan in.** An event input merges any number
 //! of sources by offset (ties go by the source's key), so an `EventSources`
 //! is a list, not one source per port. The other feeders of this crate (the
 //! MIDI sequencer's clip node, the route rules, a live input) set their own
-//! feed on the sink's node ([`AudioGraphRes::set_feed`]); the input reads
+//! feed on the sink's node ([`Graph::set_feed`](crate::graph::Graph::set_feed)); the input reads
 //! the union.
 //!
 //! [`PortSources`]: crate::graph::PortSources
@@ -25,7 +25,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tutti_core::AudioNode;
 
-use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
+use crate::graph::{AudioGraphRes, Feeder, GraphReconcileSystems, engine_ready};
 pub use tutti_session::EventSource;
 
 /// The entities whose event output 0 feeds this entity's event input 0.
@@ -44,10 +44,6 @@ impl EventSources {
         Self(vec![entity])
     }
 }
-
-/// The feeder name an [`EventSources`] declaration writes under, among a
-/// sink's feeds ([`AudioGraphRes::set_feed`]).
-pub const DECLARED: &str = "declared";
 
 /// The controls a node inserted with
 /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) handed
@@ -151,7 +147,7 @@ pub struct Reconciled {
 /// - **A re-bound sink keeps its feeds.** The session keys feeds by node; an
 ///   entity whose [`AudioNode`] changed since the last frame has every
 ///   feeder's sources moved from its old node to its new one
-///   (`AudioGraphRes::move_feeds`), so a clip, a route and a declaration
+///   (`Graph::move_feeds`), so a clip, a route and a declaration
 ///   follow it.
 /// - **A declaration is recomputed whole each frame**: a source's node can
 ///   change (a re-bind, a despawn) without the sink's declaration changing,
@@ -174,12 +170,12 @@ pub fn reconcile(
         if let Some(&old) = last.bound.get(&entity)
             && old != sink
         {
-            graph.move_feeds(old, sink);
+            graph.graph().move_feeds(old, sink);
         }
         bound.insert(entity, sink);
         let Some(sources) = sources else {
             if last.declared.contains(&entity) {
-                graph.set_feed(sink, DECLARED, Vec::new());
+                graph.graph().set_feed(sink, Feeder::Declared, Vec::new());
             }
             continue;
         };
@@ -188,7 +184,7 @@ pub fn reconcile(
             .iter()
             .filter_map(|e| nodes.get(*e).ok().map(|&n| EventSource::from(n)))
             .collect();
-        graph.set_feed(sink, DECLARED, sources);
+        graph.graph().set_feed(sink, Feeder::Declared, sources);
         declared.insert(entity);
     }
     last.bound = bound;

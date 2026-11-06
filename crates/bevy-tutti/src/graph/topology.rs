@@ -10,7 +10,7 @@
 //!
 //! # What the value owns, and what it does not
 //!
-//! **It owns edges and outputs.** Every `AudioGraphRes::set_source` and
+//! **It owns edges and outputs.** Every `Graph::set_source` and
 //! `set_output_source` this adapter performs is driven by [`apply`] from a
 //! value. Nothing reads a topology back out of the runtime to decide what to
 //! write.
@@ -86,7 +86,7 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 /// wired by hand, and no event or param-modulation sources. So
 /// [`tutti_types::latency::plan`] over it is only an approximation of the
 /// graph's compensation; for the figure the graph's plans compensate by, use
-/// [`AudioGraphRes::latency_plan`], which folds over the whole graph spec.
+/// [`Graph::latency_plan`](crate::graph::Graph::latency_plan), which folds over the whole graph spec.
 ///
 /// It is **not** what writes the graph, and not a cache the engine is derived
 /// from. Each rebuild builds a fresh value from the declarations, and
@@ -148,12 +148,12 @@ pub fn build(
     master: &MasterSources,
 ) -> Topology {
     let mut topology = Topology {
-        inputs: ChannelLayout::from_count(graph.inputs() as u16),
+        inputs: ChannelLayout::from_count(graph.graph_ref().inputs() as u16),
         ..Default::default()
     };
 
     for (entity, node) in nodes.iter() {
-        if !graph.contains(*node) {
+        if !graph.graph_ref().contains(*node) {
             continue;
         }
         let spec = spec_of(graph, *node);
@@ -199,7 +199,7 @@ pub fn build(
     topology.outputs = if master.0.is_empty() {
         Vec::new()
     } else {
-        (0..graph.outputs())
+        (0..graph.graph_ref().outputs())
             .map(|channel| match master.0.get(channel) {
                 // Unresolvable, not silent — but `Topology::outputs` is
                 // positional, so the channel must keep its slot. `Zero` is what
@@ -219,7 +219,7 @@ pub fn build(
 /// Brings the engine into line with the value, and says whether anything moved.
 ///
 /// **The value is the truth for edges and outputs; this is the only place it
-/// reaches the runtime.** Two calls — `AudioGraphRes::set_source`, `set_output_source`
+/// reaches the runtime.** Two calls — `Graph::set_source`, `set_output_source`
 /// — driven by what the value says rather than by re-reading the declaration
 /// port by port. Nothing here calls `connect`, `pipe_input` or `pipe_output`:
 /// those walk *every* port of a node, which is how a later wiring call silently
@@ -268,8 +268,8 @@ pub fn apply(
         let (Some(&sink), Some(source)) = (ids.get(&at.node), lower(source, &ids)) else {
             continue;
         };
-        if graph.source(sink, at.port as usize) != source {
-            graph.set_source(sink, at.port as usize, source);
+        if graph.graph_ref().source(sink, at.port as usize) != source {
+            graph.graph().set_source(sink, at.port as usize, source);
             wrote = true;
         }
     }
@@ -278,8 +278,8 @@ pub fn apply(
         let Some(source) = lower(*source, &ids) else {
             continue;
         };
-        if graph.output_source(channel) != source {
-            graph.set_output_source(channel, source);
+        if graph.graph_ref().output_source(channel) != source {
+            graph.graph().set_output_source(channel, source);
             wrote = true;
         }
     }
@@ -300,7 +300,7 @@ fn live_ids(
 ) -> BTreeMap<NodeKey, AudioNode> {
     nodes
         .iter()
-        .filter(|(_, n)| graph.contains(**n))
+        .filter(|(_, n)| graph.graph_ref().contains(**n))
         .map(|(e, n)| (key_of(e), *n))
         .collect()
 }
@@ -335,8 +335,8 @@ fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSour
 /// # What is compared, and what deliberately is not
 ///
 /// **Compared:** every edge the value declares, against
-/// [`AudioGraphRes::source`], and every output channel it declares, against
-/// [`output_source`](AudioGraphRes::output_source).
+/// [`Graph::source`](crate::graph::Graph::source), and every output channel it declares, against
+/// [`Graph::output_source`](crate::graph::Graph::output_source).
 ///
 /// **Not compared:** a port the value says nothing about. The loop's own
 /// contract is that an undeclared port belongs to whoever wired it — a `Vec`
@@ -369,7 +369,7 @@ pub fn disagreements(
         let (Some(&sink), Some(expected)) = (ids.get(&at.node), lower(source, &ids)) else {
             continue;
         };
-        let live = graph.source(sink, at.port as usize);
+        let live = graph.graph_ref().source(sink, at.port as usize);
         if live != expected {
             faults.push(format!(
                 "node {:?} port {}: value says {expected:?}, engine holds {live:?}",
@@ -383,7 +383,7 @@ pub fn disagreements(
         let Some(expected) = lower(*source, &ids) else {
             continue;
         };
-        let live = graph.output_source(channel);
+        let live = graph.graph_ref().output_source(channel);
         if live != expected {
             faults.push(format!(
                 "output {channel}: value says {expected:?}, engine holds {live:?}"
@@ -399,10 +399,10 @@ pub fn disagreements(
 fn spec_of(graph: &AudioGraphRes, node: AudioNode) -> NodeSpec {
     NodeSpec {
         kind: ENTITY_NODE_KIND.to_string(),
-        inputs: ChannelLayout::from_count(graph.node_inputs(node) as u16),
-        outputs: ChannelLayout::from_count(graph.node_outputs(node) as u16),
-        latency: graph.node_latency(node),
-        tail: graph.node_tail(node),
+        inputs: ChannelLayout::from_count(graph.graph_ref().node_inputs(node) as u16),
+        outputs: ChannelLayout::from_count(graph.graph_ref().node_outputs(node) as u16),
+        latency: graph.graph_ref().node_latency(node),
+        tail: graph.graph_ref().node_tail(node),
         params: BTreeMap::new(),
     }
 }
@@ -410,7 +410,7 @@ fn spec_of(graph: &AudioGraphRes, node: AudioNode) -> NodeSpec {
 /// One declared port as an [`Edge`], or `None` if it cannot resolve *yet*.
 ///
 /// Mirrors `wire::resolve` arm for arm, including the two refusals: a self-loop
-/// (which `AudioGraphRes::set_source` asserts on) and a source port past the node's
+/// (which `Graph::set_source` asserts on) and a source port past the node's
 /// output count. Both are `None` there and must be `None` here, or the value
 /// would claim an edge the engine will never hold.
 fn edge_of(
@@ -436,7 +436,7 @@ fn edge_of(
 /// resolve — no later frame changes either — so silence there would leave a port
 /// unwired forever with nothing said. Those two warn.
 ///
-/// The self-loop refusal is not merely tidy: `AudioGraphRes::set_source` `assert!`s on it,
+/// The self-loop refusal is not merely tidy: `Graph::set_source` `assert!`s on it,
 /// so a value carrying one would turn a caller's mistake into a panic inside a
 /// graph rebuild.
 fn source_of(

@@ -125,7 +125,10 @@ mod soundfont_spawn {
 
         let node = *app.world().get::<AudioNode>(entity).expect("AudioNode");
         assert!(
-            app.world().resource::<AudioGraphRes>().contains(node),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(node),
             "the handle must name a node that is actually in the graph"
         );
         assert!(
@@ -201,6 +204,7 @@ mod soundfont_spawn {
         assert_eq!(
             app.world()
                 .resource::<bevy_tutti::graph::AudioGraphRes>()
+                .graph_ref()
                 .node_event_inputs(node),
             1
         );
@@ -332,7 +336,7 @@ mod midi_soundfont_audio {
         // to publish to. We render the control side directly rather than through
         // that — `render_frame` on this side sees the same units.
         let mut graph = AudioGraphRes::headless(0, 2);
-        graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+        graph.graph().set_sample_rate(SampleRate(SAMPLE_RATE));
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
@@ -353,8 +357,8 @@ mod midi_soundfont_audio {
         // what the clip node and the keyboard wire to.
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, ()) = graph.insert(unit);
-            graph.set_outputs_from(node);
+            let (node, ()) = graph.graph().insert(unit);
+            graph.graph().set_outputs_from(node);
             node
         };
         let synth = app.world_mut().spawn(node).id();
@@ -557,16 +561,16 @@ mod midi_route {
     fn routed_level(channel: MidiChannel) -> f32 {
         let mut app = App::new();
         let mut graph = AudioGraphRes::headless(0, 2);
-        graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+        graph.graph().set_sample_rate(SampleRate(SAMPLE_RATE));
         let wire = Wire::default();
-        let (input_node, _) = graph.insert(MidiInputNode::new(Some(
-            Box::new(wire.clone()) as Box<dyn MidiIn>
+        let (input_node, _) = graph.graph().insert(MidiInputNode::new(Some(
+            Box::new(wire.clone()) as Box<dyn MidiIn>,
         )));
         let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
         settings.enable_reverb_and_chorus = false;
         let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
-        let (synth_node, ()) = graph.insert(unit);
-        graph.set_outputs_from(synth_node);
+        let (synth_node, ()) = graph.graph().insert(unit);
+        graph.graph().set_outputs_from(synth_node);
         app.insert_resource(graph);
         app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {

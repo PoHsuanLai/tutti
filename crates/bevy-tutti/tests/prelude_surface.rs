@@ -151,7 +151,7 @@ fn _surface_compiles() {
     #[cfg(feature = "audio-io")]
     fn _wire_monitor(graph: &mut AudioGraphRes, rate: SampleRate) -> Option<()> {
         let (_mic, monitor) = MicIn::open_with_monitor(None, rate).ok()?;
-        let (_id, ()) = graph.insert(monitor);
+        let (_id, ()) = graph.graph().insert(monitor);
         Some(())
     }
 

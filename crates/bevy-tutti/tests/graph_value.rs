@@ -43,7 +43,7 @@ fn app() -> App {
 fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
     let (id, _controls) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert(node)
+        graph.graph().insert(node)
     };
     app.world_mut().spawn(id).id()
 }
@@ -123,7 +123,7 @@ fn the_master_declaration_becomes_the_values_outputs() {
 /// **An imperative write to a declared port is detected and reverted.**
 ///
 /// A host can write a declared port imperatively through
-/// `AudioGraphRes::set_source`. The dirty gate watches ECS change ticks, so a
+/// `Graph::set_source`. The dirty gate watches ECS change ticks, so a
 /// write nothing in the ECS touched does not by itself trigger a rebuild.
 ///
 /// With the value owning edges, the repair falls out of [`apply`]: it compares
@@ -179,6 +179,7 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .source(tampered_id, 0),
         GraphSource::Node(osc_id, 0),
         "the declaration reached the engine to begin with"
@@ -186,14 +187,14 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
 
     // The hazard: a host reaches past the declaration and rewrites the port.
     // Nothing in the ECS changed.
-    app.world_mut().resource_mut::<AudioGraphRes>().set_source(
-        tampered_id,
-        0,
-        GraphSource::Node(other_id, 0),
-    );
+    app.world_mut()
+        .resource_mut::<AudioGraphRes>()
+        .graph()
+        .set_source(tampered_id, 0, GraphSource::Node(other_id, 0));
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .source(tampered_id, 0),
         GraphSource::Node(other_id, 0),
         "the imperative write landed — otherwise the repair below proves nothing"
@@ -210,6 +211,7 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .source(tampered_id, 0),
         GraphSource::Node(osc_id, 0),
         "the value put the engine back on a port no declaration touched this \
@@ -222,6 +224,7 @@ fn an_imperative_engine_write_is_repaired_from_the_value() {
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .source(bystander_id, 0),
         GraphSource::Node(other_id, 0),
         "the declaration that changed reached the engine as well"
@@ -434,7 +437,10 @@ fn many_spawns_in_one_frame_coalesce_into_one_commit() {
     app.update();
 
     assert!(
-        !app.world().resource::<AudioGraphRes>().is_edited(),
+        !app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .is_edited(),
         "one commit consumed the whole frame's edits"
     );
     assert_eq!(
@@ -483,6 +489,7 @@ fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
     let id = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .insert(Osc::sine(Hz(440.0)));
     app.world_mut().entity_mut(pending).insert(id);
     app.update();
@@ -568,7 +575,7 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
     // Same entity, a different node of the same shape.
     let (second, ()) = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.insert(Osc::sine(Hz(880.0)))
+        graph.graph().insert(Osc::sine(Hz(880.0)))
     };
     app.world_mut().entity_mut(osc).insert(second);
     app.update();
@@ -580,7 +587,10 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
          topology is identical and the comparison alone would skip the frame"
     );
     assert_eq!(
-        app.world().resource::<AudioGraphRes>().source(sink_id, 0),
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .source(sink_id, 0),
         GraphSource::Node(second, 0),
         "and the wire moved anyway — `Changed<AudioNode>` is the engine-side \
          signal that the mapping the value resolves through has moved"

@@ -73,7 +73,7 @@ pub use export::{
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
 pub use graph::{
-    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Graph,
+    AudioSide, Committed, Crossfade, CrossfadeId, CrossfadeRefused, EventSource, Feeder, Graph,
     GraphSource, LIVE_MAX_BLOCK, ReplaceRefused,
 };
 #[cfg(feature = "midi")]

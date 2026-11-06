@@ -5,7 +5,7 @@
 //! `MasterSources`, `AudioParam`, `crossfade_audio_node`,
 //! `LatencyCompensationPlugin` — so what is checked is the whole adapter,
 //! not a hand-wired graph. It takes the audio side
-//! (`AudioGraphRes::take_audio_side`) and plays it in device-sized blocks.
+//! (`Graph::take_audio_side`) and plays it in device-sized blocks.
 //!
 //! # The oracles
 //!
@@ -94,8 +94,8 @@ fn scene(with_limiter: bool) -> Scene {
 /// [`scene`], with the waveshaper at `drive`.
 fn scene_driven(with_limiter: bool, drive: f32) -> Scene {
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(SampleRate(RATE));
-    let side = graph.take_audio_side();
+    graph.graph().set_sample_rate(SampleRate(RATE));
+    let side = graph.graph().take_audio_side();
 
     let mut app = App::new();
     app.insert_resource(graph);
@@ -200,6 +200,7 @@ fn a_compensated_scene_delays_its_dry_channel_by_the_lookahead() {
         .app
         .world()
         .resource::<AudioGraphRes>()
+        .graph_ref()
         .latency_plan()
         .total()
         .get();
@@ -429,12 +430,12 @@ fn pdc_is_the_compilers() {
         .expect("bound");
     let graph = s.app.world().resource::<AudioGraphRes>();
     assert_eq!(
-        graph.output_source(0),
+        graph.graph_ref().output_source(0),
         GraphSource::Node(drive, 0),
         "nothing is spliced in; the plan delays the channel"
     );
     assert!(
-        graph.latency_plan().total().get() > 0,
+        graph.graph_ref().latency_plan().total().get() > 0,
         "the limiter reports its lookahead"
     );
 }

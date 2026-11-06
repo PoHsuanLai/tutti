@@ -38,8 +38,8 @@
 //! // Read the edges back off the engine — the declaration's actual effect,
 //! // as opposed to `LiveGraph`, which is what this layer meant to write.
 //! let graph = app.world().resource::<AudioGraphRes>();
-//! assert!(matches!(graph.output_source(0), GraphSource::Node(_, 0)));
-//! assert!(matches!(graph.output_source(1), GraphSource::Node(_, 1)));
+//! assert!(matches!(graph.graph_ref().output_source(0), GraphSource::Node(_, 0)));
+//! assert!(matches!(graph.graph_ref().output_source(1), GraphSource::Node(_, 1)));
 //! ```
 //!
 //! # Why the sink owns the declaration
@@ -68,7 +68,7 @@
 //! [`rebuild`] derives a [`Topology`](tutti_types::graph::Topology) from the
 //! declarations, compares it against [`LiveGraph`] — one comparison, the whole
 //! change detection — and, when it differs, writes the ports that differ through
-//! `AudioGraphRes::set_source` / `set_output_source`. A *value* decides those
+//! `Graph::set_source` / `set_output_source`. A *value* decides those
 //! writes, not a port-by-port re-read of the runtime.
 //!
 //! **Units are not the value's.** A node is added by
@@ -83,7 +83,7 @@
 //! # One writer per declared port
 //!
 //! A port named by a [`PortSources`] belongs to that declaration. Writing it
-//! imperatively through [`AudioGraphRes::set_source`] as well is a bug in the
+//! imperatively through [`Graph::set_source`](crate::graph::Graph::set_source) as well is a bug in the
 //! host, which this layer **repairs**: every port the value names is compared
 //! against the engine before being written, so the declaration is reasserted
 //! on the next rebuild.
@@ -194,7 +194,7 @@ impl PortSources {
     /// Audio ports only. A node's modulatable params (a filter's cutoff, a
     /// distortion's drive) are not input ports: the graph modulates them
     /// through its own param ports (a control lane's events, or
-    /// `AudioGraphRes::set_param_mod`), so re-declaring a node's
+    /// `Graph::set_param_mod`), so re-declaring a node's
     /// audio ports cannot disturb its modulation — they are two different
     /// spaces, and neither can clobber the other.
     #[must_use]
@@ -241,7 +241,7 @@ impl MasterSources {
     ///
     /// For a source with fewer outputs, say so explicitly — a mono node feeding
     /// both channels is [`mono_from`](Self::mono_from). There is no wrapping
-    /// here on purpose. `AudioGraphRes::set_outputs_from` wraps with `channel % node_outputs`,
+    /// here on purpose. `Graph::set_outputs_from` wraps with `channel % node_outputs`,
     /// which silently turns "route this" into "route this, duplicated", and the
     /// arity it wraps against is the *node's*, which this constructor cannot see
     /// — it has an `Entity`, not a graph. Guessing wrong leaves a channel
@@ -446,8 +446,8 @@ pub fn rebuild(
                  holds; the excess will not be rendered"
             );
         }
-        if declared > graph.outputs() {
-            graph.widen_outputs(declared);
+        if declared > graph.graph_ref().outputs() {
+            graph.graph().widen_outputs(declared);
         }
     }
 
@@ -509,13 +509,13 @@ pub fn unwire_removed_sources(
         return;
     };
     let Some(mut graph) = graph else { return };
-    if !graph.contains(*node) {
+    if !graph.graph_ref().contains(*node) {
         return;
     }
-    let claimed = declared.0.len().min(graph.node_inputs(*node));
+    let claimed = declared.0.len().min(graph.graph_ref().node_inputs(*node));
     for port in 0..claimed {
-        if graph.source(*node, port) != GraphSource::Silence {
-            graph.set_source(*node, port, GraphSource::Silence);
+        if graph.graph_ref().source(*node, port) != GraphSource::Silence {
+            graph.graph().set_source(*node, port, GraphSource::Silence);
         }
     }
 }

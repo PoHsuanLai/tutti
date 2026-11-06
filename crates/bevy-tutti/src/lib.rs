@@ -49,7 +49,7 @@
 //! let node = *app.world_mut().query::<&AudioNode>().single(app.world()).unwrap();
 //! let graph = app.world().resource::<AudioGraphRes>();
 //! // Read the edge back off the engine, not off the component.
-//! assert_eq!(graph.output_source(0), GraphSource::Node(node, 0));
+//! assert_eq!(graph.graph_ref().output_source(0), GraphSource::Node(node, 0));
 //! ```
 //!
 //! # Sub-plugins
@@ -86,7 +86,7 @@
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
-//!     let (node, _) = graph.insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
+//!     let (node, _) = graph.graph().insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
 //!     // Staged, not committed: the insert marks the session edited, and
 //!     // `commit_graph` publishes the frame's edits once.
 //!     let _ = node;

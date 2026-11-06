@@ -76,7 +76,12 @@ pub struct Shape {
     /// The port's [`EventWriter`](crate::EventWriter) refuses the event
     /// that would exceed the capacity ([`EventRejected::Full`](crate::EventRejected::Full),
     /// returned to the node at once), and the executor counts it
-    /// ([`Executor::dropped_event_count`](crate::Executor::dropped_event_count)). The
+    /// ([`Executor::dropped_event_count`](crate::Executor::dropped_event_count)),
+    /// by port ([`Editor::take_event_losses`](crate::Editor::take_event_losses)). A
+    /// note-off is refused only past [`note_off_room`](crate::note_off_room), the
+    /// capacity and an eighth and 8 more: every buffer downstream is sized
+    /// for it. A rate that is per second, not per block, is sized from the
+    /// block in [`Node::prepare`] ([`EventDensity`](crate::EventDensity)). The
     /// events already written stand. Refusing at compile time is not an
     /// option: how many events a node emits is data (a chord, a burst of
     /// controller moves), not a property of the graph. What the compiler

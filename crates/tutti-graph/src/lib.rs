@@ -141,9 +141,13 @@
 //!
 //! - Each event output port declares how many events it writes per block
 //!   ([`Shape::event_capacity`]), and every buffer downstream is sized from
-//!   that at compile time. A writer past it is refused the newest event and
-//!   the executor counts it ([`Executor::dropped_event_count`]); nothing
-//!   downstream of a writer ever drops one.
+//!   that at compile time. A writer past it is refused the newest event,
+//!   except a note-off, which has room past the capacity
+//!   ([`note_off_room`]); the executor counts each refusal
+//!   ([`Executor::dropped_event_count`]), and per port
+//!   ([`Editor::take_event_losses`]). Nothing downstream of a writer ever
+//!   drops one. A source whose rate is per second sizes its declaration from
+//!   the block it is prepared for ([`EventDensity`]).
 //! - [`Editor::schedule`] delivers an event on an exact frame or beat
 //!   ([`At`](tutti_types::At)). A late command lands at the start of the next
 //!   block and is counted ([`Executor::late_command_count`]), never dropped.

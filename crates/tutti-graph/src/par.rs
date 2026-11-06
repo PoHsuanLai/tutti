@@ -459,7 +459,7 @@ impl Shared<'_, '_> {
                     view: self.events.view(held_events),
                 };
                 let lost = event_delay_op(event_ring(&mut ring), &mut e, src, dst, frames);
-                dropped.from_delay(self.plan, delay, lost);
+                dropped.charge_delay(self.plan, delay, lost);
             }
             Op::EventMerge { srcs, dst } => {
                 let mut e = EventsView {
@@ -540,7 +540,7 @@ impl Shared<'_, '_> {
                     view: self.events.view(held_events),
                 };
                 let lost = fifo.push(e.ev(src));
-                dropped.from_feedback(self.plan, feedback, u64::from(lost));
+                dropped.charge_feedback(self.plan, feedback, u64::from(lost));
             }
         }
     }

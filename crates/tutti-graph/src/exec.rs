@@ -182,7 +182,8 @@ use tutti_types::PlayReading;
 /// configured otherwise ([`Editor::with_event_capacity`](crate::Editor::with_event_capacity)).
 ///
 /// A hard cap, preallocated so the audio thread never grows a buffer. Past
-/// it the port refuses the newest event
+/// it the port refuses the newest event, a note-off excepted until
+/// [`note_off_room`](crate::note_off_room)
 /// ([`EventRejected::Full`](crate::EventRejected::Full), returned to the
 /// node), and the executor counts it in
 /// [`dropped_event_count`](Executor::dropped_event_count); an engine forwards that
@@ -1586,7 +1587,7 @@ impl Executor {
                             dst,
                             frames,
                         );
-                        st.dropped.from_delay(plan, delay, lost);
+                        st.dropped.charge_delay(plan, delay, lost);
                     }
                     Op::EventMerge { srcs, dst } => {
                         let lost =
@@ -1638,7 +1639,7 @@ impl Executor {
                             .as_mut()
                             .expect("built by apply");
                         let lost = fifo.push(st.events.ev(src));
-                        st.dropped.from_feedback(plan, feedback, u64::from(lost));
+                        st.dropped.charge_feedback(plan, feedback, u64::from(lost));
                     }
                 }
             }

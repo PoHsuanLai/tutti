@@ -90,13 +90,13 @@ impl Dropped {
     }
 
     /// `count` events lost downstream of `from`, in a FIFO it feeds.
-    pub(crate) fn from_source(&mut self, from: EventOut, count: u32) {
+    pub(crate) fn charge_source(&mut self, from: EventOut, count: u32) {
         self.note(Owner::Key(from.node), Some(from.port), count);
     }
 
     /// `count` events lost in the FIFO of the plan's delay `delay`, charged
     /// to the output port that feeds it.
-    pub(crate) fn from_delay(&mut self, plan: &Plan, delay: u32, count: u64) {
+    pub(crate) fn charge_delay(&mut self, plan: &Plan, delay: u32, count: u64) {
         let from = match plan.delays.get(delay as usize).map(|d| d.key) {
             Some(DelayKey::Event { from, .. } | DelayKey::ParamEvent { from, .. }) => Some(from),
             _ => None,
@@ -104,9 +104,9 @@ impl Dropped {
         self.charge(from, count);
     }
 
-    /// As [`from_delay`](Self::from_delay), for the plan's event feedback
+    /// As [`charge_delay`](Self::charge_delay), for the plan's event feedback
     /// `feedback`.
-    pub(crate) fn from_feedback(&mut self, plan: &Plan, feedback: u32, count: u64) {
+    pub(crate) fn charge_feedback(&mut self, plan: &Plan, feedback: u32, count: u64) {
         let from = match plan.event_feedback.get(feedback as usize).map(|f| f.key) {
             Some(FeedbackKey::Event { from, .. }) => Some(from),
             _ => None,
@@ -117,7 +117,7 @@ impl Dropped {
     fn charge(&mut self, from: Option<EventOut>, count: u64) {
         let n = u32::try_from(count).unwrap_or(u32::MAX);
         match from {
-            Some(from) => self.from_source(from, n),
+            Some(from) => self.charge_source(from, n),
             None => self.count(count),
         }
     }

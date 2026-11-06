@@ -35,8 +35,7 @@ fn render(
             Ok(())
         })
     })
-    .unwrap()
-    .0;
+    .unwrap();
     out
 }
 

@@ -32,7 +32,7 @@ use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents};
+use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, ParameterChanges, TransportInfo};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -105,7 +105,7 @@ fn drive_silent(inst: &mut Active, iters: usize, transport: &TransportInfo) {
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let ins: &[&[f32]] = &[];
         let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-        let events = Vst3InputEvents {
+        let events = InputEvents {
             midi: &midi,
             ..Default::default()
         };
@@ -160,7 +160,7 @@ fn process_with_automation_does_not_allocate() {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
             let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-            let events = Vst3InputEvents {
+            let events = InputEvents {
                 midi: &midi,
                 ..Default::default()
             };
@@ -222,7 +222,7 @@ fn process_with_midi_does_not_allocate() {
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
             MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ];
-        let events = Vst3InputEvents {
+        let events = InputEvents {
             midi: &warm,
             ..Default::default()
         };
@@ -253,7 +253,7 @@ fn process_with_midi_does_not_allocate() {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
             let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-            let src = Vst3InputEvents {
+            let src = InputEvents {
                 midi: events,
                 ..Default::default()
             };
@@ -319,7 +319,7 @@ fn process_with_hundreds_of_events_does_not_allocate() {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
             let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-            let events = Vst3InputEvents {
+            let events = InputEvents {
                 midi: &midi,
                 note_expressions: exprs,
                 ..Default::default()

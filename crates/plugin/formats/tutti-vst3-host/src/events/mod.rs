@@ -25,7 +25,7 @@ mod stage;
 pub use harmony::{Utf16Chord, Utf16Scale, Utf16Text};
 pub use midi::MidiEncoder;
 pub use note_expression::{expression_type_from_id, expression_type_id};
-pub use stage::{Stager, Vst3InputEvents, drain_midi};
+pub use stage::{InputEvents, Stager, drain_midi};
 pub use tutti_vst3_ffi::{
     Chord, Data, Event, EventHeader, EventKind, ExpressionInt, ExpressionText, ExpressionValue,
     K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, NoteOff, NoteOn, Payload, PolyPressure, Scale, TextRef,

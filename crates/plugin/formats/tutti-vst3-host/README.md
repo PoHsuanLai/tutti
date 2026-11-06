@@ -11,7 +11,7 @@ parameter tree, unit and program lists, note expression, state save/restore and
 the plugin's own editor, and implements the host-side COM interfaces a plugin
 discovers through `IComponentHandler::queryInterface`.
 
-The lifecycle is encoded in the type system: [`Vst3Library`] holds the loaded
+The lifecycle is encoded in the type system: [`Library`] holds the loaded
 DSO and its factory, and [`Vst3Loaded`] is an `initialize()`'d plugin suitable
 for GUI and parameter work. Activating it takes `self` by value and splits it
 into a [`Vst3Processor<T>`][`Vst3Processor`], the realtime half, where
@@ -28,7 +28,7 @@ Most applications reach it through `tutti-plugin` (feature `vst3`) or
 when you want a VST3 host without the rest of the engine.
 
 The other types you will meet first: [`AudioBuffer`] (the per-block audio),
-[`Vst3InputEvents`] (per-block MIDI and other events), [`PluginInfo`] (the class
+[`InputEvents`] (per-block MIDI and other events), [`PluginInfo`] (the class
 metadata read at load) and [`Vst3Error`] (with [`LoadStage`] for load failures).
 
 ## What it does not own
@@ -63,7 +63,7 @@ bundle on disk.
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Prepare, RenderMode, SampleFormat, SampleRate, Samples};
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Loaded,
+    AudioBuffer, InputEvents, LoadOptions, MidiEvent, TransportInfo, Vst3Loaded,
 };
 
 // Initialized. Parameters and the editor are reachable here, with no
@@ -95,7 +95,7 @@ let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 48_000.0);
 // The sample rate stays a raw `f64` here: this is a C ABI, which is where
 // the engine's unit newtypes deliberately stop.
 let midi = [MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000)];
-let events = Vst3InputEvents {
+let events = InputEvents {
     midi: &midi,
     ..Default::default()
 };
@@ -126,11 +126,11 @@ reason as above.
 let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 
 // Parameters are addressed by an opaque, plugin-chosen `ParamID`, never by
-// position: `parameter_info` reads one by enumeration index, and the `id` it
-// hands back is what `Control::set_parameter` takes. The titles are UTF-16 in the ABI,
-// so they are read through the `_string` accessors rather than as fields.
-for index in 0..plugin.parameter_count() {
-    let Some(info) = plugin.parameter_info(index) else {
+// position: `parameter_ids` lists them, `parameter_info` reads one by id, and
+// the id is what `Control::set_parameter` takes. The titles are UTF-16 in the
+// ABI, so they are read through the `_string` accessors rather than as fields.
+for id in plugin.parameter_ids() {
+    let Some(info) = plugin.parameter_info(id) else {
         continue;
     };
     println!(
@@ -142,8 +142,8 @@ for index in 0..plugin.parameter_count() {
 }
 
 // The write takes the id and a normalized `0..=1` value.
-if let Some(info) = plugin.parameter_info(0) {
-    plugin.set_parameter(ParamId::new(info.id), Normalized::new(0.75));
+if let Some(&id) = plugin.parameter_ids().first() {
+    plugin.set_parameter(id, Normalized::new(0.75));
 }
 
 // State save/restore is legal before any buffer exists — a project load
@@ -206,7 +206,7 @@ parameter, which it queues to the Processor as well as applying to the edit
 controller, so a plugin whose component is separate from its controller hears of
 it in the next block's `inputParameterChanges`.
 
-[`Vst3Library`] is a stage for a different reason: one bundle commonly exposes
+[`Library`] is a stage for a different reason: one bundle commonly exposes
 several plugin classes, so the loaded DSO plus its factory outlives any one
 instance and is shared by `Arc`.
 
@@ -271,7 +271,7 @@ state and the editor belong on the main thread.
 
 MIT OR Apache-2.0
 
-[`Vst3Library`]: crate::Vst3Library
+[`Library`]: crate::Library
 [`Vst3Loaded`]: crate::Vst3Loaded
 [`Vst3Loaded::poll_plugin_notifications`]: crate::Vst3Loaded::poll_plugin_notifications
 [`Vst3Loaded::take_requests`]: crate::Vst3Loaded::take_requests
@@ -280,7 +280,7 @@ MIT OR Apache-2.0
 [`Vst3Processor::set_prefetch`]: crate::Vst3Processor::set_prefetch
 [`Vst3Controller`]: crate::Vst3Controller
 [`AudioBuffer`]: crate::AudioBuffer
-[`Vst3InputEvents`]: crate::Vst3InputEvents
+[`InputEvents`]: crate::InputEvents
 [`PluginInfo`]: crate::PluginInfo
 [`Vst3Error`]: crate::Vst3Error
 [`LoadStage`]: crate::LoadStage

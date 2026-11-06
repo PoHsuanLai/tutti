@@ -24,9 +24,7 @@ use bevy_tasks::AsyncComputeTaskPool;
 
 use tutti_types::NodeKey;
 
-use crate::export::request::{
-    ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest, ExportSource,
-};
+use crate::export::request::{ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest};
 use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Starts the oldest pending [`ExportRequest`], if nothing is already running.
@@ -133,18 +131,15 @@ fn start(
     // with no engine to render from is a reportable failure, and distinct
     // from a target that cannot produce audio.
     if world.get_resource::<AudioConfig>().is_none() {
-        return Err(invalid(NO_ENGINE).into());
+        return Err(ExportError::NoEngine);
     }
     let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
-        return Err(invalid(NO_ENGINE).into());
+        return Err(ExportError::NoEngine);
     };
-    let source = match request.source {
-        ExportSource::Master => tutti_session::ExportSource::Mix,
-        // Resolved here rather than stored: see `ExportSource::Node`.
-        ExportSource::Node(entity) => tutti_session::ExportSource::Node(
-            nodes.node(entity).ok_or_else(|| invalid(NOT_A_NODE))?,
-        ),
-    };
+    // Resolved here rather than stored: see `ExportSource`.
+    let source = request
+        .source
+        .try_map(|entity| nodes.node(entity).ok_or(ExportError::NotANode(entity)))?;
     let mut session_request =
         tutti_session::ExportRequest::new(source, request.target, request.config, request.clock);
     session_request.latency_from_graph = request.latency_from_graph;
@@ -156,17 +151,6 @@ fn start(
         .session()
         .export(session_request)
         .map_err(|e| nodes.session_error(e))
-}
-
-/// Why a node export found nothing to render: the entity is not bound to a
-/// graph node.
-const NOT_A_NODE: &str = "export target entity is not a graph node";
-
-/// Why an export could not start: the world has no audio engine.
-const NO_ENGINE: &str = "no audio engine to export from";
-
-fn invalid(reason: impl Into<String>) -> tutti_export::Error {
-    tutti_export::Error::InvalidConfig(reason.into())
 }
 
 /// Every entity bound to a graph node, by entity and by node key — what
@@ -229,11 +213,11 @@ impl NodeNames {
 
     /// A session's export error as the adapter reports it: the renderer's
     /// own named as [`name`](Self::name) names it, anything else (another
-    /// export in flight) as an invalid request, with its message.
+    /// export in flight) as [`ExportError::Session`].
     fn session_error(&self, e: tutti_session::Error) -> ExportError {
         match e {
             tutti_session::Error::Export(e) => self.name(e),
-            other => ExportError::Render(invalid(other.to_string())),
+            other => ExportError::Session(other),
         }
     }
 }
@@ -281,7 +265,7 @@ pub fn poll_exports(
                 .map_err(|e| names.session_error(e)),
             None => {
                 drop(rendered);
-                Err(invalid(NO_ENGINE).into())
+                Err(ExportError::NoEngine)
             }
         };
         commands
@@ -302,7 +286,7 @@ pub fn poll_exports(
 mod tests {
     use super::*;
     use crate::engine::build::build_on;
-    use crate::export::{ExportClock, ExportOutput, ExportPlugin, ExportTarget};
+    use crate::export::{ExportClock, ExportOutput, ExportPlugin, ExportSource, ExportTarget};
     use crate::graph::{
         EngineNodes, GraphReconcilePlugin, MasterSources, MetronomeRes, SpawnAudioNode,
         TransportRes,
@@ -557,7 +541,7 @@ mod tests {
             },
             ..Default::default()
         };
-        for source in [ExportSource::Master, ExportSource::Node(click)] {
+        for source in [ExportSource::Mix, ExportSource::Node(click)] {
             let left = export(
                 &mut app,
                 ExportRequest::new(source, ExportTarget::Buffers, config.clone(), timeline()),

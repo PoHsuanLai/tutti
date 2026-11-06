@@ -16,10 +16,7 @@
 //! inside the hook, and republishes [`AudioConfig`] and the
 //! [`GraphLatency`](crate::GraphLatency) mirror.
 //!
-//! **Recovery after a failed hook:** the stream is left stopped, and the
-//! device keeps the old spec and graph rate (`Device::graph_rate`). A
-//! restart onto the old device at the old rate moves nothing and plays
-//! again.
+//! **Recovery after a failed hook:** see [`Device::graph_rate`].
 //!
 //! A `SoundFontUnit` re-rates in its own `prepare`. Not re-rated here: a
 //! host-connected `UmpOut` (its JR clock; `Midi::set_hardware_out`). A MIDI clip node needs nothing: it
@@ -242,7 +239,10 @@ mod tests {
             .world()
             .get::<tutti_core::AudioNode>(entity)
             .expect("a node");
-        app.world().resource::<AudioGraphRes>().node_latency(node)
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .node_latency(node)
     }
 
     /// **A restart onto a 48 kHz device re-rates everything.** One second at
@@ -455,12 +455,21 @@ mod tests {
     #[test]
     fn a_restart_onto_a_wider_device_widens_the_root() {
         let (mut app, _old, _, _) = engine_app();
-        assert_eq!(app.world().resource::<AudioGraphRes>().outputs(), 2);
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs(),
+            2
+        );
 
         let (driver, surround) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_with(NEW, 6), driver, None).expect("restarts");
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().outputs(),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs(),
             6,
             "the root takes the device's six"
         );
@@ -479,7 +488,13 @@ mod tests {
 
         let (driver, stereo) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_at(NEW), driver, None).expect("restarts");
-        assert_eq!(app.world().resource::<AudioGraphRes>().outputs(), 6);
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs(),
+            6
+        );
         assert_eq!(
             app.world().resource::<AudioConfig>().channels,
             ChannelLayout::STEREO
@@ -705,9 +720,13 @@ mod tests {
             .expect("a node");
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (loop_back, ()) = graph.insert(tutti_nodes::testing::Through::mono());
-            graph.set_source(loop_back, 0, crate::graph::GraphSource::Node(lim, 0));
-            graph.set_source(lim, 0, crate::graph::GraphSource::Node(loop_back, 0));
+            let (loop_back, ()) = graph.graph().insert(tutti_nodes::testing::Through::mono());
+            graph
+                .graph()
+                .set_source(loop_back, 0, crate::graph::GraphSource::Node(lim, 0));
+            graph
+                .graph()
+                .set_source(lim, 0, crate::graph::GraphSource::Node(loop_back, 0));
         }
         let (driver, new) = ManualStreamDriver::new();
         restart_device_on(app.world_mut(), spec_at(NEW), driver, None)
@@ -823,14 +842,21 @@ mod tests {
         .expect("the reference plugin loads");
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let node = graph.insert_plugin(Box::new(client));
-            graph.set_output_source(0, crate::graph::GraphSource::Node(node, 0));
+            let node = graph.graph().insert_plugin(Box::new(client));
+            graph
+                .graph()
+                .set_output_source(0, crate::graph::GraphSource::Node(node, 0));
             node
         };
         app.update();
         let _ = stream.render_block(512).expect("the stream is open");
         app.update();
-        let latency = |app: &App| app.world().resource::<AudioGraphRes>().node_latency(node);
+        let latency = |app: &App| {
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .node_latency(node)
+        };
         assert_eq!(
             latency(&app),
             tutti_core::Samples(137 + 512),

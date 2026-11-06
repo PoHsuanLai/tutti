@@ -10,7 +10,7 @@ mod conformance_support;
 
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::meter::{BarNumber, TimeSignature};
-use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents};
+use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, PrefetchSupport, TransportInfo};
 
 use conformance_support::*;
 
@@ -117,7 +117,7 @@ fn report_host_capability_score() {
             num_samples: 512,
             sample_rate: 48_000.0,
         };
-        inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+        inst.process(&mut buffer, &InputEvents::default(), None, &transport);
     }
     // Deactivate before reading: the processor half accumulates findings in a
     // local log and ships them to the controller as `"LogEvent"` messages
@@ -234,8 +234,11 @@ fn prefetchable_support_is_queryable() {
 
     match inst.prefetchable_support() {
         Some(v) => {
-            eprintln!("IPrefetchableSupport reports {v}");
-            assert!(v <= 2, "unexpected prefetchable state {v} (expected 0..=2)");
+            eprintln!("IPrefetchableSupport reports {v:?}");
+            assert!(
+                !matches!(v, PrefetchSupport::Unknown(_)),
+                "unexpected prefetchable state {v:?} (expected one of the three SDK values)"
+            );
         }
         None => eprintln!("plugin does not implement IPrefetchableSupport"),
     }
@@ -297,7 +300,7 @@ fn midi_learn_forwards_from_the_main_thread() {
     };
     inst.process(
         &mut buffer,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &cc,
             ..Default::default()
         },
@@ -330,8 +333,10 @@ fn warn_tag_block_is_isolated() {
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
 
-    let declared: Vec<u32> = (0..inst.parameter_count())
-        .filter_map(|i| inst.parameter_id_at(i))
+    let declared: Vec<u32> = inst
+        .parameter_ids()
+        .into_iter()
+        .map(|id| id.get())
         .collect();
 
     // Every id in the warning block must be a real parameter...
@@ -397,7 +402,7 @@ fn host_checker_reports_no_errors_through_output_params() {
             num_samples: 512,
             sample_rate: 48_000.0,
         };
-        let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+        let out = inst.process(&mut buffer, &InputEvents::default(), None, &transport);
         all_ids.extend(decode_hostchecker_warnings(out.parameter_changes));
     }
 

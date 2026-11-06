@@ -244,7 +244,8 @@ crates/
   control arrives per call as a plain typed value. It holds the real FFT, the
   analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
-  convolver, the delay line and swept-delay kernel, the ring buffers and the
+  convolver, the delay line and swept-delay kernel, the export resampler, the
+  ring buffers and the
   waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
@@ -385,8 +386,8 @@ Scalars use `Param<U>`.
   system that runs a phase in its set. Node removal is an
   `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
-  `replace` take its `IntoNode`). A host's plain node goes in as
+  `insert_audio_node`, `crossfade_audio_node` (and `Graph::insert` /
+  `replace`, reached through `AudioGraphRes::graph`, take its `IntoNode`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with

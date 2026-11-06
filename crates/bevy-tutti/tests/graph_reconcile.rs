@@ -152,7 +152,12 @@ mod graph_reconcile {
         for (node, probe) in q.iter(app.world()) {
             count += 1;
             assert_eq!(probe.0, 0.5);
-            assert!(app.world().resource::<AudioGraphRes>().contains(*node));
+            assert!(
+                app.world()
+                    .resource::<AudioGraphRes>()
+                    .graph_ref()
+                    .contains(*node)
+            );
         }
         assert_eq!(count, 1);
     }
@@ -168,12 +173,22 @@ mod graph_reconcile {
         app.update();
 
         let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
-        assert!(app.world().resource::<AudioGraphRes>().contains(node_id));
+        assert!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(node_id)
+        );
 
         app.world_mut().despawn(entity);
         app.update();
 
-        assert!(!app.world().resource::<AudioGraphRes>().contains(node_id));
+        assert!(
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(node_id)
+        );
     }
 
     #[test]
@@ -199,7 +214,12 @@ mod graph_reconcile {
         };
         app.update();
         let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
-        assert!(app.world().resource::<AudioGraphRes>().contains(node_id));
+        assert!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(node_id)
+        );
 
         // A `Last`-phase system (runs after GraphReconcileSystems::Commit)
         // despawns the entity exactly once.
@@ -225,11 +245,17 @@ mod graph_reconcile {
 
         assert!(app.world().get::<AudioNode>(entity).is_none());
         assert!(
-            !app.world().resource::<AudioGraphRes>().contains(node_id),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(node_id),
             "late-despawned node removed from graph"
         );
         assert!(
-            !app.world().resource::<AudioGraphRes>().is_edited(),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited(),
             "graph converged: the edit was sent after one trailing frame"
         );
     }
@@ -256,6 +282,7 @@ mod graph_reconcile {
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .contains(node_id_before)
         );
 
@@ -276,6 +303,7 @@ mod graph_reconcile {
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .contains(node_id_after)
         );
     }
@@ -323,7 +351,9 @@ mod audio_param {
         // DSP reads, reachable without asking the graph for its copy.
         let drive = DriveCell(unit.drive());
         let mut graph = AudioGraphRes::headless(0, 1);
-        graph.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        graph
+            .graph()
+            .set_sample_rate(tutti_core::SampleRate(48_000.0));
         // A `ParamNode`: a param set by address writes the cell it reads, which
         // it reads on its next block. `node_drive` renders a frame before it
         // reads all the same.
@@ -343,9 +373,11 @@ mod audio_param {
         let controls = CapturedControls::default();
         let node = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            let (node, params) = graph.insert(unit);
-            graph.set_node_params(node, DistortionNode::params(&params));
-            graph.set_outputs_from(node);
+            let (node, params) = graph.graph().insert(unit);
+            graph
+                .graph()
+                .set_node_params(node, DistortionNode::params(&params));
+            graph.graph().set_outputs_from(node);
             node
         };
         let mut entity = app.world_mut().spawn(drive);
@@ -632,7 +664,15 @@ mod engine_nodes {
         let click = id_of(nodes.click);
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.node_inputs(click), 0, "the click has no inputs");
-        assert_eq!(graph.node_outputs(click), 2, "the click is stereo");
+        assert_eq!(
+            graph.graph_ref().node_inputs(click),
+            0,
+            "the click has no inputs"
+        );
+        assert_eq!(
+            graph.graph_ref().node_outputs(click),
+            2,
+            "the click is stereo"
+        );
     }
 }

@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tutti_types::SampleRate;
 
 #[derive(Clone)]
 pub(super) struct Lifecycle {
@@ -27,7 +28,7 @@ pub(super) struct Lifecycle {
     /// The sample rate the plugin refused and why, while it is refused. Not a
     /// crash: the plugin stays loaded and is retried at every later rate
     /// change, which clears this when it takes one.
-    refusal: Arc<Mutex<Option<(f64, String)>>>,
+    refusal: Arc<Mutex<Option<(SampleRate, String)>>>,
     /// How long a rate change is waited on, in milliseconds.
     rate_timeout_ms: Arc<AtomicU64>,
 }
@@ -56,11 +57,11 @@ impl Lifecycle {
     }
 
     /// The refused rate (Hz) and the plugin's reason, while one stands.
-    pub(super) fn rate_refusal(&self) -> Option<(f64, String)> {
+    pub(super) fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         self.refusal.lock().ok().and_then(|r| r.clone())
     }
 
-    pub(super) fn set_rate_refusal(&self, refusal: Option<(f64, String)>) {
+    pub(super) fn set_rate_refusal(&self, refusal: Option<(SampleRate, String)>) {
         if let Ok(mut slot) = self.refusal.lock() {
             *slot = refusal;
         }

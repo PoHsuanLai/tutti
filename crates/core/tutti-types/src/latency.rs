@@ -155,6 +155,13 @@ pub struct Compensation {
 }
 
 impl Compensation {
+    /// Compensation of `channels` (indexed by output channel) and the
+    /// graph's `total` latency, as a plan reports them.
+    #[must_use]
+    pub fn new(channels: Vec<Samples>, total: Samples) -> Self {
+        Self { channels, total }
+    }
+
     /// Returns the pre-roll for a source feeding `channel`.
     ///
     /// Zero for a channel outside the graph's range, which is the same answer

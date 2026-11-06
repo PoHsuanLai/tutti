@@ -109,6 +109,7 @@ fn handle_parameter_roundtrip() {
         .params()
         .parameter_value(PARAM_0)
         .expect("param 0 should exist");
+    let v = v.get();
     assert!((v - 0.5).abs() < 0.01, "expected ~0.5, got {v}");
 }
 

@@ -12,7 +12,7 @@ use std::ffi::CStr;
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{
-    AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents, Vst3Library,
+    AudioBuffer, InputEvents, Library, MidiEvent, ParameterChanges, TransportInfo,
 };
 
 use conformance_support::*;
@@ -62,7 +62,7 @@ fn report_multi_class_bundle_coverage() {
     let mut multi = Vec::new();
 
     for (name, path) in sample_plugins() {
-        let Ok(library) = Vst3Library::load(&path) else {
+        let Ok(library) = Library::load(&path) else {
             continue;
         };
         let names: Vec<String> = (0..library.count_classes())
@@ -125,7 +125,7 @@ fn every_audio_class_survives_a_block() {
     let mut failures = Vec::new();
 
     for (bundle, path) in sample_plugins() {
-        let Ok(library) = Vst3Library::load(&path) else {
+        let Ok(library) = Library::load(&path) else {
             continue;
         };
         let names: Vec<String> = (0..library.count_classes())
@@ -172,7 +172,7 @@ fn every_audio_class_survives_a_block() {
                     };
                     inst.process(
                         &mut buffer,
-                        &Vst3InputEvents::default(),
+                        &InputEvents::default(),
                         None,
                         &TransportInfo::default(),
                     );

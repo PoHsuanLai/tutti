@@ -208,7 +208,9 @@ fn two_hundred_moving_parameters_do_not_allocate() {
             handle
                 .params()
                 .parameter_value(tutti_plugin::handles::ParamId::new((id as i32) as u32)),
-            Some(value(71, 1, id)),
+            Some(tutti_plugin::server::Normalized::new(f64::from(value(
+                71, 1, id
+            )))),
             "parameter {id}"
         );
     }

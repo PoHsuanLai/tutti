@@ -318,8 +318,7 @@ impl PluginClient<Unbound> {
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Self> {
         let sample_rate = sample_rate.into();
-        // `.get()` at the wire: `launch` hands the rate to the subprocess.
-        let server = subprocess::launch(&config, &plugin_path, sample_rate.get())?;
+        let server = subprocess::launch(&config, &plugin_path, sample_rate)?;
         // Guard the process before the first fallible step below: an `Err`
         // from `PluginBridge::new` would otherwise drop a bare `Child`, which
         // std neither kills nor waits.
@@ -341,7 +340,7 @@ impl PluginClient<Unbound> {
             config.socket_path.clone(),
             server.audio_buffer,
             plugin_path,
-            sample_rate.get(),
+            sample_rate,
         )?;
 
         let controls = PluginControls::new(
@@ -385,19 +384,14 @@ impl PluginClient<Unbound> {
                 listener_invalidate_sink.fire(PluginInvalidation::Tail { tail });
             }
             BridgeEvent::ParameterChanged { index, value } => {
-                if let Ok(id) = u32::try_from(index) {
-                    listener_param_sink.fire(id, value);
-                }
+                listener_param_sink.fire(index, value);
             }
             BridgeEvent::Resync(kind) => match kind.classify() {
                 ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),
                 ResyncClass::Invalidate(i) => listener_invalidate_sink.fire(i),
             },
             BridgeEvent::RateRefusal(Some((rate, reason))) => {
-                listener_invalidate_sink.fire(PluginInvalidation::RateRefused {
-                    rate: SampleRate(rate),
-                    reason,
-                });
+                listener_invalidate_sink.fire(PluginInvalidation::RateRefused { rate, reason });
             }
             BridgeEvent::RateRefusal(None) => {
                 listener_invalidate_sink.fire(PluginInvalidation::RateRestored);

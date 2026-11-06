@@ -368,7 +368,10 @@ fn report(world: &mut World) {
         .query_filtered::<&AudioNode, With<PluginHealth>>()
         .single(world)
     {
-        let inputs = world.resource::<AudioGraphRes>().node_event_inputs(node);
+        let inputs = world
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .node_event_inputs(node);
         println!("midi: the plugin's node has {inputs} event input(s)");
     }
 
@@ -397,8 +400,8 @@ fn report(world: &mut World) {
             Some(n) => {
                 println!(
                     "plugin node io: {} in, {} out",
-                    graph.node_inputs(n),
-                    graph.node_outputs(n)
+                    graph.graph_ref().node_inputs(n),
+                    graph.graph_ref().node_outputs(n)
                 );
             }
             None => println!("plugin node io: node not resolvable in the graph"),

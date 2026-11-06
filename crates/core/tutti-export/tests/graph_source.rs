@@ -4,14 +4,14 @@
 //!
 //! Two kinds of check sit side by side.
 //!
-//! - **Portable, on every target:** an analytic figure where the signal has
+//! - Portable, on every target: an analytic figure where the signal has
 //!   one (a sine's samples, a DC level, a lookahead's frames, a direct
 //!   time-domain convolution, the tone a dry voice reads), and the export's
 //!   own invariants where it does not (a file is its planes through
 //!   `write_buffers`; a width is the quad render through `fold_frame`; a
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
-//! - **Golden digests, on the recorded target only:** FNV-1a over the planes'
+//! - Golden digests, on the recorded target only: FNV-1a over the planes'
 //!   (or the file's) bits. All but three were recorded from the graph's render
 //!   against an independent reference renderer it matched bit for bit. Three
 //!   are self-recorded: the pitched sampler voice's and the convolver's (the
@@ -110,7 +110,7 @@ fn built(g: GraphBuilder) -> RenderGraph {
 /// The builder's graph as an export gets it from a live one: built at a
 /// device's block, then forked offline at the render's.
 ///
-/// A fork **resets** every unit it makes (each node's fork source hands a
+/// A fork resets every unit it makes (each node's fork source hands a
 /// reset copy). For most units a reset one renders what a fresh one does; not for all: a reset
 /// `VbapPannerNode` starts on its commanded bearing where a fresh one glides
 /// there from front-centre.
@@ -237,7 +237,8 @@ fn quad_vbap() -> GraphBuilder {
                 .with_layout(ChannelLayout::STEREO),
         );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
-        pan.set_position(az, tutti_core::Elevation::LEVEL);
+        pan.controls()
+            .set_position(az, tutti_core::Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
@@ -391,7 +392,7 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 /// codes, so every sample is perturbed. The file is its planes dithered and
 /// written (`write_buffers`), byte for byte; its samples scatter around the
 /// level's code (8 192.05) within the dither's two codes and average onto it;
-/// and its golden digest holds on **every** target: a DC level and a seeded
+/// and its golden digest holds on every target: a DC level and a seeded
 /// integer dither use no libm.
 ///
 /// Mutation (run): as above → the digest moves.
@@ -886,7 +887,7 @@ fn assert_the_tone(what: &str, plane: &[f32]) {
     }
 }
 
-/// **A sampler voice renders in time at `GRAPH_MAX_BLOCK`**, dry and a fifth
+/// A sampler voice renders in time at `GRAPH_MAX_BLOCK`, dry and a fifth
 /// up: the dry one is the tone it plays, to the bit, on both channels; the
 /// render clock ends the render's frames on; and the pitched
 /// one matches its golden digest.
@@ -955,7 +956,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     }
 }
 
-/// The same through a **fork**: a placed `MemorySource` in a live graph that
+/// The same through a fork: a placed `MemorySource` in a live graph that
 /// has played on another transport (at beat 0.25), forked offline, plays the
 /// tone from the render's start, to the bit, as a voice on the render's
 /// transport from the start does. The fork shares nothing with the live node

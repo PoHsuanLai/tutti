@@ -45,12 +45,12 @@ fn gate<N: IntoNode>(node: N, warm: usize) {
 #[test]
 fn vbap_panner_stereo_process_is_allocation_free() {
     let node = VbapPannerNode::stereo().expect("stereo preset");
-    node.set_position(30.0, 0.0);
+    node.controls().set_position(30.0, 0.0);
     // One warm-up block.
     gate(node, 1);
 }
 
-/// The rear-arc **fold** branch is allocation-free.
+/// The rear-arc fold branch is allocation-free.
 ///
 /// `vbap_panner_stereo_process_is_allocation_free` above pans to 30 degrees,
 /// which is inside the speaker pair and takes neither branch `solve_gains`
@@ -68,14 +68,14 @@ fn vbap_folded_rear_arc_is_allocation_free() {
     let mut node = VbapPannerNode::stereo().expect("stereo preset");
     // 200 degrees wraps to -160, well past the lateral axis: the fold fires and
     // mirrors it to -20. Plain VBAP would leave this bearing silent.
-    node.set_position(200.0, 0.0);
+    node.controls().set_position(200.0, 0.0);
     // `reset` seats the de-zipper on the folded bearing, so the assertion
     // window measures the steady state rather than the ramp into it.
     Node::reset(&mut node);
     gate(node, 1);
 }
 
-/// The **elevation-retreat** branch is allocation-free.
+/// The elevation-retreat branch is allocation-free.
 ///
 /// The other branch `solve_gains` added, and the only one that re-enters
 /// `vbap`'s solver more than once per sample. A 2D ring has no geometry at
@@ -96,7 +96,7 @@ fn vbap_folded_rear_arc_is_allocation_free() {
 fn vbap_elevation_retreat_is_allocation_free() {
     let mut node = VbapPannerNode::quad().expect("quad preset");
     // Straight up: a 2D ring cannot solve this, so the retreat runs.
-    node.set_position(0.0, 90.0);
+    node.controls().set_position(0.0, 90.0);
     Node::reset(&mut node);
     gate(node, 1);
 }
@@ -154,7 +154,7 @@ fn hrtf_binaural_process_is_allocation_free() {
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
-    node.set_position(30.0, 0.0);
+    node.controls().set_position(30.0, 0.0);
     // Three blocks: past the first step's latency, so the gate sees signal.
     // Nothing grows lazily, so nothing needs to warm before the window.
     gate(node, 3);
@@ -216,7 +216,7 @@ fn hrtf_binaural_nearest_vertex_fallback_is_allocation_free() {
     ];
     let bytes = sphere_bytes(48_000, 64, &verts, &[[0, 1, 2]]);
     let node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("the sphere parses");
-    node.set_position(180.0, 0.0);
+    node.controls().set_position(180.0, 0.0);
     gate(node, 3);
 }
 
@@ -253,7 +253,7 @@ fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
-    node.set_position(30.0, 0.0);
+    node.controls().set_position(30.0, 0.0);
     node.prepare(&Prepare::new(SampleRate(44_100.0), Samples(100)));
     // 64 taps at 48 kHz are ceil(64 * 44 100 / 48 000) = 59 at 44.1 kHz:
     // the set was resampled, not reused.

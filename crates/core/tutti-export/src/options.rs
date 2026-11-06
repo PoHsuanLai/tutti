@@ -6,7 +6,7 @@ use std::path::Path;
 
 /// The container to write, carrying that format's own settings.
 ///
-/// The settings live **in the variant**, not beside it: a compression level
+/// The settings live in the variant, not beside it: a compression level
 /// cannot be set on a format that has no compression, because there is nowhere
 /// to put it. A flat config holding `flac: Flac` and `ogg: Ogg` unconditionally
 /// would make every WAV export carry two settings nothing reads.

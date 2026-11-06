@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::Thread;
+use tutti_types::SampleRate;
 
 /// How many commands the audio thread can queue before `push_command` fails.
 /// This also bounds how many `Process` payloads can be outstanding at once,
@@ -70,13 +71,13 @@ pub(super) struct Channels {
 }
 
 impl Channels {
-    pub(super) fn new(sample_rate: f64) -> Self {
+    pub(super) fn new(sample_rate: SampleRate) -> Self {
         Self {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
             newest_seq: Arc::new(AtomicU64::new(0)),
             worker: Arc::new(Mutex::new(None)),
-            sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
+            sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.get().to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
             dropped_param_events: Arc::new(AtomicU64::new(0)),
@@ -86,13 +87,15 @@ impl Channels {
 
     /// The current sample rate. `Relaxed` suffices: it only sizes a timeout, so
     /// reading a value one block stale is harmless.
-    pub(super) fn sample_rate(&self) -> f64 {
-        f64::from_bits(self.sample_rate_bits.load(Ordering::Relaxed))
+    pub(super) fn sample_rate(&self) -> SampleRate {
+        SampleRate(f64::from_bits(
+            self.sample_rate_bits.load(Ordering::Relaxed),
+        ))
     }
 
-    pub(super) fn set_sample_rate(&self, rate: f64) {
+    pub(super) fn set_sample_rate(&self, rate: SampleRate) {
         self.sample_rate_bits
-            .store(rate.to_bits(), Ordering::Relaxed);
+            .store(rate.get().to_bits(), Ordering::Relaxed);
     }
 
     /// Called once by the bridge thread with its own handle, before it starts

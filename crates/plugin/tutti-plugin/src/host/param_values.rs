@@ -28,20 +28,20 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::host::handles::PluginHandle;
+use crate::protocol::{Normalized, ParamId};
 
 /// Edits the plugin reported, in order, waiting for [`PluginParamValues::drain_edits`].
-type Edits = Arc<Mutex<Vec<(u32, f32)>>>;
+type Edits = Arc<Mutex<Vec<(ParamId, Normalized)>>>;
 
 /// A loaded plugin's parameter values, by id: read once by a [`ParamRead`]
 /// (after its saved state is restored), then kept current from the values
 /// the plugin reports (`PluginHandle::on_parameter_changed`).
 ///
-/// Ids are the `u32` a `ParamAddr::Id` names: a CLAP, VST3 or AU parameter
-/// id, or a VST2 index. Values are the plugin's own `f32`, untyped because
-/// they cross the plugin boundary as the format gives them.
+/// Ids are the `ParamId` a `ParamAddr::Id` names: a CLAP, VST3 or AU parameter
+/// id, or a VST2 index.
 #[derive(Debug)]
 pub struct PluginParamValues {
-    values: Option<HashMap<u32, f32>>,
+    values: Option<HashMap<ParamId, Normalized>>,
     edits: Edits,
 }
 
@@ -61,13 +61,13 @@ impl ParamRead {
     /// the plugin does not answer is left out; a plugin that lists none gives an
     /// empty map.
     #[must_use]
-    pub fn run(self) -> HashMap<u32, f32> {
+    pub fn run(self) -> HashMap<ParamId, Normalized> {
         let params = self.handle.params();
         params
             .parameter_descriptors()
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|p| Some((p.id.get(), params.parameter_value(p.id)?)))
+            .filter_map(|p| Some((p.id, params.parameter_value(p.id)?)))
             .collect()
     }
 }
@@ -105,7 +105,7 @@ impl PluginParamValues {
     /// Values known from the start, with no plugin behind them (a test's, or
     /// a host that mirrors values its own way). Edits arrive through
     /// [`report`](Self::report).
-    pub fn known(values: impl IntoIterator<Item = (u32, f32)>) -> Self {
+    pub fn known(values: impl IntoIterator<Item = (ParamId, Normalized)>) -> Self {
         Self {
             values: Some(values.into_iter().collect()),
             edits: Arc::default(),
@@ -115,12 +115,12 @@ impl PluginParamValues {
     /// Lands a finished [`ParamRead`]: the mirror holds `values` and is
     /// [ready](Self::is_ready). Edits reported meanwhile stay queued for
     /// [`drain_edits`](Self::drain_edits), which applies them over these.
-    pub fn land(&mut self, values: HashMap<u32, f32>) {
+    pub fn land(&mut self, values: HashMap<ParamId, Normalized>) {
         self.values = Some(values);
     }
 
     /// Queues a value as if the plugin had reported it.
-    pub fn report(&self, id: u32, value: f32) {
+    pub fn report(&self, id: ParamId, value: Normalized) {
         self.edits
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -135,7 +135,7 @@ impl PluginParamValues {
 
     /// Parameter `id`'s value: `None` while the read is in flight, `Some(None)`
     /// for a parameter the plugin did not list.
-    pub fn get(&self, id: u32) -> Option<Option<f32>> {
+    pub fn get(&self, id: ParamId) -> Option<Option<Normalized>> {
         self.values.as_ref().map(|v| v.get(&id).copied())
     }
 
@@ -151,7 +151,7 @@ impl PluginParamValues {
     /// changed again within that window without a report is affected (each
     /// change the plugin reports arrives here in order), and the next report
     /// corrects it.
-    pub fn drain_edits(&mut self, mut apply: impl FnMut(u32, f32)) {
+    pub fn drain_edits(&mut self, mut apply: impl FnMut(ParamId, Normalized)) {
         let Some(values) = self.values.as_mut() else {
             return;
         };
@@ -166,6 +166,10 @@ impl PluginParamValues {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn n(v: f64) -> Normalized {
+        Normalized::new(v)
+    }
+
     use crate::backend::{HostParams, HostState, ParameterChangeSink};
     use crate::error::StateError;
     use crate::handles::ParamId;
@@ -187,8 +191,12 @@ mod tests {
                     .collect(),
             )
         }
-        fn parameter_value(&self, id: ParamId) -> Option<f32> {
-            self.params.iter().find(|(a, _)| *a == id)?.1
+        fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
+            self.params
+                .iter()
+                .find(|(a, _)| *a == id)?
+                .1
+                .map(|v| Normalized::new(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
@@ -250,21 +258,21 @@ mod tests {
         let (mut mirror, read) = PluginParamValues::start(&plugin);
         assert!(!mirror.is_ready(), "the mirror waits for its read");
         assert_eq!(
-            mirror.get(7),
+            mirror.get(opaque),
             None,
             "nothing is known before the read lands"
         );
 
         // On another thread, as a host runs it: the job is `Send`.
         let values = std::thread::spawn(move || read.run()).join().unwrap();
-        assert_eq!(values, HashMap::from([(7, 0.25), (3, 0.75)]));
+        assert_eq!(values, HashMap::from([(opaque, n(0.25)), (index, n(0.75))]));
 
         mirror.land(values);
         assert!(mirror.is_ready());
-        assert_eq!(mirror.get(7), Some(Some(0.25)));
-        assert_eq!(mirror.get(3), Some(Some(0.75)));
+        assert_eq!(mirror.get(opaque), Some(Some(n(0.25))));
+        assert_eq!(mirror.get(index), Some(Some(n(0.75))));
         assert_eq!(
-            mirror.get(9),
+            mirror.get(silent),
             Some(None),
             "an unanswered parameter is not listed"
         );
@@ -285,24 +293,24 @@ mod tests {
         let (plugin, sink) = handle(vec![(ParamId::new(1), Some(0.1))]);
         let (mut mirror, read) = PluginParamValues::start(&plugin);
 
-        sink.fire(1, 0.9);
+        sink.fire(ParamId::new(1), n(0.9));
         let mut seen = Vec::new();
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert!(seen.is_empty(), "an edit before the read lands waits");
 
         mirror.land(read.run());
         mirror.drain_edits(|id, v| seen.push((id, v)));
-        assert_eq!(seen, [(1, 0.9)]);
+        assert_eq!(seen, [(ParamId::new(1), n(0.9))]);
         assert_eq!(
-            mirror.get(1),
-            Some(Some(0.9)),
+            mirror.get(ParamId::new(1)),
+            Some(Some(n(0.9))),
             "the edit replaces the value read"
         );
 
         mirror.drain_edits(|id, v| seen.push((id, v)));
         assert_eq!(
             seen,
-            [(1, 0.9)],
+            [(ParamId::new(1), n(0.9))],
             "a drained edit is consumed, not applied again"
         );
     }

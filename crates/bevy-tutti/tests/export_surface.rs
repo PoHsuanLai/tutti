@@ -36,8 +36,8 @@ use tutti_types::graph::{OutPort, Source};
 /// of it has something to render.
 fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
     let mut graph = AudioGraphRes::headless(0, 2);
-    let (node, _) = graph.insert(Const::mono(0.5));
-    graph.set_outputs_from(node);
+    let (node, _) = graph.graph().insert(Const::mono(0.5));
+    graph.graph().set_outputs_from(node);
     (graph, node)
 }
 
@@ -101,7 +101,7 @@ fn a_buffers_request_runs_and_reports_planes() {
 
     app.world_mut()
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::Buffers,
             stereo_config(),
             ExportClock::frozen(),
@@ -136,7 +136,7 @@ fn a_file_request_writes_and_reports_the_path() {
 
     app.world_mut()
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::File {
                 path: path.clone(),
                 normalize: None,
@@ -174,7 +174,7 @@ fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
     let entity = app
         .world_mut()
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::Buffers,
             stereo_config(),
             ExportClock::frozen(),
@@ -215,7 +215,7 @@ fn an_unrenderable_node_reports_a_failure() {
     // `Sink::mono()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (id, _) = graph.insert(Sink::mono());
+        let (id, _) = graph.graph().insert(Sink::mono());
         app.world_mut().spawn(id).id()
     };
 
@@ -243,6 +243,41 @@ fn an_unrenderable_node_reports_a_failure() {
     );
 }
 
+/// **An export of an entity that is no graph node reports `NotANode` naming
+/// it**, not a rendered-silence success or a string to parse.
+///
+/// Mutation (run): `start` resolving a missing entity to
+/// `ExportError::NoEngine` → the match fails.
+#[test]
+fn an_export_of_an_entity_with_no_node_is_not_a_node() {
+    let (mut app, _node) = app_with_engine_on();
+    let bare = app.world_mut().spawn_empty().id();
+
+    static REPORTED: AtomicUsize = AtomicUsize::new(0);
+    REPORTED.store(0, Ordering::SeqCst);
+
+    app.world_mut()
+        .spawn(ExportRequest::new(
+            ExportSource::Node(bare),
+            ExportTarget::Buffers,
+            stereo_config(),
+            ExportClock::frozen(),
+        ))
+        .observe(move |done: On<ExportDone>| {
+            assert!(
+                matches!(&done.result, Err(bevy_tutti::export::ExportError::NotANode(e)) if *e == bare),
+                "got {:?}",
+                done.result
+            );
+            REPORTED.store(1, Ordering::SeqCst);
+        });
+
+    assert!(
+        run_until(&mut app, |_| REPORTED.load(Ordering::SeqCst) == 1),
+        "the refusal must still report"
+    );
+}
+
 /// Several requests spawned in the SAME frame must not all start at once.
 ///
 /// This is the property a caller-side `run_if(not(any_with_component::<
@@ -257,7 +292,7 @@ fn a_batch_spawned_in_one_frame_starts_one_at_a_time() {
 
     for _ in 0..5 {
         app.world_mut().spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::Buffers,
             stereo_config(),
             ExportClock::frozen(),
@@ -318,7 +353,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
     PEAK_MILLI.store(usize::MAX, Ordering::SeqCst);
 
     let request = ExportRequest::new(
-        ExportSource::Master,
+        ExportSource::Mix,
         ExportTarget::Buffers,
         stereo_config(),
         ExportClock::frozen(),
@@ -449,7 +484,7 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     let seen: Arc<std::sync::Mutex<Option<usize>>> = Arc::default();
     let hook = Arc::clone(&seen);
     let request = ExportRequest::new(
-        ExportSource::Master,
+        ExportSource::Mix,
         ExportTarget::Buffers,
         stereo_config(),
         ExportClock::timeline(timeline.clone()),

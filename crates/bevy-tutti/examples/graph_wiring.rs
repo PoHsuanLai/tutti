@@ -39,7 +39,9 @@ fn main() {
     // keeps the example headless and shows exactly what the core needs:
     // a graph, a claim that the engine is up, and the reconcile pipeline.
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+    graph
+        .graph()
+        .set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
@@ -145,15 +147,19 @@ fn report(
 
     println!("\nnodes in the graph:");
     for (node, label) in &nodes {
-        println!("  {:<7} inputs={}", label.0, graph.node_inputs(*node));
+        println!(
+            "  {:<7} inputs={}",
+            label.0,
+            graph.graph_ref().node_inputs(*node)
+        );
     }
 
     println!("\nedges, read back from the engine:");
     for (node, label) in &nodes {
-        for port in 0..graph.node_inputs(*node) {
-            // `AudioGraphRes::source` is why this layer keeps no shadow state:
+        for port in 0..graph.graph_ref().node_inputs(*node) {
+            // `Graph::source` is why this layer keeps no shadow state:
             // the engine can always be asked what a port currently holds.
-            let src = match graph.source(*node, port) {
+            let src = match graph.graph_ref().source(*node, port) {
                 GraphSource::Node(id, p) => format!("node {id:?} port {p}"),
                 GraphSource::Input(p) => format!("graph input {p}"),
                 GraphSource::Silence => "silence".to_string(),
@@ -164,7 +170,10 @@ fn report(
 
     println!("\nmaster bus:");
     for channel in 0..2 {
-        println!("  channel {channel} <- {:?}", graph.output_source(channel));
+        println!(
+            "  channel {channel} <- {:?}",
+            graph.graph_ref().output_source(channel)
+        );
     }
 
     // Render a handful of frames. A committed graph is a real signal path, so

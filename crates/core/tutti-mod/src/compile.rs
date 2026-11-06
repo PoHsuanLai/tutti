@@ -10,15 +10,15 @@
 //! declarations (in any order) compile to equal [`Compiled`]s, so a host
 //! republishes only the programs that changed.
 //!
-//! - **Stable ids.** A layer's [`LayerId`] derives from its route's key and
+//! - Stable ids. A layer's [`LayerId`] derives from its route's key and
 //!   its depth-by route's key, so a depth edit keeps every id, and the sum
 //!   order with it. A signal source keeps its [`SourceId`] across compiles
 //!   (`prev`'s); a new one takes the lowest id free.
-//! - **Rate edits** are dated: given the previous compile and the executor's
+//! - Rate edits are dated: given the previous compile and the executor's
 //!   play reading, a seconds-clocked layer whose rate changed gets a
 //!   [`RateAnchor`] [`RATE_ANCHOR_MARGIN`] frames ahead, at the phase the
-//!   previous program reaches there, so its phase is continuous (§4.3).
-//! - **Refusals** are by name ([`CompileError`]).
+//!   previous program reaches there, so its phase is continuous.
+//! - Refusals are by name ([`CompileError`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -38,7 +38,7 @@ use crate::program::{
 use crate::shape::Polarity;
 
 /// How far ahead of the executor's play reading a rate edit takes effect,
-/// in frames (doc 014 §4.3): at least two of the largest block (4096
+/// in frames: at least two of the largest block (4096
 /// frames, the export's cap) plus slack for the publish to land, so every
 /// lane reads the new program before its anchor and switches on the same
 /// frame. About a quarter of a second at 48 kHz.
@@ -104,7 +104,7 @@ pub enum Source {
         value: f32,
     },
     /// An envelope follower: a node whose audio input the host wires, its
-    /// level sent into each lane it reaches (doc 014 §6).
+    /// level sent into each lane it reaches.
     Follower {
         /// Rise time constant.
         attack: Seconds,
@@ -112,7 +112,7 @@ pub enum Source {
         release: Seconds,
     },
     /// A note envelope: a node on a MIDI input, its ADSR sent into each
-    /// lane it reaches (doc 014 §6).
+    /// lane it reaches.
     NoteEnvelope {
         /// The stages.
         adsr: Adsr,
@@ -159,9 +159,9 @@ impl RouteDecl {
     }
 }
 
-/// A target's range and automation. The knob is a cell, not a declaration
-/// (doc 014 §4.2), and so is the range the lane reads: the range here is
-/// checked, and the host stores it into the target's range cell.
+/// A target's range and automation. The knob is a cell, not a declaration,
+/// and so is the range the lane reads: the range here is checked, and the
+/// host stores it into the target's range cell.
 ///
 /// Plain data, built with a struct literal; [`compile`] checks it.
 #[derive(Clone)]
@@ -520,7 +520,7 @@ pub fn compile(
     // Signal sources' nodes: `prev`'s ids kept, a new one the next never
     // given (`prev.next_source` on). An id is never given twice, so a lane
     // can never read a removed source's last segment as a new source's,
-    // however many programs it skips (doc 014 §7): a lane that adopts a
+    // however many programs it skips: a lane that adopts a
     // program also forgets the inputs it does not read, so a removed
     // source's slot is free at once.
     let mut nodes = BTreeMap::new();
@@ -738,7 +738,7 @@ fn time_function(source: &Source) -> (Clock, Wave) {
 }
 
 /// An LFO's `clock` (as declared: no anchor) dated against its own dated
-/// clock in the previous compile, `old` (doc 014 §4.3). Keyed by source,
+/// clock in the previous compile, `old`. Keyed by source,
 /// so a new route, a route moved to this source, or a route whose
 /// `depth_by` changed reads the anchor every other layer of it reads.
 ///
@@ -753,7 +753,7 @@ fn time_function(source: &Source) -> (Clock, Wave) {
 ///   frame instead, which is where the old rate gives way anyway, and the
 ///   publish has the room to land before it.
 ///
-/// **The error that remains.** One anchor holds one rate change, so it
+/// The error that remains. One anchor holds one rate change, so it
 /// cannot express R0 → R1 → R2. When a second edit (to R2) comes while an
 /// anchor (R0 → R1 at `a`) is pending but nearer than `ANCHOR_REUSE_MIN`,
 /// the new anchor goes at `now + margin`, past `a`, with the old clock's

@@ -18,7 +18,7 @@
 //!
 //! [`LatencyCompensationPlugin`] is optional and adds only a check: in debug
 //! builds, on every frame that edits the graph, that the latency fold over the
-//! whole graph spec ([`AudioGraphRes::latency_plan`], what a latency readout
+//! whole graph spec ([`Graph::latency_plan`](crate::graph::Graph::latency_plan), what a latency readout
 //! reads: audio edges plus each node's event and param-modulation sources)
 //! agrees with what the compiled plan compensates by. It applies nothing and
 //! publishes nothing; the graph compiler and the commit do both.
@@ -58,7 +58,7 @@
 //! /// A host system that edits the graph itself. Every edit made through
 //! /// `AudioGraphRes` marks the session edited; the frame's commit sends it.
 //! fn my_graph_edits(mut graph: ResMut<AudioGraphRes>) {
-//!     graph.insert(Osc::sine(Hz(440.0)));
+//!     graph.graph().insert(Osc::sine(Hz(440.0)));
 //! }
 //!
 //! let mut app = App::new();
@@ -70,7 +70,7 @@
 //!
 //! // The frame's edit was in before the commit ran, so `commit_graph` sent
 //! // it and the session is clean again.
-//! assert!(!app.world().resource::<AudioGraphRes>().is_edited());
+//! assert!(!app.world().resource::<AudioGraphRes>().graph_ref().is_edited());
 //! ```
 //!
 //! # Sources outside the graph
@@ -84,7 +84,7 @@
 //! # Asking between commits
 //!
 //! A host that wants the figure for the graph as edited but not yet committed
-//! — a latency readout — calls [`AudioGraphRes::latency_plan`] directly: it
+//! — a latency readout — calls [`Graph::latency_plan`](crate::graph::Graph::latency_plan) directly: it
 //! needs no ECS state and mutates nothing.
 
 use bevy_app::{App, Plugin, Update};
@@ -92,7 +92,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
-use tutti_core::{PrerollTable, Samples};
+use tutti_core::{Compensation, PrerollTable, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
 ///
@@ -209,7 +209,7 @@ impl Plugin for LatencyCompensationPlugin {
 ///
 /// Runs only on a frame that edits the graph (the session's edit flag set).
 /// The fold
-/// over the whole spec ([`AudioGraphRes::latency_plan`]: audio edges plus
+/// over the whole spec ([`Graph::latency_plan`](crate::graph::Graph::latency_plan): audio edges plus
 /// event and param-modulation sources) must equal what the compiled plan
 /// compensates by. Both are read on the control side from the one spec, so a
 /// disagreement is a bug, not a race.
@@ -223,26 +223,26 @@ pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>) {
     let Some(graph) = graph else {
         return;
     };
-    if !cfg!(debug_assertions) || !graph.is_edited() {
+    if !cfg!(debug_assertions) || !graph.graph_ref().is_edited() {
         return;
     }
     // `None` only for a spec that does not compile: its commit refuses it
     // too, and there is no plan to check against.
-    let Some((channels, total)) = graph.compensate() else {
+    let graph = graph.graph_ref();
+    let Some(planned) = graph.planned_compensation() else {
         return;
     };
     let folded = graph.latency_plan();
     // The fold reports no channels at all when nothing is latent (its "empty
-    // result"); the plan has one zero per output. Same figures.
-    let width = folded.channels().len().max(channels.len());
-    let per_channel = |c: &[Samples]| -> Vec<Samples> {
-        (0..width)
-            .map(|i| c.get(i).copied().unwrap_or(Samples(0)))
-            .collect()
+    // result"); the plan has one zero per output. `for_channel` reads both as
+    // the same figures.
+    let width = folded.channels().len().max(planned.channels().len());
+    let figures = |c: &Compensation| -> (Vec<Samples>, Samples) {
+        ((0..width).map(|i| c.for_channel(i)).collect(), c.total())
     };
     debug_assert_eq!(
-        (per_channel(folded.channels()), folded.total()),
-        (per_channel(&channels), total),
+        figures(&folded),
+        figures(&planned),
         "the spec's latency fold and the compiled plan disagree"
     );
 }
@@ -287,18 +287,20 @@ mod tests {
     /// node the engine ships.
     fn skewed_graph() -> (AudioGraphRes, Samples) {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (a, _) = graph.insert(Const::mono(1.0));
-        let (eff, _) = graph.insert(LimiterNode::with_channels(
+        let (a, _) = graph.graph().insert(Const::mono(1.0));
+        let (eff, _) = graph.graph().insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),
         ));
-        let (b, _) = graph.insert(Const::mono(1.0));
-        graph.set_source(eff, 0, GraphSource::Node(a, 0));
-        graph.set_output_source(0, GraphSource::Node(eff, 0));
-        graph.set_output_source(1, GraphSource::Node(b, 0));
+        let (b, _) = graph.graph().insert(Const::mono(1.0));
+        graph.graph().set_source(eff, 0, GraphSource::Node(a, 0));
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(eff, 0));
+        graph.graph().set_output_source(1, GraphSource::Node(b, 0));
 
-        let lat = graph.node_latency(eff);
+        let lat = graph.graph_ref().node_latency(eff);
         // Every test built on this graph compares against `lat`; if the
         // limiter ever reported no latency they would all agree on zero and
         // pass while testing nothing.
@@ -348,9 +350,9 @@ mod tests {
     #[test]
     fn a_graph_with_no_latency_reports_none() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (a, _) = graph.insert(Const::mono(1.0));
-        graph.set_output_source(0, GraphSource::Node(a, 0));
-        graph.set_output_source(1, GraphSource::Node(a, 0));
+        let (a, _) = graph.graph().insert(Const::mono(1.0));
+        graph.graph().set_output_source(0, GraphSource::Node(a, 0));
+        graph.graph().set_output_source(1, GraphSource::Node(a, 0));
 
         let mut app = test_app(graph);
         app.update();
@@ -375,7 +377,12 @@ mod tests {
         let (graph, _) = skewed_graph();
         let mut app = test_app(graph);
         app.update();
-        assert!(!app.world().resource::<AudioGraphRes>().is_edited());
+        assert!(
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited()
+        );
         let sentinel = vec![Samples(99)];
         app.world()
             .resource::<ChannelCompensation>()
@@ -396,12 +403,20 @@ mod tests {
     fn the_check_leaves_the_edit_flag_for_commit_to_clear() {
         let (graph, _) = skewed_graph();
         let mut app = check_app(graph);
-        assert!(app.world().resource::<AudioGraphRes>().is_edited());
+        assert!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited()
+        );
 
         app.update();
 
         assert!(
-            app.world().resource::<AudioGraphRes>().is_edited(),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited(),
             "the session's Commit phase owns clearing the flag"
         );
     }
@@ -421,8 +436,8 @@ mod tests {
         app.update();
 
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (a, _) = graph.insert(Const::mono(1.0));
-        graph.set_outputs_from(a);
+        let (a, _) = graph.graph().insert(Const::mono(1.0));
+        graph.graph().set_outputs_from(a);
         let mut app = check_app(graph);
         app.update();
     }
@@ -442,21 +457,29 @@ mod tests {
     #[test]
     fn publishes_the_compensation_its_commit_sends() {
         let (graph, eff_lat) = skewed_graph();
-        let authored = [graph.output_source(0), graph.output_source(1)];
+        let authored = [
+            graph.graph_ref().output_source(0),
+            graph.graph_ref().output_source(1),
+        ];
         let mut app = test_app(graph);
         app.update();
         assert!(
-            !app.world().resource::<AudioGraphRes>().is_edited(),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited(),
             "committed"
         );
 
-        let (sent_channels, sent_total) = app
+        let sent = app
             .world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .sent_compensation()
             .expect("the commit sent a plan");
+        let sent_total = sent.total();
         let table = app.world().resource::<ChannelCompensation>().to_vec();
-        assert_eq!(table, sent_channels, "per-channel pre-roll");
+        assert_eq!(table, sent.channels(), "per-channel pre-roll");
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
             sent_total,
@@ -467,7 +490,10 @@ mod tests {
         // both channels still read the nodes they were wired to.
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(
-            [graph.output_source(0), graph.output_source(1)],
+            [
+                graph.graph_ref().output_source(0),
+                graph.graph_ref().output_source(1)
+            ],
             authored,
             "nothing is spliced into the wiring"
         );
@@ -486,17 +512,19 @@ mod tests {
     #[test]
     fn a_re_prepare_republishes_the_figures_once_it_resumes() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (a, _) = graph.insert(Const::mono(1.0));
-        let (eff, _) = graph.insert(LimiterNode::with_channels(
+        let (a, _) = graph.graph().insert(Const::mono(1.0));
+        let (eff, _) = graph.graph().insert(LimiterNode::with_channels(
             ChannelLayout::MONO,
             Db(-1.0),
             Db(-0.3),
         ));
-        graph.set_source(eff, 0, GraphSource::Node(a, 0));
-        graph.set_output_source(0, GraphSource::Node(eff, 0));
-        graph.set_output_source(1, GraphSource::Node(a, 0));
-        let at_44k = graph.node_latency(eff);
-        let mut side = graph.take_audio_side();
+        graph.graph().set_source(eff, 0, GraphSource::Node(a, 0));
+        graph
+            .graph()
+            .set_output_source(0, GraphSource::Node(eff, 0));
+        graph.graph().set_output_source(1, GraphSource::Node(a, 0));
+        let at_44k = graph.graph_ref().node_latency(eff);
+        let mut side = graph.graph().take_audio_side();
         let mut app = test_app(graph);
         app.update();
         assert_eq!(app.world().resource::<GraphLatency>().0, at_44k);
@@ -505,12 +533,17 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
+            .graph()
             .set_sample_rate(tutti_core::SampleRate(48_000.0));
         for _ in 0..3 {
             side.tick(&[], &mut out);
             app.update();
         }
-        let at_48k = app.world().resource::<AudioGraphRes>().node_latency(eff);
+        let at_48k = app
+            .world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .node_latency(eff);
         assert_ne!(at_48k, at_44k, "the lookahead moved in samples");
         assert_eq!(app.world().resource::<GraphLatency>().0, at_48k);
         assert_eq!(

@@ -4,7 +4,7 @@
 //!
 //! 1. render a graph to a file,
 //! 2. render into memory and inspect it,
-//! 3. normalize — which the crate does **not** do for you, and this shows why
+//! 3. normalize — which the crate does not do for you, and this shows why
 //!    that is a feature rather than a gap.
 //!
 //! Run: `cargo run --example export -- <outdir>`

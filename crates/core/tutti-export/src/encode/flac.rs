@@ -19,7 +19,7 @@
 
 use crate::config::ExportConfig;
 use crate::encode::Encoder;
-use crate::error::{Error, Result};
+use crate::error::{Codec, Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
 use flacenc::bitsink::ByteSink;
@@ -77,12 +77,12 @@ impl Encoder for FlacEncoder {
         let bits = bits_for(self.bit_depth);
         let bit_depth = self.bit_depth;
         // Once, at entry: the stride is a runtime value.
-        let ch = config.encode.channels.count() as usize;
+        let ch = usize::from(config.encode.channels.count());
         let rate = crate::encode::encoder_rate(config) as usize;
 
         let verify = |c: EncoderConfig| {
             c.into_verified()
-                .map_err(|e| Error::Encoding(format!("Invalid FLAC config: {e:?}")))
+                .map_err(|e| Error::encoding(Codec::Flac, format!("invalid config: {e:?}")))
         };
         let configs = Configs {
             full: verify(encoder_config(self.compression_level))?,
@@ -91,7 +91,7 @@ impl Encoder for FlacEncoder {
             panic_at: None,
         };
         let info = StreamInfo::new(rate, ch, bits)
-            .map_err(|e| Error::Encoding(format!("Invalid FLAC stream: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("invalid stream: {e:?}")))?;
 
         let mut file = BufWriter::new(File::create(&self.path)?);
         // A placeholder of the final header's size (STREAMINFO is fixed
@@ -142,7 +142,7 @@ fn header_bytes(info: &StreamInfo) -> Result<Vec<u8>> {
     let mut sink = ByteSink::new();
     Stream::with_stream_info(info.clone())
         .write(&mut sink)
-        .map_err(|e| Error::Encoding(format!("Failed to write FLAC header: {e:?}")))?;
+        .map_err(|e| Error::encoding(Codec::Flac, format!("failed to write header: {e:?}")))?;
     Ok(sink.into_inner())
 }
 
@@ -281,7 +281,7 @@ impl FrameWriter {
         let mut buf = match self.free.pop() {
             Some(buf) => buf,
             None => FrameBuf::with_size(self.channels, BLOCK_SIZE)
-                .map_err(|e| Error::Encoding(format!("FLAC frame buffer: {e:?}")))?,
+                .map_err(|e| Error::encoding(Codec::Flac, format!("frame buffer: {e:?}")))?,
         };
         // The last block is encoded at its own length rather than padded.
         // `resize` is unchecked, which is what lets that length be under
@@ -289,11 +289,11 @@ impl FrameWriter {
         // block.
         buf.resize(frames);
         buf.fill_interleaved(pcm)
-            .map_err(|e| Error::Encoding(format!("FLAC frame buffer: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("frame buffer: {e:?}")))?;
 
         while self.sent - self.written >= self.in_flight_cap {
             if !self.receive(out, true)? {
-                return Err(Error::Encoding("a FLAC worker stopped".into()));
+                return Err(Error::encoding(Codec::Flac, "a worker stopped"));
             }
         }
         let jobs = self
@@ -301,7 +301,7 @@ impl FrameWriter {
             .as_ref()
             .expect("blocks are queued before `finish`");
         jobs.send((self.sent, buf))
-            .map_err(|_| Error::Encoding("a FLAC worker stopped".into()))?;
+            .map_err(|_| Error::encoding(Codec::Flac, "a worker stopped"))?;
         self.sent += 1;
         while self.receive(out, false)? {}
         Ok(())
@@ -318,16 +318,17 @@ impl FrameWriter {
         let Some((n, frame, mut buf)) = got else {
             return Ok(false);
         };
-        let frame = frame.map_err(|e| Error::Encoding(format!("FLAC encoding failed: {e}")))?;
+        let frame =
+            frame.map_err(|e| Error::encoding(Codec::Flac, format!("encoding failed: {e}")))?;
         buf.resize(BLOCK_SIZE);
         self.free.push(buf);
         self.pending.insert(n, frame);
         while let Some(frame) = self.pending.remove(&self.written) {
             self.info.update_frame_info(&frame);
             self.sink.clear();
-            frame
-                .write(&mut self.sink)
-                .map_err(|e| Error::Encoding(format!("Failed to write FLAC frame: {e:?}")))?;
+            frame.write(&mut self.sink).map_err(|e| {
+                Error::encoding(Codec::Flac, format!("failed to write frame: {e:?}"))
+            })?;
             out.write_all(self.sink.as_slice())?;
             self.written += 1;
         }
@@ -341,7 +342,7 @@ impl FrameWriter {
         self.jobs = None;
         while self.written < self.sent {
             if !self.receive(out, true)? {
-                return Err(Error::Encoding("a FLAC worker stopped".into()));
+                return Err(Error::encoding(Codec::Flac, "a worker stopped"));
             }
         }
         // A fixed-blocksize stream's STREAMINFO states the block size every
@@ -349,12 +350,12 @@ impl FrameWriter {
         // states it too, rather than `update_frame_info`'s unset 65535 and 0.
         self.info
             .set_block_sizes(BLOCK_SIZE, BLOCK_SIZE)
-            .map_err(|e| Error::Encoding(format!("FLAC block size: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("block size: {e:?}")))?;
         if self.written == 0 {
             // Zero is "unknown"; unset, the two would read u32::MAX and 0.
             self.info
                 .set_frame_sizes(0, 0)
-                .map_err(|e| Error::Encoding(format!("FLAC frame size: {e:?}")))?;
+                .map_err(|e| Error::encoding(Codec::Flac, format!("frame size: {e:?}")))?;
         }
         // `update_frame_info` has summed every block's length, the last at its
         // own, so the sample count is already exact.
@@ -416,8 +417,8 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 /// Quantize to the integer sample flacenc takes, via the engine's canonical
 /// converters.
 ///
-/// **Delegation is the whole point.** A local `(clamped * 32767.0) as i32`
-/// **truncates** where [`tutti_core::pcm`] rounds: the two agree on 0.0 and ±1.0
+/// Delegation is the whole point. A local `(clamped * 32767.0) as i32`
+/// truncates where [`tutti_core::pcm`] rounds: the two agree on 0.0 and ±1.0
 /// and diverge by one LSB everywhere else, so 0.7 encodes as 22936 in a FLAC and
 /// 22937 in a WAV from the same render. `pcm` exists so a recorded and an
 /// exported file quantize a given sample identically, and its docs call bare
@@ -426,108 +427,11 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
     match bit_depth {
-        BitDepth::Int16 => tutti_core::pcm::f32_to_i16(sample) as i32,
+        BitDepth::Int16 => i32::from(tutti_core::pcm::f32_to_i16(sample)),
         // Float32 is rejected in `create`, so this is the Int24 path.
         _ => tutti_core::pcm::f32_to_i24(sample),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clamps_out_of_range_input() {
-        assert_eq!(f32_to_i32(2.0, BitDepth::Int16), 32767);
-        assert_eq!(f32_to_i32(-2.0, BitDepth::Int16), -32767);
-    }
-
-    /// FLAC must quantize exactly as the rest of the engine does.
-    ///
-    /// The two tests above pass under truncation *and* under rounding, because
-    /// 0.0 and ±1.0 land on exact integers either way — which is how a private
-    /// truncating converter survives unnoticed. These levels have a fractional
-    /// part above 0.5, so the two disagree: 0.7 × 32767 = 22936.9, which
-    /// truncates to 22936 and rounds to 22937.
-    #[test]
-    fn quantization_matches_the_engines_canonical_converter() {
-        for level in [0.7f32, -0.7, 0.3, -0.3, 0.123_45, 0.999] {
-            assert_eq!(
-                f32_to_i32(level, BitDepth::Int16),
-                tutti_core::pcm::f32_to_i16(level) as i32,
-                "Int16: FLAC and tutti_core::pcm disagree on {level}"
-            );
-            assert_eq!(
-                f32_to_i32(level, BitDepth::Int24),
-                tutti_core::pcm::f32_to_i24(level),
-                "Int24: FLAC and tutti_core::pcm disagree on {level}"
-            );
-        }
-    }
-
-    fn configs(panic_at: Option<usize>) -> Configs {
-        Configs {
-            full: encoder_config(5).into_verified().unwrap(),
-            short: short_block_config(5).into_verified().unwrap(),
-            panic_at,
-        }
-    }
-
-    /// A worker that panics ends the export with an error naming the panic,
-    /// within bounded time, instead of leaving the producer waiting on a
-    /// frame that never comes. 200 blocks keep the queue full, so the
-    /// producer is blocked on `done` when the panic lands.
-    ///
-    /// Mutation (run): drop the `catch_unwind` (encode directly, the hook's
-    /// `panic!` unwinding the worker) → the export never returns and the
-    /// 30 s guard below fails the test.
-    #[test]
-    #[cfg_attr(miri, ignore = "spawns encoder threads and waits on a clock")]
-    fn a_panicking_worker_ends_the_export_with_an_error() {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let configs = configs(Some(1));
-            let info = StreamInfo::new(48_000, 2, 16).unwrap();
-            let pcm = vec![0i32; BLOCK_SIZE * 2];
-            let mut out = Vec::new();
-            let result = std::thread::scope(|scope| {
-                let mut writer = FrameWriter::start(scope, 4, &configs, info, 2, 16);
-                let pumped = (0..200).try_for_each(|_| writer.block(&pcm, &mut out));
-                let finished = writer.finish(&mut out);
-                pumped.and(finished)
-            });
-            let _ = tx.send(result.map(|_| ()).map_err(|e| e.to_string()));
-        });
-        let result = rx
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("the export hung on a panicked worker");
-        let err = result.expect_err("a panicked frame cannot be written");
-        assert!(err.contains("injected at frame 1"), "{err}");
-    }
-
-    /// An empty export states valid block sizes (the stream's, 4 096 both)
-    /// and "unknown" frame sizes, not flacenc's unset 65 535 / 0 and
-    /// `u32::MAX` / 0.
-    ///
-    /// Mutation (run): set the block sizes only when a frame was written
-    /// (`if self.written > 0`) → min 65 535 → fails.
-    #[test]
-    #[cfg_attr(miri, ignore = "spawns encoder threads")]
-    fn an_empty_stream_states_valid_sizes() {
-        let configs = configs(None);
-        let info = StreamInfo::new(48_000, 2, 16).unwrap();
-        let mut out = Vec::new();
-        let info = std::thread::scope(|scope| {
-            FrameWriter::start(scope, 2, &configs, info, 2, 16).finish(&mut out)
-        })
-        .unwrap();
-        assert!(out.is_empty(), "no frames");
-        assert_eq!(
-            (info.min_block_size(), info.max_block_size()),
-            (BLOCK_SIZE, BLOCK_SIZE)
-        );
-        assert_eq!((info.min_frame_size(), info.max_frame_size()), (0, 0));
-        assert_eq!(info.total_samples(), 0);
-        assert_eq!(header_bytes(&info).unwrap().len(), 42);
-    }
-}
+mod tests;

@@ -10,14 +10,15 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::ContentScale;
+use super::MidiEventVec;
 use super::Normalized;
 use super::ParamId;
 use super::SampleFormat;
 use super::Samples;
-use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor, PluginTail, Preset, PresetId};
+use tutti_types::SampleRate;
 
 /// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
 /// when a message arrives without the field. The operative value at runtime
@@ -44,8 +45,8 @@ pub enum HostMessage {
     LoadPlugin {
         /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
-        /// Sample rate in Hz, as `f64` because plugin ABIs denominate it so.
-        sample_rate: f64,
+        /// Sample rate, an `f64` on the wire because plugin ABIs denominate it so.
+        sample_rate: SampleRate,
         /// Maximum frames per [`ProcessAudio`](Self::ProcessAudio) block. The
         /// plugin sizes its internal buffers from this, so a later block may not
         /// exceed it.
@@ -69,7 +70,9 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: ParamId,
         /// Normalized `0.0..=1.0`; the loader maps it into the plugin's domain.
-        value: f32,
+        /// An `f32` on the wire.
+        #[serde(with = "super::wire::normalized")]
+        value: Normalized,
     },
     /// Enter or leave an automation gesture, so the plugin can record it.
     SetAutomationState {
@@ -93,8 +96,8 @@ pub enum HostMessage {
     /// answered by [`BridgeMessage::SampleRateSet`]: the host must learn
     /// whether the plugin runs at the rate before it renders another block.
     SetSampleRate {
-        /// Sample rate in Hz, as `f64` because plugin ABIs denominate it so.
-        rate: f64,
+        /// Sample rate, an `f64` on the wire because plugin ABIs denominate it so.
+        rate: SampleRate,
     },
     /// Clear the plugin's internal state — tails, delay lines, voices.
     Reset,
@@ -195,6 +198,10 @@ pub enum HostMessage {
 /// A reply or notification travelling subprocess → host.
 ///
 /// Variant order is wire-significant; see the module docs.
+// `AudioProcessed` holds the inline `MidiEventVec` (~5 KB). A reply is decoded
+// into one stack value and moved once to the bridge thread's queue; boxing it
+// would put a heap allocation on every block's reply.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     /// The plugin was probed or loaded successfully.
@@ -217,8 +224,8 @@ pub enum BridgeMessage {
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted
     /// travel here. (Parameter / note-expression output is not routed back.)
-    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side, and the host
-    /// keeps at most that many of a longer one.
+    /// `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side; the host
+    /// refuses a longer list at decode.
     ///
     /// **This message is not what makes the audio readable.** The slab carries a
     /// per-slot generation counter and answers that itself, so the host emits
@@ -231,13 +238,14 @@ pub enum BridgeMessage {
         #[serde(default)]
         seq: u64,
         /// MIDI the plugin emitted during the block.
-        #[serde(default)]
-        midi_out: IpcMidiEventVec,
+        #[serde(default, with = "super::wire::midi")]
+        midi_out: MidiEventVec,
     },
     /// One parameter's normalized value, or `None` if the plugin declined.
     ParameterValue {
-        /// Normalized `0.0..=1.0`.
-        value: Option<f32>,
+        /// Normalized `0.0..=1.0`; an optional `f32` on the wire.
+        #[serde(with = "super::wire::normalized_opt")]
+        value: Option<Normalized>,
     },
     /// Every parameter the plugin declares, in the plugin's own order.
     ParameterList {
@@ -280,10 +288,11 @@ pub enum BridgeMessage {
     EditorClosed,
     /// The plugin moved one of its own parameters, typically from its editor.
     ParameterChanged {
-        /// Positional parameter index as the plugin reported it.
-        index: i32,
-        /// Normalized `0.0..=1.0`.
-        value: f32,
+        /// The parameter, by the id the plugin reported (VST2: its index).
+        index: ParamId,
+        /// Normalized `0.0..=1.0`; an `f32` on the wire.
+        #[serde(with = "super::wire::normalized")]
+        value: Normalized,
     },
     /// Plugin reported a latency change at runtime. Host updates the
     /// corresponding `PluginClient::set_latency` so the latency the node
@@ -403,7 +412,7 @@ pub enum BridgeMessage {
     SampleRateSet {
         /// The rate that was asked for, echoed so a reply read late is never
         /// attributed to a later request.
-        rate: f64,
+        rate: SampleRate,
         /// The plugin's reason, formatted subprocess-side, or `None` when it
         /// now runs at `rate`.
         error: Option<String>,

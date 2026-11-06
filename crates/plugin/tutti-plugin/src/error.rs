@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 use thiserror::Error;
+use tutti_types::SampleRate;
 
 /// The phase of plugin loading an error came from, carried by
 /// [`BridgeError::LoadFailed`].
@@ -49,7 +50,7 @@ pub enum BridgeError {
 
     /// The plugin returned a format-defined failure code.
     #[error("Plugin error at {stage}: code {code:#x}")]
-    PluginError {
+    FormatCode {
         /// How far the load got before the plugin refused.
         stage: LoadStage,
         /// The format's own result code, rendered in hex.
@@ -256,10 +257,10 @@ pub enum PluginRenderFault {
     },
     /// The fork's plugin refused the sample rate it renders at, so it renders
     /// silence: the whole export is wrong from the first block.
-    #[error("the forked instance refused its sample rate ({rate} Hz): {reason}")]
+    #[error("the forked instance refused its sample rate ({rate}): {reason}")]
     RateRefused {
-        /// The rate it refused, in Hz.
-        rate: f64,
+        /// The rate it refused.
+        rate: SampleRate,
         /// The plugin's reason.
         reason: String,
     },

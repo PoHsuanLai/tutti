@@ -361,7 +361,10 @@ mod owed_tests {
     }
 
     fn read(handle: &PluginHandle, i: i32) -> Option<f32> {
-        handle.params().parameter_value(ParamId::new(i as u32))
+        handle
+            .params()
+            .parameter_value(ParamId::new(i as u32))
+            .map(|v| v.get() as f32)
     }
 
     /// **A block the instance is locked for owes its values to the next.**

@@ -11,7 +11,7 @@
 
 use crate::config::ExportConfig;
 use crate::encode::{Encoder, pump_blocks};
-use crate::error::{Error, Result};
+use crate::error::{Codec, ConfigError, Error, Result};
 use crate::render::{FrameSource, RenderPlan};
 use std::io::BufWriter;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -29,19 +29,24 @@ impl OggEncoder {
         opts: crate::options::Ogg,
     ) -> Result<Self> {
         let sr = NonZeroU32::new(crate::encode::encoder_rate(config))
-            .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
-        let ch = NonZeroU8::new(config.encode.channels.count() as u8)
-            .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;
+            .ok_or(ConfigError::ZeroSampleRate)?;
+        let channels = config.encode.channels.count();
+        let ch = u8::try_from(channels)
+            .map_err(|_| ConfigError::TooManyChannels {
+                channels,
+                max: u16::from(u8::MAX),
+            })
+            .and_then(|n| NonZeroU8::new(n).ok_or(ConfigError::ZeroChannels))?;
 
         let writer = BufWriter::new(std::fs::File::create(path)?);
         let mut builder = VorbisEncoderBuilder::new(sr, ch, writer)
-            .map_err(|e| Error::Encoding(format!("Failed to create OGG encoder: {e}")))?;
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to create encoder: {e}")))?;
         builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
             target_quality: opts.quality,
         });
         let encoder = builder
             .build()
-            .map_err(|e| Error::Encoding(format!("Failed to build OGG encoder: {e}")))?;
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}")))?;
         Ok(Self { encoder })
     }
 }
@@ -63,7 +68,7 @@ impl Encoder for OggEncoder {
         // is a no-op here: `DitherState::for_config` never arms for Ogg.
 
         // The stride, derived once at entry — not re-derived per block.
-        let ch = config.encode.channels.count() as usize;
+        let ch = usize::from(config.encode.channels.count());
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); ch];
         pump_blocks(src, source_rate, plan, config, |frames| {
             // An EMPTY block is vorbis's end-of-stream signal, and `pump_blocks`
@@ -77,12 +82,12 @@ impl Encoder for OggEncoder {
             frames.deinterleave_into(&mut planes);
             self.encoder
                 .encode_audio_block(&planes)
-                .map_err(|e| Error::Encoding(format!("OGG encoding failed: {e}")))
+                .map_err(|e| Error::encoding(Codec::Ogg, format!("encoding failed: {e}")))
         })?;
 
         self.encoder
             .finish()
-            .map_err(|e| Error::Encoding(format!("OGG finalization failed: {e}")))?;
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("finalization failed: {e}")))?;
         Ok(())
     }
 }

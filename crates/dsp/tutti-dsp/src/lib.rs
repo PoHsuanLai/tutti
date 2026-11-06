@@ -68,6 +68,8 @@
 //! - Delay: [`DelayLine`] with an [`InterpolationMode`], and [`SweptLines`], the
 //!   chorus and flanger kernel.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
+//! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
+//!   same scalar FFT, failing with a [`ResampleError`].
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
@@ -82,6 +84,7 @@ mod filter;
 mod swept_delay;
 mod waveshape;
 
+mod resample;
 #[cfg(test)]
 mod test_support;
 
@@ -101,6 +104,7 @@ pub use filter::{
     Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
     SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
 };
+pub use resample::{FftResampler, ResampleError};
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

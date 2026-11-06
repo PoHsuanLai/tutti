@@ -95,6 +95,7 @@ fn read(handle: &PluginHandle, i: u32) -> Option<f32> {
     handle
         .params()
         .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
+        .map(|v| v.get() as f32)
 }
 
 /// A ramp to `value` on parameter `id` (a VST2 index) at block frame `at`.

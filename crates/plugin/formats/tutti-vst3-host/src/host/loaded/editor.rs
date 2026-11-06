@@ -176,40 +176,41 @@ impl Vst3Loaded {
         self.plugin.editor_size_constraint(requested)
     }
 
-    /// Offer a key press to the open editor. Returns `true` if the plugin
-    /// **consumed** it, in which case the host must not act on it too.
+    /// Offer a key press to the open editor. [`KeyOutcome::Consumed`] means the
+    /// plugin took it and the host must not act on it too.
     ///
     /// # The two key codes
     ///
     /// VST3 carries a character *and* a virtual key, and a caller supplies one
-    /// while zeroing the other. `key` is the UTF-16 character the keystroke
-    /// produced; `virtual_key` is a `VirtualKeyCodes` value for keystrokes that
-    /// produce no character (arrows, function keys). Sending both, or neither,
-    /// is what plugins disagree about handling — pick one.
+    /// while zeroing the other (see [`KeyEvent::character`] and
+    /// [`KeyEvent::virtual_key`]). Sending both, or neither, is what plugins
+    /// disagree about handling: pick one.
     ///
-    /// `modifiers` is an OR of `KeyModifier` bits. Note the SDK's own
-    /// convention is platform-dependent: `kCommandKey` is Cmd on macOS and
-    /// Ctrl on Windows and Linux, so a caller mapping from a neutral modifier
-    /// set has to know which platform it is on.
+    /// The SDK's modifier convention is platform-dependent: `COMMAND` is Cmd on
+    /// macOS and Ctrl on Windows and Linux, so a caller mapping from a neutral
+    /// modifier set has to know which platform it is on.
     ///
     /// # Arbitration
     ///
     /// Honour the return value rather than filtering keys before the call. A
     /// host that reserves keys for itself — space for transport, say — takes
     /// them from every plugin that legitimately uses them, and cannot know
-    /// which those are. The spec's answer is this bool, and it applies only
+    /// which those are. The spec's answer is the outcome, and it applies only
     /// while the editor holds focus.
     ///
-    /// Returns `false` if no editor is open. Main/UI thread.
+    /// Returns [`KeyOutcome::Ignored`] if no editor is open. Main/UI thread.
     ///
     /// # Panics
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn send_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    pub fn send_key_down(&self, key: KeyEvent) -> KeyOutcome {
         tutti_plugin_types::assert_main_thread();
-        self.plugin.editor_key_down(key, virtual_key, modifiers)
+        outcome(
+            self.plugin
+                .editor_key_down(key.character, key.virtual_key, key.modifiers.bits()),
+        )
     }
 
     /// Offer a key release to the open editor. See
@@ -221,9 +222,12 @@ impl Vst3Loaded {
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn send_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    pub fn send_key_up(&self, key: KeyEvent) -> KeyOutcome {
         tutti_plugin_types::assert_main_thread();
-        self.plugin.editor_key_up(key, virtual_key, modifiers)
+        outcome(
+            self.plugin
+                .editor_key_up(key.character, key.virtual_key, key.modifiers.bits()),
+        )
     }
 
     /// Offer a mouse-wheel movement to the open editor, `distance` in wheel
@@ -283,3 +287,11 @@ impl Vst3Loaded {
 }
 
 pub(super) const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
+
+fn outcome(consumed: bool) -> KeyOutcome {
+    if consumed {
+        KeyOutcome::Consumed
+    } else {
+        KeyOutcome::Ignored
+    }
+}

@@ -280,7 +280,7 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
         .set_parameter_value(ParamId::new(0), Normalized::new(0.25));
     assert_eq!(
         handle.params().parameter_value(ParamId::new(0)),
-        Some(0.25),
+        Some(Normalized::new(0.25)),
         "the live write landed"
     );
     assert_renders(

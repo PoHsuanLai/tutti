@@ -121,6 +121,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
         event_inputs: app
             .world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .node_event_inputs(AudioNode(node)),
         shadow_node: world.get::<PluginShadow>(entity).map(PluginShadow::node),
         meter_bound: world.get::<PluginMeterBound>(entity).is_some(),
@@ -144,6 +145,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .node_latency(AudioNode(node)),
         Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + CHUNK),
         "the graph plans PDC against the node's latency"
@@ -192,6 +194,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .node_latency(AudioNode(node)),
         Samples(300 + CHUNK),
         "a changed plugin latency reaches the graph"
@@ -212,6 +215,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .node_latency(AudioNode(node)),
         tutti_core::latency::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
@@ -227,7 +231,7 @@ fn record_dirty(
     graph: bevy_ecs::prelude::Res<AudioGraphRes>,
     mut seen: bevy_ecs::prelude::ResMut<DirtySeen>,
 ) {
-    if graph.is_edited() {
+    if graph.graph_ref().is_edited() {
         seen.0 += 1;
     }
 }
@@ -360,6 +364,7 @@ fn a_crossfaded_plugin_is_bound_again() {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .event_sources(node, 0),
             vec![lane.into()],
             "and its gain's lane"
@@ -367,7 +372,10 @@ fn a_crossfaded_plugin_is_bound_again() {
         lane
     };
     assert_eq!(
-        app.world().resource::<AudioGraphRes>().node_latency(node),
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .node_latency(node),
         Samples(INCOMING_LATENCY + CHUNK),
         "the graph plans against the incoming plugin's declared latency"
     );
@@ -376,7 +384,10 @@ fn a_crossfaded_plugin_is_bound_again() {
     controls.set_latency(Samples(INCOMING_LATENCY + 7));
     app.update();
     assert_eq!(
-        app.world().resource::<AudioGraphRes>().node_latency(node),
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .node_latency(node),
         Samples(INCOMING_LATENCY + 7 + CHUNK),
         "the latency phase must read the incoming plugin"
     );
@@ -387,7 +398,10 @@ fn a_crossfaded_plugin_is_bound_again() {
     // `drop_captured` call from `reconcile_node_despawn` fails this.
     #[cfg(feature = "modulation")]
     assert!(
-        app.world().resource::<AudioGraphRes>().contains(lane),
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .contains(lane),
         "the gain's lane is in the graph while its plugin is"
     );
     app.world_mut().entity_mut(entity).remove::<AudioNode>();
@@ -402,7 +416,10 @@ fn a_crossfaded_plugin_is_bound_again() {
     {
         app.update();
         assert!(
-            !app.world().resource::<AudioGraphRes>().contains(lane),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .contains(lane),
             "the lane leaves with its plugin"
         );
     }

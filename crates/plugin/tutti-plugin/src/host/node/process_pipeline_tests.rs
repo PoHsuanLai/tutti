@@ -37,6 +37,7 @@ use crate::protocol::{
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::sync::Arc;
+use tutti_types::SampleRate;
 
 const CHANNELS: usize = 2;
 const GAIN: f32 = 2.0;
@@ -192,7 +193,7 @@ fn bridge_with_server(
         path.clone(),
         Arc::clone(&host_slab),
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
 
@@ -927,7 +928,7 @@ fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread) {
         path,
         host_slab,
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
 
@@ -1445,7 +1446,7 @@ fn stamped_server(
         path.clone(),
         Arc::clone(&host_slab),
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
 
@@ -1497,10 +1498,12 @@ fn stamped_server(
                             }
                             server_slab.publish_output(seq);
                         }
-                        let midi_out = vec![crate::protocol::IpcMidiEvent {
+                        let midi_out = [crate::protocol::MidiEvent {
                             frame_offset: 0,
                             data: [seq as u32, 0, 0, 0],
-                        }];
+                        }]
+                        .into_iter()
+                        .collect();
                         BridgeMessage::AudioProcessed {
                             latency_us: 0,
                             seq,
@@ -1613,8 +1616,13 @@ fn a_refused_chunk_reports_its_midi_lost() {
     let path = unique_socket_path("refused");
     let _ = std::fs::remove_file(&path);
     let slab = Arc::new(AudioSlab::create(unique_shm_name("refused"), stereo_layout()).unwrap());
-    let (bridge, _thread) =
-        PluginBridge::new(path, slab, std::path::PathBuf::from("test.vst3"), 48_000.0).unwrap();
+    let (bridge, _thread) = PluginBridge::new(
+        path,
+        slab,
+        std::path::PathBuf::from("test.vst3"),
+        SampleRate(48_000.0),
+    )
+    .unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !bridge.is_crashed() {
         assert!(std::time::Instant::now() < deadline, "never crashed");
@@ -1744,7 +1752,7 @@ fn two_stale_blocks(
         path.clone(),
         slab,
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
     let server_stream = listener.accept().unwrap();
@@ -1760,11 +1768,7 @@ fn two_stale_blocks(
         );
         while let Some(msg) = recv_host_msg(&server_stream) {
             if let HostMessage::ProcessAudio(data) = msg {
-                let midi: Vec<crate::protocol::MidiEvent> = data
-                    .midi_events
-                    .iter()
-                    .map(crate::protocol::IpcMidiEvent::to_midi_event)
-                    .collect();
+                let midi: Vec<crate::protocol::MidiEvent> = data.midi_events.to_vec();
                 let _ = got_tx.send((data.seq, midi));
                 send_bridge_msg(
                     &server_stream,

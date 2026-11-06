@@ -401,7 +401,10 @@ impl HostedPlugin {
     /// with no mirror: no knob to start from).
     #[cfg(feature = "modulation")]
     pub(crate) fn param_value(&self, id: u32) -> Option<Option<f32>> {
-        self.mirror.as_ref().map_or(Some(None), |m| m.get(id))
+        self.mirror.as_ref().map_or(Some(None), |m| {
+            m.get(tutti_plugin::handles::ParamId::new(id))
+                .map(|v| v.map(|v| v.get() as f32))
+        })
     }
 }
 
@@ -514,7 +517,10 @@ impl std::fmt::Debug for PluginParamRead {
 #[derive(Debug)]
 pub struct PluginParamsRead {
     node: AudioNode,
-    values: std::collections::HashMap<u32, f32>,
+    values: std::collections::HashMap<
+        tutti_plugin::handles::ParamId,
+        tutti_plugin::handles::Normalized,
+    >,
     /// The record's mirror token when the job was asked for.
     token: Arc<()>,
 }
@@ -766,8 +772,8 @@ impl Session {
             if let Some(mirror) = hosted.mirror.as_mut() {
                 let state = &self.mods.state;
                 mirror.drain_edits(|id, value| {
-                    if let Some(target) = state.plugin_target(node, id) {
-                        state.set_knob(target, value);
+                    if let Some(target) = state.plugin_target(node, id.get()) {
+                        state.set_knob(target, value.get() as f32);
                     }
                 });
             }
@@ -849,8 +855,11 @@ mod tests {
                     .collect(),
             )
         }
-        fn parameter_value(&self, id: ParamId) -> Option<f32> {
-            self.params.iter().find(|(a, _)| *a == id).map(|&(_, v)| v)
+        fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
+            self.params
+                .iter()
+                .find(|(a, _)| *a == id)
+                .map(|&(_, v)| Normalized::new(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {
@@ -965,8 +974,7 @@ mod tests {
     /// and one at a time.** The first update starts the clock; updates
     /// inside the interval ask for nothing; the first at or past it asks
     /// once; while that job is unlanded nothing more is asked, however late
-    /// (the old Bevy test could not cover this guard on a single-threaded
-    /// pool: here the job is simply held); landing it stores the bytes and
+    /// (the job is held, not run); landing it stores the bytes and
     /// restarts the cadence; a dropped job frees the plugin too.
     ///
     /// Mutations (each run, each failed): the due check without the token
@@ -1161,8 +1169,8 @@ mod tests {
     ///
     /// Mutations (each run, each failed): `adopt` keeping the old mirror
     /// (the value reads the outgoing plugin's 0.25); `adopt` running the
-    /// read inline (`mirror.land(read.run())`, the old code: the mirror is
-    /// ready before any job ran); the phase not handing the read out (no
+    /// read inline (`mirror.land(read.run())`: the mirror is ready before any
+    /// job ran); the phase not handing the read out (no
     /// job); `land_params` without the `ptr_eq` check (the stale read
     /// lands); `adopt` keeping the old token (the same).
     #[cfg(feature = "modulation")]

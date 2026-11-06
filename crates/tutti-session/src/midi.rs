@@ -24,15 +24,8 @@ use tutti_midi_runtime::{
 use tutti_midi_types::MidiChannel;
 use tutti_midi_types::ump::MidiEvent;
 
-use crate::graph::Graph;
+use crate::graph::{Feeder, Graph};
 use crate::{Error, EventSource, MidiNodes, Result};
-
-/// The sequencer's name among the feeds of a target's node.
-const SEQUENCER: &str = "sequencer";
-/// A live input's name among the feeds of a target's node.
-const LIVE: &str = "live midi";
-/// The route rules' name among the feeds of a target's node.
-const ROUTES: &str = "midi routes";
 
 /// Max events drained per chunk into the stack buffer: one frame of clock at
 /// any sane tempo is a handful of events, so this is generous headroom.
@@ -455,14 +448,15 @@ impl Midi<'_> {
     /// no MIDI.
     pub fn live_input(&mut self, target: AudioNode) -> Result<LiveInput> {
         self.takes_midi(target)?;
-        if let Some((node, live)) = self.fed_by(target, LIVE, &self.state.live) {
+        if let Some((node, live)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
             return Ok(LiveInput {
                 node,
                 sender: live.sender.clone(),
             });
         }
         let (node, sender) = self.graph.insert(MidiQueueNode::new());
-        self.graph.set_feed(target, LIVE, vec![node.into()]);
+        self.graph
+            .set_feed(target, Feeder::LiveInput, vec![node.into()]);
         self.state.live.insert(
             node,
             Live {
@@ -507,7 +501,8 @@ impl Midi<'_> {
         };
         // Set on every call: `set_feed` leaves an unchanged feed (and the
         // edit flag) alone.
-        self.graph.set_feed(target, SEQUENCER, vec![clip.into()]);
+        self.graph
+            .set_feed(target, Feeder::Sequencer, vec![clip.into()]);
         Ok(clip)
     }
 
@@ -526,7 +521,7 @@ impl Midi<'_> {
 
     /// `target`'s clip node, if it has one.
     pub fn clip(&self, target: AudioNode) -> Option<AudioNode> {
-        self.fed_by(target, SEQUENCER, &self.state.clips)
+        self.fed_by(target, Feeder::Sequencer, &self.state.clips)
             .map(|(clip, _)| clip)
     }
 
@@ -536,7 +531,7 @@ impl Midi<'_> {
     fn fed_by<'s, V>(
         &self,
         target: AudioNode,
-        feeder: &'static str,
+        feeder: Feeder,
         ours: &'s BTreeMap<AudioNode, V>,
     ) -> Option<(AudioNode, &'s V)> {
         self.graph
@@ -559,9 +554,15 @@ impl Midi<'_> {
     pub fn retarget(&mut self, node: AudioNode, target: AudioNode) -> Result<()> {
         self.takes_midi(target)?;
         let (old, feeder) = if let Some(clip) = self.state.clips.get_mut(&node) {
-            (std::mem::replace(&mut clip.target, target), SEQUENCER)
+            (
+                std::mem::replace(&mut clip.target, target),
+                Feeder::Sequencer,
+            )
         } else if let Some(live) = self.state.live.get_mut(&node) {
-            (std::mem::replace(&mut live.target, target), LIVE)
+            (
+                std::mem::replace(&mut live.target, target),
+                Feeder::LiveInput,
+            )
         } else {
             return Err(Error::NotSessionMidi(node));
         };
@@ -709,14 +710,14 @@ impl Midi<'_> {
         }
         for &fed in &self.state.routed {
             if !wanted.contains_key(&fed) {
-                self.graph.set_feed(fed, ROUTES, Vec::new());
+                self.graph.set_feed(fed, Feeder::Routes, Vec::new());
             }
         }
         self.state.routed = wanted.keys().copied().collect();
         for (sink, mut sources) in wanted {
             sources.sort_by_key(|s| (s.node, s.port));
             sources.dedup();
-            self.graph.set_feed(sink, ROUTES, sources);
+            self.graph.set_feed(sink, Feeder::Routes, sources);
         }
     }
 

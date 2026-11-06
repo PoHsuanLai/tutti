@@ -12,7 +12,8 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    Features, LoadedPlugin, PluginDescriptor, PluginInstance, PluginTail, SampleFormat, Samples,
+    Features, LoadedPlugin, Normalized, ParamId, PluginDescriptor, PluginInstance, PluginTail,
+    SampleFormat, Samples,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -60,10 +61,10 @@ pub(crate) enum AsyncEvent {
     /// The plugin moved one of its own parameters — a knob turned in its editor.
     /// VST2 only; the other formats signal this as `ParamValuesChanged`.
     ParameterChanged {
-        /// The plugin's own parameter index, not a `ParamId`.
-        index: i32,
+        /// The plugin's parameter index, as VST2 addresses its parameters.
+        index: ParamId,
         /// The new value, normalized to `0..1` as VST2 reports it.
-        value: f32,
+        value: Normalized,
     },
     /// The plugin reported new PDC latency at runtime. The host must re-plan
     /// delay compensation; ignoring it leaves the graph compensating a stale

@@ -29,7 +29,7 @@
 //! use tutti_types::{BeatDuration, Depth, Hz, UnitParam, Q};
 //!
 //! let mut graph = AudioGraphRes::headless(0, 1);
-//! graph.set_sample_rate(SampleRate(48_000.0));
+//! graph.graph().set_sample_rate(SampleRate(48_000.0));
 //! let mut app = App::new();
 //! app.insert_resource(graph);
 //! app.insert_resource(TransportRes(Transport::new(48_000.0)));

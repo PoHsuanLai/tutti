@@ -35,17 +35,18 @@ impl Vst3Loaded {
     }
 
     /// Queries the plugin's offline/prefetch processing support via
-    /// `IPrefetchableSupport`. Returns one of the
-    /// [`prefetchable_support`](crate::prefetchable_support) constants, or `None`
-    /// if the plugin doesn't implement the interface. Main/UI thread.
+    /// `IPrefetchableSupport`. `None` if the plugin doesn't implement the
+    /// interface. Main/UI thread.
     ///
     /// # Panics
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn prefetchable_support(&self) -> Option<u32> {
+    pub fn prefetchable_support(&self) -> Option<PrefetchSupport> {
         tutti_plugin_types::assert_main_thread();
-        self.plugin.prefetchable_support()
+        self.plugin
+            .prefetchable_support()
+            .map(PrefetchSupport::from_raw)
     }
 
     /// Tells the plugin the downstream presentation latency (in samples) for a

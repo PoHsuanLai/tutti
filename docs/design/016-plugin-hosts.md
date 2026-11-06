@@ -751,7 +751,7 @@ one.
 one; what differs is VST3's.
 
 - `Vst3Loaded` implements `Loaded` and `Control`; activating it gives a
-  `Vst3ProcessorAny` (or `Vst3Processor<T>` through `activate_typed::<T>`) and a
+  `ProcessorAny` (or `Vst3Processor<T>` through `activate_typed::<T>`) and a
   `Vst3Controller`, which derefs to `Vst3Loaded`. `Vst3Active<T>` is gone, with
   `load_with_mode`, `load_class`, `Vst3Active::load`, `set_sample_rate`,
   `restart_bus_configuration` and `activate_with_mode`: `Vst3Loaded::load(path,
@@ -985,7 +985,7 @@ and from CLAP and VST3:
 - **The sample format is a runtime choice at activation.** The Processor is the
   half that sees samples. Each host crate's `Processor` for the trait is one
   type that holds the activated `SampleFormat` (`ClapProcessor`) or matches
-  `AudioBufferMut::{F32, F64}` to an arm (`Vst3ProcessorAny`). CLAP has no typed
+  `AudioBufferMut::{F32, F64}` to an arm (`ProcessorAny`). CLAP has no typed
   form: its one `ClapProcessor` matches the buffer's width once per block (see
   its runtime-format note). VST3 keeps a typed `Vst3Processor<T>` for a user who
   fixes the sample type at compile time, through an inherent
@@ -1296,7 +1296,7 @@ pub enum AnyPlugin {
 ```
 
 `AnyProcessor` is the same enum over the four Processors (`Clap(ClapProcessor)`,
-`Vst3(Vst3ProcessorAny)`, `Vst2(Vst2Processor)`, `Au(AuProcessor)`), and
+`Vst3(ProcessorAny)`, `Vst2(Vst2Processor)`, `Au(AuProcessor)`), and
 implements `Processor`. It is what the realtime thread holds.
 
 Both live in `tutti-plugin-server`, the one crate that depends on all four hosts
@@ -1744,13 +1744,13 @@ Existing items cite their file and line. "New" means it does not exist today.
 
 | Today | Becomes |
 |---|---|
-| `Vst3Loaded` (`host/loaded.rs:81`) | `impl Loaded`; `type Processor = Vst3ProcessorAny` (new, from `VstInner`, `loaders/vst3.rs:22`), `type Controller = Vst3Controller` (new) |
-| `Vst3Active<T>` (`host/instance.rs:241`) | splits: `Vst3Processor<T>` (`IAudioProcessor::process`, `setProcessing`) and `Vst3Controller` (`IEditController`, component state, units); `Vst3ProcessorAny` wraps the typed form |
+| `Vst3Loaded` (`host/loaded.rs:81`) | `impl Loaded`; `type Processor = ProcessorAny` (new, from `VstInner`, `loaders/vst3.rs:22`), `type Controller = Vst3Controller` (new) |
+| `Vst3Active<T>` (`host/instance.rs:241`) | splits: `Vst3Processor<T>` (`IAudioProcessor::process`, `setProcessing`) and `Vst3Controller` (`IEditController`, component state, units); `ProcessorAny` wraps the typed form |
 | `Vst3Loaded::load(&Path)`, `load_class`, `Vst3Active::load(&Path, f64, usize)`, `load_with_mode` | inherent; `Vst3Active::load` (the third entry) is deleted, the rate and block leave `load` |
-| `activate::<T>(self, f64, usize) -> Result<Vst3Active<T>>` and `activate_with_mode` (`loaded.rs:392,420`), consuming on failure | `Loaded::activate(self, Prepare) -> Result<(Vst3ProcessorAny, Vst3Controller), Refused<Self>>`. **Changes**: the failure path returns the plugin. `ProcessMode` is `Prepare::mode` |
+| `activate::<T>(self, f64, usize) -> Result<Vst3Active<T>>` and `activate_with_mode` (`loaded.rs:392,420`), consuming on failure | `Loaded::activate(self, Prepare) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>>`. **Changes**: the failure path returns the plugin. `ProcessMode` is `Prepare::mode` |
 | `Vst3Active::deactivate(self) -> Vst3Loaded` (`instance.rs:454`), `set_sample_rate` (`:491`), `restart_bus_configuration` (`:1130`) | `Loaded::deactivate(processor, controller)`; the other two are deleted (`Reconfigure`, `CallDeactivate`/`CallActivate`) |
 | `read_latency_samples() -> u32`, `read_tail_samples() -> u32` (`loaded.rs:443,460`) | `Controller::latency`, `Controller::tail` |
-| `get_parameter(u32) -> f64`, `set_parameter(u32, f64)`, `get_parameter_list` (`loaded.rs:498,509,646`) | `parameter`, `set_parameter`, `parameters` with `ParamId` and `Normalized`; `parameter_by_index`, `units`, `program_lists` stay inherent |
+| `get_parameter(u32) -> f64`, `set_parameter(u32, f64)`, `get_parameter_list` (`loaded.rs:498,509,646`) | `parameter`, `set_parameter`, `parameters` with `ParamId` and `Normalized`; `parameter_ids`, `parameter_info(ParamId)`, `units`, `program_lists` stay inherent |
 | `get_state`, `set_state` (`loaded.rs:1370,1466`) | `Control::save_state`, `load_state` |
 | `open_editor(WindowHandle, ContentScale)`, `close_editor`, `editor_capabilities`, `poll_editor_resize_request` | `Editor` impl on `Vst3Controller` |
 | `take_restart`, `poll_plugin_notifications`, `RestartOutcome` (`loaded.rs:1210,1247`) | the handler's restart word is a `RequestWord`; queued edits and progress stay `PluginNotification`s on their own queue |
@@ -1946,7 +1946,7 @@ Each step is reviewable in one sitting and leaves `just ci` green.
    **2b** is the CLAP and VST3 impls and the server loaders' switch. `Control`, `Loaded`,
    `Processor`, `Controller`, `Refused`, `Stuck`, `PluginIo`, `Lifecycle`, `Hand`
    (local only) and `Hosted`; `RequestWord` and `EditRing` with their loom models;
-   `ClapProcessor`, `ClapController`, `Vst3ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands
+   `ClapProcessor`, `ClapController`, `ProcessorAny` and `Vst3Controller`; VST3's failed `activate` hands
    the plugin back; the `FakePlugin`. The server's CLAP and VST3 loaders become
    the impls plus a probe, and `Lifecycle::drive` replaces `service_requests` and
    `poll_restart`.

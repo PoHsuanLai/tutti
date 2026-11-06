@@ -151,7 +151,7 @@ impl ClockMaster {
     /// the audio thread ticks.
     ///
     /// Enabling mid-playback does not synthesise a Start: the next tick sees
-    /// `prev_playing` false against a playing transport and emits the
+    /// `prev.playing` false against a playing transport and emits the
     /// Continue + Song Position that resyncs the receiver.
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
@@ -279,7 +279,7 @@ impl ClockMaster {
         // Once per block: a rate moved mid-block would split it in two.
         let sample_rate = self.sample_rate();
         if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
-            // Keep prev_playing honest so re-enabling mid-playback emits a fresh
+            // Keep prev.playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
             // under way.
             self.prev

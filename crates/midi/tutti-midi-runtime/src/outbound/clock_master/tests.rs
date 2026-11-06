@@ -631,7 +631,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
 /// Mutations (run): compute the timecode at every piece (`piece == 0`
 /// made `true`, without the even-frame floor) → pieces 4-7 carry the next
 /// frame, and a rollover between the halves assembles a torn value →
-/// fails. Skip the alignment in `tick_mtc` (no `lead` store) → a start
+/// fails. Skip the alignment in `tick_mtc` (no `mtc.lead` store) → a start
 /// off an even frame sends piece 0 up to two frames from its label →
 /// fails.
 #[test]

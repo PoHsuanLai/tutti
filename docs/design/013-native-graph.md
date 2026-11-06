@@ -649,7 +649,7 @@ place that loses precision to be written out explicitly:
      wall-clock time), where it used to carry a phase by adding a
      quarter-frame's length each time.
    - **One MTC cycle carries one timecode.** A restarted grid puts its first
-     piece 0 on the next even frame of the timeline (`mtc_align`), and the
+     piece 0 on the next even frame of the timeline (`mtc.align`), and the
      eight nibbles are computed there (`timecode_at`: the nearest frame count,
      `position × num / (den × rate)`, on an even frame; drop-frame labels by
      `SmpteTimecode::from_frame_count`) and cached for pieces 1 to 7. The grid

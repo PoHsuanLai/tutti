@@ -15,7 +15,7 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
-use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 const BLOCK: usize = 256;
 
@@ -28,7 +28,7 @@ fn font() -> Arc<SoundFont> {
 }
 
 fn unit(rate: i32) -> SoundFontUnit {
-    SoundFontUnit::new(font(), &SynthesizerSettings::new(rate)).expect("builds")
+    SoundFontUnit::new(font(), &Settings::new(SampleRate::from(rate as u32))).expect("builds")
 }
 
 /// A clip playing middle C at `frame` into the unit, both at key 1 and 2,

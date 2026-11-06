@@ -1,6 +1,6 @@
-//! The crate's error type, kept in its own module so the vendored synthesizer
-//! error stops here. Only the file-parse error, `SoundFontError`, is
-//! re-exported from the crate root (the type `SoundFont::new` returns).
+//! The crate's error type. RustySynth's `SynthesizerError` stops here, as a
+//! string. The crate root re-exports `SoundFont` and `SoundFontError` (what
+//! `SoundFont::new` returns) from RustySynth.
 
 use thiserror::Error;
 
@@ -18,10 +18,10 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// RustySynth refused the `SoundFont` + `SynthesizerSettings` pair.
+    /// RustySynth refused the `SoundFont` and [`Settings`](crate::Settings) pair.
     ///
-    /// Carries a string rather than wrapping `rustysynth::SynthesizerError`
-    /// so the vendored type is not part of this crate's error surface.
+    /// Carries a string so the vendored `SynthesizerError` is not part of this
+    /// crate's error surface.
     #[error("SoundFont error: {0}")]
     SoundFont(String),
 }

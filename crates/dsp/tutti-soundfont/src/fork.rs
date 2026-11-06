@@ -82,7 +82,8 @@ mod tests {
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
 
-    use crate::{SoundFont, SoundFontUnit, SynthesizerSettings};
+    use crate::{Settings, SoundFont, SoundFontUnit};
+    use tutti_midi_types::midi2::num::u7;
 
     /// The live unit's rate.
     const LIVE: SampleRate = SampleRate(48_000.0);
@@ -102,12 +103,12 @@ mod tests {
     }
 
     /// A unit at `rate`, on preset `preset`.
-    fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: i32) -> SoundFontUnit {
-        let mut settings = SynthesizerSettings::new(rate.get() as i32);
-        settings.enable_reverb_and_chorus = false;
+    fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: u7) -> SoundFontUnit {
+        let mut settings = Settings::new(rate);
+        settings.reverb_and_chorus = false;
         let mut unit =
             SoundFontUnit::new(Arc::clone(soundfont), &settings).expect("the unit builds");
-        unit.program_change(0, preset);
+        unit.program_change(MidiChannel::FIRST, preset);
         unit
     }
 
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn a_fork_plays_at_the_render_rate_on_the_live_preset() {
         let font = soundfont();
-        let live = unit(&font, LIVE, 24);
+        let live = unit(&font, LIVE, u7::new(24));
         let source = live.fork_template();
 
         for rate in [LIVE, SampleRate(96_000.0)] {
@@ -167,7 +168,7 @@ mod tests {
                 "the fork shares the decoded SoundFont"
             );
             let out = render(fork, rate, 4_096);
-            let reference = render(Box::new(unit(&font, rate, 24)), rate, 4_096);
+            let reference = render(Box::new(unit(&font, rate, u7::new(24))), rate, 4_096);
             assert!(reference.iter().any(|&s| s != 0.0), "the note sounds");
             assert_eq!(out, reference, "{rate:?}: the note at the render's rate");
         }
@@ -185,8 +186,8 @@ mod tests {
     #[test]
     fn a_fork_releases_every_held_key() {
         let font = soundfont();
-        let mut live = unit(&font, LIVE, 16);
-        live.note_on(0, 60, 100);
+        let mut live = unit(&font, LIVE, u7::new(16));
+        live.note_on(MidiChannel::FIRST, u7::new(60), u7::new(100));
         let fork = live
             .fork_template()
             .fork(ForkMode::Live)

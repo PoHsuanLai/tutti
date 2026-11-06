@@ -7,24 +7,30 @@
 //! - [`SoundFontUnit`]: the player, a stereo graph node with one MIDI event
 //!   input.
 //! - [`SYNTH_BLOCK_FRAMES`]: the 8-frame MIDI timing resolution.
-//! - [`SoundFont`], [`SynthesizerSettings`], [`SoundFontError`]: re-exported
-//!   from RustySynth to decode a file and configure the synthesizer.
+//! - [`Settings`]: what a unit's synthesizer is built with.
+//! - [`SoundFont`] and [`SoundFontError`]: re-exported from RustySynth to
+//!   decode a file.
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
 
 mod error;
 pub use error::{Error, Result};
+
+mod settings;
+pub use settings::Settings;
 
 // `SoundFontUnit::fork_instance`: the unit in a fork of the graph
 // (an export), with its clip.
 mod fork;
 mod node;
 
-pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
+pub use rustysynth::{SoundFont, SoundFontError};
 
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::SampleRate;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_midi_types::MidiChannel;
+use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
@@ -74,12 +80,14 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use tutti_core::Arc;
-/// use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+/// use tutti_core::{Arc, SampleRate};
+/// use tutti_midi_types::MidiChannel;
+/// use tutti_midi_types::midi2::num::u7;
+/// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 ///
 /// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
-/// let mut unit = SoundFontUnit::new(soundfont, &SynthesizerSettings::new(48_000))?;
-/// unit.program_change(0, 0);
+/// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
+/// unit.program_change(MidiChannel::FIRST, u7::new(0));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -108,7 +116,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 ///
 /// RustySynth builds its voice tables against a rate at construction and
 /// offers no way to re-rate them. [`new`](Self::new) builds at
-/// `SynthesizerSettings::sample_rate`; the node's `prepare` swaps in
+/// `Settings::sample_rate`; the node's `prepare` swaps in
 /// [`with_sample_rate`](Self::with_sample_rate) (on the control thread,
 /// keeping the preset) when its graph runs at another rate, so a graph never
 /// plays it at the wrong pitch. A rate RustySynth refuses (outside
@@ -136,68 +144,49 @@ impl std::fmt::Debug for SoundFontUnit {
 }
 
 impl SoundFontUnit {
-    /// Creates a unit over a decoded `SoundFont`.
+    /// Creates a unit over a decoded `SoundFont`, sharing it rather than
+    /// copying it.
     ///
-    /// The synthesizer is built at `settings.sample_rate` (in Hz). RustySynth
-    /// cannot re-rate a synthesizer, so a graph prepared at another rate has
-    /// the node build a new one ([`with_sample_rate`](Self::with_sample_rate)).
-    ///
-    /// `settings.block_size` is ignored: the synthesizer is always built at
-    /// [`SYNTH_BLOCK_FRAMES`]. Every other field of `settings` (sample rate,
-    /// polyphony, reverb and chorus) is used as given. The `SoundFont` is
-    /// shared, not copied. Allocates the synthesizer's voices and effect
-    /// lines, so call it off the audio thread.
+    /// RustySynth cannot re-rate a synthesizer, so a graph prepared at another
+    /// rate has the node build a new one
+    /// ([`with_sample_rate`](Self::with_sample_rate)). Allocates the
+    /// synthesizer's voices and effect lines, so call it off the audio thread.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` +
-    /// [`SynthesizerSettings`] pair.
-    pub fn new(soundfont: Arc<SoundFont>, settings: &SynthesizerSettings) -> Result<Self> {
-        // `SynthesizerSettings` is `#[non_exhaustive]`, so it is rebuilt from
-        // `new` rather than struct-updated from the caller's copy.
-        let mut settings_owned = SynthesizerSettings::new(settings.sample_rate);
-        settings_owned.maximum_polyphony = settings.maximum_polyphony;
-        settings_owned.enable_reverb_and_chorus = settings.enable_reverb_and_chorus;
-        settings_owned.block_size = SYNTH_BLOCK_FRAMES;
-
-        let synthesizer = Synthesizer::new(&soundfont, &settings_owned)
+    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` and
+    /// [`Settings`] pair.
+    pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
+        let synthesizer = Synthesizer::new(&soundfont, &settings.to_rustysynth())
             .map_err(|e| Error::SoundFont(e.to_string()))?;
 
         Ok(Self {
             synthesizer,
-            // `SynthesizerSettings::sample_rate` is rustysynth's `i32`. The
-            // conversion into the engine's vocabulary happens here rather than
-            // being pushed onto callers.
-            sample_rate: SampleRate::from(settings.sample_rate.max(0) as u32),
+            sample_rate: SampleRate::from(settings.hz().max(0) as u32),
             left_buffer: Vec::new(),
             right_buffer: Vec::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         })
     }
 
-    /// Creates a unit over `soundfont` at `sample_rate`, playing `preset` on
-    /// `channel`: [`new`](Self::new) with the default
-    /// [`SynthesizerSettings`] at that rate, then
+    /// Creates a unit over `soundfont` at `sample_rate`, playing `program` on
+    /// `channel`: [`new`](Self::new) with the default [`Settings`], then
     /// [`program_change`](Self::program_change).
     ///
-    /// The rate is rounded to whole hertz (RustySynth's settings take an
-    /// `i32`). `channel` is 0..16 and `preset` the 7-bit program number,
-    /// as for `program_change`. Allocates, so call it off the audio thread.
+    /// Allocates, so call it off the audio thread.
     ///
     /// # Errors
     ///
     /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` at
-    /// that rate (outside 16–192 kHz).
+    /// that rate (outside 16 to 192 kHz).
     pub fn with_preset(
         soundfont: Arc<SoundFont>,
         sample_rate: SampleRate,
-        channel: i32,
-        preset: i32,
+        channel: MidiChannel,
+        program: u7,
     ) -> Result<Self> {
-        // rustysynth's settings field is `i32`; the cast is ours to make.
-        let hz = sample_rate.get().round() as i32;
-        let mut unit = Self::new(soundfont, &SynthesizerSettings::new(hz))?;
-        unit.program_change(channel, preset);
+        let mut unit = Self::new(soundfont, &Settings::new(sample_rate))?;
+        unit.program_change(channel, program);
         Ok(unit)
     }
 
@@ -221,9 +210,7 @@ impl SoundFontUnit {
     /// Returns [`Error::SoundFont`] if RustySynth refuses the rate (outside
     /// 16–192 kHz).
     pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        // RustySynth takes whole hertz; every rate a device or a render asks
-        // for is one.
-        let hz = sample_rate.get().round() as i32;
+        let hz = settings::hz(sample_rate);
         let synthesizer = self
             .synthesizer
             .with_sample_rate(hz)
@@ -244,30 +231,35 @@ impl SoundFontUnit {
     /// takes `&mut self`, so it cannot reach a unit that is already in a graph.
     /// It is useful for driving a unit by hand, before insertion or in tests.
     ///
-    /// These are RustySynth's MIDI 1.0 integers, not the engine's MIDI 2.0
-    /// vocabulary: `channel` is 0..16, `key` and `velocity` are 7-bit (0..128).
-    /// A `velocity` of 0 reads as a note-off to RustySynth.
-    pub fn note_on(&mut self, channel: i32, key: i32, velocity: i32) {
-        self.synthesizer.note_on(channel, key, velocity);
+    /// These are MIDI 1.0 values, as RustySynth takes them. A `velocity` of 0
+    /// reads as a note-off.
+    pub fn note_on(&mut self, channel: MidiChannel, key: u7, velocity: u7) {
+        self.synthesizer.note_on(
+            i32::from(channel.get()),
+            i32::from(u8::from(key)),
+            i32::from(u8::from(velocity)),
+        );
     }
 
-    /// Releases a note directly, bypassing MIDI.
-    ///
-    /// Prefer the node's MIDI event input; see [`note_on`](Self::note_on).
-    ///
-    /// `channel` is 0..16 and `key` is 7-bit (0..128), per MIDI 1.0.
-    pub fn note_off(&mut self, channel: i32, key: i32) {
-        self.synthesizer.note_off(channel, key);
+    /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
+    /// input; see [`note_on`](Self::note_on).
+    pub fn note_off(&mut self, channel: MidiChannel, key: u7) {
+        self.synthesizer
+            .note_off(i32::from(channel.get()), i32::from(u8::from(key)));
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.
     ///
-    /// `channel` is 0..16 and `preset` is the 7-bit program number (0..128)
-    /// within the SoundFont's current bank. Call it before inserting the unit;
-    /// once in a graph, send a program change on the event input instead.
-    pub fn program_change(&mut self, channel: i32, preset: i32) {
-        self.synthesizer
-            .process_midi_message(channel, 0xC0, preset, 0);
+    /// `program` is the number within the SoundFont's current bank. Call it
+    /// before inserting the unit; once in a graph, send a program change on the
+    /// event input instead.
+    pub fn program_change(&mut self, channel: MidiChannel, program: u7) {
+        self.synthesizer.process_midi_message(
+            i32::from(channel.get()),
+            0xC0,
+            i32::from(u8::from(program)),
+            0,
+        );
     }
 
     /// Render exactly `range` of this block's scratch buffers, advancing the

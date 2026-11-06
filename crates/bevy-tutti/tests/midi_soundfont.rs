@@ -239,7 +239,7 @@ mod midi_soundfont_audio {
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
-    use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -327,8 +327,8 @@ mod midi_soundfont_audio {
     /// Set up an app with a real soundfont synth wired to output.
     fn app_with_soundfont() -> (App, Entity) {
         let sf = soundfont();
-        let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
-        settings.enable_reverb_and_chorus = false;
+        let mut settings = Settings::new(SampleRate(SAMPLE_RATE));
+        settings.reverb_and_chorus = false;
         let unit = SoundFontUnit::new(sf, &settings).expect("build the SoundFontUnit");
 
         let mut app = App::new();
@@ -504,7 +504,7 @@ mod midi_route {
     use tutti_midi_runtime::MidiInputNode;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
-    use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -566,8 +566,8 @@ mod midi_route {
         let (input_node, _) = graph.graph().insert(MidiInputNode::new(Some(
             Box::new(wire.clone()) as Box<dyn MidiIn>,
         )));
-        let mut settings = SynthesizerSettings::new(SAMPLE_RATE as i32);
-        settings.enable_reverb_and_chorus = false;
+        let mut settings = Settings::new(SampleRate(SAMPLE_RATE));
+        settings.reverb_and_chorus = false;
         let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
         let (synth_node, ()) = graph.graph().insert(unit);
         graph.graph().set_outputs_from(synth_node);

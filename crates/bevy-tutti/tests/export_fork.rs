@@ -1083,7 +1083,7 @@ mod synths {
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
-    use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
     const BEAT_48K: usize = 32_000;
@@ -1125,8 +1125,8 @@ mod synths {
 
     /// A SoundFont unit at `rate`, on [`PRESET`].
     fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
-        let mut settings = SynthesizerSettings::new(rate as i32);
-        settings.enable_reverb_and_chorus = false;
+        let mut settings = Settings::new(SampleRate(rate));
+        settings.reverb_and_chorus = false;
         let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
         unit.program_change(0, PRESET);
         unit

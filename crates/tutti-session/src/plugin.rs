@@ -401,7 +401,10 @@ impl HostedPlugin {
     /// with no mirror: no knob to start from).
     #[cfg(feature = "modulation")]
     pub(crate) fn param_value(&self, id: u32) -> Option<Option<f32>> {
-        self.mirror.as_ref().map_or(Some(None), |m| m.get(id))
+        self.mirror.as_ref().map_or(Some(None), |m| {
+            m.get(tutti_plugin::handles::ParamId::new(id))
+                .map(|v| v.map(|v| v.get() as f32))
+        })
     }
 }
 
@@ -514,7 +517,10 @@ impl std::fmt::Debug for PluginParamRead {
 #[derive(Debug)]
 pub struct PluginParamsRead {
     node: AudioNode,
-    values: std::collections::HashMap<u32, f32>,
+    values: std::collections::HashMap<
+        tutti_plugin::handles::ParamId,
+        tutti_plugin::handles::Normalized,
+    >,
     /// The record's mirror token when the job was asked for.
     token: Arc<()>,
 }
@@ -766,8 +772,8 @@ impl Session {
             if let Some(mirror) = hosted.mirror.as_mut() {
                 let state = &self.mods.state;
                 mirror.drain_edits(|id, value| {
-                    if let Some(target) = state.plugin_target(node, id) {
-                        state.set_knob(target, value);
+                    if let Some(target) = state.plugin_target(node, id.get()) {
+                        state.set_knob(target, value.get() as f32);
                     }
                 });
             }
@@ -849,8 +855,11 @@ mod tests {
                     .collect(),
             )
         }
-        fn parameter_value(&self, id: ParamId) -> Option<f32> {
-            self.params.iter().find(|(a, _)| *a == id).map(|&(_, v)| v)
+        fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
+            self.params
+                .iter()
+                .find(|(a, _)| *a == id)
+                .map(|&(_, v)| Normalized::new(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {

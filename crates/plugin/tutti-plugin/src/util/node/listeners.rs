@@ -19,8 +19,9 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
+use crate::protocol::{Normalized, ParamId};
 
-type ParamCb = Arc<dyn Fn(u32, f32) + Send + Sync>;
+type ParamCb = Arc<dyn Fn(ParamId, Normalized) + Send + Sync>;
 type RefreshCb = Arc<dyn Fn(PluginRefresh) + Send + Sync>;
 type InvalidateCb = Arc<dyn Fn(PluginInvalidation) + Send + Sync>;
 
@@ -49,7 +50,7 @@ impl ParameterChangeSink {
         Self::default()
     }
 
-    pub(crate) fn set<F: Fn(u32, f32) + Send + Sync + 'static>(&self, f: F) {
+    pub(crate) fn set<F: Fn(ParamId, Normalized) + Send + Sync + 'static>(&self, f: F) {
         *self.inner.lock() = Some(Arc::new(f));
     }
 
@@ -57,7 +58,7 @@ impl ParameterChangeSink {
         *self.inner.lock() = None;
     }
 
-    pub(crate) fn fire(&self, param_id: u32, value: f32) {
+    pub(crate) fn fire(&self, param_id: ParamId, value: Normalized) {
         let cb = self.inner.lock().clone();
         if let Some(cb) = cb {
             cb(param_id, value);

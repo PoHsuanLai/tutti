@@ -220,7 +220,7 @@ unsafe impl Sync for MidiSendBuffer {}
 
 impl MidiSendBuffer {
     /// A buffer for a block's whole MIDI cap: every event a plugin node
-    /// delivers (out of process, `midi_from_wire` keeps at most that many).
+    /// delivers (out of process, the wire adapter refuses a longer list).
     pub(crate) fn new() -> Self {
         Self::with_capacity(MIDI_STACK_CAPACITY)
     }

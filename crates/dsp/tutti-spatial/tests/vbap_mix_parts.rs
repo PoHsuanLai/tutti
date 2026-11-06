@@ -8,7 +8,7 @@
 //! edge resolved, no port left to read silence that the builder wires. So
 //! each case builds the mix twice from the same sources, once with
 //! `build_vbap_mix` and once from the parts through this file's own
-//! [`insert`], and asserts the renders are **bit-identical**.
+//! [`insert`], and asserts the renders are bit-identical.
 //!
 //! Exact equality is portable: both sides run the same unit code on the same
 //! machine, in the same blocks.

@@ -27,6 +27,7 @@ use crate::protocol::{
     ScaleChanges, TransportInfo,
 };
 use crate::util::transport::shm::AudioSlab;
+use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
 /// [`AudioBridge::submit`]'s signature manageable. All default to empty.
@@ -101,7 +102,7 @@ impl AudioBridge {
     pub fn new(
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
-        sample_rate: f64,
+        sample_rate: SampleRate,
     ) -> Result<(Self, BridgeThread)> {
         // The rate lives on `Channels`, not here: the bridge thread sizes its
         // own reply timeout from the same block period, and two copies of the
@@ -170,7 +171,7 @@ impl AudioBridge {
     /// The sample rate (Hz) the plugin refused and its reason, while it is
     /// refused: it is loaded, renders silence, and is retried at the next
     /// rate change. `None` once it takes a rate.
-    pub fn rate_refusal(&self) -> Option<(f64, String)> {
+    pub fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         self.lifecycle.rate_refusal()
     }
 
@@ -235,7 +236,7 @@ impl AudioBridge {
 
     // --- RT fire-and-forget ---
 
-    pub fn set_parameter_rt(&self, param_id: ParamId, value: f32) -> bool {
+    pub fn set_parameter_rt(&self, param_id: ParamId, value: Normalized) -> bool {
         !self.lifecycle.is_crashed()
             && self
                 .channels
@@ -267,7 +268,7 @@ impl AudioBridge {
         }
     }
 
-    pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
+    pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         // Publish before queueing, so both the staleness bound and
         // the bridge thread's reply timeout track the new period from here on.
         self.channels.set_sample_rate(rate);
@@ -565,11 +566,11 @@ impl AudioBridge {
         ask_resp.recv_timeout(timeout).ok().flatten()
     }
 
-    pub fn parameter(&self, param_id: ParamId) -> Option<f32> {
+    pub fn parameter(&self, param_id: ParamId) -> Option<Normalized> {
         if self.lifecycle.is_crashed() {
             return None;
         }
-        let (ask_resp, reply) = ask::<Option<f32>>();
+        let (ask_resp, reply) = ask::<Option<Normalized>>();
         if !self
             .channels
             .push_command(Command::GetParameter { param_id, reply })
@@ -636,10 +637,10 @@ mod tests {
     /// disconnected.
     #[test]
     fn the_sample_rate_is_stored_and_updated_live() {
-        let channels = Channels::new(48_000.0);
-        assert_eq!(channels.sample_rate(), 48_000.0);
+        let channels = Channels::new(SampleRate(48_000.0));
+        assert_eq!(channels.sample_rate(), SampleRate(48_000.0));
 
-        channels.set_sample_rate(192_000.0);
-        assert_eq!(channels.sample_rate(), 192_000.0);
+        channels.set_sample_rate(SampleRate(192_000.0));
+        assert_eq!(channels.sample_rate(), SampleRate(192_000.0));
     }
 }

@@ -102,9 +102,7 @@ impl Node for PluginClient<Bound> {
             .reserve_param_changes(c.state.params.room(), points);
         c.controls.set_pipeline(c.state.io.pipeline_latency());
         c.controls.restamp(p.sample_rate());
-        // `.get()` here and nowhere earlier: `set_sample_rate_rt` puts the rate
-        // on the IPC wire, which is where the types stop.
-        let _ = c.bridge.set_sample_rate_rt(p.sample_rate().get());
+        let _ = c.bridge.set_sample_rate_rt(p.sample_rate());
         // A fork's graph is compiled from the shape read right after this, and
         // a plugin may move its latency when its rate or render mode changes
         // (an HQ offline mode is the usual case). Both changes are queued

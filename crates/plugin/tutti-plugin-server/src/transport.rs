@@ -10,9 +10,8 @@
 //! anyone to serve.
 
 use interprocess::local_socket::{ListenerOptions, traits::Listener as _};
-use std::io::{Read, Write};
-use tutti_plugin::server::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
-use tutti_plugin::{BridgeError, Result};
+use tutti_plugin::Result;
+use tutti_plugin::server::{BridgeMessage, HostMessage, read_frame, write_frame};
 
 /// The platform's concrete listener/stream pair, not the crate's dispatch enum.
 ///
@@ -69,48 +68,22 @@ impl SocketTransport {
 
 impl Transport for SocketTransport {
     fn recv(&mut self) -> Result<HostMessage> {
-        let mut len_buf = [0u8; 4];
-        self.stream.read_exact(&mut len_buf)?;
-        let len = u32::from_be_bytes(len_buf) as usize;
-        // Bound before allocating — the same check the host makes on its own
-        // side of this wire, for the same reason. See [`MAX_FRAME_BYTES`].
+        // The frame is bounded before it is allocated (see
+        // [`MAX_FRAME_BYTES`]). The server is the more exposed end: it loads
+        // untrusted plugin binaries, and one that corrupts its memory could
+        // otherwise turn a bad length into a 4 GiB allocation.
         //
-        // The server is the *more* exposed end of the two: it is the process
-        // that loads untrusted plugin binaries, so a plugin that corrupts the
-        // server's own memory can drive this loop. Trusting the length here
-        // would let it turn a corrupted write into a 4 GiB allocation, or park
-        // the session thread in `read_exact` forever.
-        //
-        // The verdict differs from the host's on purpose. The host reads this
-        // same condition as `ProcessCrashed`, because it has no way to keep
-        // talking to a server whose stream is desynchronised. Here the peer is
-        // the host, which has not crashed: the error names the frame instead,
-        // and the session ends on it either way.
-        if len > MAX_FRAME_BYTES {
-            return Err(BridgeError::ConnectionFailed(format!(
-                "incoming frame is {len} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit"
-            )));
-        }
-        let mut data = vec![0u8; len];
-        self.stream.read_exact(&mut data)?;
-        Ok(bincode::deserialize(&data)?)
+        // The verdict differs from the host's on purpose. The host reads an
+        // oversize length as `ProcessCrashed`; here the peer is the host,
+        // which has not crashed, so the error names the frame and the session
+        // ends on it either way.
+        read_frame(&mut self.stream)
     }
 
     fn send(&mut self, msg: &BridgeMessage) -> Result<()> {
-        let data = bincode::serialize(msg)?;
-        // As on the host's `send`: refuse rather than let `as u32` truncate the
-        // prefix, which would desync the stream instead of failing. Reachable
-        // here through `StateData`, whose chunk is whatever the plugin hands
-        // back from `get_state` — a number this process does not choose.
-        if data.len() > MAX_FRAME_BYTES {
-            return Err(BridgeError::ConnectionFailed(format!(
-                "outgoing frame is {} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit",
-                data.len()
-            )));
-        }
-        self.stream.write_all(&(data.len() as u32).to_be_bytes())?;
-        self.stream.write_all(&data)?;
-        Ok(())
+        // Reachable with an oversize body through `StateData`, whose chunk is
+        // whatever the plugin hands back from `get_state`.
+        write_frame(&mut self.stream, msg)
     }
 }
 
@@ -495,8 +468,11 @@ fn parent_is_alive() -> bool {
 #[cfg(all(test, unix))]
 mod recv_tests {
     use super::*;
+    use std::io::Write;
     use std::os::fd::OwnedFd;
     use std::os::unix::net::UnixStream;
+    use tutti_plugin::BridgeError;
+    use tutti_plugin::server::MAX_FRAME_BYTES;
 
     /// A length prefix over the cap is a framing violation by the host, not
     /// this process crashing: the error names the frame and the limit, and is

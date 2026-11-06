@@ -5,7 +5,7 @@
 //! width, a blend) that no `UnitParam` addresses, so they cannot take
 //! `tutti_graph::param_parts`' `ParamSet` fork. This is the same promise
 //! without the address: the template is a clone of the inserted node that
-//! **shares** its cells, so a fork taken later reads the placement the host
+//! shares its cells, so a fork taken later reads the placement the host
 //! has set by then; the fork itself detaches every cell and is reset, so no
 //! later move of the live node reaches it and no move of the fork reaches the
 //! live node.

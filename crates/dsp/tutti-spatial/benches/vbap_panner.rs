@@ -1,7 +1,7 @@
 //! **What does one block of VBAP panning cost, at 2 and 6 speakers, for a
 //! 64-frame and a 1024-frame block?**
 //!
-//! A 64-frame block at 48 kHz has **1.333 ms** (1024 frames: 21.3 ms); divide
+//! A 64-frame block at 48 kHz has 1.333 ms (1024 frames: 21.3 ms); divide
 //! a case's time by that for the fraction of the budget one panned source
 //! consumes.
 //!
@@ -45,7 +45,8 @@ fn bench(c: &mut Criterion) {
         for (speakers, block) in [(2u16, 64usize), (6, 64), (2, 1024), (6, 1024)] {
             g.throughput(Throughput::Elements(block as u64));
             let node = VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap();
-            node.set_position(Azimuth(20.0), Elevation::LEVEL);
+            node.controls()
+                .set_position(Azimuth(20.0), Elevation::LEVEL);
             let mut d = Direct::new(node, SampleRate(48_000.0), block);
             fill_noise(d.inputs_mut());
             for _ in 0..WARMUP_FRAMES / block {
@@ -61,7 +62,9 @@ fn bench(c: &mut Criterion) {
                         } else {
                             bearing + 7.0
                         };
-                        d.node.set_position(Azimuth(bearing), Elevation::LEVEL);
+                        d.node
+                            .controls()
+                            .set_position(Azimuth(bearing), Elevation::LEVEL);
                     }
                     d.block();
                     black_box(d.output(0)[block - 1]);

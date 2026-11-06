@@ -550,7 +550,7 @@ fn normalized_audio_can_be_written_to_every_format() {
     );
 }
 
-/// A resample must reach **every** format, not just the ones that happened to
+/// A resample must reach every format, not just the ones that happened to
 /// route through the shared pump.
 ///
 /// An encoder that pulled from `drive` directly while taking its header rate
@@ -688,7 +688,7 @@ fn normalized_export_lifts_the_level_toward_the_target() {
 /// `Normalize::Peak` targets TRUE peak (4x oversampled), which is why it routes
 /// through the R128 meter rather than a `fold(max, abs)` over the planes.
 ///
-/// So the file must be re-**measured**, not merely re-read: for this signal the
+/// So the file must be re-measured, not merely re-read: for this signal the
 /// two readings differ by ~1 dB. A 0.5 constant has a −6.02 dB *sample* peak but
 /// a −4.99 dBTP *true* peak — the oversampling filter rings at the buffer's hard
 /// leading edge. Asserting the sample peak against a dBTP target would be
@@ -878,7 +878,7 @@ fn int_file_peak(path: &std::path::Path) -> f32 {
         .fold(0.0f32, f32::max)
 }
 
-/// **Normalizing silence must write silence.**
+/// Normalizing silence must write silence.
 ///
 /// If `render_to_buffers` dithered, at an integer depth the planes handed to
 /// the meter would not be silent — they would carry ±1 LSB of noise. The meter
@@ -922,7 +922,7 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
     );
 }
 
-/// **The dBTP target must hold in the written file, resample included.**
+/// The dBTP target must hold in the written file, resample included.
 ///
 /// Sample-rate conversion moves the true peak — its interpolation overshoots
 /// between the original samples — so a gain measured at the render rate and
@@ -1027,12 +1027,12 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
     .expect_err("an unmeasurable rate must not report success");
 
     assert!(
-        matches!(err, tutti_export::Error::Unmeasurable(_)),
+        matches!(err, tutti_export::Error::Unmeasurable { .. }),
         "expected Unmeasurable, got {err:?}"
     );
 }
 
-/// **The width bug.** A master whose channel count is not one of 1/2/4/6/8/12 —
+/// The width bug. A master whose channel count is not one of 1/2/4/6/8/12 —
 /// `Multi(3)`, `Multi(5)`, `Multi(7)` — must export.
 ///
 /// It could not, and this test could not have been written before. The render

@@ -312,6 +312,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
 fn a_plugin_gui_edit_becomes_the_knob() {
     use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
     use bevy_tutti::plugin_host::PluginEmitter;
+    use tutti_plugin::handles::{Normalized, ParamId};
 
     let path = common::plugin::vst2_probe();
     let burst = |count: u32| {
@@ -369,8 +370,11 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
-            .with_plugin(node, |p| p.param_values().expect("the mirror").get(0)),
-        Some(Some(Some(0.5))),
+            .with_plugin(node, |p| p
+                .param_values()
+                .expect("the mirror")
+                .get(ParamId::new(0))),
+        Some(Some(Some(Normalized::new(0.5)))),
         "and the mirror"
     );
 }
@@ -394,7 +398,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
     use bevy_tutti::plugin_host::PluginEmitter;
     use tutti_graph::ForkByClone;
-    use tutti_plugin::handles::ParamId;
+    use tutti_plugin::handles::{Normalized, ParamId};
     use tutti_types::Depth;
 
     let mut app = app();
@@ -454,7 +458,11 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .collect();
         sources.sort();
         assert_eq!(sources, want, "{what}: the port's sources");
-        assert_eq!(value(app), 0.25, "{what}: the lane reaches the plugin");
+        assert_eq!(
+            value(app),
+            Normalized::new(0.25),
+            "{what}: the lane reaches the plugin"
+        );
     };
     check(&mut app, &[lane], "before");
     app.world_mut()
@@ -484,7 +492,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
 fn a_plugin_echoing_the_lane_keeps_its_knob() {
     use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource};
     use bevy_tutti::plugin_host::PluginEmitter;
-    use tutti_plugin::handles::ParamId;
+    use tutti_plugin::handles::{Normalized, ParamId};
     use tutti_types::Depth;
 
     let path = common::plugin::vst2_probe();
@@ -536,7 +544,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
         );
         assert_eq!(
             handle.params().parameter_value(ParamId::new(0)),
-            Some(0.25),
+            Some(Normalized::new(0.25)),
             "round {round}: the plugin reads the knob plus the offset"
         );
     }

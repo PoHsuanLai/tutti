@@ -39,10 +39,10 @@ metadata read at load) and [`Vst3Error`] (with [`LoadStage`] for load failures).
 a caller can stay format-agnostic, but does not define them. MIDI is the
 workspace-wide UMP [`tutti_midi_types::MidiEvent`], re-exported here as
 [`MidiEvent`]; there is **no VST3-specific MIDI event trait to implement**. To
-send something that is not already a `MidiEvent`, convert it. [`events`] exposes
-the typed VST3 event structs; the plugin's event list encodes a `MidiEvent`
+send something that is not already a `MidiEvent`, convert it. The crate root
+exposes the typed VST3 events and the translation: [`MidiEncoder`] encodes a `MidiEvent`
 stream into them, following each channel's per-note bend range (RPN #00/07)
-across blocks, and [`Vst3Event::to_midi`] decodes one back.
+across blocks, and [`EventExt::to_midi`] decodes one back.
 
 **Subprocess isolation.** This crate hosts in-process.
 [`tutti-plugin-server`](../../tutti-plugin-server) wraps it in a subprocess, and
@@ -290,5 +290,5 @@ MIT OR Apache-2.0
 [`WindowHandle`]: crate::WindowHandle
 [`EditorSize`]: crate::EditorSize
 [`MidiEvent`]: crate::MidiEvent
-[`events`]: crate::events
-[`Vst3Event::to_midi`]: crate::events::Vst3Event::to_midi
+[`MidiEncoder`]: crate::MidiEncoder
+[`EventExt::to_midi`]: crate::EventExt::to_midi

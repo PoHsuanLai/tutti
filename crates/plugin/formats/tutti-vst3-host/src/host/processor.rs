@@ -12,17 +12,17 @@ use tutti_plugin_types::{
 };
 use tutti_types::ChannelLayout;
 
+use crate::events::{Stager, Vst3InputEvents, drain_midi};
 use crate::types::{
     AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef, TransportInfo,
-    Vst3InputEvents, Vst3Sample, to_process_context,
+    Vst3Sample, to_process_context,
 };
 use tutti_vst3_ffi::{AudioSide, BusBuffers, EventList, ParameterChangesImpl, ProcessIo};
 
 use super::midi_learn::MidiLearnProducer;
 use super::midi_mapping::{CcRoute, midi_to_mapped_controller, stage_input_events};
 use super::sequencer::{
-    SeqScratch, convert_chords_into, convert_expr_ints_into, convert_expr_texts_into,
-    convert_scales_into,
+    SeqScratch, convert_chords_into, convert_expr_texts_into, convert_scales_into, expr_ints_of,
 };
 use super::shell::{Hold, Shell};
 
@@ -71,6 +71,8 @@ pub(super) struct InputStaging {
     /// buffer; extra input buses receive silence.
     pub(super) buses: BusBuffers,
     pub(super) events: vst3::ComWrapper<EventList>,
+    /// Fills `events` from a block's sources; keeps the per-note bend ranges.
+    pub(super) stager: Stager,
     pub(super) param_changes: vst3::ComWrapper<ParameterChangesImpl>,
 }
 
@@ -115,7 +117,7 @@ impl OutputStaging {
     /// return pools. Both `fill_*` clear their destination first and reuse its
     /// heap capacity, so this is allocation-free after warmup.
     pub(super) fn drain_emitted(&mut self) {
-        self.events.fill_midi_events(&mut self.emitted_midi);
+        drain_midi(&self.events, &mut self.emitted_midi);
         self.param_changes
             .fill_changes(&mut self.emitted_param_changes);
     }
@@ -358,6 +360,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // MIDI plus every other input event source into the input list.
         let effective_params = stage_input_events(
             &mut self.audio.cc,
+            &mut self.audio.input.stager,
             &self.audio.input.events,
             events,
             param_changes,
@@ -668,17 +671,13 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             Some(t) => convert_expr_texts_into(t, &mut seq.expr_texts),
             None => seq.expr_texts.clear(),
         }
-        match expressive.and_then(|e| e.expr_ints) {
-            Some(i) => convert_expr_ints_into(i, &mut seq.expr_ints),
-            None => seq.expr_ints.clear(),
-        }
         let events = Vst3InputEvents {
             midi: ctx.midi_events,
             note_expressions,
             chords: &seq.chords,
             scales: &seq.scales,
             expr_texts: &seq.expr_texts,
-            expr_ints: &seq.expr_ints,
+            expr_ints: expr_ints_of(expressive),
         };
         let result = match self.process(buffer, &events, ctx.param_changes, &transport) {
             Ok(output) => {

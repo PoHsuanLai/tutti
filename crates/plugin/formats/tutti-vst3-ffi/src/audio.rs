@@ -208,11 +208,7 @@ pub struct AudioSide {
     shared: Arc<Shared>,
 }
 
-impl std::fmt::Debug for AudioSide {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioSide").finish_non_exhaustive()
-    }
-}
+opaque_debug!(AudioSide);
 
 impl Drop for AudioSide {
     fn drop(&mut self) {
@@ -338,14 +334,10 @@ impl AudioSide {
         // SAFETY: the claim (`state`) is held and the plugin is not retired, so
         // the processor is alive and not being torn down.
         let processor = unsafe { self.shared.processor() }.ok_or(Vst3Error::NotInitialized)?;
-        // SAFETY: every pointer in `data` is to memory that outlives the call
-        // and is valid for what the SDK says the field means: the bus arrays
-        // and their channel tables are the scratch `io` borrows and point at
-        // slices of at least `numSamples` samples (checked above, the aux block
-        // included), the lists are the live host objects `io` borrows, and the
-        // context is `io`'s exclusive borrow. The input channels are `*mut` in the
-        // ABI but come from shared slices: the plugin must not write them (see
-        // `BusBuffers::bind_inputs_f32`).
+        // SAFETY: every pointer in `data` outlives the call and is valid for its field:
+        // the bus tables point at slices of at least `numSamples` samples (checked
+        // above), and the lists and context are `io`'s borrows. Input channels are
+        // `*mut` in the ABI but shared slices here; the plugin must not write them.
         let result = check(unsafe { processor.process(&mut data) });
         drop(state);
         result

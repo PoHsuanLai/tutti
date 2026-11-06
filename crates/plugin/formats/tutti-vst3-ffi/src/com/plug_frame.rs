@@ -144,11 +144,7 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
     }
 }
 
-impl std::fmt::Debug for HostPlugFrame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostPlugFrame").finish_non_exhaustive()
-    }
-}
+opaque_debug!(HostPlugFrame);
 
 #[cfg(test)]
 mod tests {

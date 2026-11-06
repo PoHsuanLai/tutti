@@ -601,11 +601,11 @@ impl AudioIn for DyingMic {
 
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         let mut n = 0;
-        for chunk in out.chunks_exact_mut(2) {
+        for chunk in out.as_chunks_mut::<2>().0 {
             let Some(frame) = self.queued.pop_front() else {
                 break;
             };
-            chunk.copy_from_slice(&frame);
+            *chunk = frame;
             n += 1;
         }
         Samples(n)

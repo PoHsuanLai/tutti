@@ -18,8 +18,9 @@ publish = false
 # Both crate types on purpose: `cdylib` is the loadable artifact the host
 # dlopens; `rlib` lets `tutti-vst2-host` take this as a dev-dependency so
 # Cargo builds the cdylib as part of the same `cargo test` invocation
-# (one target-dir lock, no nested `cargo`, which would deadlock on it). The rlib also lets the test import `ProcessCapture`
-# and the misbehaviour constants directly instead of hand-mirroring them.
+# (one target-dir lock, no nested `cargo`, which would deadlock on it). The
+# rlib also lets the test import `ProcessCapture` and the misbehaviour
+# constants directly instead of hand-mirroring them.
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -41,12 +41,22 @@
 # - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
-#   that depends on its own depth: no statement in a `.rs` file under `crates/`
-#   or `testing/` joins a `".."` literal or a `.parent()` onto
-#   `CARGO_MANIFEST_DIR`, and no `"../…assets"` literal appears. Build scripts
-#   are exempt (their path is a build-script path).
-#   Mutation: `.join("../../assets/x")` after `env!("CARGO_MANIFEST_DIR")` in a
-#   test, and a `.parent()` chain on it -> exit 1, "depth-dependent path".
+#   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
+#   (build scripts and EXEMPT_FILES excepted; `include_str!`, `include!`,
+#   `include_bytes!` and `#[path]` are source-relative and ignored) it denies a
+#   string literal with `..` as a path component when the file mentions
+#   `CARGO_MANIFEST_DIR` or the literal is an argument of `Path::new`,
+#   `PathBuf::from`, `.join`, `.push` or `concat!`; a literal climbing to
+#   `assets`; and `.ancestors()` or `.parent()` in a file that mentions
+#   `CARGO_MANIFEST_DIR`.
+#   Limits: a textual scan. A `..` built at run time (`format!`, a
+#   non-literal) or a literal passed through a helper in a file that does not
+#   mention `CARGO_MANIFEST_DIR` is not seen.
+#   Mutation (each planted at the end of `tutti-dsp/src/lib.rs`, seen to exit
+#   1, removed): `concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/x")`;
+#   `let m = env!("CARGO_MANIFEST_DIR"); Path::new(m).join("../../fixtures/x")`;
+#   `Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2)`;
+#   `Path::new("../../samples/x.sf2")`; `.join("..").join("..").join("assets")`.
 #
 # Needs a Rust toolchain (cargo metadata) and python3. No build.
 set -euo pipefail
@@ -179,28 +189,52 @@ PY
 python3 -I - <<'PY'
 import os, re, sys
 
+# A path component `..` in a string literal, `.ancestors()` or `.parent()`
+# near the manifest directory: all depend on how deep a crate sits.
+# Exempt: the macros that resolve against the source file (`include_str!`,
+# `include!`, `include_bytes!`, `#[path = ".."]`), which are crate-relative by
+# design, and build scripts (a build-script path). EXEMPT_FILES lists any other
+# legitimate use, with the reason.
+EXEMPT_FILES = {
+    # The walk itself: it climbs from the manifest dir to find the repo root.
+    "testing/tutti-fixtures/src/lib.rs": "implements repo_root and profile_dir",
+}
+
 root = os.getcwd()
-# One statement: from the `CARGO_MANIFEST_DIR` read to the next `;`.
-manifest_stmt = re.compile(r'CARGO_MANIFEST_DIR[^;]*;', re.S)
-depth_dependent = re.compile(r'"\.\./|\.parent\(\)')
-assets_up = re.compile(r'"(?:\.\./)+[^"]*assets')
+literal = r'"(?:[^"\\]|\\.)*"'
+source_relative = re.compile(
+    r'(?:include_str|include_bytes|include)!\(\s*' + literal + r'\s*\)|#\[path\s*=\s*' + literal + r'\s*\]'
+)
+has_dotdot = lambda lit: ".." in re.split(r'[/\\]', lit[1:-1])
+path_call = re.compile(r'(?:Path::new|PathBuf::from|\.join|\.push|\.starts_with|concat!)\(\s*(' + literal + ')')
 bad = []
+def report(path, text, pos, why):
+    bad.append((path, text.count("\n", 0, pos) + 1, why))
+
 for top in ("crates", "testing"):
     for dirpath, _, files in os.walk(os.path.join(root, top)):
         for name in files:
-            if not name.endswith(".rs") or name == "build.rs":
-                continue
             path = os.path.join(dirpath, name)
-            text = open(path, encoding="utf-8").read()
-            for m in manifest_stmt.finditer(text):
-                if depth_dependent.search(m.group(0)):
-                    bad.append((path, text.count("\n", 0, m.start()) + 1))
-            for m in assets_up.finditer(text):
-                bad.append((path, text.count("\n", 0, m.start()) + 1))
+            rel = os.path.relpath(path, root)
+            if not name.endswith(".rs") or name == "build.rs" or rel in EXEMPT_FILES:
+                continue
+            raw = open(path, encoding="utf-8").read()
+            # Blank the crate-relative macros, keeping offsets and newlines.
+            text = source_relative.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), raw)
+            mentions_manifest = "CARGO_MANIFEST_DIR" in text
+            for m in re.finditer(literal, text):
+                lit = m.group(0)
+                if has_dotdot(lit) and (mentions_manifest or path_call.search(text[max(0, m.start() - 40): m.end()])):
+                    report(path, text, m.start(), f"{lit} climbs with `..`")
+                elif re.search(r'(?:\.\./)+[^"]*assets', lit):
+                    report(path, text, m.start(), f"{lit} climbs to assets")
+            if mentions_manifest:
+                for m in re.finditer(r'\.(?:ancestors|parent)\(\)', text):
+                    report(path, text, m.start(), f"`{m.group(0)}` in a file that reads CARGO_MANIFEST_DIR")
 if bad:
     print("check-layout: FAIL")
-    for path, line in bad:
-        print(f"  {os.path.relpath(path, root)}:{line}: depth-dependent path; use tutti_fixtures::asset or repo_root")
+    for path, line, why in bad:
+        print(f"  {os.path.relpath(path, root)}:{line}: depth-dependent path ({why}); use tutti_fixtures::asset or repo_root")
     sys.exit(1)
 print("check-layout: no depth-dependent test paths")
 PY

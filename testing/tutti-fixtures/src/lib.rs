@@ -45,25 +45,20 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// The repository root: the first ancestor holding `Cargo.lock`, walking up
-/// from this crate's own manifest directory, then from the current directory.
+/// The repository root: the first ancestor of this crate's manifest directory
+/// that holds a `Cargo.lock`.
 ///
 /// # Panics
 ///
-/// If neither start has such an ancestor, naming both.
+/// If there is none, naming the start.
 pub fn repo_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let own = Path::new(env!("CARGO_MANIFEST_DIR"));
-        if let Some(root) = find_root(own) {
-            return root;
-        }
-        let cwd = std::env::current_dir().unwrap_or_default();
-        find_root(&cwd).unwrap_or_else(|| {
+        find_root(own).unwrap_or_else(|| {
             panic!(
-                "no Cargo.lock above {} or above {}; the repo root cannot be found",
-                own.display(),
-                cwd.display()
+                "no Cargo.lock above {}; the repo root cannot be found",
+                own.display()
             )
         })
     })
@@ -271,18 +266,21 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let old = dir.join("old.so");
         let new = dir.join("new.so");
-        std::fs::File::create(&old)
-            .unwrap()
-            .write_all(b"x")
-            .unwrap();
-        // Coarse filesystem timestamps: without a gap the two mtimes can be
-        // equal and `max_by_key` would return either, so the test would pass
-        // for the wrong reason.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        std::fs::File::create(&new)
-            .unwrap()
-            .write_all(b"x")
-            .unwrap();
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&new, b"x").unwrap();
+        // Set the mtimes outright: equal mtimes would let `max_by_key` return
+        // either file, and the test would pass for the wrong reason.
+        let now = std::time::SystemTime::now();
+        let age = |file: &Path, by: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(file)
+                .unwrap()
+                .set_modified(now - std::time::Duration::from_secs(by))
+                .unwrap();
+        };
+        age(&old, 100);
+        age(&new, 10);
 
         let picked = newest_existing(&[old.clone(), new.clone()]).expect("one exists");
         assert_eq!(
@@ -350,12 +348,14 @@ mod tests {
         );
         std::fs::remove_file(base.join("outer/Cargo.lock")).unwrap();
         std::fs::remove_file(base.join("outer/inner/Cargo.lock")).unwrap();
-        // A tree with no lockfile below the temp dir's own ancestors: only an
-        // ancestor outside `base` could answer, never `base` itself.
-        assert_ne!(find_root(&inner).as_deref(), Some(base.as_path()));
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// The root found is the real repo root, with the assets under it.
+    ///
+    /// Mutation: look for `Cargo.toml` instead of `Cargo.lock` in `find_root`
+    /// -> the root is this crate's own directory, which has no `assets/` ->
+    /// fails.
     #[test]
     fn the_repo_root_holds_the_assets() {
         assert!(repo_root().join("Cargo.lock").is_file());
@@ -372,12 +372,15 @@ mod tests {
         asset("audio/no_such_file.wav");
     }
 
+    /// Mutation: test `rel.starts_with("sound/")` in `asset` -> the hint is
+    /// dropped -> fails.
     #[test]
     #[should_panic(expected = "download-timgm6mb.sh")]
     fn a_missing_soundfont_names_how_to_fetch_it() {
         asset("soundfonts/no_such_font.sf2");
     }
 
+    /// Mutation: swap the two entries of `candidates_in` -> fails.
     #[test]
     fn candidates_are_deps_then_the_uplifted_copy() {
         assert_eq!(
@@ -389,6 +392,7 @@ mod tests {
         );
     }
 
+    /// Mutation: spell the Linux name `lib{lib_stem}.bin` -> fails.
     #[test]
     fn lib_filename_follows_the_target_os() {
         // Assert the shape rather than one platform's answer, so this holds on

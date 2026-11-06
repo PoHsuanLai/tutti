@@ -6,13 +6,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node, Prepare,
     Shape, Status, Transport, Ump, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 
 const FRAMES_PER_BEAT: f64 = 24_000.0;
 

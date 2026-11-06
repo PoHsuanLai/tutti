@@ -29,13 +29,14 @@ fn render(
         latency: Samples(0),
     };
     let mut out = Vec::new();
-    with_source(graph, RATE, clock, |src| {
+    with_source(graph, RATE, clock, crate::EventLossPolicy::Fail, |src| {
         drive(src, ChannelLayout::from(ch), &plan, |b| {
             out.extend(b.iter_frames().map(<[f32]>::to_vec));
             Ok(())
         })
     })
-    .unwrap();
+    .unwrap()
+    .0;
     out
 }
 

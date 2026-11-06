@@ -174,6 +174,7 @@ pub(crate) fn encode_to_file(
     Ok(Written {
         path: path.to_path_buf(),
         bytes,
+        dropped_events: 0,
     })
 }
 
@@ -300,5 +301,7 @@ pub(crate) fn encode_planes(
     };
     // The frames' OWN rate, never `config.render.sample_rate`: these planes may
     // have been rendered under a different config entirely.
-    encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)
+    let mut written = encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)?;
+    written.dropped_events = rendered.dropped_events;
+    Ok(written)
 }

@@ -10,7 +10,7 @@ pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
 mod config;
-pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
+pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
 pub use normalize::{Normalize, render_normalized_to_file};
@@ -44,6 +44,10 @@ pub struct Written {
     /// Size on disk after finalization, in bytes. `0` if the file could not
     /// be stat'd.
     pub bytes: u64,
+    /// Events the graph dropped during the render that produced the file;
+    /// nonzero only under [`EventLossPolicy::Allow`] (under `Fail` the render
+    /// is an error instead).
+    pub dropped_events: u64,
 }
 
 /// Rendered audio held in memory, one `Vec` per channel.
@@ -61,6 +65,10 @@ pub struct Rendered {
     /// is always the render rate. An encoder must read it from here rather than
     /// from a config, or it converts from a rate the samples were never at.
     pub sample_rate: tutti_types::SampleRate,
+    /// Events the graph dropped during the render; nonzero only under
+    /// [`EventLossPolicy::Allow`] (under `Fail` the render is an error
+    /// instead). A dropped note-on or note-off makes the audio wrong.
+    pub dropped_events: u64,
 }
 
 impl std::fmt::Debug for Rendered {
@@ -69,6 +77,7 @@ impl std::fmt::Debug for Rendered {
             .field("channels", &self.channels())
             .field("frames", &self.frames())
             .field("sample_rate", &self.sample_rate)
+            .field("dropped_events", &self.dropped_events)
             .finish_non_exhaustive()
     }
 }
@@ -193,7 +202,10 @@ pub fn write_buffers(
 /// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
 /// prepared at another rate or its editor does not feed its executor, and
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
-/// render — the file may exist but is not a valid render.
+/// render — the file may exist but is not a valid render — and
+/// [`Error::EventsDropped`] if the graph dropped an event and
+/// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default;
+/// the file is removed).
 pub fn render_to_file(
     mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
@@ -203,12 +215,27 @@ pub fn render_to_file(
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
     let plan = render::RenderPlan::new(&config.render);
-    render::with_source(
+    let on_loss = config.render.on_event_loss;
+    let written = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
+        on_loss,
         |src| encode::encode_to_file(src, config.render.sample_rate, &plan, config, path),
-    )
+    );
+    match written {
+        Ok((mut written, dropped)) => {
+            written.dropped_events = dropped;
+            Ok(written)
+        }
+        // A file of a render that dropped events is not a render of the
+        // graph: it is not left behind.
+        Err(e @ Error::EventsDropped { .. }) => {
+            let _ = std::fs::remove_file(path);
+            Err(e)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Renders `graph` ([`RenderGraph`]) into memory.
@@ -238,7 +265,9 @@ pub fn render_to_file(
 /// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
 /// [`Error::InvalidConfig`] if the graph was prepared at another rate or its
 /// editor does not feed its executor; [`Error::ForkFailed`] if a forked node
-/// failed during the render.
+/// failed during the render; [`Error::EventsDropped`] if the graph dropped an
+/// event and `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the
+/// default).
 pub fn render_to_buffers(
     mut graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
@@ -252,10 +281,11 @@ pub fn render_to_buffers(
     let mut planes: Vec<Vec<f32>> = (0..ch)
         .map(|_| Vec::with_capacity(plan.output_length.get()))
         .collect();
-    render::with_source(
+    let ((), dropped_events) = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
+        config.render.on_event_loss,
         |src| {
             render::drive(src, config.encode.channels, &plan, |block| {
                 block.append_to_planes(&mut planes);
@@ -267,5 +297,6 @@ pub fn render_to_buffers(
     Ok(Rendered {
         planes,
         sample_rate: config.render.sample_rate,
+        dropped_events,
     })
 }

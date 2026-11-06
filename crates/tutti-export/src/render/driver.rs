@@ -220,13 +220,16 @@ pub(crate) fn with_source<R>(
     graph: &mut RenderGraph,
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
+    on_loss: crate::EventLossPolicy,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
-) -> crate::Result<R> {
+) -> crate::Result<(R, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let (editor, executor) = graph.parts_mut();
+    let dropped_before = executor.dropped_event_count();
     let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
+    let dropped = executor.dropped_event_count() - dropped_before;
     // A forked unit that failed mid-render (a plugin's server crashed or
     // hung) rendered silence from then on, and `process` has no error
     // channel: the probe is the only place the failure shows. A render that
@@ -238,7 +241,12 @@ pub(crate) fn with_source<R>(
             kind: fault.kind,
             cause: fault.cause,
         })?;
-    Ok(rendered)
+    // The executor drops an event it has no room for and goes on; the render
+    // would be a silently damaged one, so by default it says so.
+    if dropped > 0 && on_loss == crate::EventLossPolicy::Fail {
+        return Err(crate::Error::EventsDropped { count: dropped });
+    }
+    Ok((rendered, dropped))
 }
 
 /// Replays already-rendered planes as a frame source.

@@ -591,3 +591,45 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         "the feed's edge goes, the host's stays"
     );
 }
+
+/// **A port that loses events says so, as a session event**: a chord of 1,100
+/// notes on beat 0 against a port of 1,024 (the session's block) has its last
+/// 76 note-ons refused. The next update reports `EventsDropped` once, for the
+/// clip's port 0, with count 76; a second update with no further loss reports
+/// nothing.
+///
+/// Mutation (run): drop `report_event_losses` from the `Collect` phase → no
+/// event → fails. Mutation: report the port as `None` → fails.
+#[test]
+fn a_port_that_loses_events_is_reported() {
+    let mut s = offline();
+    let (synth, _seen) = tap(&mut s);
+    let chord = (0..1_100u32).map(|i| {
+        TimedMidiEvent::new(
+            Beat(0.0),
+            MidiEvent::note_on(
+                MidiGroup::FIRST,
+                MidiChannel::new(((i / 128) % 16) as u8),
+                (i % 128) as u8,
+                MF,
+            ),
+        )
+    });
+    s.midi().play_clip(synth, chord).expect("takes MIDI");
+    s.update();
+    roll(&s, 512);
+    let lost: Vec<_> = s
+        .update()
+        .into_iter()
+        .filter_map(|e| match e {
+            SessionEvent::EventsDropped { port, count, .. } => Some((port, count)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lost, vec![(Some(0), 76)]);
+    assert!(
+        s.update()
+            .iter()
+            .all(|e| !matches!(e, SessionEvent::EventsDropped { .. }))
+    );
+}

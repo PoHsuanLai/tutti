@@ -112,7 +112,7 @@ mod tests {
         ))
     }
 
-    /// `tracks` is a count of **timeline tracks**, not audio channels: one
+    /// `tracks` is a count of timeline tracks, not audio channels: one
     /// `ChannelPlan`, one ring, one file each.
     fn streaming(tracks: usize) -> (DashMap<usize, ChannelPlan>, Vec<SharedReader>) {
         let plans = DashMap::new();
@@ -146,8 +146,8 @@ mod tests {
         assert_eq!(rings[0].preroll(), 0);
     }
 
-    /// **Each channel's ring is told its own preroll, and a change is told
-    /// again**: channel 0 pre-rolls 200, channel 2 100, channel 1 none; a
+    /// Each channel's ring is told its own preroll, and a change is told
+    /// again: channel 0 pre-rolls 200, channel 2 100, channel 1 none; a
     /// republished table with channel 0 back at 0 reaches it; a channel past
     /// the table's end reads 0.
     ///

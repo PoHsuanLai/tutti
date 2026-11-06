@@ -55,7 +55,7 @@ impl SessionRate {
 
     /// Move the rate, then re-derive the ratio of every stream that is open.
     ///
-    /// **Why the ratio is derived under the plan's lock on both sides.**
+    /// Why the ratio is derived under the plan's lock on both sides.
     /// `handle_stream_file` reads the rate and sets the ratio while it holds
     /// the plan's entry; this stores the rate first and then takes each entry.
     /// So a stream the butler opens concurrently either set its ratio before
@@ -202,12 +202,12 @@ pub(super) fn handle_command(
 /// codec feature isn't compiled in, the probe fails, or the format is
 /// non-seekable.
 ///
-/// **The verdict comes from [`crate::probe()`], not from a local copy of the
-/// rule.** A host picks a playback tier before any of this runs, and it must
+/// The verdict comes from [`crate::probe()`], not from a local copy of the
+/// rule. A host picks a playback tier before any of this runs, and it must
 /// reach the same conclusion this function does — so "can the butler stream it"
 /// is asked in exactly one place. Re-deriving it here is how the two would drift
 /// the next time the conditions changed.
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+#[cfg(codec)]
 fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, tutti_io::FileIn)> {
     if !crate::probe(file_path).ok()?.streamable {
         return None;
@@ -223,7 +223,7 @@ fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, t
 /// Start streaming `file_path` on `channel_index` from frame `offset_samples`.
 ///
 /// Probes metadata for ring sizing and the conversion ratio *without* decoding
-/// the whole file, builds the region ring at the **file's own width**, installs
+/// the whole file, builds the region ring at the file's own width, installs
 /// the reader on the channel's plan, and pins the wave in the cache for the
 /// stream's lifetime. Falls back to the whole-file `load_wave` path when the
 /// format is not seekable.
@@ -242,7 +242,7 @@ fn handle_stream_file(
     // WITHOUT decoding the whole file. Prefer real incremental streaming; fall
     // back to the whole-file `load_wave` + `LruCache` path when the format
     // isn't seekable (no frame count) or opening the stream decoder fails.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     let (file_length, file_sr, file_channels, decoder, resident) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
@@ -265,7 +265,7 @@ fn handle_stream_file(
             )
         }
     };
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    #[cfg(not(codec))]
     let (file_length, file_sr, file_channels, resident) = {
         let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
             return;
@@ -297,7 +297,7 @@ fn handle_stream_file(
         file_length as usize,
     );
 
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     if let Some(decoder) = decoder {
         producer.set_decoder(decoder);
     }

@@ -12,9 +12,9 @@ use crate::voice::types::Direction;
 
 /// Loop playback configuration for one streaming channel.
 pub(crate) struct LoopConfig {
-    /// `(start, end)` in file **frames**, half-open, as it was asked for.
+    /// `(start, end)` in file frames, half-open, as it was asked for.
     pub(crate) range: (u64, u64),
-    /// Crossfade length in **frames**: as asked for, or 0 when the fade's
+    /// Crossfade length in frames: as asked for, or 0 when the fade's
     /// lead-in could not be read and the ring plays the loop hard — so a fork
     /// reading the stream's record plays what the live voice does.
     pub(crate) crossfade_frames: usize,
@@ -94,7 +94,7 @@ impl Drop for Link {
 pub struct ChannelPlan {
     pub(crate) link: Option<Link>,
     /// How far to pre-roll this channel's read head for plugin delay
-    /// compensation, in **frames** — subtracted from every target file position,
+    /// compensation, in frames — subtracted from every target file position,
     /// so a larger preroll seeks earlier. Sourced from the published
     /// compensation table, whose entries are [`Samples`](tutti_core::Samples) at
     /// the session rate.

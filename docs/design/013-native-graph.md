@@ -4276,7 +4276,7 @@ need to be), and what review of the fix turned up:
   thread: `VoicePoolHandle::send` resolves the slot to its butler channel
   and stream from a table it keeps of every streaming voice it added (and
   of those the pool held when the handle was made), forwards the loop with
-  a waiting send, and queues the `UpdateLoop`, `ClearLoop` or `AddVoice`
+  a waiting send, and queues the `UpdateLoop` or `AddVoice`
   for the drain only once the butler has taken it; a control-thread
   `insert_voice` forwards the same way until the handle is taken. The
   pool's butler sender moves into the handle then, so the node in the

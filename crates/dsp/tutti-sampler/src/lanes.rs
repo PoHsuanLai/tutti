@@ -13,13 +13,13 @@
 //! to reading its frames one by one — IEEE-754 `+` and `*` on one element
 //! give one answer whether they run four at a time or one.
 //!
-//! **Sized in `prepare`.** A rendering node sizes its [`BlockScratch`] in
+//! Sized in `prepare`. A rendering node sizes its [`BlockScratch`] in
 //! its `prepare`: as many lanes as the node has channels, each as long as
 //! `Prepare::max_block`, so a block renders in one piece. In a graph,
 //! `prepare` always precedes `process` and a block is never longer than
 //! `max_block`.
 //!
-//! **Driven by hand, unprepared.** A node driven straight through
+//! Driven by hand, unprepared. A node driven straight through
 //! `Node::process` without a `prepare` (the crate's own
 //! `testing::block`/`play`, `contract::drive_input`, which the sampler's unit
 //! tests use throughout) is still served: it is built with
@@ -114,7 +114,7 @@ impl std::fmt::Debug for Lanes {
 /// `Prepare::max_block`, so a voice's block read touches no stack arrays of
 /// its own and renders a whole block in one piece.
 ///
-/// **Its cost** a frame: 41 bytes (a position, 16; the gather's index, 4,
+/// Its cost a frame: 41 bytes (a position, 16; the gather's index, 4,
 /// fraction, 4, flag, 1, and four tap lanes, 16) plus 8 a channel (an `out`
 /// and a `raw` lane): 57 bytes a stereo frame, 57 KiB for a stereo voice
 /// prepared at 1024 frames (`tests::a_resize_sizes_every_buffer_to_the_width`
@@ -267,7 +267,7 @@ mod tests {
     /// lane.
     const BYTES_PER_FRAME_CHANNEL: usize = 2 * 4;
 
-    /// **The kernels are the per-element arithmetic, exactly.** Against a
+    /// The kernels are the per-element arithmetic, exactly. Against a
     /// scalar loop over values chosen so rounding shows (thirds, added to
     /// values of like size): equal bit for bit, so a vectorised kernel can
     /// never be the reason a block read differs from the per-sample one.
@@ -294,7 +294,7 @@ mod tests {
         }
     }
 
-    /// **A re-prepare resizes, to the owner's width.** Scratch resized to
+    /// A re-prepare resizes, to the owner's width. Scratch resized to
     /// 512 frames of 2 channels holds 512 frames in every buffer a block
     /// read writes (the first two lanes of `out` and `raw`, the positions,
     /// the gather) and nothing in the lanes past its width; resized to 64
@@ -343,8 +343,8 @@ mod tests {
         assert_eq!(BYTES_PER_FRAME_FIXED + 2 * BYTES_PER_FRAME_CHANNEL, 57);
     }
 
-    /// **Every voice node sizes its scratch from `Prepare::max_block` and
-    /// its own width**, and a re-prepare resizes it: a stereo pool, a stereo
+    /// Every voice node sizes its scratch from `Prepare::max_block` and
+    /// its own width, and a re-prepare resizes it: a stereo pool, a stereo
     /// `VoiceNode` and a `MemorySource` prepared at 512 hold 512 frames,
     /// re-prepared at 1024 hold 1024, and at 64, 64; the pool's and the
     /// node's lanes are two wide, not `MAX_SAMPLER_CHANNELS`. Unprepared, the pool

@@ -98,7 +98,7 @@ impl DiskStreamer {
         Ok(DiskStreamer { butler_tx, butler })
     }
 
-    /// Creates the streaming engine **without** spawning the butler thread;
+    /// Creates the streaming engine without spawning the butler thread;
     /// cycles are then run by hand with [`step_once`](Self::step_once).
     /// Requires the `test-support` feature.
     ///
@@ -352,7 +352,7 @@ mod tests {
         );
     }
 
-    /// **A loop change on a streamed file reads only the frames it needs**:
+    /// A loop change on a streamed file reads only the frames it needs:
     /// its fade's lead-in and a short loop's body, through the stream's own
     /// decoder — never the whole file, which blocked every other stream while
     /// it decoded and held the plan map. Observed through
@@ -433,7 +433,7 @@ mod tests {
         w.finalize().unwrap();
     }
 
-    /// **A session-rate change re-rates every stream, open or opened later.**
+    /// A session-rate change re-rates every stream, open or opened later.
     /// A streamer built at 44.1 kHz streams a 48 kHz file (ratio 48/44.1);
     /// then the device restarts at 48 kHz (`set_sample_rate`):
     ///
@@ -513,7 +513,7 @@ mod tests {
         butler.start();
     }
 
-    /// **The butler reads the caller's table, not a copy of it**: a figure
+    /// The butler reads the caller's table, not a copy of it: a figure
     /// the caller sets after the streamer is built reaches the butler's
     /// cycle (`manual`), and the threaded streamer (`new`) hands its
     /// threads the caller's own table.

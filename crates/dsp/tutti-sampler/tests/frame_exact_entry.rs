@@ -1,4 +1,4 @@
-//! **A placed clip enters on its frame** (the frame is the source of truth)
+//! A placed clip enters on its frame (the frame is the source of truth)
 //! — not a chunk late, and not a block late.
 //!
 //! At 90 BPM and 48 kHz a frame is 1/32 000 of a beat, which binary cannot
@@ -9,12 +9,12 @@
 //! its frame. Three properties, each pinned here:
 //!
 //! - the clocks count frames and derive the beat in closed form, so a node's
-//!   `Env` reads beat 3 **to the bit** on frame 96 000, on every path;
-//! - the gate asks whether playback has reached the start **by frame**
+//!   `Env` reads beat 3 to the bit on frame 96 000, on every path;
+//! - the gate asks whether playback has reached the start by frame
 //!   (`TimelineSegment::reached_by`), so a start an ulp after the playhead's
 //!   beat on its frame (two roundings of one musical position) still enters
 //!   there;
-//! - the voice reads the transport from its block's `Env`, **per frame**, so
+//! - the voice reads the transport from its block's `Env`, per frame, so
 //!   it enters on its frame wherever that falls in the block, not at the next
 //!   64-frame boundary.
 //!
@@ -246,8 +246,8 @@ fn a_clip_enters_on_its_frame_driven_by_hand() {
 /// Two computations of one musical position (a clip start from a project
 /// file, a playhead from the frame count) can differ by an ulp; a beat
 /// comparison turned that into a frame. A frame's worth later is the next
-/// frame — the rule's tolerance is a millionth of a frame — **not the next
-/// chunk**: until the voice read its `Env` per frame, that clip entered at
+/// frame — the rule's tolerance is a millionth of a frame — not the next
+/// chunk: until the voice read its `Env` per frame, that clip entered at
 /// 96 064.
 #[test]
 fn a_start_an_ulp_after_the_frame_enters_on_it() {

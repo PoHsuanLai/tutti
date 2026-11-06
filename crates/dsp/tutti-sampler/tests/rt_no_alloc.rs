@@ -16,7 +16,7 @@
 //! no per-sample entry point, so the sample-accurate gates drive one-frame
 //! blocks.
 //!
-//! `DiskSource` is **not** covered here: it needs a crate-private ring, so its
+//! `DiskSource` is not covered here: it needs a crate-private ring, so its
 //! non-allocation (steady state, a jump's scratch copy and fade) is guarded
 //! in-crate, in `voice::disk_voice`'s tests.
 
@@ -153,7 +153,7 @@ fn time_stretch_process_is_allocation_free() {
     });
 }
 
-/// One `process` of a block **past the 8192-frame scratch**, in processing
+/// One `process` of a block past the 8192-frame scratch, in processing
 /// mode: the block is split into runs inside `process`, and the split must
 /// not allocate either. The 64-frame gate above never reaches the split.
 ///
@@ -187,7 +187,7 @@ fn time_stretch_process_past_the_scratch_is_allocation_free() {
     });
 }
 
-/// The same guarantee for a **cloned** unit — the shape a fork produces.
+/// The same guarantee for a cloned unit — the shape a fork produces.
 ///
 /// A clone builds its own vocoders and block scratch, so there is no step
 /// between cloning and running: a clone is ready as built.
@@ -276,7 +276,7 @@ fn voice_pool_process_steady_state_is_allocation_free() {
     });
 }
 
-/// A **cloned** pool with a stretching voice renders its blocks without
+/// A cloned pool with a stretching voice renders its blocks without
 /// allocating.
 ///
 /// Every other pool test drives a freshly constructed node, and the two
@@ -372,7 +372,7 @@ fn voice_pool_one_frame_blocks_are_allocation_free() {
 /// Block lengths from one frame to the maximum, straddling 64.
 const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
 
-/// `node` prepared at 64 frames, then **re-prepared** at 512 (the scratch
+/// `node` prepared at 64 frames, then re-prepared at 512 (the scratch
 /// resized on the control thread), warmed, then 2 000 blocks of
 /// [`RAGGED`] lengths inside the guard, on a transport that moves and winds
 /// back to beat 0 at beat 3 (inside the test waves).
@@ -415,8 +415,8 @@ fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
     }
 }
 
-/// **Every memory voice node, re-prepared at a 512-frame `max_block`,
-/// renders ragged blocks up to it without allocating**: a pool (two plain
+/// Every memory voice node, re-prepared at a 512-frame `max_block`,
+/// renders ragged blocks up to it without allocating: a pool (two plain
 /// voices and a stretched one), a stretched `VoiceNode`, and a
 /// `MemorySource` placed and free-running, and a pool of looped voices and
 /// a silent one — each block in one piece
@@ -669,12 +669,11 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            placed: true,
-            channels: ChannelLayout::from(6u16),
-            window: VoiceWindow {
+            placement: Some(VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
-            },
+            }),
+            channels: ChannelLayout::from(6u16),
             ..Default::default()
         },
     );
@@ -770,12 +769,11 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                placed: true,
-                channels: ChannelLayout::from(6u16),
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
+                channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
         );
@@ -837,12 +835,11 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                placed: true,
-                channels: ChannelLayout::from(6u16),
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
+                channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
         );
@@ -895,12 +892,11 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
         let sampler = MemorySource::with_config(
             wave.clone(),
             MemorySourceConfig {
-                placed: true,
-                channels: ChannelLayout::from(6u16),
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
+                channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
         );
@@ -943,8 +939,8 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
     assert_eq!(handle.collect_retired(), 0, "and only once");
 }
 
-/// **An `AddVoice` past the pool's 64 slots neither grows the slot vector
-/// nor frees the voice in the callback.**
+/// An `AddVoice` past the pool's 64 slots neither grows the slot vector
+/// nor frees the voice in the callback.
 ///
 /// The slot vector is reserved to `MAX_RESIDENT_VOICES` (64), and the drain
 /// runs inside `process`. A push past the reservation would reallocate the
@@ -1051,12 +1047,11 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     let sampler = MemorySource::with_config(
         wave,
         MemorySourceConfig {
-            placed: true,
-            channels: ChannelLayout::from(6u16),
-            window: VoiceWindow {
+            placement: Some(VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
-            },
+            }),
+            channels: ChannelLayout::from(6u16),
             ..Default::default()
         },
     );
@@ -1079,14 +1074,18 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         handle
             .send(VoiceCommand::UpdateLoop {
                 id: SlotId(1),
-                looping: true,
-                loop_start: SamplePosition::new(i as f64 * 8.0),
-                loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
-                crossfade_frames: 256,
+                setting: LoopSetting::On {
+                    start: SamplePosition::new(i as f64 * 8.0),
+                    end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
+                    crossfade_frames: 256,
+                },
             })
             .expect("the command queue has room in a test");
         handle
-            .send(VoiceCommand::ClearLoop(SlotId(1)))
+            .send(VoiceCommand::UpdateLoop {
+                id: SlotId(1),
+                setting: LoopSetting::Off,
+            })
             .expect("the command queue has room in a test");
     }
 
@@ -1099,7 +1098,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 // VoiceNode's command drain — the newest thing running inside the callback.
 // ---------------------------------------------------------------------------
 
-/// **Reading a published placement allocates nothing, and frees nothing.**
+/// Reading a published placement allocates nothing, and frees nothing.
 ///
 /// `VoiceNode::drain_commands` runs at the top of every `process`, which
 /// is the audio callback. The pool's drain is careful for a reason its own
@@ -1159,7 +1158,7 @@ fn voice_node_command_drain_does_not_allocate() {
     });
 }
 
-/// **A `ReplaceWave` drain frees no wave on the audio thread**: the wave it
+/// A `ReplaceWave` drain frees no wave on the audio thread: the wave it
 /// lets go of leaves through the retirement channel and is freed by
 /// `collect_retired`, on the control side.
 ///

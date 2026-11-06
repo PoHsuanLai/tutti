@@ -71,7 +71,7 @@ impl std::fmt::Debug for Source {
 ///
 /// # Positions are in frames
 ///
-/// Every [`SamplePosition`] here indexes the **file** in frames, not in
+/// Every [`SamplePosition`] here indexes the file in frames, not in
 /// interleaved samples and not in engine-rate frames. A caller that divides by
 /// the channel count, or that converts through the session rate instead of the
 /// file's own, addresses a fraction of the intended point — a 6-channel file
@@ -214,7 +214,7 @@ impl Commands {
         Self { tx }
     }
 
-    /// Dispatches a single command to the butler. **Control thread**: while
+    /// Dispatches a single command to the butler. Control thread: while
     /// the butler's bounded queue is full it waits, so nothing reachable from
     /// a graph node's `process` calls it. No audio-thread code sends to the
     /// butler: a voice pool's streaming loop is forwarded by its control-side
@@ -226,7 +226,7 @@ impl Commands {
     /// # Errors
     ///
     /// `ButlerGone` means the butler thread has exited and the command was
-    /// **discarded**. It is permanent: every later command fails the same way,
+    /// discarded. It is permanent: every later command fails the same way,
     /// so a caller should stop rather than retry.
     ///
     /// Ignoring that error is the failure this port is shaped to prevent — a
@@ -256,7 +256,7 @@ impl Commands {
     /// Dispatches a batch of commands, in order.
     ///
     /// Returns how many were queued. `< cmds.len()` means the butler was gone
-    /// and the rest were **discarded** — dispatch stops at the first failure,
+    /// and the rest were discarded — dispatch stops at the first failure,
     /// since the condition is permanent and every later command would fail too.
     ///
     /// A count rather than a bare `Result` because the batch is *partially*
@@ -314,7 +314,7 @@ impl Status {
     ///
     /// Pulls the ring consumer and shared RT state out of the channel's plan and
     /// wraps them in a placement-gated reader. `start_beat` and `duration` are
-    /// musical time — the gate converts them to **file frames** using the file's
+    /// musical time — the gate converts them to file frames using the file's
     /// own rate, not the session's: the rate the butler recorded when it opened
     /// the stream, so a session rate that moves later (a device restart) leaves
     /// the gate's frames where they were.

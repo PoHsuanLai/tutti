@@ -41,7 +41,7 @@ impl Fft {
         self.plan.forward(real, bins, &mut self.scratch);
     }
 
-    /// `bins` (`size / 2 + 1`) to `real` (`size` samples), **unnormalized**
+    /// `bins` (`size / 2 + 1`) to `real` (`size` samples), unnormalized
     /// (the output is `size` times the signal; the caller scales). The plan
     /// uses `bins` as scratch, so its contents are unspecified after.
     ///

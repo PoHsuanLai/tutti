@@ -7,20 +7,20 @@
 //!
 //! # Why this lives in the sampler
 //!
-//! The answer is a fact about **this crate's streaming machinery**, not about the
+//! The answer is a fact about this crate's streaming machinery, not about the
 //! file in isolation. "Can it stream" means "can the butler's incremental decoder
 //! seek in it, given the codecs compiled into this build" — three conditions the
 //! butler already applies internally when a stream is registered
 //! (`butler::handlers::open_stream`). A host deriving the same verdict from
 //! `Wave::read_metadata` would be re-implementing a rule it cannot see, and the
 //! two would drift the moment the butler's capabilities changed. Butler and host
-//! read the **same function** — which is the point of it being public.
+//! read the same function — which is the point of it being public.
 //!
 //! This is not a decode: `Wave::read_metadata` reads the container head and
 //! stops. Deciding *how much* of a file to keep resident is the caller's policy;
 //! this only reports what the file allows.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tutti_core::{ChannelLayout, SampleRate, Samples};
 
@@ -33,7 +33,7 @@ use tutti_core::{ChannelLayout, SampleRate, Samples};
 /// `==` as usual; it just cannot use one as a `HashMap` key.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SampleFacts {
-    /// Total length in **frames**, not interleaved samples, if the container
+    /// Total length in frames, not interleaved samples, if the container
     /// reports one.
     ///
     /// `None` for some streamed/VBR formats that do not store a length. A
@@ -51,7 +51,7 @@ pub struct SampleFacts {
     /// The file's channel count. Multiply by [`frames`](Self::frames) to size an
     /// interleaved buffer.
     pub layout: ChannelLayout,
-    /// **Whether this build's butler can stream this file.**
+    /// Whether this build's butler can stream this file.
     ///
     /// The sampler's verdict, not a property of the file alone. False when the
     /// container reports no frame count, when the decoder declines to seek, or
@@ -65,10 +65,10 @@ pub struct SampleFacts {
 }
 
 impl SampleFacts {
-    /// This file's length in **frames**, or `Samples(0)` when unknown.
+    /// This file's length in frames, or `Samples(0)` when unknown.
     ///
     /// A convenience for the common "how big is it" question. Deliberately does
-    /// **not** hide the `None`: a caller deciding residency must distinguish
+    /// not hide the `None`: a caller deciding residency must distinguish
     /// "empty" from "unmeasurable", so this is for display and rough sizing
     /// rather than for policy. Policy reads [`frames`](Self::frames).
     #[must_use]
@@ -77,27 +77,24 @@ impl SampleFacts {
     }
 }
 
-/// Errors a probe can report. Terminal — none of these fix themselves on retry.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+/// Errors a probe can report. Terminal: none of these fix themselves on retry.
+#[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProbeError {
     /// The file could not be opened, or has no track this build can decode.
-    ///
-    /// Carries the decoder's message as a `String` rather than the error itself:
-    /// symphonia's `Error` is neither `Clone` nor `PartialEq`, and a probe result
-    /// is something a host caches and compares. Nothing branches on the text.
-    #[error("could not read {path}: {message}")]
+    #[error("could not read {}: {source}", path.display())]
     Unreadable {
-        /// The path that was probed, as displayed.
-        path: String,
-        /// The decoder's error message.
-        message: String,
+        /// The path that was probed.
+        path: PathBuf,
+        /// The decoder's error.
+        #[source]
+        source: tutti_io::WaveError,
     },
 }
 
 /// Reads `path`'s header and reports what this sampler can do with it.
 ///
-/// **Blocking file I/O.** A host on a frame budget runs this off the main thread;
+/// Blocking file I/O. A host on a frame budget runs this off the main thread;
 /// this crate deliberately does not choose a task system for it.
 ///
 /// # Errors
@@ -120,9 +117,9 @@ pub enum ProbeError {
 /// ```
 pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     let path = path.as_ref();
-    let meta = tutti_io::Wave::read_metadata(path).map_err(|e| ProbeError::Unreadable {
-        path: path.display().to_string(),
-        message: e.to_string(),
+    let meta = tutti_io::Wave::read_metadata(path).map_err(|source| ProbeError::Unreadable {
+        path: path.to_path_buf(),
+        source,
     })?;
     Ok(SampleFacts {
         frames: meta.total_frames.map(|f| Samples(f as usize)),

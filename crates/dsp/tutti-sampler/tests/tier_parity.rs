@@ -23,7 +23,7 @@
 //!
 //! # How readiness is handled: by counting, not by waiting
 //!
-//! The butler is driven **by hand** here — [`DiskStreamer::manual`] plus
+//! The butler is driven by hand here — [`DiskStreamer::manual`] plus
 //! [`step_once`](DiskStreamer::step_once) — so there is no butler thread, no
 //! sleep, no `Instant`, and no timeout anywhere in this file.
 //!
@@ -81,7 +81,7 @@ const SEEK_TOL_HZ: f64 = 40.0;
 
 /// Length of the file the *live-seek* tests stream, in seconds.
 ///
-/// **Must exceed 30 s**, and that is the whole point. `buffer_size_for_file`
+/// Must exceed 30 s, and that is the whole point. `buffer_size_for_file`
 /// sizes the ring to hold the entire file when it is under 50 MB, capped at 30 s
 /// — so a shorter file is prefilled whole, a seek repositions the *writer* into
 /// a ring that already holds everything, and the audio never changes. These
@@ -122,7 +122,7 @@ impl Clock {
         )))
     }
 
-    /// Jump the playhead to an absolute position in **seconds** of file time.
+    /// Jump the playhead to an absolute position in seconds of file time.
     ///
     /// This is the seek verb for a placed voice: the transport owns position, so
     /// moving the playhead is what repositions the clip. Seconds rather than
@@ -198,7 +198,7 @@ fn chirp_hz_at(sec: f64) -> f64 {
     300.0 + 100.0 * sec
 }
 
-/// Material whose instantaneous frequency **encodes its own file position**.
+/// Material whose instantaneous frequency encodes its own file position.
 ///
 /// This is what makes a seek verifiable. A steady tone sounds identical
 /// everywhere, so a seek to the wrong offset — or one silently ignored — is
@@ -330,7 +330,7 @@ fn prime(streamer: &mut DiskStreamer) {
 /// `path` from `at_sec`, with its ring already primed.
 ///
 /// Two properties this shape buys. The clock is placed at `at_sec` and
-/// **stays** there through priming, because priming is stepping rather than
+/// stays there through priming, because priming is stepping rather than
 /// rendering (a warm-up that rendered would walk the transport forward, and
 /// the measurement would be taken somewhere the caller had not asked for). And `take_disk_voice` is called
 /// exactly once, after the `Stream` command has demonstrably been applied,
@@ -392,11 +392,10 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
     let mem = MemorySource::with_config(
         wave,
         tutti_sampler::MemorySourceConfig {
-            placed: true,
-            window: VoiceWindow {
+            placement: Some(VoiceWindow {
                 start: Beat::new(0.0),
                 duration: None,
-            },
+            }),
             channels: ChannelLayout::STEREO,
             ..Default::default()
         },
@@ -833,11 +832,10 @@ fn the_tiers_agree_under_varispeed() {
         let mem = MemorySource::with_config(
             load_wave(&path),
             tutti_sampler::MemorySourceConfig {
-                placed: true,
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
                 channels: ChannelLayout::STEREO,
                 speed: PlaybackRate::new(factor),
                 ..Default::default()

@@ -13,7 +13,7 @@ use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 use super::clock::{BlockClock, Clock};
 use super::command::{
     COMMAND_CAPACITY, MAX_RESIDENT_VOICES, Queued, SharedRate, StreamEntry, VoiceCommand,
-    VoicePoolHandle, loop_setting,
+    VoicePoolHandle,
 };
 use super::memory_source::LoopSetting;
 use super::slot::{PlaybackSlot, stretch_wanted};
@@ -62,7 +62,7 @@ pub struct VoicePoolNode(pub tutti_core::NodeKey);
 // Retirement — values the audio thread must not drop.
 // ---------------------------------------------------------------------------
 
-/// Something the drain took ownership of and must **not** free in the callback.
+/// Something the drain took ownership of and must not free in the callback.
 ///
 /// Every variant exists for the same reason: dropping it can free a large
 /// allocation — a [`stretch::Unit`]'s vocoders (~100 KB per channel), or a
@@ -71,7 +71,7 @@ pub struct VoicePoolNode(pub tutti_core::NodeKey);
 /// channel and is freed by [`VoicePoolHandle::collect_retired`] on the
 /// control thread.
 ///
-/// **A full channel** (the control thread is not collecting) or a
+/// A full channel (the control thread is not collecting) or a
 /// disconnected one degrades to dropping the value in the drain: a free on
 /// the audio thread, counted ([`PoolDrops::freed_in_callback`]), and no
 /// other effect. That is the documented policy of
@@ -241,8 +241,8 @@ impl Voice {
     }
 }
 
-/// Forwards a streaming voice's loop to `butler` (blocking: **control
-/// thread**), and says whether the pool may record it: only once the butler
+/// Forwards a streaming voice's loop to `butler` (blocking: control
+/// thread), and says whether the pool may record it: only once the butler
 /// has taken it. A forward that cannot be made is counted in `counters`,
 /// except an `Off` with no butler to tell, which loses nothing (the butler
 /// was never given a loop to clear).
@@ -301,7 +301,7 @@ pub struct PoolTooWide {
 /// retirement channel back. Voices placed on the timeline read the transport
 /// from each block's `Env`, frame-exact at their windows' edges.
 ///
-/// **A fork of a pool is an empty pool** at its width, with no command
+/// A fork of a pool is an empty pool at its width, with no command
 /// queue and no butler: the voices a pool holds arrived through its queue on
 /// the audio thread, where no control-side copy of them exists to fork. A
 /// host that renders a track's clips offline rebuilds them in a pool of its
@@ -370,7 +370,7 @@ pub struct VoicePool {
     /// jump (a seek, a loop wrap) is seen where it happens and every slot's
     /// buffered audio is flushed there.
     ///
-    /// **One clock for the whole reader, not one per slot.** Every slot reads
+    /// One clock for the whole reader, not one per slot. Every slot reads
     /// the same transport, so N clocks would be N chances to disagree about
     /// whether the playhead moved — and a disagreement would flush some slots
     /// and not others, which is worse than flushing none.
@@ -583,9 +583,9 @@ impl VoicePool {
     /// Apply a loop setting to a slot, by tier, and record it in the slot's
     /// `Playback`.
     ///
-    /// - **In-memory**: primes / clears the loop range on the `MemorySource`
+    /// - In-memory: primes / clears the loop range on the `MemorySource`
     ///   in-unit (`MemorySource::set_loop_setting`).
-    /// - **Streaming**: the loop is butler-owned — `SetStreamLoop` reads the
+    /// - Streaming: the loop is butler-owned — `SetStreamLoop` reads the
     ///   loop's fade lead-in off disk and mutates `plan.link.loop_config`,
     ///   neither reachable from the reader — and the control thread has
     ///   already forwarded it ([`VoicePoolHandle::send`],
@@ -685,7 +685,7 @@ impl VoicePool {
     ///
     /// # Thread
     ///
-    /// **Allocates** (the filter, when the voice stretches, and the slot's box)
+    /// Allocates (the filter, when the voice stretches, and the slot's box)
     /// — control-thread callers only. The audio-thread drain moves in the
     /// box and the filter the command carries instead, both built by the
     /// sender, and sends nothing to the butler.
@@ -698,9 +698,9 @@ impl VoicePool {
     /// counted as [`PoolDrops::loops_butler_gone`], and not recorded). Two
     /// cases make that wait long:
     ///
-    /// - **A stalled butler** (on disk I/O, or descheduled): this waits as
+    /// - A stalled butler (on disk I/O, or descheduled): this waits as
     ///   long as the stall does.
-    /// - **Nobody draining the queue**: a butler controller that was never
+    /// - Nobody draining the queue: a butler controller that was never
     ///   started, or a `DiskStreamer::manual` (`test-support`) stepped on
     ///   the thread that calls this. The queue then drains only
     ///   when that same thread steps it, so a full queue waits for good.
@@ -868,21 +868,11 @@ impl VoicePool {
                         slot.voice.play.speed = speed;
                     }
                 }
-                VoiceCommand::UpdateLoop {
-                    id,
-                    looping,
-                    loop_start,
-                    loop_end,
-                    crossfade_frames,
-                } => {
+                VoiceCommand::UpdateLoop { id, setting } => {
                     // A streaming slot's loop reached the butler before this
                     // was queued (`VoicePoolHandle::send`), if `forwarded`
                     // names its stream.
-                    let setting = loop_setting(looping, loop_start, loop_end, crossfade_frames);
                     self.apply_queued_loop(id, setting, forwarded);
-                }
-                VoiceCommand::ClearLoop(id) => {
-                    self.apply_queued_loop(id, LoopSetting::Off, forwarded);
                 }
                 VoiceCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {
@@ -926,7 +916,7 @@ impl VoicePool {
 }
 
 impl Clone for VoicePool {
-    /// A copy of the voices and settings, with **no command channel** and no
+    /// A copy of the voices and settings, with no command channel and no
     /// retirement channel of its own: a copy draining the live handle's
     /// commands would steal edits from the audio thread (crossbeam hands each
     /// message to exactly one receiver), so the `Receiver` stays with the

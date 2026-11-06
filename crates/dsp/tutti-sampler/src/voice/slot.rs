@@ -58,7 +58,7 @@ pub(crate) struct PlaybackSlot {
     /// and the hot paths route through it only when
     /// [`needs_stretch`](Self::needs_stretch) and a unit is present.
     ///
-    /// **Built on the control thread, never in the callback.** A unit
+    /// Built on the control thread, never in the callback. A unit
     /// (a phase-vocoder bank plus block scratch per channel) is built by
     /// `VoicePoolHandle::send` when a `VoiceCommand::AddVoice` or a
     /// `VoiceCommand::UpdateStretch` asks for stretching (or by a standalone
@@ -108,15 +108,15 @@ impl PlaybackSlot {
     /// # Who builds one, when the voice needs it
     ///
     /// A slot that arrives already needing stretch (non-unity `play.stretch` /
-    /// `play.pitch`) gets its unit built on the **control thread**, before the
+    /// `play.pitch`) gets its unit built on the control thread, before the
     /// audio thread ever sees the slot. The two owners do that differently, and
     /// the difference is not cosmetic:
     ///
-    /// - **`VoicePool`** takes a pre-built filter from the sender — see
+    /// - `VoicePool` takes a pre-built filter from the sender — see
     ///   `VoicePoolHandle::prepare`, which fills in `VoiceCommand::AddVoice`'s
     ///   `stretch` field. It has to: `AddVoice` is drained in the callback, so the
     ///   pool cannot build one at the point it learns it needs one.
-    /// - **`VoiceNode` builds its own**, in `VoiceNode::with_channels`, because
+    /// - `VoiceNode` builds its own, in `VoiceNode::with_channels`, because
     ///   that constructor *is* control-thread code. Nothing prepares a filter for
     ///   a node, and nothing needs to.
     ///
@@ -150,8 +150,8 @@ impl PlaybackSlot {
         }
     }
 
-    /// Whether the slot's control intent asks for stretching. **Independent of
-    /// whether a unit exists**, which is why every hot path gates on
+    /// Whether the slot's control intent asks for stretching. Independent of
+    /// whether a unit exists, which is why every hot path gates on
     /// `needs_stretch() && stretch.is_some()` rather than on this alone: intent
     /// without a filter means the voice reads dry.
     ///
@@ -195,7 +195,7 @@ impl PlaybackSlot {
     /// arrives redundantly is handed back rather than swapped in, so a live filter
     /// never loses its phase mid-note.
     ///
-    /// **Allocation-free and free-free**, so it is safe on the audio-thread
+    /// Allocation-free and free-free, so it is safe on the audio-thread
     /// command drain: adopting is a move, and a redundant arrival is *returned*
     /// rather than dropped — see the caller in `VoicePool::drain_commands`,
     /// which retires it for control-thread release. Dropping a `stretch::Unit`
@@ -236,13 +236,13 @@ impl PlaybackSlot {
     /// Accumulate this slot's contribution to block frames `range` (at most
     /// [`BlockScratch::frames`], the owner's prepared `max_block`) into `out`
     /// (one slice per channel, block-long),
-    /// **a block at a time**: the voice renders into `scratch`'s planar lanes
+    /// a block at a time: the voice renders into `scratch`'s planar lanes
     /// ([`render_lanes`](Self::render_lanes)), and each lane is added into its
     /// output channel by one vectorised [`accumulate`]. Shared by the mixer
     /// loop and the standalone [`VoiceNode`](super::node::VoiceNode), so the
     /// per-voice read has one definition.
     ///
-    /// **A jump flushes on its frame.** Where the playhead jumps inside the
+    /// A jump flushes on its frame. Where the playhead jumps inside the
     /// range (a seek, a loop wrap: a run of the block that starts with
     /// [`jump`](super::clock::Run::jump)), the read stops there, the slot's
     /// buffered state is flushed ([`flush_playhead_state`](Self::flush_playhead_state)),
@@ -250,11 +250,11 @@ impl PlaybackSlot {
     /// region's material over the new one, and never loses what it held
     /// before the jump.
     ///
-    /// **Audio-thread safe**: allocation-free (the lanes are the owner's,
+    /// Audio-thread safe: allocation-free (the lanes are the owner's,
     /// built on the control thread), and the tier fork is a [`VoiceSource`]
     /// match rather than a virtual call.
     ///
-    /// `width` is a plain `usize`, deliberately **not** a [`ChannelLayout`]: it is
+    /// `width` is a plain `usize`, deliberately not a [`ChannelLayout`]: it is
     /// an already-intersected clamp that callers compute as
     /// `slot width ∧ output channels ∧ MAX_SAMPLER_CHANNELS`, not a declaration
     /// of how many channels anything *has*.
@@ -424,8 +424,8 @@ impl PlaybackSlot {
         let positions = &mut positions[..frames];
         match (&mut self.voice.source, self.stretch.as_mut()) {
             (VoiceSource::Memory(sampler), Some(unit)) if stretching => {
-                // **The stretch rate must reach the origin, not only the
-                // step.** A placed voice re-derives its origin from the
+                // The stretch rate must reach the origin, not only the
+                // step. A placed voice re-derives its origin from the
                 // playhead as the clock moves, and the playhead runs at wall
                 // clock; seating there and stepping slower makes each seat
                 // land a full piece ahead of where the previous one finished,
@@ -543,7 +543,7 @@ pub(crate) enum Piece {
     /// Every frame of the piece is a zero the mix would add (±0.0), so it
     /// adds nothing: the lanes were not written, and the read was not done.
     ///
-    /// **Skipping the add is exact.** The owner's mix starts at +0.0 and
+    /// Skipping the add is exact. The owner's mix starts at +0.0 and
     /// only adds, and under round-to-nearest a sum is -0.0 only when both
     /// operands are, so no mixed sample is ever -0.0; `x + ±0.0` is `x` for
     /// every other `x`, and a NaN there stays the quiet NaN arithmetic made.
@@ -565,7 +565,7 @@ pub(crate) fn stretch_wanted(play: &Playback) -> bool {
 /// [`VoiceCommand::UpdateStretch`](crate::voice::VoiceCommand::UpdateStretch) —
 /// which carries the two values but no `Playback` to wrap them in.
 ///
-/// [`stretch_wanted`] delegates here so the thresholds exist **once**. Writing
+/// [`stretch_wanted`] delegates here so the thresholds exist once. Writing
 /// them out a second time at the sender is how the two sides come to disagree
 /// about whether a given value stretches: the sender would decline to build a
 /// filter that `needs_stretch` then routes through, and the voice reads dry with

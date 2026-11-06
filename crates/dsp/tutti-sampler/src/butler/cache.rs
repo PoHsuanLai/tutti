@@ -9,16 +9,7 @@
 //! die with it — a feature-matrix artifact, not rot. CI builds that config, so
 //! the allow is scoped to it rather than blanket, keeping real dead-code
 //! detection live everywhere a codec is on.
-#![cfg_attr(
-    not(any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg",
-        test
-    )),
-    allow(dead_code)
-)]
+#![cfg_attr(not(any(codec, test)), allow(dead_code))]
 
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};
@@ -38,12 +29,12 @@ pub struct LruCache {
     /// is a sequence number rather than a reading of a clock. A millisecond
     /// `SystemTime::now()` would get the order wrong two ways:
     ///
-    /// - **Resolution.** Cache accesses are memory-speed; several land in the
+    /// - Resolution. Cache accesses are memory-speed; several land in the
     ///   same millisecond routinely, and every one of those would be a *tie*.
     ///   `min_by_key` breaks a tie by iteration order, which for a `DashMap` is
     ///   shard order — so the victim would be effectively arbitrary, and change
     ///   between runs. A tick increments per touch, so no two accesses can tie.
-    /// - **Monotonicity.** `SystemTime` is a wall clock: NTP correction, a
+    /// - Monotonicity. `SystemTime` is a wall clock: NTP correction, a
     ///   manual set, or a DST-adjacent jump moves it *backwards*, which makes a
     ///   just-touched entry look like the oldest one in the cache and evicts it
     ///   next. A counter has no such failure mode.
@@ -120,7 +111,7 @@ impl LruCache {
         })
     }
 
-    /// Admit `wave` under `path`, evicting least-recently-used **unpinned**
+    /// Admit `wave` under `path`, evicting least-recently-used unpinned
     /// entries until it fits.
     ///
     /// Re-inserting a resident path only refreshes its access time — the bytes
@@ -129,7 +120,7 @@ impl LruCache {
     /// target is recoverable, pulling a wave out from under a playing stream is
     /// not.
     ///
-    /// **A wave larger than the whole byte budget is refused**, and evicts
+    /// A wave larger than the whole byte budget is refused, and evicts
     /// nothing: admitting it would empty the cache for one file and still
     /// leave it over budget. Its holder keeps it (a stream that cannot seek
     /// holds its file on its writer, `RegionOut::set_resident`).
@@ -234,7 +225,7 @@ mod tests {
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
-    /// **A wave larger than the whole budget is refused, and evicts nothing.**
+    /// A wave larger than the whole budget is refused, and evicts nothing.
     ///
     /// Mutation (run): the size check removed → the resident entry is evicted
     /// to make room and the oversize wave admitted → fails.

@@ -48,7 +48,7 @@ pub fn memory_voice(
 /// represent an empty bus (a plugin port genuinely can be zero wide), but a graph
 /// node that reports zero outputs is one nothing can be wired to.
 ///
-/// **Deliberately not a function of the device width.** The graph root folds
+/// Deliberately not a function of the device width. The graph root folds
 /// whatever reaches it, so a voice narrowed to the device here would be narrowed
 /// *twice* on a wider project. The only ceiling that applies is the sampler's.
 pub fn voice_width(file: ChannelLayout) -> ChannelLayout {

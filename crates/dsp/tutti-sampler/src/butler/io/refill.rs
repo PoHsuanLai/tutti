@@ -10,7 +10,7 @@
 //! stay valid for their positions, so a jump back inside the window costs
 //! nothing.
 //!
-//! **Every count here is denominated in frames.** The `* ch` at each scratch
+//! Every count here is denominated in frames. The `* ch` at each scratch
 //! resize is the only place the interleave stride enters.
 
 use super::super::cache::LruCache;
@@ -26,16 +26,16 @@ use std::path::Path;
 use std::sync::Arc;
 use tutti_io::Wave;
 
-/// How many **frames** to read this cycle, under the varifill strategy.
+/// How many frames to read this cycle, under the varifill strategy.
 ///
 /// Scales `base_chunk` by three independent factors, then clamps their product
 /// to `0.25..=4.0` and floors the result at 1024 frames:
 ///
-/// - **Urgency** — `1.0 - buffer_fill`, so an empty ring pulls harder.
-/// - **Bandwidth** — the square root of `read_rate_bytes_per_sec` against a
+/// - Urgency — `1.0 - buffer_fill`, so an empty ring pulls harder.
+/// - Bandwidth — the square root of `read_rate_bytes_per_sec` against a
 ///   10 MB/s baseline, clamped to `0.5..=2.0`. A non-positive or unmeasured rate
 ///   contributes a neutral 1.0.
-/// - **Speed** — `playback_speed`, floored at 1.0: playing faster consumes the
+/// - Speed — `playback_speed`, floored at 1.0: playing faster consumes the
 ///   ring faster, but playing slower is no reason to read in smaller pieces.
 ///
 /// Robust to a nonsensical `buffer_fill` (negative, above one, or NaN) because
@@ -182,7 +182,7 @@ fn refill_one(
     // may cover until it claims again, so moving it every cycle would never
     // let the refill land.
     let far = (writer.frames() / 4) as u64;
-    if play < from || (play > to.saturating_add(far) && play < end) {
+    if play < from || (play > to.saturating_add(far) && end.is_none_or(|end| play < end)) {
         writer.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at != 0 {
             let mut content = Content::new(writer.content().current.clone());
@@ -193,7 +193,8 @@ fn refill_one(
     }
     let (_, to) = writer.window();
     let frames = writer.frames() as u64;
-    let limit = end.min(play + frames - frames / 8);
+    let ahead = play + frames - frames / 8;
+    let limit = end.map_or(ahead, |end| end.min(ahead));
     let fill = (to.saturating_sub(play) as f64 / frames as f64) as f32;
     rt_state.set_buffer_fill(fill);
     let fill_threshold = (0.75 / buffer_margin) as f32;
@@ -230,7 +231,7 @@ pub(in crate::butler) fn load_wave(
     // `Wave::read` is `tutti-io`'s decode path, which is compiled only when a
     // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     {
         if let Ok(w) = Wave::read(file_path) {
             let arc_wave = Arc::new(w);
@@ -243,7 +244,7 @@ pub(in crate::butler) fn load_wave(
 
     // Silences the unused-parameter warning in the codec-free build, where the
     // only way to reach this line is a cache miss with nothing able to fill it.
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    #[cfg(not(codec))]
     let _ = metrics;
 
     None

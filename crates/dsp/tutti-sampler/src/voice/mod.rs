@@ -37,8 +37,9 @@ pub mod node;
 pub mod pool;
 pub mod slot;
 pub mod types;
-// Tests only — they exercise the five modules above in combination and reach
+// Tests only: they exercise the five modules above in combination and reach
 // private state a sibling module could not see.
+#[cfg(test)]
 mod voice_pool;
 // A voice from what a host has: a wave, a file's width.
 mod build;

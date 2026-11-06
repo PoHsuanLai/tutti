@@ -5,7 +5,7 @@
 //! signal alone (`verify_sampler.py`, beside this file) has no such shared
 //! blind spot.
 //!
-//! Drives the **real** `VoicePool`: placement gate, `MemorySource`, the resident
+//! Drives the real `VoicePool`: placement gate, `MemorySource`, the resident
 //! stretch filter, and a block-advanced transport — not `stretch::Unit` in
 //! isolation. That is the point; the unit already has value-based tests, and what
 //! is unverified is the assembly.

@@ -229,7 +229,7 @@ impl ButlerThread {
         self.rx = None;
     }
 
-    /// Run exactly one butler cycle on the **calling** thread: drain every
+    /// Run exactly one butler cycle on the calling thread: drain every
     /// queued command, then apply PDC preroll, seeks and refills.
     /// Returns once that work is done, reporting what the pacing layer *would*
     /// have done next.
@@ -319,7 +319,7 @@ mod tests {
         let _ = sync::<ButlerThread>;
     };
 
-    /// **A table subscribed after the first hand step reaches the cycle**:
+    /// A table subscribed after the first hand step reaches the cycle:
     /// the step's cycle is built once and kept, so `with_pdc` must hand the
     /// new feed to it, not only to cycles built later.
     ///
@@ -354,7 +354,7 @@ mod tests {
         done()
     }
 
-    /// **A sent command wakes a waiting butler**: it is drained well inside
+    /// A sent command wakes a waiting butler: it is drained well inside
     /// the wait's timeout, not when the timeout ends.
     ///
     /// The butler waits 60 s between cycles and the test allows 10 s: the
@@ -388,7 +388,7 @@ mod tests {
         butler.stop();
     }
 
-    /// **A stopped butler is gone** to every sender, started or not.
+    /// A stopped butler is gone to every sender, started or not.
     ///
     /// A started butler's thread drops its receiver on the way out, so the
     /// mutation that bites is on the controller that never started.
@@ -418,7 +418,7 @@ mod tests {
         );
     }
 
-    /// **A send waiting on a full queue returns once the butler stops**,
+    /// A send waiting on a full queue returns once the butler stops,
     /// reporting it gone, rather than waiting for good.
     ///
     /// Mutation (run): `stop` without its `self.rx = None` → the waiting
@@ -451,7 +451,7 @@ mod tests {
         waiter.join().unwrap();
     }
 
-    /// **A butler thread that exits on its own is gone to its senders**,
+    /// A butler thread that exits on its own is gone to its senders,
     /// without its controller's `stop`: a `Shutdown` command ends the loop,
     /// and the thread's receiver goes with it.
     ///

@@ -1,7 +1,7 @@
 //! A disk voice's file, read on demand for an offline render.
 //!
 //! A [`DiskVoice`](super::disk_voice::DiskVoice) plays what the butler streams
-//! into its ring. A **fork** of one for an export cannot: the ring has one
+//! into its ring. A fork of one for an export cannot: the ring has one
 //! consumer, the live audio thread, and a seek asked of the butler moves the
 //! live stream. So a forked voice reads the file itself, through this: the
 //! file the butler's record names ([`StreamFile`]), re-opened by its path and
@@ -65,19 +65,37 @@ const PAGE_LEAD: usize = 4;
 
 /// Why an offline disk voice renders silence where its file should be: the
 /// file, and what went wrong with it.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("cannot read {}: {what}", path.display())]
 pub(crate) struct OfflineReadError {
     path: PathBuf,
-    what: String,
+    #[source]
+    what: ReadFault,
 }
 
-impl std::fmt::Display for OfflineReadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot read {}: {}", self.path.display(), self.what)
-    }
+/// What went wrong reading a file for an offline voice.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReadFault {
+    #[cfg(not(codec))]
+    #[error("no audio codec feature is enabled")]
+    NoCodec,
+    #[cfg(codec)]
+    #[error("seek to frame {frame}: {source}")]
+    Seek {
+        frame: usize,
+        source: tutti_io::WaveError,
+    },
+    #[cfg(codec)]
+    #[error("decode at frame {frame}: {message}")]
+    Decode {
+        frame: usize,
+        // The decoder keeps its error and lends it out, so only its text is ours.
+        message: String,
+    },
+    #[cfg(codec)]
+    #[error(transparent)]
+    Open(#[from] tutti_io::WaveError),
 }
-
-impl std::error::Error for OfflineReadError {}
 
 /// The file a forked disk voice plays: the butler's description of it, and
 /// the file itself, opened on the first read.
@@ -247,10 +265,7 @@ enum Open {
     Resident(Arc<Wave>),
     /// Boxed: a decoder and two pages' bookkeeping, against an `Arc`. With
     /// no codec compiled in nothing builds one (`open_path` fails first).
-    #[cfg_attr(
-        not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(codec), allow(dead_code))]
     Paged(Box<Pages>),
 }
 
@@ -258,16 +273,16 @@ impl Open {
     /// Open `file`: the butler's decoded copy when its cache holds one, else
     /// the file by its path — header only when it can seek, a whole decode
     /// when it cannot.
-    fn from_file(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, String> {
+    fn from_file(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
         if let Some(wave) = &file.resident {
             return Ok(Self::Resident(Arc::clone(wave)));
         }
         Self::open_path(file, fault)
     }
 
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    fn open_path(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, String> {
-        let decoder = tutti_io::FileIn::open(&file.path).map_err(|e| e.to_string())?;
+    #[cfg(codec)]
+    fn open_path(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
+        let decoder = tutti_io::FileIn::open(&file.path)?;
         let channels = usize::from(decoder.layout().count());
         match decoder.total_frames().filter(|_| decoder.seekable()) {
             Some(len) => Ok(Self::Paged(Box::new(Pages {
@@ -286,15 +301,15 @@ impl Open {
                 drop(decoder);
                 Wave::read(&file.path)
                     .map(|wave| Self::Resident(Arc::new(wave)))
-                    .map_err(|e| e.to_string())
+                    .map_err(ReadFault::from)
             }
         }
     }
 
     /// No codec compiled in: nothing can be decoded, here or by the butler.
-    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
-    fn open_path(_file: &StreamFile, _fault: Arc<FaultLatch>) -> Result<Self, String> {
-        Err("no audio codec feature is enabled".into())
+    #[cfg(not(codec))]
+    fn open_path(_file: &StreamFile, _fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
+        Err(ReadFault::NoCodec)
     }
 
     fn len(&self) -> usize {
@@ -345,12 +360,9 @@ impl Open {
 /// forward, before it going backward ([`load`](Self::load)), so a reversed
 /// read decodes a page per page of frames, not one per few frames.
 // With no codec compiled in nothing builds one (`open_path` fails first).
-#[cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(codec), allow(dead_code))]
 struct Pages {
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(codec)]
     decoder: tutti_io::FileIn,
     path: PathBuf,
     fault: Arc<FaultLatch>,
@@ -452,24 +464,28 @@ impl Pages {
         page.frames = frames;
         page.data.clear();
         page.data.resize(frames * ch, 0.0);
-        #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+        #[cfg(codec)]
         {
-            let fail = |what: String| OfflineReadError {
+            let fail = |what: ReadFault| OfflineReadError {
                 path: self.path.clone(),
                 what,
             };
             if self.decoder.cursor() != Samples(start)
-                && let Err(e) = self.decoder.seek(Samples(start))
+                && let Err(source) = self.decoder.seek(Samples(start))
             {
-                self.fault
-                    .latch(fail(format!("seek to frame {start}: {e}")));
+                self.fault.latch(fail(ReadFault::Seek {
+                    frame: start,
+                    source,
+                }));
                 return;
             }
             // Frames read before a fault stay in the page.
             let _ = self.decoder.fill_sequential_interleaved(&mut page.data);
             if let Some(e) = self.decoder.error() {
-                self.fault
-                    .latch(fail(format!("decode at frame {start}: {e}")));
+                self.fault.latch(fail(ReadFault::Decode {
+                    frame: start,
+                    message: e.to_string(),
+                }));
             }
         }
     }
@@ -515,7 +531,7 @@ mod tests {
         )
     }
 
-    /// **A reversed read decodes a page per page of frames**, as a forward
+    /// A reversed read decodes a page per page of frames, as a forward
     /// one does: reading the whole file backwards loads about `LEN / PAGE`
     /// pages, not one every few frames (a page laid out ahead of a forward
     /// read leaves a backward one below its start almost at once). Counted,
@@ -547,7 +563,7 @@ mod tests {
         }
     }
 
-    /// **The taps wrap through the loop** (the disk fork): on a
+    /// The taps wrap through the loop (the disk fork): on a
     /// hard loop `[10, 20)`, half a frame before the end interpolates frames
     /// 18, 19, then 10, 11 — what the loop plays next, and what the butler's
     /// ring holds there — not 20, 21 from past it; half a frame into a later
@@ -585,7 +601,7 @@ mod tests {
         assert!(read.page_loads() > 0, "read through the pages");
     }
 
-    /// **A forward read past the end of an unlooped file closes it**: there
+    /// A forward read past the end of an unlooped file closes it: there
     /// is nothing more to read, so the render stops holding the file, and a
     /// later read past the end does not open it again.
     ///
@@ -613,7 +629,7 @@ mod tests {
         assert!(!read.is_open(), "a read past the end opened it again");
     }
 
-    /// **`OfflineRead::read_into` latches a damaged file's fault.** The FLAC
+    /// `OfflineRead::read_into` latches a damaged file's fault. The FLAC
     /// fixture cut to 90% ends short of its frame count; a read before the
     /// cut returns frames, and the `FaultLatch` holds the decode failure.
     /// Called on the reader directly, not through a voice render.

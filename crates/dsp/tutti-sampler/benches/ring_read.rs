@@ -1,4 +1,4 @@
-//! **What does the disk tier's ring read cost per block?**
+//! What does the disk tier's ring read cost per block?
 //!
 //! `N` disk voices' rings, each read as `read_ring` (`voice/live_read.rs`)
 //! reads one: a claim per block, then per output frame the four taps of a

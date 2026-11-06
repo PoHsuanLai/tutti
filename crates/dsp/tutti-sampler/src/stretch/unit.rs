@@ -13,7 +13,7 @@ use tutti_core::{AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate
 
 /// Real-time time-stretching and pitch-shifting unit.
 ///
-/// A pure frame-in → frame-out **filter**: it owns NO source. The caller ticks
+/// A pure frame-in → frame-out filter: it owns NO source. The caller ticks
 /// the real audio source itself and feeds the resulting frame in as this unit's
 /// `input`; what lives here is the latent phase-vocoder state (one vocoder per
 /// channel, the scratch buffers, the atomics).
@@ -41,7 +41,7 @@ use tutti_core::{AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate
 /// The vocoders and the block scratch are this unit's, by value; no two
 /// units share running state.
 ///
-/// A clone is a **fresh** filter with the same width, window and parameters:
+/// A clone is a fresh filter with the same width, window and parameters:
 /// its own vocoders built on the same grid (sharing only the immutable window
 /// and phase tables), none of the running state. That is what a voice's fork
 /// needs, since it resets what it clones anyway. A clone allocates about
@@ -50,7 +50,7 @@ use tutti_core::{AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate
 /// # Channels
 ///
 /// One vocoder per channel, plus one in/out block-scratch pair each. The vocoders are
-/// **independent** — there is no phase locking between them, so a correlated
+/// independent — there is no phase locking between them, so a correlated
 /// source can drift channel-to-channel. Fixing that is a separate question from
 /// width.
 pub struct Unit {
@@ -87,7 +87,7 @@ pub struct Unit {
 /// A [`Unit`]'s per-channel state: one vocoder per channel, and `process`'s
 /// block scratch.
 pub(super) struct Channels {
-    /// One per channel; its length **is** the unit's width.
+    /// One per channel; its length is the unit's width.
     pub(super) vocoders: Vec<Vocoder>,
     /// `process`'s per-block working buffers, one pair per channel. Carry
     /// nothing between blocks: `process` overwrites `scratch_in` from its
@@ -209,7 +209,7 @@ impl Unit {
         self.width
     }
 
-    /// The same width as a stride, for indexing. Derive it **once** per call,
+    /// The same width as a stride, for indexing. Derive it once per call,
     /// above any loop.
     #[inline]
     fn stride(&self) -> usize {
@@ -287,7 +287,7 @@ impl Unit {
                 || self.pitch_cents().get().abs() > PITCH_EPSILON_CENTS)
     }
 
-    /// Processing latency, in samples — **zero while bypassing**.
+    /// Processing latency, in samples — zero while bypassing.
     ///
     /// One whole window must arrive before the first frame can be analysed, so a
     /// processing unit delays by exactly that. A bypassing one does not: `tick`
@@ -327,7 +327,7 @@ impl Unit {
 
     /// Time-scaling the vocoder actually performs: `stretch × pitch_ratio`.
     ///
-    /// **Not** [`stretch_factor`](Self::stretch_factor), and deliberately not
+    /// Not [`stretch_factor`](Self::stretch_factor), and deliberately not
     /// clamped to [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]. Those bounds
     /// describe *user intent* — how much longer the material should get. This is
     /// an internal quantity, and pitch shifting drives it outside them by
@@ -352,7 +352,7 @@ impl Unit {
     /// Fed samples this unit consumes per output sample:
     /// `1 / effective_stretch`.
     ///
-    /// **The unit paces its own intake**, and the caller feeds one source sample
+    /// The unit paces its own intake, and the caller feeds one source sample
     /// per output sample. That is the crate's existing contract — every voice
     /// path hands `tick` a single frame and expects one back — and pitch shifting
     /// rides on it rather than changing it.
@@ -361,9 +361,9 @@ impl Unit {
     /// resampling is the only thing that transposes. So this rate carries both
     /// halves, for opposite reasons:
     ///
-    /// - **`1 / stretch`** — consume slower so the material lasts longer;
+    /// - `1 / stretch` — consume slower so the material lasts longer;
     ///   the hops restore the pitch that slow read would otherwise drop.
-    /// - **`/ pitch_ratio`** — consume faster to transpose up; the hops, which
+    /// - `/ pitch_ratio` — consume faster to transpose up; the hops, which
     ///   scale by the same [`effective_stretch`](Self::effective_stretch),
     ///   restore the duration that fast read costs.
     ///
@@ -371,7 +371,7 @@ impl Unit {
     /// resample and the restore disagree and the result is neither the requested
     /// pitch nor the requested length.
     ///
-    /// Deliberately **not** a [`ReadRate`]: that type names what a caller
+    /// Deliberately not a [`ReadRate`]: that type names what a caller
     /// advances a source cursor by (see [`input_rate`](Self::input_rate)), and
     /// this is the unit's own consumption of frames already produced. Two
     /// quantities on two sides of a boundary; sharing one type is what would let
@@ -387,8 +387,8 @@ impl Unit {
 
     /// The (analysis, synthesis) hop pair for the current effective stretch.
     ///
-    /// The **synthesis** hop is pinned to the grid's natural `size / 4`, and the
-    /// **analysis** hop is `synthesis / effective`. Their ratio is exactly
+    /// The synthesis hop is pinned to the grid's natural `size / 4`, and the
+    /// analysis hop is `synthesis / effective`. Their ratio is exactly
     /// [`effective_stretch`](Self::effective_stretch) — the time-scaling that,
     /// combined with the caller reading at [`input_rate`](Self::input_rate),
     /// yields the requested stretch and pitch independently.
@@ -421,7 +421,7 @@ impl Unit {
         (analysis, synthesis.max(1))
     }
 
-    /// Source samples a **placed** caller advances per output sample:
+    /// Source samples a placed caller advances per output sample:
     /// `1 / stretch`.
     ///
     /// For a voice whose position is *derived from the playhead* rather than fed
@@ -429,7 +429,7 @@ impl Unit {
     /// it computes where in the wave to read from the transport, so it must scale
     /// that position itself or the stretch never reaches the source.
     ///
-    /// **Pitch is deliberately absent**, and this is the subtle half of the
+    /// Pitch is deliberately absent, and this is the subtle half of the
     /// design. Pitch shifting is a resample, and the unit performs that resample
     /// internally by consuming fed frames at its own intake rate. Folding the
     /// pitch ratio in here as well would resample *twice* — once at the caller's
@@ -476,7 +476,7 @@ pub(super) fn clamp_pitch(cents: Cents) -> Cents {
 
 impl Unit {
     /// Filter frames `frames` of the lanes `input` into the same frames of
-    /// `output`, `n` lanes each (`n` ≥ 1: the caller's width): **exactly**
+    /// `output`, `n` lanes each (`n` ≥ 1: the caller's width): exactly
     /// what one [`tick`](Self::tick) per frame, each handed `n` input
     /// samples and an `n`-wide output frame cleared to zero, would write.
     ///
@@ -486,7 +486,7 @@ impl Unit {
     /// the same order per channel:
     ///
     /// - The parameters (stretch, pitch, enabled, and the hops and intake
-    ///   rate derived from them) are read **once per block**, where `tick`
+    ///   rate derived from them) are read once per block, where `tick`
     ///   read its atomics every frame; a control write lands on the next
     ///   block rather than mid-block.
     /// - The channels share nothing but the intake debt, whose sequence of
@@ -551,7 +551,7 @@ impl Unit {
 }
 
 impl Clone for Unit {
-    /// A **fresh** filter: the same width, window and parameters, its own
+    /// A fresh filter: the same width, window and parameters, its own
     /// vocoders with none of this one's running state, and its own block
     /// scratch. See "Owned, not shared" on [`Unit`] for who clones, and why
     /// fresh rather than a copy of the stream.
@@ -580,7 +580,7 @@ impl Unit {
         self.intake_debt = 0.0;
     }
 
-    /// Retunes the geometry and **preserves** all running state — the phase
+    /// Retunes the geometry and preserves all running state — the phase
     /// history and the intake debt. Allocation-free, so a device
     /// change mid-stream costs a per-channel geometry rebuild and nothing else.
     ///

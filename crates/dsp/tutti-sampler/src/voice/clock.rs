@@ -7,7 +7,7 @@
 //! start, a stop, a seek); between them the playhead rolls on the host's own
 //! clock ([`FrameClock`], rebuilt from the transport as
 //! [`Env::transport_at`] and `Env::for_each_beat` rebuild it), wrapping at
-//! the loop's end. So a block is a handful of **runs**: stretches over which
+//! the loop's end. So a block is a handful of runs: stretches over which
 //! the playhead moves linearly, cut at each change and at each loop wrap.
 //! [`BlockClock::runs`] walks them; a reader asks a run for the beat at any
 //! of its frames in closed form ([`Run::beat_at`]), so the voice enters and
@@ -17,12 +17,12 @@
 //! # Jumps
 //!
 //! Buffered state — a stretch filter's FIFOs, the live disk reader's
-//! crossfade — needs to know where the playhead moved **discontinuously**,
+//! crossfade — needs to know where the playhead moved discontinuously,
 //! which one block cannot say: a block starting at beat 4 continues a block
 //! that ended at beat 4, and jumps from one that ended at 7. So the node that
 //! owns the read keeps a [`Clock`] across blocks: where the playhead would
 //! be at the first frame after the last block, had nothing moved it. A run is
-//! a **jump** ([`Run::jump`]) when it starts somewhere else while rolling — a
+//! a jump ([`Run::jump`]) when it starts somewhere else while rolling — a
 //! seek, at a block's start or inside it — and every loop wrap is one. A
 //! start, a stop, and a seek while stopped are not (the playhead resumes
 //! where it stands). Each jump moves the [generation](Run::generation) on: a live disk
@@ -431,8 +431,8 @@ mod tests {
             .collect()
     }
 
-    /// **A block that starts where the last one left the playhead is no
-    /// jump; one that starts anywhere else is**, on its first frame, and
+    /// A block that starts where the last one left the playhead is no
+    /// jump; one that starts anywhere else is, on its first frame, and
     /// moves the generation on. The first block continues nothing.
     ///
     /// Mutation (run): `breaks` answering `false` for a rolling transport
@@ -462,8 +462,8 @@ mod tests {
         );
     }
 
-    /// **A stop, a seek while stopped, and a restart where the playhead
-    /// stands are no jump** (the playhead resumes where it stands): nothing
+    /// A stop, a seek while stopped, and a restart where the playhead
+    /// stands are no jump (the playhead resumes where it stands): nothing
     /// buffered is stale.
     ///
     /// Mutation (run): `continuation` treating a stopped run as rolling
@@ -490,7 +490,7 @@ mod tests {
         );
     }
 
-    /// **A seek inside a block is a run of its own, a jump on its frame**,
+    /// A seek inside a block is a run of its own, a jump on its frame,
     /// and the next block continues from it.
     ///
     /// Mutation (run): `Runs::seg_end` ignoring `Env::changes` (the block
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(run.beat_at(0), Beat(10_032.0 / FPB));
     }
 
-    /// **A loop wrap inside a block is a jump on the wrap's frame**, the
+    /// A loop wrap inside a block is a jump on the wrap's frame, the
     /// run after it starting at the loop's start.
     ///
     /// Mutation (run): `Runs` not cutting at a wrap (`wrap_offset`
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(got[1].beat_at(10), Beat(0.0), "the loop's start");
     }
 
-    /// **`BlockClock::jumps` is whether any run of the block jumps**: the
+    /// `BlockClock::jumps` is whether any run of the block jumps: the
     /// slot walks a range's runs for a reset only when it says so, so a
     /// `false` over a jump would leave a stretch filter or a live read
     /// holding stale state. Over a continuation, a seek back, a seek inside
@@ -566,8 +566,8 @@ mod tests {
         assert_eq!(jumped, 2, "the seek back and the seek inside a block");
     }
 
-    /// **A range cut out of a run keeps the run's jump only at its first
-    /// frame** (`runs_in`), and reads the same beats.
+    /// A range cut out of a run keeps the run's jump only at its first
+    /// frame (`runs_in`), and reads the same beats.
     #[test]
     fn a_range_starts_with_the_jump_only_where_the_jump_is() {
         let mut clock = Clock::new();

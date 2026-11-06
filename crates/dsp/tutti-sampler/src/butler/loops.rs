@@ -1,7 +1,7 @@
 //! What a stream's ring holds, position by position, and how it changes.
 //!
-//! A live stream's ring (`prefetch::Ring`) is indexed by **straight
-//! position**: file frames counted as if the file played straight on, the
+//! A live stream's ring (`prefetch::Ring`) is indexed by straight
+//! position: file frames counted as if the file played straight on, the
 //! position a placed voice's gate and seat give (`interp::Seat`), less the
 //! channel's PDC preroll. What the slot for straight position `s` holds is the
 //! stream's [`Mapping`]: the file frame a loop places `s` on, its fade blended
@@ -341,11 +341,11 @@ impl Mapping {
     }
 
     /// One past the last straight position worth writing: the file's length,
-    /// or never for a forward loop.
-    pub(crate) fn end(&self) -> u64 {
+    /// or `None` for a forward loop, which never ends.
+    pub(crate) fn end(&self) -> Option<u64> {
         match self.forward_loop() {
-            Some(_) => u64::MAX,
-            None => self.len as u64,
+            Some(_) => None,
+            None => Some(self.len as u64),
         }
     }
 
@@ -408,7 +408,9 @@ impl Mapping {
         read: &mut dyn FnMut(usize, &mut [f32]),
     ) {
         let frames = out.len() / ch;
-        let writable = (self.end().saturating_sub(pos) as usize).min(frames);
+        let writable = self
+            .end()
+            .map_or(frames, |end| (end.saturating_sub(pos) as usize).min(frames));
         out[writable * ch..].fill(0.0);
         let out = &mut out[..writable * ch];
         if self.reverse {
@@ -602,7 +604,7 @@ pub(crate) fn read_wave(wave: &Wave, at: usize, out: &mut [f32], channels: Chann
     WaveIn::new(wave, at, channels).fill_interleaved(out);
 }
 
-/// Ring capacity in **frames** for a file of `file_length_samples` frames at
+/// Ring capacity in frames for a file of `file_length_samples` frames at
 /// `sample_rate`.
 ///
 /// Buys buffering depth in seconds of audio, tapering as the file grows: a small
@@ -698,7 +700,7 @@ mod tests {
         }
     }
 
-    /// **The loop's lead-in is what leads into where the wrap resumes**:
+    /// The loop's lead-in is what leads into where the wrap resumes:
     /// `[start - fade, start)` when there is room before the start, else the
     /// loop's own head `[start, start + fade)` (the wrap then resuming after
     /// it), the fade at most half the loop there — `LoopSpan`'s rule, which
@@ -728,7 +730,7 @@ mod tests {
         );
     }
 
-    /// **A fill writes the loop as the sequence `LoopSpan` defines**: from
+    /// A fill writes the loop as the sequence `LoopSpan` defines: from
     /// frame 0, a crossfaded loop `[5, 9)` writes the file up to 5, blends
     /// 7 and 8 toward 3 and 4 as it writes them, and wraps to 5; a fill that
     /// starts past the loop's end (a straight position) places it on the loop
@@ -781,7 +783,7 @@ mod tests {
         assert_eq!(reads.get(), 1, "one read, for frames 0..9");
     }
 
-    /// **A six-channel loop wraps at its full FRAME length**: frame 100 of a
+    /// A six-channel loop wraps at its full FRAME length: frame 100 of a
     /// 100-frame loop is its frame 0, frame 150 its frame 50 — the failure
     /// `CLAUDE.md` names for this boundary ("a 6-channel looped clip wraps at a
     /// sixth of its length").
@@ -817,7 +819,7 @@ mod tests {
         }
     }
 
-    /// **A reversed mapping holds the file mirrored**: straight position `s`
+    /// A reversed mapping holds the file mirrored: straight position `s`
     /// holds file frame `len - 1 - s`, every channel in its place (a flat
     /// reverse would swap each frame's channels), and nothing past the file.
     ///
@@ -837,8 +839,8 @@ mod tests {
         );
     }
 
-    /// **A position's taps read what the memory tier reads there, bit for
-    /// bit**: slots filled by each mapping (a crossfaded loop, one fading into
+    /// A position's taps read what the memory tier reads there, bit for
+    /// bit: slots filled by each mapping (a crossfaded loop, one fading into
     /// its head, a hard one, unlooped and reversed), read at the four straight
     /// taps `Arrangement::taps` names through the one kernel, equal the memory
     /// tier's read at the same position (`read_looped_frame` on the placed
@@ -902,7 +904,7 @@ mod tests {
         }
     }
 
-    /// **Two mappings part where their slots first differ**: the same loop
+    /// Two mappings part where their slots first differ: the same loop
     /// nowhere, a longer loop at the old end, a reversal at once, and a
     /// content split at its switch is compared piecewise.
     ///
@@ -975,8 +977,8 @@ mod tests {
         }
     }
 
-    /// **A reader that reaches the switch during the butler's read moves the
-    /// switch past it.** A loop `[1 000, 3 000)` set on an unlooped ring
+    /// A reader that reaches the switch during the butler's read moves the
+    /// switch past it. A loop `[1 000, 3 000)` set on an unlooped ring
     /// parts from it at 3 000, which is where the switch goes while the
     /// reader is at 64 — no fade. But the reader claims `[2 999, 3 100)`
     /// while the butler reads: the switch is chosen again, a guard past the
@@ -1011,7 +1013,7 @@ mod tests {
         assert_eq!(writer.content().switch_at, 3_100 + GUARD_FRAMES);
     }
 
-    /// **A reader that keeps pace with every read is given up on after four**:
+    /// A reader that keeps pace with every read is given up on after four:
     /// each read the reader claims a block past where the switch was just
     /// chosen, and the fourth choice stands (its fade record covers the
     /// reader crossing it), rather than chasing the reader to the ring's end.

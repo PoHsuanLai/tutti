@@ -44,7 +44,7 @@ pub(super) struct Vocoder {
     pub(super) phase_accumulator: Vec<Radians>,
     /// Per-bin analysis phase from the previous frame.
     pub(super) last_phase: Vec<Radians>,
-    /// Per-bin phase advance produced by **one sample** of analysis hop.
+    /// Per-bin phase advance produced by one sample of analysis hop.
     /// Multiplied by the frame's analysis hop, which varies with stretch.
     ///
     /// `Arc` for the same reason as `window`: a function of the geometry alone,
@@ -54,7 +54,7 @@ pub(super) struct Vocoder {
     /// Whether a frame has been analysed yet on this stream.
     ///
     /// The first frame has no previous phase to unwrap against, so it must
-    /// **seed** the accumulator with the phase it observes rather than
+    /// seed the accumulator with the phase it observes rather than
     /// accumulate onto zero. Skipping that leaves every bin carrying a
     /// permanent, per-bin-varying offset, which is a phase error the stream
     /// never recovers from: the partials of one tone stop lining up and the
@@ -86,7 +86,7 @@ impl Vocoder {
     pub(super) fn new(geometry: StftGeometry) -> Self {
         let size = geometry.window().get();
         let bins = geometry.bins_per_frame().get();
-        // 2π·k/size — the phase bin `k` advances **per sample** of analysis hop.
+        // 2π·k/size — the phase bin `k` advances per sample of analysis hop.
         // No sample-rate term: it is a ratio of sample counts, which is why
         // changing the rate does not invalidate it.
         //
@@ -178,7 +178,7 @@ impl Vocoder {
     /// # Why there is no pitch parameter here
     ///
     /// A phase vocoder cannot transpose. A partial's output frequency is set by
-    /// **which bin holds its magnitude**, and this loop never moves magnitude
+    /// which bin holds its magnitude, and this loop never moves magnitude
     /// between bins — line for line, bin `k` in is bin `k` out. Scaling the
     /// phase advance by a pitch ratio therefore transposes nothing; it only
     /// decorrelates each bin's phase from its magnitude.

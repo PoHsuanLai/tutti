@@ -1,7 +1,7 @@
 //! **What does one block of VBAP panning cost, at 2 and 6 speakers, for a
 //! 64-frame and a 1024-frame block?**
 //!
-//! A 64-frame block at 48 kHz has **1.333 ms** (1024 frames: 21.3 ms); divide
+//! A 64-frame block at 48 kHz has 1.333 ms (1024 frames: 21.3 ms); divide
 //! a case's time by that for the fraction of the budget one panned source
 //! consumes.
 //!

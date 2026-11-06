@@ -50,7 +50,7 @@ fn vbap_panner_stereo_process_is_allocation_free() {
     gate(node, 1);
 }
 
-/// The rear-arc **fold** branch is allocation-free.
+/// The rear-arc fold branch is allocation-free.
 ///
 /// `vbap_panner_stereo_process_is_allocation_free` above pans to 30 degrees,
 /// which is inside the speaker pair and takes neither branch `solve_gains`
@@ -75,7 +75,7 @@ fn vbap_folded_rear_arc_is_allocation_free() {
     gate(node, 1);
 }
 
-/// The **elevation-retreat** branch is allocation-free.
+/// The elevation-retreat branch is allocation-free.
 ///
 /// The other branch `solve_gains` added, and the only one that re-enters
 /// `vbap`'s solver more than once per sample. A 2D ring has no geometry at

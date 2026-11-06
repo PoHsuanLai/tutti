@@ -1,6 +1,6 @@
-//! **What does one 64-frame block of binaural rendering cost?**
+//! What does one 64-frame block of binaural rendering cost?
 //!
-//! A 64-frame block at 48 kHz has **1.333 ms**; divide a case's time by that
+//! A 64-frame block at 48 kHz has 1.333 ms; divide a case's time by that
 //! for the fraction of the budget one binaural source consumes. The
 //! convolution runs once per 128 frames, so the mean over many blocks is
 //! what this reports, not the worst block.

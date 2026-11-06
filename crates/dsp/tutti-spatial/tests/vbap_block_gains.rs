@@ -26,7 +26,7 @@
 //!   1e-5: about 4x over the measurement, and the drift of libm or `powi`
 //!   across platforms is far below that. The ramp is
 //!   written so its last sample *is* the solve at the advanced position.
-//! - **Frames inside a block are within `RAMP_TOL`**. They lie on a chord of
+//! - Frames inside a block are within `RAMP_TOL`. They lie on a chord of
 //!   the gain curve where the reference sat on the curve itself, so the error
 //!   is bounded by how far the source travels in one block. The 50 ms
 //!   de-zipper moves at most `1 - exp(-64 / 2400)` ≈ 2.6% of the remaining arc
@@ -40,7 +40,7 @@
 //!   5.1 jump, 1.0e-3 on the mono fold and 0.021 on the sweep. `RAMP_TOL` is
 //!   the 0.06 bound, not the measurement, so it cannot be tuned to pass.
 //!
-//! One case differs **on purpose** inside its blocks: `stereo_width_switch`.
+//! One case differs on purpose inside its blocks: `stereo_width_switch`.
 //! The per-frame reference switches between the mono-fold and two-source
 //! branches at the block boundary with a hard step (0.64 of full scale,
 //! measured); the block render crossfades the two across the next block. Only

@@ -60,7 +60,7 @@ pub enum Error {
         chunks: usize,
     },
 
-    /// A width the render cannot use, which means **zero** and nothing else.
+    /// A width the render cannot use, which means zero and nothing else.
     ///
     /// The frame width is a runtime `ChannelLayout`, so any positive count
     /// exports — including the 3- and 5-wide masters a fixed enumeration of
@@ -119,7 +119,7 @@ pub enum Error {
     #[error("Cannot fork the graph for export: {0}")]
     Fork(tutti_graph::ForkError),
 
-    /// A forked unit failed **while the render ran**: a hosted plugin's
+    /// A forked unit failed while the render ran: a hosted plugin's
     /// server crashed, or stopped answering (`kind`). Past that point the
     /// render holds silence where the unit's output belongs, so the export is
     /// reported as failed rather than written as if it had succeeded. The

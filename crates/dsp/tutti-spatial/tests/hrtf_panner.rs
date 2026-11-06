@@ -3,7 +3,7 @@
 //! The node tests in `src/hrtf/node.rs` pin latency, blend and reset; the
 //! analytic render properties are in `tests/hrtf_render.rs`. This file
 //! drives [`HrtfBinauralNode`] with a synthetic HRIR sphere whose left/right
-//! impulse responses encode a **known** interaural time difference and level
+//! impulse responses encode a known interaural time difference and level
 //! difference as a function of azimuth, then recovers the interpolated IR by
 //! impulsing the node.
 //!
@@ -14,10 +14,10 @@
 //! azimuth 0 = front (−z), +90 = left (−x), −90 = right (+x). Each equatorial
 //! vertex stores:
 //!
-//! - a unit-ish delta whose **right-ear delay** is `round(k · sin(az))`
+//! - a unit-ish delta whose right-ear delay is `round(k · sin(az))`
 //!   samples (positive = source on the left, so the right ear is the far ear)
 //! - left/right gains `1 ± ILD · sin(az)` (near ear louder)
-//! - a `cos(az)` marker tap so **front ≠ back** — `sin(az)` alone cannot tell
+//! - a `cos(az)` marker tap so front ≠ back — `sin(az)` alone cannot tell
 //!   0° from 180°, and a wrap bug that clamps 359° to 180° would otherwise
 //!   look like a hit
 //!

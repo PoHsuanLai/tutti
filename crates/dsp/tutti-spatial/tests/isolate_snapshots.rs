@@ -1,4 +1,4 @@
-//! Both panners fork to a **snapshot** of their placement: once a fork is
+//! Both panners fork to a snapshot of their placement: once a fork is
 //! taken from the source their insert hands the editor, no live move of the
 //! position, spread, width or blend reaches it.
 //!

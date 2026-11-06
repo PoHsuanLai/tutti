@@ -70,11 +70,11 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// error.
 #[cfg_attr(not(codec), allow(dead_code))]
 pub(crate) trait Encoder {
-    /// `source_rate` is the rate the incoming frames are **at**, which is not
+    /// `source_rate` is the rate the incoming frames are at, which is not
     /// always `config.render.sample_rate` — `write_buffers` feeds frames
     /// rendered elsewhere, carrying their own rate.
     ///
-    /// **Every implementation must go through [`pump_blocks`]**, which is where
+    /// Every implementation must go through [`pump_blocks`], which is where
     /// the gate, the resample and the dither live. An encoder that pulls from
     /// [`drive`] directly still takes its header rate from [`encoder_rate`], so
     /// it writes un-resampled audio under a header claiming the target — a file

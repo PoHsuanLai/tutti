@@ -25,7 +25,7 @@
 //! A literal is what keeps a setter off a path that ignores it: the fields a
 //! stage reads are the fields in the struct it is handed.
 //!
-//! **This module is data, and only data.** No method here reads a graph, opens a
+//! This module is data, and only data. No method here reads a graph, opens a
 //! file, or decides anything — the derivations live next to the code that needs
 //! them (`render::plan` for frame counts, `encode` for the codec rate). A config
 //! constructible without a graph and comparable with `==` is one a caller can
@@ -111,7 +111,7 @@ pub struct EncodeConfig {
     pub topology: Option<tutti_types::ChannelTopology>,
 }
 
-/// The format's and depth's own defaults, written to a **stereo** file.
+/// The format's and depth's own defaults, written to a stereo file.
 ///
 /// Hand-written because [`ChannelLayout`] has no `Default`, so the width is a
 /// stated choice rather than one a derive picks. Stereo is the answer for a

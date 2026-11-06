@@ -2,8 +2,8 @@
 //!
 //! Two stages, and both stream:
 //!
-//! - **dither** ([`DitherState`]) — per block, carrying only its RNG.
-//! - **resample** ([`Resampler`]) — an FFT block resampler
+//! - dither ([`DitherState`]) — per block, carrying only its RNG.
+//! - resample ([`Resampler`]) — an FFT block resampler
 //!   on the scalar `RealFft`; it never needs the whole signal.
 //!
 //! There is deliberately no "mastering" type and no whole-signal pass.

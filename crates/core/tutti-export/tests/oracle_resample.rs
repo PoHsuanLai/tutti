@@ -2,7 +2,7 @@
 //!
 //! # What the oracle is, and why it is independent
 //!
-//! The oracle here is **arithmetic**, not a crate: a 1 kHz tone is 1 kHz at any
+//! The oracle here is arithmetic, not a crate: a 1 kHz tone is 1 kHz at any
 //! sample rate, and a tone above the new Nyquist must be *gone* rather than
 //! folded down. Both facts are derived from sampling theory and hold no matter
 //! which resampler is underneath, which makes them independent of the
@@ -11,7 +11,7 @@
 //!
 //! # Why this is not a comparison against another resampler
 //!
-//! The implementation is tutti's own FFT resampler (`process/fft_resample.rs`),
+//! The implementation is tutti's own FFT resampler (`tutti-dsp`'s `FftResampler`),
 //! so running a second library beside it would compare chunking and carry
 //! bookkeeping, not filter quality, and a render compared with a render pins
 //! nothing. The figures below are sampling theory.
@@ -26,17 +26,17 @@
 //!
 //! # Tolerance rationale
 //!
-//! **±5 Hz on frequency** is the scan step of the bin sweep below, i.e. the
+//! ±5 Hz on frequency is the scan step of the bin sweep below, i.e. the
 //! measurement's own resolution — nothing looser is justified and nothing
 //! tighter is measurable this way. The failure it exists to catch is an order
 //! of magnitude larger: a resampler reading its input at the wrong stride puts
 //! the tone at 48000/44100 × 1000 = 1088 Hz, an 88 Hz error.
 //!
-//! **±0.5 dB on level** is the pass-band ripple a decent polyphase filter is
+//! ±0.5 dB on level is the pass-band ripple a decent polyphase filter is
 //! allowed; the failures it catches (a half-scale conversion, a doubled one)
 //! are 6 dB.
 //!
-//! **>40 dB alias rejection** is the weakest claim worth making. A resampler
+//! Over 40 dB of alias rejection is the weakest claim worth making. A resampler
 //! with no anti-alias filter at all leaves the 23 kHz image at nearly the
 //! source's full 0.5 amplitude, i.e. 0 dB of rejection.
 
@@ -147,7 +147,7 @@ fn peak_freq(x: &[f32], rate: f64, lo: f64, hi: f64) -> f64 {
 /// right frequency — an 8.8% pitch error, plainly audible, and invisible to
 /// every assertion in `render.rs`.
 ///
-/// Mutation: swap the source and target rates handed to `FftFixedIn::new` ->
+/// Mutation: swap the source and target rates handed to `FftResampler::new` ->
 /// fails, the tone landing at 830 Hz instead of 1000.
 #[test]
 fn a_tone_keeps_its_frequency_across_a_rate_change() {
@@ -209,7 +209,7 @@ fn a_tone_keeps_its_frequency_across_a_rate_change() {
 /// anti-alias filter mirrors it to 44100 - 23000 = 21100 Hz, which is a loud
 /// tone that was never in the source.
 ///
-/// Mutation: swap the source and target rates handed to `FftFixedIn::new` ->
+/// Mutation: swap the source and target rates handed to `FftResampler::new` ->
 /// fails, an image surviving at 0.189 (19420 Hz) against a 0.005 floor.
 #[test]
 fn a_tone_above_the_new_nyquist_is_filtered_not_aliased() {

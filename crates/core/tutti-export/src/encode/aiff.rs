@@ -1,6 +1,6 @@
 //! AIFF (`aifc`). Streams; `finalize` back-patches the COMM/SSND sizes.
 //!
-//! AIFF does **not** require a total size up front, whatever a hand-rolled IFF
+//! AIFF does not require a total size up front, whatever a hand-rolled IFF
 //! writer's constraints might suggest: `aifc` takes samples incrementally and
 //! patches the sizes at `finalize`, the same way hound does for RIFF. It also
 //! owns the 80-bit IEEE 754 extended encoding of the sample-rate field, which is

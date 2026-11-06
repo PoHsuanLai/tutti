@@ -71,7 +71,7 @@ pub enum Clock {
     },
 }
 
-/// Where a rate edit takes effect (doc 014 §4.3): in play epoch `epoch`, the
+/// Where a rate edit takes effect: in play epoch `epoch`, the
 /// layer is at `phase` cycles on play frame `at`, and moves at `prev_rate`
 /// before it and at the layer's rate from it. An anchor from another epoch
 /// (a play start since, or a fork) is ignored.
@@ -147,7 +147,7 @@ impl Amount {
 
     /// Whether the offset bends where the raw value crosses zero: a
     /// bipolar amount with any curve but `Linear` (`shape` curves `|x|`),
-    /// so each zero crossing is a corner (doc 014 §5.3). Every curve has
+    /// so each zero crossing is a corner. Every curve has
     /// `f(0) = 0` (`Elastic` by a special case: its formula's limit is
     /// about −5e-4), so the offset `sign(x)·f(|x|)` is continuous there
     /// with the same slope `f'(0)` either side; where `f''(0) ≠ 0` its
@@ -188,7 +188,7 @@ pub struct Layer {
 /// [`DepthBy::UNIT`] (full depth, unipolar, linear) maps the wave's
 /// `[-1, 1]` onto `[0, 1]`, computed as `(raw + 1) / 2` in `f64`; any other
 /// amount goes through [`shape`]. A curved bipolar amount kinks at the
-/// wave's zero crossings, which are corners as a layer's are (doc 014 §5.3).
+/// wave's zero crossings, which are corners as a layer's are.
 /// Under `Back` or `Elastic` the scale dips below 0 (to about −0.10 and
 /// −0.373 of depth) for small inputs, so there it inverts the offset
 /// rather than shrinking it; so may a `Bezier` with control values
@@ -488,7 +488,7 @@ impl ControlProgram {
 
     /// Exactly one curve's segments: automation, no layers, no inputs. A
     /// native target's lane sends such a program's shaped pieces as they
-    /// are (exact mode, doc 014 §5.4).
+    /// are.
     #[must_use]
     pub fn is_pure_automation(&self) -> bool {
         self.automation.is_some() && self.layers.is_empty() && self.inputs.is_empty()
@@ -515,7 +515,7 @@ impl ControlProgram {
         span: f64,
         inputs: &[Option<f32>],
     ) -> Option<f32> {
-        self.evaluate(knob, at, span, inputs, false)
+        self.evaluate(knob, at, span, inputs, Limit::At)
     }
 
     /// The left limit at `at`: [`value_at`](Self::value_at) just before it,
@@ -529,7 +529,7 @@ impl ControlProgram {
         span: f64,
         inputs: &[Option<f32>],
     ) -> Option<f32> {
-        self.evaluate(knob, at, span, inputs, true)
+        self.evaluate(knob, at, span, inputs, Limit::Before)
     }
 
     fn evaluate(
@@ -538,12 +538,12 @@ impl ControlProgram {
         at: &ProgramTime,
         span: f64,
         inputs: &[Option<f32>],
-        left: bool,
+        limit: Limit,
     ) -> Option<f32> {
         let base = self
             .automation
             .as_ref()
-            .and_then(|c| automation_at(c.as_ref(), at.beat.get(), left))
+            .and_then(|c| automation_at(c.as_ref(), at.beat.get(), limit))
             .filter(|v| v.is_finite())
             .or(knob)?;
         if !span.is_finite() {
@@ -551,7 +551,7 @@ impl ControlProgram {
         }
         let mut acc = -0.0f64;
         for l in self.layers.iter() {
-            if let Some(o) = l.offset(at, span, left) {
+            if let Some(o) = l.offset(at, span, limit) {
                 acc += o;
             }
         }
@@ -567,7 +567,7 @@ impl ControlProgram {
     /// the automation's next breakpoint (where [`Curve::segment_at`] can
     /// say it), each layer's slope breaks and jumps (a square's edges, a
     /// saw's wrap, a triangle's peaks, a random step, a drawn point), each
-    /// curved bipolar layer's zero crossings (doc 014 §5.3), each
+    /// curved bipolar layer's zero crossings, each
     /// `depth_by` wave's, and a rate anchor's frame. Inputs' corners are the
     /// lane's: it holds their segments.
     pub fn next_corner(&self, at: &ProgramTime) -> Corners {
@@ -610,14 +610,23 @@ impl ControlProgram {
     }
 }
 
-/// `curve`'s value at beat `b`, or just before it when `left`.
+/// Which side of a time a value is read from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Limit {
+    /// The value at the time.
+    At,
+    /// The left limit: the value just before the time.
+    Before,
+}
+
+/// `curve`'s value at beat `b`, or just before it for [`Limit::Before`].
 ///
 /// A left limit inside a piece the curve can describe is evaluated from
 /// the piece, its position rounded *down* to `f32`: an envelope rounds the
 /// position up to 1.0 a nanobeat before a breakpoint, which on a stepped
 /// piece reads the level after the step.
-fn automation_at(curve: &dyn Curve, b: f64, left: bool) -> Option<f32> {
-    if !left {
+fn automation_at(curve: &dyn Curve, b: f64, limit: Limit) -> Option<f32> {
+    if limit == Limit::At {
         return curve.value_at(Beat(b));
     }
     let x = b - tol(b);
@@ -655,15 +664,15 @@ impl Layer {
                 .is_none_or(|d| matches!(d.wave, Wave::Const(_)))
     }
 
-    /// This layer's offset at `at` (just before it when `left`), `None`
-    /// when its clock gives no position.
-    fn offset(&self, at: &ProgramTime, span: f64, left: bool) -> Option<f64> {
-        let raw = self.wave.raw_on(&self.clock, at, left)?;
+    /// This layer's offset at `at` (just before it for [`Limit::Before`]),
+    /// `None` when its clock gives no position.
+    fn offset(&self, at: &ProgramTime, span: f64, limit: Limit) -> Option<f64> {
+        let raw = self.wave.raw_on(&self.clock, at, limit)?;
         let mut off = self.amount.offset(raw, span);
         if let Some(d) = &self.depth_by {
             let m = d
                 .wave
-                .raw_on(&d.clock, at, left)
+                .raw_on(&d.clock, at, limit)
                 .map_or(1.0, |r| d.scale(r));
             off *= m;
         }
@@ -803,12 +812,12 @@ pub(crate) fn hash_bipolar(n: i64) -> f32 {
 }
 
 impl Wave {
-    /// The raw value on `clock` at `at` (just before it when `left`); `None`
-    /// when the clock gives no position. A constant needs none.
-    fn raw_on(&self, clock: &Clock, at: &ProgramTime, left: bool) -> Option<f32> {
+    /// The raw value on `clock` at `at` (just before it for [`Limit::Before`]);
+    /// `None` when the clock gives no position. A constant needs none.
+    fn raw_on(&self, clock: &Clock, at: &ProgramTime, limit: Limit) -> Option<f32> {
         match self {
             Self::Const(v) => Some(*v),
-            _ => Some(self.raw_at(clock.cycles(at)?, left)),
+            _ => Some(self.raw_limit(clock.cycles(at)?, limit)),
         }
     }
 
@@ -818,7 +827,13 @@ impl Wave {
     /// so a seek or a fork reads the same value; the control lane and the
     /// audio-rate `tutti_nodes::LfoNode` both evaluate through it.
     pub fn raw_at(&self, cycles: f64, left: bool) -> f32 {
-        let c = if left { cycles - tol(cycles) } else { cycles };
+        let limit = if left { Limit::Before } else { Limit::At };
+        self.raw_limit(cycles, limit)
+    }
+
+    fn raw_limit(&self, cycles: f64, limit: Limit) -> f32 {
+        let before = limit == Limit::Before;
+        let c = if before { cycles - tol(cycles) } else { cycles };
         let n = c.floor();
         let frac = c - n;
         match self {
@@ -832,7 +847,7 @@ impl Wave {
                     // A left limit stays left of a corner in `f32` too:
                     // 0.5 - 1e-9 rounds to 0.5, a square's edge.
                     let mut p = frac as f32;
-                    if left && f64::from(p) > frac {
+                    if before && f64::from(p) > frac {
                         p = p.next_down();
                     }
                     periodic.evaluate_periodic(Phase(p.min(1.0)))

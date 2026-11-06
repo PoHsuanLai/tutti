@@ -311,7 +311,7 @@ fn a_pitched_voice_exports_at_the_shifted_frequency() {
     }
 }
 
-/// Time-stretch must change duration, **not** pitch — through the export too.
+/// Time-stretch must change duration, not pitch — through the export too.
 ///
 /// This is the assertion that caught a real defect in the sampler: `VoicePool`
 /// never applied `stretch::Unit::input_rate`, so the factor behaved as plain

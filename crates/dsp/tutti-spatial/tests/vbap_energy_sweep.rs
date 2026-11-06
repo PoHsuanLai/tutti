@@ -3,7 +3,7 @@
 //!
 //! # What the oracle is, and why it is independent
 //!
-//! This is the shape a subsystem with **no library oracle** gets instead of
+//! This is the shape a subsystem with no library oracle gets instead of
 //! one. The property is a scalar identity that can be stated exactly — the sum
 //! of the squared speaker gains is 1.0 — so the oracle is that sentence, and
 //! there is nothing to compare against and nothing to justify a tolerance
@@ -21,7 +21,7 @@
 //! to zero. Left to that, a stereo pair holds unity to 30°, decays (0.933 at
 //! 45°, 0.500 at 90°, 0.067 at 135°) and is **completely silent from 150°
 //! through 210°**. `VbapPanner::solve_gains` corrects this in this crate's
-//! layer, so unity is asserted at **spread 0 as well**, and the stereo pair's
+//! layer, so unity is asserted at spread 0 as well, and the stereo pair's
 //! rear arc is asserted as a hard-pan table.
 //!
 //! # Tolerance rationale
@@ -86,7 +86,7 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 /// # Only the gain assertions catch that bug, and that is worth knowing
 ///
 /// Mutation testing shows that seating `reset` on front centre leaves the
-/// two energy tests **passing**: front-centre is `[0.707, 0.707]`, which is unit
+/// two energy tests passing: front-centre is `[0.707, 0.707]`, which is unit
 /// energy, so a sweep that only sums squares cannot tell "correctly panned" from
 /// "not panned at all". The tests that fail are
 /// [`stereo_hard_pans_outside_the_pair_and_mirrors_the_rear`] and
@@ -118,7 +118,7 @@ fn sum_of_squares(gains: &[f32]) -> f32 {
 ///
 /// The sweep is a cross-product rather than random sampling: the domain is
 /// small enough to enumerate, and an enumeration is a proof where a sample is
-/// only evidence. Five layouts × seven spreads (including **0**) × 24 bearings.
+/// only evidence. Five layouts × seven spreads (including 0) × 24 bearings.
 ///
 /// Spread 0 is in the grid. `apply_spread` returns early there, and upstream
 /// `vbap` alone does not keep the invariant; `solve_gains` establishes unit
@@ -177,10 +177,10 @@ fn every_layout_holds_unit_energy_across_the_sweep() {
 /// no geometry to solve against, and upstream returned an all-zero gain vector
 /// for both — silence, not a fade:
 ///
-/// - **Below an Atmos bed.** 7.1.4 has eleven speakers and none beneath the
+/// - Below an Atmos bed. 7.1.4 has eleven speakers and none beneath the
 ///   listener, so everything under about -20° elevation was dead (measured:
 ///   every bearing at -70° and below, 31 of 36 at -60°).
-/// - **The exact poles of a 2D ring.** quad / 5.1 / 7.1 solve in the horizontal
+/// - The exact poles of a 2D ring. quad / 5.1 / 7.1 solve in the horizontal
 ///   plane, and at ±90° elevation the direction vector's horizontal projection
 ///   is the zero vector, so every gain came out zero.
 ///
@@ -228,7 +228,7 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 ///
 /// # The law
 ///
-/// A stereo pair sits at ±30° and has **no rear speaker**, so it has no
+/// A stereo pair sits at ±30° and has no rear speaker, so it has no
 /// front/back axis: there is no amplitude difference between two speakers both
 /// in front of you that says "behind". `solve_gains` therefore mirrors a rear
 /// bearing about the lateral axis (135° → 45°, 180° → 0°) and then hard-pans

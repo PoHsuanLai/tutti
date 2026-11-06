@@ -1,32 +1,29 @@
-//! `TuttiDriver` — CPAL audio I/O lifecycle.
+//! [`TuttiDriver`]: the CPAL stream lifecycle.
 //!
-//! Owns the CPAL stream and the [`AudioCallbackState`] that feeds it. A host
-//! builds one at startup and may call [`set_device`](TuttiDriver::set_device) /
-//! [`restart`](TuttiDriver::restart) to switch device without rebuilding the
-//! graph. A device that comes back at another rate needs the graph re-rated
-//! with it, which this driver cannot do (it holds only the graph's audio
-//! side): [`restart_with`](TuttiDriver::restart_with) runs the host's hook for
-//! that between the stop and the start, and a plain `restart` refuses the
-//! rate change rather than play the graph at the old rate.
+//! Owns the [`AudioEngine`] and the [`AudioCallbackState`] it renders. A device
+//! that comes back at another rate needs the graph re-rated, which this driver
+//! cannot do (it holds only the graph's audio side): [`restart_with`] runs the
+//! host's hook between the stop and the start, and a plain [`restart`] refuses
+//! the rate change.
 //!
-//! `&mut self` lifecycle — no `Mutex`. Hold it in one place. The `cpal::Stream`
-//! it owns is `Send` but not `Sync`, so a host that stores it in a shared
-//! context must pin it to one thread.
+//! [`restart_with`]: TuttiDriver::restart_with
+//! [`restart`]: TuttiDriver::restart
 
 use std::sync::Arc;
 
 use crate::Result;
+use crate::host::DeviceSelector;
 use crate::output::{AudioCallbackState, AudioEngine};
 
 /// One enumerated audio device.
 ///
-/// Returned by [`TuttiDriver::devices`] and
+/// Returned by [`AudioEngine::output_devices`] and
 /// [`DeviceHost::output_devices`](crate::DeviceHost::output_devices) /
 /// [`input_devices`](crate::DeviceHost::input_devices).
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     /// Position in the host's device enumeration — the value
-    /// [`TuttiDriver::set_device`] and [`TuttiDriver::restart`] take. Positional,
+    /// [`DeviceSelector::Index`] takes. Positional,
     /// so it is only valid against the enumeration that produced it: devices
     /// appearing or disappearing renumber the rest.
     pub index: usize,
@@ -59,40 +56,22 @@ impl Stopped<'_> {
     /// block at the new rate renders the re-prepared graph instead of the
     /// silent block a re-prepare otherwise costs.
     pub fn apply_pending(&self) -> bool {
-        // `Engine::apply_pending` panics if a callback renders this engine at
-        // the same moment (the engine's cells refuse the second borrow), and
-        // none can: a `Stopped` is constructed only in
-        // `TuttiDriver::rerate_or_restore` (its field is private to this
-        // module), which only `restart_with` and `restart_on` call, after
-        // `AudioEngine::stop` has dropped the running stream and before
-        // `start_with` opens the next one; the borrow of `self` keeps the
-        // token inside the hook. Dropping the stream is the stop: a
-        // `cpal::Stream`'s callback does not run once its drop returns, and
-        // `ManualRunning`'s drop takes the slot lock a callback renders
-        // under. What this driver's type cannot see is a host rendering the
-        // same `AudioCallbackState` by hand (`process_audio` on a clone of
-        // the `Arc` it handed `new`) during a restart; `new`
-        // documents that the driver's streams are the state's only renderer.
+        // `Engine::apply_pending` panics if a callback renders at the same
+        // moment. None can: a `Stopped` exists only inside a restart hook, after
+        // `AudioEngine::stop` dropped the stream and before the next opens, and
+        // `TuttiDriver::new` makes the driver's streams the state's only renderer.
         self.state.engine.apply_pending()
     }
 }
 
 /// The output device lifecycle a host holds: start, restart on another device
-/// or rate, stop, and fault reporting.
+/// or rate, stop.
 ///
-/// Built with [`new`](Self::new) from an opened [`AudioEngine`]
-/// and the [`AudioCallbackState`] its callback renders. A host may
-/// [`set_device`](Self::set_device) / [`select_device`](Self::select_device)
-/// and [`restart`](Self::restart) to switch device without rebuilding the
-/// graph. A device that comes back at another rate needs the graph re-rated
-/// with it, which this driver cannot do on its own (it holds only the graph's
-/// audio side): [`restart_with`](Self::restart_with) runs the host's hook for
-/// that between the stop and the start, and a plain `restart` refuses the rate
-/// change.
-///
-/// Every method runs on the control thread and there is no internal lock:
-/// hold the driver in one place. The stream it owns is not `Sync`, so a host
-/// that stores it in a shared context must keep it on one thread.
+/// Built with [`new`](Self::new) from an opened [`AudioEngine`] and the
+/// [`AudioCallbackState`] its callback renders. Reads (spec, running state,
+/// faults) go through [`engine`](Self::engine). Every method runs on the control
+/// thread and there is no internal lock; the stream is not `Sync`, so keep the
+/// driver on one thread.
 ///
 /// See the [crate-level example](crate) for building one.
 pub struct TuttiDriver {
@@ -143,34 +122,11 @@ impl TuttiDriver {
         self.graph_rate
     }
 
-    /// Returns whether the stream is open and its device has not been reported
-    /// gone (see [`AudioEngine::is_running`]).
-    #[must_use]
-    pub fn is_running(&self) -> bool {
-        self.audio_engine.is_running()
-    }
-
-    /// Returns the name of the currently selected output device.
-    ///
-    /// # Errors
-    /// As [`AudioEngine::device_name`].
-    pub fn device_name(&self) -> Result<String> {
-        self.audio_engine.device_name()
-    }
-
-    /// Selects an output device by position (`None`: the host default). Takes
-    /// effect on the next [`restart`](Self::restart); prefer
-    /// [`select_device`](Self::select_device) with a name for a saved setting.
-    pub fn set_device(&mut self, index: Option<usize>) -> &mut Self {
-        self.audio_engine.set_device(index);
-        self
-    }
-
     /// Restarts the stream on a (possibly different) output device, which
     /// must run at the rate the graph was built at.
     ///
     /// Stops the current stream, selects `device` (a
-    /// [`DeviceSelector`](crate::DeviceSelector), or an `Option<usize>`
+    /// [`DeviceSelector`], or an `Option<usize>`
     /// position with `None` for the default), reads its config and starts a
     /// new stream on it.
     ///
@@ -183,7 +139,7 @@ impl TuttiDriver {
     /// tempo without a word. Restart through
     /// [`restart_with`](Self::restart_with) to re-rate the graph between
     /// the stop and the start. Otherwise what [`AudioEngine::start`] reports.
-    pub fn restart(&mut self, device: impl Into<crate::DeviceSelector>) -> Result<()> {
+    pub fn restart(&mut self, device: impl Into<DeviceSelector>) -> Result<()> {
         self.restart_with(device, refuse_rate_change(self.graph_rate))
     }
 
@@ -198,7 +154,7 @@ impl TuttiDriver {
     /// its error returned: nothing plays at a rate the graph was not moved
     /// to. Its `Ok` is the claim that the graph now runs at the spec's rate
     /// ([`graph_rate`](Self::graph_rate)); after a failure the driver keeps
-    /// the previous rate and [`spec`](Self::spec), so a plain `restart` onto
+    /// the previous rate and [`spec`](AudioEngine::spec), so a plain `restart` onto
     /// the previous device recovers.
     ///
     /// The hook is also handed a [`Stopped`]: the engine, reachable from the
@@ -212,7 +168,7 @@ impl TuttiDriver {
     /// own error.
     pub fn restart_with<E: From<crate::Error>>(
         &mut self,
-        device: impl Into<crate::DeviceSelector>,
+        device: impl Into<DeviceSelector>,
         rerate: impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
         self.audio_engine.stop();
@@ -280,10 +236,12 @@ impl TuttiDriver {
         }
     }
 
-    /// Returns the configuration of the stream that is playing, or that would
-    /// be: the rate and width the last start or restart resolved.
-    pub fn spec(&self) -> &crate::OutputSpec {
-        self.audio_engine.spec()
+    /// The engine this driver runs, for reads: [`spec`](AudioEngine::spec),
+    /// [`is_running`](AudioEngine::is_running), [`faults`](AudioEngine::faults),
+    /// [`device_name`](AudioEngine::device_name).
+    #[must_use]
+    pub fn engine(&self) -> &AudioEngine {
+        &self.audio_engine
     }
 
     /// Selects a device by name or index. Takes effect on the next
@@ -291,28 +249,13 @@ impl TuttiDriver {
     ///
     /// Prefer a name: [`DeviceInfo::index`] is positional within one
     /// enumeration, so any hot-plug renumbers it.
-    pub fn select_device(&mut self, sel: crate::DeviceSelector) -> &mut Self {
+    pub fn select_device(&mut self, sel: DeviceSelector) -> &mut Self {
         self.audio_engine.select_device(sel);
         self
     }
 
-    /// Returns the backend fault record, which survives stop and restart.
-    ///
-    /// Take it once at startup and poll it. CPAL's error callback returns
-    /// nothing, so a device unplugged mid-session is reported only here (and
-    /// through [`is_running`](Self::is_running) turning `false`).
-    pub fn faults(&self) -> std::sync::Arc<crate::StreamFaults> {
-        self.audio_engine.faults()
-    }
-
-    /// Takes the most recent backend fault, clearing it, for a host that shows
-    /// each one once.
-    pub fn take_fault(&self) -> Option<crate::StreamFault> {
-        self.audio_engine.faults().take_last()
-    }
-
     /// Stops any running stream and starts a new one on a driver of the
-    /// caller's choosing, at the current [`spec`](Self::spec).
+    /// caller's choosing, at the current [`spec`](AudioEngine::spec).
     ///
     /// The device path is [`restart`](Self::restart), which builds a real
     /// CPAL stream. This lets a host or a test run the same lifecycle over a
@@ -332,15 +275,6 @@ impl TuttiDriver {
     /// Stops the stream. Idempotent.
     pub fn stop(&mut self) {
         self.audio_engine.stop();
-    }
-
-    /// Lists the default host's output devices.
-    ///
-    /// # Errors
-    /// [`Error::DevicesError`](crate::Error::DevicesError) if the host cannot
-    /// enumerate.
-    pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>> {
-        Ok(AudioEngine::output_devices()?.map(|(index, name)| DeviceInfo { index, name }))
     }
 }
 
@@ -363,81 +297,4 @@ fn refuse_rate_change(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{AudioEngine, ManualStreamDriver, OutputSpec};
-    use tutti_core::{
-        AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate, Samples, Transport,
-    };
-    use tutti_graph::{Editor, Prepare};
-
-    fn spec_at(rate: f64) -> OutputSpec {
-        OutputSpec::new(
-            SampleRate(rate),
-            ChannelLayout::STEREO,
-            cpal::SampleFormat::F32,
-        )
-    }
-
-    /// **A plain restart refuses a device at another rate, and leaves the
-    /// stream stopped** — its hook, run through the device-free restart
-    /// (`restart` itself needs a device to resolve). At the same rate it
-    /// starts.
-    ///
-    /// Mutations (run): `refuse_rate_change` answering `Ok` regardless → the
-    /// 48 kHz restart starts the stream over the 44.1 kHz graph → fails;
-    /// `rerate_or_restore` adopting the rate (or keeping the new spec) on
-    /// failure → the second attempt compares 48 kHz with 48 kHz and starts
-    /// → fails. (Checking against `spec().sample_rate` instead of
-    /// `graph_rate` is equivalent while a failure restores the spec; it
-    /// fails here only together with the restore removed.)
-    #[test]
-    fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
-        let transport = Transport::new(44_100.0);
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(44_100.0), Samples(512)));
-        let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
-        let state = Arc::new(AudioCallbackState::new(
-            engine,
-            MasterMeter::new(),
-            AudioTap::new(),
-        ));
-        let mut driver = TuttiDriver::new(AudioEngine::from_spec(spec_at(44_100.0)), state);
-        let graph = SampleRate(44_100.0);
-
-        // Twice onto the same 48 kHz device: the second attempt must not
-        // find the first one's resolved spec and call it "no change".
-        for attempt in 0..2 {
-            let (d, stream) = ManualStreamDriver::new();
-            let err = driver
-                .restart_on(
-                    spec_at(48_000.0),
-                    d,
-                    refuse_rate_change(driver.graph_rate()),
-                )
-                .expect_err("a new rate is refused");
-            assert!(
-                matches!(
-                    err,
-                    crate::Error::RateChanged { device, graph: g }
-                        if device == SampleRate(48_000.0) && g == graph
-                ),
-                "attempt {attempt}: {err}"
-            );
-            assert!(!driver.is_running(), "nothing plays at the wrong rate");
-            assert!(!stream.is_open());
-            assert_eq!(driver.graph_rate(), graph, "the graph did not move");
-            assert_eq!(
-                driver.spec().sample_rate,
-                graph,
-                "the spec does not claim the refused rate"
-            );
-        }
-
-        let (d, stream) = ManualStreamDriver::new();
-        driver
-            .restart_on(spec_at(44_100.0), d, refuse_rate_change(graph))
-            .expect("the same rate restarts");
-        assert!(driver.is_running() && stream.is_open());
-        drop(ed);
-    }
-}
+mod tests;

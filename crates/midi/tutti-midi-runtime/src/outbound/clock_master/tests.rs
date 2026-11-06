@@ -1,0 +1,685 @@
+use super::*;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool as StdAtomicBool;
+use tutti_core::Bpm;
+use tutti_midi_types::MidiMessage;
+use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
+
+/// Test transport: tempo + beat + playing under a switch.
+struct TestTransport {
+    beat: AtomicF64,
+    tempo: Bpm,
+    playing: StdAtomicBool,
+}
+
+impl TestTransport {
+    fn new(tempo: Bpm) -> Self {
+        Self {
+            beat: AtomicF64::new(0.0),
+            tempo,
+            playing: StdAtomicBool::new(false),
+        }
+    }
+    fn set_beat(&self, b: f64) {
+        self.beat.store(b, Ordering::Release);
+    }
+    fn set_playing(&self, p: bool) {
+        self.playing.store(p, Ordering::Release);
+    }
+    fn now(&self) -> Transport {
+        Transport::new(
+            self.playing.load(Ordering::Acquire),
+            self.tempo,
+            Beat(self.beat.load(Ordering::Acquire)),
+            None,
+        )
+    }
+}
+
+/// A master ticked from a [`TestTransport`], emitting into a mailbox.
+struct Rig {
+    cm: ClockMaster,
+    transport: Arc<TestTransport>,
+    out: crate::MidiSender,
+}
+
+impl std::ops::Deref for Rig {
+    type Target = ClockMaster;
+    fn deref(&self) -> &ClockMaster {
+        &self.cm
+    }
+}
+
+impl Rig {
+    fn tick(&self, block_size: usize) {
+        self.cm.tick(&self.transport.now(), block_size, &mut |e| {
+            let _ = self.out.queue(&[e]);
+        });
+    }
+}
+
+fn master(
+    tempo: Bpm,
+    sample_rate: impl Into<SampleRate>,
+) -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
+    let transport = Arc::new(TestTransport::new(tempo));
+    let (out, receiver) = crate::MidiMailbox::with_capacity(4096);
+    let cm = ClockMaster::new(sample_rate);
+    cm.set_enabled(true);
+    let rig = Rig {
+        cm,
+        transport: Arc::clone(&transport),
+        out,
+    };
+    (rig, transport, receiver)
+}
+
+/// Drains a receiver fully into a `Vec`.
+fn drain_all(receiver: &crate::MidiReceiver) -> Vec<MidiEvent> {
+    let mut out = Vec::new();
+    let mut buf = [MidiEvent::noop(); 256];
+    loop {
+        let n = receiver.poll_into(&mut buf);
+        out.extend_from_slice(&buf[..n]);
+        if n < buf.len() {
+            break;
+        }
+    }
+    out
+}
+
+fn is_status(ev: &MidiEvent, status: u8) -> bool {
+    let w0 = ev.data[0];
+    (w0 >> 28) & 0x0F == 0x1 && ((w0 >> 16) & 0xFF) as u8 == status
+}
+
+#[test]
+fn emits_24_ticks_per_beat_at_120bpm() {
+    let sr = 48_000.0;
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_playing(true);
+    // 120 BPM → 0.5s/beat → 24000 samples/beat. Process one beat's worth of
+    // audio in blocks of 512 and count 0xF8 ticks.
+    let samples_per_beat = sr * 0.5;
+    let block = 512usize;
+    let blocks = (samples_per_beat / block as f64).ceil() as usize;
+
+    let mut clock_ticks = 0;
+    let mut beat = 0.0f64;
+    let beats_per_sample = 120.0 / 60.0 / sr;
+    for _ in 0..blocks {
+        transport.set_beat(beat);
+        cm.tick(block);
+        beat += block as f64 * beats_per_sample;
+    }
+    let events = drain_all(&cons);
+    for ev in &events {
+        if is_status(ev, 0xF8) {
+            clock_ticks += 1;
+        }
+    }
+    // Over ~1 beat, 24 ticks are expected (allow ±1 for boundary rounding).
+    assert!(
+        (clock_ticks as i64 - 24).abs() <= 1,
+        "expected ~24 clock ticks over one beat, got {clock_ticks}"
+    );
+}
+
+#[test]
+fn play_at_zero_emits_start_not_continue() {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_beat(0.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    assert!(
+        events.iter().any(|e| is_status(e, 0xFA)),
+        "expected Start (0xFA)"
+    );
+    assert!(
+        !events.iter().any(|e| is_status(e, 0xFB)),
+        "no Continue at beat 0"
+    );
+}
+
+#[test]
+fn play_mid_song_emits_continue_and_song_position() {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_beat(8.0); // 2 bars in
+    transport.set_playing(true);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    assert!(
+        events.iter().any(|e| is_status(e, 0xFB)),
+        "expected Continue (0xFB)"
+    );
+    assert!(
+        events.iter().any(|e| is_status(e, 0xF2)),
+        "expected Song Position (0xF2)"
+    );
+    assert!(
+        !events.iter().any(|e| is_status(e, 0xFA)),
+        "no Start mid-song"
+    );
+}
+
+#[test]
+fn stop_emits_stop_message() {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let _ = drain_all(&cons);
+    transport.set_playing(false);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    assert!(
+        events.iter().any(|e| is_status(e, 0xFC)),
+        "expected Stop (0xFC)"
+    );
+}
+
+#[test]
+fn disabled_master_emits_nothing() {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    cm.set_enabled(false);
+    transport.set_playing(true);
+    cm.tick(512);
+    assert!(
+        drain_all(&cons).is_empty(),
+        "disabled master must be silent"
+    );
+}
+
+/// Ticks land on their frames, in order, and a start on a tick boundary
+/// sends that boundary's tick on frame 0.
+///
+/// This pinned two ticks (1000, 2000) until the start tick was fixed:
+/// MIDI 1.0 (MMA, "System Real Time Messages", Start) has a receiver
+/// begin on the first Timing Clock after Start, so the clock of beat 0
+/// must be sent, or every receiver runs one tick behind.
+#[test]
+fn ticks_are_sample_accurate_within_block() {
+    // A block that spans three clock ticks, the first on its first
+    // frame, places them at distinct, ordered frame offsets.
+    let sr = 48_000.0;
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_playing(true);
+    transport.set_beat(0.0);
+    // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
+    // block starting at beat 0 covers tick boundaries at 0, 1000 and 2000.
+    cm.tick(2500);
+    let events: Vec<_> = drain_all(&cons)
+        .into_iter()
+        .filter(|e| is_status(e, 0xF8))
+        .collect();
+    assert_eq!(events.len(), 3, "expected 3 ticks in the block");
+    assert!(
+        events[0].frame_offset < events[1].frame_offset
+            && events[1].frame_offset < events[2].frame_offset,
+        "ticks ordered"
+    );
+    assert_eq!(events[0].frame_offset, 0, "the start beat's tick");
+    assert!((events[1].frame_offset as i64 - 1000).abs() < 4);
+    assert!((events[2].frame_offset as i64 - 2000).abs() < 4);
+}
+
+/// Where the first Timing Clock goes, and in what order, for a block that
+/// does not continue the previous one: the transport message(s), then an
+/// F8 on frame 0 when the beat sits on a tick boundary, else the first F8
+/// on the next boundary.
+fn first_clock(events: &[MidiEvent]) -> (usize, u32) {
+    let i = events
+        .iter()
+        .position(|e| is_status(e, 0xF8))
+        .expect("a timing clock");
+    (i, events[i].frame_offset)
+}
+
+/// Start at beat 0, Continue at an on-tick beat, and a locate while
+/// playing to an on-tick beat: each sends an F8 on frame 0, queued after
+/// its Start / Continue / Song Position. MIDI 1.0 (MMA, "System Real
+/// Time Messages", Start, Continue): a receiver begins on the first
+/// Timing Clock after Start / Continue.
+///
+/// Mutation (run): skip a tick on frame 0 of a block that does not
+/// continue the last (`k == 0 && (is_edge || jumped)` → `continue`, the
+/// old rule) → no F8 at offset 0 → fails.
+#[test]
+fn an_on_tick_start_continue_or_locate_clocks_its_first_frame() {
+    let sr = 48_000.0;
+    // Start at beat 0.
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_beat(0.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    let start = events
+        .iter()
+        .position(|e| is_status(e, 0xFA))
+        .expect("Start");
+    let (clock, offset) = first_clock(&events);
+    assert_eq!(offset, 0, "Start at beat 0: F8 on frame 0");
+    assert!(start < clock, "the F8 follows Start in the queue");
+
+    // Continue at beat 8 (tick 192).
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_beat(8.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+    let cont = events
+        .iter()
+        .position(|e| is_status(e, 0xFB))
+        .expect("Continue");
+    let (clock, offset) = first_clock(&events);
+    assert_eq!(offset, 0, "Continue on a tick: F8 on frame 0");
+    assert!(
+        spp < clock && cont < clock,
+        "the F8 follows SPP and Continue"
+    );
+
+    // A locate while playing to beat 4 (tick 96).
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_beat(0.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let _ = drain_all(&cons);
+    transport.set_beat(4.0);
+    cm.tick(512);
+    let events = drain_all(&cons);
+    let spp = events.iter().position(|e| is_status(e, 0xF2)).expect("SPP");
+    let (clock, offset) = first_clock(&events);
+    assert_eq!(offset, 0, "a locate on a tick: F8 on frame 0");
+    assert!(spp < clock, "the F8 follows Song Position");
+}
+
+/// Off a tick boundary, the first F8 after a locate or a Continue is the
+/// next boundary's, on its frame; nothing goes out on frame 0.
+///
+/// Mutation (run): send a tick behind the block's start on frame 0
+/// (`k < 0` → `k = 0` instead of skipping it) → an F8 at offset 0 →
+/// fails.
+#[test]
+fn an_off_tick_locate_clocks_the_next_boundary() {
+    let sr = 48_000.0;
+    // Half a tick past beat 4: 500 frames to the next boundary at 120
+    // BPM / 48 kHz (a tick is 1000 frames).
+    let off = 4.0 + 0.5 / PPQN;
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_beat(0.0);
+    transport.set_playing(true);
+    cm.tick(512);
+    let _ = drain_all(&cons);
+    transport.set_beat(off);
+    cm.tick(2048);
+    let events = drain_all(&cons);
+    assert!(events.iter().any(|e| is_status(e, 0xF2)), "a locate");
+    let (_, offset) = first_clock(&events);
+    assert_eq!(offset, 500, "the next boundary's frame");
+
+    // The same off-tick beat as a Continue.
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_beat(off);
+    transport.set_playing(true);
+    cm.tick(2048);
+    let (_, offset) = first_clock(&drain_all(&cons));
+    assert_eq!(offset, 500, "Continue off a tick: the next boundary");
+}
+
+/// Run `blocks` blocks of `block` frames at `rate`, the transport rolling
+/// at 120 BPM from `*beat`, and return every event with its absolute
+/// frame (counted from `*frame`). Advances both.
+fn run_at(
+    cm: &Rig,
+    transport: &TestTransport,
+    cons: &crate::MidiReceiver,
+    rate: f64,
+    (block, blocks): (usize, usize),
+    (beat, frame): (&mut f64, &mut u64),
+) -> Vec<(MidiEvent, u64)> {
+    let mut at = Vec::new();
+    for _ in 0..blocks {
+        transport.set_beat(*beat);
+        cm.tick(block);
+        at.extend(
+            drain_all(cons)
+                .into_iter()
+                .map(|e| (e, *frame + u64::from(e.frame_offset))),
+        );
+        *beat += block as f64 * 2.0 / rate;
+        *frame += block as u64;
+    }
+    at
+}
+
+/// The frames of the events in `events` with `status`.
+fn of(events: &[(MidiEvent, u64)], status: u8) -> Vec<u64> {
+    events
+        .iter()
+        .filter(|(e, _)| is_status(e, status))
+        .map(|&(_, at)| at)
+        .collect()
+}
+
+/// Mean spacing, in frames, of the events at `at`.
+fn spacing(at: &[u64]) -> f64 {
+    assert!(at.len() > 10, "events to measure, got {}", at.len());
+    (at[at.len() - 1] - at[0]) as f64 / (at.len() - 1) as f64
+}
+
+/// **A rate change moves the tick spacing to the new rate's frames.** At
+/// 120 BPM a 24-PPQN tick is 1/48 s: 918.75 frames at 44.1 kHz, 1 000 at
+/// 48 kHz. A master built at 44.1 kHz and re-rated to 48 kHz (a device
+/// restart) must space its ticks 1 000 frames apart from the next block,
+/// or the receiving gear runs ~8.8% fast. (Offsets are whole frames, so
+/// each tick sits up to one frame early; the mean over ~48 ticks is within
+/// 0.05 of the exact spacing.)
+///
+/// Mutation (run): `set_sample_rate` not storing the rate → the ticks
+/// after it stay 918.75 frames apart → fails.
+#[test]
+fn a_rate_change_moves_the_tick_spacing() {
+    let (cm, transport, cons) = master(Bpm(120.0), 44_100.0);
+    transport.set_playing(true);
+    let (mut beat, mut frame) = (0.0, 0);
+    let run = (&mut beat, &mut frame);
+    let before = of(
+        &run_at(&cm, &transport, &cons, 44_100.0, (441, 100), run),
+        0xF8,
+    );
+    assert!(
+        (spacing(&before) - 918.75).abs() < 0.05,
+        "{}",
+        spacing(&before)
+    );
+
+    cm.set_sample_rate(48_000.0);
+    assert_eq!(cm.sample_rate(), SampleRate(48_000.0));
+    let run = (&mut beat, &mut frame);
+    let after = of(
+        &run_at(&cm, &transport, &cons, 48_000.0, (480, 100), run),
+        0xF8,
+    );
+    assert!(
+        (spacing(&after) - 1_000.0).abs() < 0.05,
+        "{}",
+        spacing(&after)
+    );
+}
+
+/// **The MTC quarter-frame due across a rate change lands on its
+/// wall-clock time.** At 25 fps a quarter-frame is 1/100 s: 441 frames at
+/// 44.1 kHz, 480 at 48 kHz. After 20 blocks of 512 at 44.1 kHz (10 240
+/// frames) the last quarter-frame was at 10 143 and the next is due 441
+/// frames later, 344 old frames after the restart: 374.4 new frames, and
+/// 480 apart from there. And the restart is not a locate: no Song
+/// Position goes out, and the phase is not reset.
+///
+/// Mutations (run):
+/// - `set_sample_rate` not rescaling the carried phase → the first one
+///   lands 344 frames after the restart, ~30 early → fails;
+/// - the seek check comparing the beat's move with *this* block's
+///   advance → the old-rate block's 0.0232 beats against the
+///   new rate's 0.0213 is past the 0.001 epsilon → a Song Position, and
+///   the phase reset to the restart's frame → fails.
+#[test]
+fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
+    let (cm, transport, cons) = master(Bpm(120.0), 44_100.0);
+    cm.set_send_mtc(true);
+    cm.set_mtc_fps(SmpteFrameRate::Fps25);
+    transport.set_playing(true);
+    let (mut beat, mut frame) = (0.0, 0);
+    let run = (&mut beat, &mut frame);
+    let before = of(
+        &run_at(&cm, &transport, &cons, 44_100.0, (512, 20), run),
+        0xF1,
+    );
+    assert_eq!(
+        before.last(),
+        Some(&10_143),
+        "setup: every 441 frames from 0"
+    );
+
+    cm.set_sample_rate(48_000.0);
+    let run = (&mut beat, &mut frame);
+    let events = run_at(&cm, &transport, &cons, 48_000.0, (512, 20), run);
+    assert_eq!(
+        of(&events, 0xF2),
+        Vec::<u64>::new(),
+        "the restart is not a seek"
+    );
+    let after = of(&events, 0xF1);
+    assert_eq!(after[0], 10_240 + 374, "344 old frames are 374.4 new ones");
+    assert!(
+        (spacing(&after) - 480.0).abs() < 0.05,
+        "{}",
+        spacing(&after)
+    );
+}
+
+/// **The MTC grid is closed form.** Quarter-frame `k` goes out on frame
+/// `floor(k × rate / (4 × fps))`, however many blocks it took to get
+/// there: at 29.97 fps and 44.1 kHz a quarter-frame is 367.867… frames,
+/// which binary cannot represent, and a carried phase that adds it
+/// block after block drifts off the grid.
+///
+/// Mutation (run): carry the phase (quarter-frame `k + 1` due at `k`'s
+/// position plus one quarter-frame's length, accumulated) → some
+/// quarter-frame whose exact position is a hair past a whole frame lands
+/// a frame early → fails.
+#[test]
+fn the_mtc_grid_is_closed_form() {
+    let rate = 44_100.0;
+    let fps = SmpteFrameRate::Fps2997Ndf;
+    let (cm, transport, cons) = master(Bpm(120.0), rate);
+    cm.set_send_mtc(true);
+    cm.set_mtc_fps(fps);
+    transport.set_playing(true);
+    let (mut beat, mut frame) = (0.0, 0);
+    let events = run_at(
+        &cm,
+        &transport,
+        &cons,
+        rate,
+        (512, 6_000),
+        (&mut beat, &mut frame),
+    );
+    let quarters = of(&events, 0xF1);
+    assert!(quarters.len() > 8_000, "{} quarter-frames", quarters.len());
+    for (k, &at) in quarters.iter().enumerate() {
+        let due = ((k as f64 * rate) / (fps.fps() * 4.0)).floor() as u64;
+        assert_eq!(at, due, "quarter-frame {k}");
+    }
+}
+
+#[test]
+fn generated_clock_round_trips_through_decoder() {
+    // The strongest check: feed this master's own output into the decoder and confirm
+    // it recovers the tempo and beat — the in-repo loopback from the plan.
+    let sr = 48_000.0;
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    transport.set_playing(true);
+
+    let block = 256usize;
+    let beats_per_sample = 120.0 / 60.0 / sr;
+    let us_per_sample = 1_000_000.0 / sr;
+    let mut beat = 0.0f64;
+    let mut sample_clock = 0u64;
+
+    let mut decoder = MidiClockDecoder::new();
+    // Run ~4 beats so the decoder's tempo window fills.
+    for _ in 0..((sr * 2.0 / block as f64) as usize) {
+        transport.set_beat(beat);
+        cm.tick(block);
+        for ev in drain_all(&cons) {
+            let ts_us = ((sample_clock + ev.frame_offset as u64) as f64 * us_per_sample) as u64;
+            decoder.feed(&ev, ts_us);
+        }
+        beat += block as f64 * beats_per_sample;
+        sample_clock += block as u64;
+    }
+
+    assert_eq!(decoder.transport_state(), ClockTransportState::Playing);
+    let tempo = decoder.tempo_bpm().expect("decoder derived a tempo");
+    assert!(
+        !tempo.differs_from(Bpm(120.0), 2.0),
+        "round-trip tempo ~120, got {tempo:?}"
+    );
+}
+
+#[test]
+fn mtc_quarter_frames_round_trip_to_a_timecode() {
+    let sr = 48_000.0;
+    let (cm, transport, cons) = master(Bpm(120.0), sr);
+    cm.set_send_mtc(true);
+    cm.set_mtc_fps(SmpteFrameRate::Fps25);
+    transport.set_playing(true);
+
+    // 25 fps → 100 quarter-frames/sec → one every 480 samples. Run enough
+    // blocks to emit at least 8 consecutive quarter-frames (2 full frames).
+    let block = 480usize;
+    let beats_per_sample = 120.0 / 60.0 / sr;
+    let mut beat = 0.0f64;
+    let mut decoder = MtcDecoder::new();
+    let mut got_tc = false;
+    for _ in 0..40 {
+        transport.set_beat(beat);
+        cm.tick(block);
+        for ev in drain_all(&cons) {
+            if is_status(&ev, 0xF1) {
+                // The quarter-frame data byte is the 2nd wire byte; decode
+                // via the message view's TimeCode.
+                if let tutti_midi_types::MidiMessage::TimeCode { code, .. } = ev.message() {
+                    decoder.feed(code);
+                    if decoder.timecode().is_some() {
+                        got_tc = true;
+                    }
+                }
+            }
+        }
+        beat += block as f64 * beats_per_sample;
+    }
+    assert!(got_tc, "MTC quarter-frames should assemble into a timecode");
+}
+
+/// Plays 5 s of MTC from 58 s plus `offset` samples (so 1:00 is crossed) into a decoder, and
+/// checks every assembled timecode against the clock the master read.
+fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
+    let (cm, transport, cons) = master(Bpm(120.0), rate);
+    cm.set_send_mtc(true);
+    cm.set_mtc_fps(fps);
+    transport.set_playing(true);
+    let start = 58.0 * rate + offset;
+    let (mut beat, mut frame) = (start * 2.0 / rate, 0);
+    let events = run_at(
+        &cm,
+        &transport,
+        &cons,
+        rate,
+        (480, (rate * 5.0 / 480.0) as usize),
+        (&mut beat, &mut frame),
+    );
+    let mut decoder = MtcDecoder::new();
+    let (mut piece0_at, mut last_count, mut cycles) = (0.0, None, 0u32);
+    for (ev, at) in events.iter().filter(|(e, _)| is_status(e, 0xF1)) {
+        let MidiMessage::TimeCode { code, .. } = ev.message() else {
+            panic!("not a quarter-frame");
+        };
+        if code >> 4 == 0 {
+            piece0_at = (start + *at as f64) / rate;
+        }
+        decoder.feed(code);
+        if code >> 4 != 7 {
+            continue;
+        }
+        let tc = decoder.timecode().expect("a full cycle");
+        assert!(
+            u64::from(tc.frames) < tc.frame_rate.labels_per_second(),
+            "{rate} Hz {fps:?}: {tc}"
+        );
+        // Piece 0 sits on an even frame of the timeline, and the label is
+        // that frame: they differ by under the sample the event is placed
+        // on.
+        let lag = piece0_at - tc.to_seconds();
+        assert!(
+            lag.abs() < 2.0 / rate,
+            "{rate} Hz {fps:?}: {tc} is {lag} s from piece 0"
+        );
+        let count = tc.frame_count();
+        if let Some(prev) = last_count {
+            assert_eq!(count, prev + 2, "{rate} Hz {fps:?}: {tc}");
+        }
+        last_count = Some(count);
+        cycles += 1;
+    }
+    assert!(
+        f64::from(cycles) > 5.0 * fps.fps() / 2.0 - 3.0,
+        "{cycles} cycles"
+    );
+    assert_eq!(
+        decoder.timecode().map(|t| t.minutes),
+        Some(1),
+        "crossed 1:00"
+    );
+}
+
+/// **One cycle carries one position.** Each assembled timecode is valid
+/// (frames below the rate), monotonic, and equal to the even frame piece 0
+/// went out on, across the minute rollover, at every rate and start offset.
+///
+/// Mutations (run): compute the timecode at every piece (`piece == 0`
+/// made `true`, without the even-frame floor) → pieces 4-7 carry the next
+/// frame, and a rollover between the halves assembles a torn value →
+/// fails. Skip the alignment in `tick_mtc` (no `mtc.lead` store) → a start
+/// off an even frame sends piece 0 up to two frames from its label →
+/// fails.
+#[test]
+fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
+    for (rate, fps) in [
+        (48_000.0, SmpteFrameRate::Fps24),
+        (48_000.0, SmpteFrameRate::Fps25),
+        (48_000.0, SmpteFrameRate::Fps2997Df),
+        (48_000.0, SmpteFrameRate::Fps30),
+        (44_100.0, SmpteFrameRate::Fps2997Df),
+        (44_100.0, SmpteFrameRate::Fps24),
+    ] {
+        // Offsets that put 1:00 on, and in the middle of, a cycle.
+        for offset in [0.0, 1_000.0, 5_000.0] {
+            mtc_loopback(rate, fps, offset);
+        }
+    }
+}
+
+// A position on a frame boundary, or a float's width short of it, reads as
+// that frame, floored to an even one.
+// Mutations: `frames & !1` → `frames` fails the 1920 case; `.round()` →
+// `.floor()` fails every "- 1e-7" case.
+#[test]
+fn timecode_rounds_to_the_nearest_even_frame() {
+    let at = |pos: f64, fps| timecode_at(pos, 48_000.0, fps).to_string();
+    let f25 = SmpteFrameRate::Fps25;
+    assert_eq!(at(3_840.0, f25), "00:00:00:02");
+    assert_eq!(at(3_840.0 - 1e-7, f25), "00:00:00:02");
+    assert_eq!(at(1_920.0, f25), "00:00:00:00");
+    assert_eq!(at(7_680.0 - 1e-7, f25), "00:00:00:04");
+    // Drop-frame count 1800 starts at sample 2_882_880 (60.06 s).
+    let df = SmpteFrameRate::Fps2997Df;
+    assert_eq!(at(2_882_880.0, df), "00:01:00:02");
+    assert_eq!(at(2_882_880.0 - 1e-7, df), "00:01:00:02");
+    assert_eq!(at(2_882_880.0 - 1_601.6, df), "00:00:59:28");
+    let t30 = SmpteFrameRate::Fps30;
+    assert_eq!(at(2_880_000.0, t30), "00:01:00:00");
+    assert_eq!(at(2_880_000.0 - 1e-7, t30), "00:01:00:00");
+}
+
+// MTC has no non-drop 29.97 code: Ndf is sent with the drop-frame one.
+// Mutation: give Ndf its own code (3) and the equality fails.
+#[test]
+fn non_drop_2997_goes_out_with_the_29_97_rate_code() {
+    let tc = SmpteTimecode::from_frame_count(5, SmpteFrameRate::Fps2997Ndf);
+    let ndf = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Ndf);
+    assert_eq!((ndf >> 28) & 0x06, 2 << 1);
+    let df = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Df);
+    assert_eq!(ndf, df);
+}

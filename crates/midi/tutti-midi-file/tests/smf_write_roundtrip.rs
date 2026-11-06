@@ -19,13 +19,14 @@ mod support;
 use support::decode_smf;
 use tutti_core::{Beat, Bpm};
 use tutti_midi_file::smf::{self, MidiWriteConfig, SmfTimedEvent};
+use tutti_midi_types::MidiChannel;
 
 const TPQ: u16 = 480;
 
 fn note_on(beat: f64, key: u8) -> SmfTimedEvent {
     SmfTimedEvent {
         time_beats: Beat(beat),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: midly::MidiMessage::NoteOn {
             key: key.into(),
             vel: 100.into(),
@@ -36,7 +37,7 @@ fn note_on(beat: f64, key: u8) -> SmfTimedEvent {
 fn note_off(beat: f64, key: u8) -> SmfTimedEvent {
     SmfTimedEvent {
         time_beats: Beat(beat),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: midly::MidiMessage::NoteOff {
             key: key.into(),
             vel: 0.into(),

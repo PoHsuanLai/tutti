@@ -85,7 +85,7 @@ impl Device {
     /// Whether the stream is open and its device has not been reported gone.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.driver.is_running()
+        self.driver.engine().is_running()
     }
 
     /// The name of the selected output device.
@@ -94,24 +94,24 @@ impl Device {
     ///
     /// When the host cannot name it.
     pub fn device_name(&self) -> Result<String> {
-        Ok(self.driver.device_name()?)
+        Ok(self.driver.engine().device_name()?)
     }
 
     /// The backend fault record, which survives stop and restart.
     /// [`Session::update`] reports each new fault as
     /// [`SessionEvent::DeviceFault`](crate::SessionEvent::DeviceFault).
     pub fn faults(&self) -> Arc<StreamFaults> {
-        self.driver.faults()
+        self.driver.engine().faults()
     }
 
     /// Takes the most recent backend fault, clearing it.
     pub fn take_fault(&self) -> Option<StreamFault> {
-        self.driver.take_fault()
+        self.driver.engine().faults().take_last()
     }
 
     /// The configuration of the stream that is playing, or that would be.
     pub fn spec(&self) -> &OutputSpec {
-        self.driver.spec()
+        self.driver.engine().spec()
     }
 
     /// The rate the graph runs at, as far as the device knows: the build's,
@@ -150,7 +150,7 @@ impl Device {
     ///
     /// When the host cannot enumerate.
     pub fn devices() -> Result<impl Iterator<Item = DeviceInfo>> {
-        Ok(TuttiDriver::devices()?)
+        Ok(tutti_cpal::AudioEngine::output_devices()?.into_iter())
     }
 }
 

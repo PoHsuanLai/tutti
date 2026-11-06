@@ -41,7 +41,7 @@ impl AlsaOutput {
     ///
     /// # Errors
     ///
-    /// [`Error::Alsa`](crate::Error::Alsa) with the code
+    /// [`Error::Alsa`] with the code
     /// `snd_seq_ump_event_output_direct` returned.
     ///
     /// # Panics
@@ -118,7 +118,7 @@ impl MidiOut for AlsaOutput {
 ///
 /// # Errors
 ///
-/// [`Error::Alsa`](crate::Error::Alsa) if the sequencer cannot be opened, the
+/// [`Error::Alsa`] if the sequencer cannot be opened, the
 /// port created, or the subscription to `id` made.
 pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     let (dest_client, dest_port) = unpack_id(id);

@@ -503,26 +503,33 @@ mod tests {
         assert!(target <= cap + 1e-2 && target > 300.0);
     }
 
-    /// `prepare` takes the cells' values whole, so the first block does not
-    /// ramp in from the constructor's frequencies: the node's filter renders
-    /// the same bits as a crossover built at the new frequency.
+    /// `prepare` reads the cells, not the construction values: a node built
+    /// at 500 Hz whose cell was set to 2 kHz splits at 2 kHz from its first
+    /// block. (Later blocks read the cells again, so only the first block can
+    /// tell, and the measurement is over that one block.)
     ///
-    /// Mutation (run): drop the `set_frequencies` in `prepare` → the filter
-    /// is still at the constructor's 500 Hz and ramps → fails. (The
-    /// assertion now compares a render with a fresh `Crossover` where it
-    /// used to read the filter's solved and target frequencies.)
+    /// The first block is 480 frames, whole periods of 200 Hz. A 200 Hz sine,
+    /// a decade under the split, leaves the high band at `x^4 / (1 + x^4)` with
+    /// `x = 0.1`, about 1e-4 in steady state; the bound is 2e-3 to allow the
+    /// start-up transient of a zero state. A split still at 500 Hz, or ramping
+    /// in from it, puts the high band at 0.025 or more. The low band at
+    /// 200 Hz must be near 1 (`1 / (1 + x^4)`), within 2e-2 for the same
+    /// transient.
+    /// The filter's solved frequency is private, so it is read through its
+    /// effect on a render.
+    ///
+    /// Mutation (run): the `set_frequencies` in `prepare` replaced by a no-op
+    /// → the first block ramps in from 500 Hz and the high band is well above
+    /// 2e-3 → fails.
     #[test]
     fn prepare_reads_the_cells() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();
         node.param_set().set(Splits::addr(0), 2_000.0);
-        let node = prepared(node);
-        assert_eq!(node.filters[0].frequency(0), Some(Hz(2_000.0)));
-        let x = sine(1_500.0, RATE, 512);
-        let mut a = node.filters[0].clone();
-        let mut b = Crossover::new(&[Hz(2_000.0)], SampleRate(48_000.0)).unwrap();
-        let (mut oa, mut ob) = (vec![0.0; 1024], vec![0.0; 1024]);
-        a.split_block(&x, &mut oa);
-        b.split_block(&x, &mut ob);
-        assert_eq!(oa, ob);
+        let mut node = prepared(node);
+        let out = render(&mut node, &[sine(200.0, RATE, 480)]);
+        let low = amplitude_at(&out[0], 200.0, RATE);
+        let high = amplitude_at(&out[1], 200.0, RATE);
+        assert!((low - 1.0).abs() < 2e-2, "{low}");
+        assert!(high < 2e-3, "{high}");
     }
 }

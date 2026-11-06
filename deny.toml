@@ -1,0 +1,23 @@
+# cargo-deny policy. CI and `just deny` run `cargo deny check advisories`.
+#
+# Only `advisories` is checked. `bans` and `licenses` are left off: the
+# workspace carries vendored VST3 SDK headers, forks and duplicate versions
+# pulled by Bevy, which would need a long allow-list to pass.
+
+[graph]
+all-features = true
+
+[advisories]
+# A vulnerability always fails. An advisory for an unmaintained or unsound
+# crate fails too, unless it is ignored below with a reason.
+unmaintained = "all"
+yanked = "deny"
+# The advisory DB is fetched; a fetch failure is an error, never a pass.
+ignore = [
+    # bincode 1.x is unmaintained. Reached through the plugin IPC
+    # (tutti-plugin, tutti-plugin-server); no vulnerability, only the status.
+    { id = "RUSTSEC-2025-0141", reason = "unmaintained bincode 1.x, used by tutti-plugin IPC; no vulnerability" },
+    # ttf-parser is unmaintained. Reached only through winit's Wayland
+    # title-bar crate (sctk-adwaita via ab_glyph), in tutti-vst3-host's tests.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained ttf-parser, reached via winit sctk-adwaita (tutti-vst3-host dev-dependency); no vulnerability" },
+]

@@ -143,7 +143,7 @@ just test-all                      # both
 
 - **Submodules:** `git clone --recursive`, or
   `git submodule update --init --recursive`. The VST3 SDK (three Steinberg
-  repos pinned at `v3.8.0_build_66` under `crates/plugin/vendor/vst3-sdk/`) is
+  repos pinned at `v3.8.0_build_66` under `vendor/vst3-sdk/`) is
   otherwise empty. `git describe` reports `v3.7.3_build_20-NN`; that is
   expected, and the gate asserts SHAs.
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or

@@ -120,9 +120,9 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      # The two vendored forks are excluded: they are third-party code we do not
-      # restyle, and they carry pre-existing lint debt that is not ours to pay.
-      - run: cargo clippy --locked --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
+      # `tutti-rustysynth` is excluded: it is a fork of upstream rustysynth that
+      # carries pre-existing lint debt, which is not paid here.
+      - run: cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
       # One format at a time: a test helper or a match that only the other
       # formats use is dead or irrefutable here, and the workspace run (every
       # format on) cannot see it.
@@ -156,7 +156,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Workspace
-        run: cargo clippy --locked --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
       # The workspace run builds each crate with the features the workspace
       # unifies to, which leaves tutti-plugin's format features and
       # clap-extras dark. `au` is macOS-only and compiles to nothing here.
@@ -575,7 +575,7 @@ jobs:
       # `--document-private-items`: the crates' internals carry doc comments
       # with links too, and one that only breaks in a private item rots
       # unseen.
-      - run: cargo doc --locked --workspace --no-deps --exclude rustysynth-tutti
+      - run: cargo doc --locked --workspace --no-deps --exclude tutti-rustysynth
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the
@@ -602,7 +602,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-14
-      - run: cargo +nightly-2026-10-14 doc --locked --workspace --no-deps --exclude rustysynth-tutti
+      - run: cargo +nightly-2026-10-14 doc --locked --workspace --no-deps --exclude tutti-rustysynth
         env:
           RUSTDOCFLAGS: -D warnings --cfg docsrs
 

@@ -5,12 +5,12 @@
 # needing VST3_SDK_DIR to point at an external SDK. A `git clone` without
 # `--recursive` leaves them empty; the build script asserts with the
 # `git submodule update --init --recursive` command when that happens.
-[submodule "crates/plugin/vendor/vst3-sdk/pluginterfaces"]
-	path = crates/plugin/vendor/vst3-sdk/pluginterfaces
+[submodule "vendor/vst3-sdk/pluginterfaces"]
+	path = vendor/vst3-sdk/pluginterfaces
 	url = https://github.com/steinbergmedia/vst3_pluginterfaces
-[submodule "crates/plugin/vendor/vst3-sdk/base"]
-	path = crates/plugin/vendor/vst3-sdk/base
+[submodule "vendor/vst3-sdk/base"]
+	path = vendor/vst3-sdk/base
 	url = https://github.com/steinbergmedia/vst3_base
-[submodule "crates/plugin/vendor/vst3-sdk/public.sdk"]
-	path = crates/plugin/vendor/vst3-sdk/public.sdk
+[submodule "vendor/vst3-sdk/public.sdk"]
+	path = vendor/vst3-sdk/public.sdk
 	url = https://github.com/steinbergmedia/vst3_public_sdk

@@ -35,16 +35,16 @@ bevy_tasks.workspace = true
 # derives on the entity-as-node primitives. (The Asset derive on `WaveAsset`
 # is `tutti-io/bevy`, enabled by `sampler` below.) bevy-tutti supplies the
 # reconcile systems and the CPAL audio callback (src/engine/).
-tutti-core = { path = "../core/tutti-core", default-features = false, features = ["bevy_ecs"] }
+tutti-core = { path = "../tutti-core", default-features = false, features = ["bevy_ecs"] }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
 # `ChannelLayout` field; ignoring it in reflection would reset a surround
 # device config to Stereo on scene load.
-tutti-types = { path = "../core/tutti-types", default-features = false, features = ["bevy"] }
-tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false, features = ["bevy"] }
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # The graph's vocabulary (`IntoNode`, `ParamSet`, `ForkByClone`): the node
 # contract a spawn path takes.
-tutti-graph = { path = "../core/tutti-graph" }
+tutti-graph = { path = "../tutti-graph" }
 # The Bevy-free API layer (design 015): the `Session` behind `AudioGraphRes`,
 # its builder, the `!Send` `Device`, the commit and its compensation, the
 # event feeds and the crossfade retry. `device` always: this crate opens the
@@ -54,41 +54,41 @@ tutti-graph = { path = "../core/tutti-graph" }
 tutti-session = { path = "../tutti-session", default-features = false, features = ["device"] }
 # tutti-nodes is pure DSP; its ECS binding is this crate.
 # The optional `convolution` feature below adds the convolver on top.
-tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 # Spatial audio (VBAP + binaural panners), gated by our `spatial` feature.
-tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
+tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 
 # Optional subsystems (gated by bevy-tutti features below).
 # The modulation compiler the declarations compile through; the `modulation`
 # feature turns on its `bevy` feature (Reflect on its vocabulary).
-tutti-mod = { path = "../core/tutti-mod", optional = true, default-features = false }
-tutti-sampler = { path = "../dsp/tutti-sampler", optional = true, default-features = false }
+tutti-mod = { path = "../tutti-mod", optional = true, default-features = false }
+tutti-sampler = { path = "../tutti-sampler", optional = true, default-features = false }
 # The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
 # is a component around `tutti_io::Recorder`, the one pump loop. `audio-io`
 # adds the device half and re-exports `WavOut`,
 # `MicMonitorNode` and `Recorder` through `crate::io`; `sampler` adds
 # `Wave`/`WaveAsset`/the decoder. With no codec feature the crate compiles no
 # decoder.
-tutti-io = { path = "../core/tutti-io" }
-tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
+tutti-io = { path = "../tutti-io" }
+tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
-tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
-tutti-export = { path = "../core/tutti-export", optional = true }
-tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
+tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-export = { path = "../tutti-export", optional = true }
+tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
 # `.mid` needs no OS MIDI port.
-tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
-tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", optional = true, default-features = false }
+tutti-midi-file = { path = "../tutti-midi-file", optional = true }
+tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-features = false }
 # `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
 # builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
 # so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
 # itself ships no default features.
-tutti-plugin = { path = "../plugin/tutti-plugin", optional = true, features = [
+tutti-plugin = { path = "../tutti-plugin", optional = true, features = [
     "json",
 ] }
-tutti-plugin-server = { path = "../plugin/tutti-plugin-server", optional = true, default-features = false }
+tutti-plugin-server = { path = "../tutti-plugin-server", optional = true, default-features = false }
 
 # Plugin editor windows: native child-window parenting for hosted GUIs.
 bevy_window = { version = "0.19", optional = true }
@@ -96,7 +96,7 @@ raw-window-handle = { version = "0.6", optional = true }
 
 # The device layer: CPAL stream, RT callback, mic capture, driver lifecycle.
 # Bevy-free — this crate supplies only the lifecycle around it.
-tutti-cpal = { path = "../core/tutti-cpal", default-features = false }
+tutti-cpal = { path = "../tutti-cpal", default-features = false }
 
 # `ModSource::as_atomic` hands out an `AtomicF32` cell.
 atomic_float = "1.1"
@@ -230,22 +230,22 @@ export = ["dep:tutti-export", "tutti-session/export"]
 [dev-dependencies]
 # `contract::Direct`: a node driven by hand as a graph drives it, for the
 # reference renders the export tests compare against.
-tutti-graph = { path = "../core/tutti-graph", features = ["contract"] }
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
-tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # `DiskStreamer::manual`, for the restart test that streams a clip through the
 # engine (`sampler`): a hand-stepped butler refills between blocks, where the
 # threaded one would race a render that runs faster than real time. Dev-only,
 # for the same reason as the fake MIDI backend below.
-tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, features = [
+tutti-sampler = { path = "../tutti-sampler", default-features = false, features = [
     "test-support",
 ] }
 # The fake MIDI backend, for the session-layer tests. A headless CI box has no
 # MIDI port, so without it every path through `MidiSession` is testable only
 # against "no device found". Dev-only: `midi-hardware` deliberately does not
 # cascade it.
-tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", features = [
+tutti-midi-hardware = { path = "../tutti-midi-hardware", features = [
     "test-support",
 ] }
 # RT-safety regression tests use the
@@ -264,14 +264,14 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 # `plugin-server`, to pin that a loaded plugin's shadow is captured and driven.
 # A dev-dependency so cargo builds the cdylib as part of the same test run; the
 # test finds it (and the server) beside its own binary.
-tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # `tests/plugin_vst2_meter.rs` loads the reference VST2 plugin in process
 # (`vst2`), and `libloading` re-opens the image the host loaded to read what
 # `audioMasterGetTime` answered: the linked rlib is a separate image with
 # separate statics. The same pair, for the same reason, as `tutti-plugin`'s.
-tutti-vst2-test-plugin = { path = "../plugin/vendor/tutti-vst2-test-plugin" }
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 libloading = "0.8"
-tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
 
 # `modulated_fader`: an `AudioParam` driven by modulation, showing the
 # modulation-aware read path an app cannot reconstruct on its own.

@@ -1,0 +1,82 @@
+[package]
+name = "tutti-types"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Shared vocabulary for the Tutti audio engine — RT primitives, the AudioIn/AudioOut I/O traits, and latency compensation"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-types"
+readme = "README.md"
+keywords = ["audio", "real-time"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# The vocabulary crate every other engine crate names, so the engine-wide rule
+# — Bevy is opt-in, never a default — is stated here rather than inherited.
+default = []
+# Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
+# (which rides the plugin-load IPC reply via `BusChannels`), `ChannelTopology`
+# (which rides the same reply once the format hosts report placement), the meter
+# vocabulary (which round-trips through the host's document), and the unit
+# newtypes the latter is built from.
+serde = ["dep:serde"]
+# Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
+# component built from them can be inspected and scene-serialized. Reflection
+# only — no `Component`/`Resource` derives: an app stores a `Volume`, never a
+# bare `Db`.
+bevy = ["dep:bevy_reflect"]
+
+[dependencies]
+# `ArcLend`/`Loan`, re-exported at the root: the cell non-scalar state reaches
+# the audio thread through. A general-purpose crate in this workspace that names
+# no tutti crate, so the rule "tutti-types names no other tutti crate" holds.
+arc-lend = { path = "../arc-lend" }
+# The fixed inline storage behind `RtVec` (`rt/vec.rs`):
+# a run of `N` slots that cannot grow, so the cap is the type's, not a check
+# beside it.
+arrayvec = "0.7"
+# `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
+atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+# The byte views behind `SeqWriter<T>` and `PackedAtomic<T>`: a `NoUninit +
+# AnyBitPattern` value to and from its bytes with no `unsafe`.
+bytemuck = "1.16"
+# `Seconds::one_pole_coeff`'s exponential is `libm`'s pure-Rust `exp`, so the
+# coefficient does not depend on the platform's C math library (the rule
+# `tutti-nodes`' filters follow).
+libm = "0.2.15"
+serde = { version = "1", optional = true, features = ["derive"] }
+# Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
+# defines vocabulary, not ECS surface.
+bevy_reflect = { workspace = true, optional = true }
+
+# `PosRing`'s, `PackedAtomic`'s, `SeqWriter`/`SeqReader`'s and `AudioThreadCell`'s
+# atomics become loom's under
+# `--cfg loom`, so the models in `tests/*_loom.rs` check the
+# shipped protocols rather than replicas.
+# Only that flag pulls this in; a normal build never sees loom.
+#
+#     RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test pos_ring_loom
+#
+# This can live here, unlike `tutti-shm-model`, because nothing in this crate's
+# dependency closure breaks under the flag. The one dependency that reacts to
+# it, `arc-lend`, does so by the same design (its atomics become loom's too).
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+# The meter `Deserialize` impls are the untrusted-document edge, so they are
+# tested against a real format rather than a hand-rolled deserializer.
+serde_json = "1"
+
+# `tests/spin_starvation.rs` (an ignored probe) pins its threads to one core
+# and sets their scheduling policy: `sched_setaffinity`, `pthread_setschedparam`.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,0 +1,79 @@
+[package]
+name = "tutti-midi-hardware"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Native-UMP OS MIDI I/O — endpoint enumeration, connection, send/receive"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-hardware"
+readme = "README.md"
+keywords = ["midi", "ump", "audio", "real-time"]
+categories = ["multimedia::audio", "hardware-support"]
+# One feature, and it adds no capability. This crate IS the OS MIDI edge — with
+# the file codecs in `tutti-midi-file`, there is nothing here that is not a port.
+#
+# The per-platform deps below are gated by `cfg(target_os)` alone, which is what
+# actually decides whether CoreMIDI exists.
+
+[features]
+# Export `test_support::FakeBackend` — a device list with no OS behind it, for
+# `MidiSession::with_backend`. Off by default: a host has no use for a fake
+# device list, and shipping one invites it into production wiring by accident.
+#
+# It exists because the fixture is the only thing standing between a session
+# test and a real MIDI port, and a headless CI box has none. `bevy-tutti` wires a
+# session into the ECS and could otherwise test that wiring only against "no
+# device found".
+test-support = []
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+tracing = "0.1"
+
+# Core types
+tutti-midi-types = { path = "../tutti-midi-types" }
+# NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
+# port edge. Consumers depend on `tutti-midi-file` directly.
+tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
+# The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
+# Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
+tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+
+# Lock-free: each input port's SPSC ring, split into an owned producer and
+# consumer.
+ringbuf = "0.4"
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Raw `snd_ump_*` / `snd_seq_ump_*` FFI that `alsa-sys` lacks. Its build script
+# probes alsa-lib; this crate's own build.rs turns that into `cfg(alsa_ump)`.
+tutti-alsa-ump-sys = { path = "../tutti-alsa-ump-sys" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coremidi = { workspace = true }
+# Raw FFI for the native-UMP virtual source — the safe `coremidi` wrapper has
+# `virtual_destination_with_protocol` but no `virtual_source_with_protocol`.
+coremidi-sys = { workspace = true }
+core-foundation = { workspace = true }
+
+[dev-dependencies]
+# The crate's own `test-support` surface. A dev-dependency on self is how a
+# feature reaches the crate's `#[cfg(test)]` code and its `tests/` unconditionally
+# — `required-features` would instead *skip* the tests when the feature is off,
+# reporting green for a run that did not execute them.
+tutti-midi-hardware = { path = ".", features = ["test-support"] }
+
+tracing-subscriber = "0.3"
+# The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
+# `HardwareMidiInputs` through a `MidiInputNode` in a graph, under a disabled
+# allocator.
+assert_no_alloc = { version = "1", default-features = false }
+tutti-graph = { path = "../tutti-graph" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

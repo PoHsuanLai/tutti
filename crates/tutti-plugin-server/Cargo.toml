@@ -1,0 +1,139 @@
+[package]
+name = "tutti-plugin-server"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "The plugin-server subprocess for tutti-plugin: hosts one VST2, VST3, CLAP or AU plugin in isolation"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-plugin-server"
+readme = "README.md"
+keywords = ["audio", "plugin", "vst3", "clap", "sandbox"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "plugin-server"
+path = "src/main.rs"
+
+[features]
+default = ["vst2", "vst3", "clap", "au"]
+
+# VST2 support (loader lives in the `tutti-vst2-host` sibling crate)
+vst2 = ["dep:tutti-vst2-host"]
+
+# VST3 support
+vst3 = ["dep:tutti-vst3-host"]
+
+# CLAP support
+clap = ["dep:tutti-clap-host"]
+
+# Audio Unit support (macOS only)
+au = ["dep:tutti-au-host"]
+
+# All plugin formats.
+all = ["vst2", "vst3", "clap", "au"]
+
+[dependencies]
+# Shared protocol types
+tutti-plugin = { path = "../tutti-plugin" }
+# The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
+# than reached through `tutti-plugin`, because this is a dependency in its own
+# right and a re-export would hide that.
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+
+# Core types
+tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
+
+# MIDI support
+tutti-midi-types = { path = "../tutti-midi-types" }
+
+# Serialization for IPC
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Shared memory
+memmap2 = "0.9"
+
+# Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
+interprocess = { version = "2" }
+
+# Realtime scheduling for the audio phase. The host's own audio callback runs on
+# a thread the OS backend created with realtime priority (CoreAudio, WASAPI,
+# JACK all do this); a subprocess we spawned ourselves inherits ordinary
+# priority and has to ask. Same crate and version as `tutti-sampler`'s disk
+# butler, which elevates for the same reason.
+thread-priority = "1.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# VST2 plugin hosting (optional)
+tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+
+# CLAP plugin hosting (optional)
+tutti-clap-host = { path = "../tutti-clap-host", optional = true }
+
+# VST3 plugin hosting (optional)
+tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
+
+# Audio Unit hosting (optional, macOS only)
+tutti-au-host = { path = "../tutti-au-host", optional = true }
+
+libloading = "0.8"
+
+[target.'cfg(unix)'.dependencies]
+# `getppid`, to notice that the host died before it connected. An orphan is
+# reparented to init, so ppid == 1 is the signal — no handle, no host cooperation
+# needed, which is the point: the case being handled is the one where the host had
+# no chance to cooperate.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Same duty as `libc` above, but Windows has no `getppid` and does not reparent
+# orphans, so the parent PID has to be found by walking the process table
+# (`CreateToolhelp32Snapshot`) and then probed for liveness.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
+
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+
+[dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+# RT-safety regression: prove the per-block audio path never allocates.
+assert_no_alloc = { version = "1", default-features = false }
+# The reference CLAP plugin the loader tests drive. A dev-dependency rather
+# than a build-time artifact so cargo builds the cdylib as part of the same
+# `cargo test` invocation (one target-dir lock, no nested cargo); build.rs
+# only resolves where it landed. This is what lets the CLAP suite run on any
+# machine instead of naming an absolute macOS path.
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+# The reference VST2 plugin, on the same terms as the CLAP one above: a
+# dev-dependency so the cdylib is built inside this `cargo test`, with build.rs
+# only resolving where it landed. Its behaviour is steered per-test through
+# `TUTTI_VST2_PROBE_*` env vars rather than by building variants.
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+# The same `tutti-vst3-host` the `vst3` feature pulls in, but with `conformance`
+# on so its build script compiles `audio-probe` — the reference VST3 plugin the
+# loader tests drive, the counterpart to `tutti-clap-test-plugin` above. As a
+# *dev*-dependency the feature does not reach production builds: `conformance`
+# also exposes a `pub mod` observation seam that should stay off there.
+#
+# Cargo unifies this with the optional dependency, so the probe is built
+# whenever tests run with `--features vst3`, and its location arrives as
+# `DEP_TUTTI_VST3_PROBE_DIR` (see build.rs).
+tutti-vst3-host = { path = "../tutti-vst3-host", features = ["conformance"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

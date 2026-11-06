@@ -17,27 +17,27 @@ categories = ["multimedia::audio"]
 # Everything else is a feature, because a headless consumer that only bounces
 # a file should not link ALSA, and one that only reads a .mid should not link
 # CoreMIDI.
-tutti-core = { path = "../core/tutti-core", default-features = false }
-tutti-types = { path = "../core/tutti-types", default-features = false }
-tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false }
+tutti-core = { path = "../tutti-core", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false }
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # The audio graph: what an export renders, and what `Engine` runs.
 # tutti-core already depends on it, so naming it here links nothing new.
-tutti-graph = { path = "../core/tutti-graph" }
+tutti-graph = { path = "../tutti-graph" }
 
-tutti-cpal = { path = "../core/tutti-cpal", default-features = false, optional = true }
-tutti-io = { path = "../core/tutti-io", optional = true }
-tutti-export = { path = "../core/tutti-export", optional = true }
-tutti-mod = { path = "../core/tutti-mod", default-features = false, optional = true }
-tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, optional = true }
-tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
-tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
-tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
-tutti-dsp = { path = "../dsp/tutti-dsp", default-features = false, optional = true }
-tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false, optional = true }
-tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", default-features = false, optional = true }
-tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
-tutti-midi-hardware = { path = "../midi/tutti-midi-hardware", optional = true }
-tutti-plugin = { path = "../plugin/tutti-plugin", optional = true }
+tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
+tutti-io = { path = "../tutti-io", optional = true }
+tutti-export = { path = "../tutti-export", optional = true }
+tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
+tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
+tutti-polysynth = { path = "../tutti-polysynth", optional = true }
+tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
+tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
+tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
+tutti-midi-file = { path = "../tutti-midi-file", optional = true }
+tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
+tutti-plugin = { path = "../tutti-plugin", optional = true }
 # The API layer (design 015): a graph, its engine and its device behind one
 # `Session`. `default-features = false` (its default is empty anyway): each
 # feature below turns on the session's feature of the same name with `?`, so
@@ -47,14 +47,14 @@ tutti-session = { path = "../tutti-session", default-features = false, optional 
 [dev-dependencies]
 # `tutti::nodes::testing` for this crate's own test, examples and README
 # doctest. Dev-only: a consumer of the umbrella never sees the module.
-tutti-nodes = { path = "../dsp/tutti-nodes", default-features = false, features = ["testing"] }
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 tempfile = "3.8"
 # The reference CLAP plugin the §5.2 example plays, in a `plugin-server`
 # (built first: `cargo build -p tutti-plugin-server`; not a dev-dependency,
 # which would be a cycle through `tutti-plugin`), and the lookup that finds
 # both beside the running binary (`tutti-session/tests/support`).
-tutti-clap-test-plugin = { path = "../vendor/tutti-clap-test-plugin" }
-tutti-fixture-resolve = { path = "../plugin/vendor/tutti-fixture-resolve" }
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
 
 [features]
 # `default = ["session"]`: the API layer is what this umbrella is for. It is

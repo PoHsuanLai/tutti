@@ -11,13 +11,13 @@ together — an upper bound, not a block count:
 
 | area | ~lines | what it is |
 |---|---|---|
-| `crates/plugin/formats/` | 1,519 | VST2/VST3/CLAP/AU C ABIs |
-| `crates/plugin/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
-| `crates/plugin/tutti-plugin/` | 46 | shm slab, IPC transport |
-| `crates/midi/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
+| `crates/` | 1,519 | VST2/VST3/CLAP/AU C ABIs |
+| `crates/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
+| `crates/tutti-plugin/` | 46 | shm slab, IPC transport |
+| `crates/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
 | `crates/core/` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
 | `crates/dsp/` | 14 | see below |
-| `crates/plugin/tutti-plugin-types/` | 7 | bundle/ABI value types |
+| `crates/tutti-plugin-types/` | 7 | bundle/ABI value types |
 
 **Roughly 95% of it is FFI**, and that is inherent: you cannot host a VST3
 without speaking COM, or reach CoreMIDI without calling it. The interesting

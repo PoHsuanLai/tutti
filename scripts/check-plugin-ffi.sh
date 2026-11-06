@@ -36,20 +36,20 @@ import glob, re, sys
 FORMATS = [
     (
         "CLAP",
-        "crates/plugin/formats/tutti-clap-host",
-        "crates/plugin/formats/tutti-clap-ffi",
+        "crates/tutti-clap-host",
+        "crates/tutti-clap-ffi",
         [
-            "crates/plugin/tutti-plugin-server/src/loaders/clap.rs",
-            "crates/plugin/tutti-plugin/src/format/gui/clap.rs",
+            "crates/tutti-plugin-server/src/loaders/clap.rs",
+            "crates/tutti-plugin/src/format/gui/clap.rs",
         ],
     ),
     (
         "VST3",
-        "crates/plugin/formats/tutti-vst3-host",
-        "crates/plugin/formats/tutti-vst3-ffi",
+        "crates/tutti-vst3-host",
+        "crates/tutti-vst3-ffi",
         [
-            "crates/plugin/tutti-plugin-server/src/loaders/vst3.rs",
-            "crates/plugin/tutti-plugin/src/format/gui/vst3.rs",
+            "crates/tutti-plugin-server/src/loaders/vst3.rs",
+            "crates/tutti-plugin/src/format/gui/vst3.rs",
         ],
     ),
 ]

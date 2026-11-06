@@ -1,0 +1,67 @@
+[package]
+name = "tutti-clap-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "CLAP plugin hosting library for Rust"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-clap-host"
+readme = "README.md"
+keywords = ["clap", "audio", "plugin", "dsp", "host"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# Off by default. Gates the speculative ~40% of the CLAP surface that no
+# consumer (`tutti-plugin-server` loader, in-process GUI host) currently calls:
+# param-indication, remote-controls, context-menus, triggers, tuning,
+# audio-port reconfiguration, preset-load, and the plugin
+# undo/redo + resource-directory extensions. The code and its tests stay
+# compiled — enable the feature to build/test them — but the default build is
+# lean. Consumed extensions (audio/note ports, params, state, gui, latency,
+# voice-info, render-mode, note-names) are always on.
+default = []
+clap-extras = []
+
+[dependencies]
+bitflags = "2"
+clap-sys = "0.5"
+thiserror = "2"
+tutti-clap-ffi = { path = "../tutti-clap-ffi" }
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-types = { path = "../tutti-types" }
+# `Pool`, the worker-pool contract `clap.thread-pool` requests are served on
+# (`ClapLoaded::set_thread_pool`). No cycle: `tutti-graph` names only
+# `tutti-types`.
+tutti-graph = { path = "../tutti-graph" }
+
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+
+[dev-dependencies]
+tutti-clap-ffi = { path = "../tutti-clap-ffi", features = ["test-support"] }
+# The integration tests re-open the reference plugin's library themselves (the
+# crate forbids `unsafe`; a test may use it).
+libloading = "0.8"
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+assert_no_alloc = { version = "1", default-features = false }
+# `WorkerPool`, the pool the `clap.thread-pool` suite serves requests on.
+tutti-core = { path = "../tutti-core", default-features = false }
+tempfile = "3"
+# The reference plugin used by the clap_conformance harness. As a
+# dev-dependency, Cargo builds its cdylib in the same `cargo test`
+# invocation (no nested cargo / no target-dir-lock deadlock); the rlib
+# side gives the test the `ProcessCapture` type directly. build.rs
+# resolves the cdylib artifact path for the test to dlopen.
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

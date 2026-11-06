@@ -55,23 +55,23 @@ real time.
 
 | Crate | What it owns |
 |---|---|
-| [`tutti-nodes`](crates/dsp/tutti-nodes) | The DSP node library: filters, delays, dynamics, distortion, chorus, convolution, mix bus, automation |
-| [`tutti-sampler`](crates/dsp/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch butler |
-| [`tutti-polysynth`](crates/dsp/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
-| [`tutti-soundfont`](crates/dsp/tutti-soundfont) | SoundFont (`.sf2`) playback |
-| [`tutti-spatial`](crates/dsp/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
-| [`tutti-dsp`](crates/dsp/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
-| [`tutti-mod`](crates/core/tutti-mod) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
-| [`tutti-midi-types`](crates/midi/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
-| [`tutti-midi-runtime`](crates/midi/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
-| [`tutti-midi-file`](crates/midi/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
-| [`tutti-midi-hardware`](crates/midi/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
-| [`tutti-plugin`](crates/plugin/tutti-plugin) | Plugin hosting, **out of process** — a crashing plugin does not take the host with it |
+| [`tutti-nodes`](crates/tutti-nodes) | The DSP node library: filters, delays, dynamics, distortion, chorus, convolution, mix bus, automation |
+| [`tutti-sampler`](crates/tutti-sampler) | Clip playback — in-memory and disk-streamed voices, time-stretch, the prefetch butler |
+| [`tutti-polysynth`](crates/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
+| [`tutti-soundfont`](crates/tutti-soundfont) | SoundFont (`.sf2`) playback |
+| [`tutti-spatial`](crates/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
+| [`tutti-dsp`](crates/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
+| [`tutti-mod`](crates/tutti-mod) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
+| [`tutti-midi-types`](crates/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
+| [`tutti-midi-runtime`](crates/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |
+| [`tutti-midi-file`](crates/tutti-midi-file) | SMF and MIDI 2.0 clip codecs — OS-free, so reading a `.mid` links no CoreMIDI |
+| [`tutti-midi-hardware`](crates/tutti-midi-hardware) | The OS MIDI edge: CoreMIDI and ALSA seq-UMP |
+| [`tutti-plugin`](crates/tutti-plugin) | Plugin hosting, **out of process** — a crashing plugin does not take the host with it |
 
-The four format hosts ([VST3](crates/plugin/formats/tutti-vst3-host),
-[CLAP](crates/plugin/formats/tutti-clap-host),
-[AU](crates/plugin/formats/tutti-au-host),
-[VST2](crates/plugin/formats/tutti-vst2-host)) sit under `tutti-plugin`, which
+The four format hosts ([VST3](crates/tutti-vst3-host),
+[CLAP](crates/tutti-clap-host),
+[AU](crates/tutti-au-host),
+[VST2](crates/tutti-vst2-host)) sit under `tutti-plugin`, which
 is what you use; each speaks one plugin ABI.
 
 ## Quick start

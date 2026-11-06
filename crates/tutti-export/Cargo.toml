@@ -1,0 +1,82 @@
+[package]
+name = "tutti-export"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Offline audio export and rendering for Tutti audio engine"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-export"
+readme = "README.md"
+keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["wav", "flac", "aiff", "ogg"]
+wav = ["hound"]
+flac = ["flacenc", "md-5"]
+aiff = ["aifc"]
+ogg = ["vorbis_rs"]
+
+[dependencies]
+thiserror.workspace = true
+tutti-core = { path = "../tutti-core", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false }
+# The graph: `RenderGraph` is a forked or built
+# `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
+# tutti-graph depends on no tutti crate but tutti-types.
+tutti-graph = { path = "../tutti-graph" }
+# EBU R128 loudness measurement lives in tutti-dsp (the crate's
+# Config/State/step analysis home) — `render_normalized_to_file` measures with
+# it — and so does the resampler's `RealFft`. Acyclic: tutti-dsp does NOT depend on tutti-export.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
+hound = { version = "3.5", optional = true }
+# No default features: the encoder drives flacenc's frame encoder on its own
+# workers, so flacenc's `par` (and its `serde`/`log`) are unused.
+flacenc = { version = "0.4", optional = true, default-features = false }
+# The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
+# only inside its own encode loop, which pads the last block; the FLAC encoder
+# drives flacenc's frame encoder itself, so it hashes the samples here. The
+# same crate and version flacenc already pulls in.
+md-5 = { version = "0.10", optional = true }
+vorbis_rs = { version = "0.5", optional = true }
+# AIFF/AIFF-C. Replaced ~200 lines of hand-rolled IFF chunk writing (including a
+# by-hand 80-bit IEEE 754 extended encoder); its I16/I24/F32 formats match our
+# three bit depths exactly and it back-patches sizes on finalize, so AIFF
+# streams like the other three.
+aifc = { version = "0.7", optional = true }
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile = "3.10"
+approx = "0.5"
+# Convolution nodes and the `testing` stimulus nodes for the end-to-end export
+# tests, examples and bench. Acyclic: tutti-nodes does NOT depend on
+# tutti-export.
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["convolution", "testing"] }
+# Surround producer nodes (SpatialPannerNode + build_surround_mix) for the
+# end-to-end multichannel-export integration test. Also acyclic.
+tutti-spatial = { path = "../tutti-spatial", default-features = false }
+# Voice/VoicePool producers for `sampler_to_export.rs`, which renders a sampler
+# voice through the offline clock and asserts on the exported pitch. Also
+# acyclic: tutti-sampler does NOT depend on tutti-export.
+tutti-sampler = { path = "../tutti-sampler", default-features = false }
+# The `Wave` those voices play. Acyclic: tutti-io names nothing above tutti-core.
+tutti-io = { path = "../tutti-io" }
+# An independent decoder for every container this crate writes, for
+# `tests/oracle_decode.rs`. `hound` only speaks WAV, so FLAC/AIFF/Ogg were
+# checked by frame count and header, never by content. The feature list is the
+# minimum that reads what this crate emits — do NOT add `isomp4` or the
+# mp3/aac bundles; nothing here writes those.
+symphonia = { version = "0.5.5", default-features = false, features = ["wav", "pcm", "flac", "ogg", "vorbis", "aiff"] }
+
+[[bench]]
+name = "offline_render"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

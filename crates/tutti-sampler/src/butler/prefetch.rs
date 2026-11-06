@@ -1,0 +1,633 @@
+//! A stream's ring: file frames the butler has read ahead, indexed by
+//! position.
+//!
+//! One ring per streaming region. The butler writes frames into it
+//! ([`RegionOut`]); the audio thread reads them ([`Ring`], through a
+//! [`SharedReader`]). Nothing on the reading side locks, allocates or waits.
+//!
+//! # Indexed by straight position, not consumed in order
+//!
+//! Slot `s mod N` holds what straight position `s` holds under the stream's
+//! mapping (`loops`' module docs): the file counted straight on, a loop
+//! placing it. The reader looks the four taps a position needs up by position,
+//! so it seats on the clock exactly as the memory tier does and reads what the
+//! memory tier reads, at any rate; a jump inside the window costs nothing; and
+//! a jump outside it is the butler moving the window to where the reader now
+//! plays (`Ring::play`), with no flush, no stale frames to discard and no
+//! read head to guess.
+//!
+//! The slots, the window and the protocol that keeps a write from ever
+//! landing under a read are `tutti_core::PosRing`'s (its module docs have the
+//! argument, and `tutti-types/tests/pos_ring_loom.rs` checks it under loom).
+//! Its one `PosWriter` is the butler's [`RegionOut`]'s; its one `PosReader`
+//! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
+//! one live reader per ring is the type's rule, not a flag's. This module
+//! adds what a disk stream needs on top: the region, the file, the map the
+//! reader reads the slots by, the preroll, and a free-running reader's origin
+//! and seek.
+//!
+//! A position-indexed ring rather than an SPSC FIFO the reader pops: a FIFO
+//! has to be flushed to move, which drops what was refilled since, leaves the
+//! reader's head unknowable while the flush is pending, and costs the reader
+//! its history.
+//!
+//! # Where a ring is dropped
+//!
+//! The butler's writer holds one handle, every voice taken from the stream
+//! another. A voice in a live graph is dropped where the graph frees units:
+//! under the graph's executor, retired units travel back to the control thread
+//! (`tutti_graph::Editor::collect`), so the last handle is never dropped on
+//! the audio thread, and the ring's slots and its `ArcLend` are freed off it.
+//!
+//! # Frames, not samples
+//!
+//! Every count crossing this module is in frames; the stride never leaks
+//! out.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use tutti_core::{
+    ArcLend, ChannelLayout, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader, Samples,
+};
+use tutti_io::Wave;
+
+#[cfg(codec)]
+use tutti_io::FileIn;
+
+use super::command::RegionId;
+use super::loops::{Arrangement, Content, Mapping, RingMap};
+use crate::nonempty;
+
+/// Frames a ring keeps behind where its reader plays: the taps a position
+/// reads behind itself, and a little slack.
+pub(crate) const HISTORY_FRAMES: u64 = 4;
+
+/// Why a live voice could not be taken from a channel's stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TakeVoiceError {
+    /// The channel streams nothing yet: the butler has not applied its
+    /// `Command::Stream`. Poll again next frame.
+    NotStreaming,
+    /// The stream already has its live reader. A ring serves one — it has
+    /// one `PosReader` to hand out: the butler fills ahead of the one position
+    /// it is told (where the reader plays), so two readers at two positions
+    /// would pull its window back and forth, each starving the other. Take one
+    /// voice per stream, or stream the file again on another channel.
+    ReaderTaken,
+}
+
+impl std::fmt::Display for TakeVoiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotStreaming => "the channel streams nothing yet",
+            Self::ReaderTaken => {
+                "the stream already has a live reader; a ring serves one (stream the file \
+                 again on another channel for a second voice)"
+            }
+        })
+    }
+}
+
+impl std::error::Error for TakeVoiceError {}
+
+/// A region's ring, shared by the butler's writer and the audio thread's
+/// reader.
+pub(crate) struct Ring {
+    region_id: RegionId,
+    file_path: PathBuf,
+    channels: ChannelLayout,
+    /// Glances at the window and where the reader plays (the writer's
+    /// `watch`): no sample is read through it.
+    core: Arc<PosRing>,
+    /// The ring's one reader, until a voice takes it. A lock taken on the
+    /// control thread only (`take_reader`); the audio thread holds the reader
+    /// itself.
+    reader: Mutex<Option<PosReader>>,
+    /// Butler → reader: the channel's PDC preroll, in file frames: the reader
+    /// plays straight position `gate - preroll`.
+    preroll: AtomicU64,
+    /// Butler → reader: where a free-running reader starts (the stream's
+    /// offset).
+    origin: AtomicU64,
+    /// Butler → reader: a free-running reader's seek, `(epoch, target)`.
+    seek_epoch: AtomicU64,
+    seek_target: AtomicU64,
+    /// Butler → reader: output frames a reader's crossfade lasts.
+    fade_frames: AtomicU64,
+    /// Butler → reader: how to read the slots, lent through the reader the
+    /// voice registers ([`map_reader`](Self::map_reader)).
+    map: Arc<ArcLend<RingMap>>,
+    /// The live reader is a placed voice (it follows its clock, so a relayed
+    /// seek must not move where the butler fills).
+    placed: AtomicBool,
+}
+
+impl std::fmt::Debug for Ring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ring")
+            .field("region_id", &self.region_id)
+            .field("core", &self.core)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Ring {
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.region_id
+    }
+
+    /// Declared width — the file's own layout.
+    pub(crate) fn channels(&self) -> ChannelLayout {
+        self.channels
+    }
+
+    /// Slots, in frames.
+    #[cfg(test)]
+    pub(crate) fn frames(&self) -> usize {
+        self.core.frames()
+    }
+
+    /// The positions held: a glance (tests), not a claim.
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> (u64, u64) {
+        let w = self.core.window();
+        (w.from, w.to)
+    }
+
+    /// A reader of how to read the slots, registered for the voice that
+    /// reads this ring: it lends once per block, never per sample, never
+    /// parked across blocks. Control thread: registering may allocate.
+    pub(crate) fn map_reader(&self) -> Reader<RingMap> {
+        self.map.reader()
+    }
+
+    /// The channel's PDC preroll, file frames.
+    #[inline]
+    pub(crate) fn preroll(&self) -> u64 {
+        self.preroll.load(Ordering::Relaxed)
+    }
+
+    /// Where a free-running reader starts.
+    pub(crate) fn origin(&self) -> u64 {
+        self.origin.load(Ordering::Relaxed)
+    }
+
+    /// A free-running reader's pending seek, `(epoch, target)`.
+    #[inline]
+    pub(crate) fn seek_request(&self) -> (u64, u64) {
+        let epoch = self.seek_epoch.load(Ordering::Acquire);
+        (epoch, self.seek_target.load(Ordering::Relaxed))
+    }
+
+    /// Output frames a reader's crossfade lasts.
+    #[inline]
+    pub(crate) fn fade_frames(&self) -> usize {
+        self.fade_frames.load(Ordering::Relaxed) as usize
+    }
+
+    /// Where the reader plays: a glance (tests).
+    #[cfg(test)]
+    pub(crate) fn play(&self) -> u64 {
+        self.core.play()
+    }
+
+    /// Butler: publish how to read the slots.
+    pub(crate) fn publish_map(&self, map: RingMap) {
+        self.map.publish(Arc::new(map));
+    }
+
+    /// Butler: free the maps the reader has let go of since the last
+    /// [`publish_map`](Self::publish_map), without publishing. A ring whose
+    /// map stops changing would otherwise keep one a block held across its
+    /// last publish for as long as the ring lives.
+    pub(crate) fn reclaim_maps(&self) -> usize {
+        self.map.reclaim()
+    }
+
+    /// Maps retired and not yet freed (tests).
+    #[cfg(test)]
+    pub(crate) fn retired_maps(&self) -> usize {
+        self.map.retired_len()
+    }
+
+    /// Butler: the channel's PDC preroll.
+    pub(crate) fn set_preroll(&self, preroll: u64) {
+        self.preroll.store(preroll, Ordering::Relaxed);
+    }
+
+    /// Butler: seek a free-running reader to `target`.
+    pub(crate) fn request_seek(&self, target: u64) {
+        self.seek_target.store(target, Ordering::Relaxed);
+        self.seek_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Take the ring's one live reader, `placed` when it is a voice that
+    /// follows a clock. Control thread.
+    pub(crate) fn take_reader(&self, placed: bool) -> Result<PosReader, TakeVoiceError> {
+        let reader = self
+            .reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .ok_or(TakeVoiceError::ReaderTaken)?;
+        self.placed.store(placed, Ordering::Release);
+        Ok(reader)
+    }
+
+    /// Whether the live reader follows a clock.
+    pub(crate) fn placed(&self) -> bool {
+        self.placed.load(Ordering::Acquire)
+    }
+
+    /// Window shrinks and moves so far (the ring's generation).
+    #[cfg(test)]
+    pub(crate) fn moves(&self) -> u64 {
+        self.core.generation()
+    }
+}
+
+/// The audio thread's handle on a region's ring.
+pub(crate) type SharedReader = Arc<Ring>;
+
+/// The butler's end of a region's ring: the writer, its source (a disk
+/// decoder, or the file resident whole) and what it holds (`loops::Content`).
+/// Butler-thread-local.
+pub(crate) struct RegionOut {
+    ring: Arc<Ring>,
+    /// The ring's one writer.
+    writer: PosWriter,
+    content: Content,
+    /// Incremental disk decoder for real streaming. `None` means this region
+    /// reads the file resident whole (`resident`).
+    #[cfg(codec)]
+    decoder: Option<FileIn>,
+    /// Whether the decoder's current fault has been logged, so a stream that
+    /// keeps reading past it logs once.
+    #[cfg(codec)]
+    fault_logged: bool,
+    /// The file decoded whole, for a format that cannot seek. Held here, not
+    /// only in the LRU cache, so a file too large to cache still streams.
+    resident: Option<Arc<Wave>>,
+}
+
+impl RegionOut {
+    /// The shared ring.
+    pub(crate) fn ring(&self) -> &Arc<Ring> {
+        &self.ring
+    }
+
+    /// What the ring holds.
+    pub(crate) fn content(&self) -> &Content {
+        &self.content
+    }
+
+    pub(crate) fn set_content(&mut self, content: Content) {
+        self.content = content;
+    }
+
+    /// Install an incremental disk decoder.
+    #[cfg(codec)]
+    pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
+        self.decoder = Some(decoder);
+    }
+
+    /// Hold the file resident whole (a format that cannot seek).
+    pub(crate) fn set_resident(&mut self, wave: Arc<Wave>) {
+        self.resident = Some(wave);
+    }
+
+    /// Declared ring width — the file's own layout.
+    pub(crate) fn channels(&self) -> ChannelLayout {
+        self.ring.channels
+    }
+
+    /// Frames held ahead of where the reader plays.
+    pub(crate) fn buffered(&self) -> Samples {
+        let (from, to) = self.window();
+        let play = self.play().max(from);
+        Samples(to.saturating_sub(play) as usize)
+    }
+
+    /// Slots, in frames.
+    pub(crate) fn frames(&self) -> usize {
+        self.writer.frames()
+    }
+
+    /// The positions held.
+    pub(crate) fn window(&self) -> (u64, u64) {
+        let w = self.writer.window();
+        (w.from, w.to)
+    }
+
+    /// Where the reader plays (or this writer said it would).
+    pub(crate) fn play(&self) -> u64 {
+        self.writer.play()
+    }
+
+    /// One past the last position the block in flight may read.
+    pub(crate) fn in_flight_end(&self) -> u64 {
+        self.writer.in_flight_end()
+    }
+
+    /// Drop every position at and past `x` (a rewrite from `x` follows).
+    pub(crate) fn retract_to(&mut self, x: u64) {
+        self.writer.retract_to(x);
+    }
+
+    /// Drop every position below `y` (so a reader that jumps back there
+    /// moves the window rather than read what lies below).
+    pub(crate) fn raise_from(&mut self, y: u64) {
+        self.writer.raise_from(y);
+    }
+
+    /// An empty window at `start` (the reader jumped outside it).
+    pub(crate) fn reset(&mut self, start: u64) {
+        self.writer.reset(start);
+    }
+
+    /// Where the reader plays, before one has said (a stream's start, a
+    /// free-running reader's seek), so the window is filled there.
+    pub(crate) fn set_play(&mut self, play: u64) {
+        self.writer.set_play(play);
+    }
+
+    /// The file this region streams.
+    pub(crate) fn file_path(&self) -> &Path {
+        &self.ring.file_path
+    }
+
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.ring.region_id
+    }
+
+    /// Read file frames `at..` into `out` (flat, the ring's width), from the
+    /// decoder or the resident file; zero past the end. `false` when the
+    /// file could not be read there: a decode fault is logged once and the
+    /// frames read before it are kept.
+    pub(crate) fn read_file(&mut self, at: usize, out: &mut [f32]) -> bool {
+        let channels = self.ring.channels;
+        #[cfg(codec)]
+        if let Some(decoder) = self.decoder.as_mut() {
+            let ch = self.writer.stride();
+            if decoder.cursor() != Samples(at) && decoder.seek(Samples(at)).is_err() {
+                out.fill(0.0);
+                return false;
+            }
+            // Frames read before a fault are kept; the rest is silence.
+            let got = decoder
+                .fill_sequential_interleaved(out)
+                .map_or(0, Samples::get);
+            out[got * ch..].fill(0.0);
+            let Some(fault) = decoder.error() else {
+                self.fault_logged = false;
+                return true;
+            };
+            if !self.fault_logged {
+                self.fault_logged = true;
+                tracing::warn!(
+                    "decode fault at frame {at} of {}: {fault}; the stream plays silence from there",
+                    self.ring.file_path.display()
+                );
+            }
+            return false;
+        }
+        match self.resident.as_deref() {
+            Some(wave) => {
+                super::loops::read_wave(wave, at, out, channels);
+                true
+            }
+            None => {
+                out.fill(0.0);
+                false
+            }
+        }
+    }
+
+    /// Fill `out` with what straight positions `pos..` hold under `mapping`,
+    /// reading the file.
+    pub(crate) fn fill_with(&mut self, mapping: &Mapping, pos: u64, out: &mut [f32]) {
+        let ch = self.writer.stride();
+        mapping.fill(pos, out, ch, &mut |at, run| {
+            let _ = self.read_file(at, run);
+        });
+    }
+
+    /// Append frames at the window's end, returning how many frames
+    /// landed: short where a slot the reader's block in flight may read would
+    /// be written, or where the ring is full ahead of the reader
+    /// (`PosRing::push`). A trailing partial frame is ignored.
+    pub fn push_interleaved(&mut self, samples: &[f32]) -> Samples {
+        Samples(self.writer.push(samples))
+    }
+}
+
+/// The ring is the engine's [`AudioOut`](tutti_core::AudioOut) shape: flat
+/// interleaved in, a runtime [`ChannelLayout`] for the width, counts in
+/// frames. `write` appends at the window's end; the inherent
+/// [`push_interleaved`](RegionOut::push_interleaved) stays the one production
+/// callers use, because it returns what landed.
+impl tutti_core::AudioOut<f32> for RegionOut {
+    fn layout(&self) -> ChannelLayout {
+        self.ring.channels
+    }
+
+    /// Append frames, discarding the landed count.
+    fn write(&mut self, interleaved: &[f32]) {
+        let _ = self.push_interleaved(interleaved);
+    }
+
+    /// No-op: the ring is live, never a stream that gets closed.
+    fn finalize(self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Constructor namespace for a region's ring.
+pub(crate) struct RegionBuffer;
+
+impl RegionBuffer {
+    /// Build a region's ring of `capacity` frames of `channels` each
+    /// (floored at 4096 frames and one channel, capped at
+    /// [`MAX_POS_RING_FRAMES`]), holding nothing, read as an unlooped forward
+    /// stream of a file `len` frames long (`usize::MAX` for a length not
+    /// known). Returns the writer and the reader's handle.
+    #[cfg(test)]
+    pub(crate) fn with_capacity(
+        region_id: RegionId,
+        file_path: PathBuf,
+        capacity: usize,
+        channels: impl Into<ChannelLayout>,
+    ) -> (RegionOut, SharedReader) {
+        Self::for_file(region_id, file_path, capacity, channels, usize::MAX)
+    }
+
+    /// `RegionBuffer::with_capacity` for a file `len` frames long.
+    pub(crate) fn for_file(
+        region_id: RegionId,
+        file_path: PathBuf,
+        capacity: usize,
+        channels: impl Into<ChannelLayout>,
+        len: usize,
+    ) -> (RegionOut, SharedReader) {
+        let channels = nonempty(channels.into());
+        let stride = channels.count() as usize;
+        let frames = capacity.clamp(4096, MAX_POS_RING_FRAMES);
+        let mapping = Mapping::plain(len);
+        let (writer, reader) = PosRing::new(frames, stride, HISTORY_FRAMES);
+        let ring = Arc::new(Ring {
+            region_id,
+            file_path,
+            channels,
+            core: writer.watch(),
+            reader: Mutex::new(Some(reader)),
+            preroll: AtomicU64::new(0),
+            origin: AtomicU64::new(0),
+            seek_epoch: AtomicU64::new(0),
+            seek_target: AtomicU64::new(0),
+            fade_frames: AtomicU64::new(0),
+            map: Arc::new(ArcLend::new(RingMap::plain(Arrangement::plain(len), 0))),
+            placed: AtomicBool::new(false),
+        });
+        let writer = RegionOut {
+            ring: Arc::clone(&ring),
+            writer,
+            content: Content::new(mapping),
+            #[cfg(codec)]
+            decoder: None,
+            #[cfg(codec)]
+            fault_logged: false,
+            resident: None,
+        };
+        (writer, ring)
+    }
+
+    /// Point a fresh ring at `start`: the reader there and the window from
+    /// just behind it (the taps a position reads one frame back), a
+    /// free-running reader's origin, the preroll and the seek fade set.
+    pub(crate) fn place(
+        writer: &mut RegionOut,
+        start: u64,
+        origin: u64,
+        preroll: u64,
+        fade_frames: usize,
+    ) {
+        writer.reset(start.saturating_sub(HISTORY_FRAMES));
+        writer.set_play(start);
+        let ring = &writer.ring;
+        ring.origin.store(origin, Ordering::Relaxed);
+        ring.preroll.store(preroll, Ordering::Relaxed);
+        ring.fade_frames
+            .store(fade_frames as u64, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_core::AudioOut;
+
+    /// `frames` frames at `channels`, sample `c` of frame `f` carrying
+    /// `f * channels + c`, so a rotation or a tear is a wrong value.
+    fn indexed(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels).map(|i| i as f32).collect()
+    }
+
+    fn ring(capacity: usize, channels: usize) -> (RegionOut, SharedReader) {
+        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), capacity, channels)
+    }
+
+    /// Frames written through the `AudioOut` trait land by position,
+    /// every channel in its place at six channels, a trailing partial frame
+    /// dropped. (The ring's own protocol is `PosRing`'s tests and loom model.)
+    ///
+    /// Mutation (run): `write` pushing nothing → fails.
+    #[test]
+    fn frames_written_through_the_trait_land_by_position() {
+        let (mut writer, ring) = ring(64, 6);
+        assert_eq!(AudioOut::layout(&writer), ChannelLayout::from(6u16));
+        let mut data = indexed(12, 6);
+        data.extend_from_slice(&[99.0, 99.0, 99.0]);
+        writer.write(&data);
+        assert_eq!(ring.window(), (0, 12), "twelve whole frames");
+        let mut reader = ring.take_reader(false).expect("the ring's reader");
+        let claim = reader.claim(0, [(0, 12), (0, 0)]);
+        for s in 0..12u64 {
+            for c in 0..6 {
+                assert_eq!(claim.sample(s, c), (s as usize * 6 + c) as f32, "frame {s}");
+            }
+        }
+    }
+
+    /// A ring holds a whole number of frames: the capacity asked for,
+    /// floored at 4096 and capped at what the window word can say.
+    #[test]
+    fn a_ring_holds_a_whole_number_of_frames() {
+        assert_eq!(ring(10, 2).1.frames(), 4_096);
+        assert_eq!(ring(10_000, 6).1.frames(), 10_000);
+        assert_eq!(ring(usize::MAX >> 8, 1).1.frames(), MAX_POS_RING_FRAMES);
+    }
+
+    /// A ring serves one live reader: it
+    /// has one `PosReader` (not `Clone`), and taking a second is refused,
+    /// naming why.
+    ///
+    /// Mutation (run): the slot put back after a take (`replace` of what was
+    /// taken) — the nearest a caller can come to handing out two, since the
+    /// reader cannot be cloned → fails.
+    #[test]
+    fn a_ring_serves_one_live_reader() {
+        let (_writer, ring) = ring(64, 2);
+        assert!(ring.take_reader(true).is_ok());
+        assert!(ring.placed());
+        assert_eq!(
+            ring.take_reader(false).map(|_| ()),
+            Err(TakeVoiceError::ReaderTaken)
+        );
+        assert!(ring.placed(), "a refused take changes nothing");
+    }
+
+    /// `read_file` reports a damaged file. The repo's FLAC fixture cut to
+    /// its first 90% ends short of its frame count; `read_file` keeps the
+    /// frames decoded before the cut, zero-fills the rest, returns `false` and
+    /// sets the `fault_logged` flag (the log line itself is not captured). A
+    /// read at frame 0 afterwards clears the flag. Called directly, not
+    /// through a butler step or a voice.
+    ///
+    /// Mutation (run): discarding `got` on a fault (zero-filling all of
+    /// `out`, as the old `Err` arm did) fails the kept-frames assertion.
+    #[test]
+    fn a_damaged_file_keeps_its_frames_and_reports_the_fault() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/audio/stereo.flac");
+        let bytes = std::fs::read(source).expect("fixture");
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("cut.flac");
+        std::fs::write(&path, &bytes[..bytes.len() * 9 / 10]).expect("write");
+
+        let decoder = FileIn::open(&path).expect("a cut file still opens");
+        let total = decoder.total_frames().expect("flac reports a length").get();
+        let (mut writer, _ring) = ring(4096, 2);
+        writer.set_decoder(decoder);
+
+        let mut out = vec![1.0f32; total * 2];
+        assert!(!writer.read_file(0, &mut out), "the cut is a fault");
+        assert!(writer.fault_logged);
+        let kept = out
+            .chunks(2)
+            .rposition(|f| f != [0.0, 0.0])
+            .map_or(0, |i| i + 1);
+        assert!(kept > 1000 && kept < total, "kept {kept} of {total} frames");
+        assert!(
+            out[kept * 2..].iter().all(|&s| s == 0.0),
+            "silence after the fault"
+        );
+
+        // A seek back to good frames clears the fault, and reading resumes.
+        let mut head = vec![0.0f32; 512 * 2];
+        assert!(writer.read_file(0, &mut head));
+        assert!(!writer.fault_logged);
+    }
+}

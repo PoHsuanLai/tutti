@@ -18,11 +18,9 @@ cd "$(dirname "$0")/.."
 
 # _archive/ is excluded by design: those crates are kept as SPEC for rebuilds and
 # reference APIs that no longer exist. They are hidden from cargo (Cargo.toml ->
-# .txt) and must not gate a build. Vendored trees are excluded because they are
-# third-party forks we do not restyle.
+# .txt) and must not gate a build.
 readonly EXCLUDES=(
   --exclude-dir=_archive
-  --exclude-dir=vendor
   --exclude-dir=target
   --exclude-dir=.git
 )
@@ -34,7 +32,7 @@ echo "==> chained tutti_X::tutti_Y:: paths"
 # is required so a bare `pub use tutti_types;` (the declaration being removed,
 # which lives in exactly one place per crate) is not itself reported here.
 if chained=$(grep -rnE "tutti_[a-z0-9_]+::tutti_[a-z0-9_]+::" \
-      --include='*.rs' --include='*.md' "${EXCLUDES[@]}" crates/ 2>/dev/null); then
+      --include='*.rs' --include='*.md' "${EXCLUDES[@]}" crates/ testing/ 2>/dev/null); then
   echo "$chained"
   count=$(printf '%s\n' "$chained" | wc -l | tr -d ' ')
   echo "FAIL: $count chained path(s). Import from the owning crate's root instead."
@@ -74,7 +72,7 @@ if [ "$#" -ge 2 ]; then
   echo "==> redundant ${crate}::<module>:: paths"
   alt=$(IFS='|'; echo "$*")
   if hits=$(grep -rnE "${crate}::(${alt})::" \
-        --include='*.rs' --include='*.md' "${EXCLUDES[@]}" crates/ 2>/dev/null); then
+        --include='*.rs' --include='*.md' "${EXCLUDES[@]}" crates/ testing/ 2>/dev/null); then
     echo "$hits"
     count=$(printf '%s\n' "$hits" | wc -l | tr -d ' ')
     echo "FAIL: $count path(s) through a privatized module. Use ${crate}::<Item>."

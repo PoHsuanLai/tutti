@@ -1,0 +1,62 @@
+[package]
+name = "tutti-vst2-host"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "VST2 plugin hosting (audio + native editor) via the vst-tutti crate"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-vst2-host"
+readme = "README.md"
+keywords = ["vst2", "vst", "audio", "plugin", "host"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The two plugin→host callback queues. `ArrayQueue`, not `crossbeam-channel`:
+# `automate` and `process_events` are invoked from inside the plugin's
+# `processReplacing`, so their push runs on the audio thread. An unbounded
+# channel allocates a list node there per event and can never report
+# back-pressure; a bounded lock-free queue does neither.
+# `Pod` for the plain-bytes mirror of `TimeInfo` the transport cell holds.
+bytemuck = { version = "1.16", features = ["derive"] }
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+parking_lot = "0.12"
+thiserror = "2"
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+# `SeqWriter` / `SeqReader`, the sequence lock the transport snapshot lives in.
+tutti-types = { path = "../tutti-types" }
+# Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
+# (get_sample_rate / size_window / io_changed / latency / process_level /
+# automation_state) that upstream vst-rs's host_dispatch swallowed.
+vst-tutti = { path = "../vst-tutti" }
+
+[build-dependencies]
+# Shared with the other three crates that locate a reference plugin
+# cdylib; see that crate's docs for the newest-wins and never-skip rules.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+
+[dev-dependencies]
+# The shared resolver; see its docs for the newest-wins rule.
+tutti-fixture-resolve = { path = "../../testing/tutti-fixture-resolve" }
+assert_no_alloc = { version = "1", default-features = false }
+# Used by the conformance harness to re-open the reference plugin and read
+# its capture. The test cannot use the linked rlib's globals for this: the
+# rlib and the cdylib are separate images with separate statics, and the host
+# only ever touches the cdylib's. The rlib is still linked, for the shared
+# `#[repr(C)]` type definitions.
+libloading = "0.8"
+tempfile = "3"
+# The reference plugin the conformance harness loads. As a dev-dependency,
+# Cargo builds its cdylib in the same `cargo test` invocation (no nested
+# cargo / no target-dir-lock deadlock — see build.rs); the rlib side gives
+# the test the `ProcessCapture` type and the misbehaviour switches directly
+# instead of hand-mirroring them across the dlopen seam.
+tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

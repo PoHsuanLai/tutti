@@ -1,0 +1,36 @@
+[package]
+name = "tutti-midi-runtime"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "MIDI runtime for the Tutti audio engine: MIDI graph nodes (input, queue, clip, clock, out), MPE ingest, MIDI-CI, SysEx"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-runtime"
+readme = "README.md"
+keywords = ["audio", "midi", "real-time", "daw"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
+tutti-core = { version = "0.0.1", path = "../tutti-core", default-features = false, features = ["midi"] }
+# The graph's node contract and event ports: `MidiClipNode` is an event
+# source node. No cycle: tutti-graph names no MIDI crate.
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+
+# Lock-free / concurrent
+atomic_float = "1.1"
+crossbeam-queue = "0.3"
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

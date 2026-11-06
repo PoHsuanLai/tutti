@@ -68,7 +68,7 @@ cries wolf gets deleted.
 
 **`git clone` without `--recursive` leaves the VST3 SDK empty.** It is three
 Steinberg repos pinned at `v3.8.0_build_66` under
-`crates/plugin/vendor/vst3-sdk/`. `tutti-vst3-host` compiles its own reference
+`vendor/vst3-sdk/`. `tutti-vst3-host` compiles its own reference
 plugin, `audio-probe`, against them — which is what lets the VST3 suites run on a
 bare checkout instead of needing `VST3_SDK_DIR` to point at an external SDK. The
 build script asserts with `git submodule update --init --recursive` when they are

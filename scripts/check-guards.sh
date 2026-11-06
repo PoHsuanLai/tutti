@@ -85,7 +85,7 @@ def guarded(body):
 
 
 bad, seen = [], 0
-for path in glob.glob("crates/plugin/formats/tutti-clap-ffi/src/**/*.rs", recursive=True):
+for path in glob.glob("crates/tutti-clap-ffi/src/**/*.rs", recursive=True):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s
@@ -94,7 +94,7 @@ for path in glob.glob("crates/plugin/formats/tutti-clap-ffi/src/**/*.rs", recurs
         if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
             bad.append((path, m.group(1)))
 
-for path in glob.glob("crates/plugin/formats/tutti-vst3-ffi/src/com/*.rs"):
+for path in glob.glob("crates/tutti-vst3-ffi/src/com/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s

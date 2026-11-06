@@ -3,7 +3,7 @@
 # The VST3 SDK is three Steinberg submodules, and this asserts each one is at
 # the commit the repo documents as the `v3.8.0_build_66` release. Three places
 # state that pin in prose — `.gitmodules`, `CLAUDE.md`, and the `VENDORED_SDK`
-# doc comment in `crates/plugin/formats/tutti-vst3-host/build.rs` — and prose
+# doc comment in `crates/tutti-vst3-host/build.rs` — and prose
 # cannot notice when a submodule bump moves the tree out from under it. This is
 # the only check that can.
 #
@@ -33,9 +33,9 @@ cd "$(dirname "$0")/.."
 # the SDK means editing these three lines in the same commit as the submodule
 # move; that is the point of the gate, not an inconvenience it imposes.
 readonly PINS=(
-  "crates/plugin/vendor/vst3-sdk/base           3d2e82f8e6bff59c1d8b7a27491a29c2286b5206"
-  "crates/plugin/vendor/vst3-sdk/pluginterfaces 31d6eeba6daaa3e2a8bfbe3e7a90ca0b7fbfbc1c"
-  "crates/plugin/vendor/vst3-sdk/public.sdk     a3911a4615dabbfdfd9d181ee26b05c70c289a95"
+  "vendor/vst3-sdk/base           3d2e82f8e6bff59c1d8b7a27491a29c2286b5206"
+  "vendor/vst3-sdk/pluginterfaces 31d6eeba6daaa3e2a8bfbe3e7a90ca0b7fbfbc1c"
+  "vendor/vst3-sdk/public.sdk     a3911a4615dabbfdfd9d181ee26b05c70c289a95"
 )
 
 status=0

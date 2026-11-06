@@ -249,7 +249,7 @@ bench-smoke:
 # criterion's flags mean nothing to it, and a full run takes minutes. Its
 # output is the Markdown that `crates/arc-lend/BENCHMARKS.md` is built from;
 # record a run with
-#   just bench-compare | tee crates/arc-lend/compare/results/<date>-<host>.txt
+#   just bench-compare | tee testing/arc-lend-compare/results/<date>-<host>.txt
 # `--test` is the smoke run (tiny counts; proves it runs, measures nothing).
 bench-compare *ARGS:
     cargo bench --locked -p arc-lend-compare --bench compare -- {{ARGS}}
@@ -338,7 +338,7 @@ check-paths *ARGS:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --locked --workspace --all-targets --exclude rustysynth-tutti -- -D warnings
+    cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
 
 # Typecheck and lint the Windows cfg paths, from Linux or macOS.
 #
@@ -374,7 +374,7 @@ check-windows:
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
-    win --workspace --all-targets --exclude rustysynth-tutti \
+    win --workspace --all-targets --exclude tutti-rustysynth \
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
@@ -389,14 +389,14 @@ check-windows:
 # breaks in a private item rots until someone reads the private docs.
 doc:
     RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps \
-        --exclude rustysynth-tutti
+        --exclude tutti-rustysynth
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
     scripts/check-doc-features.sh
     # The docs.rs build: nightly, `--cfg docsrs`, so `doc_cfg` must parse and
     # every feature badge must render. The nightly is dated, as in CI.
     RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps \
-        --exclude rustysynth-tutti
+        --exclude tutti-rustysynth
 
 # Clippy with `--cfg loom` on the crates that carry loom models. The flag swaps
 # the atomics and constants those crates use, so code that is clean in a normal
@@ -423,10 +423,10 @@ verify-audio OUT="/tmp/tutti-verify":
     cargo run --locked --release -p tutti-dsp --example render_analysis_cases  -- {{OUT}}/analysis
     cargo run --locked --release -p tutti-polysynth --example render_synth_cases     -- {{OUT}}/synth
     uv sync --quiet
-    uv run python crates/dsp/tutti-sampler/examples/verify_sampler.py   {{OUT}}/sampler
-    uv run python crates/core/tutti-export/examples/verify_export.py    {{OUT}}/export
-    uv run python crates/dsp/tutti-dsp/examples/verify_analysis.py {{OUT}}/analysis
-    uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
+    uv run python crates/tutti-sampler/examples/verify_sampler.py   {{OUT}}/sampler
+    uv run python crates/tutti-export/examples/verify_export.py    {{OUT}}/export
+    uv run python crates/tutti-dsp/examples/verify_analysis.py {{OUT}}/analysis
+    uv run python crates/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
 ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-features check-loom test test-features test-editor test-doc doc

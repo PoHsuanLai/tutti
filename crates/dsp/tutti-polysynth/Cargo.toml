@@ -35,7 +35,7 @@ tutti-graph = { path = "../../core/tutti-graph" }
 # The SVF and ladder coefficient functions. The voice bank runs those two
 # filters' topologies across SIMD lanes and derives its coefficients from the
 # same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
-tutti-nodes = { path = "../tutti-nodes", default-features = false }
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 # `f32x8` lanes for the voice bank.
 wide = { version = "1.6", default-features = false }
@@ -44,6 +44,10 @@ wide = { version = "1.6", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]
+# The filter nodes the bank is compared against (`bank.rs`), and the mixing and
+# lane nodes of the integration tests. No cycle: `tutti-nodes` names no
+# synth crate.
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # The graph contract's test harness. No cycle: `tutti-graph` names no tutti
 # crate but `tutti-types`.
 tutti-graph = { path = "../../core/tutti-graph", features = ["contract"] }

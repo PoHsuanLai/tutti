@@ -4588,6 +4588,7 @@ dependencies = [
  "criterion",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-dsp",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",

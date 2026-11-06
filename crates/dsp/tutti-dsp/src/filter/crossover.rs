@@ -207,7 +207,8 @@ impl State {
 /// same frequencies.
 ///
 /// ```
-/// use tutti_nodes::{Crossover, Hz};
+/// use tutti_dsp::Crossover;
+/// use tutti_types::Hz;
 ///
 /// let mut xo = Crossover::new(&[Hz(200.0), Hz(2_000.0)], 48_000.0).unwrap();
 /// assert_eq!(xo.bands(), 3);

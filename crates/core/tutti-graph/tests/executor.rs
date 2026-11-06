@@ -353,40 +353,26 @@ fn queue_two_outputs(ed: &mut Editor) {
     ed.commit().expect("commits");
 }
 
-/// `outputs` is sized for the plan the caller last saw, and a commit queued
-/// since is the plan that renders (`process` applies it first): a caller that
-/// passes more slices than the plan needs gets the plan's channels and leaves
-/// the rest alone, with no plan before (the engine's CI crash) and after a
-/// narrowing commit.
+/// `render_applied` does not apply: a commit queued before it waits for the
+/// next block, whatever its width; `process` applies it first.
 ///
-/// The engine-level interleaving is `engine::tests::a_commit_between_settle_and_render_renders_at_its_own_width`;
-/// this pins the executor half of it.
-///
-/// Mutation (run): in `process_with_changes`, make the ordinary path demand
-/// `outputs.len() == plan.global_outputs()` → the first render fails.
+/// Mutation (run): have `render_applied` call `apply_pending` → the first
+/// render writes the new plan's channels → fails.
 #[test]
-fn a_commit_applied_by_process_may_be_wider_than_the_outputs_were_sized_for() {
+fn render_applied_leaves_a_queued_commit_for_the_next_block() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
-    assert!(exec.plan().is_none());
     queue_two_outputs(&mut ed);
-    // Four slices for a plan that arrives with two.
-    let mut bufs = vec![vec![7.0f32; 16]; 4];
-    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(16, &Transport::default(), &[], &mut refs);
-    assert_eq!(exec.plan().map(|p| p.global_outputs()), Some(2));
-    assert!(bufs[0].iter().all(|&x| x == 0.5));
-    assert!(bufs[1].iter().all(|&x| x == 0.25));
-    assert!(bufs[2..].iter().flatten().all(|&x| x == 7.0), "untouched");
-
-    // Narrowing to one output in the gap.
-    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
-    ed.commit().expect("commits");
-    let mut bufs = vec![vec![7.0f32; 16]; 4];
-    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
-    exec.process(16, &Transport::default(), &[], &mut refs);
-    assert_eq!(exec.plan().map(|p| p.global_outputs()), Some(1));
-    assert!(bufs[0].iter().all(|&x| x == 0.5));
-    assert!(bufs[1..].iter().flatten().all(|&x| x == 7.0), "untouched");
+    exec.render_applied(
+        16,
+        &Transport::default(),
+        &tutti_graph::TransportChanges::NONE,
+        &[],
+        &mut [],
+    );
+    assert!(exec.plan().is_none(), "still queued");
+    let out = render(&mut exec, 16, 2);
+    assert!(out[0].iter().all(|&x| x == 0.5));
+    assert!(out[1].iter().all(|&x| x == 0.25));
 }
 
 /// Fewer slices than the plan has outputs is a caller bug: a debug build
@@ -397,7 +383,7 @@ fn a_commit_applied_by_process_may_be_wider_than_the_outputs_were_sized_for() {
 /// bounds" in release, a different message in debug → fails.
 #[test]
 #[cfg(debug_assertions)]
-#[should_panic(expected = "output slices for a plan with 2 global outputs")]
+#[should_panic(expected = "for a plan with 0 global inputs and 2 outputs")]
 fn too_few_output_slices_assert_in_debug() {
     let (mut ed, mut exec) = Editor::new(prepare(64));
     queue_two_outputs(&mut ed);
@@ -1177,4 +1163,33 @@ fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
     assert_eq!(ed.in_flight(), 3, "a latency change sends");
     ed.commit().expect("commits");
     assert_eq!(ed.in_flight(), 3, "and once sent, is unchanged again");
+}
+
+/// An input the plan reads, with no slice for it: the same caller bug as a
+/// short `outputs`, caught before `global_in` indexes `inputs`.
+///
+/// Mutation (run): drop the `inputs.len()` half of the guard → "index out of
+/// bounds" in `global_in` → fails.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "for a plan with 1 global inputs and 1 outputs")]
+fn too_few_input_slices_assert_in_debug() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.spec_mut().topology.inputs = tutti_types::ChannelLayout::MONO;
+    ed.spec_mut().topology.outputs = vec![Source::Global(0)];
+    ed.commit().expect("commits");
+    render(&mut exec, 16, 1);
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn too_few_input_slices_render_silence_in_release() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.spec_mut().topology.inputs = tutti_types::ChannelLayout::MONO;
+    ed.spec_mut().topology.outputs = vec![Source::Global(0)];
+    ed.commit().expect("commits");
+    let out = render(&mut exec, 16, 1);
+    assert!(out[0].iter().all(|&x| x == 0.0));
 }

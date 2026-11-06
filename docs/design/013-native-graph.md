@@ -4752,6 +4752,20 @@ The first three are one class of bug, misreported latency. The graph's
 `Shape { latency }` is declared, separately from the DSP, which makes the
 class impossible; each `route` was fixed to report processing latency only.
 
+#### The engine sized a block from a plan the executor then replaced
+
+`process` applies queued commits first, so a caller that sized a block from
+`Executor::plan` / `prepare` (output width, block bound, rate) and then called
+`process` rendered with whatever a commit sent in between installed: a wider
+plan indexed an empty or short `outputs` (the macOS CI abort), a smaller
+`MaxBlock` from a re-prepare's resume tripped the block-length assert, and a
+narrower plan folded stale scratch. The contract is now: `Executor::render_applied`
+renders the plan, prepare and rate the executor holds without applying, and
+`Engine::settle` applies once and sizes from the result, so a later commit
+waits for the next block. `outputs` and `inputs` need a slice per global channel
+of the plan; fewer is a caller bug (a `debug_assert`, silence in release). The
+regressions are `engine::tests::*_between_settle_and_render_*`.
+
 ### Verdicts
 
 **Becomes a compiler op, part of `Env`, or a runtime op. Delete the node:**

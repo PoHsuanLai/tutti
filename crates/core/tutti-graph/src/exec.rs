@@ -1283,21 +1283,12 @@ impl Executor {
     /// Renders one block of `frames` into `outputs`, reading `inputs`.
     ///
     /// `inputs` must have a slice per global input channel the plan reads, and
-    /// `outputs` at least one per global output channel; every slice at least
-    /// `frames` long. Applies queued commits first
-    /// ([`apply_pending`](Self::apply_pending)), so "the plan" is the one
-    /// installed by that call: a commit sent after the caller last looked at
-    /// [`plan`](Self::plan) may already be it. A caller that sizes `outputs`
-    /// from the plan therefore passes more than it needs and reads
-    /// [`plan`](Self::plan) again afterwards. Channels past the plan's width
-    /// are left as they were, except when the block renders silence (no plan,
-    /// or between a re-prepare's commits), which clears every slice. With
-    /// none queued it never allocates. Marks the thread with
+    /// `outputs` one per global output channel; every slice at least `frames`
+    /// long. Applies queued commits first ([`apply_pending`](Self::apply_pending));
+    /// with none queued it never allocates. A caller that sizes the block from
+    /// the executor's plan or prepare applies once itself and renders with
+    /// [`render_applied`](Self::render_applied). Marks the thread with
     /// [`RtScope::enter`] for the duration.
-    ///
-    /// An `outputs` shorter than the plan needs is a caller bug: it panics in
-    /// debug builds, and in release the block renders silence into what was
-    /// given, without running a node.
     ///
     /// # Panics
     ///
@@ -1320,10 +1311,6 @@ impl Executor {
     /// commands resolve against the transport in force where playback
     /// reaches their beat.
     ///
-    /// `inputs` and `outputs` are as for [`process`](Self::process): the plan
-    /// that renders is the one in force after this call's own
-    /// [`apply_pending`](Self::apply_pending).
-    ///
     /// # Panics
     ///
     /// As [`process`](Self::process), and if a change is not inside the
@@ -1336,11 +1323,40 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        self.apply_pending();
+        self.render_applied(frames, transport, changes, inputs, outputs);
+    }
+
+    /// As [`process_with_changes`](Self::process_with_changes), without
+    /// applying queued commits: the block renders the plan, prepare and rate
+    /// the executor holds now, and a commit sent later waits for the next
+    /// block.
+    ///
+    /// For a caller that reads [`plan`](Self::plan) or
+    /// [`prepare`](Self::prepare) to size the block (its length, `outputs`)
+    /// and must have them still true when it renders: it calls
+    /// [`apply_pending`](Self::apply_pending) once, sizes from the result and
+    /// renders here. [`process`](Self::process) would apply again, and a
+    /// commit sent in between (a wider plan, a smaller `MaxBlock` from a
+    /// re-prepare's resume) would change what the sizes were read from.
+    ///
+    /// `inputs` and `outputs` must have one slice per global input and output
+    /// channel of the plan. Fewer of either is a caller bug: it panics in debug builds, and in release the
+    /// block renders silence into what was given, running no node.
+    ///
+    /// # Panics
+    ///
+    /// As [`process_with_changes`](Self::process_with_changes).
+    pub fn render_applied(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
         let _rt = RtScope::enter();
         let _ftz = ScopedNoDenormals::new();
-        // Before the bound is checked: a queued resume changes it, and the
-        // first longer block may be the one that arrives with it.
-        self.apply_pending();
         if self.suspended {
             // Between a re-prepare's two commits the units are on the control
             // thread: render silence, for whatever block arrives — the device
@@ -1419,16 +1435,20 @@ impl Executor {
             *frame += Samples(frames);
             return;
         };
-        if outputs.len() < plan.global_outputs() {
+        if outputs.len() < plan.global_outputs() || inputs.len() < usize::from(plan.global_inputs())
+        {
             debug_assert!(
                 false,
-                "{} output slices for a plan with {} global outputs",
+                "{} input and {} output slices for a plan with {} global inputs and {} outputs",
+                inputs.len(),
                 outputs.len(),
+                plan.global_inputs(),
                 plan.global_outputs()
             );
             for o in outputs.iter_mut() {
                 o[..frames].fill(0.0);
             }
+            commands.observe(&env);
             *frame += Samples(frames);
             return;
         }
@@ -1490,8 +1510,7 @@ impl Executor {
                     max,
                     cap,
                     inputs,
-                    // The claim table is sized for the plan's width.
-                    outputs: &mut outputs[..plan.global_outputs()],
+                    outputs,
                     arena,
                     flags,
                     events,

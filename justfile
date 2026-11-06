@@ -55,8 +55,12 @@ test-doc *ARGS:
     # named here, not left to bevy-tutti's features unifying it in.
     cargo test --locked --doc -p tutti-session --features device {{ARGS}}
 
+# The suites with a release-only half (`debug_assertions` off); CI's release step.
+test-release:
+    cargo nextest run --locked --release -p tutti-types -p arc-lend -p tutti-graph
+
 # Everything.
-test-all: test test-features test-editor test-doc
+test-all: test test-features test-editor test-doc test-release
 
 # Lint the feature-gated code that no other recipe compiles.
 #
@@ -429,4 +433,4 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/dsp/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-features check-loom test test-features test-editor test-doc doc
+ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-features check-loom test test-features test-editor test-doc test-release doc

@@ -16,16 +16,17 @@ are not vendored (`crates/tutti-midi-types/docs/midi2-spec/README.md`).
 - **MIDI's hierarchy.** Transport, UMP Endpoint, Function Block, Group, Channel,
   Note. Devices are modelled as endpoints with function blocks, and every message
   has the scope the specification gives it (§2).
-- **One word type, one message type.** `Ump` is the `Copy` storage, in
-  `tutti-types`. `Message` is a `Copy` enum in `tutti-ump`. `decode` and `encode`
-  are pure, and the only code that knows a bit position (§3).
+- **One word type, one message type.** `tutti-ump` holds `Ump`, the `Copy` storage,
+  and `Message`, a `Copy` enum, with `decode` and `encode`: pure, and the only code
+  that knows a bit position. It has no tutti dependency, and `tutti-graph` depends
+  on it. MIDI vocabulary leaves `tutti-types` (§3).
 - **Translation at the edge.** MIDI 1.0 to MIDI 2.0 and MPE happen once, in a
   stateful `Translator` per group and channel at the input edge. Reading never
   changes a message's meaning (§4).
 - **Connections as a state machine.** M2-100's connection steps are a no-I/O
   `Connection`, driven by tests with no device (§5).
 - **Crates follow the layers** (§6).
-- **`midi2` becomes private, then optional** (§7).
+- **`midi2` becomes a test-only oracle** (§7).
 - **Events are not silently lost.** Capacity follows the block size, note-offs
   have priority and are retried, drops are counted exactly, and an export reports
   them (§8).
@@ -96,7 +97,7 @@ Three choices differ from the specification on purpose:
 ## 3. `Ump` and `Message`
 
 ```rust
-// tutti-types. tutti-graph may depend on this crate and no other.
+// tutti-ump. No tutti dependency, so tutti-graph can use it.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable)]
 pub struct Ump([u32; 4]);
@@ -109,11 +110,14 @@ impl Ump {
 
 The graph's `EventKind::Midi` holds this `Ump`. Its doc says the graph never
 inspects the words, and `Event` does: `is_note_off` makes that the one place.
-`tutti-types` already depends on `bytemuck`, and `Pod` lets plugin IPC copy a
-block of events as one memory copy.
+`Pod` lets plugin IPC copy a block of events as one memory copy.
+
+`tutti-ump`'s only normal dependency is `bytemuck`, because the graph and everything
+above it compile it. `tutti-types` has no MIDI vocabulary: `MidiGroup`, `MidiChannel`
+and `CCNumber` move here. `tutti_types::Note` stays, because it is a musical pitch
+(class and octave) used by `tutti-dsp`'s analyzers, not a wire value.
 
 ```rust
-// tutti-ump
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Message {
     Utility(Utility),                  // MT 0x0: no group
@@ -142,18 +146,16 @@ Rules:
 - **Unknown stays intact.** `Err(Unknown(ump))` keeps the words, so a message from
   a later revision is forwarded unchanged. Reserved message types and a defined
   message type with an unknown status both land here.
-- **Only the codec shifts bits.** The helpers are private, and a consumer matches
-  on `Message`. The exception is `Ump::words` and `Ump::is_note_off` in
-  `tutti-types`, which the graph needs and `tutti-ump` calls rather than repeats.
+- **Only the codec shifts bits.** The helpers are private. A consumer matches on
+  `Message`, and the graph calls `Ump::is_note_off`.
 - **Hand-written match arms, not a macro or a proc macro.** There are few messages
   and each arm is short. A reader checks them against the specification's table,
   and a macro would hide what they are checking.
 - **Fields are typed.** Note, velocity, group, channel and 7-bit values have a
   public constructor that refuses out-of-range values and a private one masked
   off the wire. A note of 200 cannot be built, where today it silently becomes 72
-  in release. `MidiGroup`, `MidiChannel`, `CCNumber` and `Note` already exist in
-  `tutti-types`, and are reused. Types are added under the rules in CLAUDE.md: a distinct range or
-  a distinct algebra.
+  in release. Types are added under the rules in CLAUDE.md: a distinct range or a
+  distinct algebra.
 
 `NoteId` is an engine concept: `MidiMessage` mints one on decode and the wire has
 none. It moves to whichever node assigns voices, and leaves decoding.
@@ -246,12 +248,12 @@ the core set.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-types` | Vocabulary | `Ump`; already `MidiGroup`, `MidiChannel`, `CCNumber`, `Note` | No tutti crate |
-| `tutti-ump` | Packet | `Message`, codec, field types | `tutti-types` |
+| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
 | `tutti-midi-hardware` | Transport | OS backends, no graph | `tutti-midi-device` |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
+| `tutti-graph` | Graph | Event ports hold `Ump` | `tutti-types`, `tutti-ump` |
 | `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump` |
 
 `tutti-midi-types` goes away. This is not a split for compile time, which is
@@ -274,11 +276,11 @@ API, with 55 uses of that path across crates. Both re-exports go.
 typed view over a buffer (`NoteOn<&[u32]>`). That is typed packets, not this
 design's model, and it does not enforce the name limits in M2-104 §7.1.
 
-- Stage 1 keeps it private to `tutti-ump` for Flex and Stream. Channel voice,
-  System and Utility are written directly.
-- It is also a test-only oracle: random words go through both decoders, and each
-  disagreement is settled by reading the specification.
-- Dropping it for Flex and Stream is decided by what remains after stage 5.
+- `tutti-graph` depends on `tutti-ump`, so `midi2` and its build tree (`fixed`,
+  `typenum`, `half`, `zerocopy`, `derive_more`) cannot be a normal dependency. Every
+  message, including Flex and Stream, is written directly.
+- It stays as a dev-dependency: a test-only oracle where random words go through
+  both decoders, and each disagreement is settled by reading the specification.
 
 `midly` stays in `tutti-midi-file`. `tutti-midi-types` uses it only for about 12
 lines of live MIDI 1.0 parsing, which `tutti-midi-protocol` does itself.
@@ -338,8 +340,9 @@ a behaviour change.
 
 0. **Stop losing events** (§8). No model change needed, and no dependency on the
    others. Behaviour change: fewer drops, a new report.
-1. **`Ump`, `tutti-ump`, tests and benchmarks.** Alongside the old types, nothing
-   else changes. `tutti_graph::Ump` moves to `tutti-types`.
+1. **`tutti-ump`.** First `Ump` and the moved vocabulary, with every caller updated
+   and no behaviour change. Then `Message`, the codec, tests and benchmarks,
+   alongside the old types.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
    host.
 3. **`tutti-midi-protocol`.** Translation to the edge. Behaviour change: §4's spec
@@ -388,8 +391,6 @@ such as reassembled SysEx; that is decided when that code is written.
 
 ## 13. Open questions
 
-- **`Ump` home.** `tutti-types` is vocabulary, and `Ump` with `is_note_off` is about
-  as much as it should hold. Confirm when stage 1 shows what the graph needs.
 - **Device-side MIDI 2.0 on ALSA.** Group-to-port mapping is read from kernel docs,
   and no UMP hardware has been tested. Needs a real device before stage 4 is
   declared done.

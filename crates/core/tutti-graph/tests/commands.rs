@@ -272,6 +272,32 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
     assert_eq!(rig.exec.late_command_count(), 0);
 }
 
+/// A block the executor refuses for too few output slices (release builds;
+/// debug asserts) still moves the transport: a beat command passed inside it
+/// lands late at the next block, rather than reading as a seek that jumped
+/// over it.
+///
+/// Mutation (run, release): drop `commands.observe(&env)` from the
+/// short-outputs path of `render_applied` → the playhead sees a jump, the
+/// command is dropped, the log is empty → fails.
+#[test]
+#[cfg(not(debug_assertions))]
+fn a_beat_passed_in_a_refused_block_lands_late() {
+    let mut rig = rig();
+    rig.schedule(At::Beat(Beat(1.5)), tag(3));
+    // 120 BPM at 48 kHz: a frame is 1 / 24 000 beat.
+    let f = 1.0 / 24_000.0;
+    let at = |frames_from_beat: f64| {
+        Transport::new(true, Bpm(120.0), Beat(1.5 + frames_from_beat * f), None)
+    };
+    rig.block(64, &at(-100.0));
+    // Crosses beat 1.5, with no output slice for a one-output plan.
+    rig.exec.process(64, &at(-36.0), &[], &mut []);
+    rig.block(64, &at(28.0));
+    assert_eq!(rig.exec_log.lock().unwrap().len(), 1);
+    assert_eq!(rig.exec.late_command_count(), 1);
+}
+
 /// Back-pressure: at `COMMAND_CAPACITY` outstanding, `schedule` refuses and
 /// sends nothing; once commands land their credit returns.
 ///

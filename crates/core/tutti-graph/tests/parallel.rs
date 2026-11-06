@@ -368,6 +368,18 @@ fn render_with(
     blocks: &[usize],
     ranges: bool,
 ) -> Vec<Vec<f32>> {
+    render_wide(ed, exec, blocks, ranges, 0)
+}
+
+/// [`render_with`], handing the executor `extra` more output slices than the
+/// plan has outputs, which must stay untouched.
+fn render_wide(
+    ed: &mut Editor,
+    exec: &mut Executor,
+    blocks: &[usize],
+    ranges: bool,
+    extra: usize,
+) -> Vec<Vec<f32>> {
     const CUT: [ParamRange; 4] = [
         ParamRange::new(1.0, 2.0),
         ParamRange::new(0.5, 1.2),
@@ -404,12 +416,16 @@ fn render_with(
         let input: Vec<f32> = (0..n)
             .map(|k| (((frame + k as u64) * 7919) % 211) as f32 / 211.0 - 0.5)
             .collect();
-        let mut chans = vec![vec![0.0f32; n]; outputs];
+        let mut chans = vec![vec![0.0f32; n]; outputs + extra];
         {
             let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
             let t = Transport::new(true, Bpm(120.0), Beat(frame as f64 / 24_000.0), None);
             exec.process(n, &t, &[&input], &mut outs);
         }
+        assert!(
+            chans[outputs..].iter().flatten().all(|&x| x == 0.0),
+            "a slice past the plan's outputs was written"
+        );
         for (a, c) in all.iter_mut().zip(chans) {
             a.extend(c);
         }
@@ -459,6 +475,25 @@ fn the_parallel_render_is_bit_identical_to_the_serial_one() {
                 );
             }
         }
+    }
+}
+
+/// More output slices than the plan has outputs are ignored the same way on
+/// every path: the serial render and each pool render the plan's channels,
+/// bit for bit, and leave the extra slices alone.
+///
+/// Mutation (run): hand `run_block` all of `outputs` instead of
+/// `outputs[..plan.global_outputs()]` → "a claim table of 5 words for 6
+/// elements" on every pool → fails.
+#[test]
+fn extra_output_slices_are_ignored_on_every_path() {
+    let blocks = [MAX_BLOCK, 7, 64];
+    let (mut ed, mut exec) = pair(1);
+    let serial = render_wide(&mut ed, &mut exec, &blocks, false, 1);
+    for workers in WORKERS {
+        let (mut ed, mut exec) = pair(workers);
+        let parallel = render_wide(&mut ed, &mut exec, &blocks, false, 1);
+        assert_eq!(bits(&serial), bits(&parallel), "{workers} workers");
     }
 }
 

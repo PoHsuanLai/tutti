@@ -1005,9 +1005,11 @@ impl GraphRender {
         transport: &GraphTransport,
         changes: &TransportChanges,
     ) {
-        // `settle` installed every queued commit, and a commit applied
-        // inside `process_with_changes` is one sent after it: the next block
-        // sees it. The editor's limits refuse a graph wider than the scratch.
+        // `settle` installed every queued commit, and the executor renders
+        // without applying again: a commit sent since waits for the next
+        // block, so the width, the block bound and the rate read here are the
+        // ones the block renders with. The editor's limits refuse a graph
+        // wider than the scratch.
         let width = self.exec.plan().map_or(0, |p| p.global_outputs());
         debug_assert!(
             width <= MAX_ROOT_CHANNELS,
@@ -1020,7 +1022,7 @@ impl GraphRender {
         let mut outs: [&mut [f32]; MAX_ROOT_CHANNELS] =
             std::array::from_fn(|_| chunks.next().expect("MAX_ROOT_CHANNELS chunks"));
         self.exec
-            .process_with_changes(len, transport, changes, &[], &mut outs[..width]);
+            .render_applied(len, transport, changes, &[], &mut outs[..width]);
         // Published after the block, not by the walk before it: through the
         // block the live playhead still reads its first frame (the last
         // block's end), and it only moves forward.
@@ -1311,5 +1313,153 @@ mod tests {
         assert_eq!((r.silenced, r.blocks), (2, 1));
         engine.load_meter().reset();
         assert_eq!(engine.load_meter().peek().silenced, 0);
+    }
+
+    /// `width` outputs, channel `c` holding `10 * width + c + 1`.
+    struct Ramp(u16);
+
+    impl tutti_graph::Node for Ramp {
+        fn shape(&self) -> tutti_graph::Shape {
+            tutti_graph::Shape::audio(
+                tutti_types::ChannelLayout::EMPTY,
+                tutti_types::ChannelLayout::from_count(self.0),
+            )
+            .with_tail(crate::Tail::Unbounded)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(
+            &mut self,
+            _: &tutti_graph::Cx<'_>,
+            mut io: tutti_graph::Io<'_>,
+        ) -> tutti_graph::Status {
+            for c in 0..usize::from(self.0) {
+                io.output(c).fill((10 * usize::from(self.0) + c + 1) as f32);
+            }
+            tutti_graph::Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+
+    /// Wire the globals to a `Ramp` of `width` at key 1, replacing any, and
+    /// commit.
+    fn rewire(ed: &mut Editor, width: u16) {
+        use tutti_types::NodeKey;
+        use tutti_types::graph::{OutPort, Source};
+        ed.insert(NodeKey(1), "ramp", tutti_graph::Unforkable(Ramp(width)));
+        ed.spec_mut().topology.outputs = (0..width)
+            .map(|port| {
+                Source::Node(OutPort {
+                    node: NodeKey(1),
+                    port,
+                })
+            })
+            .collect();
+        ed.commit().expect("commits");
+    }
+
+    /// One graph block as `process_segment` runs it, with `between` run after
+    /// `settle` and before `render`: the control thread's commit landing in
+    /// the gap.
+    fn block_with(engine: &Engine, out_ch: usize, between: impl FnOnce()) -> Vec<f32> {
+        block_of(engine, out_ch, 8, between)
+    }
+
+    /// [`block_with`] for a block of `want` frames (at most the bound).
+    fn block_of(engine: &Engine, out_ch: usize, want: usize, between: impl FnOnce()) -> Vec<f32> {
+        let mut g = engine.graph.borrow_mut();
+        let (bound, _) = g.settle(&engine.timed);
+        assert!(bound >= want);
+        let len = want;
+        between();
+        let control = Control::read(&engine.settings, g.motion.loop_region());
+        let t = g.clock.begin(&control, true);
+        g.clock.advance(len, &t);
+        let mut out = vec![-9.0f32; len * out_ch];
+        g.render(&mut out, out_ch, 0, len, &t, &TransportChanges::NONE);
+        out
+    }
+
+    /// A commit that lands between `settle` and `render` waits for the next
+    /// block: this block renders the plan `settle` left, at its width, and
+    /// the next one the new plan. Deterministic: the gap is staged, not
+    /// timed. From no plan, then widening.
+    ///
+    /// Mutation (run): `render` calls `process_with_changes` (which applies
+    /// again) with `outs[..width]` → the first block panics (empty slice) →
+    /// fails.
+    #[test]
+    fn a_commit_between_settle_and_render_waits_for_the_next_block() {
+        use std::cell::RefCell;
+        let transport = Transport::new(48_000.0);
+        let (ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let ed = RefCell::new(ed);
+        let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("empty graph");
+        let want = |w: usize| -> Vec<f32> {
+            (0..8)
+                .flat_map(|_| (0..w).map(|c| (10 * w + c + 1) as f32))
+                .collect()
+        };
+        // No plan at `settle`: this block is silent.
+        let got = block_with(&engine, 2, || rewire(&mut ed.borrow_mut(), 2));
+        assert_eq!(got, vec![0.0; 16]);
+        // The next one has it.
+        assert_eq!(block_with(&engine, 2, || {}), want(2));
+        // Widening to 4 in the gap: this block is still 2 wide.
+        assert_eq!(
+            block_with(&engine, 2, || rewire(&mut ed.borrow_mut(), 4)),
+            want(2)
+        );
+        assert_eq!(block_with(&engine, 4, || {}), want(4));
+    }
+
+    /// A narrowing commit in the gap: this block folds the wide plan whole,
+    /// the next the narrow one, with no stale channel in it.
+    ///
+    /// Mutation (run): `render` calls `process_with_changes` → the gap block
+    /// renders the narrow plan, folded at the wide width over stale channels
+    /// → fails.
+    #[test]
+    fn a_narrowing_commit_between_settle_and_render_waits_for_the_next_block() {
+        use std::cell::RefCell;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        rewire(&mut ed, 4);
+        let ed = RefCell::new(ed);
+        let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("within limits");
+        let wide: Vec<f32> = (0..8).flat_map(|_| [41.0, 42.0, 43.0, 44.0]).collect();
+        let narrow: Vec<f32> = (0..8).flat_map(|_| [21.0, 22.0]).collect();
+        assert_eq!(block_with(&engine, 4, || {}), wide);
+        let got = block_with(&engine, 4, || rewire(&mut ed.borrow_mut(), 2));
+        assert_eq!(got, wide);
+        assert_eq!(block_with(&engine, 2, || {}), narrow);
+    }
+
+    /// A re-prepare's resume landing in the gap changes neither the block
+    /// bound nor the rate under the block: this block (settled at 512)
+    /// renders at 512, and the next is bound at 256.
+    ///
+    /// Mutation (run): `render` calls `process_with_changes` → "block of 512
+    /// frames against a max of 256" → fails.
+    #[test]
+    fn a_resume_between_settle_and_render_waits_for_the_next_block() {
+        use std::cell::RefCell;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        rewire(&mut ed, 2);
+        let ed = RefCell::new(ed);
+        let engine = Engine::new(&transport, &mut ed.borrow_mut(), exec).expect("within limits");
+        ed.borrow_mut()
+            .reprepare(Prepare::new(SampleRate(48_000.0), Samples(256)))
+            .expect("shrinks");
+        // The suspend commit lands in this block's `settle`; silent.
+        let _ = block_of(&engine, 2, 512, || {});
+        // The resume is sent after `settle` bound the block at 512.
+        let _ = block_of(&engine, 2, 512, || drop(ed.borrow_mut().collect()));
+        let max = |e: &Engine| e.graph.borrow_mut().exec.prepare().max_block().get();
+        assert_eq!(max(&engine), 512, "not yet applied");
+        let got = block_of(&engine, 2, 256, || {});
+        assert_eq!(max(&engine), 256);
+        let want: Vec<f32> = (0..256).flat_map(|_| [21.0, 22.0]).collect();
+        assert_eq!(got, want);
     }
 }

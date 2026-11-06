@@ -127,9 +127,19 @@ impl<'a> GraphSource<'a> {
             .into());
         }
         let max_block = executor.prepare().max_block().get();
-        let topology = &editor.spec().topology;
-        let global_inputs = usize::from(topology.inputs.count());
-        let planes = vec![vec![0.0f32; max_block]; topology.outputs.len()];
+        // Sized from the plan the first block renders, not from the editor's
+        // spec: the spec may hold edits that were never committed, and the
+        // executor renders only what was. (Nothing commits during the render,
+        // so the plan applied here is the one every block runs.)
+        executor.apply_pending();
+        let (global_inputs, outputs) = executor.plan().map_or_else(
+            || {
+                let topology = &editor.spec().topology;
+                (usize::from(topology.inputs.count()), topology.outputs.len())
+            },
+            |p| (p.global_inputs() as usize, p.global_outputs()),
+        );
+        let planes = vec![vec![0.0f32; max_block]; outputs];
         Ok(Self {
             editor,
             executor,

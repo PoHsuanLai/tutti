@@ -160,11 +160,11 @@ use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
 use crate::cost::Schedule;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
-use crate::loss::{Dropped, EventLoss};
 use crate::fade::CrossfadeCurve;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
+use crate::loss::{Dropped, EventLoss};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, MaxBlock, Node, Prepare, SilenceMask, Status,
     Transport, TransportChanges,

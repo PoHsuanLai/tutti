@@ -223,7 +223,15 @@ fn a_loss_is_charged_to_its_port() {
 /// reports no loss → fails.
 #[test]
 fn the_parallel_losses_are_the_serial_ones() {
-    let scripts = |n: u32| vec![Script { ons: 20 + n, offs: n }, Script { ons: 3, offs: 3 }];
+    let scripts = |n: u32| {
+        vec![
+            Script {
+                ons: 20 + n,
+                offs: n,
+            },
+            Script { ons: 3, offs: 3 },
+        ]
+    };
     let writers: Vec<Vec<Script>> = (0..4).map(scripts).collect();
     let (mut ed, mut exec, seen) = rig(1, 16, &writers);
     let serial = run(&mut ed, &mut exec, 5);

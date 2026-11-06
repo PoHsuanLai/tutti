@@ -158,6 +158,27 @@ pub enum SessionEvent {
         /// Why.
         refused: crate::CrossfadeRefused,
     },
+    /// A node's event output port lost events since the last update: they
+    /// were past its capacity (a note-off only past the room set aside for
+    /// note-offs), a PDC or feedback delay it feeds was full, or the node
+    /// left out an event because the one it pairs with was refused (a clip's
+    /// note-off of a note-on the port refused). One per port per update, the
+    /// sum over the blocks of the update. A note-off refused and sent again
+    /// later counts as refused.
+    ///
+    /// `port` is `None` for a loss no output port owns. The graph's total is
+    /// [`LoadReading::dropped_events`](tutti_core::LoadReading::dropped_events), exact
+    /// where this is per port: a block that loses at more than 64 places, or
+    /// a host that does not run `Collect` for long enough to fill a ring of
+    /// 256 entries, leaves some out here and not there.
+    EventsDropped {
+        /// The node.
+        node: AudioNode,
+        /// Its event output port.
+        port: Option<u16>,
+        /// How many events.
+        count: u64,
+    },
     /// The audio backend reported a fault (a device unplugged mid-session):
     /// the most recent one since the last poll.
     #[cfg(feature = "device")]
@@ -185,6 +206,15 @@ pub enum SessionEvent {
     /// [`PhaseCx::now`].
     #[cfg(feature = "midi")]
     MidiOutDropped(u64),
+    /// The hardware input's rings dropped events because they were full: the
+    /// total so far, reported when it rises, at most once per
+    /// [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT) of
+    /// [`PhaseCx::now`]. The input drain takes a bounded number of events a
+    /// block and leaves the rest in the rings; a ring fills when blocks stop
+    /// coming (a stalled callback) or the device sends faster than they
+    /// drain.
+    #[cfg(feature = "midi-hardware")]
+    MidiInputDropped(u64),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`): its
     /// node was removed. Reported once.
     #[cfg(feature = "plugin")]
@@ -244,6 +274,16 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "midi")]
             Self::MidiOutDropped(count) => f.debug_tuple("MidiOutDropped").field(count).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiInputDropped(count) => {
+                f.debug_tuple("MidiInputDropped").field(count).finish()
+            }
+            Self::EventsDropped { node, port, count } => f
+                .debug_struct("EventsDropped")
+                .field("node", node)
+                .field("port", port)
+                .field("count", count)
+                .finish(),
             #[cfg(feature = "plugin")]
             Self::PluginDied { node, cause } => f
                 .debug_struct("PluginDied")
@@ -433,6 +473,7 @@ impl Session {
                 }
                 let repreparing = self.graph.is_repreparing();
                 self.graph.collect();
+                self.report_event_losses(out);
                 // A re-prepare resumed in that collect: it sent the resumed
                 // plan, whose shapes are new (a lookahead is a time, so a
                 // rate change moves latencies).
@@ -480,8 +521,10 @@ impl Session {
                 #[cfg(feature = "plugin")]
                 self.render_mode_phase()
             }
-            Phase::Poll =>
-            {
+            Phase::Poll => {
+                #[cfg(feature = "midi-hardware")]
+                self.midi_state
+                    .midi_input_phase(self.midi_io.as_ref(), cx.now, out);
                 #[cfg(feature = "device")]
                 if let Some((faults, seen)) = &mut self.faults {
                     let count = faults.count();
@@ -499,6 +542,24 @@ impl Session {
                 self.reclaim();
             }
         }
+    }
+
+    /// The events the graph's ports lost since the last update, as
+    /// [`SessionEvent::EventsDropped`], one per port.
+    fn report_event_losses(&mut self, out: &mut Vec<SessionEvent>) {
+        let mut sums: std::collections::BTreeMap<(tutti_core::NodeKey, Option<u16>), u64> =
+            std::collections::BTreeMap::new();
+        for loss in self.graph.take_event_losses() {
+            *sums.entry((loss.node, loss.port)).or_default() += u64::from(loss.count);
+        }
+        out.extend(
+            sums.into_iter()
+                .map(|((node, port), count)| SessionEvent::EventsDropped {
+                    node: AudioNode(node),
+                    port,
+                    count,
+                }),
+        );
     }
 
     /// The [`Reclaim`](Phase::Reclaim) phase: every cell the session

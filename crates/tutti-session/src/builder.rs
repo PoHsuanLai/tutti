@@ -148,7 +148,7 @@ impl SessionBuilder {
         // Built first so its port manager can feed the graph's MIDI input.
         #[cfg(feature = "midi-hardware")]
         let midi_io = self.midi_hardware.then(|| {
-            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(256));
+            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::default());
             // It times each inbound event by turning a wall-clock delta into a
             // frame offset, which takes the device's real rate: told here,
             // before any callback runs.

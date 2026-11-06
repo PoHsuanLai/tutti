@@ -1644,6 +1644,14 @@ impl Graph {
         self.editor.collect();
     }
 
+    /// The output ports that lost events since the last call
+    /// (`Editor::take_event_losses`).
+    pub(crate) fn take_event_losses(
+        &mut self,
+    ) -> impl Iterator<Item = tutti_graph::EventLoss> + '_ {
+        self.editor.take_event_losses()
+    }
+
     /// `Editor::commit`. `Sent` clears the edit flag; `Retry` keeps it.
     pub(crate) fn commit(&mut self) -> Committed {
         match self.editor.commit() {

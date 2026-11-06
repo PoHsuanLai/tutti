@@ -693,7 +693,9 @@ fn a_full_ring_counts_what_it_drops() {
     let manager = Arc::new(HardwareMidiInputs::new(4));
     let mut handle = manager.open_input_port("Busy");
     let id = handle.port_id();
-    let taken = (0..10).filter(|_| handle.push(MidiEvent::noop(), now())).count();
+    let taken = (0..10)
+        .filter(|_| handle.push(MidiEvent::noop(), now()))
+        .count();
     assert_eq!(taken, 4);
     assert_eq!(manager.port_info(id).map(|p| p.dropped), Some(6));
     assert_eq!(manager.dropped_events(), 6);

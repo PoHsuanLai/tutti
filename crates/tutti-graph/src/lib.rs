@@ -248,7 +248,6 @@ pub use event::{
     SegmentShape, SortedEvents, SubBlocks, Ump, note_off_room,
 };
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
-pub use loss::EventLoss;
 pub use fade::{CrossfadeCurve, Fade};
 pub use fork::{
     ForkBuild, ForkByClone, ForkCause, ForkError, ForkFault, ForkFaultKind, ForkHealth, ForkMode,
@@ -256,6 +255,7 @@ pub use fork::{
 };
 pub use history::TransportHistory;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
+pub use loss::EventLoss;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
     MaxBlock, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,

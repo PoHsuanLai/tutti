@@ -1720,6 +1720,9 @@ mod tests {
         let quarter = EventDensity::per_kiloframe(256);
         assert_eq!(at(quarter, 4096), 1024);
         assert_eq!(at(quarter, 1001), MIN_EVENT_PORT_CAPACITY);
-        assert_eq!(at(EventDensity::per_kiloframe(1), 4097), MIN_EVENT_PORT_CAPACITY);
+        assert_eq!(
+            at(EventDensity::per_kiloframe(1), 4097),
+            MIN_EVENT_PORT_CAPACITY
+        );
     }
 }

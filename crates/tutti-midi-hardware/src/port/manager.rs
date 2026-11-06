@@ -541,7 +541,8 @@ impl HardwareMidiDrain {
     /// block later each. Control thread: allocates.
     pub fn reserve(&mut self, events: usize) {
         let want = events.max(CYCLE_SCRATCH_CAP);
-        self.events.reserve_exact(want.saturating_sub(self.events.len()));
+        self.events
+            .reserve_exact(want.saturating_sub(self.events.len()));
         self.limit = want.min(self.events.capacity());
     }
 

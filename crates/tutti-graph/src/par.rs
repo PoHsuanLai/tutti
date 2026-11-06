@@ -79,12 +79,12 @@ use tutti_types::{
 use crate::arena::{Arena, Line};
 use crate::command::Deliveries;
 use crate::event::Event;
-use crate::loss::Dropped;
 use crate::exec::{
     Head, Inject, OpState, Ring, Unit, audio_ring, capture_op, delay_op, event_delay_op,
     event_merge_op, event_ring, global_in, node_dispatch, output_op,
 };
 use crate::history::TransportHistory;
+use crate::loss::Dropped;
 use crate::node::{Env, MAX_PORTS, MaxBlock};
 use crate::plan::{Op, Plan, Span};
 use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};

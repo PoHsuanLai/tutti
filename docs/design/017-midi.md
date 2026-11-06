@@ -251,7 +251,9 @@ the core set.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph | `tutti-midi-device` |
+| `tutti-midi-hardware` | Transport | OS backends, no graph, `#![forbid(unsafe_code)]` | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
+| `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
 | `tutti-graph` | Graph | Event ports hold `Ump` | `tutti-types`, `tutti-ump` |
 | `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump` |
@@ -280,6 +282,9 @@ and device for overlapping things, and `MidiSession` reads as if it were
 only for an OS's handle to a connection, and `async_port` (an SPSC ring, not async)
 is named for what it is. `Sysex7ByteAssembler` consumes bytes no current backend
 produces, and moves to `tutti-midi-protocol` with the MIDI-CI path that wants it.
+
+MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
+`-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.
 
 `sync`'s clock and MTC decoders have no consumer today. They move to the runtime
 when a clock slave uses them (§9), and are deleted otherwise. `cc::mapping` is
@@ -410,7 +415,8 @@ a behaviour change.
    host.
 3. **`tutti-midi-protocol`.** Translation to the edge. Behaviour change: §4's spec
    fixes.
-4. **`tutti-midi-device`.** Model, connection, identity, device loss, timing (§5).
+4. **`tutti-midi-device` and the `-ffi` crates.** Model, connection, identity, device
+   loss, timing (§5), and the backends with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
    here and the rest of `ci`/`negotiate` is deleted.
 5. **Remove the old types:** `tutti-midi-types`, `MidiEvent`, `MidiMessage`, the

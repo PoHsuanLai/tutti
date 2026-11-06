@@ -294,11 +294,11 @@ fn memory_voices_render_the_same_frames_at_any_block_length() {
     for (name, play) in playbacks() {
         assert_block_invariant(&format!("pool, {name}"), || {
             let mut pool = VoicePool::new();
-            pool.insert_voice(SlotId(1), memory_voice(&wave, play.clone()));
+            pool.insert_voice(SlotId(1), memory_voice(&wave, play));
             pool
         });
         assert_block_invariant(&format!("voice node, {name}"), || {
-            VoiceNode::new(memory_voice(&wave, play.clone()))
+            VoiceNode::new(memory_voice(&wave, play))
         });
     }
 }

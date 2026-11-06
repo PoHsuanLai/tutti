@@ -129,7 +129,7 @@ impl Default for VoiceWindow {
 /// gain, normal speed, one-shot, free-running. It is hand-written (not
 /// derived) because the newtypes default to zero — a derived default would ship
 /// silent (`gain = 0`) and frozen (`speed = 0`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MemorySourceConfig {
     /// Linear output gain, applied as one scalar to every channel.
     /// `Amplitude::new(1.0)` is unity — the `Default` value, and not the

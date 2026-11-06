@@ -197,7 +197,7 @@ impl VoiceSource {
 /// Placement is the source's alone. Carrying a second copy here makes two clocks
 /// kept in sync by hand, and the record drifting from the source renders
 /// silence with nothing to point at. Ask the source for its placement.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Playback {
     /// Output gain, applied after the source read. Linear, not decibels.
     pub gain: Amplitude,
@@ -229,19 +229,6 @@ impl Default for Playback {
     }
 }
 
-impl Clone for Playback {
-    fn clone(&self) -> Self {
-        Self {
-            gain: self.gain,
-            speed: self.speed,
-            direction: self.direction,
-            loop_: self.loop_,
-            stretch: self.stretch,
-            pitch: self.pitch,
-        }
-    }
-}
-
 /// One voice's playback state — what a [`VoicePool`](super::VoicePool) stores
 /// per slot.
 #[derive(Debug)]
@@ -267,7 +254,7 @@ impl Clone for Voice {
     fn clone(&self) -> Self {
         Self {
             source: self.source.clone(),
-            play: self.play.clone(),
+            play: self.play,
             channel_index: self.channel_index,
         }
     }
@@ -294,7 +281,7 @@ impl Voice {
         };
         Ok(Self {
             source,
-            play: self.play.clone(),
+            play: self.play,
             channel_index: self.channel_index,
         })
     }

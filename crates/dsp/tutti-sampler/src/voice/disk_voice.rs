@@ -325,7 +325,7 @@ impl IntoNode for DiskSource {
 /// `shared_state` stays a separate wiring arg (it must be the same `RtState`
 /// the `inner` unit holds). The transport is not wiring: a voice reads it
 /// from each block's `Env`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DiskVoiceConfig {
     /// Span of timeline this voice occupies. Mirrors `MemorySource` — see
     /// [`VoiceWindow`].

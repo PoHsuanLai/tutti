@@ -43,12 +43,12 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ArcLend, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Offset, Prepare, Shape, Status,
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_types::{ArcLend, ChannelLayout, Reader};
 
 use super::timed::TimedMidiEvent;
 use super::walk::{Beated, Visit, Walk};
@@ -246,7 +246,7 @@ impl MidiClipControls {
 /// audio. See the module docs.
 ///
 /// ```
-/// use tutti_core::{Beat, NodeKey, SampleRate, Samples};
+/// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 /// use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};

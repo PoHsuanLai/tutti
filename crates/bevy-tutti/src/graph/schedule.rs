@@ -211,8 +211,8 @@ mod tests {
         app.insert_resource(AudioGraphRes::headless(0, 2));
         app.insert_resource(AudioEngineState::Running);
         app.insert_resource(crate::graph::AudioConfig {
-            sample_rate: tutti_core::SampleRate(48_000.0),
-            channels: tutti_core::ChannelLayout::STEREO,
+            sample_rate: tutti_types::SampleRate(48_000.0),
+            channels: tutti_types::ChannelLayout::STEREO,
         });
         app.add_plugins(GraphReconcilePlugin);
         app.add_plugins(crate::engine::device_state::DeviceStatePlugin);

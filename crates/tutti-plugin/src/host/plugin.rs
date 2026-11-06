@@ -15,7 +15,7 @@ use crate::host::handles::PluginHandle;
 use crate::host::node::PluginClient;
 use crate::protocol::{Features, LoadedPlugin, PluginDescriptor};
 use crate::util::config::AudioConfig;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 /// The audio node, whichever backend produced it.
 ///
@@ -48,7 +48,7 @@ enum Backend {
 /// # Examples
 ///
 /// ```no_run
-/// use tutti_core::SampleRate;
+/// use tutti_types::SampleRate;
 /// use tutti_plugin::catalog::Plugin;
 ///
 /// let plugin = Plugin::open("/usr/lib/vst3/MyPlugin.vst3", SampleRate::new(48_000.0))?;

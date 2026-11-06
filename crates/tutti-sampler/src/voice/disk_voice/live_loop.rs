@@ -22,8 +22,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
 use tutti_graph::{Node, Offset, Prepare, TransportChanges};
+use tutti_types::{Beat, Bpm, PlaybackRate, SamplePosition, SampleRate, Samples};
 
 use super::DiskVoice;
 use crate::testing::{MockTransport, block};
@@ -144,7 +144,7 @@ impl Live {
         let mut config = DiskStreamerConfig::default();
         if setup.preroll > 0 {
             config.pdc = Some(Arc::new(tutti_core::PrerollTable::new(vec![
-                tutti_core::Samples(setup.preroll),
+                tutti_types::Samples(setup.preroll),
             ])));
         }
         let mut streamer = DiskStreamer::manual(SampleRate(SR), config).expect("builds");

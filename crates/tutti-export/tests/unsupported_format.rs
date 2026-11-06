@@ -1,8 +1,8 @@
 //! What `Error::UnsupportedFormat` carries, so a caller can match it.
 
 use std::path::Path;
-use tutti_core::SampleRate;
 use tutti_export::{AudioFormat, Error, Rendered, UnsupportedReason};
+use tutti_types::SampleRate;
 
 fn unsupported(r: tutti_export::Result<AudioFormat>) -> (String, UnsupportedReason) {
     match r {

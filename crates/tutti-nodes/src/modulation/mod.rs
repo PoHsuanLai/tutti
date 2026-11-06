@@ -12,8 +12,8 @@
 //! buffer every channel reads, with per-channel phase offsets.
 //!
 //! Consequence worth knowing: chorus and flanger take their depth in
-//! [`Seconds`](tutti_core::Seconds) of delay sweep, while the phaser's is a
-//! unitless [`Depth`](tutti_core::Depth) fraction of its frequency range.
+//! [`Seconds`](tutti_types::Seconds) of delay sweep, while the phaser's is a
+//! unitless [`Depth`](tutti_types::Depth) fraction of its frequency range.
 
 mod shared;
 

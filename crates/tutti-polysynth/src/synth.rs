@@ -5,8 +5,8 @@
 use core::fmt;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_core::Adsr;
-use tutti_core::{Depth, Hz, Q, Resonance, Semitones};
+use tutti_types::Adsr;
+use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 
 /// The waveform every sub-voice of every voice generates.
 ///
@@ -199,7 +199,7 @@ pub struct SynthConfig {
     /// rate-dependent when its graph prepares it (`Node::prepare`), so a host that runs at a
     /// different rate does not need this to be right — only the LFO and
     /// portamento step sizes are computed from it.
-    pub sample_rate: tutti_core::SampleRate,
+    pub sample_rate: tutti_types::SampleRate,
     /// How many notes may sound at once. Must be at least 1; there is no
     /// upper bound. Every voice is fully constructed up front, so this is a
     /// memory and CPU budget rather than just a ceiling — 64 voices of saw
@@ -264,7 +264,7 @@ pub struct SynthConfig {
 impl Default for SynthConfig {
     fn default() -> Self {
         Self {
-            sample_rate: tutti_core::SampleRate::SR_44K1,
+            sample_rate: tutti_types::SampleRate::SR_44K1,
             max_voices: 8,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::default(),

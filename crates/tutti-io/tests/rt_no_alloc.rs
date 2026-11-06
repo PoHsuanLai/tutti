@@ -13,8 +13,8 @@
 //! against the type it guards.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::SampleRate;
 use tutti_graph::contract::Direct;
+use tutti_types::SampleRate;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

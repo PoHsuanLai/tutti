@@ -192,8 +192,8 @@ mod master_bus {
     // synth type, so it runs in the default configuration too.
 
     use bevy_tutti::graph::{AudioGraphRes, GraphSource};
-    use tutti_core::{ChannelLayout, Hz};
     use tutti_nodes::testing::Osc;
+    use tutti_types::{ChannelLayout, Hz};
 
     /// Two "this is the master" calls do not sum. The second wins outright.
     ///

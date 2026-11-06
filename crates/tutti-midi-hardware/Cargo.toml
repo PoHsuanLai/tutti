@@ -38,10 +38,10 @@ tracing = "0.1"
 tutti-midi-types = { path = "../tutti-midi-types" }
 # NOTE: no `tutti-midi-file` dep. A file is not hardware — this crate is the OS
 # port edge. Consumers depend on `tutti-midi-file` directly.
-tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
 # The MIDI runtime: the graph's MIDI nodes and the ring they cross threads on.
 # Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-hardware.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false }
 
 # Lock-free: each input port's SPSC ring, split into an owned producer and
 # consumer.

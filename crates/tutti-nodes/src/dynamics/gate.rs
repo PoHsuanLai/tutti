@@ -1,14 +1,14 @@
 //! Noise gate with external sidechain: attenuates below a threshold.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::AttackRelease;
 use super::utils::{apply_gain_lane, sidechain_levels};
-use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
 use tutti_dsp::{GateBlock, GateKernel};
+use tutti_types::{Db, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::{LastGood, block_driven};
 
@@ -38,7 +38,7 @@ impl GateCore {
     /// than only as coefficients and a sample count — the seconds are the
     /// recoverable form, the derived values are not.
     ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
+    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     pub fn new(
         threshold_db: impl Into<Db>,
         attack: impl Into<Seconds>,
@@ -85,7 +85,7 @@ impl GateCore {
         self.last_range = None;
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
+    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_types::SampleRate>) {
         let (attack, hold, release) = self.times([None, None]);
         self.kernel
             .set_sample_rate(sample_rate, attack, hold, release);

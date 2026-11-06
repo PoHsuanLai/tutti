@@ -252,7 +252,7 @@ mod tests {
     use std::sync::Arc;
 
     use dashmap::DashMap;
-    use tutti_core::SampleRate;
+    use tutti_types::SampleRate;
 
     use super::super::cache::LruCache;
     use super::super::command::RegionId;

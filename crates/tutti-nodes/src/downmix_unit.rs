@@ -28,9 +28,9 @@
 //!
 //! [`fold_frame`]: tutti_types::fold_frame
 
-use tutti_core::{ChannelLayout, Tail};
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_types::fold_planar_channel;
+use tutti_types::{ChannelLayout, Tail};
 
 /// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
 /// Dolby matrices.

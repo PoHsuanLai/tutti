@@ -16,9 +16,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tutti_types::graph::{Invalid, Valid};
-use tutti_types::latency::{Feed, LatencyGraph};
+use tutti_types::{Feed, LatencyGraph};
 use tutti_types::{NodeKey, Samples, Topology};
+use tutti_types::{Valid, graph::Invalid};
 
 use crate::node::Resolution;
 use crate::param::{ParamIn, ParamMod, ParamRange};

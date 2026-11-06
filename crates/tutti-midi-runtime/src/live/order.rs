@@ -1,8 +1,8 @@
 //! Putting a block's MIDI in the order an event port takes it.
 
-use tutti_core::Samples;
 use tutti_graph::Offset;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::Samples;
 
 /// Sort by `frame_offset`, keeping arrival order among equal offsets. (An
 /// offset past the block is clamped onto its last frame by [`offset_of`],

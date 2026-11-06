@@ -15,13 +15,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_core::{AtomicF32, ChannelLayout, SampleRate, Samples};
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     CompressorNode, DelayLineNode, GateNode, LadderFilterNode, LadderType, ModDelayNode,
     PhaserNode, SvfFilterNode, SvfType,
 };
+use tutti_types::{AtomicF32, ChannelLayout, SampleRate, Samples};
 
 const BAD: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
 

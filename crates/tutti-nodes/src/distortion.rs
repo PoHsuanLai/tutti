@@ -25,12 +25,12 @@
 //! bit-identical output to a node nothing can modulate, at the cost of one
 //! branch.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
-use tutti_core::{ChannelLayout, Drive, Param, Tail};
+use std::sync::Arc;
 use tutti_dsp::{ShapeKind, Shaper};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
 use tutti_types::UnitParam;
+use tutti_types::{ChannelLayout, Drive, Param, Tail};
 
 /// Stereo waveshaping distortion. 2 inputs, 2 outputs.
 ///

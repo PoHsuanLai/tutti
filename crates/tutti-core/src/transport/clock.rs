@@ -8,9 +8,9 @@
 
 use super::loop_region::LoopRegion;
 use super::state::ClockLinks;
-use crate::Ordering;
-use crate::{Beat, Bpm, Samples};
+use std::sync::atomic::Ordering;
 use tutti_types::FrameClock;
+use tutti_types::{Beat, Bpm, Samples};
 
 /// How far the tempo must move before the clock takes it (and starts a new
 /// segment). Comparing for equality would restart on every buffer from ULP
@@ -114,7 +114,7 @@ impl TransportClock {
     /// The one constructor: `links` carries both halves of the position
     /// handshake, so a clock cannot be assembled with its inputs wired and its
     /// writeback forgotten.
-    pub fn new(links: ClockLinks, sample_rate: impl Into<crate::SampleRate>) -> Self {
+    pub fn new(links: ClockLinks, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
         let sample_rate = sample_rate.into();
         let initial_tempo = Bpm(links.tempo.load(Ordering::Acquire));
 
@@ -173,7 +173,7 @@ impl TransportClock {
     /// Derive an independent stream running at a fixed `bpm` (severed, as
     /// [`starting_at`](Self::starting_at) is).
     #[must_use]
-    pub fn at_tempo(&self, bpm: impl Into<crate::Bpm>) -> Self {
+    pub fn at_tempo(&self, bpm: impl Into<tutti_types::Bpm>) -> Self {
         let mut derived = self.severed();
         derived.set_tempo(bpm);
         derived
@@ -188,7 +188,7 @@ impl TransportClock {
     }
 
     /// Set this clock's tempo, from its current frame on.
-    fn set_tempo(&mut self, bpm: impl Into<crate::Bpm>) {
+    fn set_tempo(&mut self, bpm: impl Into<tutti_types::Bpm>) {
         let bpm = bpm.into();
         self.links.tempo.store(bpm.get(), Ordering::Release);
         self.clock.set_tempo(bpm);
@@ -220,7 +220,7 @@ impl TransportClock {
     }
 
     /// The rate this clock counts frames at.
-    pub(crate) fn sample_rate(&self) -> crate::SampleRate {
+    pub(crate) fn sample_rate(&self) -> tutti_types::SampleRate {
         self.clock.sample_rate()
     }
 
@@ -276,7 +276,7 @@ impl TransportClock {
         if from.playing {
             let region = from
                 .looping
-                .and_then(|l| super::LoopRange::new(l.start, l.end));
+                .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
             self.clock.advance(Samples(frames), region);
         }
         self.advance_steady_time(frames);
@@ -339,7 +339,7 @@ impl TransportClock {
     /// in its `Env` and `Env::for_each_beat` steps by. A request inside the
     /// hysteresis would otherwise run this clock at a tempo it does not
     /// publish.
-    pub(crate) fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: tutti_types::SampleRate) {
         self.clock.set_sample_rate(sample_rate);
     }
 
@@ -374,8 +374,10 @@ impl TransportClock {
 mod tests {
     use super::super::state::SeekSlot;
     use super::*;
-    use crate::{AtomicBool, AtomicF64, LoopRange};
+    use atomic_float::AtomicF64;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use tutti_types::LoopRange;
 
     fn create_test_atomics() -> (Arc<AtomicF64>, Arc<AtomicBool>) {
         (
@@ -477,7 +479,7 @@ mod tests {
     #[test]
     fn steady_time_ignores_pause_and_loop() {
         let (tempo, paused) = create_test_atomics();
-        let steady = Arc::new(crate::AtomicI64::new(0));
+        let steady = Arc::new(std::sync::atomic::AtomicI64::new(0));
         let mut links = ClockLinks::bare(Arc::clone(&tempo), Arc::clone(&paused));
         links.steady_time = Some(Arc::clone(&steady));
         // A two-beat loop, so the playhead wraps repeatedly over the run.
@@ -522,7 +524,7 @@ mod tests {
     #[test]
     fn a_derived_stream_severs_steady_time() {
         let (tempo, paused) = create_test_atomics();
-        let steady = Arc::new(crate::AtomicI64::new(9_000));
+        let steady = Arc::new(std::sync::atomic::AtomicI64::new(9_000));
         let mut links = ClockLinks::bare(tempo, paused);
         links.steady_time = Some(Arc::clone(&steady));
         let clock = TransportClock::new(links, 44100.0);
@@ -665,12 +667,12 @@ mod tests {
         let mut clock = TransportClock::new(links, 44100.0);
         // Inside the hysteresis: asked, but not taken.
         tempo.store(120.0005, Ordering::Release);
-        clock.set_sample_rate(crate::SampleRate(48_000.0));
+        clock.set_sample_rate(tutti_types::SampleRate(48_000.0));
         tick(&mut clock);
         assert_eq!(in_force.load(Ordering::Acquire), 120.0);
         assert_eq!(
             clock.current_beat(),
-            Beat(0.0) + super::super::state::beats_per_sample(Bpm(120.0), 48_000.0),
+            Beat(0.0) + tutti_types::beats_per_sample(Bpm(120.0), 48_000.0),
         );
     }
 

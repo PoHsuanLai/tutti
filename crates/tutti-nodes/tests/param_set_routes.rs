@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use audio_automation::CurveType;
-use tutti_core::{ChannelLayout, UnitParam};
 use tutti_graph::{
     Cx, Editor, EventOut, GraphBuilder, Io, Node, ParamIn, ParamNode, ParamRange, ParamSet,
     Prepare, Renderer, Shape, Status, Unforkable,
@@ -35,6 +34,7 @@ use tutti_nodes::{
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{BeatDuration, Depth, Hz, NodeKey, PhaseIncrement, SampleRate, Samples};
+use tutti_types::{ChannelLayout, UnitParam};
 
 /// Writes `value` to `p` through `node`'s set, as a host does; `false` for
 /// a param the set lacks.
@@ -320,10 +320,10 @@ fn chorus_rate_write_moves_the_nodes_own_cell() {
 #[test]
 fn compressor_makeup_is_addressed_as_gain_db() {
     let node = CompressorNode::with_channels(
-        tutti_core::Db(-12.0),
-        tutti_core::CompressionRatio(4.0),
-        tutti_core::Seconds(0.01),
-        tutti_core::Seconds(0.1),
+        tutti_types::Db(-12.0),
+        tutti_types::CompressionRatio(4.0),
+        tutti_types::Seconds(0.01),
+        tutti_types::Seconds(0.1),
         2,
     );
     let makeup = node.makeup_gain();

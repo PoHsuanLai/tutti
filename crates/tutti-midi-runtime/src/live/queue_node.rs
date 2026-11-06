@@ -10,12 +10,12 @@
 //! Its fork is silent: nothing a control thread sends reaches an offline
 //! render.
 
-use tutti_core::ChannelLayout;
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::ChannelLayout;
 
 use super::mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};
 use super::order::{in_offset_order, offset_of};
@@ -27,7 +27,7 @@ pub const MIDI_QUEUE_CAPACITY: usize = MAILBOX_CAPACITY;
 /// module docs.
 ///
 /// ```
-/// use tutti_core::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{NodeKey, SampleRate, Samples};
 /// use tutti_midi_types::MidiChannel;
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiQueueNode;

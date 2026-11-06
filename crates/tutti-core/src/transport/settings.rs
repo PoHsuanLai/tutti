@@ -12,8 +12,9 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU64};
-use crate::{Beat, Bpm};
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
+use tutti_types::{Beat, Bpm};
 
 /// Transport values shared between threads.
 ///

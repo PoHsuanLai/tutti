@@ -24,7 +24,7 @@
 //! use bevy_tutti::modulation::{Lfo, Mods, ParamRef, TuttiModulationPlugin};
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_core::transport::Transport;
-//! use tutti_core::SampleRate;
+//! use tutti_types::SampleRate;
 //! use tutti_nodes::{SvfFilterNode, SvfType};
 //! use tutti_types::{BeatDuration, Depth, Hz, UnitParam, Q};
 //!

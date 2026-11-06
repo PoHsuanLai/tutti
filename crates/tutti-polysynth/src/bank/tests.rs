@@ -1,6 +1,6 @@
 use super::*;
-use tutti_core::{Amplitude, Seconds};
 use tutti_nodes::{LadderFilterNode, LadderType, SvfFilterNode};
+use tutti_types::{Amplitude, Seconds};
 
 const SR: f64 = 48_000.0;
 
@@ -245,7 +245,7 @@ fn the_lane_svf_matches_svf_filter_node() {
         // The node as a graph runs it, prepared at the bank's rate.
         let mut node = tutti_graph::Solo::new(
             SvfFilterNode::<f32>::new(ty, cutoff, q),
-            tutti_graph::Prepare::new(sr(), tutti_core::Samples(64)),
+            tutti_graph::Prepare::new(sr(), tutti_types::Samples(64)),
         );
         let expected = node.render_input(&[&dry]).remove(0);
         for (i, (w, e)) in wet.iter().zip(&expected).enumerate() {
@@ -273,7 +273,7 @@ fn the_lane_ladder_matches_ladder_filter_node() {
     // The node as a graph runs it, prepared at the bank's rate.
     let mut node = tutti_graph::Solo::new(
         LadderFilterNode::<f32>::new(LadderType::LP24, cutoff, res),
-        tutti_graph::Prepare::new(sr(), tutti_core::Samples(64)),
+        tutti_graph::Prepare::new(sr(), tutti_types::Samples(64)),
     );
     let expected = node.render_input(&[&dry]).remove(0);
     for (i, (w, e)) in wet.iter().zip(&expected).enumerate() {

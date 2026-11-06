@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use audio_automation::CurveType;
-use tutti_core::ChannelLayout;
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     SegmentShape, Shape, Status,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Latency, Tail};
 
 use super::Curve;
@@ -100,7 +100,7 @@ pub fn segment_shape(curve: CurveType) -> Option<SegmentShape> {
 /// stopped there), which is halfway along it.
 ///
 /// ```
-/// use tutti_core::{Beat, Bpm, SampleRate, Samples};
+/// use tutti_types::{Beat, Bpm, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo, Transport};
 /// use tutti_nodes::automation::{AutomationEnvelope, AutomationLaneNode, AutomationPoint};
 ///
@@ -266,8 +266,8 @@ mod tests {
     use super::*;
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::Ordering;
-    use tutti_core::{AtomicF32, Bpm, SampleRate, Samples};
     use tutti_graph::{Solo, Transport};
+    use tutti_types::{AtomicF32, Bpm, SampleRate, Samples};
 
     fn ramp_envelope() -> AutomationEnvelope<&'static str> {
         let mut env: AutomationEnvelope<&str> = AutomationEnvelope::new("volume");

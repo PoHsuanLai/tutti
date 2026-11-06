@@ -19,11 +19,11 @@
 //! `detach` → that control fails; drop `SpatialTarget::detach`'s elevation
 //! line → both elevation controls fail.
 
-use tutti_core::{Mix, SampleRate, Spread, StereoWidth};
 use tutti_graph::contract::{SAMPLE_RATE, drive};
 use tutti_graph::{ForkMode, IntoNode, Node, NodeParts, Prepare};
 use tutti_spatial::{HrtfBinauralControls, HrtfBinauralNode, VbapPannerControls, VbapPannerNode};
 use tutti_types::Samples;
+use tutti_types::{Mix, SampleRate, Spread, StereoWidth};
 
 /// Frames per render: long enough for the 50 ms de-zipper to settle, and for
 /// several loud/quiet stimulus cycles.

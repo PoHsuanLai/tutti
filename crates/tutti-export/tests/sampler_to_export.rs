@@ -51,9 +51,7 @@
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use tutti_core::{
-    Beat, Bpm, Cents, OfflineTimeline, OfflineTimelineConfig, SampleRate, StretchFactor,
-};
+use tutti_core::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, RenderConfig,
     RenderGraph, render_to_file,
@@ -61,6 +59,7 @@ use tutti_export::{
 use tutti_graph::GraphBuilder;
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_types::{Beat, Bpm, Cents, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BASE_HZ: f32 = 440.0;

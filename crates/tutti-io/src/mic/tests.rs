@@ -21,9 +21,9 @@ fn block(node: &mut MicMonitorNode, frames: usize) -> Vec<Vec<f32>> {
     // `drive_input`, not `drive`: with no inputs and no params, the block's
     // length comes from its `Env`.
     let env = tutti_graph::Env {
-        frame: tutti_core::Frame(0),
+        frame: tutti_types::Frame(0),
         sample_rate: RATE,
-        block_len: tutti_core::Samples(frames),
+        block_len: tutti_types::Samples(frames),
         transport: tutti_graph::Transport::default(),
         changes: tutti_graph::TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
@@ -173,12 +173,12 @@ fn the_declared_shape_matches_what_the_graph_is_told() {
 /// fails.
 #[test]
 fn the_mic_refuses_to_fork() {
-    use tutti_core::NodeKey;
-    use tutti_core::graph::{OutPort, Source};
     use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget};
+    use tutti_types::NodeKey;
+    use tutti_types::graph::{OutPort, Source};
 
     let (ring, _prod) = ring_with(&[[1.0, 2.0]]);
-    let prepare = Prepare::new(RATE, tutti_core::Samples(64));
+    let prepare = Prepare::new(RATE, tutti_types::Samples(64));
     let (mut editor, _exec) = Editor::new(prepare);
     editor.insert(NodeKey(7), "mic", MicMonitorNode::new(ring));
     editor.spec_mut().topology.outputs = (0..2)

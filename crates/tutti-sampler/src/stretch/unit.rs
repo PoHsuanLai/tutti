@@ -9,7 +9,8 @@ use tutti_dsp::StftGeometry;
 
 use super::vocoder::Vocoder;
 use super::{FftSize, MAX_BUFFER_SIZE};
-use tutti_core::{AtomicF32, Cents, ChannelLayout, Ordering, ReadRate, SampleRate, StretchFactor};
+use std::sync::atomic::Ordering;
+use tutti_types::{AtomicF32, Cents, ChannelLayout, ReadRate, SampleRate, StretchFactor};
 
 /// Real-time time-stretching and pitch-shifting unit.
 ///

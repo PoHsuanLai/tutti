@@ -31,9 +31,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
-use tutti_core::{ProjectMeter, SampleRate, Samples};
+use tutti_core::ProjectMeter;
 use tutti_plugin_types::PluginTail;
 use tutti_types::Latency;
+use tutti_types::{SampleRate, Samples};
 
 use super::batcher::MAX_CHUNK;
 
@@ -326,7 +327,7 @@ impl std::fmt::Debug for PluginControls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::meter::MeterMap;
+    use tutti_types::MeterMap;
 
     fn controls() -> PluginControls {
         PluginControls::new(Samples(0), PluginTail::default(), SampleRate(44_100.0))

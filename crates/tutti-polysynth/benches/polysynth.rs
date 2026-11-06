@@ -33,7 +33,6 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
@@ -43,6 +42,7 @@ use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoCurve, PortamentoMode,
     SvfMode, SynthConfig, UnisonConfig,
 };
+use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 
 const SR: f64 = 48_000.0;
 /// The block every case renders: a constant here, not an axis (see the
@@ -61,7 +61,7 @@ fn flat_envelope() -> Adsr {
 
 fn config() -> SynthConfig {
     SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(SR),
+        sample_rate: tutti_types::SampleRate::from(SR),
         envelope: flat_envelope(),
         ..Default::default()
     }

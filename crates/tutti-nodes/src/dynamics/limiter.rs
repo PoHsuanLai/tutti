@@ -7,19 +7,19 @@
 //! distorts. Reach for the first to limit musically, the second as a safety
 //! catch.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
-use tutti_core::ChannelLayout;
+use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
+use tutti_types::ChannelLayout;
 
 use crate::ramp::LastGood;
-use tutti_core::{Db, Param, SampleRate, Samples, Seconds, Tail};
 use tutti_dsp::{
     EnvelopeFollower, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
     compute_limiter_gain, db_to_amplitude, fold_peak, smooth_envelope,
 };
 use tutti_types::Latency;
 use tutti_types::UnitParam;
+use tutti_types::{Db, Param, SampleRate, Samples, Seconds, Tail};
 
 /// The lane's length before the graph prepares the node.
 const DEFAULT_LANE: usize = 512;
@@ -793,7 +793,7 @@ mod tests {
     #[test]
     fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
-        let device = tutti_core::SampleRate(48_000.0);
+        let device = tutti_types::SampleRate(48_000.0);
 
         let mut lim = LimiterNode::new(-6.0, -0.3);
 

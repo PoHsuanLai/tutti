@@ -28,13 +28,13 @@
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
-use tutti_core::{ChannelLayout, Samples};
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
     Status, Ump,
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
+use tutti_types::{ChannelLayout, Samples};
 
 use super::client::{InProcessVst2Client, drive_f32};
 use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
@@ -340,9 +340,9 @@ mod owed_tests {
     use std::sync::OnceLock;
     use std::sync::atomic::Ordering;
 
-    use tutti_core::SampleRate;
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset, ParamRamp};
+    use tutti_types::SampleRate;
 
     use crate::handles::{ParamId, PluginHandle};
 
@@ -390,8 +390,8 @@ mod owed_tests {
             unit.events(
                 0,
                 &[Event::ramp(
-                    Offset::new(0, tutti_core::Samples(BLOCK)).expect("inside the block"),
-                    ParamRamp::foreign(1, 0.75, tutti_core::Samples(0)),
+                    Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block"),
+                    ParamRamp::foreign(1, 0.75, tutti_types::Samples(0)),
                 )],
             );
             unit.block();
@@ -423,7 +423,7 @@ mod owed_tests {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();
             MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut out);
-            let at = Offset::new(0, tutti_core::Samples(BLOCK)).expect("inside the block");
+            let at = Offset::new(0, tutti_types::Samples(BLOCK)).expect("inside the block");
             out.iter()
                 .map(|e| Event::midi(at, e.data))
                 .collect::<Vec<_>>()

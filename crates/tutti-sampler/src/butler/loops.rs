@@ -33,8 +33,8 @@ use std::sync::Arc;
 
 use super::io::wave_io::WaveIn;
 use super::prefetch::RegionOut;
-use tutti_core::{ChannelLayout, SampleRate};
 use tutti_io::Wave;
+use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::nonempty;
 use crate::voice::interp::{split_position, tap_indices};
@@ -943,7 +943,7 @@ mod tests {
     /// A 20 000-frame mono ring writer holding frames `0..10_000` of a
     /// resident ramp, unlooped, with its reader's block in flight at
     /// `[0, 64)`; the reader, for a hook to move; and the ramp.
-    fn switching_ring() -> (RegionOut, tutti_core::PosReader, Arc<Wave>) {
+    fn switching_ring() -> (RegionOut, tutti_types::PosReader, Arc<Wave>) {
         use super::super::command::RegionId;
         use super::super::prefetch::RegionBuffer;
         const LEN: usize = 20_000;
@@ -955,7 +955,7 @@ mod tests {
         writer.set_resident(Arc::clone(&wave));
         let mut held = vec![0.0f32; 10_000];
         writer.fill_with(&Mapping::plain(LEN), 0, &mut held);
-        assert_eq!(writer.push_interleaved(&held), tutti_core::Samples(10_000));
+        assert_eq!(writer.push_interleaved(&held), tutti_types::Samples(10_000));
         let mut reader = shared.take_reader(false).expect("the ring's reader");
         let _ = reader.claim(0, [(0, 64), (0, 0)]);
         assert_eq!(writer.in_flight_end(), 64);

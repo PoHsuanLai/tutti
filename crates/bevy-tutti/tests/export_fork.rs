@@ -25,7 +25,6 @@ use bevy_tutti::export::{
     ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
-use tutti_core::{Hz, Q, Tail};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
@@ -35,6 +34,7 @@ use tutti_graph::{
 };
 use tutti_nodes::testing::{Osc, assert_golden};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::{Hz, Q, Tail};
 use tutti_types::{SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
@@ -440,7 +440,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         wave.push_frame(&[tone(i)]);
     }
     let voice = {
-        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(3.0), None);
+        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(3.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
         graph.graph().set_outputs_from(node);
@@ -451,15 +451,15 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
-        let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
+        let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
         app.world_mut().spawn(node).id()
     };
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: tutti_core::Beat(0.0),
-        tempo: tutti_core::Bpm(90.0),
+        start_beat: tutti_types::Beat(0.0),
+        tempo: tutti_types::Bpm(90.0),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }));
@@ -973,7 +973,7 @@ mod plugin {
             } else {
                 MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)
             };
-            TimedMidiEvent::new(tutti_core::Beat(beat), event)
+            TimedMidiEvent::new(tutti_types::Beat(beat), event)
         };
         app.world_mut().spawn(MidiSourceInstall::new(
             probe,
@@ -982,8 +982,8 @@ mod plugin {
         app.update();
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-            start_beat: tutti_core::Beat(0.0),
-            tempo: tutti_core::Bpm(90.0),
+            start_beat: tutti_types::Beat(0.0),
+            tempo: tutti_types::Bpm(90.0),
             sample_rate: SampleRate(rate),
             loop_range: None,
         }));
@@ -1076,7 +1076,6 @@ mod synths {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
-    use tutti_core::{Beat, Bpm, Seconds};
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
@@ -1085,6 +1084,7 @@ mod synths {
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_types::{Beat, Bpm, Seconds};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
     const BEAT_48K: usize = 32_000;
@@ -1292,7 +1292,7 @@ mod synths {
     #[test]
     fn an_audio_param_on_a_synth_reaches_it_and_its_fork() {
         use bevy_tutti::graph::{AudioParam, AudioParamAppExt, NodeControls};
-        use tutti_core::{Amplitude, UnitParam};
+        use tutti_types::{Amplitude, UnitParam};
         type VolumeParam = AudioParam<Amplitude, { UnitParam::Volume as u16 }>;
 
         let peak = |volume: Option<f32>| {
@@ -1386,10 +1386,10 @@ mod disk {
     use std::path::Path;
 
     use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-    use tutti_core::{Beat, Bpm, SamplePosition};
     use tutti_sampler::{
         Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
     };
+    use tutti_types::{Beat, Bpm, SamplePosition};
 
     /// Frame `i` of every test file: distinct per frame, and exactly what an
     /// f32 WAV hands back.

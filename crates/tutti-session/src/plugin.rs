@@ -1072,8 +1072,8 @@ mod tests {
         for crossfade in [false, true] {
             let mut rig = rig(None);
             let replacement = tutti_graph::ForkByClone(tutti_nodes::testing::Const::mono(1.0));
-            let fade = tutti_core::Seconds(0.0);
-            let curve = tutti_core::CrossfadeCurve::EqualAmplitude;
+            let fade = tutti_types::Seconds(0.0);
+            let curve = tutti_graph::CrossfadeCurve::EqualAmplitude;
             if crossfade {
                 assert!(matches!(
                     rig.session

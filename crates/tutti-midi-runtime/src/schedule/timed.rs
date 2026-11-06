@@ -1,7 +1,7 @@
 //! [`TimedMidiEvent`]: a MIDI event at a beat.
 
-use tutti_core::Beat;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::Beat;
 
 /// One [`MidiEvent`] tagged with the absolute beat at which it fires.
 ///

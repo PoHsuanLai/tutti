@@ -4,11 +4,12 @@
 
 use std::fmt;
 
-use tutti_core::{Arc, AtomicF32, Hz, Param, SampleRate};
+use std::sync::Arc;
 use tutti_dsp::{Crossover, CrossoverError, MAX_SPLITS, fit_to_rate};
 use tutti_graph::{
     Cost, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::{AtomicF32, Hz, Param, SampleRate};
 use tutti_types::{ChannelLayout, Tail, UnitAddr, UnitParam};
 
 use crate::ramp::{LastGood, block_driven};

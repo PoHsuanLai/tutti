@@ -4,7 +4,7 @@
 //! the graph must produce and how many leading frames the sink drops.
 
 use crate::config::RenderConfig;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 use tutti_types::{BeatDuration, Bpm, Samples};
 
 /// Fixed scheduling parameters for one render.
@@ -76,12 +76,12 @@ pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
 
 /// Seconds covering `len` beats at `tempo` — the musical-vocabulary form.
 ///
-/// Routed through [`beats_per_sample`](tutti_core::transport::beats_per_sample)
+/// Routed through [`beats_per_sample`](tutti_types::beats_per_sample)
 /// rather than `BeatDuration::to_seconds`, which returns `f32` `Seconds` and
 /// would reintroduce the narrowing above. `(tempo / 60) / rate` is the one
 /// spelling of the rate — see that function.
 pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 {
-    let bps = tutti_core::transport::beats_per_sample(tempo, rate).get();
+    let bps = tutti_types::beats_per_sample(tempo, rate).get();
     if bps <= 0.0 {
         return 0.0;
     }

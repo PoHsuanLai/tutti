@@ -5,15 +5,15 @@
 //! [`SvfFilterNode`]: the coefficients are shared across channels and only the
 //! integrator state is per channel.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
 use tutti_dsp::Real;
+use tutti_types::AtomicF32;
 
-use tutti_core::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Tail};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
+use tutti_types::{ChannelLayout, Db, Hz, Param, Q, SampleRate, Tail};
 
 use crate::ramp::LastGood;
 use tutti_dsp::{Ramp, lane_group, segments};
@@ -31,7 +31,7 @@ use tutti_dsp::{SvfCoefficients, SvfType, svf_step};
 /// # Examples
 ///
 /// ```
-/// use tutti_core::{Hz, Q, UnitParam};
+/// use tutti_types::{Hz, Q, UnitParam};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_nodes::{SvfFilterNode, SvfType};
 /// use tutti_types::{SampleRate, Samples};

@@ -51,13 +51,13 @@ vocabulary and its live impls from one place.
   frames in real time between endpoints a host owns, the other renders a graph
   faster than real time to a file.
 - **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump`, `ChannelLayout` and
-  the PCM quantizers are all `tutti-types`', re-exported through `tutti-core`.
+  the PCM quantizers are all `tutti-types`'.
   This crate supplies the live *impls*, not the traits.
 
 ```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-core     Engine, AudioTap; re-exports io
+tutti-core     Engine, AudioTap
     ↑
 tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
                Wave, FileIn, the decoder
@@ -78,7 +78,8 @@ the same three lines record a microphone — that interchangeability is the reas
 the traits exist.
 
 ```rust
-use tutti_core::{AudioTap, Samples};
+use tutti_core::AudioTap;
+use tutti_types::Samples;
 use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
 
 let tap = AudioTap::new();

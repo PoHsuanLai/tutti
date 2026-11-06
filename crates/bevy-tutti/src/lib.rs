@@ -22,7 +22,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::Hz;
+//! use tutti_types::Hz;
 //! use tutti_nodes::testing::Osc;
 //!
 //! fn build_chain(mut commands: Commands) {
@@ -86,7 +86,7 @@
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     let _ = transport.motion.try_send(MotionEvent::Play);
-//!     let (node, _) = graph.graph().insert(tutti_nodes::testing::Osc::sine(tutti_core::Hz(440.0)));
+//!     let (node, _) = graph.graph().insert(tutti_nodes::testing::Osc::sine(tutti_types::Hz(440.0)));
 //!     // Staged, not committed: the insert marks the session edited, and
 //!     // `commit_graph` publishes the frame's edits once.
 //!     let _ = node;
@@ -284,16 +284,18 @@ pub mod prelude {
     #[cfg(feature = "sampler")]
     pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
-    pub use tutti_core::CrossfadeCurve;
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::ClickState;
+    pub use tutti_graph::CrossfadeCurve;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
+    pub use tutti_types::prelude::*;
 
     pub use tutti_core::transport::{
-        FadeOut, LoopEdit, LoopRange, LoopRegion, MetronomeMode, MotionEvent, MotionState, Then,
+        FadeOut, LoopEdit, LoopRegion, MetronomeMode, MotionEvent, MotionState, Then,
     };
+    pub use tutti_types::LoopRange;
 }
 
 // Test-only global allocator for RT-safety regression tests. Panics on any heap allocation inside `assert_no_alloc(..)`

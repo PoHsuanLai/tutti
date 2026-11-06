@@ -245,7 +245,7 @@ mod tests {
             use std::sync::Arc;
             let source = tutti_sampler::MemorySource::placed(
                 Arc::new(tutti_io::Wave::new(1, 48_000.0)),
-                tutti_core::Beat(0.0),
+                tutti_types::Beat(0.0),
                 None,
             );
             assert!(keeps_one(tutti_sampler::VoiceNode::new(
@@ -258,8 +258,8 @@ mod tests {
         }
         // A node that publishes nothing keeps none.
         assert!(!keeps_one(tutti_nodes::DownmixNode::new(
-            tutti_core::ChannelLayout::STEREO,
-            tutti_core::ChannelLayout::MONO,
+            tutti_types::ChannelLayout::STEREO,
+            tutti_types::ChannelLayout::MONO,
         )));
     }
 }

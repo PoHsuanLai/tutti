@@ -27,13 +27,14 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Amplitude, ChannelLayout, Db, FrozenClock, Hz, SampleRate};
+use tutti_core::FrozenClock;
 use tutti_export::{
     AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig, Normalize, RenderConfig,
     RenderGraph, Resample, render_normalized_to_file, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::{Amplitude, ChannelLayout, Db, Hz, SampleRate};
 
 const SR: f64 = 48_000.0;
 

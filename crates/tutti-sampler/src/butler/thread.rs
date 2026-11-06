@@ -11,7 +11,7 @@ use std::thread::{self, JoinHandle};
 use dashmap::DashMap;
 use thread_priority::ThreadPriority;
 use tutti_core::PrerollTable;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 use super::ButlerSender;
 use super::cache::LruCache;
@@ -65,7 +65,7 @@ impl ButlerThread {
     /// `channel_capacity` bounds the command queue in messages (at least
     /// one); a send to a full queue waits. `sample_rate` is the
     /// *session* rate, against which each file's own rate becomes the stream's
-    /// [`SrcRatio`](tutti_core::SrcRatio).
+    /// [`SrcRatio`](tutti_types::SrcRatio).
     pub fn with_config(
         channel_capacity: usize,
         sample_rate: SampleRate,
@@ -98,9 +98,9 @@ impl ButlerThread {
     }
 
     /// Subscribe to a per-channel delay-compensation table, indexed by channel
-    /// index and denominated in [`Samples`](tutti_core::Samples).
+    /// index and denominated in [`Samples`](tutti_types::Samples).
     ///
-    /// Set by whoever runs `tutti_core::latency::compensate` over the audio
+    /// Set by whoever runs `tutti_types::latency::compensate` over the audio
     /// graph (a session republishes it with every plan); the butler reads it
     /// each refill cycle and pre-rolls each stream by its channel's entry.
     /// The subscription is shared, not copied, so later sets are observed.
@@ -307,7 +307,7 @@ mod tests {
     use crate::butler::ButlerGone;
     use crate::butler::loop_body::Pacing;
     use crate::ports::{Command, Commands};
-    use tutti_core::Samples;
+    use tutti_types::Samples;
 
     /// The controller is `Sync` (a Bevy resource holds it), with its
     /// hand-stepped cycle held plainly: a compile-time check.

@@ -8,10 +8,10 @@
 //! parameter smoothing) would land here.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::SampleRate;
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{EqBandNode, LadderFilterNode, LadderType, SvfFilterNode, SvfType};
+use tutti_types::SampleRate;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -72,7 +72,7 @@ fn svf_filter_mono_process_is_allocation_free() {
 fn svf_filter_stereo_process_is_allocation_free() {
     gate(
         SvfFilterNode::<f64>::with_channels(
-            tutti_core::ChannelLayout::STEREO,
+            tutti_types::ChannelLayout::STEREO,
             SvfType::HighPass,
             200.0,
             0.707,
@@ -110,7 +110,7 @@ fn svf_filter_with_parameter_changes_is_allocation_free() {
         SvfFilterNode::<f64>::new(SvfType::Bell, 1_000.0, 1.0),
         move |params, _| {
             hz = if hz > 4_000.0 { 500.0 } else { hz + 1.0 };
-            params.set(tutti_core::UnitParam::Cutoff, hz);
+            params.set(tutti_types::UnitParam::Cutoff, hz);
         },
     );
 }
@@ -129,8 +129,8 @@ fn ladder_with_moving_cutoff_and_drive_is_allocation_free() {
         LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1_000.0, 0.6),
         move |params, i| {
             hz = if hz > 4_000.0 { 500.0 } else { hz + 7.0 };
-            params.set(tutti_core::UnitParam::Cutoff, hz);
-            params.set(tutti_core::UnitParam::Drive, 1.0 + (i % 7) as f32);
+            params.set(tutti_types::UnitParam::Cutoff, hz);
+            params.set(tutti_types::UnitParam::Drive, 1.0 + (i % 7) as f32);
         },
     );
 }

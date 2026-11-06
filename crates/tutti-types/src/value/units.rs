@@ -2096,7 +2096,7 @@ impl BeatDuration {
     ///
     /// For *duration* readouts — a clip length, a UI-facing time display. It is
     /// deliberately **not** the conversion the per-sample transport path uses:
-    /// `tutti_core::transport::beats_per_sample` computes
+    /// `tutti_types::beats_per_sample` computes
     /// `(tempo / 60) / sample_rate`, the one spelling every reader placing a
     /// beat in a block divides by (the two groupings round differently, and
     /// readers must agree). Routing those sites through this method would

@@ -33,8 +33,8 @@
 
 use crate::kernel::{self, V};
 use crate::{Adsr, FilterType, OscillatorType, SvfMode};
-use tutti_core::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
 use tutti_dsp::{LadderCoeffs, SvfCoeffs, SvfType};
+use tutti_types::{Amplitude, Db, Hz, Phase, PhaseIncrement, Q, Resonance, SampleRate, Seconds};
 use wide::u32x8;
 
 /// The longest run of frames rendered between two control steps.
@@ -84,7 +84,7 @@ impl EnvShape {
         // Where the types stop: these are per-sample slopes and a frame count
         // used as a divisor inside the SIMD loop, not quantities any unit
         // covers. `Seconds`/`Amplitude` come off here, once.
-        let frames = |s: tutti_core::Seconds| s.to_samples(sample_rate).get().max(1) as f32;
+        let frames = |s: tutti_types::Seconds| s.to_samples(sample_rate).get().max(1) as f32;
         // Clamped to unity: the attack peaks at 1.0 and decay runs from there
         // to sustain. A sustain above 1.0 would make "decay" a rise, and a
         // retrigger from a held level above 1.0 would drop the note to the

@@ -39,15 +39,20 @@ use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use tutti_core::{AudioNode, Compensation, CrossfadeCurve, Samples, Tail};
+use tutti_core::AudioNode;
+use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
     ParamIn, ParamMod, ParamRange, ParamSet, Prepare, Transport,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{Compensation, Samples, Tail};
+use tutti_types::{
+    NodeKey,
+    graph::{Edge, InPort, OutPort, Source},
+};
 
 use crate::SessionNode;
 

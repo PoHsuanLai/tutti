@@ -10,11 +10,11 @@
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
-use tutti_core::{Beat, Bpm, SampleRate, StretchFactor};
 use tutti_graph::contract;
 use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
+use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;

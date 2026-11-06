@@ -25,10 +25,10 @@ use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources,
 };
 use tutti_core::AudioNode;
-use tutti_core::{ChannelLayout, Db, Hz};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{ChannelSumNode, LimiterNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, Db, Hz};
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
 fn app() -> App {
@@ -52,7 +52,7 @@ fn node_id(app: &App, entity: Entity) -> AudioNode {
     *app.world().get::<AudioNode>(entity).expect("AudioNode")
 }
 
-fn live(app: &App) -> &tutti_types::graph::Topology {
+fn live(app: &App) -> &tutti_types::Topology {
     app.world().resource::<LiveGraph>().topology()
 }
 

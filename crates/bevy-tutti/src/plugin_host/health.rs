@@ -572,7 +572,7 @@ mod tests {
         let session = tutti_session::Session::builder()
             .outputs_floor(2)
             .snapshot_interval(Duration::ZERO)
-            .build_detached(tutti_core::SampleRate::DEFAULT)
+            .build_detached(tutti_types::SampleRate::DEFAULT)
             .expect("a detached session builds");
         let mut app = app_over(AudioGraphRes::from_session(session));
         let saves = Arc::new(std::sync::atomic::AtomicUsize::new(0));

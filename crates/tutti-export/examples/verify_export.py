@@ -224,7 +224,7 @@ def check_dc(d):
             fail(
                 f"dc_{tag}",
                 f"formats disagree on the same sample: {seen} "
-                "(a private quantizer has drifted from tutti_core::pcm)",
+                "(a private quantizer has drifted from tutti_types::pcm)",
             )
             print(f"  -> FORMATS DISAGREE: {seen}")
 

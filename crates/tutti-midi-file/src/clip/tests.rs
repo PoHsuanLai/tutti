@@ -39,7 +39,7 @@ fn round_trips_a_clip_through_a_file() {
     assert_eq!(notes.len(), 1);
     assert_eq!(
         (notes[0].note, notes[0].duration_beats),
-        (60, tutti_core::BeatDuration(1.0))
+        (60, tutti_types::BeatDuration(1.0))
     );
     // The whole point of the format: velocity survives at 16 bits.
     assert_eq!(notes[0].velocity, 0xABCD);

@@ -43,8 +43,8 @@
 //! `HeapProd` directly), never pops.
 
 use ringbuf::{HeapCons, traits::Consumer};
-use tutti_core::{Amplitude, ChannelLayout, SampleRate, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Tail};
 
 /// The consumer end of a stereo capture ring, as an opaque handle for
 /// [`MicMonitorNode`].

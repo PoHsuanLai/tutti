@@ -21,10 +21,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Amplitude, ChannelLayout, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::BusStripNode;
+use tutti_types::{Amplitude, ChannelLayout, SampleRate};
 
 const BLOCK: usize = 128;
 const SR: SampleRate = SampleRate(48_000.0);
@@ -96,7 +96,7 @@ fn strip(c: &mut Criterion) {
         );
         fill_noise(&mut d);
         d.node.set_volume(Amplitude(0.5));
-        d.node.set_pan(tutti_core::Pan(0.25));
+        d.node.set_pan(tutti_types::Pan(0.25));
         d.block();
         g.bench_with_input(BenchmarkId::new("steady", width), &width, |b, _| {
             b.iter(|| {

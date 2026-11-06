@@ -5,7 +5,7 @@
 //! resample, dither and encoders downstream see only frames.
 
 use std::sync::Arc;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 use tutti_graph::{
     CommitError, Editor, Executor, ForkError, ForkMode, ForkRemains, ForkTarget, PendingFork, Pool,
@@ -88,7 +88,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// # Example
 ///
 /// ```
-/// use tutti_core::{Hz, SampleRate};
+/// use tutti_types::{Hz, SampleRate};
 /// use tutti_export::{render_to_buffers, ExportConfig, FrozenClock, RenderConfig, RenderGraph};
 /// use tutti_graph::GraphBuilder;
 /// use tutti_nodes::testing::Osc;
@@ -290,7 +290,7 @@ impl RenderGraph {
     /// value would drag a graph into arithmetic that is otherwise pure:
     ///
     /// ```
-    /// # use tutti_core::{Hz, SampleRate};
+    /// # use tutti_types::{Hz, SampleRate};
     /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;
@@ -330,7 +330,7 @@ impl RenderGraph {
     /// the call site:
     ///
     /// ```
-    /// # use tutti_core::{Hz, SampleRate, Seconds};
+    /// # use tutti_types::{Hz, SampleRate, Seconds};
     /// # use tutti_export::{ExportConfig, RenderConfig, RenderGraph};
     /// # use tutti_graph::GraphBuilder;
     /// # use tutti_nodes::testing::Osc;

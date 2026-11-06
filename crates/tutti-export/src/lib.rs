@@ -60,7 +60,7 @@ pub struct Rendered {
     /// config asked to write: [`render_to_buffers`] does not resample, so this
     /// is always the render rate. An encoder must read it from here rather than
     /// from a config, or it converts from a rate the samples were never at.
-    pub sample_rate: tutti_core::SampleRate,
+    pub sample_rate: tutti_types::SampleRate,
 }
 
 impl std::fmt::Debug for Rendered {

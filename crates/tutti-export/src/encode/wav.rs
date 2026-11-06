@@ -1,5 +1,5 @@
 //! WAV (hound). Streams; hound back-patches the RIFF sizes on `finalize`, and the
-//! speaker mask of a multichannel file is patched in after it (`tutti_core::wav`).
+//! speaker mask of a multichannel file is patched in after it (`tutti_types::wav`).
 //!
 //! A WAV file's sizes are 32-bit: an export that would pass them fails with
 //! [`Error::WavTooLarge`] before the file is created when the plan already shows
@@ -10,7 +10,7 @@
 //! this one pulls (it drives the render to a planned frame count) while a
 //! live sink is pushed blocks by whoever owns the loop. They share the
 //! quantization — both dispatch through
-//! [`BitDepth::quantize`](tutti_core::pcm::BitDepth::quantize) — so a bounced
+//! [`BitDepth::quantize`](tutti_types::pcm::BitDepth::quantize) — so a bounced
 //! and a recorded WAV agree sample-for-sample at a given depth. The one
 //! deliberate difference: an export dithers first, a live capture does not.
 
@@ -22,9 +22,9 @@ use crate::render::{FrameSource, RenderPlan};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use tutti_core::ChannelLayout;
-use tutti_core::pcm::Sample;
-use tutti_core::wav;
+use tutti_types::ChannelLayout;
+use tutti_types::pcm::Sample;
+use tutti_types::wav;
 
 pub(crate) struct WavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,
@@ -43,7 +43,7 @@ impl WavEncoder {
     pub(crate) fn create(
         path: &Path,
         config: &ExportConfig,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
     ) -> Result<Self> {
         let max_frames = wav::max_data_frames(config.encode.channels, config.encode.bit_depth);
@@ -54,7 +54,7 @@ impl WavEncoder {
     fn create_with_limit(
         path: &Path,
         config: &ExportConfig,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         max_frames: u64,
     ) -> Result<Self> {
@@ -106,7 +106,7 @@ impl WavEncoder {
     /// (the condition `pump_blocks` uses).
     fn planned_frames(
         plan: &RenderPlan,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         config: &ExportConfig,
     ) -> u64 {
         let kept = u128::from(plan.output_length.get() as u64);
@@ -148,7 +148,7 @@ impl Encoder for WavEncoder {
     fn encode(
         self,
         src: &mut dyn FrameSource,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {

@@ -2,7 +2,7 @@
 //!
 //! `MetronomeRes::set_mode` takes a `MetronomeMode`; `transport.motion.try_send`
 //! takes a `MotionEvent`. Both arrive through a `Deref` to a tutti-core type, so
-//! before these were re-exported a host had to add a direct `tutti-core`
+//! without the re-export a host would need a direct `tutti-core`
 //! dependency to spell an argument this crate's own examples pass. Handing out a
 //! method whose parameter type the caller cannot name is an incomplete forward.
 //!
@@ -166,11 +166,11 @@ fn _surface_compiles() {
     // `AudioParam` is generic over unit and port, so it is spelled with both.
     #[cfg(feature = "modulation")]
     fn _declare_param(app: &mut bevy_app::App) {
-        app.add_audio_param::<tutti_core::Db, 0>();
+        app.add_audio_param::<tutti_types::Db, 0>();
     }
     #[cfg(feature = "modulation")]
-    fn _param_component() -> AudioParam<tutti_core::Db, 0> {
-        AudioParam::new(tutti_core::Db(-6.0))
+    fn _param_component() -> AudioParam<tutti_types::Db, 0> {
+        AudioParam::new(tutti_types::Db(-6.0))
     }
 
     // Modulation declared from the prelude alone: a range, a source and a
@@ -180,7 +180,7 @@ fn _surface_compiles() {
         let cutoff = ParamRef::unit(filter, UnitParam::Cutoff);
         mods.range(cutoff, 200.0, 4_000.0);
         let lfo = mods.lfo(Lfo::sine());
-        mods.route(lfo, cutoff, tutti_core::Depth(0.3));
+        mods.route(lfo, cutoff, tutti_types::Depth(0.3));
     }
 
     // Sampler: build a voice, and clamp a file width to what it will play.

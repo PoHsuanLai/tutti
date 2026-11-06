@@ -25,10 +25,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use tutti_midi_types::MidiGroup;
 
 use atomic_float::AtomicF64;
-use tutti_core::{Beat, BeatDuration, SampleRate, first_frame_at_or_after};
 use tutti_graph::Transport;
 use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::{Beat, BeatDuration, SampleRate, first_frame_at_or_after};
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
 const PPQN: f64 = 24.0;
@@ -328,7 +328,7 @@ impl ClockMaster {
         // below is a *position*. Both are beats-denominated and neither is an
         // `Hz` — a beat-synced rate is beats-per-cycle, the inverse of a
         // frequency. Unwrapping either lets the two mix silently.
-        let beats_per_sample = tutti_core::transport::beats_per_sample(tempo, sample_rate);
+        let beats_per_sample = tutti_types::beats_per_sample(tempo, sample_rate);
         let expected_advance = beats_per_sample * block_size as f64;
         let prev_advance = BeatDuration(
             self.prev

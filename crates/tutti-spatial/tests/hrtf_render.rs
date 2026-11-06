@@ -14,12 +14,12 @@
 //!   whose rate or response length would make preparing it unbounded; the
 //!   rate it is prepared at is held to a ceiling.
 
-use tutti_core::{Azimuth, Elevation, SampleRate, Samples, Tail};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{Node, Prepare};
 use tutti_spatial::{
     HrtfBinauralError, HrtfBinauralNode, MAX_PREPARED_RATE, MAX_SPHERE_RATE, MIN_SPHERE_RATE,
 };
+use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Tail};
 
 const RATE: u32 = 48_000;
 /// The convolution step (`STEP` in `panner.rs`).

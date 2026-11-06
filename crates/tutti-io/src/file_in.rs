@@ -11,7 +11,7 @@
 //! It is this crate's read edge, the counterpart of [`WavOut`](crate::WavOut).
 //!
 //! **It does not downmix.** A caller wanting stereo folds the frames itself
-//! through [`tutti_core::fold_frame`], as every other engine edge does.
+//! through [`tutti_types::fold_frame`], as every other engine edge does.
 //!
 //! To read from an
 //! arbitrary position, call [`seek`] first — it hooks
@@ -32,8 +32,8 @@ use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
-use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{AudioIn, OnEmpty};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::WaveError;
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};
@@ -67,7 +67,7 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// flat interleaved `f32` buffer **at the file's own channel width** and
 /// returns the frames produced; a short count and then `0` mark the end of the
 /// file. It does not downmix: a caller wanting stereo folds each frame through
-/// [`tutti_core::fold_frame`].
+/// [`tutti_types::fold_frame`].
 ///
 /// [`seek`](Self::seek) positions it at an exact frame. Decoding, seeking and
 /// file I/O all block, so use it from a loader or streaming thread, never the
@@ -78,7 +78,7 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 ///
 /// ```no_run
 /// use tutti_io::{AudioIn, FileIn};
-/// use tutti_core::Samples;
+/// use tutti_types::Samples;
 ///
 /// let mut file = FileIn::open("take.flac")?;
 /// let width = usize::from(file.layout().count());
@@ -459,7 +459,7 @@ impl FileIn {
 ///
 /// No downmix happens here: `layout()` describes exactly what `poll_into`
 /// produces. A caller wanting stereo folds each frame through
-/// [`tutti_core::fold_frame`].
+/// [`tutti_types::fold_frame`].
 impl AudioIn for FileIn {
     /// A file has an end, and a decode error ends the stream there too (see the
     /// doc above): either way `0` means there is no more to read, and

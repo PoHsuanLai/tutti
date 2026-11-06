@@ -15,7 +15,6 @@ use clap_probe::{ProbeEnv, exclusive, load_probe, render};
 use std::sync::Arc;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{Beat, SampleRate, Samples};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
     Prepare, SegmentShape,
@@ -26,6 +25,7 @@ use tutti_nodes::automation::{
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{At, Frame, NodeKey};
+use tutti_types::{Beat, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;

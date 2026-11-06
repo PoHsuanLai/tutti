@@ -18,10 +18,10 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Azimuth, Elevation, SampleRate};
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_spatial::HrtfBinauralNode;
+use tutti_types::{Azimuth, Elevation, SampleRate};
 
 const BLOCK: usize = 64;
 const RATE: u32 = 48_000;

@@ -31,8 +31,9 @@ mod graph_reconcile {
         AudioGraphRes, GraphReconcileSystems, SpawnAudioNode, commit_graph, crossfade_audio_node,
         engine_ready, reconcile_node_despawn,
     };
-    use tutti_core::{AudioNode, Hz};
+    use tutti_core::AudioNode;
     use tutti_nodes::testing::Osc;
+    use tutti_types::Hz;
 
     /// Local probe component: the DAW param components moved out of the engine,
     /// so these pump tests use a self-contained marker to prove the chained
@@ -353,7 +354,7 @@ mod audio_param {
         let mut graph = AudioGraphRes::headless(0, 1);
         graph
             .graph()
-            .set_sample_rate(tutti_core::SampleRate(48_000.0));
+            .set_sample_rate(tutti_types::SampleRate(48_000.0));
         // A `ParamNode`: a param set by address writes the cell it reads, which
         // it reads on its next block. `node_drive` renders a frame before it
         // reads all the same.
@@ -389,7 +390,7 @@ mod audio_param {
     /// The node's drive atomic, taken from the unit before it moved into the
     /// graph.
     #[derive(Component)]
-    struct DriveCell(std::sync::Arc<tutti_core::AtomicF32>);
+    struct DriveCell(std::sync::Arc<tutti_types::AtomicF32>);
 
     /// The node's live drive — what the DSP reads — after one rendered frame,
     /// so a setting queued for the node has reached it (see

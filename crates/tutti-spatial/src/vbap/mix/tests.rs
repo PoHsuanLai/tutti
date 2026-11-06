@@ -7,7 +7,10 @@ use tutti_types::Samples;
 /// energy over the last block.
 fn settled_energy(g: GraphBuilder) -> Vec<f32> {
     let mut r = g
-        .renderer(Prepare::new(tutti_core::SampleRate(48_000.0), Samples(256)))
+        .renderer(Prepare::new(
+            tutti_types::SampleRate(48_000.0),
+            Samples(256),
+        ))
         .expect("builds");
     let mut last = Vec::new();
     for _ in 0..49 {

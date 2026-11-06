@@ -93,6 +93,26 @@ pub fn first_frame_at_or_after(frames_ahead: f64) -> i64 {
     (frames_ahead - FRAME_TOLERANCE).ceil() as i64
 }
 
+/// Musical time covered by one audio sample at `tempo` and `sample_rate`.
+///
+/// The per-frame rate a reader needs to place a beat inside a block
+/// (the MIDI clock, automation sampling): a beat span divided
+/// by it is a frame distance, which the engine's one placement rule
+/// ([`first_frame_at_or_after`]) turns
+/// into a frame, its tolerance absorbing the rate's rounding.
+///
+/// **No clock steps by it.** A playhead that adds this per frame or per block
+/// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
+/// frame 96 000, which is beat 3): the clocks count frames and derive the
+/// beat in closed form ([`TimelineSegment`]).
+///
+/// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
+/// by it divides by the same `f64`.
+#[inline]
+pub fn beats_per_sample(tempo: impl Into<Bpm>, sample_rate: impl Into<SampleRate>) -> BeatDuration {
+    BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
+}
+
 /// Returns a fractional frame position landed on the whole frame it is within
 /// [`FRAME_TOLERANCE`] of, if any; otherwise returns it unchanged.
 ///
@@ -238,6 +258,23 @@ mod tests {
     use super::*;
 
     const SR: SampleRate = SampleRate(48_000.0);
+
+    /// `(tempo / 60) / sample_rate`: 120 BPM at 48 kHz is exactly 1/24 000
+    /// beat per sample, and 90 BPM at 48 kHz is 1/32 000.
+    ///
+    /// Mutation (run): the tempo divided by 120 instead of 60 -> half the
+    /// rate -> fails.
+    #[test]
+    fn beats_per_sample_is_tempo_over_sixty_over_rate() {
+        assert_eq!(
+            beats_per_sample(Bpm(120.0), SR),
+            BeatDuration(2.0 / 48_000.0)
+        );
+        assert_eq!(
+            beats_per_sample(Bpm(90.0), SR),
+            BeatDuration(1.5 / 48_000.0)
+        );
+    }
 
     /// A position within the tolerance of a whole frame is that frame, from
     /// either side; one further off, or halfway, keeps its fraction.

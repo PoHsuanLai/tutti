@@ -49,7 +49,6 @@
 use std::sync::Arc;
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{Amplitude, Beat, Bpm, Hz, SampleRate};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock,
     GRAPH_MAX_BLOCK, Normalize, RenderConfig, RenderGraph, Rendered, Resample,
@@ -59,6 +58,7 @@ use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
 use tutti_nodes::testing::{Const, Osc, assert_golden};
+use tutti_types::{Amplitude, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -238,7 +238,7 @@ fn quad_vbap() -> GraphBuilder {
         );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
         pan.controls()
-            .set_position(az, tutti_core::Elevation::LEVEL);
+            .set_position(az, tutti_types::Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {
@@ -823,7 +823,7 @@ fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
         Voice {
             source: VoiceSource::Memory(source),
             play: Playback {
-                pitch: tutti_core::Cents::new(cents),
+                pitch: tutti_types::Cents::new(cents),
                 ..Default::default()
             },
             channel_index: None,

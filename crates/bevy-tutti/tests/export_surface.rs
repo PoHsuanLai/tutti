@@ -44,7 +44,7 @@ fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
 fn stereo_config() -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(44_100.0),
+            sample_rate: tutti_types::SampleRate(44_100.0),
             duration_seconds: 0.05,
             ..Default::default()
         },
@@ -66,7 +66,7 @@ fn app_with_engine_on() -> (App, Entity) {
     app.add_plugins(ExportPlugin);
     app.insert_resource(graph);
     app.insert_resource(AudioConfig {
-        sample_rate: tutti_core::SampleRate(44_100.0),
+        sample_rate: tutti_types::SampleRate(44_100.0),
         channels: ChannelLayout::STEREO,
     });
     // `engine_ready` gates `start_exports` on this state, not on the graph
@@ -414,9 +414,9 @@ fn the_prepare_hook_sees_the_callers_timeline() {
 
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: tutti_core::Beat(16.0),
-        tempo: tutti_core::Bpm(90.0),
-        sample_rate: tutti_core::SampleRate(44_100.0),
+        start_beat: tutti_types::Beat(16.0),
+        tempo: tutti_types::Bpm(90.0),
+        sample_rate: tutti_types::SampleRate(44_100.0),
         loop_range: None,
     }));
     static SEEN_TEMPO: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -476,9 +476,9 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
 
     let (mut app, _node) = app_with_engine_on();
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: tutti_core::Beat(4.0),
-        tempo: tutti_core::Bpm(90.0),
-        sample_rate: tutti_core::SampleRate(44_100.0),
+        start_beat: tutti_types::Beat(4.0),
+        tempo: tutti_types::Bpm(90.0),
+        sample_rate: tutti_types::SampleRate(44_100.0),
         loop_range: None,
     }));
     let seen: Arc<std::sync::Mutex<Option<usize>>> = Arc::default();

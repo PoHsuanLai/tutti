@@ -8,7 +8,7 @@ use cpal::traits::DeviceTrait;
 use std::sync::Arc;
 use tutti_core::Engine;
 use tutti_core::{AudioTap, MasterMeter};
-use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 use crate::block::OutputBlock;
 use crate::driver::DeviceInfo;

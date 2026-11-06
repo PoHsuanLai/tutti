@@ -51,7 +51,7 @@ A panner alone: stereo in, one output per speaker. Both panners are
 graph nodes (`tutti_graph::Node`); inserting one hands back its controls.
 
 ```rust
-use tutti_core::{Azimuth, Elevation, SampleRate, Samples};
+use tutti_types::{Azimuth, Elevation, SampleRate, Samples};
 use tutti_graph::{Prepare, Solo};
 use tutti_spatial::VbapPannerNode;
 

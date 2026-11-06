@@ -163,7 +163,6 @@ ogg = ["tutti-io/ogg", "tutti-sampler?/ogg"]
 midi = [
     "dep:tutti-midi-file",
     "dep:tutti-midi-runtime",
-    "tutti-core/midi",
     "tutti-session/midi",
 ]
 # The OS MIDI layer. Note the feature and the crate share the name `midi-hardware`
@@ -178,9 +177,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session/midi-hardware
 # wants the asset derives on both.
 synth = ["dep:tutti-polysynth", "tutti-session/synth"]
 # SoundFont does NOT imply `synth`: it is its own crate and pulls no voice
-# engine. `midi` is required — `tutti-soundfont` needs `tutti-core/midi`, and
-# enabling it here keeps `engine/build.rs` in step with the tutti-core that
-# compiles under feature unification.
+# engine. It implies `midi`: a soundfont is played by MIDI.
 soundfont = ["midi", "dep:tutti-soundfont", "tutti-session/soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::sampler`).
@@ -205,9 +202,6 @@ sampler = [
 audio-io = ["tutti-cpal/capture", "tutti-session/audio-io"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
-# `tutti-plugin-server` pulls `tutti-core` with `midi` under feature
-# unification, so `plugin` enables bevy-tutti's own `midi` to keep the two in
-# step.
 plugin = [
     "dep:tutti-plugin",
     "dep:tutti-plugin-server",

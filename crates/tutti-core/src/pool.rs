@@ -158,8 +158,8 @@ impl Shared {
 ///
 /// let pool = Arc::new(WorkerPool::new(4)); // the caller and three helpers
 /// # let (_editor, mut executor) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
-/// #     tutti_core::SampleRate(48_000.0),
-/// #     tutti_core::Samples(256),
+/// #     tutti_types::SampleRate(48_000.0),
+/// #     tutti_types::Samples(256),
 /// # ));
 /// executor.set_pool(Some(pool)); // before the executor goes to the audio thread
 /// ```

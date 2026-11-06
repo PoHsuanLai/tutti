@@ -8,13 +8,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Harmony,
     Io, LoopRange, Node, Prepare, Shape, Status, Transport,
 };
 use tutti_midi_runtime::{HarmonyControls, HarmonyNode, TimedHarmony};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -30,8 +30,8 @@ struct Sink(Seen);
 impl Node for Sink {
     fn shape(&self) -> Shape {
         Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::MONO,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
         )
         .with_events(1, 0)
     }

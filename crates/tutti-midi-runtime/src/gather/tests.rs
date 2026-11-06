@@ -1,7 +1,7 @@
 use super::*;
-use tutti_core::Samples;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_types::Samples;
 
 fn note(n: u8) -> MidiEvent {
     MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0xFFFF)

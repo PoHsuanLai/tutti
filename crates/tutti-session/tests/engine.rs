@@ -18,9 +18,10 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ChannelLayout, InterleavedMut, MetronomeMode, MotionEvent, SampleRate, Samples};
+use tutti_core::{MetronomeMode, MotionEvent};
 use tutti_nodes::testing::assert_golden;
 use tutti_session::{GraphSource, Session};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -59,7 +60,7 @@ fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
             transport
                 .motion
                 .try_send(MotionEvent::Locate {
-                    beat: tutti_core::Beat(0.75),
+                    beat: tutti_types::Beat(0.75),
                     fade: tutti_core::FadeOut::Immediate,
                     then: tutti_core::Then::Keep,
                 })
@@ -177,14 +178,14 @@ fn voice(cents: f32) -> tutti_sampler::VoicePool {
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }
-    let source = MemorySource::placed(Arc::new(wave), tutti_core::Beat(0.0), None);
+    let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None);
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
         Voice {
             source: VoiceSource::Memory(source),
             play: Playback {
-                pitch: tutti_core::Cents::new(cents),
+                pitch: tutti_types::Cents::new(cents),
                 ..Default::default()
             },
             channel_index: None,

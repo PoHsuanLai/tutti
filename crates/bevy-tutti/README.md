@@ -19,7 +19,7 @@ offline renderer), the `tutti` crate exposes the same engine with no ECS.
 ```rust
 use bevy::prelude::*;
 use bevy_tutti::prelude::*;
-use tutti_core::Hz;
+use tutti_types::Hz;
 use tutti_nodes::testing::Osc; // a test tone; needs tutti-nodes' `testing` feature
 
 fn main() {

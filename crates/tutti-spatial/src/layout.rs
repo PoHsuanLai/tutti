@@ -5,7 +5,7 @@
 //! destination buffer. The VBAP node uses [`speaker_channel_map`] to scatter
 //! its gains; the mix builder uses [`lfe_channel`] to route bass management.
 
-use tutti_core::ChannelLayout;
+use tutti_types::ChannelLayout;
 
 /// `map[i]` = file channel for speaker `i`.
 ///

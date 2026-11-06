@@ -27,10 +27,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tutti_core::{ChannelLayout, Engine, InterleavedMut, Transport};
+use tutti_core::{Engine, Transport};
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_plugin::server::RING_SLOTS;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, InterleavedMut};
 use tutti_types::{NodeKey, SampleRate, Samples, Tail};
 
 /// What the probe declares and delays by (`REPORTED_LATENCY_SAMPLES`).

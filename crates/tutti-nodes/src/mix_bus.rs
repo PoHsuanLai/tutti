@@ -23,8 +23,8 @@
 //! feature would make a VBAP dependency the price of summing two stereo
 //! signals.
 
-use tutti_core::{ChannelLayout, Tail};
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::{ChannelLayout, Tail};
 
 /// A dynamic-arity, dynamic-width summing bus: `sources * channels` inputs →
 /// `channels` outputs, summed per channel.

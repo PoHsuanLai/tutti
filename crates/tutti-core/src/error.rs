@@ -13,7 +13,7 @@ pub enum Error {
 
     /// A tempo outside the accepted 20.0..=999.0 BPM range, in [`Bpm`]'s units.
     ///
-    /// [`Bpm`]: crate::Bpm
+    /// [`Bpm`]: tutti_types::Bpm
     #[error("Invalid tempo: {0}. Must be between 20.0 and 999.0 BPM")]
     InvalidTempo(f32),
 

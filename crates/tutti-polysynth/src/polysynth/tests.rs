@@ -3,12 +3,12 @@ use crate::{
     Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve, PortamentoMode,
     SynthConfig, UnisonConfig, VoiceMode,
 };
-use tutti_core::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with
@@ -70,7 +70,7 @@ impl Hand {
     /// through `Node::process`.
     fn drive(&mut self, frames: usize, mut queued: Vec<MidiEvent>) -> [Vec<f32>; 2] {
         queued.sort_by_key(|e| e.frame_offset);
-        let block = tutti_core::Samples(frames);
+        let block = tutti_types::Samples(frames);
         let (inside, past): (Vec<MidiEvent>, Vec<MidiEvent>) = queued
             .into_iter()
             .partition(|e| (e.frame_offset as usize) < frames);
@@ -83,7 +83,7 @@ impl Hand {
             })
             .collect();
         let env = tutti_graph::Env {
-            frame: tutti_core::Frame(0),
+            frame: tutti_types::Frame(0),
             sample_rate: self.synth.config.sample_rate,
             block_len: block,
             transport: tutti_graph::Transport::default(),
@@ -112,7 +112,7 @@ fn synth(config: SynthConfig) -> Hand {
 #[test]
 fn a_full_block_renders_every_frame() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         // Near-instant attack, so the note is audible within the first block
         // rather than still ramping up from silence.
@@ -203,7 +203,7 @@ fn ev_aftertouch(channel: u8, pressure: u8) -> MidiEvent {
 #[test]
 fn a_fork_carries_no_sounding_note() {
     let mut live = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -228,7 +228,7 @@ fn a_fork_carries_no_sounding_note() {
 #[test]
 fn a_clone_unaliases_voice_state() {
     let mut live = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -265,13 +265,13 @@ fn a_clone_unaliases_voice_state() {
 fn test_unison_creates_subvoices() {
     // Create synth with 3-voice unison
     let synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(15.0),
+            detune_cents: tutti_types::Cents(15.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
         }),
@@ -292,7 +292,7 @@ fn test_unison_creates_subvoices() {
 /// pinned the synth's `ModParams` impl and then an `AtomicTarget` over
 /// the set's cell; doc 014 §10 deleted both, and the `ParamSet` is the
 /// one address.)
-fn set(synth: &PolySynth, p: tutti_core::UnitParam, value: f32) -> bool {
+fn set(synth: &PolySynth, p: tutti_types::UnitParam, value: f32) -> bool {
     tutti_graph::ParamNode::param_set(synth).set(p, value)
 }
 
@@ -300,10 +300,10 @@ fn set(synth: &PolySynth, p: tutti_core::UnitParam, value: f32) -> bool {
 /// the master atomic → the atomic stays 1.0 → fails.
 #[test]
 fn a_volume_write_moves_the_master_atomic() {
-    use tutti_core::UnitParam;
+    use tutti_types::UnitParam;
 
     let synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         ..Default::default()
     });
@@ -321,12 +321,12 @@ fn a_volume_write_moves_the_master_atomic() {
 /// last assertion fails.
 #[test]
 fn detune_is_addressable_with_unison_absent_without() {
-    use tutti_core::UnitParam;
+    use tutti_types::UnitParam;
 
     let with_unison = synth(SynthConfig {
         unison: Some(UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(10.0),
+            detune_cents: tutti_types::Cents(10.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
         }),
@@ -343,15 +343,15 @@ fn detune_is_addressable_with_unison_absent_without() {
 /// the ratio stays 1.0 → fails.
 #[test]
 fn a_detune_write_recomputes_unison_on_process() {
-    use tutti_core::UnitParam;
+    use tutti_types::UnitParam;
 
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(0.0),
+            detune_cents: tutti_types::Cents(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: false,
         }),
@@ -382,7 +382,7 @@ fn a_detune_write_recomputes_unison_on_process() {
 #[test]
 fn test_unison_stereo_output() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
@@ -394,7 +394,7 @@ fn test_unison_stereo_output() {
         }, // Fast attack to get output quickly
         unison: Some(UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(15.0),
+            detune_cents: tutti_types::Cents(15.0),
             stereo_spread: Spread(1.0), // Full stereo spread
             phase_randomize: false,
         }),
@@ -441,7 +441,7 @@ fn test_unison_stereo_output() {
 fn test_no_unison_single_subvoice() {
     // Create synth without unison
     let synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -463,13 +463,13 @@ fn test_no_unison_single_subvoice() {
 #[test]
 fn test_basic_dsp_chain() {
     use crate::bank::VoiceBank;
-    use tutti_core::Phase;
+    use tutti_types::Phase;
 
     let mut bank = VoiceBank::new(
         OscillatorType::Saw,
         &FilterType::None,
         &Adsr::new(Seconds(0.001), Seconds(0.1), Amplitude(0.8), Seconds(0.1)),
-        tutti_core::SampleRate(44100.0),
+        tutti_types::SampleRate(44100.0),
         1,
         1,
     );
@@ -505,13 +505,13 @@ fn test_basic_dsp_chain() {
 fn test_dynamic_unison_resize() {
     // Create synth with 2-voice unison
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: 2,
-            detune_cents: tutti_core::Cents(10.0),
+            detune_cents: tutti_types::Cents(10.0),
             stereo_spread: Spread(0.5),
             phase_randomize: false,
         }),
@@ -556,7 +556,7 @@ fn test_dynamic_unison_resize() {
 #[test]
 fn test_note_off_respects_channel() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -611,7 +611,7 @@ fn test_note_off_respects_channel() {
 #[test]
 fn test_cc64_sustain_pedal_holds_notes() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -663,7 +663,7 @@ fn test_cc64_sustain_pedal_holds_notes() {
 #[test]
 fn test_cc66_sostenuto_pedal_holds_notes() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -727,7 +727,7 @@ fn test_cc66_sostenuto_pedal_holds_notes() {
 #[test]
 fn test_cc120_all_sound_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -763,7 +763,7 @@ fn test_cc120_all_sound_off() {
 #[test]
 fn test_cc123_all_notes_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -804,7 +804,7 @@ fn test_cc123_all_notes_off() {
 #[test]
 fn test_cc123_respects_channel() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -848,7 +848,7 @@ fn test_cc123_respects_channel() {
 #[test]
 fn test_velocity_zero_note_on_is_note_off() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -884,7 +884,7 @@ fn test_velocity_zero_note_on_is_note_off() {
 #[test]
 fn test_legato_mode_no_retrigger() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 1,
         voice_mode: VoiceMode::Legato,
         oscillator: OscillatorType::Sine,
@@ -931,7 +931,7 @@ fn test_legato_mode_no_retrigger() {
 #[test]
 fn test_mono_mode_retrigger() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 1,
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
@@ -978,7 +978,7 @@ fn test_mono_mode_retrigger() {
 #[test]
 fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
     let config = || SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1013,7 +1013,7 @@ fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
     struck.tick(&[], &mut out);
     let struck_freq = struck.voices[0].sounding_freq();
 
-    let delta = tutti_core::Cents::from_pitch_ratio(held_freq.get() / struck_freq.get());
+    let delta = tutti_types::Cents::from_pitch_ratio(held_freq.get() / struck_freq.get());
     assert!(
         delta.get().abs() < 0.5,
         "same wheel position, two pitches: held {held_freq:?} vs struck {struck_freq:?} \
@@ -1024,7 +1024,7 @@ fn a_bend_lands_on_the_same_pitch_whether_the_note_was_already_sounding() {
 #[test]
 fn test_portamento_with_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 2,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1037,7 +1037,7 @@ fn test_portamento_with_pitch_bend() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: PortamentoCurve::Linear,
-            time: tutti_core::Seconds(0.05), // 50ms glide
+            time: tutti_types::Seconds(0.05), // 50ms glide
             constant_time: true,
         }),
         ..Default::default()
@@ -1077,7 +1077,7 @@ fn test_portamento_with_pitch_bend() {
 #[test]
 fn test_zero_voices_returns_error() {
     let result = PolySynth::new(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 0,
         ..Default::default()
     });
@@ -1087,7 +1087,7 @@ fn test_zero_voices_returns_error() {
 #[test]
 fn test_polysynth_reset() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1119,7 +1119,7 @@ fn test_polysynth_reset() {
 #[test]
 fn test_mpe_per_voice_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1130,7 +1130,7 @@ fn test_mpe_per_voice_pitch_bend() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1186,7 +1186,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     // sound on the same channel (where the classic per-channel MPE handler
     // would have bent both). This is the per-note-addressing proof.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1197,7 +1197,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1244,7 +1244,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     // MIDI 2.0 Per-Note Management {reset:true} must reset ONLY the addressed
     // note's per-note expression, leaving another sounding voice's bend intact.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1255,7 +1255,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1322,7 +1322,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
     // absolute pitch for the addressed note. Note 60 retuned to note 69.0
     // (A440) should sound at 440 Hz; another note is untouched.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1383,7 +1383,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     // Detach (D=1): the addressed voice keeps its current per-note bend but
     // stops responding to further per-note controllers (M2-104 §7.4.5).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1394,7 +1394,7 @@ fn test_per_note_management_detach_freezes_the_note() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1463,7 +1463,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     // 12-semitone sensitivity, a full per-note bend should reach ~12 semitones
     // (not the default 48).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1474,7 +1474,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1521,7 +1521,7 @@ fn test_reset_all_controllers_spares_per_note() {
     // Reset All Controllers (CC121) resets channel controllers + global pitch
     // bend but must NOT touch per-note controllers (M2-104 Appendix B.2).
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1532,7 +1532,7 @@ fn test_reset_all_controllers_spares_per_note() {
             release: Seconds(0.1),
         },
         mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+        mpe_pitch_bend_range: tutti_types::Semitones(48.0),
         ..Default::default()
     });
 
@@ -1574,7 +1574,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // A Registered Per-Note Controller for Brightness (CC74 / SoundController
     // index 5) addressed to note X must set ONLY note X's slide.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
@@ -1644,7 +1644,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
     // and as a Registered Volume controller — must reach the addressed voice
     // as gain, and leave others at unity.
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1707,7 +1707,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
 #[test]
 fn test_mpe_per_voice_pressure() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1758,7 +1758,7 @@ fn test_mpe_per_voice_pressure() {
 #[test]
 fn test_mpe_per_voice_slide() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Saw,
@@ -1809,7 +1809,7 @@ fn test_mpe_per_voice_slide() {
 #[test]
 fn test_mpe_disabled_global_pitch_bend() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1848,7 +1848,7 @@ fn test_mpe_disabled_global_pitch_bend() {
 #[test]
 fn test_mpe_pressure_affects_amplitude() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 1,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1895,7 +1895,7 @@ fn test_mpe_pressure_affects_amplitude() {
 #[test]
 fn test_mpe_note_on_resets_expression() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::SR_44K1,
+        sample_rate: tutti_types::SampleRate::SR_44K1,
         max_voices: 4,
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
@@ -1978,7 +1978,7 @@ fn enabling_mpe_applies_to_a_sounding_voice() {
             max_voices: 4,
             oscillator: OscillatorType::Sine,
             mpe_enabled: false,
-            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            mpe_pitch_bend_range: tutti_types::Semitones(48.0),
             ..Default::default()
         })
         .unwrap(),
@@ -2016,7 +2016,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
             max_voices: 4,
             oscillator: OscillatorType::Sine,
             mpe_enabled: true,
-            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            mpe_pitch_bend_range: tutti_types::Semitones(48.0),
             ..Default::default()
         })
         .unwrap(),
@@ -2078,12 +2078,12 @@ fn disabling_mpe_clears_latent_per_note_state() {
 #[test]
 fn a_long_block_renders_every_frame_like_short_blocks() {
     let config = || SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 4,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
             cutoff: Hz(3_000.0),
-            q: tutti_core::Q(1.0),
+            q: tutti_types::Q(1.0),
             mode: crate::SvfMode::Lowpass,
         },
         portamento: Some(PortamentoConfig {
@@ -2154,12 +2154,12 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
 #[test]
 fn unison_grown_under_a_held_note_sounds_immediately() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 2,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: 1,
-            detune_cents: tutti_core::Cents(12.0),
+            detune_cents: tutti_types::Cents(12.0),
             stereo_spread: Spread(1.0),
             phase_randomize: false,
         }),
@@ -2208,7 +2208,7 @@ fn unison_grown_under_a_held_note_sounds_immediately() {
 #[test]
 fn process_and_tick_agree_through_a_glide() {
     let config = || SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 1,
         voice_mode: VoiceMode::Mono,
         oscillator: OscillatorType::Sine,
@@ -2277,12 +2277,12 @@ fn process_and_tick_agree_through_a_glide() {
 #[test]
 fn a_chord_gets_a_distinct_phase_stack_per_voice() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 2,
         oscillator: OscillatorType::Saw,
         unison: Some(UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(0.0),
+            detune_cents: tutti_types::Cents(0.0),
             stereo_spread: Spread(0.0),
             phase_randomize: true,
         }),
@@ -2336,7 +2336,7 @@ fn a_chord_gets_a_distinct_phase_stack_per_voice() {
 #[test]
 fn a_steal_at_a_different_velocity_does_not_click() {
     let mut synth = synth(SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 1,
         allocation_strategy: crate::AllocationStrategy::Oldest,
         oscillator: OscillatorType::Sine,
@@ -2384,12 +2384,12 @@ fn a_steal_at_a_different_velocity_does_not_click() {
 #[test]
 fn reset_all_controllers_leaves_the_cutoff_alone() {
     let config = || SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(48_000.0),
+        sample_rate: tutti_types::SampleRate::from(48_000.0),
         max_voices: 1,
         oscillator: OscillatorType::Saw,
         filter: FilterType::Svf {
             cutoff: Hz(600.0),
-            q: tutti_core::Q(0.707),
+            q: tutti_types::Q(0.707),
             mode: crate::SvfMode::Lowpass,
         },
         ..Default::default()
@@ -2456,13 +2456,13 @@ fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
     use tutti_graph::ParamFork;
     let live = || {
         let synth = synth(SynthConfig {
-            sample_rate: tutti_core::SampleRate(48_000.0),
+            sample_rate: tutti_types::SampleRate(48_000.0),
             max_voices: 4,
             voice_mode: VoiceMode::Poly,
             oscillator: OscillatorType::Saw,
             unison: Some(UnisonConfig {
                 voice_count: 3,
-                detune_cents: tutti_core::Cents(15.0),
+                detune_cents: tutti_types::Cents(15.0),
                 stereo_spread: Spread(0.5),
                 phase_randomize: false,
             }),
@@ -2479,9 +2479,9 @@ fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
         (l, r)
     };
     for (param, value) in [
-        (tutti_core::UnitParam::Volume, 0.9),
-        (tutti_core::UnitParam::Detune, 40.0),
-        (tutti_core::UnitParam::StereoSpread, 1.0),
+        (tutti_types::UnitParam::Volume, 0.9),
+        (tutti_types::UnitParam::Detune, 40.0),
+        (tutti_types::UnitParam::StereoSpread, 1.0),
     ] {
         let synth = live();
         let source = ParamFork::new(&synth);

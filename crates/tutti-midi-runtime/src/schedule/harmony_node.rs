@@ -27,11 +27,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tutti_core::{ArcLend, Beat, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, Harmony, HarmonyKind,
     IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
+use tutti_types::{ArcLend, Beat, ChannelLayout, Reader};
 
 use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 
@@ -115,7 +115,7 @@ impl Shared {
 /// See the module docs.
 ///
 /// ```
-/// use tutti_core::{Beat, NodeKey, SampleRate, Samples};
+/// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Harmony, Prepare};
 /// use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
 ///

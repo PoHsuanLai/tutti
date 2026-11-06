@@ -27,9 +27,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::SampleRate;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/probe_path.rs"]
@@ -123,7 +123,7 @@ fn load() -> Loaded {
 fn prepare_at(unit: &mut InProcessVst2Client, rate: SampleRate) {
     tutti_graph::Node::prepare(
         unit,
-        &tutti_graph::Prepare::new(rate, tutti_core::Samples(BLOCK)),
+        &tutti_graph::Prepare::new(rate, tutti_types::Samples(BLOCK)),
     );
 }
 
@@ -138,15 +138,15 @@ fn drive_block(unit: &mut InProcessVst2Client) {
 fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(SAMPLE_RATE);
-    Node::prepare(unit, &Prepare::new(rate, tutti_core::Samples(max)));
+    Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
         .map(|_| &silence[..])
         .collect();
     let env = Env {
-        frame: tutti_core::Frame(0),
+        frame: tutti_types::Frame(0),
         sample_rate: rate,
-        block_len: tutti_core::Samples(frames),
+        block_len: tutti_types::Samples(frames),
         transport: Transport::default(),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
@@ -362,7 +362,7 @@ fn the_output_is_what_the_plugin_wrote() {
     let rate = SampleRate(SAMPLE_RATE);
     Node::prepare(
         &mut loaded.unit,
-        &Prepare::new(rate, tutti_core::Samples(BLOCK)),
+        &Prepare::new(rate, tutti_types::Samples(BLOCK)),
     );
     let channels = usize::from(Node::shape(&loaded.unit).audio_in.count());
     assert_eq!(channels, 2, "the probe's default layout is stereo");
@@ -379,9 +379,9 @@ fn the_output_is_what_the_plugin_wrote() {
             .collect();
         let inputs: Vec<&[f32]> = input.iter().map(|c| &c[..]).collect();
         let env = Env {
-            frame: tutti_core::Frame(0),
+            frame: tutti_types::Frame(0),
             sample_rate: rate,
-            block_len: tutti_core::Samples(frames),
+            block_len: tutti_types::Samples(frames),
             transport: Transport::default(),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
@@ -401,8 +401,8 @@ fn the_output_is_what_the_plugin_wrote() {
 /// whatever its input: what leaves a non-zero buffer behind for a later node
 /// to be handed.
 struct Fill {
-    width: tutti_core::ChannelLayout,
-    inputs: tutti_core::ChannelLayout,
+    width: tutti_types::ChannelLayout,
+    inputs: tutti_types::ChannelLayout,
     value: f32,
 }
 
@@ -438,8 +438,8 @@ impl tutti_graph::Node for Fill {
 /// the stale value → fails.
 #[test]
 fn outputs_past_the_tables_are_silent() {
-    use tutti_core::{ChannelLayout, Samples};
     use tutti_graph::{GraphBuilder, Prepare, Transport, Unforkable};
+    use tutti_types::{ChannelLayout, Samples};
     use tutti_vst2_test_plugin::channel_tag;
 
     const WIDE: usize = 18;
@@ -612,7 +612,7 @@ fn an_io_change_reaches_on_invalidate_and_the_shape() {
     let seen = seen.lock().unwrap();
     assert!(
         seen.contains(&PluginInvalidation::Latency {
-            samples: tutti_core::Samples(300)
+            samples: tutti_types::Samples(300)
         }),
         "{seen:?}"
     );

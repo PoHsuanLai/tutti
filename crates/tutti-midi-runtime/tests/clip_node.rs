@@ -9,13 +9,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, IntoNode, Io, LoopRange, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Ump, Unforkable,
 };
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;
@@ -28,8 +28,8 @@ struct Sink(Seen);
 impl Node for Sink {
     fn shape(&self) -> Shape {
         Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
         )
         .with_events(1, 0)
     }
@@ -676,7 +676,7 @@ fn a_tempo_change_inside_a_block_re_times_the_passes() {
 /// early where a wrap overshoots → fails.
 #[test]
 fn every_pass_lands_where_the_hosts_clock_reaches_it() {
-    use tutti_core::{FRAME_TOLERANCE, FrameClock, LoopRange as Region};
+    use tutti_types::{FRAME_TOLERANCE, FrameClock, LoopRange as Region};
     const TEMPO: f64 = 97.0;
     let (start, end) = (Beat(3.0), Beat(3.00126));
     let fpb = RATE * 60.0 / TEMPO;
@@ -689,7 +689,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     );
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     let region = Region::new(start, end).unwrap();
-    let mut clock = FrameClock::new(Beat(2.999), tutti_core::Bpm(TEMPO), SampleRate(RATE));
+    let mut clock = FrameClock::new(Beat(2.999), tutti_types::Bpm(TEMPO), SampleRate(RATE));
     for _ in 0..4 {
         exec.process(
             512,
@@ -703,7 +703,7 @@ fn every_pass_lands_where_the_hosts_clock_reaches_it() {
     // The reference walk.
     let tol = FRAME_TOLERANCE / fpb;
     let mut want = Vec::new();
-    let mut walk = FrameClock::new(Beat(2.999), tutti_core::Bpm(TEMPO), SampleRate(RATE));
+    let mut walk = FrameClock::new(Beat(2.999), tutti_types::Bpm(TEMPO), SampleRate(RATE));
     let mut prev: Option<f64> = None;
     for f in 0..4 * 512u64 {
         let b = walk.beat().get();
@@ -751,8 +751,8 @@ fn sub_frame_loop(start: Beat, end: Beat) -> Option<Vec<(u64, u32)>> {
         let clip = MidiClipNode::new([TimedMidiEvent::new(start, on(60))]);
         let (_ed, mut exec, _c, seen) = rig(clip, 64);
         let mut clock =
-            tutti_core::FrameClock::new(start, tutti_core::Bpm(120.0), SampleRate(RATE));
-        let region = tutti_core::LoopRange::new(start, end).unwrap();
+            tutti_types::FrameClock::new(start, tutti_types::Bpm(120.0), SampleRate(RATE));
+        let region = tutti_types::LoopRange::new(start, end).unwrap();
         for _ in 0..4 {
             exec.process(
                 64,

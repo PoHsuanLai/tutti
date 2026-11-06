@@ -29,15 +29,15 @@ use std::sync::Arc;
 
 use std::sync::atomic::Ordering;
 
-use tutti_core::{
-    Amplitude, AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, NodeKey,
-    PhaseIncrement, SampleRate, Samples, UnitParam,
-};
 use tutti_graph::{EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, Transport};
 use tutti_io::Wave;
 use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};
+use tutti_types::{
+    Amplitude, AtomicF32, Beat, BeatDuration, Bpm, ChannelLayout, Depth, Frame, NodeKey,
+    PhaseIncrement, SampleRate, Samples, UnitParam,
+};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const BLOCK: usize = 256;

@@ -11,7 +11,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use tutti_types::NodeKey;
-use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source, Topology};
+use tutti_types::{
+    Topology,
+    graph::{Edge, FeedbackFrom, InPort, OutPort, Source},
+};
 
 use crate::editor::{CommitError, Editor};
 use crate::exec::Executor;

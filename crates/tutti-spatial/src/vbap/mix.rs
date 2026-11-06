@@ -7,9 +7,9 @@
 //! is arity arithmetic with no geometry in it, and mixers that never touch VBAP
 //! need it too.
 
-use tutti_core::{Azimuth, ChannelLayout, Elevation, Hz, NodeKey, Q};
 use tutti_graph::GraphBuilder;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
+use tutti_types::{Azimuth, ChannelLayout, Elevation, Hz, NodeKey, Q};
 
 use super::error::Result;
 use super::node::VbapPannerNode;

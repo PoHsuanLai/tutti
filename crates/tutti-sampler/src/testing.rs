@@ -16,8 +16,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tutti_core::{Beat, Bpm, Frame, SampleRate, Samples};
 use tutti_graph::{Env, Node, Transport, TransportChanges, contract};
+use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
 
 /// A transport a test can move between blocks, as a real one moves.
 ///

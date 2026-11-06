@@ -39,7 +39,7 @@ vst2 = ["dep:tutti-vst2-host", "dep:arrayvec"]
 
 [dependencies]
 # Core types (units, transport, metering)
-tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
+tutti-core = { path = "../tutti-core", default-features = false }
 # The AudioIn/AudioOut I/O vocabulary — the slab is the concrete process edge
 # realising those two roles (see util/transport/shm/slab.rs).
 tutti-types = { path = "../tutti-types" }

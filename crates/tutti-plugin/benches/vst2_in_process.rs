@@ -29,9 +29,9 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::SampleRate;
 use tutti_graph::contract::Direct;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_types::SampleRate;
 
 // The bench target gets dev-dependencies, and its binary sits in `deps/` like a
 // test's, so the test suites' resolver works here unchanged.

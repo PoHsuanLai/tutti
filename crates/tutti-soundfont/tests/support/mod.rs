@@ -10,11 +10,11 @@
 
 use std::ops::{Deref, DerefMut};
 
-use tutti_core::{SampleRate, Samples};
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_soundfont::SoundFontUnit;
+use tutti_types::{SampleRate, Samples};
 
 /// The block length a [`Hand`] renders: 64 frames.
 pub const BLOCK: usize = 64;

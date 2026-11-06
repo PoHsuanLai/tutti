@@ -17,7 +17,7 @@
 //! read head to guess.
 //!
 //! The slots, the window and the protocol that keeps a write from ever
-//! landing under a read are `tutti_core::PosRing`'s (its module docs have the
+//! landing under a read are `tutti_types::PosRing`'s (its module docs have the
 //! argument, and `tutti-types/tests/pos_ring_loom.rs` checks it under loom).
 //! Its one `PosWriter` is the butler's [`RegionOut`]'s; its one `PosReader`
 //! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
@@ -48,10 +48,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{
+use tutti_io::Wave;
+use tutti_types::{
     ArcLend, ChannelLayout, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader, Samples,
 };
-use tutti_io::Wave;
 
 #[cfg(codec)]
 use tutti_io::FileIn;
@@ -424,12 +424,12 @@ impl RegionOut {
     }
 }
 
-/// The ring is the engine's [`AudioOut`](tutti_core::AudioOut) shape: flat
+/// The ring is the engine's [`AudioOut`](tutti_types::AudioOut) shape: flat
 /// interleaved in, a runtime [`ChannelLayout`] for the width, counts in
 /// frames. `write` appends at the window's end; the inherent
 /// [`push_interleaved`](RegionOut::push_interleaved) stays the one production
 /// callers use, because it returns what landed.
-impl tutti_core::AudioOut<f32> for RegionOut {
+impl tutti_types::AudioOut<f32> for RegionOut {
     fn layout(&self) -> ChannelLayout {
         self.ring.channels
     }
@@ -527,7 +527,7 @@ impl RegionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::AudioOut;
+    use tutti_types::AudioOut;
 
     /// `frames` frames at `channels`, sample `c` of frame `f` carrying
     /// `f * channels + c`, so a rotation or a tear is a wrong value.

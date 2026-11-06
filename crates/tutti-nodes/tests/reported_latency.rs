@@ -9,13 +9,13 @@
 //! the output with an impulse, because the number alone cannot fail on a node
 //! whose DSP drifted away from it.
 
-use tutti_core::{ChannelLayout, Hz};
-use tutti_core::{SampleRate, Samples};
 use tutti_graph::contract::{drive, prepared};
 use tutti_graph::{GraphBuilder, Node, Prepare};
 use tutti_nodes::testing::Through;
 use tutti_nodes::{CrossoverNode, DelayLineNode, ModDelayNode, MultibandCompressorNode};
 use tutti_types::Latency;
+use tutti_types::{ChannelLayout, Hz};
+use tutti_types::{SampleRate, Samples};
 
 const SR: SampleRate = SampleRate(48_000.0);
 /// The block the impulse responses are rendered in.
@@ -229,10 +229,10 @@ fn a_delay_insert_adds_no_compensation_to_the_other_paths() {
 /// reads 0 and the dry impulse leaves at frame 0 → fails.
 #[test]
 fn a_limiter_summed_with_a_dry_path_reports_the_limiter_latency() {
-    use tutti_core::{ChannelLayout, Db, Samples, Seconds};
     use tutti_graph::{GraphBuilder, Prepare};
     use tutti_nodes::{ChannelSumNode, LimiterNode};
     use tutti_types::Latency;
+    use tutti_types::{ChannelLayout, Db, Samples, Seconds};
 
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (lim, _) = g.add_with_controls(LimiterNode::with_channels(

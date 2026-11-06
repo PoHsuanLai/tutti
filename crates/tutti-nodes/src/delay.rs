@@ -8,14 +8,14 @@
 //! a delay whose time is modulated must interpolate between taps or it steps
 //! audibly.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
+use tutti_types::AtomicF32;
 
-use tutti_core::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
+use tutti_types::{ChannelLayout, Feedback, Mix, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::{LastGood, block_driven, finite_or};
 use tutti_dsp::Ramp;
@@ -434,7 +434,7 @@ impl DelayLineNode {
             },
             mix: self.good[2].read(mix_port.map_or_else(
                 || self.mix.load().get(),
-                |m| tutti_core::Mix::new_clamped(m).get(),
+                |m| tutti_types::Mix::new_clamped(m).get(),
             )),
         };
         let from = self.last.unwrap_or(target);
@@ -1035,7 +1035,7 @@ mod tests {
             &[&x[4_096..], &x[4_096..]],
         );
         run.assert_ramps_in("delay time");
-        let want = fractional_samples(Seconds(0.2), tutti_core::SampleRate(48_000.0));
+        let want = fractional_samples(Seconds(0.2), tutti_types::SampleRate(48_000.0));
         assert_eq!(run.ramped.last_delay, vec![want, want]);
     }
 

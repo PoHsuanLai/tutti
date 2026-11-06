@@ -1,12 +1,12 @@
 //! A session on a device, device-free: `build_device_on` and `restart_on`
 //! over `ManualStreamDriver`s standing for the devices.
 
-use tutti_core::{ChannelLayout, Db, Hz, SampleRate, Samples};
 use tutti_cpal::{ManualStreamDriver, OutputSpec};
 use tutti_graph::ForkByClone;
 use tutti_nodes::LimiterNode;
 use tutti_nodes::testing::Osc;
 use tutti_session::{GraphSource, Session};
+use tutti_types::{ChannelLayout, Db, Hz, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {
     OutputSpec::new(

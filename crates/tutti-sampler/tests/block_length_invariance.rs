@@ -59,15 +59,15 @@ use std::f32::consts::TAU;
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{
-    Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
-};
 use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
 use tutti_io::Wave;
 use tutti_sampler::{
     Command, Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback,
     SlotId, StepOutcome, Voice, VoiceNode, VoicePool, VoiceSource,
+};
+use tutti_types::{
+    Beat, Bpm, Cents, Frame, PlaybackRate, SamplePosition, SampleRate, Samples, StretchFactor,
 };
 
 const SR: f64 = 48_000.0;

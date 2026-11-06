@@ -64,7 +64,7 @@ and the channel fold/upmix paths.
 The Rust tests read files back with `hound`, which only speaks WAV. FLAC, AIFF
 and Ogg are checked there by frame count and header — never by content. So
 "does the FLAC hold the same samples as the WAV" is not a question the Rust suite
-can ask. A FLAC quantizer that **truncated** where `tutti_core::pcm` rounds
+can ask. A FLAC quantizer that **truncated** where `tutti_types::pcm` rounds
 would encode 0.7 as 22936 in a FLAC and 22937 in a WAV from the same render,
 and a unit test at 0.0 and ±1.0, where truncation and rounding agree, would not
 notice.

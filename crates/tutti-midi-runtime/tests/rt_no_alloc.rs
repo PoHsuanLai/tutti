@@ -7,7 +7,6 @@
 //! → the gate panics.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Harmony, LoopRange, Prepare, Transport};
 use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode,
@@ -15,6 +14,7 @@ use tutti_midi_runtime::{
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
+use tutti_types::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -262,7 +262,7 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
         );
     }
     ed.commit().unwrap();
-    let region = tutti_core::LoopRange::new(start, end).unwrap();
+    let region = tutti_types::LoopRange::new(start, end).unwrap();
     let looping = Some(LoopRange { start, end });
     let mut clock = FrameClock::new(start, Bpm(120.0), SampleRate(RATE));
     let mut drain = [MidiEvent::noop(); 256];

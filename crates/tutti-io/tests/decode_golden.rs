@@ -11,8 +11,8 @@
 
 use std::path::PathBuf;
 
-use tutti_core::Samples;
 use tutti_io::{AudioIn, FileIn, Wave};
+use tutti_types::Samples;
 
 fn asset(name: &str) -> PathBuf {
     tutti_fixtures::asset(&format!("audio/{name}"))

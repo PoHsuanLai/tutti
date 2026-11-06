@@ -26,8 +26,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::{Azimuth, Elevation, Mix, Radians, SampleRate, Samples, fold_frame_to_mono};
 use tutti_dsp::Complex32;
+use tutti_types::{Azimuth, Elevation, Mix, Radians, SampleRate, Samples, fold_frame_to_mono};
 
 use super::sphere::{HrirSphere, HrtfSet, Weights};
 use crate::AngleSmoother;

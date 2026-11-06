@@ -2,8 +2,8 @@ use super::*;
 use crate::butler::{RegionBuffer, RegionId};
 use crate::testing::{MockTransport, block};
 use std::path::PathBuf;
-use tutti_core::{Bpm, SamplePosition, Samples};
 use tutti_graph::contract::Direct;
+use tutti_types::{Bpm, SamplePosition, Samples};
 
 /// The rate the tests' blocks run at.
 const SR: f64 = 44_100.0;
@@ -153,7 +153,7 @@ fn placement_gate_applies_src_ratio_exactly_once() {
     let (inner, state) = make_unit(&samples);
     let ring = Arc::clone(inner.read.ring());
     let src = 48_000.0 / 44_100.0;
-    state.set_src_ratio(tutti_core::SrcRatio::new(src as f32));
+    state.set_src_ratio(tutti_types::SrcRatio::new(src as f32));
 
     let mut reader = DiskVoice::new(
         inner,

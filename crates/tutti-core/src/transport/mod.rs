@@ -35,7 +35,7 @@ pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
-pub use state::{ClockLinks, Declick, LoopRange, PlayheadClaimed, SeekSlot, beats_per_sample};
+pub use state::{ClockLinks, Declick, PlayheadClaimed, SeekSlot};
 pub use timed::{SCHEDULE_CAPACITY, ScheduleFull, TransportCommand};
 pub(crate) use timed::{Schedule, Scheduled};
 
@@ -153,8 +153,8 @@ pub trait TransportState: Timeline {
     /// Whether the transport is armed and recording. Always `false` offline.
     fn is_recording(&self) -> bool;
     /// The active loop region, or `None` when not looping. Always a valid,
-    /// non-empty region — see [`LoopRange`].
-    fn loop_range(&self) -> Option<LoopRange>;
+    /// non-empty region — see [`LoopRange`](tutti_types::LoopRange).
+    fn loop_range(&self) -> Option<tutti_types::LoopRange>;
     /// Samples elapsed since the stream started — free-running, never reset by
     /// a loop, seek, or stop.
     ///

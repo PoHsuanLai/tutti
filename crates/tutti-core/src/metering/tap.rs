@@ -13,13 +13,13 @@
 //! host-supplied hook, so the alternative is a graph node spliced into
 //! `MasterSources`.
 
-use crate::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
     traits::{Producer, Split},
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Ring capacity in stereo frames — ~3 seconds at 44.1 kHz.
 const CAPACITY: usize = 131_072;
@@ -65,9 +65,9 @@ impl TapCons {
     /// [`try_pop`](Self::try_pop) pays both per frame. Zero means the same as
     /// an empty `try_pop`: nothing pushed since the last poll.
     #[inline]
-    pub fn pop_into(&mut self, out: &mut [f32]) -> crate::Samples {
+    pub fn pop_into(&mut self, out: &mut [f32]) -> tutti_types::Samples {
         use ringbuf::traits::Consumer;
-        crate::Samples(self.0.pop_slice(out.as_chunks_mut::<2>().0))
+        tutti_types::Samples(self.0.pop_slice(out.as_chunks_mut::<2>().0))
     }
 
     /// Frames readable right now.

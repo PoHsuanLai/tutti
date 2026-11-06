@@ -19,10 +19,11 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
 // `SessionNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
+use tutti_core::LoopEdit;
 use tutti_core::transport::Transport;
-use tutti_core::{At, Hz, LoopEdit, LoopRange, Q};
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::{At, Hz, LoopRange, Q};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -41,7 +42,7 @@ fn main() {
     let mut graph = AudioGraphRes::headless(0, 2);
     graph
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+        .set_sample_rate(tutti_types::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));

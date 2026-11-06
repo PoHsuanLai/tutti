@@ -64,7 +64,7 @@ use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
 use tutti_types::Samples;
-use tutti_types::meter::{BarNumber, TimeSignature};
+use tutti_types::{BarNumber, TimeSignature};
 
 /// Serializes component discovery / instantiate / dispose, exactly as
 /// `au_conformance.rs`'s lock of the same name does. AudioToolbox tolerates

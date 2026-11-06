@@ -26,10 +26,10 @@
 //! and the host's monotonic clock ([`HostClock`], read once per block; none
 //! for an offline render).
 
-use tutti_core::meter::{Meter, MeterMap};
-use tutti_core::{Beat, Bpm, SampleRate, SegmentOrigin};
 use tutti_graph::{Continuity, Cx, Offset, Transport};
 use tutti_types::Samples;
+use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
+use tutti_types::{Meter, MeterMap};
 
 use crate::protocol::TransportInfo;
 
@@ -473,10 +473,10 @@ fn os_monotonic_ns() -> i64 {
 mod tests {
     use super::*;
     use std::time::Instant;
-    use tutti_core::meter::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
-    use tutti_core::{Frame, FrameClock, Samples};
     use tutti_graph::{Env, LoopRange, Transport, TransportChanges, TransportHistory};
     use tutti_types::Latency;
+    use tutti_types::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
+    use tutti_types::{Frame, FrameClock, Samples};
 
     const SR: SampleRate = SampleRate(48_000.0);
 
@@ -782,7 +782,7 @@ mod tests {
             if self.playing {
                 let region = self
                     .looping
-                    .and_then(|l| tutti_core::LoopRange::new(l.start, l.end));
+                    .and_then(|l| tutti_types::LoopRange::new(l.start, l.end));
                 self.clock.advance(Samples(frames), region);
             }
         }

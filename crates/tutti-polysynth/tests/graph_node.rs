@@ -4,8 +4,6 @@
 //!
 //! 120 BPM at 48 kHz: a beat is 24 000 frames.
 
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds};
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
     Transport,
@@ -13,6 +11,8 @@ use tutti_graph::{
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples, Seconds};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;

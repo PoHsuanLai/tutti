@@ -4,22 +4,24 @@ use std::sync::Arc;
 
 use super::motion::MotionFsm;
 use super::settings::TransportSettings;
-use super::state::LoopRange;
 use super::state::{ClockLinks, PlayheadClaim, PlayheadClaimed};
-use crate::{AtomicBool, AtomicF64, Ordering};
-use crate::{Beat, BeatDuration, Bpm, SampleRate, Samples};
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tutti_types::LoopRange;
+use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
 ///
 /// There is no facade here — the fields are public and carry their own APIs:
 ///
 /// ```
-/// # use tutti_core::{At, Bpm, LoopEdit, MotionEvent, Transport};
+/// # use tutti_types::{At, Bpm};
+/// # use tutti_core::{LoopEdit, MotionEvent, Transport};
 /// # let transport = Transport::new(48_000.0);
 /// transport.motion.try_send(MotionEvent::Play)?; // a request; may be refused
 /// transport.settings.set_tempo(Bpm(140.0));      // a value; cannot fail
 /// // Loop beats 0 to 4 from the next block; the engine owns the region.
-/// let range = tutti_core::LoopRange::new(0.0, 4.0).expect("ordered");
+/// let range = tutti_types::LoopRange::new(0.0, 4.0).expect("ordered");
 /// transport.motion.schedule(At::NextBlock, LoopEdit::over(range))?;
 /// # Ok::<_, Box<dyn std::error::Error>>(())
 /// ```
@@ -125,7 +127,7 @@ impl Transport {
     /// Frames one beat spans at the current tempo, rounded to the nearest
     /// frame.
     ///
-    /// Derived from [`beats_per_sample`](super::beats_per_sample) rather than
+    /// Derived from [`beats_per_sample`](tutti_types::beats_per_sample) rather than
     /// from a second `/ 60.0`: the grouping of that division is load-bearing,
     /// and a second spelling of it would round differently.
     ///
@@ -134,7 +136,7 @@ impl Transport {
     /// thread, and an infinite frame count is an unbounded allocation waiting
     /// for its first caller.
     pub fn samples_per_beat(&self) -> Samples {
-        let bps = super::beats_per_sample(self.settings.tempo(), self.sample_rate());
+        let bps = tutti_types::beats_per_sample(self.settings.tempo(), self.sample_rate());
         if bps <= BeatDuration(0.0) {
             return Samples::ZERO;
         }

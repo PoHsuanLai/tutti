@@ -18,7 +18,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tutti_core::{ArcLend, ChannelLayout, Reader};
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
@@ -26,6 +25,7 @@ use tutti_graph::{
 use tutti_midi_types::mpe::MpeMode;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{Midi1ToMidi2Translator, MidiChannel, MidiGroup, MidiIn};
+use tutti_types::{ArcLend, ChannelLayout, Reader};
 
 use super::order::{in_offset_order, offset_of};
 use crate::outbound::mpe_ingest::{MpeIngest, Translated};
@@ -63,7 +63,7 @@ pub fn input_ports(channel: Option<MidiChannel>) -> impl Iterator<Item = usize> 
 /// See the module docs.
 ///
 /// ```
-/// use tutti_core::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiInputNode;
 ///

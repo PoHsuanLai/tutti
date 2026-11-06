@@ -9,8 +9,8 @@ use std::sync::Arc;
 use super::disk_voice::DiskVoice;
 use super::fault::FaultLatch;
 use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
-use tutti_core::{Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SampleRate, StretchFactor};
 use tutti_graph::{ForkCause, ForkMode, Node};
+use tutti_types::{Amplitude, Beat, BeatDuration, Cents, PlaybackRate, SampleRate, StretchFactor};
 
 /// Opaque identifier for one voice slot in a [`VoicePool`](super::VoicePool).
 ///

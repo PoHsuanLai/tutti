@@ -13,10 +13,10 @@
 //! Exact equality is portable: both sides run the same unit code on the same
 //! machine, in the same blocks.
 
-use tutti_core::SampleRate;
 use tutti_graph::{GraphBuilder, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_spatial::{VbapMixNode, VbapMixParts, VbapSource, build_vbap_mix};
+use tutti_types::SampleRate;
 use tutti_types::{Amplitude, ChannelLayout, Hz, NodeKey, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);

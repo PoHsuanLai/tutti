@@ -266,7 +266,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     app.add_plugins(ExportPlugin);
     app.insert_resource(bevy_tutti::graph::AudioConfig {
         sample_rate: SampleRate(RATE),
-        channels: tutti_core::ChannelLayout::STEREO,
+        channels: tutti_types::ChannelLayout::STEREO,
     });
     app.insert_resource(bevy_tutti::graph::MetronomeRes(Arc::new(
         tutti_core::transport::ClickState::new(),
@@ -312,7 +312,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
         encode: EncodeConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Float32,
-            channels: tutti_core::ChannelLayout::STEREO,
+            channels: tutti_types::ChannelLayout::STEREO,
             topology: None,
         },
         ..Default::default()
@@ -846,8 +846,8 @@ const LATE: usize = 100;
 impl tutti_graph::Node for Late {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::MONO,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
         )
         .with_latency(tutti_types::Latency::new(tutti_types::Samples(LATE)))
     }

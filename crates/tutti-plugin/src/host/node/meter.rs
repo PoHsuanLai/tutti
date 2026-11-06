@@ -15,14 +15,14 @@ use tutti_core::{MeterSlot, MeterSlotReader, ProjectMeter};
 /// # One cell, fixed when the node is built
 ///
 /// The node reads one cell of its own, through a reader registered on it when
-/// the node is built ([`MeterSlot::reader`]), holding the project's [`MeterMap`](tutti_core::MeterMap) or
+/// the node is built ([`MeterSlot::reader`]), holding the project's [`MeterMap`](tutti_types::MeterMap) or
 /// nothing. Installing a meter makes the slot *follow* a [`ProjectMeter`]:
 /// the project meter publishes into the slot now, and on every
 /// [`ProjectMeter::set_meter`] after, so a meter edit reaches the metronome
 /// and every plugin with one call. Installing or clearing is a publish into
 /// the node's cell, never a swap of which cell it reads.
 ///
-/// The cell is an [`ArcLend`](tutti_core::ArcLend) of an `Option<Arc<_>>`,
+/// The cell is an [`ArcLend`](tutti_types::ArcLend) of an `Option<Arc<_>>`,
 /// so the node only ever *borrows* the meter: an install or a clear during
 /// playback retires the old value for the control side to free. (An
 /// `ArcSwapOption` here turned the node's guard into the last strong count,
@@ -116,7 +116,7 @@ impl std::fmt::Debug for PluginMeter {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tutti_core::{Beat, MeterChange, MeterMap, TimeSignature};
+    use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     /// A project meter of `n`/4 from beat 0, for a block to recognise.
     fn meter_of(n: u32) -> ProjectMeter {

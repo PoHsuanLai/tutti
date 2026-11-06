@@ -4,7 +4,7 @@
 //! avoid touching the allocator on a hot reload. The `Vec`-returning
 //! wrappers remain available for ergonomics.
 
-use tutti_core::{SampleRate, Seconds};
+use tutti_types::{SampleRate, Seconds};
 
 /// Fills `out` with a simple exponential-decay test IR.
 ///

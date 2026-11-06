@@ -21,9 +21,9 @@ use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
-use tutti_core::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
 use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
+use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
 
 /// A gate edge waiting for the next control step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,7 +329,7 @@ impl SynthVoice {
     /// the cutoff the others computed, and the cutoff is recomputed even when
     /// every source is idle, so a slide that returns to center returns the
     /// filter too.
-    fn modulated_cutoff(&mut self, frames: usize, sample_rate: tutti_core::SampleRate) -> Hz {
+    fn modulated_cutoff(&mut self, frames: usize, sample_rate: tutti_types::SampleRate) -> Hz {
         let fm = &self.filter_mod;
         let mut cutoff = self.base_filter_cutoff.get();
 

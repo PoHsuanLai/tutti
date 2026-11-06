@@ -5,7 +5,7 @@
 //! on what the graph renders: the nodes are [`ProbeUnit`]s, which write the
 //! value their param port reads to their output, so a render is the
 //! delivered value frame by frame. The audio side is taken
-//! ([`AudioGraphRes::take_audio_side`]) and rendered between frames, as a
+//! (`Graph::take_audio_side`) and rendered between frames, as a
 //! device would.
 //!
 //! The properties that need the plan the graph sent (a depth or range edit

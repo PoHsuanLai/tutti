@@ -425,6 +425,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     let mut side = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .take_audio_side();
     let value = |app: &App| {
         app.world()
@@ -446,6 +447,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         let mut sources: Vec<_> = app
             .world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .event_sources(node, 0)
             .into_iter()
             .map(|s| s.node.0)
@@ -513,6 +515,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
     let mut side = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .take_audio_side();
     let mut out = vec![Vec::new(), Vec::new()];
     for round in 0..4 {

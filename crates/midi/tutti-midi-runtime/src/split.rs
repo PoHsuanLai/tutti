@@ -68,6 +68,7 @@ impl BlockSplitter {
     /// The next step over `events` (sorted by offset, the same slice every
     /// call), or `None` when the block is done.
     #[inline]
+    #[must_use]
     pub fn step(&mut self, events: &[MidiEvent]) -> Option<Step> {
         let due = events.get(self.next_event);
         if let Some(event) = due
@@ -105,6 +106,8 @@ mod tests {
         let mut split = BlockSplitter::new(size, overrun);
         let mut out = Vec::new();
         while let Some(step) = split.step(events) {
+            // A splitter that stops advancing fails here instead of hanging.
+            assert!(out.len() < 64, "the walk does not terminate: {out:?}");
             out.push(match step {
                 Step::Event(e) => format!("e{}@{}", (e.data[0] >> 8) & 0x7f, e.frame_offset),
                 Step::Span(r) => format!("{}..{}", r.start, r.end),
@@ -116,8 +119,8 @@ mod tests {
     /// Each event lands before the frame it governs, and equal offsets keep
     /// their order.
     ///
-    /// Mutation (run): the `<=` in `step` as `<` -> an event at the span start
-    /// is skipped past and the span is empty -> fails.
+    /// Mutation (run): the `<=` in `step` as `<` -> at pos == offset == 0 the
+    /// span is `0..0` forever -> the step cap in `walk` panics -> fails.
     #[test]
     fn events_split_the_block_at_their_offsets() {
         let events = [at(0, 60), at(3, 61), at(3, 62), at(6, 63)];
@@ -155,5 +158,50 @@ mod tests {
         let events = [at(0, 60)];
         assert_eq!(walk(0, Overrun::Defer, &events), ["e60@0"]);
         assert!(walk(0, Overrun::ClampToLastFrame, &events).is_empty());
+    }
+
+    /// An event at exactly the block's length is an overrun: `Defer` applies it
+    /// after the last frame, `ClampToLastFrame` before the last frame.
+    ///
+    /// Mutation (run): `ClampToLastFrame` clamping to `size` instead of
+    /// `size - 1` -> the event lands after frame 8, not before frame 7 -> fails.
+    #[test]
+    fn an_event_at_exactly_the_block_length_is_an_overrun() {
+        let events = [at(8, 60)];
+        assert_eq!(walk(8, Overrun::Defer, &events), ["0..8", "e60@8"]);
+        assert_eq!(
+            walk(8, Overrun::ClampToLastFrame, &events),
+            ["0..7", "e60@8", "7..8"]
+        );
+    }
+
+    /// Several overrun events under `Defer` all apply, in arrival order.
+    ///
+    /// Mutation (run): ending the walk after the first deferred event -> the
+    /// later ones are lost -> fails.
+    #[test]
+    fn deferred_events_keep_their_arrival_order() {
+        let events = [at(10, 60), at(10, 61), at(40, 62)];
+        assert_eq!(
+            walk(8, Overrun::Defer, &events),
+            ["0..8", "e60@10", "e61@10", "e62@40"]
+        );
+    }
+
+    /// An overrun event after in-block ones does not move the in-block spans.
+    ///
+    /// Mutation (run): the `.min(self.size)` on the span end removed -> the
+    /// span runs to the overrun offset, `2..20` -> fails.
+    #[test]
+    fn an_overrun_event_leaves_the_in_block_spans_alone() {
+        let events = [at(2, 60), at(20, 61)];
+        assert_eq!(
+            walk(8, Overrun::Defer, &events),
+            ["0..2", "e60@2", "2..8", "e61@20"]
+        );
+        assert_eq!(
+            walk(8, Overrun::ClampToLastFrame, &events),
+            ["0..2", "e60@2", "2..7", "e61@20", "7..8"]
+        );
     }
 }

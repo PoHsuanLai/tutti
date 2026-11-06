@@ -101,6 +101,49 @@ mod soundfont_spawn {
         false
     }
 
+    /// A trigger whose channel or preset is outside the MIDI range is dropped
+    /// with an error: no build starts and no unit appears.
+    ///
+    /// Mutation (run): dropping the `.filter(|&c| c < MidiChannel::COUNT)` in
+    /// `soundfont_playback_system` (channel 16 then masks to 0) builds a unit
+    /// on channel 0 -> `PendingSoundFontUnit` or `AudioNode` appears -> fails.
+    #[test]
+    fn an_out_of_range_trigger_is_dropped_without_a_unit() {
+        for (preset, channel) in [(0, 16), (0, -1), (128, 0), (-1, 0)] {
+            let mut app = app();
+            let handle = insert_asset(&mut app, soundfont_asset());
+            let entity = app
+                .world_mut()
+                .spawn(PlaySoundFont {
+                    source: handle,
+                    preset,
+                    channel,
+                })
+                .id();
+
+            for _ in 0..60 {
+                app.update();
+                std::thread::yield_now();
+            }
+
+            let world = app.world();
+            assert!(
+                world.get::<PlaySoundFont>(entity).is_none(),
+                "preset {preset}, channel {channel}: the trigger is consumed"
+            );
+            assert!(
+                world
+                    .get::<bevy_tutti::soundfont::PendingSoundFontUnit>(entity)
+                    .is_none(),
+                "preset {preset}, channel {channel}: no build starts"
+            );
+            assert!(
+                world.get::<AudioNode>(entity).is_none(),
+                "preset {preset}, channel {channel}: no unit appears"
+            );
+        }
+    }
+
     /// A triggered soundfont ends up bound to the graph by `AudioNode`, and the
     /// node it names is really there.
     #[test]

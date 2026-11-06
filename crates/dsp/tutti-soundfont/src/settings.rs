@@ -7,6 +7,7 @@ use tutti_core::SampleRate;
 /// with. The block size is not one of them: every unit is built at
 /// [`SYNTH_BLOCK_FRAMES`](crate::SYNTH_BLOCK_FRAMES).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Settings {
     /// The rate to render at, rounded to whole hertz. RustySynth accepts
     /// 16 to 192 kHz.

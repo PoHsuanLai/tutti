@@ -5,7 +5,7 @@
 //! version names five crates:
 //!
 //! ```text
-//! use tutti_analysis::{measure_loudness, LoudnessConfig};
+//! use tutti_dsp::{measure_loudness, LoudnessConfig};
 //! use tutti_core::{Amplitude, FrozenClock, Hz, SampleRate};
 //! use tutti_export::{render_to_buffers, render_to_file, RenderGraph, ...};
 //! use tutti_graph::GraphBuilder;
@@ -16,18 +16,18 @@
 //! is the actual readability win — a reader does not have to know which of
 //! five packages a given name lives in.
 //!
-//! Note that `tutti-analysis` is reachable here and **is not reachable
+//! Note that `tutti-dsp` is reachable here and **is not reachable
 //! through `bevy-tutti` at all** — that umbrella does not depend on it. So
 //! this program could not have been written through the Bevy adapter either.
 //!
 //! The original stays where it is: it proves `tutti-export` is usable
 //! standalone, which is the layering claim this crate must not obscure.
 //!
-//! Run: `cargo run -p tutti --features "export,analysis,wav" \
+//! Run: `cargo run -p tutti --features "export,dsp,wav" \
 //!        --example headless_export -- <outdir>`
 
-use tutti::analysis::{LoudnessConfig, measure_loudness};
 use tutti::core::FrozenClock;
+use tutti::dsp::{LoudnessConfig, measure_loudness};
 use tutti::export::{
     AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
     render_to_buffers, render_to_file,

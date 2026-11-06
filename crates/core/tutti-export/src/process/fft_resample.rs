@@ -1,4 +1,4 @@
-//! A fixed-input FFT resampler over [`tutti_types::RealFft`].
+//! A fixed-input FFT resampler over [`tutti_dsp::RealFft`].
 //!
 //! Overlap-add: each `fft_size_in`-frame block is zero-padded to twice its
 //! length, transformed, multiplied by a windowed-sinc low-pass, truncated or
@@ -21,7 +21,7 @@
 
 use crate::error::{Error, Result};
 use std::f32::consts::PI;
-use tutti_types::{Complex32, RealFft};
+use tutti_dsp::{Complex32, RealFft};
 
 /// One block's worth of resampling: the filter, the plans and the scratch.
 struct Unit {

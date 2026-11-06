@@ -60,7 +60,7 @@ real time.
 | [`tutti-polysynth`](crates/dsp/tutti-polysynth) | A polyphonic subtractive/wavetable synth with MPE |
 | [`tutti-soundfont`](crates/dsp/tutti-soundfont) | SoundFont (`.sf2`) playback |
 | [`tutti-spatial`](crates/dsp/tutti-spatial) | The engine's only geometry: VBAP for speakers, HRTF for headphones |
-| [`tutti-analysis`](crates/dsp/tutti-analysis) | Waveform summaries, onset detection, pitch, correlation, loudness |
+| [`tutti-dsp`](crates/dsp/tutti-dsp) | Waveform summaries, onset detection, pitch, correlation, loudness |
 | [`tutti-mod`](crates/core/tutti-mod) | The modulation compiler — routes to one control program per param, which a control lane plays; audio-free and Bevy-free |
 | [`tutti-midi-types`](crates/midi/tutti-midi-types) | MIDI 2.0 / UMP value types, the vocabulary the MIDI stack shares |
 | [`tutti-midi-runtime`](crates/midi/tutti-midi-runtime) | Routing, voice allocation, MPE, clock |

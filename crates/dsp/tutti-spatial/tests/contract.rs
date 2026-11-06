@@ -71,7 +71,7 @@ fn node() -> HrtfBinauralNode {
     let bytes = synthetic_hrir_sphere(rate, 64);
     // Born at the contract's rate; the graph prepares it at that rate too.
     let node = HrtfBinauralNode::new(&bytes, SAMPLE_RATE).expect("the sphere parses");
-    node.set_position(90.0, 0.0);
+    node.controls().set_position(90.0, 0.0);
     node
 }
 

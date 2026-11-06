@@ -3,7 +3,7 @@
 //! The node tests in `src/hrtf/node.rs` pin latency, blend and reset; the
 //! analytic render properties are in `tests/hrtf_render.rs`. This file
 //! drives [`HrtfBinauralNode`] with a synthetic HRIR sphere whose left/right
-//! impulse responses encode a **known** interaural time difference and level
+//! impulse responses encode a known interaural time difference and level
 //! difference as a function of azimuth, then recovers the interpolated IR by
 //! impulsing the node.
 //!
@@ -14,10 +14,10 @@
 //! azimuth 0 = front (−z), +90 = left (−x), −90 = right (+x). Each equatorial
 //! vertex stores:
 //!
-//! - a unit-ish delta whose **right-ear delay** is `round(k · sin(az))`
+//! - a unit-ish delta whose right-ear delay is `round(k · sin(az))`
 //!   samples (positive = source on the left, so the right ear is the far ear)
 //! - left/right gains `1 ± ILD · sin(az)` (near ear louder)
-//! - a `cos(az)` marker tap so **front ≠ back** — `sin(az)` alone cannot tell
+//! - a `cos(az)` marker tap so front ≠ back — `sin(az)` alone cannot tell
 //!   0° from 180°, and a wrap bug that clamps 359° to 180° would otherwise
 //!   look like a hit
 //!
@@ -169,7 +169,7 @@ fn ir_of(
     elevation: Elevation,
     len: usize,
 ) -> (Vec<f32>, Vec<f32>) {
-    node.set_position(azimuth, elevation);
+    node.controls().set_position(azimuth, elevation);
     Node::reset(node);
     let latency = node.shape().latency.samples().get();
     let lead = STEP + 17;
@@ -498,7 +498,8 @@ fn azimuth_sweep_is_continuous_and_energy_bounded() {
 #[test]
 fn a_direction_change_crossfades_without_a_jump() {
     let mut node = make_node();
-    node.set_position(Azimuth::FRONT, Elevation::LEVEL);
+    node.controls()
+        .set_position(Azimuth::FRONT, Elevation::LEVEL);
     Node::reset(&mut node);
     let ones = vec![1.0f32; 64];
     // Fill the history with the constant.
@@ -526,7 +527,7 @@ fn a_direction_change_crossfades_without_a_jump() {
     let bound = [range(|s| s.0), range(|s| s.1)].map(|r| r / STEP as f32 + 1e-5);
 
     let target = Azimuth(170.0);
-    node.set_position(target, Elevation::LEVEL);
+    node.controls().set_position(target, Elevation::LEVEL);
     let (mut l, mut r) = (Vec::new(), Vec::new());
     // Half a second: ten time constants of the 50 ms glide.
     for _ in 0..(SAMPLE_RATE as usize / 2 / 64) {

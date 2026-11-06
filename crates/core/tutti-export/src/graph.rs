@@ -13,7 +13,7 @@ use tutti_graph::{
 };
 use tutti_types::{GraphTail, Samples};
 
-use crate::{Error, Result};
+use crate::{ConfigError, Error, Result};
 
 /// A fork's refusal as the render reports it: [`Error::NotForkable`] for
 /// the one a host acts on, [`Error::Fork`] for the rest.
@@ -41,7 +41,7 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// The graph an export renders: a `tutti_graph` editor/executor pair.
 ///
 /// The pair is already installed (the executor running its plan) and
-/// prepared **at the render's sample rate** — the render refuses any other
+/// prepared at the render's sample rate — the render refuses any other
 /// rate rather than re-rating it, since a unit's preparation is the control
 /// side's job. Get one of two ways:
 ///
@@ -138,10 +138,7 @@ impl RenderGraph {
         if self.editor.is_paired_with(&self.executor) {
             Ok(())
         } else {
-            Err(Error::InvalidConfig(
-                "the graph's editor does not feed its executor; pass the pair built together"
-                    .into(),
-            ))
+            Err(ConfigError::UnpairedGraph.into())
         }
     }
 
@@ -215,7 +212,7 @@ impl RenderGraph {
     ///
     /// # Threading
     ///
-    /// Call on the **main thread** when the graph may hold an in-process VST2
+    /// Call on the main thread when the graph may hold an in-process VST2
     /// plugin: its fork loads a second instance (`VSTPluginMain`, through a
     /// loader whose entry-point slot is a process global) and dispatches its
     /// state, which VST2 confines to the main thread. Drop the graph there
@@ -326,7 +323,7 @@ impl RenderGraph {
     ///
     /// For a caller that wants [`RenderConfig::tail`](crate::RenderConfig::tail)
     /// to be whatever the graph says: a reverb, a convolver, a hosted plugin
-    /// that declared a decay. It returns the figure **and its caveats**
+    /// that declared a decay. It returns the figure and its caveats
     /// rather than a frame count, because for two graphs there is no count:
     /// one that never decays, and one whose nodes were never taught to
     /// answer. Resolving either into a number is a decision, so it happens at

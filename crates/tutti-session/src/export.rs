@@ -40,7 +40,9 @@ use std::time::{Duration, Instant};
 
 use tutti_core::AudioNode;
 use tutti_core::transport::OfflineTransport;
-use tutti_export::{ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written};
+use tutti_export::{
+    ConfigError, ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written,
+};
 use tutti_types::{NodeKey, Samples};
 
 use crate::graph::AudioNodeTarget;
@@ -569,9 +571,7 @@ impl ExportJob {
         // it, and apply it here so the render's first block runs it.
         if let Err(e) = graph.commit() {
             return ExportRendered {
-                result: Err(invalid(format!(
-                    "the prepare hook left the forked graph uncommittable: {e}"
-                ))),
+                result: Err(ConfigError::PrepareHookUncommittable(e).into()),
                 graph: Some(graph),
                 _token: token,
             };
@@ -650,16 +650,6 @@ impl std::fmt::Debug for ExportRendered {
     }
 }
 
-/// Why an export found nothing to render: its node has no audio outputs.
-const NO_OUTPUTS: &str = "export target node has no audio outputs";
-
-/// Why an export found nothing to render: the graph has no outputs.
-const GRAPH_HAS_NO_OUTPUTS: &str = "the graph has no outputs to export";
-
-fn invalid(reason: impl Into<String>) -> tutti_export::Error {
-    tutti_export::Error::InvalidConfig(reason.into())
-}
-
 impl Session {
     /// Starts an export: gathers its fork of the live graph here (what it
     /// reads of the live graph and its nodes, now; an in-process VST2
@@ -685,7 +675,7 @@ impl Session {
             return Err(Error::ExportInFlight);
         }
         if self.graph.outputs() == 0 {
-            return Err(invalid(GRAPH_HAS_NO_OUTPUTS).into());
+            return Err(tutti_export::Error::from(ConfigError::GraphHasNoOutputs).into());
         }
         let ExportRequest {
             source,
@@ -712,7 +702,7 @@ impl Session {
             Err(tutti_export::Error::Fork(
                 tutti_graph::ForkError::NoOutputs { .. }
                 | tutti_graph::ForkError::NoSuchNode { .. },
-            )) => return Err(invalid(NO_OUTPUTS).into()),
+            )) => return Err(tutti_export::Error::from(ConfigError::TargetHasNoOutputs).into()),
             Err(e) => return Err(e.into()),
         };
         // A new export: its own stall clock, from its first collect.

@@ -26,7 +26,7 @@
 //!   1e-5: about 4x over the measurement, and the drift of libm or `powi`
 //!   across platforms is far below that. The ramp is
 //!   written so its last sample *is* the solve at the advanced position.
-//! - **Frames inside a block are within `RAMP_TOL`**. They lie on a chord of
+//! - Frames inside a block are within `RAMP_TOL`. They lie on a chord of
 //!   the gain curve where the reference sat on the curve itself, so the error
 //!   is bounded by how far the source travels in one block. The 50 ms
 //!   de-zipper moves at most `1 - exp(-64 / 2400)` ≈ 2.6% of the remaining arc
@@ -40,7 +40,7 @@
 //!   5.1 jump, 1.0e-3 on the mono fold and 0.021 on the sweep. `RAMP_TOL` is
 //!   the 0.06 bound, not the measurement, so it cannot be tuned to pass.
 //!
-//! One case differs **on purpose** inside its blocks: `stereo_width_switch`.
+//! One case differs on purpose inside its blocks: `stereo_width_switch`.
 //! The per-frame reference switches between the mono-fold and two-source
 //! branches at the block boundary with a hard step (0.64 of full scale,
 //! measured); the block render crossfades the two across the next block. Only
@@ -117,7 +117,7 @@ fn cases() -> Vec<Case> {
             name: "stereo_static",
             speakers: 2,
             setup: |n| {
-                n.set_position(Azimuth(20.0), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(20.0), Elevation::LEVEL);
                 Node::reset(n);
             },
             per_block: nothing,
@@ -129,9 +129,9 @@ fn cases() -> Vec<Case> {
             name: "stereo_jump",
             speakers: 2,
             setup: |n| {
-                n.set_position(Azimuth::FRONT, Elevation::LEVEL);
+                n.controls().set_position(Azimuth::FRONT, Elevation::LEVEL);
                 Node::reset(n);
-                n.set_position(Azimuth(120.0), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(120.0), Elevation::LEVEL);
             },
             per_block: nothing,
             in_block: true,
@@ -140,8 +140,8 @@ fn cases() -> Vec<Case> {
             name: "surround_static_spread",
             speakers: 6,
             setup: |n| {
-                n.set_position(Azimuth(45.0), Elevation::LEVEL);
-                n.set_spread(Spread(0.3));
+                n.controls().set_position(Azimuth(45.0), Elevation::LEVEL);
+                n.controls().set_spread(Spread(0.3));
                 Node::reset(n);
             },
             per_block: nothing,
@@ -151,9 +151,9 @@ fn cases() -> Vec<Case> {
             name: "surround_jump",
             speakers: 6,
             setup: |n| {
-                n.set_position(Azimuth::FRONT, Elevation::LEVEL);
+                n.controls().set_position(Azimuth::FRONT, Elevation::LEVEL);
                 Node::reset(n);
-                n.set_position(Azimuth(120.0), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(120.0), Elevation::LEVEL);
             },
             per_block: nothing,
             in_block: true,
@@ -163,8 +163,8 @@ fn cases() -> Vec<Case> {
             name: "surround_mono_fold_moving",
             speakers: 6,
             setup: |n| {
-                n.set_width(StereoWidth(0.0));
-                n.set_position(Azimuth(-70.0), Elevation::LEVEL);
+                n.controls().set_width(StereoWidth(0.0));
+                n.controls().set_position(Azimuth(-70.0), Elevation::LEVEL);
             },
             per_block: nothing,
             in_block: true,
@@ -174,10 +174,13 @@ fn cases() -> Vec<Case> {
             name: "surround_sweep",
             speakers: 6,
             setup: |n| {
-                n.set_position(Azimuth(10.0), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(10.0), Elevation::LEVEL);
                 Node::reset(n);
             },
-            per_block: |n, b| n.set_position(Azimuth(10.0 + 25.0 * b as f32), Elevation(5.0)),
+            per_block: |n, b| {
+                n.controls()
+                    .set_position(Azimuth(10.0 + 25.0 * b as f32), Elevation(5.0))
+            },
             in_block: true,
         },
         // The width crosses the mono-fold threshold mid-run.
@@ -185,11 +188,12 @@ fn cases() -> Vec<Case> {
             name: "stereo_width_switch",
             speakers: 2,
             setup: |n| {
-                n.set_position(Azimuth(-15.0), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(-15.0), Elevation::LEVEL);
                 Node::reset(n);
             },
             per_block: |n, b| {
-                n.set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
+                n.controls()
+                    .set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
             },
             in_block: false,
         },
@@ -275,7 +279,8 @@ fn process_matches_the_per_sample_solver() {
 #[test]
 fn tick_matches_the_per_sample_solver() {
     let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
-    node.set_position(Azimuth(100.0), Elevation(10.0));
+    node.controls()
+        .set_position(Azimuth(100.0), Elevation(10.0));
     let mut got = Vec::new();
     let mut out = [0.0f32; 6];
     for k in 0..40 {
@@ -297,7 +302,8 @@ fn tick_matches_the_per_sample_solver() {
 #[ignore = "generator, not a check"]
 fn print_tick_golden() {
     let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
-    node.set_position(Azimuth(100.0), Elevation(10.0));
+    node.controls()
+        .set_position(Azimuth(100.0), Elevation(10.0));
     let mut got = Vec::new();
     let mut out = [0.0f32; 6];
     for k in 0..40 {
@@ -970,8 +976,9 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
     for speakers in [2u16, 6] {
         for width in [0.0f32, 1.0] {
             let mut node = prep(VbapPannerNode::for_layout(ChannelLayout::from(speakers)).unwrap());
-            node.set_width(StereoWidth(width));
-            node.set_position(Azimuth(-20.0), Elevation::LEVEL);
+            node.controls().set_width(StereoWidth(width));
+            node.controls()
+                .set_position(Azimuth(-20.0), Elevation::LEVEL);
             Node::reset(&mut node);
             let stream = dc_stream(&mut node, &dc_block(1.0, 0.5), 24, |n, b| {
                 // A 140° jump, then a sweep that moves the target every block.
@@ -980,7 +987,7 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
                 } else {
                     120.0 - 15.0 * (b - 11) as f32
                 };
-                n.set_position(Azimuth(az), Elevation::LEVEL);
+                n.controls().set_position(Azimuth(az), Elevation::LEVEL);
             });
             assert_boundaries_are_on_the_ramp(
                 &stream,
@@ -1001,11 +1008,13 @@ fn the_gain_ramp_is_continuous_across_block_boundaries() {
 #[test]
 fn a_width_crossing_the_fold_threshold_crossfades() {
     let mut node = prep(VbapPannerNode::stereo().unwrap());
-    node.set_position(Azimuth(-15.0), Elevation::LEVEL);
+    node.controls()
+        .set_position(Azimuth(-15.0), Elevation::LEVEL);
     Node::reset(&mut node);
     // L only: the two-source branch and the fold weigh it differently.
     let stream = dc_stream(&mut node, &dc_block(1.0, 0.0), 8, |n, b| {
-        n.set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
+        n.controls()
+            .set_width(StereoWidth(if b % 2 == 0 { 1.0 } else { 0.0 }));
     });
     // The crossings must actually move the output, or the continuity check
     // below would pass on a node that ignores width.
@@ -1039,7 +1048,7 @@ fn a_width_crossing_the_fold_threshold_crossfades() {
 fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     let setup = || {
         let mut n = prep(VbapPannerNode::surround_5_1().unwrap());
-        n.set_position(Azimuth(0.0), Elevation::LEVEL);
+        n.controls().set_position(Azimuth(0.0), Elevation::LEVEL);
         Node::reset(&mut n);
         n
     };
@@ -1053,7 +1062,8 @@ fn a_position_change_lands_in_the_next_block_as_a_ramp() {
         assert_eq!(out[c][0], s, "ch {c} moved without a change");
     }
 
-    node.set_position(Azimuth(90.0), Elevation::LEVEL);
+    node.controls()
+        .set_position(Azimuth(90.0), Elevation::LEVEL);
     let out = process(&mut node, &input);
 
     let mut reference = setup();
@@ -1061,7 +1071,9 @@ fn a_position_change_lands_in_the_next_block_as_a_ramp() {
     for _ in 0..BLOCK {
         tick(&mut reference, [0.8, 0.8], &mut frame);
     }
-    reference.set_position(Azimuth(90.0), Elevation::LEVEL);
+    reference
+        .controls()
+        .set_position(Azimuth(90.0), Elevation::LEVEL);
     for _ in 0..BLOCK {
         tick(&mut reference, [0.8, 0.8], &mut frame);
     }

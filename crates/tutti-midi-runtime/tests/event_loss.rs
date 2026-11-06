@@ -277,3 +277,59 @@ fn the_port_follows_the_block() {
         );
     }
 }
+
+/// The hardware input is sized from the block it is prepared for: 512 events
+/// up to a 2,048-frame block (one in four frames below that), a quarter of
+/// the block's frames past it, up to 4,096 at 16,384; and its wire is told
+/// (`MidiIn::reserve`), so the drain takes as many.
+///
+/// Mutation: ignore `prepare` in `MidiInputNode::prepare` → 8,192 reads 512
+/// and the wire is told nothing → fails.
+#[test]
+fn the_hardware_input_follows_the_block() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tutti_midi_runtime::MidiInputNode;
+    use tutti_midi_types::MidiIn;
+
+    struct Wire(Arc<AtomicUsize>);
+    impl MidiIn for Wire {
+        fn poll_block(&mut self, _: usize, _: &mut [MidiEvent]) -> usize {
+            0
+        }
+        fn reserve(&mut self, events: usize) {
+            self.0.store(events, Ordering::Relaxed);
+        }
+    }
+
+    for (block, want) in [(64usize, 512u32), (2048, 512), (8192, 2048), (16_384, 4096)] {
+        let told = Arc::new(AtomicUsize::new(0));
+        let mut node = MidiInputNode::new(Some(Box::new(Wire(Arc::clone(&told)))));
+        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+        assert_eq!(
+            node.shape().event_capacity.map(|n| n.get()),
+            Some(want),
+            "block {block}"
+        );
+        assert_eq!(told.load(Ordering::Relaxed), want as usize, "block {block}");
+    }
+}
+
+/// The harmony node's port is sized at two events a frame: a loop of 8 frames
+/// with a chord and a scale change in it, in a 1,024-frame block, is 128
+/// passes of two events each, 256 events. Its port, of 2,048, holds them.
+///
+/// Mutation: leave the capacity at its floor of 256 plus nothing (ignore
+/// `prepare`) → the port reads 256 at 1,024 frames → fails.
+#[test]
+fn the_harmony_port_follows_the_block() {
+    use tutti_midi_runtime::HarmonyNode;
+    for (block, want) in [(64usize, 256u32), (1024, 2048), (16_384, 16_384)] {
+        let mut node = HarmonyNode::new([]);
+        node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
+        assert_eq!(
+            node.shape().event_capacity.map(|n| n.get()),
+            Some(want),
+            "block {block}"
+        );
+    }
+}

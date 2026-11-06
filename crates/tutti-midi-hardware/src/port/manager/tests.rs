@@ -630,3 +630,73 @@ fn collect_frees_a_port_removed_during_a_drain() {
         "and a second collect has nothing to do"
     );
 }
+
+/// A drain sized for its block takes that many events in one cycle: four
+/// ports of 256 events offer 1,024, and a drain reserved for 1,024 takes all
+/// of them where the default takes 256.
+///
+/// Mutation: ignore `reserve`'s `events` (`want = CYCLE_SCRATCH_CAP`) → the
+/// cycle takes 256 → fails.
+#[test]
+fn a_reserved_drain_takes_a_longer_blocks_events() {
+    let manager = Arc::new(HardwareMidiInputs::new(256));
+    for port in 0..4 {
+        let mut handle = manager.open_input_port(format!("Input {port}"));
+        for _ in 0..256 {
+            assert!(handle.push(MidiEvent::noop(), now()));
+        }
+    }
+    let mut drain = drain_of(&manager);
+    assert_eq!(drain.capacity(), CYCLE_SCRATCH_CAP);
+    drain.reserve(1024);
+    assert_eq!(drain.capacity(), 1024);
+    let mut n = 0;
+    drain.cycle_start_read_all_inputs(512, |_, _| n += 1);
+    assert_eq!(n, 1024);
+}
+
+/// A `MidiIn` poll into a buffer smaller than what waits takes what the
+/// buffer holds and leaves the rest in the rings: 30 events and a buffer of
+/// 10 are three polls, and none is lost.
+///
+/// Before, the drain popped up to its own cap and dropped what the buffer had
+/// no room for, uncounted.
+///
+/// Mutation: poll with `self.limit` instead of `buffer.len()` in
+/// `poll_block` → the first poll takes 30, the buffer indexes past its end →
+/// fails.
+#[test]
+fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
+    use tutti_midi_types::MidiIn;
+    let manager = Arc::new(HardwareMidiInputs::new(64));
+    let mut handle = manager.open_input_port("In");
+    for i in 0..30u32 {
+        assert!(handle.push(MidiEvent::noop().with_frame_offset(i), now()));
+    }
+    let mut drain = drain_of(&manager);
+    let mut buffer = [MidiEvent::noop(); 10];
+    let taken: Vec<usize> = (0..4).map(|_| drain.poll_block(512, &mut buffer)).collect();
+    assert_eq!(taken, vec![10, 10, 10, 0]);
+    assert_eq!(manager.dropped_events(), 0);
+}
+
+/// A driver pushing into a full ring has its events counted: per port, and
+/// in the manager's total, which keeps a removed port's count.
+///
+/// Ring of 4: 10 pushes are 4 taken and 6 dropped.
+///
+/// Mutation: drop the `fetch_add` in `InputProducerHandle::push` → the
+/// counts read 0 → fails. Mutation: leave `retired_dropped` alone in
+/// `remove_input_port` → the total falls to 0 on removal → fails.
+#[test]
+fn a_full_ring_counts_what_it_drops() {
+    let manager = Arc::new(HardwareMidiInputs::new(4));
+    let mut handle = manager.open_input_port("Busy");
+    let id = handle.port_id();
+    let taken = (0..10).filter(|_| handle.push(MidiEvent::noop(), now())).count();
+    assert_eq!(taken, 4);
+    assert_eq!(manager.port_info(id).map(|p| p.dropped), Some(6));
+    assert_eq!(manager.dropped_events(), 6);
+    assert!(manager.remove_input_port(id));
+    assert_eq!(manager.dropped_events(), 6, "a removed port's drops stay");
+}

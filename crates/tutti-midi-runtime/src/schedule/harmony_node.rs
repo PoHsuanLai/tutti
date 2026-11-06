@@ -18,7 +18,7 @@
 //! last sent: a receiver holds the context until the next change, so a short
 //! loop whose passes start in the context they end in sends only its
 //! changes, not two events a pass. Those changes are still bounded per block
-//! by [`HARMONY_EVENT_CAPACITY`] (a loop of a few frames with a change in it
+//! by [`HARMONY_EVENT_DENSITY`] (a loop of a few frames with a change in it
 //! sends one a pass); past it the port refuses, and the executor counts it.
 //!
 //! The lanes are published to the node with [`ArcLend`]
@@ -29,16 +29,22 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_core::{ArcLend, Beat, ChannelLayout, Reader};
 use tutti_graph::{
-    Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, Harmony, HarmonyKind,
-    IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
+    Cx, Event, EventDensity, EventWriter, ForkCause, ForkMode, ForkSource, Forked, Harmony,
+    HarmonyKind, IntoNode, Io, MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape,
+    Status,
 };
 
 use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 
-/// The most events a [`HarmonyNode`] writes in one block, its declared
-/// event capacity: past it the rest are refused and counted
-/// (`Executor::dropped_event_count`).
-pub const HARMONY_EVENT_CAPACITY: u32 = 64;
+/// The events per frame a [`HarmonyNode`]'s port is sized for, which with its
+/// block makes its declared event capacity: two a frame, the most a walk
+/// sends (a loop wraps at most once a frame, and a wrap re-states a chord and
+/// a scale), between 256 events for a short block and the cap
+/// ([`EventDensity::capacity`]). The cost is 8 KB at 128 frames and 64 KB at
+/// 1,024. Past it the rest are refused and counted
+/// (`Editor::take_event_losses`); a chord or scale is context, not a note, so
+/// a refusal leaves no note hanging and the next jump or wrap re-states it.
+pub const HARMONY_EVENT_DENSITY: EventDensity = EventDensity::per_frame(2);
 
 /// A chord or scale taking effect at a beat.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -136,6 +142,8 @@ pub struct HarmonyNode {
     /// The chord and the scale this node last sent: a loop wrap re-states
     /// only what differs.
     sent: Sent,
+    /// The declared event capacity, from the block the node was prepared for.
+    capacity: u32,
 }
 
 impl std::fmt::Debug for HarmonyNode {
@@ -165,6 +173,7 @@ impl HarmonyNode {
             generation,
             walk: Walk::default(),
             sent: Sent::default(),
+            capacity: MIN_EVENT_PORT_CAPACITY,
         }
     }
 }
@@ -327,17 +336,20 @@ impl Visit<TimedHarmony> for Sending<'_, '_> {
 }
 
 impl Node for HarmonyNode {
-    /// No audio, one event output of [`HARMONY_EVENT_CAPACITY`].
+    /// No audio, one event output of [`HARMONY_EVENT_DENSITY`] per frame of
+    /// the block it was prepared for.
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
             .with_events(0, 1)
-            .with_event_capacity(HARMONY_EVENT_CAPACITY)
+            .with_event_capacity(self.capacity)
             // Event-only: the clip node's walk over its changes, nothing per
             // frame.
             .with_cost(tutti_graph::Cost::Light)
     }
 
-    fn prepare(&mut self, _p: &Prepare) {}
+    fn prepare(&mut self, p: &Prepare) {
+        self.capacity = HARMONY_EVENT_DENSITY.capacity(p);
+    }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let lanes = self.lanes.lend();

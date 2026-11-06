@@ -20,7 +20,7 @@ pub mod queue_node;
 mod route;
 
 pub use input_node::{
-    CHANNELLESS_PORT, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputControls,
+    CHANNELLESS_PORT, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiInputControls,
     MidiInputNode, input_port_of, input_ports,
 };
 pub use mailbox::{MAILBOX_CAPACITY, MidiMailbox, MidiReceiver, MidiSender};

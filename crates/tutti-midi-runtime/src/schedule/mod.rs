@@ -11,5 +11,5 @@ pub mod timed;
 mod walk;
 
 pub use clip_node::{CLIP_EVENT_DENSITY, MidiClipControls, MidiClipNode};
-pub use harmony_node::{HARMONY_EVENT_CAPACITY, HarmonyControls, HarmonyNode, TimedHarmony};
+pub use harmony_node::{HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, TimedHarmony};
 pub use timed::TimedMidiEvent;

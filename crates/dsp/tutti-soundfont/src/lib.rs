@@ -24,6 +24,7 @@ pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::SampleRate;
+use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::ump::MidiEvent;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
@@ -296,30 +297,12 @@ impl SoundFontUnit {
     /// offset at or past `size` (which a graph's event input never carries)
     /// is clamped to the last frame rather than dropped.
     fn render_events(&mut self, size: usize, count: usize) {
-        let mut event_idx = 0;
-        let mut pos = 0usize;
-        while pos < size {
-            // Apply every event due at or before `pos` — the equal-offset run
-            // lands in full before any of the frames it governs is rendered.
-            while event_idx < count
-                && (self.midi_buffer[event_idx].frame_offset as usize).min(size - 1) <= pos
-            {
-                let event = self.midi_buffer[event_idx];
-                self.apply_event(&event);
-                event_idx += 1;
+        let mut walk = BlockSplitter::new(size, Overrun::ClampToLastFrame);
+        while let Some(step) = walk.step(&self.midi_buffer[..count]) {
+            match step {
+                Step::Event(event) => self.apply_event(&event),
+                Step::Span(span) => self.render_range(span),
             }
-
-            // Render up to the next event's offset, so the segment [pos, next)
-            // carries exactly the state the events at `pos` established.
-            let next = if event_idx < count {
-                (self.midi_buffer[event_idx].frame_offset as usize)
-                    .min(size - 1)
-                    .max(pos + 1)
-            } else {
-                size
-            };
-            self.render_range(pos..next);
-            pos = next;
         }
     }
 

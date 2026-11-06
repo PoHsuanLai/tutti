@@ -18,12 +18,14 @@
 
 use crate::SynthConfig;
 use crate::bank::{CONTROL_BLOCK, VoiceBank};
+use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_core::{Amplitude, Param, Tail};
+use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
+use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{CCNumber, MidiChannel};
-use tutti_midi_types::{NoteId, cc};
+use tutti_midi_types::{CCNumber, MidiChannel, NoteId, cc};
 
 use std::sync::Arc;
 
@@ -81,11 +83,6 @@ pub struct PolySynth {
     master_volume: Param<Amplitude>,
     /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
-    /// MIDI queued by this crate's unit tests for the next block they drive
-    /// by hand (`tests::Hand`). Test builds only: the synth itself plays
-    /// nothing but its event input.
-    #[cfg(test)]
-    queued: Vec<MidiEvent>,
     /// Voices that finished this block, collected during the render loop and
     /// drained after it.
     ///
@@ -156,8 +153,6 @@ impl PolySynth {
             pitch_bend: 0.0,
             master_volume,
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
-            #[cfg(test)]
-            queued: Vec::new(),
             finished_indices: Vec::with_capacity(max_voices),
         })
     }
@@ -361,21 +356,21 @@ impl PolySynth {
         else {
             return;
         };
-        let channel = u8::from(cv2.channel());
+        let channel = MidiChannel::new(u8::from(cv2.channel()));
         match cv2 {
             Cv2::NoteOn(m) => {
-                let note = u8::from(m.note_number());
+                let note = m.note_number();
                 self.handle_note_on(note, u16_to_unit_f32(m.velocity()), channel);
                 // Note-On Attribute #3: Pitch 7.9 (M2-104 §7.4.15.3) — an absolute
                 // per-note tuning override delivered at note start. Applied after
                 // allocation so it lands on the voice this note just claimed.
                 if let Some(NoteAttribute::Pitch7_9(p)) = m.attribute() {
-                    let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
+                    let id = NoteId::from_channel_note(channel, u8::from(note));
                     self.set_voice_tuning(id, tutti_midi_types::q7_9_to_f32(p.to_bits()));
                 }
             }
             Cv2::NoteOff(m) => {
-                self.handle_note_off(u8::from(m.note_number()), channel);
+                self.handle_note_off(m.note_number(), channel);
             }
             Cv2::ControlChange(m) => {
                 self.handle_cc(
@@ -396,27 +391,30 @@ impl PolySynth {
             // MIDI 2.0 native per-note messages address one voice by note-id —
             // two same-pitch notes stay independent even on one channel.
             Cv2::PerNotePitchBend(m) => {
-                let id =
-                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
-                self.set_voice_mpe_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let bend = bend_u32_to_signed_f32(m.pitch_bend_data());
+                let semitones =
+                    tutti_core::Semitones(bend * self.config.mpe_pitch_bend_range.get());
+                self.set_voice_mpe(id, MpeControl::PitchBend(semitones));
             }
             Cv2::KeyPressure(m) => {
-                let id =
-                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
-                self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe(
+                    id,
+                    MpeControl::Pressure(u32_to_unit_f32(m.key_pressure_data())),
+                );
             }
             // Assignable per-note controllers carry a raw index. Only the dims
             // a synth voice can apply are honored: CC74 → slide, CC7 → per-note
             // gain.
             Cv2::AssignablePerNoteController(m) => {
-                let id =
-                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 let data = u32_to_unit_f32(m.controller_data());
                 // `m.index()` is the raw per-note controller index off the
                 // wire (a `u8`, not a `u7`), so it is masked into range here.
                 match CCNumber::new(m.index()) {
-                    cc::BRIGHTNESS => self.set_voice_mpe_slide(id, data),
-                    cc::VOLUME => self.set_voice_mpe_gain(id, data),
+                    cc::BRIGHTNESS => self.set_voice_mpe(id, MpeControl::Slide(data)),
+                    cc::VOLUME => self.set_voice_mpe(id, MpeControl::Gain(data)),
                     _ => {}
                 }
             }
@@ -427,15 +425,14 @@ impl PolySynth {
             // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
-                let id =
-                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 match m.controller() {
                     Controller::Volume(data) => {
-                        self.set_voice_mpe_gain(id, u32_to_unit_f32(data));
+                        self.set_voice_mpe(id, MpeControl::Gain(u32_to_unit_f32(data)));
                     }
                     Controller::Brightness(data)
                     | Controller::SoundController { index: 5, data } => {
-                        self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
+                        self.set_voice_mpe(id, MpeControl::Slide(u32_to_unit_f32(data)));
                     }
                     // Registered Per-Note Controller #3: Pitch 7.25 (M2-104
                     // §7.4.15.2) — an absolute per-note tuning override. The note
@@ -464,8 +461,7 @@ impl PolySynth {
             // future-notes reset needs no state — the live voice is simply detached.
             // Hence: detach wins for the live voice when both bits are set.
             Cv2::PerNoteManagement(m) => {
-                let id =
-                    NoteId::from_channel_note(MidiChannel::new(channel), u8::from(m.note_number()));
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 if m.detach() {
                     self.detach_voice_mpe(id);
                 } else if m.reset() {
@@ -490,20 +486,18 @@ impl PolySynth {
         }
     }
 
-    fn handle_note_on(&mut self, note: u8, vel_norm: f32, channel: u8) {
-        let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
+    fn handle_note_on(&mut self, note: u7, vel_norm: f32, channel: MidiChannel) {
+        let id = NoteId::from_channel_note(channel, u8::from(note));
         let result = self.allocator.allocate(id, note, channel, vel_norm);
 
-        let slot_index = match result {
-            AllocationResult::Allocated { slot_index } => Some(slot_index),
-            AllocationResult::Stolen { slot_index } => Some(slot_index),
-            AllocationResult::LegatoRetrigger { slot_index } => Some(slot_index),
-            AllocationResult::Unavailable => None,
-        };
+        let slot_index = result.slot_index();
         let is_legato = matches!(result, AllocationResult::LegatoRetrigger { .. });
 
         if let Some(slot_index) = slot_index {
-            let base_freq = self.config.tuning.fractional_note_to_freq(f32::from(note));
+            let base_freq = self
+                .config
+                .tuning
+                .fractional_note_to_freq(f32::from(u8::from(note)));
             let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
 
             let target_freq = if let Some(ref mut porta) = self.portamento {
@@ -531,8 +525,8 @@ impl PolySynth {
         }
     }
 
-    fn handle_note_off(&mut self, note: u8, channel: u8) {
-        let id = NoteId::from_channel_note(MidiChannel::new(channel), note);
+    fn handle_note_off(&mut self, note: u7, channel: MidiChannel) {
+        let id = NoteId::from_channel_note(channel, u8::from(note));
         // `release` resolves the exact voice by id and reports whether it truly
         // stopped (vs. held by a pedal). Gate that voice by index — never by a
         // (note, channel) scan, which would alias two same-pitch voices.
@@ -547,7 +541,7 @@ impl PolySynth {
         self.allocator
             .slots()
             .iter()
-            .position(|s| s.id() == id && s.state() != crate::voice::VoiceState::Idle)
+            .position(|s| s.id() == id && !s.is_idle())
     }
 
     /// Apply `f` to the single voice bound to `id` (the per-note addressing
@@ -560,25 +554,9 @@ impl PolySynth {
         }
     }
 
-    /// MIDI 2.0 per-note pitch bend: modulate only the voice addressed by `id`.
-    fn set_voice_mpe_pitch_bend(&mut self, id: NoteId, bend_norm: f32) {
-        let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
-        self.with_voice_for_id(id, |v| v.set_mpe_pitch_bend(semitones));
-    }
-
-    /// MIDI 2.0 per-note pressure (poly key pressure): only the addressed voice.
-    fn set_voice_mpe_pressure(&mut self, id: NoteId, norm: f32) {
-        self.with_voice_for_id(id, |v| v.set_mpe_pressure(norm));
-    }
-
-    /// MIDI 2.0 per-note slide (CC74 / Brightness): only the addressed voice.
-    fn set_voice_mpe_slide(&mut self, id: NoteId, value: f32) {
-        self.with_voice_for_id(id, |v| v.set_mpe_slide(value));
-    }
-
-    /// MIDI 2.0 per-note gain (per-note Volume / CC7): only the addressed voice.
-    fn set_voice_mpe_gain(&mut self, id: NoteId, value: f32) {
-        self.with_voice_for_id(id, |v| v.set_mpe_gain(value));
+    /// Applies one per-note controller to the voice addressed by `id` alone.
+    fn set_voice_mpe(&mut self, id: NoteId, control: MpeControl) {
+        self.with_voice_for_id(id, |v| v.apply_mpe(control));
     }
 
     /// Absolute per-note tuning override (Pitch 7.25 / 7.9). `fractional_note` is
@@ -617,7 +595,7 @@ impl PolySynth {
         }
     }
 
-    fn handle_cc(&mut self, cc_num: CCNumber, value: f32, channel: u8) {
+    fn handle_cc(&mut self, cc_num: CCNumber, value: f32, channel: MidiChannel) {
         let on = value >= 0.5;
         match cc_num {
             cc::MOD_WHEEL => {
@@ -709,7 +687,7 @@ impl PolySynth {
             .iter_mut()
             .filter(|v| v.is_active())
             .for_each(|voice| {
-                let base_freq = tuning.fractional_note_to_freq(f32::from(voice.note()));
+                let base_freq = tuning.fractional_note_to_freq(f32::from(u8::from(voice.note())));
                 voice.set_pitch(base_freq * bend_multiplier);
             });
     }
@@ -720,7 +698,7 @@ impl PolySynth {
             if voice.is_active()
                 && voice.gate_value() > 0.0
                 && i < slots.len()
-                && slots[i].state() == crate::voice::VoiceState::Releasing
+                && slots[i].is_releasing()
             {
                 voice.note_off();
             }
@@ -838,31 +816,12 @@ impl PolySynth {
         volume: f32,
         emit: &mut impl FnMut(usize, f32, f32),
     ) {
-        let mut block_start = 0;
-        let mut event_idx = 0;
-
-        while block_start < size {
-            let block_end = if event_idx < midi_count {
-                let next_offset = (self.midi_buffer[event_idx].frame_offset as usize).min(size);
-                if next_offset <= block_start {
-                    let event = self.midi_buffer[event_idx];
-                    self.process_midi_event(&event);
-                    event_idx += 1;
-                    continue;
-                }
-                next_offset
-            } else {
-                size
-            };
-
-            self.render_span(block_start, block_end - block_start, volume, emit);
-            block_start = block_end;
-        }
-
-        while event_idx < midi_count {
-            let event = self.midi_buffer[event_idx];
-            self.process_midi_event(&event);
-            event_idx += 1;
+        let mut walk = BlockSplitter::new(size, Overrun::Defer);
+        while let Some(step) = walk.step(&self.midi_buffer[..midi_count]) {
+            match step {
+                Step::Event(event) => self.process_midi_event(&event),
+                Step::Span(span) => self.render_span(span.start, span.len(), volume, emit),
+            }
         }
     }
 }
@@ -914,8 +873,6 @@ impl Clone for PolySynth {
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
-            #[cfg(test)]
-            queued: Vec::new(),
             finished_indices: Vec::with_capacity(self.config.max_voices),
         }
     }

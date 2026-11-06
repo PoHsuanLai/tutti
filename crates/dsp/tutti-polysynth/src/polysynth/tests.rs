@@ -7,16 +7,12 @@ use tutti_core::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
+use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
-
-/// Build a `PolySynth` from a config, unwrapping the result.
-fn synth(config: SynthConfig) -> PolySynth {
-    PolySynth::new(config).expect("synth builds")
-}
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with
-/// [`queue_midi`] is the next block's event input.
+/// [`queue_midi`] is the next block's event input. It derefs to the synth.
 ///
 /// - [`tick`](Hand::tick) is a one-frame block: every queued event lands
 ///   on its frame.
@@ -24,15 +20,32 @@ fn synth(config: SynthConfig) -> PolySynth {
 ///   frames: each queued event on its `frame_offset`, and one past the
 ///   block applied after it (as the renderer applies an event at or past
 ///   the block's end).
-///
-/// The queue is the test-only `queued` field: the synth itself plays
-/// only its event input.
-trait Hand {
-    fn tick(&mut self, input: &[f32], output: &mut [f32]);
-    fn render_planar(&mut self, left: &mut [f32], right: &mut [f32]);
+struct Hand {
+    synth: PolySynth,
+    queued: Vec<MidiEvent>,
 }
 
-impl Hand for PolySynth {
+impl std::ops::Deref for Hand {
+    type Target = PolySynth;
+    fn deref(&self) -> &PolySynth {
+        &self.synth
+    }
+}
+
+impl std::ops::DerefMut for Hand {
+    fn deref_mut(&mut self) -> &mut PolySynth {
+        &mut self.synth
+    }
+}
+
+impl Hand {
+    fn new(synth: PolySynth) -> Self {
+        Self {
+            synth,
+            queued: Vec::new(),
+        }
+    }
+
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         let mut queued = std::mem::take(&mut self.queued);
         for e in &mut queued {
@@ -52,9 +65,7 @@ impl Hand for PolySynth {
         left.copy_from_slice(&l);
         right.copy_from_slice(&r);
     }
-}
 
-impl PolySynth {
     /// One block of `frames` under `queued` (stable-sorted by offset),
     /// through `Node::process`.
     fn drive(&mut self, frames: usize, mut queued: Vec<MidiEvent>) -> [Vec<f32>; 2] {
@@ -73,18 +84,24 @@ impl PolySynth {
             .collect();
         let env = tutti_graph::Env {
             frame: tutti_core::Frame(0),
-            sample_rate: self.config.sample_rate,
+            sample_rate: self.synth.config.sample_rate,
             block_len: block,
             transport: tutti_graph::Transport::default(),
             changes: tutti_graph::TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };
-        let out = tutti_graph::contract::drive_input(self, &env, &[], &[], &[&events]).audio;
+        let out =
+            tutti_graph::contract::drive_input(&mut self.synth, &env, &[], &[], &[&events]).audio;
         for e in &past {
-            self.apply_midi(e);
+            self.synth.apply_midi(e);
         }
         out.try_into().expect("stereo")
     }
+}
+
+/// Build a hand-driven synth from a config, unwrapping the result.
+fn synth(config: SynthConfig) -> Hand {
+    Hand::new(PolySynth::new(config).expect("synth builds"))
 }
 
 /// A long block renders every frame it was asked for.
@@ -134,7 +151,7 @@ fn a_full_block_renders_every_frame() {
 }
 
 /// Queue events for the synth's next hand-driven block ([`Hand`]).
-fn queue_midi(synth: &mut PolySynth, events: &[MidiEvent]) {
+fn queue_midi(synth: &mut Hand, events: &[MidiEvent]) {
     synth.queued.extend_from_slice(events);
 }
 
@@ -197,7 +214,7 @@ fn a_fork_carries_no_sounding_note() {
     live.tick(&[], &mut out);
     assert_eq!(live.active_voice_count(), 1, "the original played its note");
 
-    let mut render = live.fork_instance();
+    let mut render = Hand::new(live.fork_instance());
     assert_eq!(render.active_voice_count(), 0, "the fork holds no voice");
     let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
     render.render_planar(&mut l, &mut r);
@@ -228,7 +245,7 @@ fn a_clone_unaliases_voice_state() {
 
     // A clone (a fork's template), then a note-off driven through the
     // clone's *own* machinery: gate the clone's voice shut.
-    let mut render = live.clone();
+    let mut render = Hand::new(live.clone());
     // A clone that still ALIASED the voice Shared would, by note_off on its
     // voice, also slam the live voice's gate to 0.0.
     if let Some(v) = render.voices.get_mut(0) {
@@ -574,7 +591,10 @@ fn test_note_off_respects_channel() {
     // until envelope finishes
     let mut ch1_still_gated = false;
     for voice in &synth.voices {
-        if voice.is_active() && voice.channel() == 1 && voice.note() == 60 {
+        if voice.is_active()
+            && voice.channel() == MidiChannel::new(1)
+            && voice.note() == u7::new(60)
+        {
             assert!(
                 voice.gate_value() > 0.0,
                 "Channel 1 voice should still have gate open"
@@ -814,7 +834,7 @@ fn test_cc123_respects_channel() {
     let ch1_voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 1);
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1));
     assert!(
         ch1_voice.is_some(),
         "Channel 1 voice should still be active"
@@ -885,7 +905,7 @@ fn test_legato_mode_no_retrigger() {
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
     assert_eq!(synth.active_voice_count(), 1);
-    assert_eq!(synth.voices[0].note(), 60);
+    assert_eq!(synth.voices[0].note(), u7::new(60));
 
     // Second note should legato (update pitch, no retrigger)
     let note2 = ev_note_on(0, 64, 100);
@@ -897,7 +917,11 @@ fn test_legato_mode_no_retrigger() {
         1,
         "Legato should use same voice"
     );
-    assert_eq!(synth.voices[0].note(), 64, "Voice should have new note");
+    assert_eq!(
+        synth.voices[0].note(),
+        u7::new(64),
+        "Voice should have new note"
+    );
     assert!(
         synth.voices[0].gate_value() > 0.0,
         "Gate should stay open (no retrigger)"
@@ -927,13 +951,13 @@ fn test_mono_mode_retrigger() {
     queue_midi(&mut synth, &[note1]);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
-    assert_eq!(synth.voices[0].note(), 60);
+    assert_eq!(synth.voices[0].note(), u7::new(60));
 
     // Second note should retrigger (new allocation, not legato)
     let note2 = ev_note_on(0, 64, 100);
     queue_midi(&mut synth, &[note2]);
     synth.tick(&[], &mut output);
-    assert_eq!(synth.voices[0].note(), 64);
+    assert_eq!(synth.voices[0].note(), u7::new(64));
 }
 
 /// One wheel position means one pitch, whether the note was already
@@ -1084,7 +1108,7 @@ fn test_polysynth_reset() {
     assert_eq!(synth.active_voice_count(), 4);
 
     // Reset
-    tutti_graph::Node::reset(&mut synth);
+    tutti_graph::Node::reset(&mut synth.synth);
     assert_eq!(
         synth.active_voice_count(),
         0,
@@ -1135,12 +1159,12 @@ fn test_mpe_per_voice_pitch_bend() {
     let voice_ch1 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 1)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
         .unwrap();
     let voice_ch2 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 2)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(2))
         .unwrap();
 
     assert!(
@@ -1195,12 +1219,12 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     let voice_60 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == 60)
+        .find(|v| v.is_active() && v.note() == u7::new(60))
         .unwrap();
     let voice_64 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == 64)
+        .find(|v| v.is_active() && v.note() == u7::new(64))
         .unwrap();
 
     assert!(
@@ -1258,7 +1282,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == note)
+            .find(|v| v.is_active() && v.note() == u7::new(note))
             .unwrap()
             .mpe_state()
             .pitch_bend_semitones
@@ -1336,7 +1360,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == note)
+            .find(|v| v.is_active() && v.note() == u7::new(note))
             .unwrap()
             .base_note_freq()
             .get()
@@ -1393,7 +1417,7 @@ fn test_per_note_management_detach_freezes_the_note() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == 60)
+            .find(|v| v.is_active() && v.note() == u7::new(60))
             .unwrap()
             .mpe_state()
             .pitch_bend_semitones
@@ -1481,7 +1505,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     let bend = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == 60)
+        .find(|v| v.is_active() && v.note() == u7::new(60))
         .unwrap()
         .mpe_state()
         .pitch_bend_semitones
@@ -1534,7 +1558,7 @@ fn test_reset_all_controllers_spares_per_note() {
     let bend = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == 60)
+        .find(|v| v.is_active() && v.note() == u7::new(60))
         .unwrap()
         .mpe_state()
         .pitch_bend_semitones
@@ -1595,7 +1619,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == note)
+            .find(|v| v.is_active() && v.note() == u7::new(note))
             .unwrap()
             .mpe_state()
             .slide
@@ -1608,7 +1632,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // The unaddressed voice must keep its neutral default (center = no timbre
     // shift), not be dragged along with note 60.
     assert!(
-        (slide(&synth, 64) - crate::voice::SLIDE_CENTER).abs() < 0.01,
+        (slide(&synth, 64) - crate::mpe::SLIDE_CENTER).abs() < 0.01,
         "note 64 (unaddressed) slide must stay at center, got {}",
         slide(&synth, 64)
     );
@@ -1645,7 +1669,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == note)
+            .find(|v| v.is_active() && v.note() == u7::new(note))
             .unwrap()
             .mpe_state()
             .gain
@@ -1713,12 +1737,12 @@ fn test_mpe_per_voice_pressure() {
     let voice_ch1 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 1)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
         .unwrap();
     let voice_ch2 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 2)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(2))
         .unwrap();
 
     assert!(
@@ -1774,7 +1798,7 @@ fn test_mpe_per_voice_slide() {
     let voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 1)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
         .unwrap();
     assert!(
         (voice.mpe_state().slide - 1.0).abs() < 0.01,
@@ -1910,7 +1934,7 @@ fn test_mpe_note_on_resets_expression() {
     let voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == 1)
+        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
         .unwrap();
     assert!(
         voice.mpe_state().pressure.abs() < 0.01,
@@ -1949,14 +1973,16 @@ fn mpe_enabled_is_observable() {
 /// anything.
 #[test]
 fn enabling_mpe_applies_to_a_sounding_voice() {
-    let mut synth = PolySynth::new(SynthConfig {
-        max_voices: 4,
-        oscillator: OscillatorType::Sine,
-        mpe_enabled: false,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
-        ..Default::default()
-    })
-    .unwrap();
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            max_voices: 4,
+            oscillator: OscillatorType::Sine,
+            mpe_enabled: false,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     let mut output = [0.0f32; 2];
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
@@ -1985,14 +2011,16 @@ fn enabling_mpe_applies_to_a_sounding_voice() {
 /// earlier.
 #[test]
 fn disabling_mpe_clears_latent_per_note_state() {
-    let mut synth = PolySynth::new(SynthConfig {
-        max_voices: 4,
-        oscillator: OscillatorType::Sine,
-        mpe_enabled: true,
-        mpe_pitch_bend_range: tutti_core::Semitones(48.0),
-        ..Default::default()
-    })
-    .unwrap();
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            max_voices: 4,
+            oscillator: OscillatorType::Sine,
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        })
+        .unwrap(),
+    );
 
     let mut output = [0.0f32; 2];
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
@@ -2441,9 +2469,10 @@ fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
             ..Default::default()
         });
         synth.set_volume(0.5);
-        synth
+        synth.synth
     };
-    let render = |mut fork: PolySynth| {
+    let render = |fork: PolySynth| {
+        let mut fork = Hand::new(fork);
         queue_midi(&mut fork, &[ev_note_on(0, 60, 100), ev_note_on(0, 64, 100)]);
         let (mut l, mut r) = (vec![0.0f32; 2_048], vec![0.0f32; 2_048]);
         fork.render_planar(&mut l, &mut r);

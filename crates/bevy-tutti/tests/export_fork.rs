@@ -729,7 +729,6 @@ mod plugin {
     use tutti_core::AudioNode;
     use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::midi2::num::u7;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_nodes::testing::Const;

@@ -95,7 +95,7 @@ pub(crate) struct AngleSmoother {
 
 impl AngleSmoother {
     /// A smoother with a 50 ms time constant of audio at `sample_rate`, for
-    /// a caller that [`step`](Self::step)s once per `samples_per_step`
+    /// a caller that `step`s once per `samples_per_step`
     /// samples: one for a panner that steps every frame (VBAP), the
     /// convolution frame length for one that steps once per frame (HRTF).
     pub(crate) fn new(sample_rate: impl Into<SampleRate>, samples_per_step: Samples) -> Self {
@@ -133,7 +133,7 @@ impl AngleSmoother {
             .seed_at(Elevation::new_clamped(elevation.get()).get());
     }
 
-    /// Where the ramp currently is — the pair the last [`step`](Self::step)
+    /// Where the ramp currently is — the pair the last `step`
     /// returned (or the seeded position), without advancing.
     ///
     /// A block-rate consumer needs this as the *start* of a block: the VBAP

@@ -53,7 +53,7 @@ impl ExponentialSmoother {
     /// Step toward a target *height* along the number line.
     ///
     /// Correct for a quantity with two ends and no seam. **Wrong for a
-    /// bearing**: see [`process_angle`](Self::process_angle). The pair is the
+    /// bearing**: see `process_angle`. The pair is the
     /// point — one entry per space, each typed, so a bearing cannot reach the
     /// linear form by accident.
     #[cfg(any(feature = "hrtf", test))]
@@ -94,7 +94,7 @@ impl ExponentialSmoother {
         (1.0 - retained.powi(steps)) as f32
     }
 
-    /// [`process`](Self::process) `steps` times toward the same target, in
+    /// `process` `steps` times toward the same target, in
     /// one move: the analytic `v + (target - v)(1 - (1 - coeff)^steps)`
     /// instead of the loop.
     ///
@@ -113,7 +113,7 @@ impl ExponentialSmoother {
         Elevation(self.value)
     }
 
-    /// [`process_angle`](Self::process_angle) `steps` times toward the same
+    /// `process_angle` `steps` times toward the same
     /// target, in one move along the short arc (see
     /// [`advance`](Self::advance) for the error bound). The short arc to a
     /// target does not change direction as the value closes on it, so one
@@ -132,7 +132,7 @@ impl ExponentialSmoother {
 
     /// The running value, in whichever space the caller steps it in (see
     /// [`seed_at`](Self::seed_at) for why it is a bare `f32`). Already
-    /// wrapped when stepped with [`process_angle`](Self::process_angle).
+    /// wrapped when stepped with `process_angle`.
     #[inline]
     pub fn value(&self) -> f32 {
         self.value
@@ -148,8 +148,8 @@ impl ExponentialSmoother {
     /// front-centre.
     ///
     /// Bare `f32` on purpose: `value` is the state *both* entry points share —
-    /// degrees of bearing under [`process_angle`](Self::process_angle), degrees
-    /// of height under [`process`](Self::process) — so no single unit describes
+    /// degrees of bearing under `process_angle`, degrees
+    /// of height under `process` — so no single unit describes
     /// it. Callers seed it in whichever space they then step in.
     pub fn seed_at(&mut self, value: f32) {
         self.value = value;

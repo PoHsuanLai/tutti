@@ -271,6 +271,16 @@ that uses them (`Sysex8PacketReassembler` has no production caller and is delete
 unless one appears). `outbound` goes away, along with the re-exports from
 `tutti-midi-types`, and `pub mod` inside a private parent becomes `mod`.
 
+`tutti-midi-hardware` is a transport and nothing else. Its re-exports go: `midi2`,
+`midly`, `ci`, the translator, the Clip File codec, MPE, `CCMapping`, the sync
+decoders, the graph nodes, and a prelude that hands out `MidiInputNode`. A consumer
+names the owner. So does its vocabulary: one crate says port, endpoint, connection
+and device for overlapping things, and `MidiSession` reads as if it were
+`tutti_session::Session`. It becomes `Endpoint` from `tutti-midi-device`, with `Port`
+only for an OS's handle to a connection, and `async_port` (an SPSC ring, not async)
+is named for what it is. `Sysex7ByteAssembler` consumes bytes no current backend
+produces, and moves to `tutti-midi-protocol` with the MIDI-CI path that wants it.
+
 `sync`'s clock and MTC decoders have no consumer today. They move to the runtime
 when a clock slave uses them (§9), and are deleted otherwise. `cc::mapping` is
 replaced by a CC modulation source (§9), and `jr_timestamp` is rewritten in

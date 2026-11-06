@@ -119,17 +119,10 @@ impl Vst3Loaded {
     /// from. Matching on the *flag* rather than on a name or position is what
     /// makes this work for a plugin with several lists.
     ///
-    /// **The flag check is uncovered, measured rather than assumed.** Dropping
-    /// `is_program_change()` and taking the unit's first parameter leaves every
-    /// test green: the SDK's `multiple_programchanges` sample gives each unit
-    /// exactly one parameter, so the two rules coincide. The fixture that would
-    /// separate them is `mda-vst3`, whose controllers add a Bypass parameter to
-    /// the same root unit *before* the preset one, but its shell exposes the
-    /// base controller (dangling `programListId`, zero published lists) and
-    /// `load` cannot re-open the bundle while the first load holds it. So no
-    /// available input distinguishes the two. The flag is correct per
-    /// `vsteditcontroller.cpp:604`; it is the test that is missing, not the
-    /// rule.
+    /// The flag is `kIsProgramChange` (`vsteditcontroller.cpp:604`), not the
+    /// unit's first parameter: a unit may carry a bypass parameter before the
+    /// preset one. No available fixture separates the two rules, so the flag
+    /// check is not covered by a test.
     #[must_use]
     pub fn program_change_parameter(&self, list_id: i32) -> Option<(ParamId, i32)> {
         let owning_unit = self

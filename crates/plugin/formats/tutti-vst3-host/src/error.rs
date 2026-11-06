@@ -96,3 +96,31 @@ pub enum Vst3Error {
     #[error("State error: {0}")]
     StateError(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A load failure reads with its stage and the cause's own message, and a
+    /// missing class names what the bundle does export.
+    ///
+    /// Mutation (run): dropping `{cause}` from the `LoadFailed` format string
+    /// fails the first assertion; dropping `offered` from `ClassNotFound`'s
+    /// message fails the second.
+    #[test]
+    fn load_failed_displays_its_cause() {
+        let err = Vst3Error::LoadFailed {
+            path: PathBuf::from("/x.vst3"),
+            stage: LoadStage::Scanning,
+            cause: LoadCause::FileNotFound,
+        };
+        assert!(err.to_string().contains("Plugin file not found"));
+
+        let missing = LoadCause::ClassNotFound {
+            wanted: "Reverb".into(),
+            offered: vec!["Delay".into()],
+        };
+        let text = missing.to_string();
+        assert!(text.contains("Reverb") && text.contains("Delay"), "{text}");
+    }
+}

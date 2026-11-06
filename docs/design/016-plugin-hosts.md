@@ -1750,7 +1750,7 @@ Existing items cite their file and line. "New" means it does not exist today.
 | `activate::<T>(self, f64, usize) -> Result<Vst3Active<T>>` and `activate_with_mode` (`loaded.rs:392,420`), consuming on failure | `Loaded::activate(self, Prepare) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>>`. **Changes**: the failure path returns the plugin. `ProcessMode` is `Prepare::mode` |
 | `Vst3Active::deactivate(self) -> Vst3Loaded` (`instance.rs:454`), `set_sample_rate` (`:491`), `restart_bus_configuration` (`:1130`) | `Loaded::deactivate(processor, controller)`; the other two are deleted (`Reconfigure`, `CallDeactivate`/`CallActivate`) |
 | `read_latency_samples() -> u32`, `read_tail_samples() -> u32` (`loaded.rs:443,460`) | `Controller::latency`, `Controller::tail` |
-| `get_parameter(u32) -> f64`, `set_parameter(u32, f64)`, `get_parameter_list` (`loaded.rs:498,509,646`) | `parameter`, `set_parameter`, `parameters` with `ParamId` and `Normalized`; `parameter_by_index`, `units`, `program_lists` stay inherent |
+| `get_parameter(u32) -> f64`, `set_parameter(u32, f64)`, `get_parameter_list` (`loaded.rs:498,509,646`) | `parameter`, `set_parameter`, `parameters` with `ParamId` and `Normalized`; `parameter_ids`, `parameter_info(ParamId)`, `units`, `program_lists` stay inherent |
 | `get_state`, `set_state` (`loaded.rs:1370,1466`) | `Control::save_state`, `load_state` |
 | `open_editor(WindowHandle, ContentScale)`, `close_editor`, `editor_capabilities`, `poll_editor_resize_request` | `Editor` impl on `Vst3Controller` |
 | `take_restart`, `poll_plugin_notifications`, `RestartOutcome` (`loaded.rs:1210,1247`) | the handler's restart word is a `RequestWord`; queued edits and progress stay `PluginNotification`s on their own queue |

@@ -449,3 +449,67 @@ mod plugin_info_bus_tests {
         assert_eq!(info.output_bus_channels[0], info.num_outputs);
     }
 }
+
+#[cfg(test)]
+mod host_type_tests {
+    use super::{KeyEvent, KeyModifiers, PrefetchSupport};
+    use vst3::Steinberg::Vst::ePrefetchableSupport_ as P;
+
+    /// Each SDK value maps to its own variant and anything else is carried.
+    ///
+    /// Mutation (run): swapping the `kIsYetPrefetchable` and
+    /// `kIsNotYetPrefetchable` arms in `from_raw` fails the second and third
+    /// rows; dropping the `Unknown` arm's payload (`Unknown(0)`) fails the last.
+    #[test]
+    #[allow(clippy::unnecessary_cast)] // u32 on unix, c_int on Windows
+    fn prefetch_support_maps_each_sdk_value() {
+        assert_eq!(
+            PrefetchSupport::from_raw(P::kIsNeverPrefetchable as u32),
+            PrefetchSupport::Never
+        );
+        assert_eq!(
+            PrefetchSupport::from_raw(P::kIsYetPrefetchable as u32),
+            PrefetchSupport::Yes
+        );
+        assert_eq!(
+            PrefetchSupport::from_raw(P::kIsNotYetPrefetchable as u32),
+            PrefetchSupport::NotYet
+        );
+        assert_eq!(PrefetchSupport::from_raw(77), PrefetchSupport::Unknown(77));
+    }
+
+    /// The modifier bits are the SDK's `KeyModifier` values and combine and
+    /// test as a set.
+    ///
+    /// Mutation (run): defining `CONTROL` as `COMMAND`'s bit fails the bit
+    /// table; replacing `|` with `^` in `bitor` fails the union of a modifier
+    /// with itself.
+    #[test]
+    fn key_modifiers_are_the_sdk_bits() {
+        assert_eq!(KeyModifiers::SHIFT.bits(), 1);
+        assert_eq!(KeyModifiers::ALTERNATE.bits(), 2);
+        assert_eq!(KeyModifiers::COMMAND.bits(), 4);
+        assert_eq!(KeyModifiers::CONTROL.bits(), 8);
+
+        let both = KeyModifiers::SHIFT | KeyModifiers::COMMAND;
+        assert_eq!(both.bits(), 5);
+        assert!(both.contains(KeyModifiers::SHIFT));
+        assert!(!both.contains(KeyModifiers::CONTROL));
+        assert_eq!(
+            KeyModifiers::SHIFT | KeyModifiers::SHIFT,
+            KeyModifiers::SHIFT
+        );
+    }
+
+    /// A character key carries no virtual key, and a virtual key no character.
+    ///
+    /// Mutation (run): setting `character` in `KeyEvent::virtual_key` fails the
+    /// second assertion.
+    #[test]
+    fn key_constructors_fill_exactly_one_code() {
+        let c = KeyEvent::character(97);
+        assert_eq!((c.character, c.virtual_key), (97, 0));
+        let v = KeyEvent::virtual_key(11);
+        assert_eq!((v.character, v.virtual_key), (0, 11));
+    }
+}

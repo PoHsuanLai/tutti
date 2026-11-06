@@ -472,3 +472,22 @@ mod unit_group_tests {
         assert_eq!(groups.get(&1), None);
     }
 }
+
+#[cfg(test)]
+mod requirements_tests {
+    use super::requirements;
+    use crate::types::process_context_flags as f;
+
+    /// The FFI layer keeps `u32::MAX` for "interface not implemented"; every
+    /// other word, including `0` (implemented, asks for nothing), is a real
+    /// answer.
+    ///
+    /// Mutation (run): `!=` to `==` in `requirements` fails all three rows;
+    /// returning `Some(raw)` always fails the first.
+    #[test]
+    fn only_the_sentinel_means_no_interface() {
+        assert_eq!(requirements(u32::MAX), None);
+        assert_eq!(requirements(0), Some(0));
+        assert_eq!(requirements(f::NEED_TEMPO), Some(f::NEED_TEMPO));
+    }
+}

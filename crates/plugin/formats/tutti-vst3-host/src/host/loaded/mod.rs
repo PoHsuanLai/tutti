@@ -3,21 +3,12 @@
 //! into a [`ProcessorAny`](crate::ProcessorAny), which renders, and a
 //! [`Vst3Controller`](crate::Vst3Controller), which holds everything else.
 //!
-//! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
-//! inspection, and state save/restore. `process()` lives exclusively on the
-//! Processor; the type system enforces that you can't call it here.
-//!
-//! The size of this file is the argument for the type existing. Nearly forty
-//! public methods are legal in this state and need no audio buffer: the
-//! parameter tree with its plain/normalized conversions, units and program
-//! lists, note expression and keyswitch tables, `IMidiLearn`, physical UI
-//! mapping, XML representations, the compatibility JSON, state save/restore,
-//! and the entire editor surface. A host that only browses metadata, or only
-//! shows a GUI, calls `initialize()` and stops: activation is a cost it never
-//! pays.
-//!
-//! Everything here stays reachable while the plugin renders: the Controller
-//! `Deref`s to the `Vst3Loaded` it holds.
+//! `Vst3Loaded` serves GUI-only hosting, offline parameter inspection and state
+//! save/restore: the parameter tree, units and program lists, note expression
+//! and keyswitch tables, `IMidiLearn`, XML representations, state, and the
+//! editor. `process()` lives on the Processor only. The Controller `Deref`s to
+//! the `Vst3Loaded` it holds, so all of this stays reachable while the plugin
+//! renders.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -201,21 +192,11 @@ pub struct RestartOutcome {
     /// `IKeyswitchController`.
     pub keyswitch_changed: bool,
     /// `kParamIDMappingChanged` fired (3.7.11) — the `IRemapParamID` mapping
-    /// changed. Emitted during *project load*, when a newer plugin version
-    /// remaps the ids an older session saved: dropping it silently detaches
-    /// every automation lane that referenced a remapped parameter. The host
-    /// reports it as a changed parameter list; remapping the ids through
-    /// `IRemapParamID` is deferred.
+    /// changed. Emitted during project load when a newer plugin version remaps
+    /// the ids an older session saved; ignoring it detaches automation lanes
+    /// from remapped parameters. Remap through
+    /// [`Vst3Loaded::remap_param_id`].
     pub param_id_mapping_changed: bool,
-    // The six fields above stop here, at the format layer, on purpose. Carrying
-    // them further means new `AsyncEvent` variants, and bincode encodes a
-    // discriminant, so appending one is a `PROTOCOL_VERSION` bump — paid for a
-    // signal nothing acts on yet. Shipping flags across a versioned boundary to
-    // no receiver only adds write-only protocol surface.
-    //
-    // The signal *exists* here, where a consumer can reach it, and
-    // `every_decoded_restart_flag_reaches_the_outcome` keeps it that way.
-    // Plumbing follows a consumer, not the other way round.
     /// Not a restart flag: the plugin sent more notifications than the queue
     /// holds since the last poll, and the newest were dropped (see
     /// [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)). An edit
@@ -244,11 +225,7 @@ impl RestartOutcome {
 
     /// Fold one `restartComponent` bitmask into the coalesced outcome.
     ///
-    /// Every flag `RestartFlags` decodes is forwarded. Six of the twelve used
-    /// to stop here — decoded into the struct above and then dropped, so a
-    /// plugin could signal them into a consumer that had no field to receive
-    /// them. `param_id_mapping_changed` is the one that bites: it fires during
-    /// project load and losing it detaches automation from remapped parameters.
+    /// Every flag `RestartFlags` decodes is forwarded.
     fn merge_flags(&mut self, flags: RestartFlags) {
         self.latency_changed |= flags.latency_changed;
         self.param_values_changed |= flags.param_values_changed;
@@ -372,5 +349,29 @@ mod restart_outcome_tests {
             "these restart flags are decoded but never forwarded, so no \
              consumer can act on them: {dropped:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::Activation;
+    use tutti_plugin_types::SampleFormat;
+
+    /// Inactive is the absence of a format; only a 64-bit activation is f64.
+    ///
+    /// Mutation (run): `is_f64` returning `self.format.is_some()` fails the
+    /// 32-bit row; `is_active` returning `true` fails the default row.
+    #[test]
+    fn activation_is_its_format() {
+        let off = Activation::default();
+        assert!(!off.is_active() && !off.is_f64());
+        let f32_ = Activation {
+            format: Some(SampleFormat::Float32),
+        };
+        assert!(f32_.is_active() && !f32_.is_f64());
+        let f64_ = Activation {
+            format: Some(SampleFormat::Float64),
+        };
+        assert!(f64_.is_active() && f64_.is_f64());
     }
 }

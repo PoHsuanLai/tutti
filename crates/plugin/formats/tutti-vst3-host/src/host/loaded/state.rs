@@ -97,8 +97,8 @@ impl Vst3Loaded {
     /// Which unit a given bus channel belongs to, or `None` if the plugin
     /// doesn't implement `IUnitInfo` or maps nothing to that channel.
     ///
-    /// `media_type` and `direction` take the same `K_AUDIO`/`K_EVENT` and
-    /// `K_INPUT`/`K_OUTPUT` constants as the bus accessors. Main/UI thread.
+    /// `media_type` and `direction` are the SDK's `MediaTypes` and
+    /// `BusDirections` values. Main/UI thread.
     ///
     /// # Panics
     ///

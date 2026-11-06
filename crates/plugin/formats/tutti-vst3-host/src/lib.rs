@@ -9,25 +9,25 @@ pub(crate) mod helpers;
 pub mod host;
 pub mod types;
 
-pub use error::{LoadStage, Result, Vst3Error};
+pub use error::{LoadCause, LoadStage, Result, Vst3Error};
 pub use events::{
     Chord, Data, Event, EventExt, EventHeader, EventKind, ExpressionInt, ExpressionText,
-    ExpressionValue, K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, MidiEncoder, NoteOff, NoteOn, Payload,
-    PolyPressure, Scale, Stager, TextRef, ToEvent, Utf16Chord, Utf16Scale, Utf16Text,
-    Vst3InputEvents, drain_midi, expression_type_from_id, expression_type_id,
+    ExpressionValue, InputEvents, K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, MidiEncoder, NoteOff,
+    NoteOn, Payload, PolyPressure, Scale, Stager, TextRef, ToEvent, Utf16Chord, Utf16Scale,
+    Utf16Text, drain_midi, expression_type_from_id, expression_type_id,
 };
 pub use host::{
-    FactoryInfo, LoadOptions, ProcessFailed, RestartOutcome, Vst3Controller, Vst3Library,
-    Vst3Loaded, Vst3Processor, Vst3ProcessorAny, descriptor_of, factory_flags,
+    FactoryInfo, Library, LoadOptions, ProcessFailed, ProcessorAny, RestartOutcome, Vst3Controller,
+    Vst3Loaded, Vst3Processor, descriptor_of, factory_flags,
 };
 pub use types::{
-    AudioBuffer, BufferPtrs, BusInfo, ContentScale, EditorCapabilities, EditorSize, MidiEvent,
-    NoteExpressionIntValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    ParameterPoint, ParameterQueue, PluginInfo, ProcessMode, ProcessOutput, ProcessOutputRef,
-    Sample, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3Sample, Vst3UnitInfo, WindowHandle, automation_state, keyswitch_type,
-    note_expression_flags, parameter_flags, physical_ui_type, prefetchable_support,
-    process_context_flags, to_process_context, unit_ids,
+    AudioBuffer, BufferPtrs, BusInfo, ContentScale, EditorCapabilities, EditorSize, KeyEvent,
+    KeyModifiers, KeyOutcome, MidiEvent, NoteExpressionIntValue, NoteExpressionType,
+    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, PlainRange, PluginInfo,
+    PrefetchSupport, ProcessMode, ProcessOutput, ProcessOutputRef, Sample, TransportInfo,
+    Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3Sample,
+    Vst3UnitInfo, WindowHandle, keyswitch_type, note_expression_flags, parameter_flags,
+    physical_ui_type, process_context_flags, to_process_context, unit_ids,
 };
 
 pub use tutti_vst3_ffi::{

@@ -4,7 +4,7 @@ use tutti_vst3_ffi::Staging;
 
 use super::{Chord, Event, ExpressionText, Payload, Scale};
 
-/// A chord context change for [`Vst3InputEvents`](super::Vst3InputEvents).
+/// A chord context change for [`InputEvents`](super::InputEvents).
 #[derive(Debug, Clone)]
 pub struct Utf16Chord {
     /// Frame offset within the block the event is staged into.
@@ -34,7 +34,7 @@ impl Utf16Chord {
     }
 }
 
-/// A scale context change for [`Vst3InputEvents`](super::Vst3InputEvents).
+/// A scale context change for [`InputEvents`](super::InputEvents).
 #[derive(Debug, Clone)]
 pub struct Utf16Scale {
     /// Frame offset within the block the event is staged into.
@@ -61,7 +61,7 @@ impl Utf16Scale {
     }
 }
 
-/// A per-note text annotation for [`Vst3InputEvents`](super::Vst3InputEvents).
+/// A per-note text annotation for [`InputEvents`](super::InputEvents).
 #[derive(Debug, Clone)]
 pub struct Utf16Text {
     /// Frame offset within the block the event is staged into.

@@ -7,18 +7,150 @@
 pub(crate) use tutti_vst3_ffi::K_SAMPLE_64_INT;
 use tutti_vst3_ffi::Vst3Error as FfiError;
 use tutti_vst3_ffi::{BoundBuses, BusBuffers, K_SAMPLE_32_INT, SampleWidth};
+use vst3::Steinberg::KeyModifier_ as Key;
+use vst3::Steinberg::Vst::ePrefetchableSupport_ as Prefetch;
+
+use crate::helpers::sdk_enum_i32;
 pub use tutti_vst3_ffi::{
     BusInfo, ProcessMode, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    Vst3ProgramListInfo, Vst3UnitInfo, automation_state, keyswitch_type, note_expression_flags,
-    parameter_flags, physical_ui_type, prefetchable_support, process_context_flags,
-    to_process_context, unit_ids,
+    Vst3ProgramListInfo, Vst3UnitInfo, keyswitch_type, note_expression_flags, parameter_flags,
+    physical_ui_type, process_context_flags, to_process_context, unit_ids,
 };
 
 pub use tutti_plugin_types::{
     AudioBuffer, BufferPtrs, ContentScale, EditorCapabilities, EditorSize, MidiEvent,
     NoteExpressionIntValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    ParameterPoint, ParameterQueue, Sample, TransportInfo, WindowHandle,
+    ParameterPoint, ParameterQueue, Sample, SampleFormat, TransportInfo, WindowHandle,
 };
+
+/// A parameter's own `[min, max]`, as the plugin's controller maps the
+/// normalized endpoints. `min <= max`; a constant parameter has `min == max`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlainRange {
+    /// The plain value at normalized 0 or 1, whichever is lower.
+    pub min: f64,
+    /// The plain value at normalized 0 or 1, whichever is higher.
+    pub max: f64,
+}
+
+/// A plugin's answer to `IPrefetchableSupport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefetchSupport {
+    /// The plugin can never be used in prefetch (offline look-ahead) mode.
+    Never,
+    /// The plugin supports prefetch now.
+    Yes,
+    /// The plugin does not support prefetch now, but may later.
+    NotYet,
+    /// A value the SDK does not define, as returned.
+    Unknown(u32),
+}
+
+impl PrefetchSupport {
+    /// The `ePrefetchableSupport` value the plugin returned.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        // `ePrefetchableSupport_` is `u32` on unix and `c_int` on Windows.
+        #[allow(clippy::unnecessary_cast)]
+        let is = |sdk| raw == sdk as u32;
+        if is(Prefetch::kIsNeverPrefetchable) {
+            Self::Never
+        } else if is(Prefetch::kIsYetPrefetchable) {
+            Self::Yes
+        } else if is(Prefetch::kIsNotYetPrefetchable) {
+            Self::NotYet
+        } else {
+            Self::Unknown(raw)
+        }
+    }
+}
+
+/// The modifier keys held during a key event (`KeyModifier`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyModifiers(i16);
+
+impl KeyModifiers {
+    /// No modifier.
+    pub const NONE: Self = Self(0);
+    /// Shift.
+    pub const SHIFT: Self = Self(sdk_enum_i32(Key::kShiftKey) as i16);
+    /// Alt on Windows, Option on macOS.
+    pub const ALTERNATE: Self = Self(sdk_enum_i32(Key::kAlternateKey) as i16);
+    /// Command on macOS, Control on Windows and Linux.
+    pub const COMMAND: Self = Self(sdk_enum_i32(Key::kCommandKey) as i16);
+    /// Control on macOS, Windows key on Windows.
+    pub const CONTROL: Self = Self(sdk_enum_i32(Key::kControlKey) as i16);
+
+    /// The `KeyModifier` bitmask.
+    #[must_use]
+    pub const fn bits(self) -> i16 {
+        self.0
+    }
+
+    /// Whether every modifier in `other` is held.
+    #[must_use]
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for KeyModifiers {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// One key event offered to a plugin's editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    /// The UTF-16 unit typed, or `0` for a key with no character.
+    pub character: u16,
+    /// The SDK's `VirtualKeyCode`, or `0` for a plain character key.
+    pub virtual_key: i16,
+    /// The modifiers held.
+    pub modifiers: KeyModifiers,
+}
+
+impl KeyEvent {
+    /// A character key with no modifier.
+    #[must_use]
+    pub const fn character(character: u16) -> Self {
+        Self {
+            character,
+            virtual_key: 0,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// A non-character key, by the SDK's virtual key code, with no modifier.
+    #[must_use]
+    pub const fn virtual_key(virtual_key: i16) -> Self {
+        Self {
+            character: 0,
+            virtual_key,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+}
+
+/// What an editor did with an offered key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyOutcome {
+    /// The editor took the key; the host must not act on it.
+    Consumed,
+    /// The editor ignored the key, or no editor is open.
+    Ignored,
+}
+
+impl KeyOutcome {
+    /// Whether the editor took the key.
+    #[must_use]
+    pub fn is_consumed(self) -> bool {
+        self == Self::Consumed
+    }
+}
 
 /// Events and parameter changes emitted by the plugin during one call to
 /// [`Vst3Processor::process`](crate::Vst3Processor::process).
@@ -223,6 +355,8 @@ impl PluginInfo {
 /// This is the host's own seam: the FFI crate's process path is not generic
 /// over the sample type.
 pub trait Vst3Sample: tutti_plugin_types::Sample {
+    /// The format of this sample type.
+    const FORMAT: SampleFormat;
     /// The width of this sample type.
     const WIDTH: SampleWidth;
     /// The `symbolicSampleSize` the plugin is told: `kSample32` or `kSample64`.
@@ -244,6 +378,7 @@ pub trait Vst3Sample: tutti_plugin_types::Sample {
 }
 
 impl Vst3Sample for f32 {
+    const FORMAT: SampleFormat = SampleFormat::Float32;
     const WIDTH: SampleWidth = SampleWidth::F32;
     const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_32_INT;
 
@@ -263,6 +398,7 @@ impl Vst3Sample for f32 {
 }
 
 impl Vst3Sample for f64 {
+    const FORMAT: SampleFormat = SampleFormat::Float64;
     const WIDTH: SampleWidth = SampleWidth::F64;
     const VST3_SYMBOLIC_SIZE: i32 = K_SAMPLE_64_INT;
 

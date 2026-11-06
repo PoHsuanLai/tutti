@@ -2,7 +2,7 @@
 //! form VST3's event list takes.
 //!
 //! The Processor converts a block's [`ExpressiveContext`] into these buffers
-//! and stages them as [`Vst3InputEvents`](crate::Vst3InputEvents).
+//! and stages them as [`InputEvents`](crate::InputEvents).
 
 use crate::events::{Utf16Chord, Utf16Scale, Utf16Text};
 use tutti_plugin_types::{
@@ -221,7 +221,7 @@ mod seq_scratch_tests {
     /// is staged → fails.
     #[test]
     fn int_expressions_reach_the_event_list() {
-        use crate::events::{Payload, Stager, Vst3InputEvents};
+        use crate::events::{InputEvents, Payload, Stager};
         use tutti_plugin_types::NoteExpressionIntChanges;
         use tutti_vst3_ffi::EventList;
 
@@ -236,7 +236,7 @@ mod seq_scratch_tests {
             expr_ints: Some(&ints),
             ..Default::default()
         };
-        let events = Vst3InputEvents {
+        let events = InputEvents {
             expr_ints: expr_ints_of(Some(&expressive)),
             ..Default::default()
         };

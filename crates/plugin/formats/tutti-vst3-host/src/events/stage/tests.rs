@@ -3,8 +3,8 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 
 use tutti_vst3_ffi::EVENT_CAPACITY;
 
-fn midi_only(midi: &[MidiEvent]) -> Vst3InputEvents<'_> {
-    Vst3InputEvents {
+fn midi_only(midi: &[MidiEvent]) -> InputEvents<'_> {
+    InputEvents {
         midi,
         ..Default::default()
     }
@@ -36,7 +36,7 @@ fn a_per_note_bend_range_outlives_its_block() {
     )];
     stager.stage(
         &list,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &sensitivity,
             ..Default::default()
         },
@@ -51,7 +51,7 @@ fn a_per_note_bend_range_outlives_its_block() {
     )];
     stager.stage(
         &list,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &bend,
             ..Default::default()
         },
@@ -240,7 +240,7 @@ fn staging_every_source_is_allocation_free_after_warmup() {
         value: 1,
     }];
 
-    let src = Vst3InputEvents {
+    let src = InputEvents {
         midi: &midi,
         note_expressions: &note_expr,
         chords: &chords,
@@ -363,7 +363,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
             value: 1,
         })
         .collect();
-    let src = Vst3InputEvents {
+    let src = InputEvents {
         midi: &midi,
         note_expressions: &note_expressions,
         chords: &chords,
@@ -385,7 +385,7 @@ fn a_full_block_from_every_source_stages_without_allocating() {
     assert!(offsets.is_sorted(), "in frame order: {offsets:?}");
 
     // Twice the room: the rest is dropped, counted, never grown into.
-    let twice = Vst3InputEvents {
+    let twice = InputEvents {
         midi: &[midi.as_slice(), midi.as_slice()].concat(),
         note_expressions: &[note_expressions.as_slice(), note_expressions.as_slice()].concat(),
         ..src
@@ -434,7 +434,7 @@ fn events_on_one_frame_keep_their_source_order() {
     let mut stager = Stager::default();
     stager.stage(
         &list,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &midi,
             note_expressions: &note_expressions,
             chords: &chords,
@@ -492,7 +492,7 @@ fn past_the_room_note_offs_are_kept_and_the_rest_counted() {
         }))
         .collect();
     let chords = [chord(0, 1)];
-    let src = Vst3InputEvents {
+    let src = InputEvents {
         midi: &midi,
         chords: &chords,
         ..Default::default()
@@ -573,7 +573,7 @@ fn note_expressions_past_their_budget_leave_the_harmony_room() {
     assert_no_alloc::assert_no_alloc(|| {
         stager.stage(
             &list,
-            &Vst3InputEvents {
+            &InputEvents {
                 midi: &midi,
                 note_expressions: &note_expressions,
                 chords: &chords,
@@ -614,7 +614,7 @@ fn a_negative_offset_sorts_before_zero() {
     let mut stager = Stager::default();
     stager.stage(
         &list,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &midi,
             note_expressions: &note_expressions,
             ..Default::default()

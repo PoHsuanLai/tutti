@@ -1,5 +1,5 @@
 //! The realtime half of an activation: [`Vst3Processor<T>`] at a fixed sample
-//! type, and [`Vst3ProcessorAny`], the trait's `Processor`, which picks the
+//! type, and [`ProcessorAny`], the trait's `Processor`, which picks the
 //! type at activation.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use tutti_plugin_types::{
 };
 use tutti_types::ChannelLayout;
 
-use crate::events::{Stager, Vst3InputEvents, drain_midi};
+use crate::events::{InputEvents, Stager, drain_midi};
 use crate::types::{
     AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, ProcessOutputRef, TransportInfo,
     Vst3Sample, to_process_context,
@@ -176,8 +176,9 @@ pub struct Vst3Processor<T: Vst3Sample> {
     pub(super) audio: AudioIO,
     seq: SeqScratch,
     audio_side: AudioSide,
-    /// What `getProcessContextRequirements` answered at activation.
-    context_requirements: u32,
+    /// What `getProcessContextRequirements` answered at activation; `None` when
+    /// the plugin does not implement the interface.
+    context_requirements: Option<u32>,
     drain: EditDrain,
     /// The writes taken for the block in hand, latest per parameter, and what
     /// a rejoin carried over from the last activation before the first block.
@@ -206,7 +207,7 @@ pub(super) struct ProcessorParts {
     pub shell: Arc<Shell>,
     pub audio: AudioIO,
     pub audio_side: AudioSide,
-    pub context_requirements: u32,
+    pub context_requirements: Option<u32>,
     pub drain: EditDrain,
     pub carried: Vec<(u32, Normalized)>,
 }
@@ -327,7 +328,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
     pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        events: &Vst3InputEvents,
+        events: &InputEvents,
         param_changes: Option<&ParameterChanges>,
         transport: &TransportInfo,
     ) -> std::result::Result<ProcessOutputRef<'_>, ProcessFailed> {
@@ -383,7 +384,8 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         self.pending.clear();
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context = to_process_context(transport, self.context_requirements);
+        let mut process_context =
+            to_process_context(transport, self.context_requirements.unwrap_or(u32::MAX));
         process_context.sampleRate = buffer.sample_rate;
 
         // The setup comes from `process_setup()`, the same accessor
@@ -559,14 +561,14 @@ impl<T: Vst3Sample> Vst3Processor<T> {
 /// typed processors sit in one enum and `process` matches the buffer's width to
 /// the arm.
 #[derive(Debug)]
-pub enum Vst3ProcessorAny {
+pub enum ProcessorAny {
     /// Activated at 32-bit.
     F32(Vst3Processor<f32>),
     /// Activated at 64-bit; the plugin said it can process it.
     F64(Vst3Processor<f64>),
 }
 
-impl Vst3ProcessorAny {
+impl ProcessorAny {
     pub(super) fn shell(&self) -> &Arc<Shell> {
         match self {
             Self::F32(p) => p.shell(),
@@ -622,7 +624,7 @@ impl Vst3ProcessorAny {
     }
 }
 
-impl Processor for Vst3ProcessorAny {
+impl Processor for ProcessorAny {
     fn process(&mut self, io: &mut PluginIo<'_>) -> PluginResult<()> {
         let PluginIo { buffer, ctx, out } = io;
         self.render(buffer, ctx, out)
@@ -671,7 +673,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             Some(t) => convert_expr_texts_into(t, &mut seq.expr_texts),
             None => seq.expr_texts.clear(),
         }
-        let events = Vst3InputEvents {
+        let events = InputEvents {
             midi: ctx.midi_events,
             note_expressions,
             chords: &seq.chords,

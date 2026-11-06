@@ -10,12 +10,12 @@ use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, Sy
 use tutti_vst3_ffi::{
     EVENT_CAPACITY, EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena,
 };
-use tutti_vst3_host::{MidiEvent, Stager, Utf16Chord, Vst3InputEvents, drain_midi};
+use tutti_vst3_host::{InputEvents, MidiEvent, Stager, Utf16Chord, drain_midi};
 use vst3::Steinberg::Vst::{Event, IEventList, IEventListTrait};
 use vst3::Steinberg::{kResultFalse, kResultOk};
 
-fn midi_only(midi: &[MidiEvent]) -> Vst3InputEvents<'_> {
-    Vst3InputEvents {
+fn midi_only(midi: &[MidiEvent]) -> InputEvents<'_> {
+    InputEvents {
         midi,
         ..Default::default()
     }
@@ -260,7 +260,7 @@ fn a_full_text_arena_refuses_rather_than_moving_its_pointers() {
             text: text.clone(),
         })
         .collect();
-    let sources = Vst3InputEvents {
+    let sources = InputEvents {
         chords: &chords,
         ..Default::default()
     };
@@ -416,7 +416,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
     assert_no_alloc::assert_no_alloc(|| {
         stager.stage(
             &list,
-            &Vst3InputEvents {
+            &InputEvents {
                 midi: &midi,
                 ..Default::default()
             },

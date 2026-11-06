@@ -44,8 +44,8 @@ use std::sync::Mutex;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::ParamId;
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    TransportInfo, Vst3InputEvents, Vst3Loaded,
+    AudioBuffer, InputEvents, LoadOptions, MidiEvent, NoteExpressionType, NoteExpressionValue,
+    ParameterChanges, TransportInfo, Vst3Loaded,
 };
 #[path = "support/active.rs"]
 mod active;
@@ -263,7 +263,7 @@ fn render(
         num_samples: frames,
         sample_rate: 48_000.0,
     };
-    let events = Vst3InputEvents {
+    let events = InputEvents {
         midi,
         ..Default::default()
     };
@@ -818,7 +818,7 @@ fn f64_path_carries_the_same_audio() {
     };
     inst.process(
         &mut buffer,
-        &Vst3InputEvents::default(),
+        &InputEvents::default(),
         None,
         &TransportInfo::default(),
     );
@@ -1160,7 +1160,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
         num_samples: FRAMES,
         sample_rate: 48_000.0,
     };
-    let events = Vst3InputEvents {
+    let events = InputEvents {
         midi: &midi,
         note_expressions: &expressions,
         ..Default::default()
@@ -1258,7 +1258,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
         num_samples: FRAMES,
         sample_rate: 48_000.0,
     };
-    let events = Vst3InputEvents {
+    let events = InputEvents {
         midi: &midi,
         ..Default::default()
     };
@@ -1309,8 +1309,10 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
     // Drive blocks while sweeping the plugin's parameters: it emits CC when a
     // parameter changes, so a static value produces nothing.
     let info = inst.plugin_info().clone();
-    let param_ids: Vec<u32> = (0..inst.parameter_count())
-        .filter_map(|i| inst.parameter_id_at(i))
+    let param_ids: Vec<u32> = inst
+        .parameter_ids()
+        .into_iter()
+        .map(|id| id.get())
         .collect();
 
     let mut emitted = 0usize;
@@ -1336,7 +1338,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
         };
         let out = inst.process(
             &mut buffer,
-            &Vst3InputEvents::default(),
+            &InputEvents::default(),
             Some(&params),
             &TransportInfo::default(),
         );
@@ -1371,7 +1373,7 @@ fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
     let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
 
-    let want = tutti_vst3_host::process_context_flags::NEED_TEMPO;
+    let want = Some(tutti_vst3_host::process_context_flags::NEED_TEMPO);
     assert_eq!(
         loaded.context_requirements(),
         want,

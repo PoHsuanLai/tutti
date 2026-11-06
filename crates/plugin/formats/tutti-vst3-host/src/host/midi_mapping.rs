@@ -24,7 +24,7 @@ use vst3::Steinberg::Vst::{
     ParamID,
 };
 
-use crate::events::{Stager, Vst3InputEvents};
+use crate::events::{InputEvents, Stager};
 use crate::types::{MidiEvent, ParameterChanges};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
 use tutti_types::{Reader, RtVec};
@@ -236,14 +236,14 @@ pub(crate) fn stage_input_events<'a>(
     cc: &'a mut CcRoute,
     stager: &mut Stager,
     list: &EventList,
-    events: &Vst3InputEvents<'_>,
+    events: &InputEvents<'_>,
     param_changes: Option<&'a ParameterChanges>,
 ) -> Option<&'a ParameterChanges> {
     let (midi, params, lost_tail) = match cc.route(events.midi, param_changes) {
         Some((midi, params)) => (midi.as_slice(), Some(params), midi.is_overflowed()),
         None => (events.midi, param_changes, false),
     };
-    let effective = Vst3InputEvents { midi, ..*events };
+    let effective = InputEvents { midi, ..*events };
     if effective.is_empty() {
         list.clear();
     } else {

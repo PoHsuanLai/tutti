@@ -1,4 +1,4 @@
-//! Plugin lifecycle types: [`Vst3Library`] (loaded DSO + factory),
+//! Plugin lifecycle types: [`Library`] (loaded DSO + factory),
 //! [`Vst3Loaded`] (initialized plugin, no audio), and the two halves an
 //! activation splits it into, [`Vst3Processor`] (renders blocks) and
 //! [`Vst3Controller`] (everything else). The stages are distinct types and the
@@ -32,9 +32,9 @@ mod speakers;
 
 pub use control::descriptor_of;
 pub use controller::Vst3Controller;
-pub use library::{ClassInfo, FactoryInfo, Vst3Library, factory_flags};
+pub use library::{ClassInfo, FactoryInfo, Library, factory_flags};
 pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded};
-pub use processor::{ProcessFailed, Vst3Processor, Vst3ProcessorAny};
+pub use processor::{ProcessFailed, ProcessorAny, Vst3Processor};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are
 /// reached in production only through `open_editor`/`close_editor`, which need

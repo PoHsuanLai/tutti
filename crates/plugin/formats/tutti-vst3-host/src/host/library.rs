@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tutti_vst3_ffi::Module;
 pub use tutti_vst3_ffi::{ClassInfo, FactoryInfo, factory_flags};
 
-use crate::error::{LoadStage, Result, Vst3Error};
+use crate::error::{LoadCause, LoadStage, Result, Vst3Error};
 
 /// A loaded VST3 dynamic library with its `IPluginFactory` resolved.
 ///
@@ -14,11 +14,11 @@ use crate::error::{LoadStage, Result, Vst3Error};
 /// classes, and each [`Vst3Loaded`](crate::Vst3Loaded) instance keeps its
 /// originating library alive for the plugin's lifetime.
 #[derive(Debug)]
-pub struct Vst3Library {
+pub struct Library {
     module: Arc<Module>,
 }
 
-impl Vst3Library {
+impl Library {
     /// The module behind this library, which a plugin created from it keeps
     /// alive.
     pub(crate) fn module(&self) -> &Arc<Module> {
@@ -38,7 +38,7 @@ impl Vst3Library {
         let module = Module::open(lib_path).map_err(|e| Vst3Error::LoadFailed {
             path: lib_path.to_path_buf(),
             stage: e.stage,
-            reason: e.reason,
+            cause: LoadCause::Module(e.reason),
         })?;
         Ok(Arc::new(Self { module }))
     }

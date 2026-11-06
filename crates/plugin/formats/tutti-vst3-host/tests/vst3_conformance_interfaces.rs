@@ -8,7 +8,8 @@
 #[path = "support/conformance.rs"]
 mod conformance_support;
 
-use tutti_vst3_host::{LoadOptions, Vst3Library, Vst3Loaded};
+use tutti_plugin_types::ParamId;
+use tutti_vst3_host::{Library, LoadOptions, Vst3Loaded};
 
 use conformance_support::*;
 
@@ -27,11 +28,11 @@ fn context_requirements_are_read_from_the_plugin() {
 
     let req = checker.context_requirements();
     assert_ne!(
-        req,
-        u32::MAX,
+        req, None,
         "host-checker implements IProcessContextRequirements, so the host must \
          have its real flags rather than the everything-fallback"
     );
+    let req = req.unwrap_or_default();
     assert!(
         checker.wants_transport(),
         "host-checker requests tempo/playhead/bar fields ({req:#x}), so \
@@ -52,7 +53,7 @@ fn context_requirements_are_read_from_the_plugin() {
         "note-expression-synth requests no context fields ({:#x}), but the host \
          reports transport={} sequencer={} — these accessors are not reading \
          the plugin's flags",
-        nes.context_requirements(),
+        nes.context_requirements().unwrap_or(u32::MAX),
         nes.wants_transport(),
         nes.wants_sequencer_context()
     );
@@ -417,19 +418,19 @@ fn remap_param_id_migrates_a_known_parameter() {
     let uid: [i8; 16] = AGAIN_PROCESSOR_UID.map(|b| b as i8);
 
     assert_eq!(
-        remap.remap_param_id(&uid, 0),
-        Some(EXPECTED_NEW_ID),
+        remap.remap_param_id(&uid, ParamId::new(0)),
+        Some(ParamId::new(EXPECTED_NEW_ID)),
         "the sample maps AGain's param 0 onto {EXPECTED_NEW_ID}; a different \
          answer means the UID or the id is not reaching the plugin"
     );
     assert_eq!(
-        remap.remap_param_id(&uid, 999),
+        remap.remap_param_id(&uid, ParamId::new(999)),
         None,
         "param 999 has no mapping, so the host must report None rather than a \
          stale or defaulted id"
     );
     assert_eq!(
-        remap.remap_param_id(&[0i8; 16], 0),
+        remap.remap_param_id(&[0i8; 16], ParamId::new(0)),
         None,
         "a zero UID is not AGain, so the plugin refuses — a Some here means the \
          host is not passing the UID through"
@@ -531,7 +532,7 @@ fn param_id_for_function_name_resolves_known_functions() {
     assert_ne!(
         dry_wet, randomize,
         "two different function names resolved to the same parameter id \
-         ({dry_wet}) — the name is being ignored"
+         ({dry_wet:?}) — the name is being ignored"
     );
     assert_eq!(
         checker.param_id_for_function_name(0, "NotAFunctionName"),
@@ -562,7 +563,7 @@ fn the_factory_flag_word_is_read_not_discarded() {
     let mut read = 0usize;
     let mut unicode = 0usize;
     for (name, path) in sample_plugins() {
-        let Ok(library) = Vst3Library::load(&path) else {
+        let Ok(library) = Library::load(&path) else {
             continue;
         };
         let Some(info) = library.factory_info() else {

@@ -41,7 +41,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use tutti_vst3_host::{AudioBuffer, LoadOptions, TransportInfo, Vst3InputEvents, Vst3Loaded};
+use tutti_vst3_host::{AudioBuffer, InputEvents, LoadOptions, TransportInfo, Vst3Loaded};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -209,7 +209,7 @@ fn drive_block_with(inst: &mut Active, input: f32) -> Vec<Vec<f32>> {
     // itself is `try_process`'s to report.
     let _ = inst.try_process(
         &mut buffer,
-        &Vst3InputEvents::default(),
+        &InputEvents::default(),
         None,
         &TransportInfo::default(),
     );

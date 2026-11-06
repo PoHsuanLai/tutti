@@ -1,6 +1,6 @@
 //! Post-`initialize()` VST3 state. Audio processing is **not** active here:
 //! [`Loaded::activate`](tutti_plugin_types::Loaded::activate) splits the plugin
-//! into a [`Vst3ProcessorAny`](crate::Vst3ProcessorAny), which renders, and a
+//! into a [`ProcessorAny`](crate::ProcessorAny), which renders, and a
 //! [`Vst3Controller`](crate::Vst3Controller), which holds everything else.
 //!
 //! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
@@ -24,24 +24,25 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use tutti_plugin_types::{
-    Control, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
-    PluginDescriptor, Request,
+    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginDescriptor,
+    Request, SampleFormat,
 };
 use tutti_types::{ArcLend, ChannelTopology};
 use tutti_vst3_ffi::{
     BusDirection, CreateError, EditorError, MediaType, Plugin, PluginNotification, RestartFlags,
 };
 
-use crate::error::{LoadStage, Result, Vst3Error};
+use crate::error::{LoadCause, LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::unit_ids;
 use crate::types::{
-    ContentScale, EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
+    ContentScale, EditorCapabilities, EditorSize, KeyEvent, KeyOutcome, PluginInfo,
+    PrefetchSupport, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
 };
 
 use super::instance::usable_topology;
-use super::library::Vst3Library;
+use super::library::Library;
 use super::midi_learn::MidiLearnConsumer;
 use super::midi_mapping::{MidiCcCell, MidiCcMapping};
 
@@ -62,7 +63,7 @@ pub struct Vst3Loaded {
     // Every COM object below is implemented *inside* the plugin DSO, so its
     // vtable lives in that module's text: releasing one after the DSO is gone
     // jumps through a dangling function pointer. `_library` therefore has to be
-    // the LAST field, not the first. (Same rule `Vst3Library` documents for its
+    // the LAST field, not the first. (Same rule `Library` documents for its
     // own fields.)
     pub(super) plugin: Plugin,
     pub(super) info: PluginInfo,
@@ -84,7 +85,7 @@ pub struct Vst3Loaded {
     pub(super) midi_cc: Arc<ArcLend<MidiCcCell>>,
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
     /// the teardown-order note at the top of this struct.
-    pub(super) _library: Arc<Vst3Library>,
+    pub(super) _library: Arc<Library>,
 }
 
 /// How a plugin was loaded, kept so [`Loaded::rebuild`] loads it again.
@@ -99,10 +100,19 @@ pub(super) struct LoadOrigin {
 /// The plugin's activation, as the host last made it.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Activation {
-    /// `setActive(1)` has run and `setActive(0)` has not.
-    pub(super) active: bool,
-    /// The sample width of that activation.
-    pub(super) f64: bool,
+    /// The sample format of the current activation; `None` while `setActive(1)`
+    /// has not run or `setActive(0)` has since.
+    pub(super) format: Option<SampleFormat>,
+}
+
+impl Activation {
+    pub(super) fn is_active(self) -> bool {
+        self.format.is_some()
+    }
+
+    pub(super) fn is_f64(self) -> bool {
+        self.format == Some(SampleFormat::Float64)
+    }
 }
 
 /// How to load a plugin from a bundle.
@@ -121,7 +131,7 @@ impl LoadOptions {
     }
 
     /// Loads the audio class with this display name from a bundle that exports
-    /// several (a name from [`Vst3Library::class_info`]).
+    /// several (a name from [`Library::class_info`]).
     ///
     /// One VST3 bundle may export many plugins: that is the normal shape for a
     /// commercial suite, and `mda-vst3` exports 34 audio classes from one

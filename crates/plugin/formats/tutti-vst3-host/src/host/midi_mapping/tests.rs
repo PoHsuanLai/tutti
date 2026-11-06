@@ -791,7 +791,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     let list = EventList::input();
     let mut stager = Stager::default();
 
-    let one = Vst3InputEvents {
+    let one = InputEvents {
         midi: &first,
         ..Default::default()
     };
@@ -803,7 +803,7 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     );
     assert!(sysex_in(&list).is_empty(), "the message is still open");
 
-    let two = Vst3InputEvents {
+    let two = InputEvents {
         midi: &packets[MIDI_STACK_CAPACITY - 1..],
         ..Default::default()
     };
@@ -832,13 +832,13 @@ fn a_route_overflow_drops_the_open_sysex() {
     let list = EventList::input();
     let mut stager = Stager::default();
     // 300 packets in one call: the route keeps 256 and loses 44.
-    let one = Vst3InputEvents {
+    let one = InputEvents {
         midi: &packets[..300],
         ..Default::default()
     };
     stage_input_events(&mut route, &mut stager, &list, &one, None);
     assert_eq!(list.sysex_dropped(), 1);
-    let two = Vst3InputEvents {
+    let two = InputEvents {
         midi: &packets[300..],
         ..Default::default()
     };

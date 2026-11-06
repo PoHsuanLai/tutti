@@ -144,14 +144,10 @@ pub struct MemorySourceConfig {
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`MemorySource::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
-    /// Whether the source is **placed** on the transport: it plays
-    /// [`window`](Self::window) of the timeline, reading the transport from
-    /// each block's `Env`. `false` leaves it free-running (audition /
-    /// one-shot).
-    pub placed: bool,
-    /// Span of timeline the voice occupies. Only consulted when `placed` —
-    /// a window off the transport has nothing to be a window *of*.
-    pub window: VoiceWindow,
+    /// The window of the timeline the source plays, read against the
+    /// transport from each block's `Env`. `None` leaves it free-running
+    /// (audition / one-shot).
+    pub placement: Option<VoiceWindow>,
     /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
     pub channels: ChannelLayout,
@@ -163,8 +159,7 @@ impl Default for MemorySourceConfig {
             gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
-            placed: false,
-            window: VoiceWindow::default(),
+            placement: None,
             channels: ChannelLayout::STEREO,
         }
     }
@@ -238,15 +233,9 @@ pub struct MemorySource {
     /// (`LoopSpan`), so a change is a store.
     loop_setting: LoopSetting,
 
-    /// Whether the source plays its window of the transport (placed) or
-    /// its own cursor (free-running).
-    ///
-    /// Separate from `window` — see [`VoiceWindow`]. The window is always
-    /// present because "from beat 0, whole source" is a meaningful default.
-    placed: bool,
-
-    /// Span of timeline this voice occupies. Meaningless unless `placed`.
-    window: VoiceWindow,
+    /// The window of the transport the source plays; `None` when it is
+    /// free-running on its own cursor.
+    placement: Option<VoiceWindow>,
 
     /// Whether the free-running cursor has been round its loop: then the frame
     /// behind the loop's start is the loop's last (`LoopSpan::taps`). Atomic
@@ -291,8 +280,7 @@ impl std::fmt::Debug for MemorySource {
             .field("sample_rate", &self.sample_rate)
             .field("src_ratio", &self.src_ratio)
             .field("loop_setting", &self.loop_setting)
-            .field("placed", &self.placed)
-            .field("window", &self.window)
+            .field("placement", &self.placement)
             .finish_non_exhaustive()
     }
 }
@@ -309,8 +297,7 @@ impl Clone for MemorySource {
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
             loop_setting: self.loop_setting,
-            placed: self.placed,
-            window: self.window,
+            placement: self.placement,
             looped: AtomicBool::new(self.looped.load(Ordering::Relaxed)),
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
@@ -341,8 +328,7 @@ impl MemorySource {
             sample_rate,
             src_ratio: SrcRatio::UNITY,
             loop_setting: LoopSetting::Off,
-            placed: false,
-            window: VoiceWindow::default(),
+            placement: None,
             looped: AtomicBool::new(false),
             clock: Clock::new(),
             channels: ChannelLayout::STEREO,
@@ -379,8 +365,7 @@ impl MemorySource {
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
-            placed: config.placed,
-            window: config.window,
+            placement: config.placement,
             channels: nonempty(config.channels),
             ..Self::new(wave)
         };
@@ -399,8 +384,8 @@ impl MemorySource {
     /// transport at `start_beat` for `duration_beats`, everything else
     /// default.
     ///
-    /// Equivalent to `with_config(wave, MemorySourceConfig { placed: true,
-    /// window, ..Default::default() })`, and it exists because it reads better
+    /// Equivalent to `with_config(wave, MemorySourceConfig { placement:
+    /// Some(window), ..Default::default() })`, and it exists because it reads better
     /// at the timeline call sites — the same reason tutti-polysynth keeps
     /// convenience constructors alongside its config one. `duration_beats` of
     /// `None` plays the whole source.
@@ -408,29 +393,25 @@ impl MemorySource {
         Self::with_config(
             wave,
             MemorySourceConfig {
-                placed: true,
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: start_beat,
                     duration: duration_beats,
-                },
+                }),
                 ..Default::default()
             },
         )
     }
 
-    /// Moves the window. Independent of whether the source is placed — a
-    /// window is just geometry, so there is no "only if placed" branch to get
-    /// wrong. The next frame reads at the new window.
+    /// Places the source on the transport at `window`, or moves its window.
+    /// The next frame reads at the new window.
     pub fn set_window(&mut self, window: VoiceWindow) {
-        self.window = window;
+        self.placement = Some(window);
     }
 
-    /// Places this source on the transport at `window` (see
-    /// [`is_placed`](Self::is_placed)).
+    /// Places this source on the transport at `window`.
     #[must_use]
     pub fn placed_at(mut self, window: VoiceWindow) -> Self {
-        self.placed = true;
-        self.window = window;
+        self.set_window(window);
         self
     }
 
@@ -506,25 +487,13 @@ impl MemorySource {
     /// Whether this source plays its window of the transport, read from its
     /// block's `Env` (`false`: free-running on its own cursor).
     pub fn is_placed(&self) -> bool {
-        self.placed
+        self.placement.is_some()
     }
 
-    /// The voice's window on the timeline. Always meaningful — see
-    /// [`VoiceWindow`] for why the window is not itself optional.
-    pub fn window(&self) -> VoiceWindow {
-        self.window
-    }
-
-    /// Where on the timeline this voice's window opens, in [`Beat`]s.
-    pub fn start_beat(&self) -> Beat {
-        self.window.start
-    }
-
-    /// How long the window stays open, in [`BeatDuration`], or `None` to play
-    /// the whole source. The end is **exclusive**: at `start + duration` the
-    /// gate already reports silence.
-    pub fn duration_beats(&self) -> Option<BeatDuration> {
-        self.window.duration
+    /// The window of the timeline this voice plays, or `None` when it is
+    /// free-running.
+    pub fn window(&self) -> Option<VoiceWindow> {
+        self.placement
     }
 
     /// Length of the loaded wave in **frames** — one per output sample at unity
@@ -808,12 +777,12 @@ impl MemorySource {
     /// wave's rate, and varispeed with the stretch — see
     /// [`stretched_window_position`](Self::stretched_window_position).
     #[inline]
-    pub(crate) fn gate(&self, stretch_rate: ReadRate) -> Gate {
-        Gate {
-            window: self.window,
+    pub(crate) fn gate(&self, stretch_rate: ReadRate) -> Option<Gate> {
+        Some(Gate {
+            window: self.placement?,
             source_rate: self.wave.sample_rate(),
             rate: self.window_rate().then(stretch_rate),
-        }
+        })
     }
 
     /// The positions a placed read plays over block frames `range`, one per
@@ -842,12 +811,12 @@ impl MemorySource {
         stretch_rate: ReadRate,
         out: &mut [Option<SamplePosition>],
     ) -> bool {
-        if !self.placed {
+        let Some(gate) = self.gate(stretch_rate) else {
             out.fill(None);
             return false;
-        }
+        };
         let step = self.read_rate().then(stretch_rate);
-        place(clock, range, self.gate(stretch_rate), step, out)
+        place(clock, range, gate, step, out)
     }
 
     /// [`read_placed_into`](Self::read_placed_into) for a block: frame `i`
@@ -1079,13 +1048,11 @@ impl MemorySource {
     /// the agreement.
     #[inline]
     pub fn window_position(&self, transport: &tutti_graph::Transport) -> Option<SamplePosition> {
-        if !self.placed {
-            return None;
-        }
+        let window = self.placement?;
         super::interp::window_position(
             transport,
-            self.window.start,
-            self.window.duration,
+            window.start,
+            window.duration,
             self.wave.sample_rate(),
             self.window_rate(),
         )
@@ -1119,13 +1086,11 @@ impl MemorySource {
         transport: &tutti_graph::Transport,
         stretch_rate: ReadRate,
     ) -> Option<SamplePosition> {
-        if !self.placed {
-            return None;
-        }
+        let window = self.placement?;
         super::interp::window_position(
             transport,
-            self.window.start,
-            self.window.duration,
+            window.start,
+            window.duration,
             self.wave.sample_rate(),
             self.window_rate().then(stretch_rate),
         )
@@ -1214,7 +1179,7 @@ impl MemorySource {
         let n = out.len().min(MAX_SAMPLER_CHANNELS);
         let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         let base = range.start;
-        if self.placed {
+        if self.placement.is_some() {
             let frames = range.len();
             let positions = &mut positions[..frames];
             let sounds = self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
@@ -1605,7 +1570,7 @@ mod tests {
                 Arc::clone(&wave),
                 MemorySourceConfig {
                     speed: PlaybackRate::new(0.5),
-                    placed: true,
+                    placement: Some(VoiceWindow::default()),
                     ..Default::default()
                 },
             )
@@ -1646,7 +1611,7 @@ mod tests {
             Arc::clone(wave),
             MemorySourceConfig {
                 speed: PlaybackRate::new(rate),
-                placed: true,
+                placement: Some(VoiceWindow::default()),
                 ..Default::default()
             },
         )
@@ -2224,31 +2189,23 @@ mod tests {
         );
     }
 
-    /// A window is geometry: it does not need the source to be placed to
-    /// exist, and setting one before the source is placed must stick.
-    ///
-    /// Order is not fixed, so a setter guarded on "only if placed" loses
-    /// the window silently, and the voice plays from beat 0 for its whole
-    /// length.
+    /// A window set on a free-running source places it, and placing it
+    /// afterwards at that window leaves it as it was.
     #[test]
-    fn the_window_can_be_set_before_the_source_is_placed() {
+    fn setting_a_window_places_the_source() {
         let wave = ramp_wave(100, 44_100.0);
         let mut sampler = MemorySource::new(wave);
-        assert_eq!(sampler.window(), VoiceWindow::default());
+        assert_eq!(sampler.window(), None);
+        assert!(!sampler.is_placed());
 
-        // Not placed yet — a placement-guarded setter would drop this silently.
-        sampler.set_window(VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0)));
-        assert_eq!(sampler.start_beat(), Beat::new(8.0));
-        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+        let window = VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0));
+        sampler.set_window(window);
+        assert_eq!(sampler.window(), Some(window));
 
-        // Placing it afterwards (at its own window) must not disturb it...
-        let window = sampler.window();
         let sampler = sampler.placed_at(window);
-        assert_eq!(sampler.start_beat(), Beat::new(8.0));
-        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+        assert_eq!(sampler.window(), Some(window));
 
-        // ...and the gate now honours it: beat 0 is before the beat-8 start,
-        // beat 9 inside.
+        // The gate honours it: beat 0 is before the beat-8 start, beat 9 inside.
         let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::new(120.0)).transport();
         assert!(sampler.window_position(&at(0.0)).is_none());
         assert!(sampler.window_position(&at(9.0)).is_some());

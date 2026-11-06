@@ -1339,7 +1339,7 @@ mod tests {
             .fork_copy(tutti_graph::ForkMode::Live)
             .expect("a memory voice forks");
         match &fork.source {
-            VoiceSource::Memory(s) => assert_eq!(s.start_beat(), Beat::new(2.0)),
+            VoiceSource::Memory(s) => assert_eq!(s.window().map(|w| w.start), Some(Beat::new(2.0))),
             other => panic!("expected a Memory source, got {other:?}"),
         }
         let mut node = VoiceNode::with_channels(fork, 1usize);
@@ -2212,7 +2212,7 @@ mod tests {
                 indexed_wave(6, 64),
                 MemorySourceConfig {
                     channels: ChannelLayout::from(w),
-                    placed: true,
+                    placement: Some(VoiceWindow::default()),
                     ..Default::default()
                 },
             );
@@ -2247,11 +2247,10 @@ mod tests {
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                placed: true,
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
                 ..Default::default()
             },
         );
@@ -2293,11 +2292,10 @@ mod tests {
             indexed_wave(6, 4096),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                placed: true,
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
                 ..Default::default()
             },
         );
@@ -2364,11 +2362,10 @@ mod tests {
                 indexed_wave(6, 128),
                 MemorySourceConfig {
                     channels: ChannelLayout::from(6u16),
-                    placed: true,
-                    window: VoiceWindow {
+                    placement: Some(VoiceWindow {
                         start: Beat::new(0.0),
                         duration: None,
-                    },
+                    }),
                     ..Default::default()
                 },
             );
@@ -2476,11 +2473,10 @@ mod tests {
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: ChannelLayout::from(6u16),
-                placed: true,
-                window: VoiceWindow {
+                placement: Some(VoiceWindow {
                     start: Beat::new(0.0),
                     duration: None,
-                },
+                }),
                 ..Default::default()
             },
         );

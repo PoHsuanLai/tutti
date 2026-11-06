@@ -104,7 +104,7 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            placed: true,
+            placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
     );
@@ -186,7 +186,7 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            placed: true,
+            placement: Some(tutti_sampler::VoiceWindow::default()),
             // Deliberately NOT 1.0 and NOT equal to the playback gain below.
             gain: Amplitude::new(0.25),
             ..Default::default()
@@ -280,7 +280,7 @@ fn gain_scales_every_channel_equally() {
         dc_wave(SR as usize),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            placed: true,
+            placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
     );
@@ -362,7 +362,7 @@ fn two_half_gain_voices_sum_to_one_full_gain_voice() {
             dc_wave(SR as usize),
             MemorySourceConfig {
                 channels: ChannelLayout::STEREO,
-                placed: true,
+                placement: Some(tutti_sampler::VoiceWindow::default()),
                 ..Default::default()
             },
         );

@@ -131,7 +131,7 @@ fn reversed_pool(wave: Arc<Wave>, direction: Direction) -> (VoicePool, Arc<Clock
         wave,
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            placed: true,
+            placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
     );
@@ -394,7 +394,7 @@ fn loop_is_continuous(len: usize, start: f64, end: f64, fade: usize) {
             sine(len),
             MemorySourceConfig {
                 channels: ChannelLayout::STEREO,
-                placed: true,
+                placement: Some(tutti_sampler::VoiceWindow::default()),
                 ..Default::default()
             },
         );
@@ -598,7 +598,7 @@ fn a_reversed_voice_with_a_loop_set_stays_bounded() {
         ramp(LEN),
         MemorySourceConfig {
             channels: ChannelLayout::STEREO,
-            placed: true,
+            placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
     );

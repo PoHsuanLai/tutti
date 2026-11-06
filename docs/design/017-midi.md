@@ -262,6 +262,15 @@ translator, so reading cannot translate, and `tutti-midi-hardware` cannot reach
 the graph. The cycle that keeps `ump` and `translation` together today is mostly
 `message()` calling `normalize`, and it ends with that call.
 
+`tutti-midi-runtime` keeps only graph nodes and what they need: the input, queue,
+out, clip, harmony and clock nodes with `ClockMaster`, plus `MidiMailbox`, routes,
+`gather_midi` and `BlockSplitter`, about 3,100 of its 5,700 production lines. Its
+layout flattens to match. `negotiate` and `jr_timestamp` move to `tutti-midi-device`,
+`mpe_ingest` to `tutti-midi-protocol`, and the SysEx reassemblers go with the layer
+that uses them (`Sysex8PacketReassembler` has no production caller and is deleted
+unless one appears). `outbound` goes away, along with the re-exports from
+`tutti-midi-types`, and `pub mod` inside a private parent becomes `mod`.
+
 `sync`'s clock and MTC decoders have no consumer today. They move to the runtime
 when a clock slave uses them (§9), and are deleted otherwise. `cc::mapping` is
 replaced by a CC modulation source (§9), and `jr_timestamp` is rewritten in

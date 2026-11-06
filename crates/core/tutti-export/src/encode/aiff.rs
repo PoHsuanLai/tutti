@@ -51,7 +51,7 @@ impl AiffEncoder {
         };
         let file = BufWriter::new(std::fs::File::create(path)?);
         let writer = AifcWriter::new(file, &info)
-            .map_err(|e| Error::encoding(Codec::Aiff, format!("AIFF: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Aiff, format!("{e:?}")))?;
         Ok(Self {
             writer,
             bit_depth: config.encode.bit_depth,
@@ -86,11 +86,11 @@ impl Encoder for AiffEncoder {
                 }
                 BitDepth::Float32 => self.writer.write_samples_f32(buf),
             }
-            .map_err(|e| Error::encoding(Codec::Aiff, format!("AIFF write failed: {e:?}")))
+            .map_err(|e| Error::encoding(Codec::Aiff, format!("write failed: {e:?}")))
         })?;
 
         self.writer.finalize().map_err(|e| {
-            Error::encoding(Codec::Aiff, format!("AIFF finalization failed: {e:?}"))
+            Error::encoding(Codec::Aiff, format!("finalization failed: {e:?}"))
         })?;
         Ok(())
     }

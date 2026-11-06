@@ -40,13 +40,13 @@ impl OggEncoder {
 
         let writer = BufWriter::new(std::fs::File::create(path)?);
         let mut builder = VorbisEncoderBuilder::new(sr, ch, writer).map_err(|e| {
-            Error::encoding(Codec::Ogg, format!("Failed to create OGG encoder: {e}"))
+            Error::encoding(Codec::Ogg, format!("failed to create encoder: {e}"))
         })?;
         builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
             target_quality: opts.quality,
         });
         let encoder = builder.build().map_err(|e| {
-            Error::encoding(Codec::Ogg, format!("Failed to build OGG encoder: {e}"))
+            Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}"))
         })?;
         Ok(Self { encoder })
     }
@@ -83,12 +83,12 @@ impl Encoder for OggEncoder {
             frames.deinterleave_into(&mut planes);
             self.encoder
                 .encode_audio_block(&planes)
-                .map_err(|e| Error::encoding(Codec::Ogg, format!("OGG encoding failed: {e}")))
+                .map_err(|e| Error::encoding(Codec::Ogg, format!("encoding failed: {e}")))
         })?;
 
         self.encoder
             .finish()
-            .map_err(|e| Error::encoding(Codec::Ogg, format!("OGG finalization failed: {e}")))?;
+            .map_err(|e| Error::encoding(Codec::Ogg, format!("finalization failed: {e}")))?;
         Ok(())
     }
 }

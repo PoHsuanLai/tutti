@@ -159,9 +159,9 @@ impl RouteDecl {
     }
 }
 
-/// A target's range and automation. The knob is a cell, not a declaration
-///, and so is the range the lane reads: the range here is
-/// checked, and the host stores it into the target's range cell.
+/// A target's range and automation. The knob is a cell, not a declaration,
+/// and so is the range the lane reads: the range here is checked, and the
+/// host stores it into the target's range cell.
 ///
 /// Plain data, built with a struct literal; [`compile`] checks it.
 #[derive(Clone)]

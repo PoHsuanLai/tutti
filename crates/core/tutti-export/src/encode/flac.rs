@@ -82,7 +82,7 @@ impl Encoder for FlacEncoder {
 
         let verify = |c: EncoderConfig| {
             c.into_verified()
-                .map_err(|e| Error::encoding(Codec::Flac, format!("Invalid FLAC config: {e:?}")))
+                .map_err(|e| Error::encoding(Codec::Flac, format!("invalid config: {e:?}")))
         };
         let configs = Configs {
             full: verify(encoder_config(self.compression_level))?,
@@ -91,7 +91,7 @@ impl Encoder for FlacEncoder {
             panic_at: None,
         };
         let info = StreamInfo::new(rate, ch, bits)
-            .map_err(|e| Error::encoding(Codec::Flac, format!("Invalid FLAC stream: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("invalid stream: {e:?}")))?;
 
         let mut file = BufWriter::new(File::create(&self.path)?);
         // A placeholder of the final header's size (STREAMINFO is fixed
@@ -142,7 +142,7 @@ fn header_bytes(info: &StreamInfo) -> Result<Vec<u8>> {
     let mut sink = ByteSink::new();
     Stream::with_stream_info(info.clone())
         .write(&mut sink)
-        .map_err(|e| Error::encoding(Codec::Flac, format!("Failed to write FLAC header: {e:?}")))?;
+        .map_err(|e| Error::encoding(Codec::Flac, format!("failed to write header: {e:?}")))?;
     Ok(sink.into_inner())
 }
 
@@ -281,7 +281,7 @@ impl FrameWriter {
         let mut buf = match self.free.pop() {
             Some(buf) => buf,
             None => FrameBuf::with_size(self.channels, BLOCK_SIZE)
-                .map_err(|e| Error::encoding(Codec::Flac, format!("FLAC frame buffer: {e:?}")))?,
+                .map_err(|e| Error::encoding(Codec::Flac, format!("frame buffer: {e:?}")))?,
         };
         // The last block is encoded at its own length rather than padded.
         // `resize` is unchecked, which is what lets that length be under
@@ -289,11 +289,11 @@ impl FrameWriter {
         // block.
         buf.resize(frames);
         buf.fill_interleaved(pcm)
-            .map_err(|e| Error::encoding(Codec::Flac, format!("FLAC frame buffer: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("frame buffer: {e:?}")))?;
 
         while self.sent - self.written >= self.in_flight_cap {
             if !self.receive(out, true)? {
-                return Err(Error::encoding(Codec::Flac, "a FLAC worker stopped"));
+                return Err(Error::encoding(Codec::Flac, "a worker stopped"));
             }
         }
         let jobs = self
@@ -301,7 +301,7 @@ impl FrameWriter {
             .as_ref()
             .expect("blocks are queued before `finish`");
         jobs.send((self.sent, buf))
-            .map_err(|_| Error::encoding(Codec::Flac, "a FLAC worker stopped"))?;
+            .map_err(|_| Error::encoding(Codec::Flac, "a worker stopped"))?;
         self.sent += 1;
         while self.receive(out, false)? {}
         Ok(())
@@ -319,7 +319,7 @@ impl FrameWriter {
             return Ok(false);
         };
         let frame = frame
-            .map_err(|e| Error::encoding(Codec::Flac, format!("FLAC encoding failed: {e}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("encoding failed: {e}")))?;
         buf.resize(BLOCK_SIZE);
         self.free.push(buf);
         self.pending.insert(n, frame);
@@ -327,7 +327,7 @@ impl FrameWriter {
             self.info.update_frame_info(&frame);
             self.sink.clear();
             frame.write(&mut self.sink).map_err(|e| {
-                Error::encoding(Codec::Flac, format!("Failed to write FLAC frame: {e:?}"))
+                Error::encoding(Codec::Flac, format!("failed to write frame: {e:?}"))
             })?;
             out.write_all(self.sink.as_slice())?;
             self.written += 1;
@@ -342,7 +342,7 @@ impl FrameWriter {
         self.jobs = None;
         while self.written < self.sent {
             if !self.receive(out, true)? {
-                return Err(Error::encoding(Codec::Flac, "a FLAC worker stopped"));
+                return Err(Error::encoding(Codec::Flac, "a worker stopped"));
             }
         }
         // A fixed-blocksize stream's STREAMINFO states the block size every
@@ -350,12 +350,12 @@ impl FrameWriter {
         // states it too, rather than `update_frame_info`'s unset 65535 and 0.
         self.info
             .set_block_sizes(BLOCK_SIZE, BLOCK_SIZE)
-            .map_err(|e| Error::encoding(Codec::Flac, format!("FLAC block size: {e:?}")))?;
+            .map_err(|e| Error::encoding(Codec::Flac, format!("block size: {e:?}")))?;
         if self.written == 0 {
             // Zero is "unknown"; unset, the two would read u32::MAX and 0.
             self.info
                 .set_frame_sizes(0, 0)
-                .map_err(|e| Error::encoding(Codec::Flac, format!("FLAC frame size: {e:?}")))?;
+                .map_err(|e| Error::encoding(Codec::Flac, format!("frame size: {e:?}")))?;
         }
         // `update_frame_info` has summed every block's length, the last at its
         // own, so the sample count is already exact.

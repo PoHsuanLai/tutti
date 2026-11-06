@@ -2,6 +2,7 @@
 //! features is on, so the encode path exists.
 
 fn main() {
+    println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rustc-check-cfg=cfg(codec)");
     let any = ["WAV", "FLAC", "AIFF", "OGG"]
         .iter()

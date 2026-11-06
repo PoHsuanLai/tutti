@@ -469,7 +469,7 @@ fn upsampling_cuts_at_the_input_band_edge() {
 /// NaN, negatives and sub-0.5 Hz rates reach the converter as 0 and
 /// infinity as `usize::MAX`; the converter still refuses them, but with its
 /// own message, so the message assertions fail. Removing the block cap
-/// (see `fft_resample`) makes the last case allocate gigabytes.
+/// (see `FftResampler`) makes the last case allocate gigabytes.
 #[test]
 fn an_unusable_rate_is_an_error() {
     let new =

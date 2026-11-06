@@ -9,6 +9,8 @@ pub use fft::FftResampler;
 #[non_exhaustive]
 pub enum ResampleError {
     /// A rate that is not a finite value of at least 0.5 Hz and under 2^32 Hz.
+    /// Not raised by [`FftResampler`] itself, which takes integer rates: it is
+    /// for callers converting a floating-point rate on the way in.
     #[error("invalid sample rate: {hz} Hz")]
     InvalidRate {
         /// The rejected rate.

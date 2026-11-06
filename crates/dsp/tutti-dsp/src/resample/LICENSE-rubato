@@ -1,4 +1,4 @@
-The block algorithm, block-size derivation and filter design in fft_resample.rs
+The block algorithm, block-size derivation and filter design in resample/fft.rs
 are adapted from the rubato crate, version 0.16.2 (https://github.com/HEnquist/rubato).
 
 MIT License

@@ -38,6 +38,11 @@ readonly MANIFEST=crates/tutti-session/Cargo.toml
 
 fail=0
 
+if [ ! -f "$MANIFEST" ]; then
+  echo "FAIL: $MANIFEST does not exist; was $CRATE moved?"
+  exit 1
+fi
+
 # 1. The dependency closure.
 if ! tree=$(cargo tree --locked -p "$CRATE" -e normal --all-features --prefix none 2>&1); then
   echo "$tree"

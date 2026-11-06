@@ -1,0 +1,43 @@
+[package]
+name = "tutti-clap-ffi"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The unsafe half of the CLAP host: safe handles over clap-sys"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-clap-ffi"
+readme = "README.md"
+keywords = ["clap", "audio", "plugin", "ffi"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# The hooks a test uses to drive the raw C vtables the safe API hides (raw
+# lists, streams and host vtables, a context-menu builder). Off in a
+# production build; the host crate's tests turn it on.
+test-support = []
+
+[dependencies]
+clap-sys = "0.5"
+libloading = "0.8"
+# `WindowHandle`, the one value whose unsafe constructor carries the claim that
+# a parent window is valid; the editor entries take it by reference.
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# The reference plugin the wrapper tests load; Cargo builds its cdylib in the
+# same `cargo test` invocation and the tests find the artifact beside the test
+# binary (`tutti-fixtures`).
+tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+assert_no_alloc = { version = "1", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

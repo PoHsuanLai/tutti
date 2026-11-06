@@ -1,0 +1,148 @@
+[package]
+name = "tutti-sampler"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Sample playback for Tutti: in-memory and disk-streamed voices, a voice pool, and a phase-vocoder time stretch"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-sampler"
+readme = "README.md"
+keywords = ["audio", "sampler", "time-stretch", "streaming", "dsp"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["wav"]
+
+# Bevy ECS integration: the entity-as-node marker derives on the voice-pool
+# handles, and nothing else. Plugins and asset loaders are bevy-tutti's, so
+# this feature adds only `derive(Component)` — the DSP leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
+# stretch::Unit) compile Bevy-free for direct `tutti_graph` use either way.
+bevy = ["dep:bevy_ecs"]
+
+# Drive the butler's cycle by hand instead of by its thread.
+#
+# Exposes `DiskStreamer::manual` + `step_once`, which run the *same*
+# `ButlerCycle::step` the butler thread runs — the thread contributes only
+# pacing. A butler-driven stream is otherwise observable to an out-of-crate test
+# only through wall clock (send, sleep, look), and the butler parks 1 ms idle /
+# 3 ms healthy, so such a test is racing a producer it cannot see. Off by
+# default: a host has no use for it, and the assertions it adds are about a
+# constraint only a hand driver can violate.
+#
+# Also exposes `testing`: a transport a test moves between blocks, and the
+# block driver that hands a node its `Env` (which needs `tutti-graph`'s
+# `contract` harness).
+test-support = ["tutti-graph/contract"]
+
+# Audio format support - cascade to tutti-io, which owns the decoder.
+wav = ["tutti-io/wav"]
+flac = ["tutti-io/flac"]
+mp3 = ["tutti-io/mp3"]
+ogg = ["tutti-io/ogg"]
+files = ["wav", "flac", "mp3", "ogg"]
+
+[dependencies]
+# Base dependency - format features added above. `default-features = false`
+# matches every sibling and keeps this crate immune if tutti-core ever grows a
+# default — it has none today (`default = []`), so the flag currently
+# suppresses nothing.
+tutti-core = { path = "../tutti-core", default-features = false }
+
+# The file edge: `Wave` (the resident buffer a voice plays), and with a codec
+# feature the decoder the butler loads and streams through (`Wave::read`,
+# `Wave::read_metadata`, `FileIn`). No cycle: `tutti-io` names nothing above
+# `tutti-core`.
+tutti-io = { path = "../tutti-io" }
+
+# The graph: every node here is a `tutti_graph::Node`, reads
+# the transport from its block's `Env`, and hands its controls and its fork
+# source over through `IntoNode`. No cycle: `tutti-graph` names only
+# `tutti-types`.
+tutti-graph = { path = "../tutti-graph" }
+
+# The shared cubic Hermite kernel (`tutti_types::cubic_hermite`).
+tutti-types = { path = "../tutti-types", default-features = false }
+
+# The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
+# STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
+# checked) and `window::hann` rather than keeping a ninth copy of each.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
+
+# The entity-as-node marker derives on the voice-pool handles. Optional,
+# gated by the `bevy` feature.
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+
+tracing = "0.1"
+thiserror = "2"
+
+# Lock-free
+crossbeam-channel = "0.5"
+dashmap = "6.1"
+parking_lot = "0.12"
+
+# Parallel I/O
+rayon = "1.10"
+
+# Thread priority
+thread-priority = "1.1"
+
+
+
+
+[dev-dependencies]
+# Finds the repo's `assets/` for the tests.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+criterion.workspace = true
+# The crate's own `test-support` surface, for the integration tests.
+#
+# A dev-dependency on self is how a feature reaches `tests/` unconditionally.
+# The alternative — `required-features` on the test target — *skips* the test
+# when the feature is off, so a plain `cargo nextest run` would report green
+# without having run `tier_parity` at all. That is the failure mode this
+# workspace's testing policy names outright: a test that cannot fail claims
+# coverage it does not have, and one that silently does not run is the same
+# claim with fewer clues.
+tutti-sampler = { path = ".", features = ["test-support", "flac"] }
+# Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
+# nothing above `tutti-core`.
+tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
+# `contract` for the node harnesses (`drive_input`, `Direct`, `BlockRig`).
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+# `ControlProgram`, for a control lane on a voice's gain port
+# (`voice_gain_survives_commit.rs`). No cycle: `tutti-mod` names no tutti
+# crate but `tutti-types`.
+tutti-mod = { path = "../tutti-mod", default-features = false }
+
+tracing-subscriber = "0.3"
+insta = { version = "1.41", features = ["yaml"] }
+approx = "0.5"
+tempfile = "3.8"
+rand = "0.8"
+serde_json = "1"
+assert_no_alloc = { version = "1", default-features = false }
+
+# Tests only: several fixtures write a real WAV to disk and stream it back, so
+# they need a writer. The library itself does not touch `hound` (the live WAV
+# sink is `tutti-io`'s), so this is a dev-dependency only: a DSP crate that
+# decodes through `symphonia` has no business carrying a second codec.
+hound = "3.5"
+
+[[bench]]
+name = "voice_pool"
+harness = false
+
+[[bench]]
+name = "ring_read"
+harness = false
+
+[[bench]]
+name = "stretch"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

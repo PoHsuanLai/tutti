@@ -214,7 +214,7 @@ A FLAC export is ~98% encoder and ~2% engine. **Never gate the `encode` group**
 ## What is gated, and what is not
 
 **Gated**, in the ordinary test job:
-`crates/core/tutti-core/tests/alloc_budget.rs`. Allocation counts and bytes
+`crates/tutti-core/tests/alloc_budget.rs`. Allocation counts and bytes
 are machine-independent, so a budget on them is a real regression gate that
 survives a shared vCPU.
 

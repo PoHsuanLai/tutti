@@ -22,6 +22,10 @@ crates=(crates/bevy-tutti crates/tutti-session crates/tutti)
 failed=()
 
 for dir in "${crates[@]}"; do
+  if [ ! -f "$dir/Cargo.toml" ]; then
+    echo "FAIL: $dir/Cargo.toml does not exist; was the crate moved?" >&2
+    exit 1
+  fi
   name=$(sed -n 's/^name = "\(.*\)"/\1/p' "$dir/Cargo.toml" | head -1)
   features=$(awk '/^\[features\]/{p=1;next} /^\[/{p=0} p && /^[a-z0-9_-]+ *=/{print $1}' \
     "$dir/Cargo.toml" | grep -vx -e default -e jack || true)

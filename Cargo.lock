@@ -395,7 +395,7 @@ dependencies = [
  "tutti-core",
  "tutti-cpal",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -3529,13 +3529,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2fafc9b46be0b8ad0a15bb17406e34b4602987c90d12509ca71710ab545b40f"
 
 [[package]]
-name = "rustysynth-tutti"
-version = "1.3.6"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "safe_arch"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4213,7 +4206,7 @@ dependencies = [
  "tutti-cpal",
  "tutti-dsp",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -4261,7 +4254,7 @@ dependencies = [
  "libc",
  "libloading 0.8.9",
  "tutti-clap-test-plugin",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-plugin-types",
 ]
 
@@ -4278,7 +4271,7 @@ dependencies = [
  "tutti-clap-ffi",
  "tutti-clap-test-plugin",
  "tutti-core",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
@@ -4373,7 +4366,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-fixture-resolve"
+name = "tutti-fixtures"
 version = "0.0.1"
 
 [[package]]
@@ -4402,6 +4395,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
 ]
@@ -4521,7 +4515,7 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-core",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
@@ -4553,7 +4547,7 @@ dependencies = [
  "tutti-clap-host",
  "tutti-clap-test-plugin",
  "tutti-core",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-types",
@@ -4599,6 +4593,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-rustysynth"
+version = "1.3.6"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "tutti-sampler"
 version = "0.0.1"
 dependencies = [
@@ -4621,6 +4622,7 @@ dependencies = [
  "tracing-subscriber",
  "tutti-core",
  "tutti-dsp",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-mod",
@@ -4639,7 +4641,7 @@ dependencies = [
  "tutti-core",
  "tutti-cpal",
  "tutti-export",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
  "tutti-midi-file",
@@ -4670,13 +4672,14 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "rustysynth",
- "rustysynth-tutti",
  "thiserror 2.0.21",
  "tutti-core",
+ "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-nodes",
+ "tutti-rustysynth",
 ]
 
 [[package]]
@@ -4724,7 +4727,7 @@ dependencies = [
  "parking_lot",
  "tempfile",
  "thiserror 2.0.21",
- "tutti-fixture-resolve",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-types",

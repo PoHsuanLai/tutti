@@ -1,0 +1,79 @@
+[package]
+name = "tutti-io"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Tutti's audio I/O edge — mic monitoring and file decode in, WAV out"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-io"
+readme = "README.md"
+keywords = ["audio", "recording", "capture", "wav"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# No codec by default, as on every engine crate: a host doing only mic → WAV
+# needs no decoder. Each feature pulls exactly one symphonia container (and
+# its codec) for `Wave::read`, `Wave::read_metadata` and `FileIn`. `wav` needs
+# `pcm`: WAV is only the container.
+default = []
+wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
+flac = ["dep:symphonia", "symphonia/flac"]
+mp3 = ["dep:symphonia", "symphonia/mp3"]
+ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
+
+# `WaveAsset` — the Bevy `Asset` wrapper a loader hands out. Only the derive;
+# the loader itself lives in `bevy-tutti`. Present only with a codec as well,
+# since an asset that cannot be decoded has no constructor.
+bevy = ["dep:bevy_asset", "dep:bevy_reflect"]
+
+[dependencies]
+# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioTap`,
+# `ChannelLayout` and the PCM quantizers. `default-features = false` matches
+# every sibling and keeps this crate immune if tutti-core ever grows a default —
+# it has none today (`default = []`), so the flag currently suppresses nothing.
+tutti-core = { path = "../tutti-core", default-features = false }
+
+thiserror.workspace = true
+
+# The node contract `MicMonitorNode` is written against. No cycle:
+# tutti-graph names no tutti crate but tutti-types.
+tutti-graph = { path = "../tutti-graph" }
+
+# The capture ring `MicMonitorNode` drains. The producer half lives in the
+# device layer (`tutti-cpal`), which sits *above* this crate.
+ringbuf = "0.4"
+
+# WAV encode for the `WavOut` sink. Deliberately not in `tutti-types`, which is
+# the root leaf: a file-format codec belongs at the edge that writes files.
+hound = "3.5"
+
+# File decode for `Wave::read` / `FileIn`. No default features: each codec is a
+# feature above, so a build lists exactly the containers it can read.
+symphonia = { version = "0.5.5", optional = true, default-features = false }
+
+bevy_asset = { workspace = true, optional = true }
+bevy_reflect = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Finds the repo's `assets/` for the tests.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# Every codec, for this crate's own tests. A dev-dependency on self is how a
+# feature reaches the test targets unconditionally; `required-features` would
+# instead *skip* `tests/decode_golden.rs` on a plain run and report green
+# having decoded nothing. Same device as `tutti-sampler`'s `test-support`.
+tutti-io = { path = ".", features = ["wav", "flac", "mp3", "ogg"] }
+# `contract::Direct`, the by-hand driver the monitor's allocation gate runs.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+tempfile = "3.8"
+# The RT gate: `MicMonitorNode::process` must not allocate.
+assert_no_alloc = { version = "1", default-features = false }
+# The gate builds a ring by hand to feed the node under a disabled allocator.
+ringbuf = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1110,11 +1110,7 @@ mod synths {
 
     /// The repo's committed test soundfont (as `midi_soundfont.rs` finds it).
     fn font() -> Arc<SoundFont> {
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("bevy-tutti lives two levels below the repo root")
-            .join("assets/soundfonts/TimGM6mb.sf2");
+        let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",

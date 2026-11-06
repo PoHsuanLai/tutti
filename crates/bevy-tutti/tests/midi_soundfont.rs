@@ -27,7 +27,6 @@ mod common;
 /// checkout and fails loudly with the resolved path, rather than skipping and
 /// passing without running.
 mod soundfont_spawn {
-    use std::path::PathBuf;
 
     use bevy_app::prelude::*;
     use bevy_asset::{AssetPlugin, Assets, Handle};
@@ -46,11 +45,7 @@ mod soundfont_spawn {
     /// committed, so its absence is a broken checkout and not a configuration this
     /// suite should quietly pass on.
     fn soundfont_asset() -> SoundFontAsset {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent() // crates/
-            .and_then(|p| p.parent()) // repo root
-            .expect("bevy-tutti lives two levels below the repo root")
-            .join("assets/soundfonts/TimGM6mb.sf2");
+        let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let bytes = std::fs::read(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",
@@ -267,7 +262,6 @@ mod soundfont_spawn {
 /// checkout and fails loudly with the resolved path, rather than skipping and
 /// passing without running.
 mod midi_soundfont_audio {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use bevy_app::prelude::*;
@@ -312,11 +306,7 @@ mod midi_soundfont_audio {
     /// suite should quietly pass on. Returning on `None` would let a wrong path
     /// report success while asserting nothing.
     fn soundfont() -> Arc<SoundFont> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent() // crates/
-            .and_then(|p| p.parent()) // repo root
-            .expect("bevy-tutti lives two levels below the repo root")
-            .join("assets/soundfonts/TimGM6mb.sf2");
+        let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",
@@ -534,7 +524,6 @@ mod midi_soundfont_audio {
 ///   (`input_ports`) → a note on channel 2 goes nowhere → silent → fails.
 /// - A rule for another channel (the check below) → silent.
 mod midi_route {
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use bevy_app::prelude::*;
@@ -552,11 +541,7 @@ mod midi_route {
     const SAMPLE_RATE: f64 = 48_000.0;
 
     fn soundfont() -> Arc<SoundFont> {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("bevy-tutti lives two levels below the repo root")
-            .join("assets/soundfonts/TimGM6mb.sf2");
+        let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
             panic!(
                 "committed test soundfont missing at {}: {e}",

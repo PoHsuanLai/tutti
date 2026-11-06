@@ -1,0 +1,69 @@
+[package]
+name = "tutti-polysynth"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Polyphonic subtractive synthesizer as a Tutti graph node: voice allocation, unison, portamento, tuning, MPE"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-polysynth"
+readme = "README.md"
+keywords = ["audio", "synthesizer", "polyphony", "mpe", "dsp"]
+categories = ["multimedia::audio"]
+# `std` gates nothing yet. There is no `midi` feature: a voice is addressed by
+# per-note identity, so MIDI is not optional. SoundFont playback is the
+# separate `tutti-soundfont` crate.
+
+[lints]
+workspace = true
+
+[features]
+default = []
+std = []
+
+[dependencies]
+tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
+
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+
+# `Node`, `ForkSource`: the synth as a graph node, and its own way into a
+# fork of the graph (an export), as `tutti-plugin`'s `PluginClient` has
+# one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`.
+tutti-graph = { path = "../tutti-graph" }
+
+# The SVF and ladder coefficient functions. The voice bank runs those two
+# filters' topologies across SIMD lanes and derives its coefficients from the
+# same functions `SvfFilterNode`/`LadderFilterNode` use, rather than a copy.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
+
+# `f32x8` lanes for the voice bank.
+wide = { version = "1.6", default-features = false }
+
+# Error handling
+thiserror = "2"
+
+[dev-dependencies]
+# The filter nodes the bank is compared against (`bank.rs`), and the mixing and
+# lane nodes of the integration tests. No cycle: `tutti-nodes` names no
+# synth crate.
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
+# The graph contract's test harness. No cycle: `tutti-graph` names no tutti
+# crate but `tutti-types`.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+criterion.workspace = true
+approx = "0.5"
+assert_no_alloc = { version = "1", default-features = false }
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+# `ControlProgram` for the lane tests (`tests/param_lanes.rs`). No cycle:
+# `tutti-mod` names no tutti crate but `tutti-types`.
+tutti-mod = { path = "../tutti-mod", default-features = false }
+
+[[bench]]
+name = "polysynth"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

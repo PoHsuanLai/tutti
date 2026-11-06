@@ -8,10 +8,10 @@ long the writer takes while readers are reading, and how much memory a
 parked reader keeps alive. arc-lend loses some of these, and we report the
 losses next to the wins.
 
-The harness is the `arc-lend-compare` crate beside this file
-([`compare/`](compare/)). Every table below, except section 8's, is copied
+The harness is the `arc-lend-compare` crate
+([`testing/arc-lend-compare/`](../../testing/arc-lend-compare/)). Every table below, except section 8's, is copied
 by script from one recorded run, whose raw output is committed as
-[`compare/results/2026-10-27-ryzen9-9950x.txt`](compare/results/2026-10-27-ryzen9-9950x.txt);
+[`testing/arc-lend-compare/results/2026-10-27-ryzen9-9950x.txt`](../../testing/arc-lend-compare/results/2026-10-27-ryzen9-9950x.txt);
 no figure was edited by hand. Two earlier runs, on a shared 4-vCPU cloud
 VM, are kept beside it for reference.
 
@@ -107,7 +107,7 @@ the type, and the third does not apply to it; in exchange, each reading
 thread registers a `Reader` ahead of time.
 ## Method
 
-A custom harness (`compare/benches/compare/main.rs`), not criterion:
+A custom harness (`testing/arc-lend-compare/benches/compare/main.rs`), not criterion:
 criterion reports means, and a deadline thread cares about the tail.
 
 - **A block** is one read (`Reader::lend()`, `load()`, `get()`, `enter()`,
@@ -185,8 +185,8 @@ floor under every latency below.
 
 Versions: `arc-swap` 1.9.3, `basedrop` 0.1.3, `left-right` 0.11.8,
 `crossbeam-epoch` 0.9.21, `haphazard` 0.1.8 and `triple_buffer` 9.0.0,
-each pinned exact in `compare/Cargo.toml`; `arc-lend` from this tree. Each
-configuration is in code (`compare/benches/compare/contenders.rs`), with
+each pinned exact in `testing/arc-lend-compare/Cargo.toml`; `arc-lend` from this tree. Each
+configuration is in code (`testing/arc-lend-compare/benches/compare/contenders.rs`), with
 the source line in the contender's crate that justifies it.
 
 | contender | configuration |
@@ -990,7 +990,7 @@ alone. The difference is the retired list's filter.
 
 Not part of the Ryzen run above: this section was added later and is
 recorded on its own, in
-[`compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt`](compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt).
+[`testing/arc-lend-compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt`](../../testing/arc-lend-compare/results/2026-11-03-container-4vcpu-concurrent-lends.txt).
 Reproduce it with
 
 ```bash
@@ -1046,13 +1046,13 @@ checked. Each is recorded in a comment beside the code.
 - **The lend counter** (section 8; a `generation` field in `Reader`
   instead of on the slot): the *adjacent* column rose above *apart*, as
   recorded in section 8.
-- **The instrument's own tests** (`compare/tests/instruments.rs`) check
+- **The instrument's own tests** (`testing/arc-lend-compare/tests/instruments.rs`) check
   that a counting thread's free is counted, that another thread's
   allocations are not, that a payload counts its drop, that a promoted
   arc-swap guard frees on the reader, and that an arc-lend loan and its
   reader's drop do not.
 - **The comparison's claims about the other cells**
-  (`compare/tests/claims.rs`) are checked by running them: a
+  (`testing/arc-lend-compare/tests/claims.rs`) are checked by running them: a
   crossbeam-epoch reader frees values the writer retired, a haphazard
   reader frees nothing and its protected value survives the writer's
   reclaim, a triple_buffer reader frees nothing, an arc-swap `Cache`

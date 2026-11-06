@@ -2,15 +2,15 @@
 #
 # Two of them, both following the same pattern: a Rust example renders audio to a
 # directory, and a Python script judges it. See
-#   crates/dsp/tutti-sampler/examples/README.md
-#   crates/core/tutti-export/examples/README.md
+#   crates/tutti-sampler/examples/README.md
+#   crates/tutti-export/examples/README.md
 #
 # This is not a Python package -- nothing here is imported by anything. It exists
 # so the judges' dependencies are declared and locked in one place instead of
 # living as a prose `pip install` line in a README, which is what they were.
 #
 #   uv sync
-#   uv run python crates/core/tutti-export/examples/verify_export.py /tmp/exports
+#   uv run python crates/tutti-export/examples/verify_export.py /tmp/exports
 #
 # Why Python at all, when the engine is Rust: these scripts are a *second
 # opinion*. Four defects in the sampler were invisible to its whole Rust suite

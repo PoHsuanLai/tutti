@@ -1,0 +1,121 @@
+[package]
+name = "tutti-nodes"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Built-in graph nodes for the Tutti audio engine: filters, delays, dynamics, modulation effects, LFOs, mixing, automation, convolution"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-nodes"
+readme = "README.md"
+keywords = ["audio", "dsp", "effects", "filters", "real-time"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# No `bevy` feature: ECS bindings are host-side. No `spatial` feature: the
+# panners are `tutti-spatial`, which depends on this crate.
+# FFT convolution reverb (partitioned IR).
+# (The transforms are `tutti_dsp::RealFft`; the convolution itself is this
+# crate's, so its IR spectra can be stored once and shared.)
+convolution = []
+# `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
+# benches (`Const`, `Osc`, `Through`, `Split`, `Sink`). Off by default and
+# enabled only from `[dev-dependencies]`, so it is never production API: the
+# same pattern as `tutti-sampler`'s `test-support`.
+testing = []
+
+[dependencies]
+# Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`) from tutti-core's
+# root. default-features = false: tutti-nodes is pure DSP and needs none of
+# tutti-core's Bevy layer.
+tutti-core = { path = "../tutti-core", default-features = false }
+
+# Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
+# tutti-core re-exports these too, but the impl needs to name `Curve` directly.
+# default-features = false so bevy does not re-leak.
+tutti-types = { path = "../tutti-types", default-features = false }
+
+# The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
+# `LfoShape`, `compile`): the control lane evaluates its programs, and the
+# reconcile (`Modulation`) calls the compiler. `default-features = false`
+# keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
+tutti-mod = { path = "../tutti-mod", default-features = false }
+
+# The convolver's FFT: `tutti_dsp::StagedRealFft`. tutti-dsp names no tutti
+# crate but `tutti-types`, so the edge adds no cycle.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
+
+# The node contract every node here implements. tutti-graph depends on no
+# tutti crate but tutti-types, so the edge adds no cycle.
+tutti-graph = { path = "../tutti-graph" }
+
+# Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via
+# `tutti_nodes::automation`.
+audio-automation = { workspace = true }
+
+[dev-dependencies]
+# The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
+# `libm`'s pure-Rust routines, as `tutti-dsp`'s filters do, so they do not
+# depend on the platform's C math library.
+libm = "0.2.15"
+# The crate's own `testing` module, for its integration tests and bench. A
+# self dev-dependency rather than `required-features`, which would *skip*
+# those targets when the feature is off — see `tutti-sampler`'s manifest.
+tutti-nodes = { path = ".", features = ["testing"] }
+approx = "0.5"
+# An independent RBJ-cookbook biquad, as a second opinion on the SVF's magnitude
+# response in `tests/oracle_biquad.rs`. Adds no transitive crates — `num-traits`
+# is already in the tree.
+biquad = "0.5"
+assert_no_alloc = { version = "1", default-features = false }
+criterion.workspace = true
+# `sibling_batch`'s cross-member kernels (`f32x8` lanes). The polysynth's voice
+# bank already depends on it, so it adds no crate to the lock file.
+wide = { version = "1.6", default-features = false }
+# `engine_render`'s Graph backend rows: the graph behind `Engine`.
+# `contract`: the graph's sample-accuracy contract harness, which
+# `tests/contract.rs` runs the latency-bearing nodes through.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+
+# The engine's graph-render bench. It measures `Engine::process`, which is
+# `tutti-core`'s, but it lives here because the graph it renders is built from
+# this crate's nodes and `tutti-core` cannot depend on them (the edge runs the
+# other way).
+[[bench]]
+name = "engine_render"
+harness = false
+
+[[bench]]
+name = "width_generic"
+harness = false
+
+[[bench]]
+name = "parallel_render"
+harness = false
+
+[[bench]]
+name = "sibling_batch"
+harness = false
+
+[[bench]]
+name = "bus_strip"
+harness = false
+
+[[bench]]
+name = "node_kernels"
+harness = false
+
+[[bench]]
+name = "convolver_blocks"
+harness = false
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

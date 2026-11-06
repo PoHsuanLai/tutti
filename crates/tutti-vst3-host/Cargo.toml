@@ -1,0 +1,151 @@
+[package]
+name = "tutti-vst3-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "VST3 plugin hosting library for Rust"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-vst3-host"
+readme = "README.md"
+keywords = ["vst3", "audio", "plugin", "dsp", "host"]
+categories = ["multimedia::audio"]
+# Not a native library in the usual sense — this exists so `build.rs` can pass
+# `cargo:probe-dir=…` to dependents as `DEP_TUTTI_VST3_PROBE_DIR`. `rustc-env`
+# does not propagate across a package boundary, and the reference plugin this
+# crate builds is one artifact that dependents (tutti-plugin-server's loader
+# tests) must find rather than rebuild. Cargo requires the key to be unique
+# across the graph.
+links = "tutti_vst3_probe"
+# `tests/support/gui_lifecycle.rs` is `include!`d by two targets, not a target
+# itself, but cargo's auto-discovery walks `tests/` and would compile it as one
+# — and it opens with `//!`, so that fails with E0753 before anything runs.
+# Every real target is therefore declared below.
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+# Off by default. Exposes `host::conformance`, a test-only observation seam
+# that hands the fully-built `ProcessData` to an installed observer just
+# before `IAudioProcessor::process`. Used by the VST3 host-conformance tests
+# to validate what this host assembles against the VST3 spec.
+default = []
+conformance = ["tutti-vst3-ffi/conformance"]
+
+[dependencies]
+thiserror = "2"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+tutti-types = { path = "../tutti-types" }
+vst3 = "0.3"
+tutti-vst3-ffi = { path = "../tutti-vst3-ffi" }
+
+[build-dependencies]
+cc = "1"
+
+[dev-dependencies]
+# This crate, on itself, purely to turn `conformance` on for its own tests.
+# That feature is what makes `build.rs` compile `audio-probe`, the reference
+# plugin the suites here load — the VST3 counterpart to `tutti-clap-host`'s
+# dev-dependency on `tutti-clap-test-plugin`. Without it the probe does not
+# exist and `integration_tests` skips itself on every machine.
+#
+# A dev-dependency rather than a default feature because `conformance` also
+# exposes a `pub mod` observation seam in the library, which should stay out of
+# production builds.
+tutti-vst3-host = { path = ".", features = ["conformance"] }
+assert_no_alloc = { version = "1", default-features = false }
+# The CLAP host, to feed one MIDI stream to both formats' event lists and check
+# they read a per-note bend at the same range. Acyclic: it does not depend on
+# this crate.
+tutti-clap-host = { path = "../tutti-clap-host" }
+tempfile = "3"
+winit = "0.30"
+raw-window-handle = "0.6"
+
+[[example]]
+name = "gui_test"
+path = "examples/gui_test.rs"
+
+# Every test target is declared because `autotests = false` (see above);
+# a new file under tests/ needs an entry here or it will not run.
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+
+[[test]]
+name = "vst3_audio_correctness"
+path = "tests/vst3_audio_correctness.rs"
+
+[[test]]
+name = "vst3_com_dispatch"
+path = "tests/vst3_com_dispatch.rs"
+
+[[test]]
+name = "vst3_conformance_blocks"
+path = "tests/vst3_conformance_blocks.rs"
+
+[[test]]
+name = "vst3_conformance_controller"
+path = "tests/vst3_conformance_controller.rs"
+
+[[test]]
+name = "vst3_conformance_interfaces"
+path = "tests/vst3_conformance_interfaces.rs"
+
+[[test]]
+name = "vst3_conformance_modes"
+path = "tests/vst3_conformance_modes.rs"
+
+[[test]]
+name = "vst3_event_lists"
+path = "tests/vst3_event_lists.rs"
+
+[[test]]
+name = "vst3_ffi_plugin"
+path = "tests/vst3_ffi_plugin.rs"
+
+[[test]]
+name = "vst3_gui_lifecycle"
+path = "tests/vst3_gui_lifecycle.rs"
+
+[[test]]
+name = "vst3_misbehaving_plugin"
+path = "tests/vst3_misbehaving_plugin.rs"
+
+[[test]]
+name = "vst3_process_no_alloc"
+path = "tests/vst3_process_no_alloc.rs"
+
+[[test]]
+name = "vst3_traits"
+path = "tests/vst3_traits.rs"
+
+[[test]]
+name = "vst3_view_input"
+path = "tests/vst3_view_input.rs"
+
+[[test]]
+name = "vst3_view_teardown"
+path = "tests/vst3_view_teardown.rs"
+
+# The editor-lifecycle tests, run on the main thread. `harness = false` so this
+# target owns `main()` — the only way to reach the main thread under cargo, and
+# macOS requires it for Cocoa's event loop. See the module docs; the test bodies
+# are shared with `tests/vst3_gui_lifecycle.rs`, not duplicated.
+[[test]]
+name = "gui_lifecycle_main"
+path = "tests/gui_lifecycle_main.rs"
+harness = false
+
+# docs.rs renders with every feature on. `default = []` keeps the engine
+# Bevy-free for consumers, but it would otherwise publish a page with the
+# feature-gated half of the public API missing.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

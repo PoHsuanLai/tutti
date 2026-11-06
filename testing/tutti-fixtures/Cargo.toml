@@ -1,0 +1,14 @@
+[package]
+name = "tutti-fixtures"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Where the test suites find repo assets, the reference plugin cdylibs and the plugin-server binary"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+publish = false
+
+# A dev-dependency of the crates whose tests read a repo asset or load a
+# reference plugin or the plugin-server. It has no
+# dependencies and is never linked into a shipped binary.
+[dependencies]

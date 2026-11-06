@@ -88,6 +88,7 @@ scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session 
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
+scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 ```
 
 `just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
@@ -114,6 +115,15 @@ cargo test --doc --workspace       # nextest does NOT run doctests, silently
 just test-all                      # both
 ```
 
+- **A test finds a repo file through `tutti_fixtures`, never a relative `..`
+  path:** `asset("audio/stereo.flac")` and `repo_root()` for the repo's files
+  (`scripts/check-layout.sh` greps for depth-dependent paths), and `cdylib`
+  and `plugin_server` for the reference plugins and `plugin-server`, which it
+  finds in the test binary's own profile directory (no build script or env
+  var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
+  dev-dependency and absence is a failure, never a skip. A crate-local file
+  (`tutti-rustysynth`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
+  `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
   `real_stall_tests`, `tutti-session`'s `plugin` suite, `tutti`'s §5.2
@@ -143,7 +153,7 @@ just test-all                      # both
 
 - **Submodules:** `git clone --recursive`, or
   `git submodule update --init --recursive`. The VST3 SDK (three Steinberg
-  repos pinned at `v3.8.0_build_66` under `crates/plugin/vendor/vst3-sdk/`) is
+  repos pinned at `v3.8.0_build_66` under `vendor/vst3-sdk/`) is
   otherwise empty. `git describe` reports `v3.7.3_build_20-NN`; that is
   expected, and the gate asserts SHAs.
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
@@ -204,34 +214,64 @@ One workspace at the repo root. The member list in `Cargo.toml` is the source
 of truth.
 
 ```
-crates/
+crates/          everything shipped; directory name = package name; no nesting
   tutti          Bevy-free umbrella. Every item is a `pub use` (tests/no_logic.rs).
   bevy-tutti     Bevy umbrella + adapter; the only Bevy-mandatory member.
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-types.
-  core/          tutti-core (graph runtime, transport, metering, PDC)
-                 tutti-types (vocabulary only: units, channel layouts, io edge traits, rt
+  tutti-types    vocabulary only: units, channel layouts, io edge traits, rt
                  primitives, Topology; no FFT and no new algorithms. Downmix, interp
-                 and sample conversion stay until a follow-up moves them)
-                 tutti-cpal (device),
-                 tutti-io (I/O edge: live + file decode)
-                 tutti-mod (modulation), tutti-export (offline render)
-                 tutti-graph (doc 013: the `Node` contract, Topology→Plan compiler,
-                 serial executor + reference interpreter; `Engine` renders it)
-  dsp/           tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler,
-                 tutti-polysynth, tutti-soundfont, tutti-dsp (pure algorithms over
-                 slices: the real FFT, analyzers, filters, dynamics, convolver,
-                 delay lines, waveshapers; depends only on tutti-types)
-  midi/          tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
+                 and sample conversion stay until a follow-up moves them
+  tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
+                 executor + reference interpreter; `Engine` renders it
+  tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
+                 dynamics, convolver, delay lines, waveshapers
+  tutti-mod      modulation compiler
+  tutti-core     graph runtime, transport, metering, PDC
+  tutti-io       I/O edge: live + file decode
+  tutti-cpal     device
+  tutti-export   offline render
+  tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
+  tutti-soundfont, tutti-rustysynth (our fork of rustysynth)
+  tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
-  plugin/        tutti-plugin{,-types,-server}, tutti-shm-model (loom),
-                 formats/{vst2,vst3,clap,au}-host, formats/clap-ffi (all CLAP
-                 unsafe), formats/vst3-ffi (all VST3 unsafe),
-                 vendor/{vst-tutti,vst3-sdk}
-  vendor/        rustysynth-tutti, tutti-clap-test-plugin
+  tutti-plugin{,-types,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
+  vst-tutti (our fork of the vst crate; its split is a later lane)
+testing/         never shipped
+  tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
+  tutti-shm-model (loom), arc-lend-compare
+vendor/          third-party code we never edit
+  vst3-sdk/      the three Steinberg submodules
 ```
+
+**Layering.** Dependencies between workspace crates point strictly down this
+list (normal and build edges; dev-dependencies may go anywhere).
+`scripts/check-layout.sh` holds the table and fails on an unplaced crate:
+
+0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`
+1. `tutti-types`
+2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
+3. `tutti-core`, `tutti-plugin-types`
+4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`
+5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
+   `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
+   `tutti-clap-host`, `tutti-vst3-host`
+6. `tutti-plugin`
+7. `tutti-plugin-server`, `tutti-session`
+8. `tutti`, `bevy-tutti`
+
+- A member is directly `crates/<package-name>` or `testing/<dir>`; a nested
+  directory is refused. Nothing under `crates/` has a normal or build
+  dependency on `testing/`; a test reaches `testing/` through a
+  dev-dependency.
+- `vendor/` holds third-party code we never edit and no workspace member.
+  Our own forks (`tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
+- Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
+  them.
 
 - `tutti-types` names no other tutti crate. Its one workspace-member
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
@@ -265,7 +305,7 @@ crates/
   re-exports no crate whole (`scripts/check-adapter.sh`).
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
-- The vendored fork (`rustysynth-tutti`) is excluded from clippy and rustdoc.
+- `tutti-rustysynth` (our fork) is excluded from clippy and rustdoc.
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they

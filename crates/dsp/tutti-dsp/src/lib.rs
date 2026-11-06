@@ -58,7 +58,9 @@
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod analysis;
+mod buffer;
 mod control;
+mod dynamics;
 mod fft;
 mod filter;
 
@@ -66,7 +68,14 @@ mod filter;
 mod test_support;
 
 pub use analysis::*;
+pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::COEFF_INTERVAL;
+pub use dynamics::{
+    CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
+    GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
+    compute_compressor_gain_reduction, compute_gate_gain, compute_limiter_gain, db_to_amplitude,
+    fold_peak, gate_gain_at, ramp_db, ramp_is_at_end, smooth_envelope,
+};
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
 pub use filter::{
     Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,

@@ -5,13 +5,10 @@ use tutti_core::AtomicF32;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{ChannelLayout, UnitParam};
 
-use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
-use super::utils::{
-    amplitude_to_db, apply_gain_lane, compute_gate_gain, db_to_amplitude, gate_gain_at, ramp_db,
-    ramp_is_at_end, sidechain_levels,
-};
+use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_core::{Db, Param, SampleRate, Seconds, Tail};
+use tutti_dsp::{GateBlock, GateKernel};
 
 use crate::ramp::{LastGood, block_driven};
 
@@ -23,8 +20,7 @@ pub(super) struct GateCore {
     pub hold: Param<Seconds>,
     pub range_db: Param<Db>,
 
-    envelope: f32,
-    follower: GateEnvelopeFollower,
+    kernel: GateKernel,
     /// The range the previous block ended on, the start of this block's ramp.
     /// `None` until the first block, which starts on its own value.
     last_range: Option<Db>,
@@ -33,29 +29,6 @@ pub(super) struct GateCore {
     /// start of every later ramp, so a non-finite write reads as unchanged
     /// (see [`LastGood`]).
     good: [LastGood; 5],
-}
-
-/// The controls one block runs on, read from their atomics **once** at the
-/// top of `process`.
-///
-/// Reading per block keeps two atomic loads per sample out of the gain
-/// computation. The threshold only decides open/closed, and the attack/hold/release follower
-/// already turns a changed decision into a ramp, so it is held for the block
-/// and converted to a linear level once.
-/// The range multiplies the output directly — the closed floor — so a step
-/// would click; it ramps linearly from the previous block's value instead.
-#[derive(Clone, Copy)]
-pub(super) struct GateBlock {
-    /// The block's threshold as a linear level: the detector is compared in
-    /// the linear domain, so no `log10` runs per sample.
-    threshold_linear: f32,
-    /// Whether a silent detector (pinned at [`Db::FLOOR`]) is at or above the
-    /// threshold. Only a threshold at or under the floor opens on silence.
-    silence_opens: bool,
-    range_from: Db,
-    range_to: Db,
-    /// `range_to` as a linear gain, converted once for the block.
-    range_to_linear: f32,
 }
 
 impl GateCore {
@@ -81,8 +54,7 @@ impl GateCore {
             timing: AttackRelease::new(attack, release),
             hold: Param::new(hold),
             range_db: Param::new(Db(-80.0)),
-            envelope: 0.0,
-            follower: GateEnvelopeFollower::new(attack, hold, release, SampleRate::DEFAULT),
+            kernel: GateKernel::new(attack, hold, release, SampleRate::DEFAULT),
             last_range: None,
             good: [
                 LastGood::new(threshold_db.get()),
@@ -100,23 +72,22 @@ impl GateCore {
     }
 
     pub fn is_open(&self) -> bool {
-        self.follower.value() > 0.5
+        self.kernel.is_open()
     }
 
     pub fn gate_level(&self) -> f32 {
-        self.follower.value()
+        self.kernel.gate_level()
     }
 
     pub fn reset(&mut self) {
-        self.envelope = 0.0;
-        self.follower.reset();
+        self.kernel.reset();
         // Ramp history is state like the envelope; see `CompressorCore::reset`.
         self.last_range = None;
     }
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
         let (attack, hold, release) = self.times([None, None]);
-        self.follower
+        self.kernel
             .set_sample_rate(sample_rate, attack, hold, release);
     }
 
@@ -125,7 +96,7 @@ impl GateCore {
     #[inline]
     pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
         let (attack, hold, release) = self.times(driven);
-        self.follower.update_coefficients(attack, hold, release);
+        self.kernel.update_coefficients(attack, hold, release);
     }
 
     /// Attack, hold and release, with non-finite writes held off; attack
@@ -152,20 +123,11 @@ impl GateCore {
         let range_from = self.last_range.unwrap_or(range_to);
         self.last_range = Some(range_to);
         let threshold = Db(self.good[0].read(self.threshold_db.load().get()));
-        GateBlock {
-            threshold_linear: db_to_amplitude(threshold).get(),
-            silence_opens: Db::FLOOR >= threshold,
-            range_from,
-            range_to,
-            range_to_linear: db_to_amplitude(range_to).get(),
-        }
+        GateBlock::new(threshold, range_from, range_to)
     }
 
-    /// Gate gain (linear) for frame `i` of an `n`-frame block, given the
-    /// sidechain level and an optional per-sample threshold override (dB).
-    /// `None` uses the block's threshold (the fast path); `Some(db)` overrides
-    /// it — the audio-rate modulation path, which stays per sample. No extra
-    /// clamp — the setter stores threshold unclamped.
+    /// Gate gain (linear) for frame `i` of an `n`-frame block; see
+    /// [`GateKernel::gain`].
     #[inline]
     pub fn gain(
         &mut self,
@@ -175,26 +137,7 @@ impl GateCore {
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
-        // The block's threshold compares in the linear domain. A per-sample
-        // override changes every frame, so converting it costs what the
-        // detector's `log10` does; it stays in dB.
-        let open = match threshold_override.filter(|t| t.get().is_finite()) {
-            Some(t) => amplitude_to_db(sc_level) >= t,
-            // Exact equality is unreachable: `10^(t/20)` rounds, so no level a
-            // test can name sits on the threshold, and `>=` versus `>` cannot
-            // be pinned by a test.
-            None => sc_level >= block.threshold_linear || (sc_level <= 0.0 && block.silence_opens),
-        };
-        self.envelope = sc_level;
-        self.follower.step(open);
-        // At the end of the ramp (a held range is always there) the range is
-        // the block's, converted once.
-        if ramp_is_at_end(block.range_from, block.range_to, i, n) {
-            gate_gain_at(self.follower.value(), block.range_to_linear).get()
-        } else {
-            let range = ramp_db(block.range_from, block.range_to, i, n);
-            compute_gate_gain(self.follower.value(), range).get()
-        }
+        self.kernel.gain(block, i, n, sc_level, threshold_override)
     }
 }
 

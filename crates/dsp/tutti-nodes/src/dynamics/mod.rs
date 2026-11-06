@@ -2,8 +2,8 @@
 //! multiband compressor.
 //!
 //! All three share one shape — measure a level, decide a gain, apply it — so
-//! they share an [`envelope`] follower, a [`params`] vocabulary
-//! (attack/release, threshold/knee) and the dB conversions in [`utils`]. What
+//! they share an envelope follower (`tutti_dsp::EnvelopeFollower`), a [`params`] vocabulary
+//! (attack/release, threshold/knee) and the dB conversions and gain curves of `tutti-dsp`. What
 //! differs is only the gain decision, which is why each keeps its own file and
 //! nothing here is a trait.
 //!
@@ -12,7 +12,6 @@
 //! signal being shaped. [`MultibandCompressorNode`] runs one compressor core per
 //! band of a [`Crossover`](crate::Crossover), each detecting on its own band.
 
-mod envelope;
 mod utils;
 
 mod compressor;

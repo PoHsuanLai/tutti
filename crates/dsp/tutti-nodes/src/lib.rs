@@ -39,7 +39,7 @@
 //! - Param ports: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
-//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers).
+//! - Modules: [`automation`] (lanes and recording).
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
@@ -66,8 +66,6 @@ pub use tutti_core::{
 // from `tutti_mod` declarations. DAW-param ECS policy — the shared param
 // pool, node authoring markers, spawners, ECS reconcilers, deferred
 // convolver load — is the host's, and deliberately outside this workspace.
-
-pub mod buffer;
 
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for

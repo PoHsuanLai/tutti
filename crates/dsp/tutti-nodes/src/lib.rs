@@ -137,8 +137,8 @@ pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
-    CONVOLVER_PARAMS, Convolver, ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
-    generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into,
+    CONVOLVER_PARAMS, ConvolverNode, IrChannelConfig, WetDry, generate_room_ir,
+    generate_room_ir_into, generate_test_ir, generate_test_ir_into,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

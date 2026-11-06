@@ -69,7 +69,7 @@
 
 use std::sync::Arc;
 
-use tutti_dsp::{Complex32, StagedRealFft};
+use crate::{Complex32, StagedRealFft};
 
 /// Default FFT block size when the caller doesn't pick one. A power of two,
 /// as every partition size here is.
@@ -356,8 +356,8 @@ impl IrSpectra {
     }
 
     /// The partition size and partition count of each level, head first.
-    #[cfg(test)]
-    pub(super) fn shape(&self) -> Vec<(usize, usize)> {
+    #[must_use]
+    pub fn shape(&self) -> Vec<(usize, usize)> {
         self.levels
             .iter()
             .map(|l| (l.part, l.segments.len()))

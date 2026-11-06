@@ -75,7 +75,8 @@ fn convolver_mid_cycle_blocks_are_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_ragged_calls_are_allocation_free() {
-    use tutti_nodes::{Convolver, generate_test_ir};
+    use tutti_dsp::Convolver;
+    use tutti_nodes::generate_test_ir;
 
     let ir = generate_test_ir(8192, 0.3, 48_000.0);
     let mut c = Convolver::new(&ir, 128);
@@ -105,7 +106,8 @@ fn convolver_ragged_calls_are_allocation_free() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver_tail_levels_are_allocation_free() {
-    use tutti_nodes::{Convolver, generate_test_ir};
+    use tutti_dsp::Convolver;
+    use tutti_nodes::generate_test_ir;
 
     let ir = generate_test_ir(240_000, 1.0, 48_000.0);
     let mut c = Convolver::new(&ir, 512);

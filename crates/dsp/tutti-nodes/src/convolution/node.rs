@@ -24,10 +24,10 @@ use tutti_graph::{
 };
 use tutti_types::{Latency, Tail, UnitParam};
 
-use super::convolver::Convolver;
 use super::params::WetDry;
 use crate::ramp::{LastGood, Ramp, block_driven};
 use tutti_dsp::CircularBuffer;
+use tutti_dsp::Convolver;
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.

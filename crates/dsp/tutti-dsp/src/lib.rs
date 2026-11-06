@@ -60,6 +60,7 @@
 mod analysis;
 mod buffer;
 mod control;
+mod convolver;
 mod dynamics;
 mod fft;
 mod filter;
@@ -70,6 +71,7 @@ mod test_support;
 pub use analysis::*;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::COEFF_INTERVAL;
+pub use convolver::{Convolver, IrSpectra};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,

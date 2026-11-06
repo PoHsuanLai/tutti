@@ -729,6 +729,7 @@ mod plugin {
     use tutti_core::AudioNode;
     use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
+    use tutti_midi_types::midi2::num::u7;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_nodes::testing::Const;
@@ -1080,6 +1081,7 @@ mod synths {
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
+    use tutti_midi_types::midi2::num::u7;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
@@ -1091,7 +1093,7 @@ mod synths {
     const NOTE: usize = 4_096;
     /// A preset of the test soundfont that is not the default piano, so a
     /// fork that lost the live unit's preset is heard.
-    const PRESET: i32 = 24;
+    const PRESET: u7 = u7::new(24);
 
     /// A saw with an instant attack, built at the live graph's rate.
     fn poly() -> PolySynth {
@@ -1128,7 +1130,7 @@ mod synths {
         let mut settings = Settings::new(SampleRate(rate));
         settings.reverb_and_chorus = false;
         let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
-        unit.program_change(0, PRESET);
+        unit.program_change(MidiChannel::FIRST, PRESET);
         unit
     }
 

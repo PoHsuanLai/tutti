@@ -6,6 +6,8 @@ use bevy_log::{error, info};
 use crate::AudioEngineState;
 use crate::engine::device_state;
 use crate::graph::{AudioConfig, GraphReconcilePlugin};
+use tutti_cpal::DeviceSelector;
+use tutti_session::DevicePolicy;
 
 #[cfg(feature = "midi")]
 use crate::midi::TuttiMidiPlugin;
@@ -24,7 +26,7 @@ use crate::soundfont::TuttiSoundFontPlugin;
 ///
 /// ```rust
 /// use bevy_app::prelude::*;
-/// use bevy_tutti::{AudioEngineState, TuttiPlugin};
+/// use bevy_tutti::{AudioEngineState, DeviceSelector, TuttiPlugin};
 ///
 /// // Defaults: stereo out, no input, MIDI on iff the `midi` feature is built.
 /// assert_eq!(TuttiPlugin::default().outputs, 2);
@@ -39,7 +41,7 @@ use crate::soundfont::TuttiSoundFontPlugin;
 /// app.add_plugins(TuttiPlugin {
 ///     inputs: 2,
 ///     outputs: 4,
-///     output_device: Some(1),
+///     output_device: DeviceSelector::named("USB Audio"),
 ///     disabled: true,
 ///     ..Default::default()
 /// });
@@ -76,11 +78,22 @@ use crate::soundfont::TuttiSoundFontPlugin;
 /// With the `soundfont`, `midi` or `sampler` feature, when the app has no
 /// `AssetServer` (add `bevy_asset::AssetPlugin`, part of `DefaultPlugins`,
 /// first): those subsystems register asset loaders.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TuttiPlugin {
-    /// Index into the host's output-device list, or `None` for the system
-    /// default.
-    pub output_device: Option<usize>,
+    /// The output device: the system default, or one by identity
+    /// ([`DeviceSelector`]).
+    pub output_device: DeviceSelector,
+    /// Watch the host's devices (design 018): `None`, the default, enumerates
+    /// once at startup and never moves the stream by itself. With a policy,
+    /// a poller thread enumerates every
+    /// [`poll_interval`](DevicePolicy::poll_interval),
+    /// [`AudioDeviceState`](crate::AudioDeviceState)'s list follows, an
+    /// [`AudioDeviceEvent`](crate::AudioDeviceEvent) is written for each
+    /// change, and the policy's own opt-ins decide what restarts the stream.
+    /// With `retry_startup`, [`AudioEngineState::Failed`] is not terminal:
+    /// the engine is built when the device appears. Nothing of this was
+    /// exercised against real hardware.
+    pub watch_devices: Option<DevicePolicy>,
     /// How many input channels to open. `0` opens no input stream at all,
     /// which is the default — a host that never records should not hold a
     /// microphone permission.
@@ -118,7 +131,8 @@ pub struct TuttiPlugin {
 impl Default for TuttiPlugin {
     fn default() -> Self {
         Self {
-            output_device: None,
+            output_device: DeviceSelector::Default,
+            watch_devices: None,
             inputs: 0,
             outputs: 2,
             disabled: false,
@@ -144,6 +158,7 @@ impl Plugin for TuttiPlugin {
                 Ok(()) => AudioEngineState::Running,
                 Err(e) => {
                     error!("Failed to start Tutti Audio Engine: {e}");
+                    device_state::retry_startup(self, app);
                     AudioEngineState::Failed(e.to_string())
                 }
             }

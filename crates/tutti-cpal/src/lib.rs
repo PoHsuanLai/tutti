@@ -10,6 +10,8 @@ mod faults;
 mod host;
 mod output;
 mod owner;
+mod poller;
+mod roster;
 
 #[cfg(feature = "capture")]
 mod mic;
@@ -24,6 +26,8 @@ pub use error::{Error, Result};
 pub use faults::{StreamFault, StreamFaultKind, StreamFaults};
 pub use host::{AudioHost, DeviceHost, DeviceSelector, available_hosts};
 pub use output::{AudioCallbackState, AudioEngine, MAX_FRAMES, process_audio};
+pub use poller::DevicePoller;
+pub use roster::{DeviceChange, DeviceId, DeviceRoster, Direction, Snapshot, SnapshotSource};
 
 // Re-exported for the same reason `tutti-midi-file` re-exports `midly`: this
 // crate's public surface already names cpal types (`SampleFormat` in

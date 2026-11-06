@@ -9,6 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
+use crate::roster::{DeviceId, Direction, Snapshot};
 
 /// Which platform audio host to open devices through.
 ///
@@ -41,46 +42,33 @@ impl std::fmt::Display for AudioHost {
 
 /// Which device on a host to open.
 ///
-/// [`Index`](Self::Index) is positional within one enumeration, so a device
-/// appearing or disappearing renumbers everything after it.
-/// [`Name`](Self::Name) survives re-enumeration and is the better choice for a
-/// saved setting; cpal exposes no hot-plug notification, so neither form
-/// follows a device that is unplugged and replugged under a new name.
+/// A [`DeviceId`] is a name and an order among same-named devices, so a saved
+/// selection survives a hot-plug of another card (a position would not). It
+/// does not follow a device unplugged and replugged under a new name.
 ///
-/// An index or name that matches nothing is an error
-/// ([`Error::InvalidDevice`]), never a fallback to the default device.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// An id that matches nothing is an error ([`Error::InvalidDevice`]), never a
+/// fallback to the default device.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum DeviceSelector {
     /// The host's default device.
     #[default]
     Default,
-    /// Position in this host's enumeration. Invalidated by hot-plug.
-    Index(usize),
-    /// Exact device name. Stable across re-enumeration.
-    Name(String),
+    /// A device by identity.
+    Id(DeviceId),
 }
 
-impl From<Option<usize>> for DeviceSelector {
-    /// Maps `None` to [`Default`](DeviceSelector::Default) and `Some(i)` to
-    /// [`Index(i)`](DeviceSelector::Index).
-    fn from(index: Option<usize>) -> Self {
-        match index {
-            Some(i) => DeviceSelector::Index(i),
-            None => DeviceSelector::Default,
-        }
+impl DeviceSelector {
+    /// The first device called `name`.
+    #[must_use]
+    pub fn named(name: impl Into<String>) -> Self {
+        Self::Id(DeviceId::new(name))
     }
 }
 
-/// Which way a device is being enumerated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Direction {
-    Output,
-    /// Constructed only by `mic.rs`, which is `#[cfg(feature = "capture")]`.
-    /// The variant stays unconditional so `device()`'s match arms do not have
-    /// to be — a cfg'd enum variant would put `#[cfg]` on four match arms in
-    /// two functions to save one line here.
-    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
-    Input,
+impl From<DeviceId> for DeviceSelector {
+    fn from(id: DeviceId) -> Self {
+        Self::Id(id)
+    }
 }
 
 /// An opened platform audio host, used to enumerate its devices.
@@ -157,39 +145,47 @@ impl DeviceHost {
 
     /// Lists this host's output devices.
     ///
-    /// Each [`DeviceInfo::index`] is positional (see
-    /// [`DeviceSelector::Index`]); a device whose name cannot be read is listed
-    /// with an empty name.
+    /// A device whose name cannot be read is listed with an empty name.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
     pub fn output_devices(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(self
-            .inner
-            .output_devices()?
-            .enumerate()
-            .map(|(index, d)| DeviceInfo {
-                index,
-                name: d.name().unwrap_or_default(),
-            })
-            .collect())
+        Ok(DeviceInfo::list(
+            self.inner
+                .output_devices()?
+                .map(|d| d.name().unwrap_or_default()),
+        ))
     }
 
-    /// Lists this host's input devices, with the same indexing caveat as
-    /// [`output_devices`](Self::output_devices).
+    /// Lists this host's input devices, as
+    /// [`output_devices`](Self::output_devices) does.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
     pub fn input_devices(&self) -> Result<Vec<DeviceInfo>> {
-        Ok(self
-            .inner
-            .input_devices()?
-            .enumerate()
-            .map(|(index, d)| DeviceInfo {
-                index,
-                name: d.name().unwrap_or_default(),
-            })
-            .collect())
+        Ok(DeviceInfo::list(
+            self.inner
+                .input_devices()?
+                .map(|d| d.name().unwrap_or_default()),
+        ))
+    }
+
+    /// Every device and both defaults, in one look: what
+    /// [`DevicePoller`](crate::DevicePoller) publishes. Blocks as long as the
+    /// host's enumeration does.
+    ///
+    /// # Errors
+    /// [`Error::DevicesError`] if the host cannot enumerate.
+    pub fn snapshot(&self) -> Result<Snapshot> {
+        let name = |d: cpal::Device| d.name().unwrap_or_default();
+        let default_output = self.inner.default_output_device().map(name);
+        let default_input = self.inner.default_input_device().map(name);
+        Ok(Snapshot::from_names(
+            self.inner.output_devices()?.map(name),
+            self.inner.input_devices()?.map(name),
+            default_output.as_deref(),
+            default_input.as_deref(),
+        ))
     }
 
     /// Resolve a selector to a device. **The only place a device is resolved.**
@@ -216,27 +212,14 @@ impl DeviceHost {
             }
             .ok_or_else(|| Error::InvalidDevice(format!("No {what} device available"))),
 
-            DeviceSelector::Index(i) => {
-                let devices = list()?;
-                let count = devices.len();
-                devices.into_iter().nth(*i).ok_or_else(|| {
-                    Error::InvalidDevice(format!(
-                        "{what} device index {i} out of range ({count} available)"
-                    ))
-                })
-            }
-
-            // Name beats index precisely because it survives re-enumeration.
-            // An unknown name is an error rather than a fall back to the
+            // An unknown id is an error rather than a fall back to the
             // default: silently playing out of the wrong device is the
             // failure this selector exists to prevent.
-            DeviceSelector::Name(name) => {
-                let devices = list()?;
-                devices
-                    .into_iter()
-                    .find(|d| d.name().is_ok_and(|n| &n == name))
-                    .ok_or_else(|| Error::InvalidDevice(format!("no {what} device named {name:?}")))
-            }
+            DeviceSelector::Id(id) => list()?
+                .into_iter()
+                .filter(|d| d.name().is_ok_and(|n| n == id.name()))
+                .nth(id.ordinal())
+                .ok_or_else(|| Error::InvalidDevice(format!("no {what} device {id}"))),
         }
     }
 }

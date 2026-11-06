@@ -38,11 +38,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tutti_cpal::{
-    DeviceInfo, DeviceSelector, OutputSpec, StreamDriver, StreamFault, StreamFaults, TuttiDriver,
+    DeviceInfo, DeviceSelector, OutputSpec, SnapshotSource, StreamDriver, StreamFault,
+    StreamFaults, TuttiDriver,
 };
 use tutti_types::{SampleRate, Samples};
 
-use crate::{Error, Result, Session};
+use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, SessionEvent};
 
 /// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
 /// thread that opened it.
@@ -154,6 +155,24 @@ impl Device {
     }
 }
 
+/// A restart that moved the stream ([`SessionEvent::DeviceRestarted`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceRestarted {
+    /// The rate the graph ran at before.
+    pub previous_rate: SampleRate,
+    /// The rate it runs at now.
+    pub rate: SampleRate,
+}
+
+impl DeviceRestarted {
+    /// Whether the rate moved: a capture stream opened at the old rate now
+    /// feeds the graph frames of the wrong rate until it is reopened.
+    #[must_use]
+    pub fn rate_changed(&self) -> bool {
+        self.previous_rate != self.rate
+    }
+}
+
 /// What [`Session::restart`] asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceRestart {
@@ -205,11 +224,19 @@ impl Session {
         request: DeviceRestart,
         follow: impl FnOnce(&OutputSpec),
     ) -> Result<()> {
-        self.check_restart(request.max_block)?;
-        let max_block = request.max_block;
-        device.driver.restart_with(request.device, |spec, stopped| {
-            self.rerate(spec, stopped, max_block, follow)
-        })
+        let outcome = self.check_restart(request.max_block).and_then(|()| {
+            let max_block = request.max_block;
+            let previous = device.graph_rate();
+            let selector = request.device.clone();
+            self.note_chosen(selector);
+            device
+                .driver
+                .restart_with(request.device, |spec, stopped| {
+                    self.rerate(spec, stopped, max_block, follow)
+                })
+                .map(|()| previous)
+        });
+        self.note_restart(device, outcome)
     }
 
     /// [`restart_following`](Self::restart_following) on a driver of the
@@ -231,10 +258,101 @@ impl Session {
     where
         D::Running: 'static,
     {
-        self.check_restart(max_block)?;
-        device.driver.restart_on(spec, driver, |spec, stopped| {
-            self.rerate(spec, stopped, max_block, follow)
-        })
+        let outcome = self.check_restart(max_block).and_then(|()| {
+            let previous = device.graph_rate();
+            device
+                .driver
+                .restart_on(spec, driver, |spec, stopped| {
+                    self.rerate(spec, stopped, max_block, follow)
+                })
+                .map(|()| previous)
+        });
+        self.note_restart(device, outcome)
+    }
+
+    /// Records a restart's outcome: the policy is told, and the next poll
+    /// reports it ([`SessionEvent::DeviceRestarted`] or
+    /// [`SessionEvent::RestartFailed`]). A failure that left the stream
+    /// stopped keeps the old spec and graph rate, as the module docs say.
+    fn note_restart(&mut self, device: &Device, outcome: Result<SampleRate>) -> Result<()> {
+        let now = std::time::Instant::now();
+        match outcome {
+            Ok(previous_rate) => {
+                let name = device.device_name().ok().map(tutti_cpal::DeviceId::new);
+                self.device_events
+                    .push(SessionEvent::DeviceRestarted(DeviceRestarted {
+                        previous_rate,
+                        rate: device.graph_rate(),
+                    }));
+                self.note_device(FollowEvent::Opened(name), now);
+                Ok(())
+            }
+            Err(e) => {
+                self.device_events
+                    .push(SessionEvent::RestartFailed(e.to_string()));
+                self.note_device(
+                    FollowEvent::RestartFailed {
+                        running: device.is_running(),
+                    },
+                    now,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn note_chosen(&mut self, selector: DeviceSelector) {
+        self.note_device(FollowEvent::Chose(selector), std::time::Instant::now());
+    }
+
+    /// Feeds the policy and queues a restart it asks for.
+    fn note_device(&mut self, event: FollowEvent, now: std::time::Instant) {
+        if let Some(watch) = &mut self.device_watch
+            && let Some(request) = watch.note(event, now)
+        {
+            self.device_events
+                .push(SessionEvent::RestartWanted(request));
+        }
+    }
+
+    /// Starts watching the host's devices (design 018): `source` is polled on
+    /// every [`Phase::Poll`], its changes are reported as events, and
+    /// `policy` decides which of them restart the stream. `want` is the
+    /// selector the stream was started with, which the policy never
+    /// overrides, and `running_on` the device it opened (`Device::device_name`;
+    /// `None`: unknown, so only its faults mark it lost). Replaces a watch already running.
+    pub fn watch_devices(
+        &mut self,
+        source: impl SnapshotSource + Send + 'static,
+        policy: DevicePolicy,
+        want: DeviceSelector,
+        running_on: Option<tutti_cpal::DeviceId>,
+    ) {
+        self.device_watch = Some(DeviceWatch::new(source, policy, want, running_on));
+    }
+
+    /// The [`Phase::Poll`] body: what restarts reported, the stream's own
+    /// faults, then the watch.
+    pub(crate) fn device_poll(&mut self, now: std::time::Instant, out: &mut Vec<SessionEvent>) {
+        out.append(&mut self.device_events);
+        let mut lost = false;
+        if let Some((faults, seen)) = &mut self.faults {
+            let count = faults.count();
+            if count != *seen {
+                *seen = count;
+                if let Some(fault) = faults.last() {
+                    lost = fault.kind == tutti_cpal::StreamFaultKind::Disconnected;
+                    out.push(SessionEvent::DeviceFault(fault));
+                }
+            }
+        }
+        if lost {
+            self.note_device(FollowEvent::Lost, now);
+            out.append(&mut self.device_events);
+        }
+        if let Some(watch) = &mut self.device_watch {
+            watch.poll(now, out);
+        }
     }
 
     /// The checks that must pass before the stream stops.

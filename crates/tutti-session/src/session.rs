@@ -156,7 +156,7 @@ pub enum SessionEvent {
         /// The id [`Graph::crossfade`] returned.
         id: CrossfadeId,
         /// Why.
-        why: String,
+        refused: crate::CrossfadeRefused,
     },
     /// The audio backend reported a fault (a device unplugged mid-session):
     /// the most recent one since the last poll.
@@ -224,11 +224,11 @@ impl std::fmt::Debug for SessionEvent {
                 .field("node", node)
                 .field("id", id)
                 .finish_non_exhaustive(),
-            Self::CrossfadeFailed { node, id, why } => f
+            Self::CrossfadeFailed { node, id, refused } => f
                 .debug_struct("CrossfadeFailed")
                 .field("node", node)
                 .field("id", id)
-                .field("why", why)
+                .field("refused", refused)
                 .finish(),
             #[cfg(feature = "device")]
             Self::DeviceFault(fault) => f.debug_tuple("DeviceFault").field(fault).finish(),
@@ -278,7 +278,7 @@ pub struct MidiNodes {
     pub clock: AudioNode,
     /// The clock master: enable it, pick MTC and its frame rate.
     pub clock_master: Arc<tutti_midi_runtime::ClockMaster>,
-    /// The hardware out's node, fed by the clock (the `"clock"` feed).
+    /// The hardware out's node, fed by the clock ([`Feeder::Clock`](crate::Feeder)).
     pub hardware_out: AudioNode,
     /// What a host drains to the OS.
     pub out_controls: tutti_midi_runtime::MidiOutControls,
@@ -419,8 +419,8 @@ impl Session {
                         Retried::Landed { node, id, controls } => {
                             SessionEvent::CrossfadeLanded { node, id, controls }
                         }
-                        Retried::Failed { node, id, why } => {
-                            SessionEvent::CrossfadeFailed { node, id, why }
+                        Retried::Failed { node, id, refused } => {
+                            SessionEvent::CrossfadeFailed { node, id, refused }
                         }
                     });
                 }
@@ -541,9 +541,9 @@ impl Session {
     /// pre-roll to [`compensation`](Self::compensation), the total to
     /// [`latency`](Self::latency). Nothing before the first plan.
     pub(crate) fn publish_sent(&mut self) {
-        if let Some((channels, total)) = self.graph.sent_compensation() {
-            self.latency = total;
-            self.compensation.set(&channels);
+        if let Some(sent) = self.graph.sent_compensation() {
+            self.latency = sent.total();
+            self.compensation.set(sent.channels());
         }
     }
 

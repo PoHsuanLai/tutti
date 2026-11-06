@@ -10,7 +10,7 @@
 //! first block, and there is nothing to install.
 //!
 //! **Reaching the node.** Binding into the graph is a typestate transition at
-//! insert (`PluginClient::bind`, in `AudioGraphRes::insert_plugin`); the host
+//! insert (`PluginClient::bind`, in `Graph::insert_plugin`); the host
 //! keeps the node's [`PluginControls`], captured before it went in, and never
 //! needs the node again.
 //!

@@ -206,24 +206,24 @@ mod master_bus {
     #[test]
     fn a_second_claim_on_the_master_silently_replaces_the_first() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (first, _) = graph.insert(Osc::sine(Hz(440.0)));
-        let (second, _) = graph.insert(Osc::sine(Hz(880.0)));
+        let (first, _) = graph.graph().insert(Osc::sine(Hz(440.0)));
+        let (second, _) = graph.graph().insert(Osc::sine(Hz(880.0)));
 
-        graph.set_outputs_from(first);
+        graph.graph().set_outputs_from(first);
         assert_eq!(
-            graph.output_source(0),
+            graph.graph_ref().output_source(0),
             GraphSource::Node(first, 0),
             "the first claim lands"
         );
 
-        graph.set_outputs_from(second);
+        graph.graph().set_outputs_from(second);
         assert_eq!(
-            graph.output_source(0),
+            graph.graph_ref().output_source(0),
             GraphSource::Node(second, 0),
             "and the second overwrites it — this is the bug, not a mix"
         );
         assert_eq!(
-            graph.output_source(1),
+            graph.graph_ref().output_source(1),
             // a mono `Osc` has one output, so `channel % node_outputs` wraps both
             // global channels onto port 0.
             GraphSource::Node(second, 0),
@@ -237,17 +237,28 @@ mod master_bus {
     #[test]
     fn a_master_claim_takes_every_channel_even_from_a_mono_source() {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (stereo, _) = graph.insert(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
-        let (mono, _) = graph.insert(Osc::sine(Hz(880.0)));
+        let (stereo, _) = graph
+            .graph()
+            .insert(Osc::sine(Hz(440.0)).with_layout(ChannelLayout::STEREO));
+        let (mono, _) = graph.graph().insert(Osc::sine(Hz(880.0)));
 
-        graph.set_outputs_from(stereo);
-        assert_eq!(graph.output_source(1), GraphSource::Node(stereo, 1));
-        graph.set_outputs_from(mono);
+        graph.graph().set_outputs_from(stereo);
+        assert_eq!(
+            graph.graph_ref().output_source(1),
+            GraphSource::Node(stereo, 1)
+        );
+        graph.graph().set_outputs_from(mono);
 
         // `set_outputs_from` wraps with `channel % node_outputs`, so a 1-output
         // node feeds both channels from its single port.
-        assert_eq!(graph.output_source(0), GraphSource::Node(mono, 0));
-        assert_eq!(graph.output_source(1), GraphSource::Node(mono, 0));
+        assert_eq!(
+            graph.graph_ref().output_source(0),
+            GraphSource::Node(mono, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().output_source(1),
+            GraphSource::Node(mono, 0)
+        );
     }
 
     /// The sequence a system calling `set_outputs_from` produces: the build
@@ -263,18 +274,21 @@ mod master_bus {
         let mut graph = AudioGraphRes::headless(0, 2);
 
         // Stand-in for the click node `build_into` piped to output.
-        let (click, _) = graph.insert(Osc::sine(Hz(1000.0)));
-        graph.set_outputs_from(click);
+        let (click, _) = graph.graph().insert(Osc::sine(Hz(1000.0)));
+        graph.graph().set_outputs_from(click);
 
         // A soundfont finishes loading a few frames later.
-        let (soundfont, _) = graph.insert(Osc::sine(Hz(261.0)));
-        graph.set_outputs_from(soundfont);
+        let (soundfont, _) = graph.graph().insert(Osc::sine(Hz(261.0)));
+        graph.graph().set_outputs_from(soundfont);
 
         assert_ne!(
-            graph.output_source(0),
+            graph.graph_ref().output_source(0),
             GraphSource::Node(click, 0),
             "the metronome is disconnected — silently, with nothing in the log"
         );
-        assert_eq!(graph.output_source(0), GraphSource::Node(soundfont, 0));
+        assert_eq!(
+            graph.graph_ref().output_source(0),
+            GraphSource::Node(soundfont, 0)
+        );
     }
 }

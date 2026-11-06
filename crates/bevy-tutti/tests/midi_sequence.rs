@@ -67,7 +67,7 @@ fn app() -> App {
     // At the rate `roll` advances the transport for: a transport that moves
     // at another rate's pace reads as a seek every block.
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+    graph.graph().set_sample_rate(SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
@@ -452,16 +452,21 @@ fn event_sources_wire_a_clip_node_to_a_graph_synth() {
         .insert(EventSources::from(clip));
     app.update();
     let graph = app.world().resource::<AudioGraphRes>();
-    assert_eq!(graph.node_event_inputs(node_of(&app, synth)), 1);
+    assert_eq!(graph.graph_ref().node_event_inputs(node_of(&app, synth)), 1);
     assert_eq!(
-        graph.event_sources(node_of(&app, synth), 0),
+        graph.graph_ref().event_sources(node_of(&app, synth), 0),
         vec![node_of(&app, clip).into()]
     );
 
     app.world_mut().entity_mut(synth).remove::<EventSources>();
     app.update();
     let graph = app.world().resource::<AudioGraphRes>();
-    assert!(graph.event_sources(node_of(&app, synth), 0).is_empty());
+    assert!(
+        graph
+            .graph_ref()
+            .event_sources(node_of(&app, synth), 0)
+            .is_empty()
+    );
 }
 
 /// **An install on a synth plays through a clip node of its own, wired to
@@ -496,6 +501,7 @@ fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
     assert_eq!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .event_sources(node_of(&app, synth), 0),
         vec![clip.into()]
     );
@@ -518,7 +524,12 @@ fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
         Some(clip),
         "the emptied clip stays, to end its notes"
     );
-    assert!(app.world().resource::<AudioGraphRes>().contains(clip));
+    assert!(
+        app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .contains(clip)
+    );
 }
 
 /// **A clip node goes when its target leaves the event path**: here the
@@ -557,7 +568,12 @@ fn a_clip_node_goes_when_its_target_loses_its_node() {
     changed.events = changed.events.clone();
     app.update();
     assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
-    assert!(!app.world().resource::<AudioGraphRes>().contains(clip));
+    assert!(
+        !app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .contains(clip)
+    );
 }
 
 /// **An install moved to another target leaves the old one silent**: the
@@ -621,7 +637,12 @@ fn a_clip_goes_when_its_target_loses_its_node_with_no_install_edit() {
         .remove::<tutti_core::AudioNode>();
     app.update();
     assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
-    assert!(!app.world().resource::<AudioGraphRes>().contains(clip));
+    assert!(
+        !app.world()
+            .resource::<AudioGraphRes>()
+            .graph_ref()
+            .contains(clip)
+    );
 }
 
 /// **An install added while there is no graph plays once the graph

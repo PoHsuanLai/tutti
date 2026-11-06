@@ -17,6 +17,9 @@ categories = ["game-development", "multimedia::audio"]
 workspace = true
 
 [dependencies]
+# The graph resource's lock: re-entrant, so two reads of the graph in one
+# statement cannot deadlock (`AudioGraphRes::graph_ref`).
+parking_lot = { version = "0.12", default-features = false }
 # Minimal Bevy (just ECS + App, no rendering)
 bevy_app.workspace = true
 bevy_ecs.workspace = true

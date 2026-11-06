@@ -965,8 +965,7 @@ mod tests {
     /// and one at a time.** The first update starts the clock; updates
     /// inside the interval ask for nothing; the first at or past it asks
     /// once; while that job is unlanded nothing more is asked, however late
-    /// (the old Bevy test could not cover this guard on a single-threaded
-    /// pool: here the job is simply held); landing it stores the bytes and
+    /// (the job is held, not run); landing it stores the bytes and
     /// restarts the cadence; a dropped job frees the plugin too.
     ///
     /// Mutations (each run, each failed): the due check without the token
@@ -1161,8 +1160,8 @@ mod tests {
     ///
     /// Mutations (each run, each failed): `adopt` keeping the old mirror
     /// (the value reads the outgoing plugin's 0.25); `adopt` running the
-    /// read inline (`mirror.land(read.run())`, the old code: the mirror is
-    /// ready before any job ran); the phase not handing the read out (no
+    /// read inline (`mirror.land(read.run())`: the mirror is ready before any
+    /// job ran); the phase not handing the read out (no
     /// job); `land_params` without the `ptr_eq` check (the stale read
     /// lands); `adopt` keeping the old token (the same).
     #[cfg(feature = "modulation")]

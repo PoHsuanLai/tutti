@@ -456,8 +456,9 @@ kept a tracked map to know what to disconnect.
 `Spawn → Params → Despawn → Compensate → Commit` — one file per duty (`schedule`,
 `spawn`, `despawn`, `commit`, `wire`, `param`, plus `io`, `metering`, `tap`,
 `transport`, `plugin`, `resources`). `AudioGraphRes` is the graph handle, a
-`tutti_session::Session` behind it (opaque: its methods are the only way to
-the `Editor` inside, and there is no `Deref`, so the mutate/commit boundary
+`tutti_session::Session` behind it (`graph()` is the session's `Graph`, to
+edit, and `graph_ref()` a guard over it, to read; there is no way to the
+`Editor` inside and no `Deref` to the session, so the mutate/commit boundary
 stays visible), and `AudioConfig` the sample-rate / channel config. Every edit
 through it sets the session graph's edit flag (`Graph::is_edited`), which is
 what coalesces a frame's edits into one commit (design 015). Node removal is an `On<Remove, AudioNode>` observer, not a
@@ -490,7 +491,7 @@ so it needs none of that. Event feeds are keyed by the sink's `AudioNode`;
 `Graph::move_feeds` carries them to a replacement, which is what Bevy's
 re-bind calls. There is no whole-`Topology` replace, since it would fight
 Bevy's partial declarations when both hosts share one session, and no direct
-`Editor` access: `Graph` stays opaque, as `AudioGraphRes` is.
+`Editor` access: `Graph` stays opaque, and `AudioGraphRes` hands out the `Graph`, never the `Session`.
 
 ## Testing Policy
 

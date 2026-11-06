@@ -62,8 +62,8 @@ mod tests {
 
     fn test_app() -> App {
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
-        graph.set_outputs_from(dc);
+        let (dc, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.0));
+        graph.graph().set_outputs_from(dc);
         let mut app = App::new();
         app.insert_resource(graph);
         app.add_systems(Update, plugin_render_mode);
@@ -103,8 +103,8 @@ mod tests {
         use crate::graph::AudioConfig;
 
         let mut graph = AudioGraphRes::headless(0, 2);
-        let (dc, _) = graph.insert(tutti_nodes::testing::Const::mono(0.0));
-        graph.set_outputs_from(dc);
+        let (dc, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.0));
+        graph.graph().set_outputs_from(dc);
         let mut app = App::new();
         app.add_plugins(bevy_app::TaskPoolPlugin::default());
         app.insert_resource(graph);
@@ -127,7 +127,7 @@ mod tests {
             let done = std::sync::Arc::clone(&done);
             app.world_mut()
                 .spawn(BevyRequest::new(
-                    crate::export::ExportSource::Master,
+                    crate::export::ExportSource::Mix,
                     crate::export::ExportTarget::Buffers,
                     tutti_export::ExportConfig {
                         render: tutti_export::RenderConfig {

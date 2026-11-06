@@ -358,8 +358,8 @@ Scalars use `Param<U>`.
   system that runs a phase in its set. Node removal is an
   `On<Remove, AudioNode>` observer.
 - Every spawn path takes a `SessionNode`: `spawn_audio_node`,
-  `insert_audio_node`, `crossfade_audio_node` (and `AudioGraphRes::insert` /
-  `replace` take its `IntoNode`). A host's plain node goes in as
+  `insert_audio_node`, `crossfade_audio_node` (and `Graph::insert` /
+  `replace`, reached through `AudioGraphRes::graph`, take its `IntoNode`). A host's plain node goes in as
   `ForkByClone(node)` or `Unforkable(node)`; its own `ParamNode` is
   registered in one line with `bevy_tutti::param_graph_node!(MyNode)`.
 - Params are `AudioParam<U, const P: u16>`, registered with

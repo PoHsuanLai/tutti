@@ -263,7 +263,7 @@ pub fn promote_pending_soundfonts(
         // that follows the graph's rate on a device restart (`Node::prepare`).
         // The insert edits the session, so the frame's commit sends it.
         let controls = CapturedControls::default();
-        let (id, ()) = graph.insert(unit);
+        let (id, ()) = graph.graph().insert(unit);
 
         // `AudioNode` is the whole binding: node teardown
         // (`reconcile_node_despawn`) keys on its removal.

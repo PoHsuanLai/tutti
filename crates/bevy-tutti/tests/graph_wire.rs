@@ -49,7 +49,7 @@ mod graph_wire {
     fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
         let (id, _controls) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(node)
+            graph.graph().insert(node)
         };
         app.world_mut().spawn(id).id()
     }
@@ -72,7 +72,10 @@ mod graph_wire {
 
         let (osc_id, filt_id) = (node_id(&app, osc), node_id(&app, filt));
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Node(osc_id, 0)
         );
     }
@@ -97,11 +100,11 @@ mod graph_wire {
 
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(
-            graph.output_source(0),
+            graph.graph_ref().output_source(0),
             GraphSource::Node(node_id(&app, a), 0)
         );
         assert_eq!(
-            graph.output_source(1),
+            graph.graph_ref().output_source(1),
             GraphSource::Node(node_id(&app, b), 0)
         );
     }
@@ -123,7 +126,10 @@ mod graph_wire {
             .insert(PortSources::from(osc));
         app.update();
         assert_ne!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Silence
         );
 
@@ -131,7 +137,10 @@ mod graph_wire {
         app.update();
 
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Silence,
             "a removed declaration must not leave its last wiring behind"
         );
@@ -155,7 +164,10 @@ mod graph_wire {
             .insert(PortSources::from(pending));
         app.update();
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Silence,
             "nothing to resolve yet, and no panic"
         );
@@ -163,13 +175,16 @@ mod graph_wire {
         // The node turns up. The declaration is untouched.
         let (id, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(Osc::sine(Hz(440.0)))
+            graph.graph().insert(Osc::sine(Hz(440.0)))
         };
         app.world_mut().entity_mut(pending).insert(id);
         app.update();
 
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Node(id, 0),
             "the wire forms once the node exists — nothing about the declaration \
              changed, so a gate on `Changed<PortSources>` alone would miss it"
@@ -194,6 +209,7 @@ mod graph_wire {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .source(node_id(&app, filt), 0),
             GraphSource::Silence
         );
@@ -220,6 +236,7 @@ mod graph_wire {
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
+                .graph_ref()
                 .source(node_id(&app, filt), 0),
             GraphSource::Silence
         );
@@ -244,20 +261,26 @@ mod graph_wire {
         app.update();
         let first = node_id(&app, osc);
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Node(first, 0)
         );
 
         // Same entity, different node.
         let (second, ()) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(Osc::sine(Hz(880.0)))
+            graph.graph().insert(Osc::sine(Hz(880.0)))
         };
         app.world_mut().entity_mut(osc).insert(second);
         app.update();
 
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().source(filt_id, 0),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .source(filt_id, 0),
             GraphSource::Node(second, 0),
             "the declaration names an entity, so re-binding that entity must move \
              the wire — otherwise it points at a node nothing renders"
@@ -283,7 +306,9 @@ mod graph_wire {
         // Port 1 wired by hand — undeclared, so this layer must not own it.
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.set_source(sink_id, 1, GraphSource::Node(foreign_id, 0));
+            graph
+                .graph()
+                .set_source(sink_id, 1, GraphSource::Node(foreign_id, 0));
         }
         app.update();
 
@@ -292,12 +317,12 @@ mod graph_wire {
 
         let graph = app.world().resource::<AudioGraphRes>();
         assert_eq!(
-            graph.source(sink_id, 0),
+            graph.graph_ref().source(sink_id, 0),
             GraphSource::Silence,
             "the declared port is released"
         );
         assert_eq!(
-            graph.source(sink_id, 1),
+            graph.graph_ref().source(sink_id, 1),
             GraphSource::Node(foreign_id, 0),
             "but an undeclared port belongs to whoever wired it"
         );
@@ -340,25 +365,35 @@ mod graph_wire {
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             assert!(
-                graph.node_latency(lim_id).get() > 0,
+                graph.graph_ref().node_latency(lim_id).get() > 0,
                 "the limiter is latent"
             );
-            graph.set_output_source(0, GraphSource::Node(lim_id, 0));
-            graph.set_output_source(1, GraphSource::Node(osc_id, 0));
+            graph
+                .graph()
+                .set_output_source(0, GraphSource::Node(lim_id, 0));
+            graph
+                .graph()
+                .set_output_source(1, GraphSource::Node(osc_id, 0));
         }
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.source(lim_id, 0), GraphSource::Node(osc_id, 0));
         assert_eq!(
-            graph.output_source(0),
+            graph.graph_ref().source(lim_id, 0),
+            GraphSource::Node(osc_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().output_source(0),
             GraphSource::Node(lim_id, 0),
             "the host's master is its own"
         );
-        assert_eq!(graph.output_source(1), GraphSource::Node(osc_id, 0));
         assert_eq!(
-            graph.latency_plan().total(),
-            graph.node_latency(lim_id),
+            graph.graph_ref().output_source(1),
+            GraphSource::Node(osc_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().latency_plan().total(),
+            graph.graph_ref().node_latency(lim_id),
             "and the graph compensates the path the host wired"
         );
     }
@@ -390,20 +425,25 @@ mod graph_wire {
         app.world_mut().insert_resource(MasterSources::from(sink));
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.set_source(sink_id, 1, GraphSource::Node(lim_id, 0));
+            graph
+                .graph()
+                .set_source(sink_id, 1, GraphSource::Node(lim_id, 0));
         }
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.source(sink_id, 0), GraphSource::Node(osc_id, 0));
         assert_eq!(
-            graph.source(sink_id, 1),
+            graph.graph_ref().source(sink_id, 0),
+            GraphSource::Node(osc_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().source(sink_id, 1),
             GraphSource::Node(lim_id, 0),
             "the undeclared port is the host's"
         );
         assert_eq!(
-            graph.latency_plan().total(),
-            graph.node_latency(lim_id),
+            graph.graph_ref().latency_plan().total(),
+            graph.graph_ref().node_latency(lim_id),
             "and the graph compensates the path the host wired"
         );
     }
@@ -424,9 +464,12 @@ mod graph_wire {
 
         let mono_id = node_id(&app, mono);
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.output_source(0), GraphSource::Node(mono_id, 0));
         assert_eq!(
-            graph.output_source(1),
+            graph.graph_ref().output_source(0),
+            GraphSource::Node(mono_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().output_source(1),
             GraphSource::Node(mono_id, 0),
             "both channels take the mono node's only port"
         );
@@ -448,7 +491,10 @@ mod graph_wire {
         app.update();
         let stereo_id = node_id(&app, stereo);
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().output_source(1),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .output_source(1),
             GraphSource::Node(stereo_id, 1)
         );
 
@@ -458,13 +504,19 @@ mod graph_wire {
 
         let mono_id = node_id(&app, mono);
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.output_source(0), GraphSource::Node(mono_id, 0));
+        assert_eq!(
+            graph.graph_ref().output_source(0),
+            GraphSource::Node(mono_id, 0)
+        );
         assert_ne!(
-            graph.output_source(1),
+            graph.graph_ref().output_source(1),
             GraphSource::Node(stereo_id, 1),
             "the retracted node must not still be feeding a channel"
         );
-        assert_eq!(graph.output_source(1), GraphSource::Node(mono_id, 0));
+        assert_eq!(
+            graph.graph_ref().output_source(1),
+            GraphSource::Node(mono_id, 0)
+        );
     }
 
     /// A rebuild that finds the engine already agreeing writes nothing — it does not
@@ -509,7 +561,7 @@ mod graph_wire {
         app.add_systems(
             Update,
             (move |graph: Res<AudioGraphRes>| {
-                if graph.is_edited() {
+                if graph.graph_ref().is_edited() {
                     probe.store(true, Ordering::SeqCst);
                 }
             })
@@ -558,12 +610,16 @@ mod graph_wire {
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.outputs(), 6, "the declaration widened the root");
+        assert_eq!(
+            graph.graph_ref().outputs(),
+            6,
+            "the declaration widened the root"
+        );
 
         let id = node_id(&app, wide);
         for channel in 0..6 {
             assert_eq!(
-                graph.output_source(channel),
+                graph.graph_ref().output_source(channel),
                 GraphSource::Node(id, channel),
                 "channel {channel} must actually be wired, not merely reachable"
             );
@@ -586,9 +642,12 @@ mod graph_wire {
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.outputs(), 6);
+        assert_eq!(graph.graph_ref().outputs(), 6);
         assert!(
-            !app.world().resource::<AudioGraphRes>().is_edited(),
+            !app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .is_edited(),
             "the commit consumed the edit rather than panicking on the arity change"
         );
     }
@@ -611,14 +670,23 @@ mod graph_wire {
             tutti_core::ChannelLayout::from(6u16),
         ));
         app.update();
-        assert_eq!(app.world().resource::<AudioGraphRes>().outputs(), 6);
+        assert_eq!(
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs(),
+            6
+        );
 
         // Now declare only two channels.
         app.insert_resource(MasterSources::from(wide));
         app.update();
 
         assert_eq!(
-            app.world().resource::<AudioGraphRes>().outputs(),
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs(),
             6,
             "a shorter declaration is not a narrowing instruction"
         );
@@ -663,11 +731,14 @@ mod graph_wire {
         let lim_id = node_id(&app, lim);
         let latency = {
             let graph = app.world().resource::<AudioGraphRes>();
-            assert_eq!(graph.output_source(1), GraphSource::Node(lim_id, 0));
-            let lat = graph.node_latency(lim_id);
+            assert_eq!(
+                graph.graph_ref().output_source(1),
+                GraphSource::Node(lim_id, 0)
+            );
+            let lat = graph.graph_ref().node_latency(lim_id);
             assert!(lat.get() > 0, "the limiter must report its lookahead");
             assert_eq!(
-                graph.latency_plan().total(),
+                graph.graph_ref().latency_plan().total(),
                 lat,
                 "channel 1 is the slow path"
             );
@@ -681,23 +752,26 @@ mod graph_wire {
 
         let osc_id = node_id(&app, osc);
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.output_source(0), GraphSource::Node(osc_id, 0));
         assert_eq!(
-            graph.output_source(1),
+            graph.graph_ref().output_source(0),
+            GraphSource::Node(osc_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().output_source(1),
             GraphSource::Silence,
             "the dropped channel's source is disconnected"
         );
         assert_eq!(
-            graph.outputs(),
+            graph.graph_ref().outputs(),
             2,
             "the root keeps its width; a shrink is not a narrowing"
         );
         assert_eq!(
-            graph.source(lim_id, 0),
+            graph.graph_ref().source(lim_id, 0),
             GraphSource::Node(osc_id, 0),
             "the limiter's own input is still declared, so it is untouched"
         );
-        let plan = graph.latency_plan();
+        let plan = graph.graph_ref().latency_plan();
         assert_eq!(
             plan.total(),
             tutti_core::Samples(0),
@@ -728,7 +802,11 @@ mod graph_wire {
         app.update();
 
         assert!(
-            app.world().resource::<AudioGraphRes>().outputs() <= 8,
+            app.world()
+                .resource::<AudioGraphRes>()
+                .graph_ref()
+                .outputs()
+                <= 8,
             "the root must stay within the render scratch"
         );
     }
@@ -757,7 +835,7 @@ mod graph_wire {
         let (sink_id, src_id) = (node_id(&app, sink), node_id(&app, src));
         for port in 0..6 {
             assert_eq!(
-                graph.source(sink_id, port),
+                graph.graph_ref().source(sink_id, port),
                 GraphSource::Node(src_id, port),
                 "port {port} must come from the matching source port"
             );
@@ -812,7 +890,7 @@ mod param_mod_wire {
     fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
         let (id, _controls) = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-            graph.insert(node)
+            graph.graph().insert(node)
         };
         app.world_mut().spawn(id).id()
     }
@@ -871,6 +949,7 @@ mod param_mod_wire {
             .insert(PortSources::silent().with(0, o).with(1, o));
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
+            .graph()
             .set_param_mod(
                 target_id,
                 UnitParam::Drive,
@@ -881,12 +960,27 @@ mod param_mod_wire {
         app.update();
 
         let graph = app.world().resource::<AudioGraphRes>();
-        assert_eq!(graph.node_inputs(target_id), 2, "no param port: two inputs");
-        assert!(graph.declares_param(target_id, UnitParam::Drive));
-        assert_eq!(graph.source(target_id, 0), GraphSource::Node(osc_id, 0));
-        assert_eq!(graph.source(target_id, 1), GraphSource::Node(osc_id, 0));
+        assert_eq!(
+            graph.graph_ref().node_inputs(target_id),
+            2,
+            "no param port: two inputs"
+        );
+        assert!(
+            graph
+                .graph_ref()
+                .declares_param(target_id, UnitParam::Drive)
+        );
+        assert_eq!(
+            graph.graph_ref().source(target_id, 0),
+            GraphSource::Node(osc_id, 0)
+        );
+        assert_eq!(
+            graph.graph_ref().source(target_id, 1),
+            GraphSource::Node(osc_id, 0)
+        );
         assert_eq!(
             graph
+                .graph_ref()
                 .param_mod(target_id, UnitParam::Drive)
                 .expect("the modulation")
                 .source,
@@ -926,6 +1020,7 @@ mod param_mod_wire {
             ));
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
+            .graph()
             .set_param_mod(
                 target_id,
                 UnitParam::Drive,
@@ -937,6 +1032,7 @@ mod param_mod_wire {
         let before = app
             .world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .param_mod(target_id, UnitParam::Drive)
             .expect("the modulation");
 
@@ -951,12 +1047,12 @@ mod param_mod_wire {
         {
             let graph = app.world().resource::<AudioGraphRes>();
             assert_eq!(
-                graph.param_mod(target_id, UnitParam::Drive),
+                graph.graph_ref().param_mod(target_id, UnitParam::Drive),
                 Some(before),
                 "the modulation is untouched by an audio redeclaration"
             );
             assert_eq!(
-                graph.source(target_id, 0),
+                graph.graph_ref().source(target_id, 0),
                 GraphSource::Node(other_id, 0),
                 "the audio input moved"
             );
@@ -964,12 +1060,18 @@ mod param_mod_wire {
 
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
+            .graph()
             .clear_param_mod(target_id, UnitParam::Drive);
         app.update();
         let graph = app.world().resource::<AudioGraphRes>();
-        assert!(graph.param_mod(target_id, UnitParam::Drive).is_none());
+        assert!(
+            graph
+                .graph_ref()
+                .param_mod(target_id, UnitParam::Drive)
+                .is_none()
+        );
         assert_eq!(
-            graph.source(target_id, 0),
+            graph.graph_ref().source(target_id, 0),
             GraphSource::Node(other_id, 0),
             "and clearing the modulation leaves the audio alone"
         );

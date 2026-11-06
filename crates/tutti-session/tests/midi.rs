@@ -16,7 +16,7 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 
 use tutti_session::{
-    Error, EventSource, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, Session,
+    Error, EventSource, Feeder, MIDI_OUT_DROP_REPORT, MidiRouteRule, PHASES, PhaseCx, Session,
     SessionEvent, SessionNode, UmpOut,
 };
 
@@ -270,7 +270,7 @@ fn route_rules_wire_the_hardware_input() {
     let ports = |s: &Session, n: AudioNode| -> Vec<u16> {
         let mut p: Vec<u16> = s
             .graph_ref()
-            .feed(n, "midi routes")
+            .feed(n, Feeder::Routes)
             .iter()
             .map(|e| {
                 assert_eq!(e.node, input);
@@ -322,7 +322,7 @@ fn the_routes_have_one_declarer() {
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
     let (b, _) = tap(&mut s);
-    let fed = |s: &Session, n: AudioNode| !s.graph_ref().feed(n, "midi routes").is_empty();
+    let fed = |s: &Session, n: AudioNode| !s.graph_ref().feed(n, Feeder::Routes).is_empty();
 
     let own = s.midi().route(MidiRouteRule::any_channel().to(a)).unwrap();
     let host = [MidiRouteRule::<u8>::any_channel().to(1)];

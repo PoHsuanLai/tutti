@@ -53,8 +53,8 @@ type CutoffParam = AudioParam<Hz, { UnitParam::Cutoff as u16 }>;
 /// side taken, with the graph and modulation plugins.
 fn app(outputs: usize) -> (App, AudioSide) {
     let mut graph = AudioGraphRes::headless(0, outputs);
-    graph.set_sample_rate(SampleRate(RATE));
-    let side = graph.take_audio_side();
+    graph.graph().set_sample_rate(SampleRate(RATE));
+    let side = graph.graph().take_audio_side();
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.insert_resource(graph);
@@ -321,7 +321,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
     let seen = Arc::clone(&slot);
     app.world_mut()
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::Buffers,
             config,
             ExportClock::timeline(timeline),
@@ -419,6 +419,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     assert!(
         app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .contains(AudioNode(node))
     );
     let (_, lane) = state.lane(cutoff).expect("a lane");
@@ -437,6 +438,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
     assert!(
         !app.world()
             .resource::<AudioGraphRes>()
+            .graph_ref()
             .contains(AudioNode(node)),
         "its node is gone"
     );
@@ -886,10 +888,10 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
     settle(&mut app);
     let probe = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let (late, ()) = graph.insert(ForkByClone(Late));
-        graph.set_outputs_from(late);
-        let (probe, params) = graph.insert(ProbeUnit::new(500.0));
-        graph.set_node_params(probe, Some(params));
+        let (late, ()) = graph.graph().insert(ForkByClone(Late));
+        graph.graph().set_outputs_from(late);
+        let (probe, params) = graph.graph().insert(ProbeUnit::new(500.0));
+        graph.graph().set_node_params(probe, Some(params));
         probe
     };
     let entity = app.world_mut().spawn(probe).id();

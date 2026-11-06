@@ -578,7 +578,7 @@ It is today's `bevy-tutti` request with the two Bevy-bound fields
 replaced:
 
 ```rust
-pub enum ExportSource { Mix, Node(AudioNode) }       // was Node(Entity)
+pub enum ExportSource<N = AudioNode> { Mix, Node(N) } // bevy-tutti: ExportSource<Entity>
 pub struct ExportRequest {
     pub source: ExportSource,
     pub target: ExportTarget,                        // File { path, normalize } | Buffers, moved
@@ -605,8 +605,8 @@ s.finish_export(done)?;               // main thread: drop the leftovers, releas
 
 - The Bevy `ExportRequest` component stays in `bevy-tutti`. Its observer
   runs the `PrepareGraph` hook's `Fn(&World)` half on the main thread,
-  resolves `ExportSource::Node(Entity)` to its `AudioNode`, and builds the
-  session's request with the returned edit. `NodeNames` stays too: it maps
+  resolves `ExportSource<Entity>` to `ExportSource<AudioNode>` (`try_map`),
+  and builds the session's request with the returned edit. `NodeNames` stays too: it maps
   the `AudioNode` an `ExportError` names back to an entity and its `Name`.
 - **One export at a time.** `s.export` returns `Error::ExportInFlight`
   while another is in flight. `bevy-tutti` keeps its queue of request

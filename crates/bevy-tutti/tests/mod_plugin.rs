@@ -49,7 +49,7 @@ fn env(key: &str, value: impl ToString) {
 /// plugins.
 fn app() -> App {
     let mut graph = AudioGraphRes::headless(0, 2);
-    graph.set_sample_rate(SampleRate(RATE));
+    graph.graph().set_sample_rate(SampleRate(RATE));
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
     app.insert_resource(graph);
@@ -223,6 +223,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let mut side = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
+        .graph()
         .take_audio_side();
     let mut live = [Vec::new(), Vec::new()];
     let mut out = vec![Vec::new(), Vec::new()];
@@ -258,7 +259,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let seen = Arc::clone(&slot);
     app.world_mut()
         .spawn(ExportRequest::new(
-            ExportSource::Master,
+            ExportSource::Mix,
             ExportTarget::Buffers,
             config,
             ExportClock::timeline(timeline),

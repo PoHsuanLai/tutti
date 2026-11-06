@@ -132,7 +132,7 @@ fn main() {
     let mut app = App::new();
 
     let mut graph = AudioGraphRes::headless(0, 1);
-    graph.set_sample_rate(SampleRate(SAMPLE_RATE));
+    graph.graph().set_sample_rate(SampleRate(SAMPLE_RATE));
 
     app.insert_resource(graph);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));

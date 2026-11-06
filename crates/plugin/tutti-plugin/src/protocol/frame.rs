@@ -44,7 +44,7 @@ pub fn encode_prefix(body_len: usize) -> std::result::Result<[u8; 4], FrameTooLa
     if body_len > MAX_FRAME_BYTES {
         return Err(FrameTooLarge { len: body_len });
     }
-    // The cap is checked at compile time to fit a `u32` (see `control`).
+    // The cap is checked at compile time to fit a `u32` (the `const _` below).
     Ok((body_len as u32).to_be_bytes())
 }
 
@@ -101,6 +101,39 @@ pub fn read_frame<R: Read, T: DeserializeOwned>(r: &mut R) -> Result<T> {
     r.read_exact(&mut body)?;
     decode_body(&body)
 }
+
+/// The two bounds `MAX_FRAME_BYTES` has to sit between, checked at compile time.
+///
+/// A `const` block rather than a `#[test]`: both operands are constants, so
+/// there is nothing to observe at runtime that the compiler cannot settle
+/// first, and a bad cap should fail the build rather than one test binary.
+/// (Clippy says the same thing via `assertions_on_constants`.)
+const _: () = {
+    // `encode_prefix` writes `body_len as u32`. That cast is only safe because
+    // the guard above it rejects everything larger, so this asserts the premise the
+    // cast depends on. Raise the constant past `u32::MAX` and the guard stops
+    // covering the truncation it was written to prevent — silently, since the
+    // cast itself never fails.
+    assert!(
+        MAX_FRAME_BYTES <= u32::MAX as usize,
+        "MAX_FRAME_BYTES exceeds what a u32 length prefix can carry, so \
+         `body_len as u32` in `encode_prefix` can still truncate and desynchronise \
+         the stream"
+    );
+
+    // The cap must also leave room for the largest message the protocol
+    // defines. The binding case is a plugin state chunk (`LoadState` /
+    // `StateData`), which for a sample-based instrument reaches single-digit
+    // MiB. A cap below that would turn preset loading into a connection
+    // failure — the regression a "tighten it until nothing complains" edit
+    // would cause, and one no test in this crate would catch, since none sends
+    // a realistically large state chunk.
+    assert!(
+        MAX_FRAME_BYTES >= 16 * 1024 * 1024,
+        "MAX_FRAME_BYTES is below the state chunk a sampler can legitimately \
+         produce, so `save_state`/`load_state` would fail on real plugins"
+    );
+};
 
 #[cfg(test)]
 mod tests {

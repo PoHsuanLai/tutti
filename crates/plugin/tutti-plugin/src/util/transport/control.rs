@@ -17,7 +17,7 @@
 //! subsumes the other.
 
 use crate::error::{BridgeError, Result};
-use crate::protocol::frame::{decode_prefix, write_frame};
+use crate::protocol::frame::{decode_body, decode_prefix, write_frame};
 use crate::protocol::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -381,12 +381,12 @@ fn recv_by(
     r.map_err(|e| annotate(e, "frame body"))
         .map_err(crashed_on_eof)?;
 
-    let msg = bincode::deserialize(&partial.body);
+    let msg = decode_body(&partial.body);
     // The frame is off the wire and accounted for, so the stream is back on a
     // boundary whether or not its *contents* decoded. Clearing only on success
     // would leave a decode failure looking like a half-read frame forever.
     partial.clear();
-    Ok(msg?)
+    msg
 }
 
 /// Blocking read with no caller-supplied bound, used for the handshake.
@@ -641,39 +641,6 @@ fn crashed_on_eof(e: std::io::Error) -> BridgeError {
         e.into()
     }
 }
-
-/// The two bounds `MAX_FRAME_BYTES` has to sit between, checked at compile time.
-///
-/// A `const` block rather than a `#[test]`: both operands are constants, so
-/// there is nothing to observe at runtime that the compiler cannot settle
-/// first, and a bad cap should fail the build rather than one test binary.
-/// (Clippy says the same thing via `assertions_on_constants`.)
-const _: () = {
-    // `send` writes `data.len() as u32`. That cast is only safe because the
-    // guard above it rejects everything larger, so this asserts the premise the
-    // cast depends on. Raise the constant past `u32::MAX` and the guard stops
-    // covering the truncation it was written to prevent — silently, since the
-    // cast itself never fails.
-    assert!(
-        MAX_FRAME_BYTES <= u32::MAX as usize,
-        "MAX_FRAME_BYTES exceeds what a u32 length prefix can carry, so \
-         `data.len() as u32` in `send` can still truncate and desynchronise \
-         the stream"
-    );
-
-    // The cap must also leave room for the largest message the protocol
-    // defines. The binding case is a plugin state chunk (`LoadState` /
-    // `StateData`), which for a sample-based instrument reaches single-digit
-    // MiB. A cap below that would turn preset loading into a connection
-    // failure — the regression a "tighten it until nothing complains" edit
-    // would cause, and one no test in this crate would catch, since none sends
-    // a realistically large state chunk.
-    assert!(
-        MAX_FRAME_BYTES >= 16 * 1024 * 1024,
-        "MAX_FRAME_BYTES is below the state chunk a sampler can legitimately \
-         produce, so `save_state`/`load_state` would fail on real plugins"
-    );
-};
 
 #[cfg(test)]
 mod tests {

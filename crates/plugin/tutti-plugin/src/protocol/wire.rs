@@ -207,6 +207,9 @@ mod tests {
     }
 
     /// A wire value outside `0..=1` is clamped on decode, and NaN becomes `0`.
+    ///
+    /// Mutation (run): `normalized::deserialize` mapping an out-of-range
+    /// value to `0.5` instead of clamping it → the 7.5 case fails.
     #[test]
     fn a_decoded_normalized_is_clamped() {
         use crate::protocol::{HostMessage, Normalized, ParamId};

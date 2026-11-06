@@ -13,7 +13,7 @@ use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 use super::clock::{BlockClock, Clock};
 use super::command::{
     COMMAND_CAPACITY, MAX_RESIDENT_VOICES, Queued, SharedRate, StreamEntry, VoiceCommand,
-    VoicePoolHandle, loop_setting,
+    VoicePoolHandle,
 };
 use super::memory_source::LoopSetting;
 use super::slot::{PlaybackSlot, stretch_wanted};
@@ -868,21 +868,11 @@ impl VoicePool {
                         slot.voice.play.speed = speed;
                     }
                 }
-                VoiceCommand::UpdateLoop {
-                    id,
-                    looping,
-                    loop_start,
-                    loop_end,
-                    crossfade_frames,
-                } => {
+                VoiceCommand::UpdateLoop { id, setting } => {
                     // A streaming slot's loop reached the butler before this
                     // was queued (`VoicePoolHandle::send`), if `forwarded`
                     // names its stream.
-                    let setting = loop_setting(looping, loop_start, loop_end, crossfade_frames);
                     self.apply_queued_loop(id, setting, forwarded);
-                }
-                VoiceCommand::ClearLoop(id) => {
-                    self.apply_queued_loop(id, LoopSetting::Off, forwarded);
                 }
                 VoiceCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {

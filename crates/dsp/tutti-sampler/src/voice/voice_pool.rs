@@ -1411,10 +1411,11 @@ mod tests {
         handle
             .send(VoiceCommand::UpdateLoop {
                 id,
-                looping: true,
-                loop_start: SamplePosition::new(0.0),
-                loop_end: SamplePosition::new(64.0),
-                crossfade_frames: 0,
+                setting: LoopSetting::On {
+                    start: SamplePosition::new(0.0),
+                    end: SamplePosition::new(64.0),
+                    crossfade_frames: 0,
+                },
             })
             .expect("the command queue has room in a test");
 
@@ -1466,10 +1467,11 @@ mod tests {
     fn loop_on(id: SlotId) -> VoiceCommand {
         VoiceCommand::UpdateLoop {
             id,
-            looping: true,
-            loop_start: SamplePosition::new(0.0),
-            loop_end: SamplePosition::new(64.0),
-            crossfade_frames: 0,
+            setting: LoopSetting::On {
+                start: SamplePosition::new(0.0),
+                end: SamplePosition::new(64.0),
+                crossfade_frames: 0,
+            },
         }
     }
 
@@ -2026,10 +2028,11 @@ mod tests {
         let refused = std::thread::spawn(move || {
             racer.send(VoiceCommand::UpdateLoop {
                 id,
-                looping: true,
-                loop_start: SamplePosition::new(0.0),
-                loop_end: SamplePosition::new(32.0),
-                crossfade_frames: 0,
+                setting: LoopSetting::On {
+                    start: SamplePosition::new(0.0),
+                    end: SamplePosition::new(32.0),
+                    crossfade_frames: 0,
+                },
             })
         });
         wait_for_forward(&handle);

@@ -1207,10 +1207,11 @@ fn a_loop_set_through_a_pool_reaches_the_butler_and_the_voice_loops() {
     handle
         .send(crate::VoiceCommand::UpdateLoop {
             id,
-            looping: true,
-            loop_start: SamplePosition(1_000.0),
-            loop_end: SamplePosition(3_001.0),
-            crossfade_frames: 0,
+            setting: LoopSetting::On {
+                start: SamplePosition(1_000.0),
+                end: SamplePosition(3_001.0),
+                crossfade_frames: 0,
+            },
         })
         .expect("the command queue has room in a test");
     assert!(streamer.step_until_settled(1_000) < 1_000, "the loop lands");
@@ -1278,10 +1279,11 @@ fn a_loop_for_a_replaced_stream_leaves_the_new_one_alone() {
     handle
         .send(crate::VoiceCommand::UpdateLoop {
             id,
-            looping: true,
-            loop_start: SamplePosition(1_000.0),
-            loop_end: SamplePosition(3_001.0),
-            crossfade_frames: 0,
+            setting: LoopSetting::On {
+                start: SamplePosition(1_000.0),
+                end: SamplePosition(3_001.0),
+                crossfade_frames: 0,
+            },
         })
         .expect("the command queue has room in a test");
     assert!(streamer.step_until_settled(1_000) < 1_000);

@@ -1079,14 +1079,18 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         handle
             .send(VoiceCommand::UpdateLoop {
                 id: SlotId(1),
-                looping: true,
-                loop_start: SamplePosition::new(i as f64 * 8.0),
-                loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
-                crossfade_frames: 256,
+                setting: LoopSetting::On {
+                    start: SamplePosition::new(i as f64 * 8.0),
+                    end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
+                    crossfade_frames: 256,
+                },
             })
             .expect("the command queue has room in a test");
         handle
-            .send(VoiceCommand::ClearLoop(SlotId(1)))
+            .send(VoiceCommand::UpdateLoop {
+                id: SlotId(1),
+                setting: LoopSetting::Off,
+            })
             .expect("the command queue has room in a test");
     }
 

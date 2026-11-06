@@ -19,8 +19,8 @@ use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_core::{
-    Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate,
-    SamplePosition, SampleRate, StretchFactor,
+    Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
+    StretchFactor,
 };
 use tutti_graph::ParamSet;
 use tutti_io::Wave;
@@ -187,21 +187,9 @@ pub enum VoiceCommand {
     UpdateLoop {
         /// The slot to set.
         id: SlotId,
-        /// `false` clears the loop, ignoring the three fields below.
-        looping: bool,
-        /// Loop start, in FRAMES from the head of the source
-        /// ([`SamplePosition`], f64 so a long file keeps sub-frame precision).
-        loop_start: SamplePosition,
-        /// Loop end, in FRAMES from the head of the source.
-        loop_end: SamplePosition,
-        /// Crossfade length in FRAMES (not samples) — the same denomination as
-        /// the two positions above. `0` butt-splices.
-        crossfade_frames: usize,
+        /// The loop to play; [`LoopSetting::Off`] clears it.
+        setting: LoopSetting,
     },
-    /// Clear the voice's loop. Equivalent to [`UpdateLoop`](Self::UpdateLoop)
-    /// with `looping: false`, and spelled separately so a host clearing a loop
-    /// need not invent positions it is about to discard.
-    ClearLoop(SlotId),
     /// Play the voice forwards or backwards.
     ///
     /// One command reaches both tiers, which is why it is not folded into
@@ -293,21 +281,11 @@ impl std::fmt::Debug for VoiceCommand {
                 .field("id", id)
                 .field("speed", speed)
                 .finish(),
-            Self::UpdateLoop {
-                id,
-                looping,
-                loop_start,
-                loop_end,
-                crossfade_frames,
-            } => f
+            Self::UpdateLoop { id, setting } => f
                 .debug_struct("UpdateLoop")
                 .field("id", id)
-                .field("looping", looping)
-                .field("loop_start", loop_start)
-                .field("loop_end", loop_end)
-                .field("crossfade_frames", crossfade_frames)
+                .field("setting", setting)
                 .finish(),
-            Self::ClearLoop(id) => f.debug_tuple("ClearLoop").field(id).finish(),
             Self::UpdateReverse { id, direction } => f
                 .debug_struct("UpdateReverse")
                 .field("id", id)
@@ -651,8 +629,7 @@ impl VoicePoolHandle {
     ///
     /// # A streaming voice's loop
     ///
-    /// An [`UpdateLoop`](VoiceCommand::UpdateLoop) or
-    /// [`ClearLoop`](VoiceCommand::ClearLoop) aimed at a streaming voice, and
+    /// An [`UpdateLoop`](VoiceCommand::UpdateLoop) aimed at a streaming voice, and
     /// an [`AddVoice`](VoiceCommand::AddVoice) of one, forward the loop to
     /// the pool's butler (`Command::Loop`, naming the voice's stream) here,
     /// and queue the command only once the butler has taken it, so the
@@ -711,26 +688,7 @@ impl VoicePoolHandle {
                 streams.remove(&id);
                 Ok(())
             }
-            VoiceCommand::UpdateLoop {
-                id,
-                looping,
-                loop_start,
-                loop_end,
-                crossfade_frames,
-            } => self.send_loop(
-                id,
-                loop_setting(looping, loop_start, loop_end, crossfade_frames),
-                VoiceCommand::UpdateLoop {
-                    id,
-                    looping,
-                    loop_start,
-                    loop_end,
-                    crossfade_frames,
-                },
-            ),
-            VoiceCommand::ClearLoop(id) => {
-                self.send_loop(id, LoopSetting::Off, VoiceCommand::ClearLoop(id))
-            }
+            VoiceCommand::UpdateLoop { id, setting } => self.send_loop(id, setting),
             cmd => self.queue(cmd, None),
         }
     }
@@ -783,12 +741,8 @@ impl VoicePoolHandle {
     /// Queues `cmd`, the loop command setting `setting` on slot `id`, once
     /// the butler has taken the loop when `id` is a streaming voice; drops it
     /// (counted) when the forward cannot be made.
-    fn send_loop(
-        &self,
-        id: SlotId,
-        setting: LoopSetting,
-        cmd: VoiceCommand,
-    ) -> Result<(), SendError> {
+    fn send_loop(&self, id: SlotId, setting: LoopSetting) -> Result<(), SendError> {
+        let cmd = VoiceCommand::UpdateLoop { id, setting };
         // An in-memory (or unknown) slot: queued without touching the
         // forwarding lock, so it never waits on the butler.
         {
@@ -907,24 +861,6 @@ impl VoicePoolHandle {
             }
             other => other,
         }
-    }
-}
-
-/// The loop an `UpdateLoop`'s fields describe.
-pub(crate) fn loop_setting(
-    looping: bool,
-    start: SamplePosition,
-    end: SamplePosition,
-    crossfade_frames: usize,
-) -> LoopSetting {
-    if looping {
-        LoopSetting::On {
-            start,
-            end,
-            crossfade_frames,
-        }
-    } else {
-        LoopSetting::Off
     }
 }
 

@@ -115,7 +115,7 @@ impl<'a> GraphSource<'a> {
     pub(crate) fn new(
         editor: &'a mut tutti_graph::Editor,
         executor: &'a mut tutti_graph::Executor,
-        sample_rate: tutti_core::SampleRate,
+        sample_rate: tutti_types::SampleRate,
         clock: &'a dyn RenderClock,
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
@@ -218,7 +218,7 @@ impl FrameSource for GraphSource<'_> {
 /// point renders and checks identically.
 pub(crate) fn with_source<R>(
     graph: &mut RenderGraph,
-    sample_rate: tutti_core::SampleRate,
+    sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
 ) -> crate::Result<R> {

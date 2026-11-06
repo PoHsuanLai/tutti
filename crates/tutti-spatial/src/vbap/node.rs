@@ -1,8 +1,8 @@
 use super::error::Result;
-use tutti_core::ChannelLayout;
-use tutti_core::fold_frame_to_mono;
-use tutti_core::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::ChannelLayout;
+use tutti_types::fold_frame_to_mono;
+use tutti_types::{Azimuth, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
 
 use super::panner::{BlockGains, VbapPanner};
 use crate::SpatialTarget;
@@ -35,7 +35,7 @@ struct LastFinite {
 /// # Examples
 ///
 /// ```
-/// use tutti_core::{Azimuth, Elevation, SampleRate, Samples};
+/// use tutti_types::{Azimuth, Elevation, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_spatial::VbapPannerNode;
 ///

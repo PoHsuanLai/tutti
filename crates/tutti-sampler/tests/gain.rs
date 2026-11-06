@@ -31,11 +31,13 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tutti_core::{Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples};
 use tutti_graph::{Env, Node, TransportChanges, contract};
 use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
+};
+use tutti_types::{
+    Amplitude, Beat, Bpm, ChannelLayout, Frame, SamplePosition, SampleRate, Samples,
 };
 
 const SR: f64 = 48_000.0;

@@ -7,8 +7,9 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::{AudioNode, Samples};
+use tutti_core::AudioNode;
 use tutti_session::{Graph, Phase, PhaseCx, Session, SessionEvent};
+use tutti_types::Samples;
 use tutti_types::{ChannelLayout, SampleRate};
 
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};

@@ -58,7 +58,7 @@ use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 /// Identifies a plugin in a [`Plugins`] catalog by its file path.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

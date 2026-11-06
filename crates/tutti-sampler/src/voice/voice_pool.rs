@@ -14,13 +14,13 @@ use super::pool::*;
 use super::types::*;
 use crossbeam_channel::bounded;
 use std::sync::Arc;
-use tutti_core::SampleRate;
-use tutti_core::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, StretchFactor};
 use tutti_graph::{IntoNode, Node, NodeParts, Prepare};
 use tutti_io::Wave;
+use tutti_types::SampleRate;
+use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, StretchFactor};
 
 use crate::voice::memory_source::MemorySourceConfig;
-use tutti_core::{Bpm, Samples};
+use tutti_types::{Bpm, Samples};
 
 use crate::testing::MockTransport;
 
@@ -2208,7 +2208,7 @@ fn both_nodes_declare_their_width() {
             assert_eq!(shape.latency.samples(), Samples(0), "{what}: no latency");
             assert_eq!(
                 shape.tail,
-                tutti_core::Tail::Unbounded,
+                tutti_types::Tail::Unbounded,
                 "{what}: a generator"
             );
         }

@@ -19,11 +19,11 @@ use super::command::{PlacementCell, VoiceNodeHandle};
 use super::disk_voice::VoiceHealth;
 use super::slot::{PlaybackSlot, stretch_wanted};
 use super::types::{SlotId, Voice};
-use tutti_core::{Amplitude, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
 };
+use tutti_types::{Amplitude, ChannelLayout, Param, Reader, SampleRate, Tail, UnitParam};
 
 /// One [`Voice`] as a graph node in its own right: zero inputs, `channels`
 /// outputs.
@@ -41,7 +41,7 @@ use tutti_graph::{
 /// - gain — a `Param<Amplitude>` cell, also addressable as
 ///   [`UnitParam::Volume`] through the handle's [`ParamSet`]. The node reads
 ///   it once per block into the voice's `Playback` record and its source.
-/// - placement — a [`Beat`](tutti_core::Beat) and an optional duration:
+/// - placement — a [`Beat`](tutti_types::Beat) and an optional duration:
 ///   not a scalar, so the handle publishes it to an `ArcLend` cell the
 ///   node reads once per block, latest wins, allocation-free.
 ///
@@ -398,7 +398,7 @@ impl IntoNode for VoiceNode {
 mod tests {
     use super::*;
     use crate::{MemorySource, Playback, VoiceSource};
-    use tutti_core::Beat;
+    use tutti_types::Beat;
 
     /// A window the node held across the next `set_placement` is freed by
     /// the next `reclaim`, with no further publish.

@@ -125,7 +125,7 @@
 //! app.add_audio_pump::<f32>();
 //! app.insert_resource(AudioTapRes::default());
 //! app.insert_resource(AudioConfig {
-//!     sample_rate: tutti_core::SampleRate(48_000.0),
+//!     sample_rate: tutti_types::SampleRate(48_000.0),
 //!     channels: ChannelLayout::STEREO,
 //! });
 //! app.insert_resource(TakePath(dir.path().join("master.wav")));
@@ -156,6 +156,6 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 // building a source or a sink needs it named here, not fetched from `tutti-core`.
 // `Samples` is the frame count `poll_into` and `pump` return, and the unit an
 // `AudioPump`'s capacity is given in — the same "needs it named here" reason.
-pub use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
-pub use tutti_core::pcm::BitDepth;
-pub use tutti_core::{ChannelLayout, Samples};
+pub use tutti_types::pcm::BitDepth;
+pub use tutti_types::{ChannelLayout, Samples};
+pub use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};

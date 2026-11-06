@@ -19,13 +19,13 @@ use bevy_ecs::prelude::*;
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
-use tutti_core::{Hz, Q};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Normalize, RenderConfig,
 };
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_types::Db;
+use tutti_types::{Hz, Q};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -41,12 +41,12 @@ fn main() {
     let mut graph = AudioGraphRes::headless(0, 2);
     graph
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(SAMPLE_RATE));
+        .set_sample_rate(tutti_types::SampleRate(SAMPLE_RATE));
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
-        sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
+        sample_rate: tutti_types::SampleRate(SAMPLE_RATE),
         channels: ChannelLayout::STEREO,
     });
     app.add_plugins((bevy_app::TaskPoolPlugin::default(), GraphReconcilePlugin));
@@ -144,9 +144,9 @@ fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter:
     // AND the timeline the nodes read, from one argument — they are the same
     // object, and any other arrangement is a bug.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-        start_beat: tutti_core::Beat(0.0),
+        start_beat: tutti_types::Beat(0.0),
         tempo: transport.settings.tempo(),
-        sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
+        sample_rate: tutti_types::SampleRate(SAMPLE_RATE),
         loop_range: None,
     }));
 
@@ -198,7 +198,7 @@ fn run_once_after_startup(mut done: Local<bool>) -> bool {
 fn config() -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
+            sample_rate: tutti_types::SampleRate(SAMPLE_RATE),
             duration_seconds: 0.5,
             ..Default::default()
         },

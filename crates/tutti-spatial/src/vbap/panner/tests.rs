@@ -1,5 +1,5 @@
 use super::*;
-use tutti_core::Seconds;
+use tutti_types::Seconds;
 
 /// The offset the stereo path applies to each virtual source, extracted so
 /// the seam behaviour is testable without a speaker layout.

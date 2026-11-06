@@ -18,14 +18,14 @@
 //!
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
-use tutti_core::Amplitude;
-use tutti_core::Hz;
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, RenderConfig,
     RenderGraph, Resample, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::Amplitude;
+use tutti_types::Hz;
 
 const SR: f64 = 48_000.0;
 const DUR: f64 = 1.0;
@@ -37,7 +37,7 @@ const TONE_HZ: f32 = 1_000.0;
 /// at (a graph prepared at another rate is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
     RenderGraph::new(editor, executor).expect("built together")
 }
@@ -94,7 +94,7 @@ fn near_nyquist_graph() -> RenderGraph {
 fn base(format: AudioFormat, bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(SR),
+            sample_rate: tutti_types::SampleRate(SR),
             duration_seconds: DUR,
             ..Default::default()
         },
@@ -226,7 +226,7 @@ fn main() -> tutti_export::Result<()> {
         (22_050.0, "22k05"),
     ] {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-        cfg.resample = Some(Resample::to(tutti_core::SampleRate(target)));
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate(target)));
         write(format!("resample_{tag}.wav"), tone_graph(), &cfg)?;
     }
 
@@ -234,7 +234,7 @@ fn main() -> tutti_export::Result<()> {
     // Nyquist and must be attenuated, not folded down to ~4 kHz.
     {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-        cfg.resample = Some(Resample::to(tutti_core::SampleRate(22_050.0)));
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate(22_050.0)));
         write(
             "resample_alias_22k05.wav".into(),
             near_nyquist_graph(),
@@ -247,7 +247,7 @@ fn main() -> tutti_export::Result<()> {
     for (i, chunk) in tutti_export::ChunkSize::PRESETS.iter().enumerate() {
         let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
         cfg.resample = Some(Resample {
-            target_rate: tutti_core::SampleRate(44_100.0),
+            target_rate: tutti_types::SampleRate(44_100.0),
             chunk: *chunk,
         });
         write(format!("chunk_{i}.wav"), tone_graph(), &cfg)?;

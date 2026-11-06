@@ -44,14 +44,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{
-    Beat, Bpm, ChannelLayout, Engine, Frame, FrameClock, InterleavedMut, MotionEvent, NodeKey,
-    OfflineTimeline, OfflineTimelineConfig, SampleRate, Samples, Transport,
-};
+use tutti_core::{Engine, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_graph::{Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges, contract};
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_types::{
+    Beat, Bpm, ChannelLayout, Frame, FrameClock, InterleavedMut, NodeKey, SampleRate, Samples,
+};
+use tutti_types::{graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm(90.0);

@@ -39,12 +39,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod support;
 
 use support::{Gain, Sine};
-use tutti_core::Hz;
-use tutti_core::{ChannelLayout, SampleRate, Samples, Transport};
-use tutti_core::{Engine, InterleavedMut};
+use tutti_core::Engine;
+use tutti_core::Transport;
 use tutti_graph::{Editor, Executor, ForkByClone, Prepare};
+use tutti_types::Hz;
+use tutti_types::InterleavedMut;
 use tutti_types::NodeKey;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);

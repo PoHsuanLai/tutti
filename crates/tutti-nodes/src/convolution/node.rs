@@ -16,12 +16,12 @@
 //! writes them after they are built. Each channel and each fork keeps only
 //! its own running state.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
-use tutti_core::{Amplitude, ChannelLayout, Mix, SampleRate, Samples, fold_frame_to_mono};
+use std::sync::Arc;
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::AtomicF32;
+use tutti_types::{Amplitude, ChannelLayout, Mix, SampleRate, Samples, fold_frame_to_mono};
 use tutti_types::{Latency, Tail, UnitParam};
 
 use super::params::WetDry;
@@ -75,7 +75,7 @@ impl DryAlign {
 /// the input stops: an IR of length `L` answers an impulse at frame 0 through
 /// frame `L - 1`, so `L - 1` of them land past the input. Defined this way the
 /// figure adds along a chain with no correction term, which is what
-/// [`tutti_core::tail`] relies on.
+/// [`tutti_types::tail`] relies on.
 ///
 /// A convolution is linear and finite, so this is exact rather than an estimate
 /// — the only node here that can say that.
@@ -157,7 +157,7 @@ pub struct ConvolverNode {
     /// resampling path needs to know what it was built against; see the type
     /// docs for why resampling is deliberately not done.
     ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
+    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     sample_rate: SampleRate,
     latency_samples: usize,
     /// One frame of input, gathered per sample for the
@@ -199,7 +199,7 @@ impl ConvolverNode {
     /// Seeds the placeholder [`SampleRate::DEFAULT`], which `prepare`
     /// overwrites without resampling anything — see the type docs.
     ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
+    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     fn build(convolvers: Vec<Convolver>, config: IrChannelConfig) -> Self {
         debug_assert!(!convolvers.is_empty());
         let latency_samples = convolvers[0].latency();

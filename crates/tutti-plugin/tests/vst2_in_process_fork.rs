@@ -23,9 +23,6 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::{
-    Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
-};
 use tutti_graph::{
     Editor, ForkError, ForkMode, ForkTarget, IntoNode, Prepare, Renderer, Transport,
 };
@@ -36,6 +33,9 @@ use tutti_plugin::{
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
+use tutti_types::{
+    Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, Samples, TimeSignature,
+};
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/probe_path.rs"]

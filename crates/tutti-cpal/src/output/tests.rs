@@ -1,11 +1,13 @@
 use super::*;
-use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{Beat, BeatDuration, MotionEvent, Transport};
-use tutti_core::{Engine, NodeKey, SampleRate, Samples};
-use tutti_core::{Hz, Q};
+use tutti_core::Engine;
+use tutti_core::{MotionEvent, Transport};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::{Beat, BeatDuration};
+use tutti_types::{Hz, Q};
+use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 /// Build an engine + transport pair whose graph actually renders.
 ///
@@ -86,8 +88,8 @@ fn test_transport_loop_wrapping() {
     transport
         .motion
         .schedule(
-            tutti_core::At::NextBlock,
-            tutti_core::LoopEdit::over(tutti_core::LoopRange::new(0.0, 4.0).expect("ordered")),
+            tutti_types::At::NextBlock,
+            tutti_core::LoopEdit::over(tutti_types::LoopRange::new(0.0, 4.0).expect("ordered")),
         )
         .expect("room");
     let _ = transport.motion.try_send(MotionEvent::Play);

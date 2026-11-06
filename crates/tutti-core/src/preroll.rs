@@ -11,7 +11,7 @@ use tutti_types::value::Samples;
 /// sampler's butler reads it once per refill cycle, and a host may read it
 /// to display.
 ///
-/// A plain lock, not an [`ArcLend`](crate::ArcLend): **no audio thread
+/// A plain lock, not an [`ArcLend`](tutti_types::ArcLend): **no audio thread
 /// reads it.** The writer is the session's commit and the readers are the
 /// butler and the host, so a reader registered per thread and a retirement
 /// list would buy nothing. Each call holds the lock for one copy of the
@@ -23,7 +23,8 @@ use tutti_types::value::Samples;
 /// later [`set`](Self::set).
 ///
 /// ```
-/// use tutti_core::{PrerollTable, Samples};
+/// use tutti_core::PrerollTable;
+/// use tutti_types::Samples;
 ///
 /// let table = PrerollTable::default();
 /// assert_eq!(table.preroll(0), None, "empty until the first plan");

@@ -7,7 +7,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Io, Node,
     Offset, Prepare, Shape, Status, Transport, TransportChanges, Ump,
@@ -18,6 +17,7 @@ use tutti_midi_runtime::{
 };
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::{CCNumber, MidiChannel, MidiEvent, MidiGroup, MidiIn, cc};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -35,8 +35,8 @@ struct Sink {
 impl Node for Sink {
     fn shape(&self) -> Shape {
         Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::MONO,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::MONO,
         )
         .with_events(self.ports, 0)
     }
@@ -90,8 +90,8 @@ fn rig<N: tutti_graph::IntoNode>(
             }),
         );
     }
-    ed.spec_mut().topology.outputs = vec![tutti_core::graph::Source::Node(
-        tutti_core::graph::OutPort {
+    ed.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
+        tutti_types::graph::OutPort {
             node: NodeKey(2),
             port: 0,
         },

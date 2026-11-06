@@ -1,6 +1,7 @@
 //! Lock-free amplitude metering.
 
-use crate::{AtomicBool, AtomicF32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tutti_types::AtomicF32;
 use tutti_types::{Amplitude, StereoPlanes};
 
 /// One meter reading: peak and RMS for a stereo pair, as linear

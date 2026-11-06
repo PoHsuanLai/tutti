@@ -20,7 +20,7 @@ fn gate<N: tutti_graph::IntoNode>(node: N) {
 #[cfg(feature = "convolution")]
 fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
     let (mut rig, _controls) =
-        tutti_graph::contract::BlockRig::new(node, tutti_core::SampleRate(48_000.0), block);
+        tutti_graph::contract::BlockRig::new(node, tutti_types::SampleRate(48_000.0), block);
     for _ in 0..16 {
         rig.block();
     }
@@ -161,9 +161,9 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
 fn downmix_process_is_allocation_free() {
     // Imported here rather than at file scope: the module-level imports are
     // gated on `convolution`, and this node needs it not.
-    use tutti_core::{ChannelLayout, SampleRate};
     use tutti_graph::contract::BlockRig;
     use tutti_nodes::DownmixNode;
+    use tutti_types::{ChannelLayout, SampleRate};
 
     let node = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
     let (mut rig, ()) = BlockRig::new(node, SampleRate(48_000.0), 64);
@@ -197,9 +197,9 @@ fn downmix_process_is_allocation_free() {
 /// precondition fails.
 #[test]
 fn distortion_process_is_allocation_free_fed_and_unfed() {
-    use tutti_core::SampleRate;
     use tutti_graph::contract::Direct;
     use tutti_nodes::{DistortionNode, ShapeKind};
+    use tutti_types::SampleRate;
 
     let kinds = [
         ShapeKind::Tanh,
@@ -257,9 +257,9 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
 /// `ChannelSumNode::process` → fails.
 #[test]
 fn channel_sum_process_is_allocation_free() {
-    use tutti_core::{ChannelLayout, SampleRate};
     use tutti_graph::contract::BlockRig;
     use tutti_nodes::ChannelSumNode;
+    use tutti_types::{ChannelLayout, SampleRate};
 
     let (mut rig, ()) = BlockRig::new(
         ChannelSumNode::new(4, ChannelLayout::STEREO),

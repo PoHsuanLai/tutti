@@ -11,8 +11,8 @@
 //! how it tells a jump (a start, a seek, a loop wrap, a restart) from the
 //! next block of the same run.
 
-use tutti_core::{At, FRAME_TOLERANCE, LoopRange, Samples, first_frame_at_or_after};
 use tutti_graph::{Due, Env, Offset};
+use tutti_types::{At, FRAME_TOLERANCE, LoopRange, Samples, first_frame_at_or_after};
 
 /// An event scheduled at a beat.
 pub(crate) trait Beated {
@@ -199,7 +199,7 @@ fn emit<T: Beated>(
         if e.beat() >= hi || e.beat().is_nan() {
             break;
         }
-        let Due::In(k) = seg.due(At::Beat(tutti_core::Beat(e.beat()))) else {
+        let Due::In(k) = seg.due(At::Beat(tutti_types::Beat(e.beat()))) else {
             continue;
         };
         if !keep(k.index()) {

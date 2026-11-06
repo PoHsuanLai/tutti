@@ -164,7 +164,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     app.add_plugins(ExportPlugin);
     app.insert_resource(bevy_tutti::graph::AudioConfig {
         sample_rate: SampleRate(RATE),
-        channels: tutti_core::ChannelLayout::STEREO,
+        channels: tutti_types::ChannelLayout::STEREO,
     });
     let probe = load(&mut app, common::plugin::clap_probe());
     let gain = ParamRef::plugin(probe, 77);
@@ -197,7 +197,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         encode: EncodeConfig {
             format: AudioFormat::Wav,
             bit_depth: BitDepth::Float32,
-            channels: tutti_core::ChannelLayout::STEREO,
+            channels: tutti_types::ChannelLayout::STEREO,
             topology: None,
         },
         ..Default::default()

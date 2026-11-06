@@ -1,7 +1,7 @@
-use tutti_core::{SampleRate, Seconds, UnitParam};
 use tutti_graph::contract::{Direct, assert_param_fork};
 use tutti_graph::{Event, Offset, ParamFork};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_types::{SampleRate, Seconds, UnitParam};
 
 use crate::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 
@@ -30,7 +30,7 @@ fn note_on() -> MidiEvent {
 /// frame 0, in 64-frame blocks.
 fn peak(synth: PolySynth, frames: usize) -> f32 {
     let mut hand = Direct::new(synth, RATE, 64);
-    let on = Offset::new(0, tutti_core::Samples(64)).expect("inside");
+    let on = Offset::new(0, tutti_types::Samples(64)).expect("inside");
     hand.events(0, &[Event::midi(on, note_on().data)]);
     let mut peak = 0.0f32;
     for _ in 0..frames / 64 {

@@ -1,6 +1,6 @@
 //! Parameter groupings shared by modulation effects (chorus, flanger, phaser).
 
-use tutti_core::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleRate, Seconds};
+use tutti_types::{Depth, Feedback, Hz, Mix, Param, Phase, PhaseIncrement, SampleRate, Seconds};
 
 use crate::ramp::{LastGood, clamp_finite};
 

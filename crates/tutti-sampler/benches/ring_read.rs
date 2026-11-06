@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{PosReader, PosRing, PosWriter};
+use tutti_types::{PosReader, PosRing, PosWriter};
 
 /// Frames per block.
 const BLOCK: usize = 64;

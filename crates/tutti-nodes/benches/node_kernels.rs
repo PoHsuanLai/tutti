@@ -22,13 +22,13 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::Node;
 use tutti_graph::contract::Direct;
 use tutti_nodes::{
     BrickwallLimiterNode, ChannelSumNode, CompressorNode, DelayLineNode, DistortionNode,
     DownmixNode, GateNode, LimiterNode, ShapeKind,
 };
+use tutti_types::{ChannelLayout, SampleRate};
 
 const BLOCKS: [usize; 2] = [64, 1024];
 const SR: SampleRate = SampleRate(48_000.0);

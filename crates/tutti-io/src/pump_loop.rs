@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tutti_core::Samples;
-use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
+use tutti_types::Samples;
+use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};
 
 #[cfg(doc)]
 use crate::Recorder;
@@ -249,7 +249,8 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// # Examples
 ///
 /// ```
-/// use tutti_core::{AudioTap, Samples};
+/// use tutti_core::AudioTap;
+/// use tutti_types::Samples;
 /// use tutti_io::{BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 ///
 /// # fn main() -> tutti_io::Result<()> {

@@ -8,15 +8,15 @@
 //! One width-generic node, [`LadderFilterNode`]: the coefficients are solved
 //! once for every channel, and the channels run side by side in groups.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
 use tutti_dsp::Real;
+use tutti_types::AtomicF32;
 
-use tutti_core::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
+use tutti_types::{ChannelLayout, Drive, Hz, Param, Resonance, SampleRate, Tail};
 
 use crate::ramp::{LastGood, finite_or};
 use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
@@ -34,7 +34,7 @@ use tutti_dsp::{Ramp, lane_group, segments};
 /// every 16 samples; a moved drive is ramped linearly across the block, since
 /// it multiplies straight into the saturator and would otherwise step.
 ///
-/// **Resonance is `0.0..=1.0`, not a [`Q`](tutti_core::Q).** It scales the
+/// **Resonance is `0.0..=1.0`, not a [`Q`](tutti_types::Q).** It scales the
 /// ladder's feedback: `0.0` is no emphasis, and toward `1.0` the filter
 /// resonates hard at the cutoff and approaches self-oscillation. The feedback
 /// runs through a `tanh` saturator, so it grits rather than blowing up.
@@ -57,7 +57,7 @@ use tutti_dsp::{Ramp, lane_group, segments};
 /// one branch.
 ///
 /// The param is `UnitParam::Q` for consistency with the other filters, but
-/// it carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_core::Q).
+/// it carries [`Resonance`] (`0.0..=1.0`), not a [`Q`](tutti_types::Q).
 ///
 /// # In a graph
 ///

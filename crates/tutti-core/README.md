@@ -1,11 +1,11 @@
 # tutti-core
 
-Real-time audio engine core — DSP graph render, transport, metering, latency.
+Real-time audio engine core — DSP graph render, transport, metering.
 
 ## What this is
 
-The engine's runtime kernel and its vocabulary: the per-block graph render,
-playback transport, level metering, and delay compensation. Use it directly
+The engine's runtime kernel: the per-block graph render, playback transport,
+level metering, and the worker pool. Use it directly
 when you drive the audio callback yourself (a custom device layer, an offline
 renderer, a test harness); otherwise take the `tutti` facade, which re-exports
 this crate as `tutti::core`, or `bevy-tutti` for a Bevy app. Sibling crates
@@ -23,10 +23,6 @@ consumer often meets them through whichever subsystem it already depends on.
   beat-driven node reads musical time per frame (`Env::for_each_beat`,
   `Env::transport_at`) rather than consulting the transport.
 - `MasterMeter` / `AudioTap` — level monitoring and the analysis tap.
-- `latency` — delay compensation as a pure pass over any graph: what each
-  output needs, and (`latency::delays`) which ports to delay by how much. The
-  graph compiler applies it; this crate inserts nothing.
-
 - `prelude` — what a host driving the engine names, in one import.
 
 A consumer that wants the whole engine behind one dependency takes `tutti`
@@ -43,8 +39,9 @@ dependencies on these crates.
   `tutti-cpal`'s job. This crate only knows how to render a block.
 - **The value vocabulary.** The unit newtypes, the RT primitives, the
   `AudioIn`/`AudioOut` traits, and the PDC and meter math are all `tutti-types`'.
-  They are re-exported here so a consumer already on the engine root needs no
-  second dependency, but their home is one layer down.
+  A consumer names them from `tutti_types`; this crate re-exports none of
+  them. Delay compensation (`latency`) is `tutti-types`' pure pass, applied by
+  the graph compiler.
 - **The ECS binding.** The reconcile pipeline, the graph resources and the
   declarative wiring live in the host adapter, `bevy_tutti::graph`. The optional
   `bevy` feature here adds exactly one thing — see below.
@@ -57,11 +54,9 @@ does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{
-    Beat, Bpm, ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate, Samples,
-    Tail, Timeline, Transport,
-};
+use tutti_types::{graph::OutPort, graph::Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples, Tail};
+use tutti_core::{Engine, MotionEvent, Timeline, Transport};
 use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};
 
 // A node reads the transport from each block's `Env`. This one puts the beat

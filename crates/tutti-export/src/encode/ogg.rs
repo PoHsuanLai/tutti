@@ -55,7 +55,7 @@ impl Encoder for OggEncoder {
     fn encode(
         mut self,
         src: &mut dyn FrameSource,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {

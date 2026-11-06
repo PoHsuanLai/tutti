@@ -1,6 +1,6 @@
 //! A voice's per-note (MPE) expression, and the one place it is applied.
 
-use tutti_core::{Amplitude, Semitones};
+use tutti_types::{Amplitude, Semitones};
 
 /// Slide (CC74) centre: "no timbre shift". The cutoff factor is
 /// `4^(slide - SLIDE_CENTER)`, so a note with no CC74 must start here.

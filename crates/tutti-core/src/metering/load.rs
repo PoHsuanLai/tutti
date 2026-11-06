@@ -1,6 +1,7 @@
 //! Render-deadline telemetry: how long each block took against its budget.
 
-use crate::{AtomicF32, AtomicU32, AtomicU64, Ordering, Seconds};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use tutti_types::{AtomicF32, Seconds};
 
 /// The time constant of [`LoadReading::mean`]'s exponential smoothing: a
 /// step in the load is 63% through after this long, whatever the block size.

@@ -59,7 +59,7 @@
 
 use super::LoopSetting;
 use std::cmp::Ordering;
-use tutti_core::SamplePosition;
+use tutti_types::SamplePosition;
 
 /// A loop over whole file frames `[start, end)`, with a crossfade of `fade`
 /// frames into it, wrapping to `resume`. See the module docs.

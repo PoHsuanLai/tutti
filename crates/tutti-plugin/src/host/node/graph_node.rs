@@ -9,11 +9,11 @@
 //! hands back its [`PluginControls`](super::PluginControls) and a fork source.
 //! Only [`Bound`] is either: an unbound client is not a node.
 
-use tutti_core::meter::MeterMap;
 use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, MAX_PORTS, Node, Offset, Prepare, Shape,
     SortedEvents, Status,
 };
+use tutti_types::meter::MeterMap;
 use tutti_types::{ChannelLayout, Samples};
 
 use super::MidiIntake;

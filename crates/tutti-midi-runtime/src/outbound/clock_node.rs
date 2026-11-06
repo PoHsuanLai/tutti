@@ -15,12 +15,12 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ChannelLayout, RtVec, SampleRate};
 use tutti_graph::{
     Cx, Event, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::{ChannelLayout, RtVec, SampleRate};
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};
@@ -34,7 +34,7 @@ pub const CLOCK_EVENT_CAPACITY: usize = 256;
 /// See the module docs.
 ///
 /// ```
-/// use tutti_core::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::ClockNode;
 ///

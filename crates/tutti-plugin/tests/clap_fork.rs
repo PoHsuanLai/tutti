@@ -27,7 +27,6 @@ use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
 use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{SampleRate, Samples};
 use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
 };
@@ -36,6 +35,7 @@ use tutti_plugin::{BridgeConfig, PluginForkError, PluginRenderFault};
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
+use tutti_types::{SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;

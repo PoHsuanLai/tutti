@@ -18,12 +18,12 @@ use super::pool::{DrainCounters, LoopRoute, PoolDrops, Retired, StreamAddr, forw
 use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use tutti_core::{
+use tutti_graph::ParamSet;
+use tutti_io::Wave;
+use tutti_types::{
     Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
     StretchFactor,
 };
-use tutti_graph::ParamSet;
-use tutti_io::Wave;
 
 /// A node's sample rate, shared with its handle: the node stores it when it
 /// is prepared (control thread), the handle reads it to build a stretch
@@ -157,7 +157,7 @@ pub enum VoiceCommand {
     UpdateGain {
         /// The slot to set.
         id: SlotId,
-        /// Linear [`Amplitude`], not [`Db`](tutti_core::Db) — the conversion is
+        /// Linear [`Amplitude`], not [`Db`](tutti_types::Db) — the conversion is
         /// the host's.
         gain: Amplitude,
     },
@@ -426,7 +426,7 @@ impl std::error::Error for SendError {}
 /// #     channel_index: None,
 /// # };
 /// let (_node, handle) = VoiceNode::new(voice).with_handle();
-/// handle.set_placement(tutti_core::Beat::new(1.0), None);
+/// handle.set_placement(tutti_types::Beat::new(1.0), None);
 /// ```
 #[derive(Clone, Debug)]
 pub struct VoiceNodeHandle {
@@ -435,7 +435,7 @@ pub struct VoiceNodeHandle {
     pub(crate) placement: PlacementCell,
     /// The voice's gain: the cell the node reads once per block.
     pub(crate) gain: Param<Amplitude>,
-    /// The gain by address ([`UnitParam::Volume`](tutti_core::UnitParam)),
+    /// The gain by address ([`UnitParam::Volume`](tutti_types::UnitParam)),
     /// for a host that sets params by address.
     pub(crate) params: ParamSet,
 }
@@ -492,7 +492,7 @@ impl VoiceNodeHandle {
     /// Sets the voice's gain, from the node's next block on. A write to a
     /// shared cell: never lost, never queued.
     pub fn set_gain(&self, gain: Amplitude) {
-        self.params.set(tutti_core::UnitParam::Volume, gain.get());
+        self.params.set(tutti_types::UnitParam::Volume, gain.get());
     }
 
     /// The voice's gain, as last set.
@@ -501,7 +501,7 @@ impl VoiceNodeHandle {
     }
 
     /// The node's params by address: its gain, as
-    /// [`UnitParam::Volume`](tutti_core::UnitParam::Volume).
+    /// [`UnitParam::Volume`](tutti_types::UnitParam::Volume).
     pub fn params(&self) -> &ParamSet {
         &self.params
     }

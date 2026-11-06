@@ -24,9 +24,9 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::Samples;
 use tutti_cpal::{OutputSpec, StreamDriver};
 use tutti_session::{Device, Session};
+use tutti_types::Samples;
 
 pub use tutti_session::DeviceRestart;
 
@@ -155,10 +155,11 @@ mod tests {
     use crate::graph::{PendingCrossfades, SpawnAudioNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;
-    use tutti_core::{At, ChannelLayout, Db, Frame, Hz, MotionEvent, SampleRate};
+    use tutti_core::MotionEvent;
     use tutti_cpal::{ManualStream, ManualStreamDriver};
     use tutti_nodes::LimiterNode;
     use tutti_nodes::testing::Osc;
+    use tutti_types::{At, ChannelLayout, Db, Frame, Hz, SampleRate};
 
     const OLD: f64 = 44_100.0;
     const NEW: f64 = 48_000.0;
@@ -546,8 +547,8 @@ mod tests {
     fn a_restart_re_rates_a_disk_streamed_clip() {
         use crate::graph::SpawnAudioNode;
         use crate::sampler::DiskStreamerRes;
-        use tutti_core::{Beat, SamplePosition};
         use tutti_sampler::{Command, DiskStreamer};
+        use tutti_types::{Beat, SamplePosition};
 
         let (mut app, old, _, _) = engine_app();
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -828,7 +829,7 @@ mod tests {
         let plugin = TuttiPlugin::default();
         let (driver, stream) = ManualStreamDriver::new();
         build_on(&plugin, &mut app, |builder| {
-            builder.build_device_on(spec_at(NEW).with_quantum(tutti_core::Samples(512)), driver)
+            builder.build_device_on(spec_at(NEW).with_quantum(tutti_types::Samples(512)), driver)
         })
         .expect("builds with no device");
         app.insert_resource(AudioEngineState::Running);
@@ -859,7 +860,7 @@ mod tests {
         };
         assert_eq!(
             latency(&app),
-            tutti_core::Samples(137 + 512),
+            tutti_types::Samples(137 + 512),
             "one 512-frame callback"
         );
         assert_eq!(app.world().resource::<GraphLatency>().0, latency(&app));
@@ -867,19 +868,19 @@ mod tests {
         let (driver, _new) = ManualStreamDriver::new();
         restart_device_on(
             app.world_mut(),
-            spec_at(NEW).with_quantum(tutti_core::Samples(256)),
+            spec_at(NEW).with_quantum(tutti_types::Samples(256)),
             driver,
             None,
         )
         .expect("restarts");
         assert_eq!(
             latency(&app),
-            tutti_core::Samples(137 + 256),
+            tutti_types::Samples(137 + 256),
             "one 256-frame callback"
         );
         assert_eq!(
             app.world().resource::<GraphLatency>().0,
-            tutti_core::Samples(137 + 256),
+            tutti_types::Samples(137 + 256),
             "PDC follows before the first block"
         );
     }

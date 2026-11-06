@@ -49,8 +49,8 @@ umbrella, which re-export it. What is in it:
 **The root is the API.** Everything is re-exported there, so `tutti_types::Bpm`
 and `tutti_types::AudioThreadCell` resolve directly — import from the root, or
 from `prelude` for the common subset, not through a module path. Most modules
-are private for that reason; the ones that stay public do so because
-`tutti-core` re-exports them as modules (`tutti_core::io::AudioIn`).
+are private for that reason; the ones that stay public are the ones
+consumers name as modules (`tutti_types::io::AudioIn`).
 
 ## What this crate does not own
 
@@ -68,8 +68,8 @@ load-bearing:
   reachable from everywhere. A crate that only needs `Beat` gets `Beat` and
   nothing else.
 
-`tutti-core` re-exports most of this crate, so a consumer already on the engine
-root usually needs no direct dependency.
+`tutti-core` re-exports none of this crate: a consumer depends on `tutti-types`
+and names the vocabulary there.
 
 ## Example — the measurement vocabulary
 

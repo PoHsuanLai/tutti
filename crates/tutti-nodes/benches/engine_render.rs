@@ -47,13 +47,15 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{ChannelLayout, Engine, InterleavedMut, MotionEvent, NodeKey, SampleRate};
-use tutti_core::{Db, Hz, Q};
-use tutti_core::{Samples, Transport};
+use tutti_core::Transport;
+use tutti_core::{Engine, MotionEvent};
 use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
+use tutti_types::Samples;
+use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};
+use tutti_types::{Db, Hz, Q};
+use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 
@@ -217,7 +219,7 @@ struct Sine {
 impl tutti_graph::Node for Sine {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
-            .with_tail(tutti_core::Tail::Unbounded)
+            .with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, p: &tutti_graph::Prepare) {
         self.dt = (1.0 / p.sample_rate().get()) as f32;
@@ -264,7 +266,7 @@ impl Lowpass {
 impl tutti_graph::Node for Lowpass {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
-            .with_tail(tutti_core::Tail::Unknown)
+            .with_tail(tutti_types::Tail::Unknown)
             .with_in_place()
     }
     fn prepare(&mut self, p: &tutti_graph::Prepare) {
@@ -300,11 +302,11 @@ impl tutti_graph::Node for Lowpass {
 /// The `nodes` shape on the graph: `ours` runs this crate's own nodes,
 /// otherwise the reference pair.
 fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
-    use tutti_core::NodeKey;
-    use tutti_core::graph::{Edge, InPort, OutPort, Source};
+    use tutti_types::NodeKey;
+    use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
-        tutti_core::Samples(512),
+        tutti_types::Samples(512),
     ));
     let src: Box<dyn tutti_graph::Node> = if ours {
         tutti_graph::IntoNode::into_node(Osc::sine(Hz(440.0))).0

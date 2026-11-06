@@ -22,7 +22,6 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
 use tutti_core::transport::Transport;
-use tutti_core::{Beat, BeatDuration, Bpm, SampleRate};
 use tutti_graph::{
     Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Ump, Unforkable,
 };
@@ -30,6 +29,7 @@ use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{PolySynth, SynthConfig};
+use tutti_types::{Beat, BeatDuration, Bpm, SampleRate};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// At 120 BPM and 48 kHz.
@@ -72,7 +72,7 @@ fn app() -> App {
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
-        channels: tutti_core::ChannelLayout::STEREO,
+        channels: tutti_types::ChannelLayout::STEREO,
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test());
@@ -96,8 +96,8 @@ struct Tap(Seen);
 impl Node for Tap {
     fn shape(&self) -> Shape {
         Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
         )
         .with_events(1, 0)
     }

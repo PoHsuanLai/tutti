@@ -42,7 +42,7 @@ const DUR: f64 = 0.1;
 /// renders at (a graph prepared at another is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
     RenderGraph::new(editor, executor).expect("built together")
 }
@@ -62,7 +62,7 @@ fn dc_graph(level: f32) -> RenderGraph {
 fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(SR),
+            sample_rate: tutti_types::SampleRate(SR),
             duration_seconds: DUR,
             ..Default::default()
         },
@@ -218,7 +218,7 @@ fn out_of_range_input_clamps_to_the_rail() {
 
 /// Every integer encoder must quantize a given float to the same value.
 ///
-/// `tutti_core::pcm` exists precisely so "a recorded and an exported file
+/// `tutti_types::pcm` exists precisely so "a recorded and an exported file
 /// quantize a given sample identically" (its own module doc). A format carrying
 /// a private copy of that arithmetic can drift from the shared one silently —
 /// both files decode, both have the right length, and the samples differ.
@@ -260,10 +260,10 @@ fn wav_and_flac_quantize_a_sample_identically() {
     // them sample for sample.
     //
     // This pair caught a real divergence: FLAC carried a private converter that
-    // truncated (`as i32`) where `tutti_core::pcm` rounds, so 0.7 encoded as
+    // truncated (`as i32`) where `tutti_types::pcm` rounds, so 0.7 encoded as
     // 22936 in a FLAC and 22937 in a WAV from the same render. Fixed by making
     // the FLAC encoder call the shared helpers.
-    let canonical = tutti_core::pcm::f32_to_i16(level);
+    let canonical = tutti_types::pcm::f32_to_i16(level);
     let from_wav = (wav[0] * 32_767.0).round() as i16;
     assert_eq!(
         from_wav, canonical,
@@ -341,7 +341,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
     for target in [48_000.0f64, 22_050.0] {
         let path = d.path().join(format!("rs_{target}.wav"));
         let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);
-        cfg.resample = Some(tutti_export::Resample::to(tutti_core::SampleRate(target)));
+        cfg.resample = Some(tutti_export::Resample::to(tutti_types::SampleRate(target)));
         cfg.render.duration_seconds = 0.25;
 
         render_to_file(dc_graph(0.4), &cfg, &FrozenClock, &path).unwrap();
@@ -352,7 +352,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
 
         // Skip the filter's edges: an FFT resampler's first and last frames are
         // the window ramping, which is expected and not what this asserts.
-        // `Ord::max` explicitly: the `tutti_core::dsp` glob also brings a
+        // `Ord::max` explicitly: the `tutti_types::dsp` glob also brings a
         // `Num::max` into scope, and a bare `.max` is ambiguous between them.
         let skip = std::cmp::Ord::max(spec.sample_rate as usize / 20, 1);
         assert!(

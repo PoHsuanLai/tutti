@@ -52,7 +52,8 @@ another rate is refused rather than re-rated. A host exporting its live graph
 forks it instead, with `RenderGraph::fork`.
 
 ```rust
-use tutti_core::{FrozenClock, Hz, SampleRate};
+use tutti_core::FrozenClock;
+use tutti_types::{Hz, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, ChannelLayout, EncodeConfig, ExportConfig,
     Flac, RenderConfig, RenderGraph,

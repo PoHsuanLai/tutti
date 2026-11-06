@@ -26,8 +26,8 @@
 mod support;
 
 use support::{dc_state, rolling_state};
-use tutti_core::ChannelLayout;
 use tutti_cpal::{MAX_FRAMES, OutputBlock};
+use tutti_types::ChannelLayout;
 
 /// Full scale for an integer format, from the format's definition rather than
 /// from the conversion under test.
@@ -194,7 +194,7 @@ fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
 #[test]
 fn the_stereo_metering_shortcut_agrees_with_the_fold() {
     let mut folded = [0.0f32; 2];
-    tutti_core::fold_frame(&[0.25, -0.75], &mut folded);
+    tutti_types::fold_frame(&[0.25, -0.75], &mut folded);
     assert_eq!(
         folded,
         [0.25, -0.75],

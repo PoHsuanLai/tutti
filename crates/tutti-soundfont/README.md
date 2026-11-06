@@ -22,8 +22,9 @@ This needs a `.sf2` on disk, so it is `no_run`.
 
 ```rust,no_run
 use std::fs::File;
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{Arc, NodeKey, SampleRate, Samples};
+use tutti_types::{graph::OutPort, graph::Source};
+use std::sync::Arc;
+use tutti_types::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};
 use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;

@@ -23,9 +23,9 @@ pub(super) fn piece_beats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Bpm, FrameClock, SampleRate, Samples};
     use tutti_graph::{Env, Transport, TransportChanges};
     use tutti_types::Frame;
+    use tutti_types::{Bpm, FrameClock, SampleRate, Samples};
 
     const SR: SampleRate = SampleRate(48_000.0);
 
@@ -59,7 +59,7 @@ mod tests {
         for (tempo, looping) in [
             (97.0, None),
             (133.3, None),
-            (97.0, crate::LoopRange::new(1_000.0, 1_000.004)),
+            (97.0, tutti_types::LoopRange::new(1_000.0, 1_000.004)),
         ] {
             let mut host = FrameClock::new(Beat(0.25), Bpm(tempo), SR);
             host.advance(Samples(987_654_321), None);

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::ChannelLayout;
+use tutti_types::ChannelLayout;
 
 use super::memory_source::{MemorySource, VoiceWindow};
 use super::types::{Playback, Voice, VoiceSource};

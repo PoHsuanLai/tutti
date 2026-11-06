@@ -17,12 +17,12 @@
 use assert_no_alloc::AllocDisabler;
 use std::sync::Mutex;
 
-use tutti_core::{SampleRate, Samples};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_types::{SampleRate, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -72,9 +72,8 @@ fn process_steady_state_does_not_allocate() {
 /// installed → this test trips the gate, the two without a meter pass.
 #[test]
 fn process_with_a_meter_does_not_allocate() {
-    use tutti_core::{
-        Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, ProjectMeter, TimeSignature,
-    };
+    use tutti_core::ProjectMeter;
+    use tutti_types::{Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin::in_process_vst2_client(probe_path::probe_path(), 48_000.0)

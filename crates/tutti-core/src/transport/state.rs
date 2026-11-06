@@ -14,32 +14,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use crate::Samples;
-use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32, AtomicU64};
-use crate::{Beat, BeatDuration};
-
-/// Musical time covered by one audio sample at `tempo` and `sample_rate`.
-///
-/// The per-frame rate a reader needs to place a beat inside a block
-/// (the MIDI clock, automation sampling): a beat span divided
-/// by it is a frame distance, which the engine's one placement rule
-/// ([`first_frame_at_or_after`](tutti_types::first_frame_at_or_after)) turns
-/// into a frame, its tolerance absorbing the rate's rounding.
-///
-/// **No clock steps by it.** A playhead that adds this per frame or per block
-/// drifts off the frames (at 90 BPM / 48 kHz it reads `2.999999999999891` on
-/// frame 96 000, which is beat 3): the clocks count frames and derive the
-/// beat in closed form ([`TimelineSegment`](tutti_types::TimelineSegment)).
-///
-/// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
-/// by it divides by the same `f64`.
-#[inline]
-pub fn beats_per_sample(
-    tempo: impl Into<crate::Bpm>,
-    sample_rate: impl Into<crate::SampleRate>,
-) -> BeatDuration {
-    BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
-}
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64};
+use tutti_types::Beat;
+use tutti_types::Samples;
 
 /// A pending absolute jump. `pending` is the one-shot flag the clock
 /// consumes; `target` is where to land.
@@ -90,11 +68,6 @@ impl Default for SeekSlot {
         Self::new()
     }
 }
-
-// `LoopRange` moved to `tutti-types` (beside `FrameClock`, the walker that
-// wraps with it, which the graph's `Env::transport_at` shares). Re-exported
-// here so its engine paths stay.
-pub use tutti_types::LoopRange;
 
 /// Declick fade contract between the transport FSM and `Engine`.
 ///
@@ -206,7 +179,8 @@ impl Default for Declick {
 /// ```compile_fail,E0451
 /// # use std::sync::Arc;
 /// # use tutti_core::transport::ClockLinks;
-/// # use tutti_core::{AtomicBool, AtomicF64};
+/// # use std::sync::atomic::AtomicBool;
+/// # use atomic_float::AtomicF64;
 /// # let t = tutti_core::Transport::new(48_000.0);
 /// // A writer assembled by hand, around the claim: refused.
 /// let forged = ClockLinks {
@@ -320,7 +294,8 @@ impl ClockLinks {
     /// that write no playhead ([`writes_playhead`](Self::writes_playhead)).
     ///
     /// ```
-    /// use tutti_core::{Beat, Timeline, Transport};
+    /// use tutti_types::Beat;
+    /// use tutti_core::{Timeline, Transport};
     /// let transport = Transport::new(48_000.0);
     /// let playhead = transport.clock_links().expect("the only writer");
     /// playhead.set_playhead(Beat(4.0));

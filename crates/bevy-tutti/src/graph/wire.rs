@@ -8,7 +8,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::{ChannelLayout, Hz, Q};
+//! use tutti_types::{ChannelLayout, Hz, Q};
 //! use tutti_nodes::testing::Osc;
 //! use tutti_nodes::{SvfFilterNode, SvfType};
 //!
@@ -96,7 +96,8 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-use tutti_core::{ChannelLayout, MAX_ROOT_CHANNELS};
+use tutti_core::MAX_ROOT_CHANNELS;
+use tutti_types::ChannelLayout;
 
 use super::topology::{self, LiveGraph};
 use super::{AudioGraphRes, GraphReconcileSystems, GraphSource, engine_ready};

@@ -42,7 +42,7 @@
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
 //! - Modules: [`automation`] (lanes and recording).
 //!
-//! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
+//! [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
 
 // The fallible constructions are the crossover's (`Crossover::new`,
 // `CrossoverNode::new`, `MultibandCompressorNode::new`), all `CrossoverError`;
@@ -55,7 +55,7 @@ mod ramp;
 #[cfg(test)]
 mod test_support;
 
-pub use tutti_core::{
+pub use tutti_types::{
     Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
     Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth,
     Unit,

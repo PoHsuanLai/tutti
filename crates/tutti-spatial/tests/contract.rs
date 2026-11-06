@@ -15,10 +15,10 @@
 //! path fails (declared 0, output 128 late). Set `LATENCY` to `STEP - 1` →
 //! every path fails (declared one frame early).
 
-use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::contract_tests;
 use tutti_spatial::HrtfBinauralNode;
+use tutti_types::Samples;
 
 /// The panner's convolution step (`STEP` in `panner.rs`).
 const LATENCY: usize = 128;

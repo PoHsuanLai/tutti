@@ -19,9 +19,9 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Azimuth, ChannelLayout, Elevation, SampleRate};
 use tutti_graph::contract::Direct;
 use tutti_spatial::VbapPannerNode;
+use tutti_types::{Azimuth, ChannelLayout, Elevation, SampleRate};
 
 /// Warmup before measuring, in frames: two seconds at 48 kHz, 40 time
 /// constants of the de-zipper, so a held source is settled bit for bit.

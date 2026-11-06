@@ -379,7 +379,7 @@ fn merged_events_are_sorted_across_tracks() {
     assert_eq!(times.len(), 4);
 
     // And the range query tiles correctly over that order.
-    let in_first_bar = parsed.events_in_range(tutti_core::Beat(0.0), tutti_core::Beat(3.0));
+    let in_first_bar = parsed.events_in_range(tutti_types::Beat(0.0), tutti_types::Beat(3.0));
     assert_eq!(
         in_first_bar.len(),
         2,

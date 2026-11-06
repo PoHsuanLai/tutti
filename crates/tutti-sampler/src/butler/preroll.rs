@@ -103,7 +103,7 @@ mod tests {
     use crate::butler::command::RegionId;
     use crate::butler::prefetch::{RegionBuffer, SharedReader};
     use std::path::PathBuf;
-    use tutti_core::Samples;
+    use tutti_types::Samples;
 
     /// A published compensation table, as `latency::compensate` would produce.
     fn table(compensations: [usize; 3]) -> Arc<PrerollTable> {
@@ -128,7 +128,7 @@ mod tests {
             state.start_streaming(
                 Arc::clone(&ring),
                 None,
-                tutti_core::SampleRate::SR_48K,
+                tutti_types::SampleRate::SR_48K,
                 48_000,
                 PathBuf::from("test.wav"),
                 std::sync::Weak::new(),

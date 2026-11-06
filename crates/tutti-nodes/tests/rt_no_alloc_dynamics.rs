@@ -18,10 +18,10 @@
 //! → both compressor gates fail on the first measured block.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{BrickwallLimiterNode, CompressorNode, GateNode, LimiterNode};
+use tutti_types::{ChannelLayout, SampleRate};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -193,7 +193,7 @@ fn brickwall_limiter_fed_ceiling_process_is_allocation_free() {
     let ceiling: Vec<f32> = (0..64).map(|i| -12.0 + 0.1875 * i as f32).collect();
     node.feed(0, Some(&ceiling));
     node.block();
-    let first = tutti_core::Db(-12.0).to_amplitude().get();
+    let first = tutti_types::Db(-12.0).to_amplitude().get();
     assert!(
         (node.output(5)[0] - first).abs() < 1e-5,
         "the fed ceiling did not reach the clip: {}",

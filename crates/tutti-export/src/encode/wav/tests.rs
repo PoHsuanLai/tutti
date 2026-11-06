@@ -2,7 +2,7 @@ use super::*;
 use crate::config::{EncodeConfig, RenderConfig};
 use crate::options::AudioFormat;
 use crate::render::PlaneSource;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 use tutti_types::Samples;
 
 fn config(channels: u16, depth: BitDepth) -> ExportConfig {
@@ -47,7 +47,7 @@ fn an_export_at_the_limit_succeeds_and_declares_its_mask() {
     for (channels, topology, mask) in [
         (6u16, None, 0x60Fu32),
         (4, None, 0),
-        (4, Some(tutti_core::ChannelTopology::quad()), 0x33),
+        (4, Some(tutti_types::ChannelTopology::quad()), 0x33),
     ] {
         let path = dir.path().join(format!("w{channels}_{mask}.wav"));
         let planes = vec![vec![0.5f32; 8]; channels as usize];
@@ -62,7 +62,7 @@ fn an_export_at_the_limit_succeeds_and_declares_its_mask() {
         );
     }
     let mut cfg = config(2, BitDepth::Int24);
-    cfg.encode.topology = Some(tutti_core::ChannelTopology::quad());
+    cfg.encode.topology = Some(tutti_types::ChannelTopology::quad());
     let err = encode(&dir.path().join("bad.wav"), &cfg, 8, &vec![vec![0.0; 8]; 2])
         .expect_err("a quad topology is not stereo");
     assert!(

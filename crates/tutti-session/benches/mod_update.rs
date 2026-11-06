@@ -19,11 +19,12 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_core::{AudioNode, ChannelLayout, SampleRate, Samples};
+use tutti_core::AudioNode;
 use tutti_mod::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{GraphSource, ParamRef, Session};
 use tutti_types::{BeatDuration, Depth, Hz, Q, UnitParam};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const UPDATES: usize = 2_000;
 

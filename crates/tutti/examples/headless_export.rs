@@ -6,7 +6,8 @@
 //!
 //! ```text
 //! use tutti_dsp::{measure_loudness, LoudnessConfig};
-//! use tutti_core::{Amplitude, FrozenClock, Hz, SampleRate};
+//! use tutti_types::{Amplitude, Hz, SampleRate};
+//! use tutti_core::FrozenClock;
 //! use tutti_export::{render_to_buffers, render_to_file, RenderGraph, ...};
 //! use tutti_graph::GraphBuilder;
 //! use tutti_types::{Db, Interleaved};
@@ -34,8 +35,8 @@ use tutti::export::{
 };
 use tutti::graph::GraphBuilder;
 use tutti::prelude::*;
-use tutti_core::Hz;
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::Hz;
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate(48_000.0);

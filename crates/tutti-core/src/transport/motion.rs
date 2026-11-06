@@ -32,9 +32,9 @@ use super::loop_region::{LoopOwner, LoopReader, LoopRegion};
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
 use super::timed::{Schedule, ScheduleFull, TransportCommand};
-use crate::AtomicU8;
-use crate::Beat;
+use std::sync::atomic::AtomicU8;
 use tutti_types::At;
+use tutti_types::Beat;
 
 pub use super::fsm::MotionState;
 
@@ -333,7 +333,8 @@ impl MotionFsm {
     /// # Examples
     ///
     /// ```
-    /// use tutti_core::{At, Beat, Frame, MotionEvent, Transport, TransportCommand};
+    /// use tutti_types::{At, Beat, Frame};
+    /// use tutti_core::{MotionEvent, Transport, TransportCommand};
     ///
     /// let transport = Transport::new(48_000.0);
     /// // Start rolling one second into the stream, stop at beat 16.
@@ -342,7 +343,7 @@ impl MotionFsm {
     /// // A tempo edit on the next block.
     /// transport
     ///     .motion
-    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_core::Bpm(90.0)))?;
+    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_types::Bpm(90.0)))?;
     /// assert_eq!(transport.motion.scheduled_outstanding(), 3);
     /// # Ok::<_, tutti_core::ScheduleFull>(())
     /// ```
@@ -621,7 +622,7 @@ fn is_declicking(motion: MotionState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Beat;
+    use tutti_types::Beat;
 
     /// The control handle and the audio half the engine would own.
     fn fsm() -> (MotionFsm, MotionAudio) {

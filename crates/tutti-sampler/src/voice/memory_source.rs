@@ -9,14 +9,14 @@
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tutti_core::{
-    Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
-    SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
-};
 use tutti_graph::{
     Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
 };
 use tutti_io::Wave;
+use tutti_types::{
+    Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
+    SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,
+};
 
 use super::clock::{BlockClock, Clock};
 use super::interp::{Gate, hermite_lanes, place, read_looped_frame, split_position, tap};
@@ -138,7 +138,7 @@ pub struct MemorySourceConfig {
     /// Varispeed. Bounded by [`PlaybackRate`]'s own constructor;
     /// [`PlaybackRate::UNITY`] is normal speed and the `Default`. Composes with
     /// the sample-rate conversion through
-    /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate), never
+    /// [`PlaybackRate::read_rate`](tutti_types::PlaybackRate::read_rate), never
     /// by a bare multiply.
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
@@ -219,7 +219,7 @@ pub struct MemorySource {
 
     /// Varispeed — user intent, bounded by the type. Composes with
     /// [`src_ratio`](Self::src_ratio) through
-    /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate); never
+    /// [`PlaybackRate::read_rate`](tutti_types::PlaybackRate::read_rate); never
     /// multiplied by a bare scalar.
     speed: PlaybackRate,
 

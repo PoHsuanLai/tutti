@@ -21,7 +21,7 @@
 //! butler follows it, so there is nothing to request and nothing to flush.
 
 use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
-use tutti_core::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
+use tutti_types::{Amplitude, AtomicF32, Param64, PlaybackRate, ReadRate, SrcRatio};
 
 use crate::voice::types::Direction;
 
@@ -330,7 +330,7 @@ mod tests {
 
         // An hour at 48 kHz: the stored rate still advances the read position
         // exactly, where the narrowed one is over a frame out.
-        let frames = tutti_core::Samples(48_000 * 3600);
+        let frames = tutti_types::Samples(48_000 * 3600);
         let exact = rate.advance(frames);
         assert_eq!(state.stretch_rate().advance(frames), exact);
         let narrowed = ReadRate::new(f64::from(rate.get() as f32)).advance(frames);

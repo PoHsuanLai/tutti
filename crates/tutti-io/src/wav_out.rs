@@ -16,7 +16,7 @@
 //! expressed as an export encode.
 //!
 //! They do share the quantization: this sink and tutti-export's WAV encoder both
-//! dispatch through [`BitDepth::quantize`](tutti_core::pcm::BitDepth::quantize),
+//! dispatch through [`BitDepth::quantize`](tutti_types::pcm::BitDepth::quantize),
 //! so a recorded and an exported WAV agree sample-for-sample at a given depth by
 //! construction. AIFF and FLAC quantize their own way over the same `pcm`
 //! primitives, so they agree in fact — just not structurally.
@@ -26,18 +26,18 @@
 //! not make silently.
 //!
 //! The live driver is [`Recorder`](crate::Recorder), which pumps any live source
-//! ([`AudioIn`](tutti_core::io::AudioIn)) into this sink ([`AudioOut`])
+//! ([`AudioIn`](tutti_types::io::AudioIn)) into this sink ([`AudioOut`])
 //! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use tutti_core::SampleRate;
-use tutti_core::io::AudioOut;
-use tutti_core::pcm::{BitDepth, Sample};
-use tutti_core::wav::{self, DataLimitExceeded};
-use tutti_core::{ChannelLayout, ChannelTopology};
+use tutti_types::SampleRate;
+use tutti_types::io::AudioOut;
+use tutti_types::{ChannelLayout, ChannelTopology};
+use tutti_types::{pcm::BitDepth, pcm::Sample};
+use tutti_types::{wav, wav::DataLimitExceeded};
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
 ///
@@ -370,7 +370,7 @@ impl WavOut {
     /// once per `src` FRAME and emits one whole destination frame. A trailing
     /// partial `src` frame is ignored.
     ///
-    /// The fold is [`fold_frame`](tutti_core::fold_frame), the engine's single
+    /// The fold is [`fold_frame`](tutti_types::fold_frame), the engine's single
     /// ITU/Dolby implementation, so a mono sink **averages** `(l + r) * 0.5` and
     /// a 5.1 source keeps its centre and surrounds instead of being truncated to
     /// the front pair.
@@ -397,7 +397,7 @@ impl WavOut {
             if !self.begin_frame() {
                 return;
             }
-            tutti_core::fold_frame(chunk, &mut frame[..folded]);
+            tutti_types::fold_frame(chunk, &mut frame[..folded]);
             for &s in &frame[..folded] {
                 if !self.emit(s) {
                     return;

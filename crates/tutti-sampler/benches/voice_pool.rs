@@ -25,7 +25,6 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
 use tutti_graph::contract::Direct;
 use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
@@ -33,6 +32,7 @@ use tutti_sampler::{
     Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,
     StepOutcome, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
+use tutti_types::{Beat, Bpm, Cents, PlaybackRate, SamplePosition, SampleRate, StretchFactor};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;

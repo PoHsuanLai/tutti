@@ -5,7 +5,7 @@ use crate::error::Result;
 use crate::ports::{Commands, Status};
 use std::sync::Arc;
 use tutti_core::PrerollTable;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 /// The disk-streaming engine: owns the butler thread that reads files into
 /// per-stream rings for [`DiskVoice`](crate::DiskVoice)s to play.
@@ -27,7 +27,7 @@ use tutti_core::SampleRate;
 /// Stream a file on channel 0 and build the voice that plays it:
 ///
 /// ```no_run
-/// use tutti_core::{Beat, SamplePosition};
+/// use tutti_types::{Beat, SamplePosition};
 /// use tutti_sampler::{Command, DiskStreamer, TakeVoiceError};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -222,12 +222,12 @@ pub struct DiskStreamerConfig {
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
     /// Subscription to a per-channel delay-compensation table, indexed by
-    /// channel index and denominated in [`Samples`](tutti_core::Samples).
+    /// channel index and denominated in [`Samples`](tutti_types::Samples).
     ///
     /// While set, the butler pre-rolls each stream by its channel's entry so
     /// downstream effects stay sample-aligned. Published by whoever runs
-    /// `tutti_core::latency::compensate` over the audio graph — the table is
-    /// [`Compensation::channels`](tutti_core::Compensation::channels).
+    /// `tutti_types::latency::compensate` over the audio graph — the table is
+    /// [`Compensation::channels`](tutti_types::Compensation::channels).
     pub pdc: Option<Arc<PrerollTable>>,
 }
 
@@ -245,7 +245,7 @@ impl std::fmt::Debug for DiskStreamerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Samples;
+    use tutti_types::Samples;
 
     /// A backward `Command::Seek` must actually reposition the live stream.
     ///
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn a_backward_seek_repositions_the_live_stream() {
         use crate::ports::Command;
-        use tutti_core::SamplePosition;
+        use tutti_types::SamplePosition;
 
         const SR: f64 = 48_000.0;
 
@@ -366,7 +366,7 @@ mod tests {
     fn a_loop_change_reads_only_the_frames_it_needs() {
         use crate::ports::Command;
         use crate::voice::LoopSetting;
-        use tutti_core::SamplePosition;
+        use tutti_types::SamplePosition;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("loop.wav");
@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn a_rate_change_re_derives_every_streams_ratio() {
         use crate::ports::Command;
-        use tutti_core::{Beat, SamplePosition, SrcRatio};
+        use tutti_types::{Beat, SamplePosition, SrcRatio};
 
         let dir = tempfile::tempdir().unwrap();
         let (at_48, at_44) = (dir.path().join("48k.wav"), dir.path().join("44k.wav"));

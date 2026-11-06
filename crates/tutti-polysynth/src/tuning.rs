@@ -6,7 +6,7 @@
 //! just, meantone or user-supplied, is flattened to the same table at
 //! construction and costs the same to play.
 
-use tutti_core::{Cents, Hz, Semitones};
+use tutti_types::{Cents, Hz, Semitones};
 
 // A second copy of A440. `Note::A4_HZ` is the engine's canonical one but is
 // private to `tutti-types`, and widening its visibility is a bigger change

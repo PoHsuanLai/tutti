@@ -2,7 +2,7 @@
 //! Algorithm-neutral: [`SpatialTarget`] is the control→RT storage,
 //! [`AngleSmoother`] the de-zipper both panners step per frame.
 
-use tutti_core::{Azimuth, Elevation, Param, SampleRate, Samples};
+use tutti_types::{Azimuth, Elevation, Param, SampleRate, Samples};
 
 use crate::smoothing::{DEFAULT_POSITION_SMOOTH_TIME, ExponentialSmoother};
 

@@ -121,16 +121,17 @@ impl Variant {
     }
 }
 
-use tutti_core::{
-    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MotionEvent, PlaybackRate,
-    Resonance, SampleRate, Samples, Seconds,
-};
+use tutti_core::MotionEvent;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_nodes::{BusStripNode, ChannelSumNode, ConvolverNode, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_session::{EventSource, GraphSource, Session};
+use tutti_types::{
+    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, PlaybackRate, Resonance,
+    SampleRate, Samples, Seconds,
+};
 
 const RATE: f64 = 48_000.0;
 const SYNTHS: usize = 8;

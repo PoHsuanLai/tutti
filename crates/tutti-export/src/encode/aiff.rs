@@ -18,7 +18,7 @@ use crate::render::{FrameSource, RenderPlan};
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
 use std::io::BufWriter;
 use std::path::Path;
-use tutti_core::pcm::{f32_to_i16, f32_to_i24};
+use tutti_types::{pcm::f32_to_i16, pcm::f32_to_i24};
 
 pub(crate) struct AiffEncoder {
     writer: AifcWriter<BufWriter<std::fs::File>>,
@@ -63,7 +63,7 @@ impl Encoder for AiffEncoder {
     fn encode(
         mut self,
         src: &mut dyn FrameSource,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {

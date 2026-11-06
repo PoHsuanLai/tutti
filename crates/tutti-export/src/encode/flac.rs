@@ -70,7 +70,7 @@ impl Encoder for FlacEncoder {
     fn encode(
         self,
         src: &mut dyn FrameSource,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
@@ -418,7 +418,7 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 /// converters.
 ///
 /// Delegation is the whole point. A local `(clamped * 32767.0) as i32`
-/// truncates where [`tutti_core::pcm`] rounds: the two agree on 0.0 and ±1.0
+/// truncates where [`tutti_types::pcm`] rounds: the two agree on 0.0 and ±1.0
 /// and diverge by one LSB everywhere else, so 0.7 encodes as 22936 in a FLAC and
 /// 22937 in a WAV from the same render. `pcm` exists so a recorded and an
 /// exported file quantize a given sample identically, and its docs call bare
@@ -427,9 +427,9 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
     match bit_depth {
-        BitDepth::Int16 => i32::from(tutti_core::pcm::f32_to_i16(sample)),
+        BitDepth::Int16 => i32::from(tutti_types::pcm::f32_to_i16(sample)),
         // Float32 is rejected in `create`, so this is the Int24 path.
-        _ => tutti_core::pcm::f32_to_i24(sample),
+        _ => tutti_types::pcm::f32_to_i24(sample),
     }
 }
 

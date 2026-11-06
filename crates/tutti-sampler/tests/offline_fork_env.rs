@@ -15,8 +15,6 @@
 
 use std::sync::Arc;
 
-use tutti_core::graph::{OutPort, Source};
-use tutti_core::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, IntoNode, Io, Node, Prepare, Shape,
     Status, Transport,
@@ -25,6 +23,8 @@ use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
+use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{graph::OutPort, graph::Source};
 
 const RATE: SampleRate = SampleRate(44_100.0);
 
@@ -249,11 +249,11 @@ fn a_voice_behind_another_node_is_forked_too() {
     );
     ed.insert(NodeKey(2), "pass", ForkByClone(Pass));
     ed.spec_mut().topology.edges.insert(
-        tutti_core::graph::InPort {
+        tutti_types::graph::InPort {
             node: NodeKey(2),
             port: 0,
         },
-        tutti_core::graph::Edge::Direct(Source::Node(OutPort {
+        tutti_types::graph::Edge::Direct(Source::Node(OutPort {
             node: NodeKey(1),
             port: 0,
         })),

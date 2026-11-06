@@ -4,7 +4,8 @@
 //! a flat list of `Param` fields, so each node reads as "an engine plus
 //! its parameter block".
 
-use tutti_core::{Amplitude, Arc, AtomicF32, Mix, Param};
+use std::sync::Arc;
+use tutti_types::{Amplitude, AtomicF32, Mix, Param};
 
 /// Wet/dry mix + output gain.
 ///

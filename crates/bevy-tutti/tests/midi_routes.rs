@@ -23,11 +23,12 @@ use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, EventSource, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiEngineNodes, MidiRouteFallback, MidiRouteRule, TuttiMidiPlugin};
+use tutti_core::AudioNode;
 use tutti_core::transport::Transport;
-use tutti_core::{AudioNode, SampleRate};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputNode};
 use tutti_midi_types::MidiChannel;
 use tutti_polysynth::{PolySynth, SynthConfig};
+use tutti_types::SampleRate;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -41,7 +42,7 @@ fn app() -> App {
     app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.insert_resource(AudioConfig {
         sample_rate: SampleRate(SAMPLE_RATE),
-        channels: tutti_core::ChannelLayout::STEREO,
+        channels: tutti_types::ChannelLayout::STEREO,
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test());

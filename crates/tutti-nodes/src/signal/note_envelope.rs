@@ -1,12 +1,12 @@
 //! [`NoteEnvelopeNode`]: an ADSR on a MIDI input, sent to control lanes as
 //! exact segments (design doc 014 §6).
 
-use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::{
     Cost, Cx, Event, EventKind, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape,
     Status, Ump,
 };
 use tutti_mod::{Adsr, SignalKind, SourceId, SourceNode};
+use tutti_types::{ChannelLayout, SampleRate};
 use tutti_types::{Frame, SamplePosition, Samples};
 
 use super::PlayWalk;

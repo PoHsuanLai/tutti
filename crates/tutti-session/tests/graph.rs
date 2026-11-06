@@ -6,10 +6,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::{
-    ChannelLayout, CrossfadeCurve, Drive, Hz, InterleavedMut, MAX_ROOT_CHANNELS, SampleRate,
-    Samples, Seconds,
-};
+use tutti_core::MAX_ROOT_CHANNELS;
+use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     Unforkable,
@@ -19,6 +17,7 @@ use tutti_session::{
     Crossfade, CrossfadeRefused, EventSource, Feeder, GraphSource, Session, SessionEvent,
     SessionNode, root_width,
 };
+use tutti_types::{ChannelLayout, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds};
 use tutti_types::{Latency, Param, UnitParam};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -734,7 +733,8 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
 /// the project meter → fails.
 #[test]
 fn an_update_frees_what_a_block_held_across_a_replacement() {
-    use tutti_core::{Beat, MeterChange, MeterMap, MeterSlot, TimeSignature};
+    use tutti_core::MeterSlot;
+    use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));

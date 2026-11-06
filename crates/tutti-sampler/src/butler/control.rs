@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 
 use super::prefetch::TakeVoiceError;
 use super::{ChannelPlan, RtState};

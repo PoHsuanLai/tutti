@@ -82,7 +82,7 @@ pub struct TuttiDriver {
     /// restart resolves to the new device's config before its hook runs —
     /// comparing against that would let a second plain `restart` onto the
     /// same new-rate device find "no change" and start over the old graph.
-    graph_rate: tutti_core::SampleRate,
+    graph_rate: tutti_types::SampleRate,
 }
 
 // Hand-rolled: `AudioCallbackState` holds the RT-side graph handles and is not
@@ -118,7 +118,7 @@ impl TuttiDriver {
     /// This is the device's rate at [`new`](Self::new), then the
     /// rate of the last restart whose hook returned `Ok`. A plain
     /// [`restart`](Self::restart) compares the new device against it.
-    pub fn graph_rate(&self) -> tutti_core::SampleRate {
+    pub fn graph_rate(&self) -> tutti_types::SampleRate {
         self.graph_rate
     }
 
@@ -282,7 +282,7 @@ impl TuttiDriver {
 /// at `graph`, the rate the graph was built at, or the restart stops there
 /// with [`Error::RateChanged`](crate::Error::RateChanged).
 fn refuse_rate_change(
-    graph: tutti_core::SampleRate,
+    graph: tutti_types::SampleRate,
 ) -> impl FnOnce(&crate::OutputSpec, &Stopped<'_>) -> Result<()> {
     move |spec, _| {
         if spec.sample_rate == graph {

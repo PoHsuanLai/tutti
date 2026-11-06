@@ -29,7 +29,8 @@
 //! it.
 
 use std::sync::Arc;
-use tutti_core::{ChannelLayout, InterleavedMut, MeteringContext, meter_output};
+use tutti_core::{MeteringContext, meter_output};
+use tutti_types::{ChannelLayout, InterleavedMut};
 
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
 
@@ -157,7 +158,7 @@ impl OutputBlock {
             } else {
                 for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     let f = &mix[i * channels..i * channels + channels];
-                    tutti_core::fold_frame(f, out);
+                    tutti_types::fold_frame(f, out);
                 }
             }
             meter_output(

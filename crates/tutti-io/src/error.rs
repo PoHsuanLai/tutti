@@ -11,7 +11,7 @@
 //! [`pump`]: crate::pump
 
 use thiserror::Error;
-use tutti_core::ChannelLayout;
+use tutti_types::ChannelLayout;
 
 /// An error from starting or finishing a recording.
 #[derive(Debug, Error)]

@@ -8,9 +8,10 @@
 //! types wrapping one stereo core; they are now one [`ModDelayNode`] and a
 //! [`ModDelayConfig`], at any width.
 
-use tutti_core::{Arc, AtomicF32};
-use tutti_core::{ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate, Seconds};
+use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
+use tutti_types::{ChannelLayout, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate, Seconds};
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeModMix};
@@ -118,7 +119,7 @@ struct ModDelayControls {
 /// preset it is a stereo chorus or flanger.
 ///
 /// Rate ([`Hz`]), depth ([`Seconds`] of delay sweep), [`Feedback`] and [`Mix`]
-/// are live [`Param`](tutti_core::Param)s shared across clones, all read **once
+/// are live [`Param`](tutti_types::Param)s shared across clones, all read **once
 /// per block**. The LFO's phases for the block are computed once, into a block
 /// buffer every channel reads, and its sine is evaluated only every 16
 /// samples (on a grid counted across blocks, so the output
@@ -822,7 +823,10 @@ mod tests {
         // phase goes back by hand: what is left to differ is the priming.
         let mut again = fresh(128);
         warm(&mut again);
-        again.prepare(&Prepare::new(SampleRate(48_000.0), tutti_core::Samples(64)));
+        again.prepare(&Prepare::new(
+            SampleRate(48_000.0),
+            tutti_types::Samples(64),
+        ));
         again.lfo.reset_phase();
         assert_eq!(render(&mut again), want, "after prepare at another block");
     }

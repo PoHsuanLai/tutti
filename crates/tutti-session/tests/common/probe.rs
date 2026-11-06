@@ -14,10 +14,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_core::{AtomicF32, ChannelLayout};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_session::SessionNode;
 use tutti_types::UnitParam;
+use tutti_types::{AtomicF32, ChannelLayout};
 
 /// One param (`Cutoff` unless told) whose knob is a cell, and an output that
 /// carries the value the param port reads: the port's frames under

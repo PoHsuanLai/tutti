@@ -13,10 +13,10 @@
 //! `scratch` in `process` → the crossover gates fail.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{ChannelLayout, Hz, SampleRate};
 use tutti_graph::contract::BlockRig;
 use tutti_graph::{IntoNode, ParamNode};
 use tutti_nodes::{BAND_PARAMS, CrossoverNode, MultibandCompressorNode};
+use tutti_types::{ChannelLayout, Hz, SampleRate};
 use tutti_types::{UnitAddr, UnitParam};
 
 #[global_allocator]

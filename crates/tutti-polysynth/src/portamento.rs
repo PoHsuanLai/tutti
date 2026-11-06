@@ -9,7 +9,7 @@
 //! than in [`Hz`]; [`PortamentoCurve`] reshapes only how far along that
 //! interval the glide has travelled.
 
-use tutti_core::{Hz, SampleRate, Seconds, Semitones};
+use tutti_types::{Hz, SampleRate, Seconds, Semitones};
 
 /// When a new note glides from the previous pitch rather than jumping to its
 /// own.

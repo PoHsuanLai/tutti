@@ -10,13 +10,13 @@
 //! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
 //! stride owned by the type and every count denominated in frames. The sink
 //! end, [`RegionOut`](crate::butler::prefetch::RegionOut), states that shape as
-//! the engine's [`AudioOut`](tutti_core::AudioOut) trait. `WaveIn` deliberately
-//! does not implement the matching [`AudioIn`](tutti_core::AudioIn) — see its
+//! the engine's [`AudioOut`](tutti_types::AudioOut) trait. `WaveIn` deliberately
+//! does not implement the matching [`AudioIn`](tutti_types::AudioIn) — see its
 //! type docs, which is where that decision and its reasoning live.
 
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
-use tutti_core::{ChannelLayout, fold_frame};
 use tutti_io::Wave;
+use tutti_types::{ChannelLayout, fold_frame};
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into
 /// `out` at `out.len()` channels, zero past the end.
@@ -69,18 +69,18 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
 /// Past the end it yields silence, so it is an *unbounded* source — the
 /// caller bounds the transfer by the size of the scratch buffer it fills.
 ///
-/// # Deliberately NOT an [`AudioIn`](tutti_core::AudioIn), and not because of the width
+/// # Deliberately NOT an [`AudioIn`](tutti_types::AudioIn), and not because of the width
 ///
-/// Width is no obstacle: [`AudioIn`](tutti_core::AudioIn) and
-/// [`AudioOut`](tutti_core::AudioOut) carry a runtime [`ChannelLayout`], which is
+/// Width is no obstacle: [`AudioIn`](tutti_types::AudioIn) and
+/// [`AudioOut`](tutti_types::AudioOut) carry a runtime [`ChannelLayout`], which is
 /// exactly why [`RegionOut`](crate::butler::prefetch::RegionOut) — the sink at
 /// the other end of this refill — does implement `AudioOut`. `WaveIn` stays
 /// inherent for a different reason, about what a short count *means*.
 ///
-/// [`AudioIn::poll_into`](tutti_core::AudioIn::poll_into)'s contract is entirely
+/// [`AudioIn::poll_into`](tutti_types::AudioIn::poll_into)'s contract is entirely
 /// about what a short or zero count means: `0` is either "the producer has
-/// not caught up" ([`Starved`](tutti_core::OnEmpty::Starved)) or "there will
-/// never be more" ([`EndOfStream`](tutti_core::OnEmpty::EndOfStream)), and
+/// not caught up" ([`Starved`](tutti_types::OnEmpty::Starved)) or "there will
+/// never be more" ([`EndOfStream`](tutti_types::OnEmpty::EndOfStream)), and
 /// `ON_EMPTY` is the source answering that question once, on the type, so a
 /// generic consumer can branch on it.
 ///

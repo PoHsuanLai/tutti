@@ -24,9 +24,9 @@
 fn main() {
     use std::hint::black_box;
     use std::time::Instant;
-    use tutti_core::SampleRate;
     use tutti_dsp::Convolver;
     use tutti_nodes::generate_test_ir;
+    use tutti_types::SampleRate;
 
     println!(
         "{:>9} {:>6} {:>6} {:>9} {:>9} {:>9} {:>9} {:>9}",

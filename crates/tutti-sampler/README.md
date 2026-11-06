@@ -53,7 +53,7 @@ build the `Wave`, wrap it, put it in a graph and render.
 
 ```rust
 use std::sync::Arc;
-use tutti_core::{SampleRate, Samples};
+use tutti_types::{SampleRate, Samples};
 use tutti_graph::{Prepare, Solo};
 use tutti_sampler::{MemorySource, Wave};
 

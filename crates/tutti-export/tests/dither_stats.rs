@@ -43,7 +43,7 @@ const LSB16: f32 = 1.0 / 32_767.0;
 /// renders at (a graph prepared at another is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
     RenderGraph::new(editor, executor).expect("built together")
 }
@@ -58,7 +58,7 @@ fn dc_graph(level: f32) -> RenderGraph {
 fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(SR),
+            sample_rate: tutti_types::SampleRate(SR),
             duration_seconds: 0.5,
             ..Default::default()
         },
@@ -115,7 +115,7 @@ fn dither_off_leaves_a_constant_perfectly_flat() {
     );
     assert_eq!(
         first,
-        tutti_core::pcm::f32_to_i16(0.25) as i32,
+        tutti_types::pcm::f32_to_i16(0.25) as i32,
         "undithered quantization must match the engine's canonical converter"
     );
 }

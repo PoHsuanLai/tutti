@@ -1,6 +1,6 @@
 //! Per-block control reads and the ramps that keep them from stepping.
 //!
-//! The width-generic nodes read every [`Param`](tutti_core::Param) **once per
+//! The width-generic nodes read every [`Param`](tutti_types::Param) **once per
 //! `process` call** instead of once per sample — a per-sample load would be up
 //! to four atomics per channel per sample on the ladder, and none of them can
 //! change faster than a block anyway, since the control thread writes between

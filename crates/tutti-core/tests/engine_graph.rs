@@ -26,16 +26,16 @@ use std::sync::{Arc, Mutex};
 mod support;
 
 use support::{Change, Segment, model_beats};
-use tutti_core::{
-    At, Beat, Bpm, ChannelLayout, Engine, FadeOut, Frame, InterleavedMut, LoopEdit, LoopRange,
-    MotionEvent, SampleRate, Samples, Tail, Then, Transport, TransportCommand,
-};
+use tutti_core::{Engine, FadeOut, LoopEdit, MotionEvent, Then, Transport, TransportCommand};
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
     Unforkable,
 };
 use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
+use tutti_types::{
+    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
+};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.
@@ -281,7 +281,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
         for f in 0..total {
             let frame: Vec<f32> = (0..src).map(|c| value(f as u64, c)).collect();
             let mut folded = vec![0.0f32; ch];
-            tutti_core::fold_frame(&frame, &mut folded);
+            tutti_types::fold_frame(&frame, &mut folded);
             let at = &got[f * ch..(f + 1) * ch];
             if f < stop || f >= stop + 480 {
                 assert_eq!(bits(at), bits(&folded), "{src} → {device}, frame {f}");

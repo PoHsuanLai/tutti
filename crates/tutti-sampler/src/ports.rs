@@ -20,8 +20,8 @@ use crate::butler::{
     ButlerCommand, ButlerGone, ButlerSender, ChannelPlan, RegionId, SessionRate, TakeVoiceError,
 };
 use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
-use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
 use tutti_io::Wave;
+use tutti_types::{Beat, BeatDuration, PlaybackRate, SamplePosition, SampleRate};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`).

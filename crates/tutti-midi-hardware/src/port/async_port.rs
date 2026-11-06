@@ -28,8 +28,8 @@ use std::time::Instant;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_core::AudioThreadCell;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::AudioThreadCell;
 
 use super::PortId;
 

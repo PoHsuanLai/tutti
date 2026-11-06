@@ -12,8 +12,8 @@ use tutti_session::{Phase, SessionEvent};
 
 use crate::Device;
 use crate::graph::{AudioConfig, AudioGraphRes, SessionPhaseSystems, engine_ready};
-use tutti_core::ChannelLayout;
 use tutti_cpal::StreamFault;
+use tutti_types::ChannelLayout;
 
 /// Audio device state, mirrored from the driver each frame.
 ///
@@ -178,9 +178,9 @@ mod tests {
     use crate::engine::build::build_on;
     use crate::graph::GraphReconcilePlugin;
     use crate::{AudioEngineState, TuttiPlugin};
-    use tutti_core::SampleRate;
     use tutti_cpal::cpal::{SampleFormat, StreamError};
     use tutti_cpal::{ManualStreamDriver, OutputSpec, StreamFaultKind};
+    use tutti_types::SampleRate;
 
     /// A fault the backend reports reaches a Bevy app as the headless
     /// session reports it: the session's `Poll` phase runs in the frame,

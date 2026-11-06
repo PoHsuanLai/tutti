@@ -4,7 +4,7 @@
 //! every master block into a lock-free ring, and `AudioTap::open` hands back the
 //! consumer as a [`TapCons`] — perfectly usable by an analysis thread draining
 //! it directly, but *not* an [`AudioIn`], so on its own it can feed neither a
-//! [`pump`](tutti_core::io::pump) nor a [`Recorder`](crate::Recorder).
+//! [`pump`](tutti_types::io::pump) nor a [`Recorder`](crate::Recorder).
 //!
 //! This is the join that makes *record what I am hearing* expressible in the I/O
 //! vocabulary, and deliberately nothing more: a newtype that pops the ring into
@@ -18,8 +18,9 @@
 //! `matching_sink` here as there is on `MicIn`, because a tap has no device to
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
-use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::{ChannelLayout, Samples, TapCons};
+use tutti_core::TapCons;
+use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{io::AudioIn, io::OnEmpty};
 
 /// The master-output analysis tap's consumer end, as an [`AudioIn`]: records
 /// what the graph is playing.

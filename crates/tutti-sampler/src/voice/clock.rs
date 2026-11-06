@@ -38,8 +38,8 @@
 
 use std::ops::Range;
 
-use tutti_core::{Beat, Bpm, FrameClock, LoopRange, SampleRate, Samples};
 use tutti_graph::{Env, Transport};
+use tutti_types::{Beat, Bpm, FrameClock, LoopRange, SampleRate, Samples};
 
 /// How far from where the playhead would have been, in frames, a run may
 /// start and still continue it. Far below anything audible (a thousandth of
@@ -395,8 +395,8 @@ impl Iterator for Runs<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Frame;
     use tutti_graph::{Offset, TransportChanges};
+    use tutti_types::Frame;
 
     /// 120 BPM at 48 kHz: 24 000 frames a beat.
     const FPB: f64 = 24_000.0;

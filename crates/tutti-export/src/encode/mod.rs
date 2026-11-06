@@ -43,7 +43,7 @@ use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 /// Along with [`encoder_rate`] and the [`Encoder`] trait, this serves the
 /// per-format arms only, so a build with no format feature has no caller.
 #[cfg_attr(not(codec), allow(dead_code))]
-pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
+pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
     config
         .resample
         .map(|r| r.target_rate)
@@ -86,7 +86,7 @@ pub(crate) trait Encoder {
     fn encode(
         self,
         src: &mut dyn FrameSource,
-        source_rate: tutti_core::SampleRate,
+        source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()>;
@@ -105,7 +105,7 @@ pub(crate) trait Encoder {
 #[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
 pub(crate) fn encode_to_file(
     src: &mut dyn FrameSource,
-    source_rate: tutti_core::SampleRate,
+    source_rate: tutti_types::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     path: &Path,
@@ -192,7 +192,7 @@ pub(crate) fn encode_to_file(
 #[cfg(codec)]
 pub(crate) fn pump_blocks<W>(
     src: &mut dyn FrameSource,
-    source_rate: tutti_core::SampleRate,
+    source_rate: tutti_types::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     mut write: W,

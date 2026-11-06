@@ -884,7 +884,7 @@ or example.
 |---|---|---|
 | `Shared` / `shared` (bare `f32` atomic) | `Param<U>` (typed) / `AtomicF32` | polysynth's `pitch`/`gate`/`filter_cutoff`/`filter_resonance` (`synth_voice.rs:51-64`) become `Param<Hz>`/`Param<Resonance>`, per the units rule; drop |
 | `DEFAULT_SAMPLE_RATE: SampleRate` (fundsp `lib.rs:73`) **and** `tutti_node::DEFAULT_SR: f64` | `SampleRate` | keep one `SampleRate::DEFAULT` in `tutti-types`; delete both constants (34 prod sites in tutti-nodes) |
-| `F32x`, exported by `tutti_core::dsp` **and** `tutti_node` | none needed | test-only consumer (automation lane); dropped with the planar layout |
+| `F32x`, exported by `tutti_types::dsp` **and** `tutti_node` | none needed | test-only consumer (automation lane); dropped with the planar layout |
 | `BufferArray<U1/U2/U6>` (typenum widths) | `BufferVec` (runtime `ChannelLayout`) | 53 test sites + `engine.rs` scratch; switch to `BufferVec`, drop typenum `U*` |
 | `Fade` (fundsp enum, via root + both umbrellas' preludes) | none. The sampler has its own private `Fade` struct (`butler/crossfader.rs:21`), so two different things share one name | move the curve enum into the graph crate as `CrossfadeCurve`; one caller (`bevy-tutti/src/graph/spawn.rs:199`) |
 | `NodeId`, `Source` exported **twice** (root `lib.rs` and `dsp`) | `NodeKey`, `graph::Source` in the value | keep only the `dsp` path until `Net` is deleted |
@@ -912,7 +912,7 @@ dropped:
   so the moved `Wave` is that planar buffer plus the symphonia decode, not the
   855-line original.
 
-After this, `tutti_core::dsp` holds only `Net`, `NodeId`, `Source` and the
+After this, `tutti_types::dsp` holds only `Net`, `NodeId`, `Source` and the
 combinators the polysynth still needs until its rewrite. Both umbrellas stop
 forwarding fundsp names.
 
@@ -3098,7 +3098,7 @@ so, and name what does catch it: tutti-sampler's `frame_exact_entry.rs` (a
 clip entering mid-render) and `graph_engine_clock.rs`'s
 `a_voice_plays_in_time_*`, and tutti-core's `legacy_chunk_major.rs`.
 
-**What of `Net` remained, all deleted with fundsp:** `tutti_core::dsp::{Net, NodeId,
+**What of `Net` remained, all deleted with fundsp:** `tutti_types::dsp::{Net, NodeId,
 Source}` and `topology::compile`; the `Net` forms of `build_vbap_mix` /
 `VbapMixParts::insert_into` (tutti-spatial) (`ParamModParts::insert_into`
 went with the whole param chain in compiler-owned param modulation); `PdcDelay`,
@@ -3143,7 +3143,7 @@ non-test used the fork by then), and of `tutti-node` only the filters'
 | `crates/vendor/fundsp-tutti` src (runtime 3.9k, static framework 6.3k, preludes 8.7k, unused DSP ~9.9k, rehomed I/O & kernels) | 32,724 |
 | fork tests/benches/examples | 3,963 |
 | `tutti-node`: `num.rs` Num/Float/Real/`F32x` tower, `signal.rs` `Routing`/`route`, `setting.rs` `Parameter`/`Address`/`NodeAddr`, `AudioUnit`, `BufferRef/BufferMut` SIMD layout | most of 2,995 |
-| `tutti_core::dsp` (44 names), `unit_param`, `Setting`, `topology::Catalog`/`compile` → `Net` | — |
+| `tutti_types::dsp` (44 names), `unit_param`, `Setting`, `topology::Catalog`/`compile` → `Net` | — |
 | the `Net`-facing half of `tutti-types::latency` (`DelayInsertion`, `compensate(&mut G)`) | — |
 | `fundsp-tutti` exclusions in CI clippy/rustdoc, the `--features` fork no_std note | — |
 

@@ -10,12 +10,10 @@
 //! `tests/contract.rs` (and the node crates'); this is the end-to-end case
 //! where the transport, the command queue and PDC all meet.
 
-use tutti_core::{
-    At, Beat, ChannelLayout, Engine, Frame, InterleavedMut, MotionEvent, SampleRate, Samples,
-    Transport,
-};
+use tutti_core::{Engine, MotionEvent, Transport};
 use tutti_graph::contract::{Latent, Pulse};
 use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Ump, Unforkable};
+use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 use tutti_types::{Latency, NodeKey};
 
 const SR: f64 = 48_000.0;

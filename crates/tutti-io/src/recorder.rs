@@ -5,7 +5,7 @@
 //!
 //! - [`start`](Recorder::start) refuses a source and sink whose channel widths
 //!   disagree, before any frame moves. The same check is a `debug_assert` in
-//!   [`tutti_core::io::pump`].
+//!   [`tutti_types::io::pump`].
 //! - The scratch buffer is allocated once, `capacity.interleaved_len(layout)`
 //!   samples, so the loop never allocates.
 //! - A zero-frame poll means "back off" or "finished" according to the
@@ -19,8 +19,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use tutti_core::Samples;
-use tutti_core::io::{AudioIn, AudioOut};
+use tutti_types::Samples;
+use tutti_types::{io::AudioIn, io::AudioOut};
 
 use crate::error::{Error, Result};
 #[cfg(doc)]
@@ -60,7 +60,7 @@ const SCRATCH_FRAMES: Samples = Samples(1024);
 ///
 /// ```no_run
 /// # use tutti_io::{Recorder, WavOut, BitDepth};
-/// # fn go<I: tutti_core::io::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
+/// # fn go<I: tutti_types::io::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
 /// let wav = WavOut::create("take.wav", 48_000.0, 2u16, BitDepth::Float32)
 ///     .expect("sink opens");
 /// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
@@ -240,10 +240,10 @@ impl Recorder {
     /// [`finish`](Self::finish) cuts a source off wherever the pump happens to be,
     /// which silently truncates a finite one. This instead lets the loop run
     /// until the source reports
-    /// [`OnEmpty::EndOfStream`](tutti_core::io::OnEmpty::EndOfStream), then
+    /// [`OnEmpty::EndOfStream`](tutti_types::io::OnEmpty::EndOfStream), then
     /// returns the finalize result as `finish` does.
     ///
-    /// **On a [`Starved`](tutti_core::io::OnEmpty::Starved) source this blocks
+    /// **On a [`Starved`](tutti_types::io::OnEmpty::Starved) source this blocks
     /// forever**, and every microphone capture is one — the pump parks and
     /// re-polls rather than ending. Choose the method that matches your
     /// source's `ON_EMPTY`. After [`finish_in_place`](Self::finish_in_place) has already
@@ -300,7 +300,7 @@ impl Recorder {
     ///
     /// Clearing the stop flag is the half that matters for a **live** source.
     /// The pump loop exits on its own only for a finite one
-    /// ([`OnEmpty::EndOfStream`](tutti_core::io::OnEmpty::EndOfStream) breaks); a starving source — every microphone
+    /// ([`OnEmpty::EndOfStream`](tutti_types::io::OnEmpty::EndOfStream) breaks); a starving source — every microphone
     /// capture — parks and re-polls forever, so nothing else ever reaches the
     /// `finalize` below it.
     pub fn finish_in_place(&mut self) -> Option<std::io::Result<()>> {

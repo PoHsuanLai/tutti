@@ -15,12 +15,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tutti_core::ChannelLayout;
 use tutti_graph::{
     Cx, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status, Ump,
 };
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::ChannelLayout;
 
 use super::mailbox::{MidiMailbox, MidiReceiver, MidiSender};
 
@@ -31,7 +31,7 @@ pub const MIDI_OUT_CAPACITY: usize = 1024;
 /// module docs.
 ///
 /// ```
-/// use tutti_core::{NodeKey, SampleRate, Samples};
+/// use tutti_types::{NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::MidiOutNode;
 ///

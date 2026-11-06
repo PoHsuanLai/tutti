@@ -34,7 +34,7 @@ a note, read it back as a paired note positioned in `Beat` and measured in
 what lets an imported clip be placed without a conversion step:
 
 ```rust
-use tutti_core::{Beat, BeatDuration, Bpm};
+use tutti_types::{Beat, BeatDuration, Bpm};
 use tutti_midi_types::MidiChannel;
 use tutti_midi_file::{
     smf, MidiFileKind, MidiWriteConfig, SmfFile, SmfMessage, SmfTimedEvent,
@@ -71,7 +71,7 @@ lost after the wire).
 
 ```rust
 # use tutti_midi_file::{smf, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
-# use tutti_core::{Beat, Bpm};
+# use tutti_types::{Beat, Bpm};
 # use tutti_midi_types::MidiChannel;
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),

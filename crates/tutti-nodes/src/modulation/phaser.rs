@@ -4,14 +4,15 @@
 //! cancellation, which is why its notches are fewer and unevenly spaced
 //! compared with a flanger's.
 
-use tutti_core::{Arc, AtomicF32};
+use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
 use crate::ramp::block_driven;
-use tutti_core::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments};
+use tutti_types::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
 
 const MAX_STAGES: usize = 12;
 
@@ -678,7 +679,7 @@ mod tests {
     /// leaves the top at 3600 Hz after the rate rises and fails.
     #[test]
     fn a_rising_rate_restores_the_authored_sweep_top() {
-        let prep = |sr: f64| Prepare::new(SampleRate(sr), tutti_core::Samples(64));
+        let prep = |sr: f64| Prepare::new(SampleRate(sr), tutti_types::Samples(64));
         let mut phaser = PhaserNode::new(4);
         phaser.prepare(&prep(8_000.0));
         assert_eq!(phaser.range.max_hz, Hz(3_600.0), "0.90 of a 4 kHz Nyquist");

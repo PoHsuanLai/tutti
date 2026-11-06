@@ -12,10 +12,10 @@
 //! [`ParamNode`], inserted through [`tutti_graph::param_parts`], so a fork
 //! starts from the values last set through the set (see `src/fork.rs`).
 
-use tutti_core::{ChannelLayout, UnitParam};
 use tutti_graph::{
     Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, SortedEvents, Status,
 };
+use tutti_types::{ChannelLayout, UnitParam};
 
 use super::PolySynth;
 

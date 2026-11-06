@@ -179,7 +179,10 @@ impl FileIn {
 
         let total_frames = track.codec_params.n_frames;
         let sample_rate = SampleRate::from(track.codec_params.sample_rate.unwrap_or(44100));
-        // At least one channel, so the interleave stride is never zero.
+        // At least one channel, so the interleave stride is never zero. Untested:
+        // no container this build reads yields a zero-channel track, and a
+        // fixture cannot be built or stubbed (symphonia's `Channels` come from
+        // the demuxer).
         let layout = ChannelLayout::from(
             track
                 .codec_params

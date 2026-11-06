@@ -163,6 +163,7 @@ impl AngleSmoother {
     }
 
     /// Advance one step toward the target and return the smoothed pair.
+    #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub(crate) fn step(&mut self, azimuth: Azimuth, elevation: Elevation) -> (Azimuth, Elevation) {
         (

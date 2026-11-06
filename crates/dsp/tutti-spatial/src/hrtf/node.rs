@@ -18,7 +18,7 @@ use crate::target::hold_finite;
 ///
 /// Build it with [`new`](Self::new) from the dataset bytes. The input pair is
 /// folded to mono, placed at the commanded bearing and height, and blended
-/// against the (equally delayed) dry mono by [`set_blend`](Self::set_blend).
+/// against the (equally delayed) dry mono by [`HrtfBinauralControls::set_blend`].
 /// It is a graph node (`tutti_graph::Node`); inserting it hands back its
 /// [`HrtfBinauralControls`], which move the source lock-free while it renders.
 /// Position changes are de-zippered over 50 ms, and each step of the glide
@@ -44,7 +44,14 @@ pub struct HrtfBinauralNode {
     /// The last finite azimuth and elevation the cells held. The de-zipper
     /// smoother is recursive, so one NaN or ±∞ coordinate would leave it NaN
     /// for good; a non-finite write reads as unchanged instead.
-    good: [f32; 2],
+    good: LastFinite,
+}
+
+/// The last finite value each control cell held, for [`hold_finite`].
+#[derive(Clone, Copy, Debug)]
+struct LastFinite {
+    azimuth: f32,
+    elevation: f32,
 }
 
 /// The live controls of an [`HrtfBinauralNode`]: its position and its
@@ -149,7 +156,10 @@ impl HrtfBinauralNode {
                 blend: Param::new(Mix::WET),
             },
             sample_rate,
-            good: [Azimuth::FRONT.get(), Elevation::LEVEL.get()],
+            good: LastFinite {
+                azimuth: Azimuth::FRONT.get(),
+                elevation: Elevation::LEVEL.get(),
+            },
         })
     }
 
@@ -159,44 +169,14 @@ impl HrtfBinauralNode {
         self.controls.clone()
     }
 
-    /// Sets the source's position in degrees, lock-free. See
-    /// [`HrtfBinauralControls::set_position`].
-    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.controls.set_position(azimuth, elevation);
-    }
-
-    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
-    /// the smoothed direction the convolver is currently rendering.
-    pub fn azimuth(&self) -> Azimuth {
-        self.controls.azimuth()
-    }
-
-    /// Returns the commanded height in [`Elevation`] degrees: the target, not
-    /// the smoothed direction the convolver is currently rendering.
-    pub fn elevation(&self) -> Elevation {
-        self.controls.elevation()
-    }
-
-    /// Sets the blend between the HRTF-rendered signal and the dry mono
-    /// center. See
-    /// [`HrtfBinauralControls::set_blend`].
-    pub fn set_blend(&self, blend: impl Into<Mix>) {
-        self.controls.set_blend(blend);
-    }
-
-    /// Returns the current HRTF/dry [`Mix`], `0..1`.
-    pub fn blend(&self) -> Mix {
-        self.controls.blend()
-    }
-
     /// The position cells, read once: a non-finite coordinate held at the
     /// last finite one.
     #[inline]
     fn placement(&mut self) -> (Azimuth, Elevation) {
         let (azimuth, elevation) = self.controls.target.load();
         (
-            Azimuth(hold_finite(&mut self.good[0], azimuth.get())),
-            Elevation(hold_finite(&mut self.good[1], elevation.get())),
+            Azimuth(hold_finite(&mut self.good.azimuth, azimuth.get())),
+            Elevation(hold_finite(&mut self.good.elevation, elevation.get())),
         )
     }
 }
@@ -388,7 +368,7 @@ mod tests {
         let near = |(az, el): (Azimuth, Elevation), want: (f32, f32)| {
             (az.get() - want.0).abs() < 0.01 && (el.get() - want.1).abs() < 0.01
         };
-        node.set_position(-45.0, 30.0);
+        node.controls().set_position(-45.0, 30.0);
         settle(&mut node);
         assert!(
             near(node.panner.aim(), (-45.0, 30.0)),
@@ -403,14 +383,14 @@ mod tests {
                 if az.is_finite() { az } else { -45.0 },
                 if el.is_finite() { el } else { 30.0 },
             );
-            node.set_position(az, el);
+            node.controls().set_position(az, el);
             settle(&mut node);
             assert!(
                 near(node.panner.aim(), want),
                 "({az}, {el}): aimed at {:?}, want {want:?}",
                 node.panner.aim()
             );
-            node.set_position(-45.0, 30.0);
+            node.controls().set_position(-45.0, 30.0);
             settle(&mut node);
             assert!(
                 near(node.panner.aim(), (-45.0, 30.0)),
@@ -438,7 +418,7 @@ mod tests {
                 "raw ({az}, {el}): aimed at {:?}",
                 node.panner.aim()
             );
-            node.set_position(-45.0, 30.0);
+            node.controls().set_position(-45.0, 30.0);
             settle(&mut node);
             assert!(
                 near(node.panner.aim(), (-45.0, 30.0)),
@@ -447,7 +427,7 @@ mod tests {
             );
         }
         // A reset (and a fork's) seats on the held position, not on a NaN.
-        node.set_position(f32::NAN, f32::NAN);
+        node.controls().set_position(f32::NAN, f32::NAN);
         Node::reset(&mut node);
         assert!(
             near(node.panner.aim(), (-45.0, 30.0)),
@@ -465,7 +445,7 @@ mod tests {
     #[test]
     fn produces_output_after_one_frame_of_latency() {
         let mut node = make_node();
-        node.set_position(90.0, 0.0);
+        node.controls().set_position(90.0, 0.0);
 
         // Drive a steady tone through more than one step and confirm the
         // renderer eventually emits non-silence (output lags by one step).
@@ -536,7 +516,8 @@ mod tests {
 
         for at in [0, 1, STEP - 1, STEP, 2 * STEP + 37] {
             let mut node = make_node();
-            node.set_position(Azimuth(90.0), Elevation::LEVEL);
+            node.controls()
+                .set_position(Azimuth(90.0), Elevation::LEVEL);
             Node::reset(&mut node);
             let (l, r) = impulse_response(&mut node, at, at + 3 * STEP);
             assert_eq!(onsets(&l), vec![at + LATENCY], "left, impulse at {at}");
@@ -557,7 +538,8 @@ mod tests {
         use tutti_nodes::testing::Through;
 
         let mut node = make_node();
-        node.set_position(Azimuth(90.0), Elevation::LEVEL);
+        node.controls()
+            .set_position(Azimuth(90.0), Elevation::LEVEL);
         Node::reset(&mut node);
         let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::from_count(3));
         let (hrtf, _) = g.add_with_controls(node);
@@ -593,8 +575,9 @@ mod tests {
         use crate::hrtf::panner::{LATENCY, STEP};
         for blend in [0.0_f32, 0.5, 1.0] {
             let mut node = make_node();
-            node.set_position(Azimuth(90.0), Elevation::LEVEL);
-            node.set_blend(Mix(blend));
+            node.controls()
+                .set_position(Azimuth(90.0), Elevation::LEVEL);
+            node.controls().set_blend(Mix(blend));
             Node::reset(&mut node);
             let at = 100;
             let (l, r) = impulse_response(&mut node, at, at + 2 * STEP);
@@ -615,17 +598,17 @@ mod tests {
     #[test]
     fn reset_keeps_the_authored_placement() {
         let mut node = make_node();
-        node.set_position(Azimuth(45.0), Elevation(10.0));
-        node.set_blend(Mix(0.4));
+        node.controls().set_position(Azimuth(45.0), Elevation(10.0));
+        node.controls().set_blend(Mix(0.4));
 
         Node::reset(&mut node);
 
-        assert_eq!(node.azimuth(), Azimuth(45.0));
-        assert_eq!(node.elevation(), Elevation(10.0));
+        assert_eq!(node.controls().azimuth(), Azimuth(45.0));
+        assert_eq!(node.controls().elevation(), Elevation(10.0));
         assert!(
-            (node.blend().get() - 0.4).abs() < 0.001,
+            (node.controls().blend().get() - 0.4).abs() < 0.001,
             "reset changed the blend to {}",
-            node.blend().get()
+            node.controls().blend().get()
         );
     }
 
@@ -635,7 +618,8 @@ mod tests {
     #[test]
     fn reset_drops_the_convolution_tail() {
         let mut node = make_node();
-        node.set_position(Azimuth(90.0), Elevation::LEVEL);
+        node.controls()
+            .set_position(Azimuth(90.0), Elevation::LEVEL);
 
         // Fill the step and the input history with a loud take.
         for n in 0..(crate::hrtf::panner::STEP * 3) {
@@ -671,13 +655,13 @@ mod tests {
         let c = node.clone();
 
         // Set through the original, observe through the clone.
-        node.set_position(45.0, 10.0);
-        assert_eq!(c.azimuth(), Azimuth(45.0));
-        assert_eq!(c.elevation(), Elevation(10.0));
+        node.controls().set_position(45.0, 10.0);
+        assert_eq!(c.controls().azimuth(), Azimuth(45.0));
+        assert_eq!(c.controls().elevation(), Elevation(10.0));
 
         // And back the other way.
-        c.set_position(-60.0, -20.0);
-        assert_eq!(node.azimuth(), Azimuth(-60.0));
-        assert_eq!(node.elevation(), Elevation(-20.0));
+        c.controls().set_position(-60.0, -20.0);
+        assert_eq!(node.controls().azimuth(), Azimuth(-60.0));
+        assert_eq!(node.controls().elevation(), Elevation(-20.0));
     }
 }

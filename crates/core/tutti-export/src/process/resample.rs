@@ -1,7 +1,7 @@
 //! Sample-rate conversion, as a streaming stage.
 //!
 //! The converter is a *block* resampler (an FFT overlap-add one,
-//! [`FftFixedIn`], on `tutti_dsp::RealFft`, so its bits do not depend on the
+//! [`FftResampler`], on `tutti_dsp::RealFft`, so its bits do not depend on the
 //! CPU) — `input_frames_next()` / `process_into_buffer()` in a loop — so this
 //! never needs the whole signal, which is why nothing in this crate buffers for
 //! it.
@@ -16,8 +16,8 @@
 //! [`Resampler`] drops those frames at the head and flushes with silence at the
 //! end to push the real tail out.
 
-use super::fft_resample::FftFixedIn;
 use crate::error::{Error, Result};
+use tutti_dsp::{FftResampler, ResampleError};
 use tutti_types::{SampleRate, Samples};
 
 /// Input frames per FFT chunk, and how finely each chunk is subdivided.
@@ -123,7 +123,7 @@ fn whole_hz(hz: f64) -> Result<usize> {
     if hz.is_finite() && (0.5..4_294_967_296.0).contains(&hz) {
         Ok(hz.round() as usize)
     } else {
-        Err(Error::Resample(format!("invalid sample rate: {hz} Hz")))
+        Err(ResampleError::InvalidRate { hz }.into())
     }
 }
 
@@ -137,7 +137,7 @@ mod streaming {
     /// Owns its own input carry, so callers hand it whatever block size they
     /// have and it emits output whenever the converter has a chunk ready.
     pub(crate) struct Resampler {
-        inner: FftFixedIn,
+        inner: FftResampler,
         channels: usize,
         ratio: f64,
         /// Input frames per channel, consumed up to `head`.
@@ -180,7 +180,7 @@ mod streaming {
         ) -> Result<Self> {
             let (source_hz, target_hz) = (source_rate.get(), target_rate.get());
             let (source_int, target_int) = (whole_hz(source_hz)?, whole_hz(target_hz)?);
-            let inner = FftFixedIn::new(
+            let inner = FftResampler::new(
                 source_int,
                 target_int,
                 chunk.chunk().get(),
@@ -295,9 +295,7 @@ mod streaming {
                 passes += 1;
                 if passes > max_passes {
                     debug_assert!(false, "the resample carry stopped shrinking");
-                    return Err(Error::Resample(format!(
-                        "the resample carry stopped shrinking after {max_passes} chunks"
-                    )));
+                    return Err(Error::ResampleStalled { chunks: max_passes });
                 }
 
                 let chunk = self.head..self.head + need;
@@ -759,7 +757,7 @@ mod tests {
                 "n = {n}"
             );
         }
-        let r = FftFixedIn::new(44_100, 48_000, 1024, 2, 1).unwrap();
+        let r = FftResampler::new(44_100, 48_000, 1024, 2, 1).unwrap();
         assert_eq!(r.output_delay(), 320);
         for q in ChunkSize::PRESETS {
             let mut plane = vec![0.0f32; 8192];

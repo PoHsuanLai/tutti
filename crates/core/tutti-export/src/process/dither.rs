@@ -8,10 +8,7 @@
 //! Reached only through the codec-gated encode arms, so a build with no format
 //! feature on compiles this with no consumers. Scoped to that configuration
 //! rather than allowed outright, so real dead code is still caught elsewhere.
-#![cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(codec), allow(dead_code))]
 
 use crate::config::ExportConfig;
 use crate::options::{AudioFormat, BitDepth, Dither};

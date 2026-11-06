@@ -32,20 +32,33 @@ pub enum Error {
         reason: UnsupportedReason,
     },
 
-    /// A config field the encoder cannot act on — a zero sample rate, a zero
-    /// channel count. Caught before any frame is rendered.
+    /// A config field the encoder cannot act on. Caught before any frame is
+    /// rendered.
     #[error("Invalid configuration: {0}")]
-    InvalidConfig(String),
+    InvalidConfig(#[from] ConfigError),
 
-    /// The codec rejected a block or failed to finalize its container. The
-    /// string carries the library's own report.
-    #[error("Encoding error: {0}")]
-    Encoding(String),
+    /// A codec rejected a block or failed to finalize its container.
+    /// `detail` is the library's own report.
+    #[error("{codec} encoding error: {detail}")]
+    Encoding {
+        /// The codec that failed.
+        codec: Codec,
+        /// The library's report.
+        detail: String,
+    },
 
     /// The resampler could not be constructed for this rate pair, or rejected a
     /// chunk.
     #[error("Resampling error: {0}")]
-    Resample(String),
+    Resample(#[from] tutti_dsp::ResampleError),
+
+    /// The resampler's input carry stopped shrinking after `chunks` chunks.
+    /// A bug in the resampler, not in the caller's input.
+    #[error("Resampling error: the resample carry stopped shrinking after {chunks} chunks")]
+    ResampleStalled {
+        /// The chunk count the carry should have drained within.
+        chunks: usize,
+    },
 
     /// A width the render cannot use, which means **zero** and nothing else.
     ///
@@ -76,8 +89,13 @@ pub enum Error {
     /// that quietly writes un-normalized audio reports success and leaves no
     /// trace: nothing in [`Written`](crate::Written) records that the gain the
     /// caller asked for was never applied.
-    #[error("Cannot measure loudness: {0}")]
-    Unmeasurable(String),
+    #[error("Cannot measure loudness: the meter rejected {channels} channels at {sample_rate} Hz")]
+    Unmeasurable {
+        /// The channel count of the audio.
+        channels: u16,
+        /// Its sample rate, in Hz.
+        sample_rate: f64,
+    },
 
     /// The graph could not be forked for the render because the node at
     /// `key` cannot be: it handed the editor no fork source (a mic monitor, a
@@ -120,6 +138,70 @@ pub enum Error {
     },
 }
 
+/// A config the export cannot act on ([`Error::InvalidConfig`]).
+#[derive(Error, Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum ConfigError {
+    /// The graph's editor does not feed its executor.
+    #[error("the graph's editor does not feed its executor; pass the pair built together")]
+    UnpairedGraph,
+    /// The graph is prepared at another rate than the render.
+    #[error(
+        "the graph is prepared at {prepared} Hz and the render is at {render} Hz; \
+         prepare it with `RenderGraph::prepare` or fork it with `RenderGraph::fork`"
+    )]
+    RateMismatch {
+        /// The rate the graph was prepared at, in Hz.
+        prepared: f64,
+        /// The rate the render asks for, in Hz.
+        render: f64,
+    },
+    /// The channel topology and the file differ in width.
+    #[error("the topology is {topology:?} wide but the file has {file:?}")]
+    TopologyWidth {
+        /// The topology's layout.
+        topology: tutti_types::ChannelLayout,
+        /// The file's layout.
+        file: tutti_types::ChannelLayout,
+    },
+    /// More channels than the container's header can count.
+    #[error("{channels} channels exceed the format's limit of {max}")]
+    TooManyChannels {
+        /// The requested channel count.
+        channels: u16,
+        /// The most the format holds.
+        max: u16,
+    },
+    /// A sample rate of zero.
+    #[error("sample rate must be non-zero")]
+    ZeroSampleRate,
+    /// A channel count of zero.
+    #[error("channel count must be non-zero")]
+    ZeroChannels,
+}
+
+/// The codec behind an [`Error::Encoding`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Codec {
+    /// FLAC.
+    Flac,
+    /// AIFF and AIFF-C.
+    Aiff,
+    /// Ogg Vorbis.
+    Ogg,
+}
+
+impl std::fmt::Display for Codec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Flac => "FLAC",
+            Self::Aiff => "AIFF",
+            Self::Ogg => "Ogg",
+        })
+    }
+}
+
 /// Why an [`AudioFormat`](crate::AudioFormat) cannot be written
 /// ([`Error::UnsupportedFormat`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +222,19 @@ impl std::fmt::Display for UnsupportedReason {
             Self::UnknownExtension => "the extension is not recognised",
             Self::BitDepth => "it cannot hold the configured bit depth",
         })
+    }
+}
+
+impl Error {
+    #[cfg_attr(
+        not(any(feature = "flac", feature = "aiff", feature = "ogg")),
+        expect(dead_code, reason = "only the flac, aiff and ogg encoders report this")
+    )]
+    pub(crate) fn encoding(codec: Codec, detail: impl Into<String>) -> Self {
+        Self::Encoding {
+            codec,
+            detail: detail.into(),
+        }
     }
 }
 

@@ -98,10 +98,10 @@ fn tick(node: &mut VbapPannerNode, input: [f32; 2], out: &mut [f32]) {
 /// property and worth pinning on its own, but it is exactly half of what a
 /// panner promises, and the missing half is the one that fails silently.
 fn gains_at(node: &mut VbapPannerNode, azimuth_deg: f32) -> Vec<f32> {
-    node.set_position(azimuth_deg, 0.0f32);
+    node.controls().set_position(azimuth_deg, 0.0f32);
     // Width 0 takes the panner's mono-fold branch (`frame_gains`), so a [1, 1] frame
     // arrives at the panner as exactly 1.0 and the outputs are the raw gains.
-    node.set_width(0.0f32);
+    node.controls().set_width(0.0f32);
 
     let n = node.num_channels();
     let mut out = vec![0.0f32; n];
@@ -146,7 +146,7 @@ fn every_layout_holds_unit_energy_across_the_sweep() {
         ("atmos", VbapPannerNode::atmos_7_1_4().unwrap()),
     ] {
         for spread_pct in [0u32, 1, 25, 50, 75, 99, 100] {
-            node.set_spread(spread_pct as f32 / 100.0);
+            node.controls().set_spread(spread_pct as f32 / 100.0);
             for az in (0..360).step_by(15) {
                 let gains = gains_at(&mut node, az as f32);
                 let sum_sq = sum_of_squares(&gains);
@@ -199,15 +199,15 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
         ("7.1", VbapPannerNode::surround_7_1().unwrap()),
         ("atmos", VbapPannerNode::atmos_7_1_4().unwrap()),
     ] {
-        node.set_spread(0.0f32);
-        node.set_width(0.0f32);
+        node.controls().set_spread(0.0f32);
+        node.controls().set_width(0.0f32);
 
         let n = node.num_channels();
         let mut out = vec![0.0f32; n];
 
         for el in [-90i32, -60, -30, 0, 30, 60, 90] {
             for az in (0..360).step_by(30) {
-                node.set_position(az as f32, el as f32);
+                node.controls().set_position(az as f32, el as f32);
                 Node::reset(&mut node);
                 tick(&mut node, [1.0, 1.0], &mut out);
 
@@ -259,7 +259,7 @@ fn every_layout_holds_unit_energy_off_the_horizontal_plane() {
 #[test]
 fn stereo_hard_pans_outside_the_pair_and_mirrors_the_rear() {
     let mut stereo = VbapPannerNode::stereo().unwrap();
-    stereo.set_spread(0.0f32);
+    stereo.controls().set_spread(0.0f32);
 
     // (azimuth, left gain, right gain). Measured, not derived.
     for (az, left, right) in [
@@ -308,7 +308,7 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
     // Quad speaker order is FL, FR, RL, RR (vbap's QUAD preset), and
     // `speaker_channel_map` is the identity for a layout with no LFE.
     let mut quad = VbapPannerNode::quad().unwrap();
-    quad.set_spread(0.0f32);
+    quad.controls().set_spread(0.0f32);
 
     let front = gains_at(&mut quad, 0.0);
     assert!(
@@ -346,17 +346,17 @@ fn a_surrounding_layout_does_not_fold_its_rear_arc() {
 #[test]
 fn spread_reaches_the_stereo_width_path() {
     let mut node = VbapPannerNode::surround_5_1().unwrap();
-    node.set_width(1.0f32); // the width>0 branch
-    node.set_position(0.0f32, 0.0f32);
+    node.controls().set_width(1.0f32); // the width>0 branch
+    node.controls().set_position(0.0f32, 0.0f32);
 
     let mut out = vec![0.0f32; node.num_channels()];
 
-    node.set_spread(0.0f32);
+    node.controls().set_spread(0.0f32);
     Node::reset(&mut node);
     tick(&mut node, [1.0, 1.0], &mut out);
     let point_lit = out.iter().filter(|g| g.abs() > 0.05).count();
 
-    node.set_spread(1.0f32);
+    node.controls().set_spread(1.0f32);
     Node::reset(&mut node);
     tick(&mut node, [1.0, 1.0], &mut out);
     let diffuse_lit = out.iter().filter(|g| g.abs() > 0.05).count();

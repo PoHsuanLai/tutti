@@ -12,7 +12,7 @@
 
 use crate::config::ExportConfig;
 use crate::encode::{Encoder, pump_blocks};
-use crate::error::{Error, Result};
+use crate::error::{Codec, ConfigError, Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
@@ -40,13 +40,18 @@ impl AiffEncoder {
                 BitDepth::Float32 => FileFormat::Aifc,
                 _ => FileFormat::Aiff,
             },
-            channels: config.encode.channels.count() as i16,
+            channels: i16::try_from(config.encode.channels.count()).map_err(|_| {
+                ConfigError::TooManyChannels {
+                    channels: config.encode.channels.count(),
+                    max: i16::MAX.unsigned_abs(),
+                }
+            })?,
             sample_rate: crate::encode::output_rate(config).get(),
             sample_format,
         };
         let file = BufWriter::new(std::fs::File::create(path)?);
-        let writer =
-            AifcWriter::new(file, &info).map_err(|e| Error::Encoding(format!("AIFF: {e:?}")))?;
+        let writer = AifcWriter::new(file, &info)
+            .map_err(|e| Error::encoding(Codec::Aiff, format!("AIFF: {e:?}")))?;
         Ok(Self {
             writer,
             bit_depth: config.encode.bit_depth,
@@ -81,12 +86,12 @@ impl Encoder for AiffEncoder {
                 }
                 BitDepth::Float32 => self.writer.write_samples_f32(buf),
             }
-            .map_err(|e| Error::Encoding(format!("AIFF write failed: {e:?}")))
+            .map_err(|e| Error::encoding(Codec::Aiff, format!("AIFF write failed: {e:?}")))
         })?;
 
-        self.writer
-            .finalize()
-            .map_err(|e| Error::Encoding(format!("AIFF finalization failed: {e:?}")))?;
+        self.writer.finalize().map_err(|e| {
+            Error::encoding(Codec::Aiff, format!("AIFF finalization failed: {e:?}"))
+        })?;
         Ok(())
     }
 }

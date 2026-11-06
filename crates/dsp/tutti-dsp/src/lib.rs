@@ -54,14 +54,18 @@
 //! - FFT: [`RealFft`], a real-input FFT on rustfft's scalar planner whose
 //!   arithmetic does not depend on the CPU; [`StagedRealFft`], the same
 //!   transform in steps; [`FftScratch`], reusable plans and buffers.
+//! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
+//!   same scalar FFT, failing with a [`ResampleError`].
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod analysis;
 mod fft;
+mod resample;
 
 pub use analysis::*;
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
+pub use resample::{FftResampler, ResampleError};
 pub use tutti_types::ChannelLayout;
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a

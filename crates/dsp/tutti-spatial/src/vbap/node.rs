@@ -10,6 +10,15 @@ use crate::fork::{FreshFork, fresh_fork_parts};
 use crate::layout::speaker_channel_map;
 use crate::target::hold_finite;
 
+/// The last finite value each control cell held, for [`hold_finite`].
+#[derive(Clone, Copy, Debug)]
+struct LastFinite {
+    azimuth: f32,
+    elevation: f32,
+    spread: f32,
+    width: f32,
+}
+
 /// A VBAP loudspeaker panner: stereo in, one output per speaker of a fixed
 /// layout.
 ///
@@ -31,7 +40,7 @@ use crate::target::hold_finite;
 /// use tutti_spatial::VbapPannerNode;
 ///
 /// let panner = VbapPannerNode::quad()?;
-/// panner.set_position(Azimuth(45.0), Elevation(0.0)); // front-left
+/// panner.controls().set_position(Azimuth(45.0), Elevation(0.0)); // front-left
 ///
 /// let mut solo = Solo::new(panner, Prepare::new(SampleRate(48_000.0), Samples(64)));
 /// let out = solo.render_input(&[&[1.0; 64], &[1.0; 64]]);
@@ -122,7 +131,7 @@ pub struct VbapPannerNode {
     /// The last finite azimuth, elevation, spread and width the cells held. The
     /// de-zipper smoother is recursive, so one NaN or ±∞ bearing would leave
     /// it NaN for good; a non-finite write reads as unchanged instead.
-    good: [f32; 4],
+    good: LastFinite,
 }
 
 /// The live controls of a [`VbapPannerNode`]: its position, [`Spread`] and
@@ -295,7 +304,12 @@ impl VbapPannerNode {
             sample_rate: SampleRate::SR_48K,
             speaker_of_channel: speaker_of_channel(layout),
             ramp_from: None,
-            good: [0.0, 0.0, Spread::POINT.get(), StereoWidth::NATURAL.get()],
+            good: LastFinite {
+                azimuth: 0.0,
+                elevation: 0.0,
+                spread: Spread::POINT.get(),
+                width: StereoWidth::NATURAL.get(),
+            },
         }
     }
 
@@ -303,46 +317,6 @@ impl VbapPannerNode {
     /// inserting the node hands back.
     pub fn controls(&self) -> VbapPannerControls {
         self.controls.clone()
-    }
-
-    /// Sets the source's position in degrees, lock-free. See
-    /// [`VbapPannerControls::set_position`].
-    pub fn set_position(&self, azimuth: impl Into<Azimuth>, elevation: impl Into<Elevation>) {
-        self.controls.set_position(azimuth, elevation);
-    }
-
-    /// Returns the commanded bearing in [`Azimuth`] degrees: the target, not
-    /// the smoothed position the panner is currently at.
-    pub fn azimuth(&self) -> Azimuth {
-        self.controls.azimuth()
-    }
-
-    /// Returns the commanded height in [`Elevation`] degrees: the target, not
-    /// the smoothed position the panner is currently at.
-    pub fn elevation(&self) -> Elevation {
-        self.controls.elevation()
-    }
-
-    /// Sets the VBAP diffusion, clamped to [`Spread`]'s `0..1`. See
-    /// [`VbapPannerControls::set_spread`].
-    pub fn set_spread(&self, spread: impl Into<Spread>) {
-        self.controls.set_spread(spread);
-    }
-
-    /// Returns the current [`Spread`], `0..1`.
-    pub fn spread(&self) -> Spread {
-        self.controls.spread()
-    }
-
-    /// Sets the mid/side width applied to a stereo input, clamped to
-    /// [`StereoWidth`]. See [`VbapPannerControls::set_width`].
-    pub fn set_width(&self, width: impl Into<StereoWidth>) {
-        self.controls.set_width(width);
-    }
-
-    /// Returns the current [`StereoWidth`].
-    pub fn width(&self) -> StereoWidth {
-        self.controls.width()
     }
 
     /// Returns the output channel count: the speaker layout's width.
@@ -356,9 +330,9 @@ impl VbapPannerNode {
     #[inline]
     fn placement(&mut self) -> (Azimuth, Elevation, Spread) {
         let (azimuth, elevation) = self.controls.target.load();
-        let azimuth = hold_finite(&mut self.good[0], azimuth.get());
-        let elevation = hold_finite(&mut self.good[1], elevation.get());
-        let spread = hold_finite(&mut self.good[2], self.controls.spread.load().get());
+        let azimuth = hold_finite(&mut self.good.azimuth, azimuth.get());
+        let elevation = hold_finite(&mut self.good.elevation, elevation.get());
+        let spread = hold_finite(&mut self.good.spread, self.controls.spread.load().get());
         (
             Azimuth(azimuth).wrap(),
             Elevation::new_clamped(elevation),
@@ -376,7 +350,7 @@ impl VbapPannerNode {
     fn block_gains(&mut self, frames: usize) -> (BlockGains, BlockGains) {
         let (azimuth, elevation, spread) = self.placement();
         let width = StereoWidth(hold_finite(
-            &mut self.good[3],
+            &mut self.good.width,
             self.controls.width.load().get(),
         ));
         let from = match self.ramp_from {
@@ -639,7 +613,7 @@ mod tests {
     #[test]
     fn vbap_panner_tick() {
         let mut panner = prep(VbapPannerNode::stereo().unwrap());
-        panner.set_position(0.0, 0.0);
+        panner.controls().set_position(0.0, 0.0);
 
         let input = [1.0f32, 1.0f32];
         let mut output = [0.0f32; 2];
@@ -660,31 +634,33 @@ mod tests {
     #[test]
     fn reset_keeps_the_authored_placement() {
         let mut panner = prep(VbapPannerNode::surround_5_1().unwrap());
-        panner.set_position(Azimuth(45.0), Elevation(15.0));
-        panner.set_spread(Spread(0.3));
-        panner.set_width(StereoWidth(1.5));
+        panner
+            .controls()
+            .set_position(Azimuth(45.0), Elevation(15.0));
+        panner.controls().set_spread(Spread(0.3));
+        panner.controls().set_width(StereoWidth(1.5));
 
         Node::reset(&mut panner);
 
         assert!(
-            (panner.azimuth().get() - 45.0).abs() < 0.001,
+            (panner.controls().azimuth().get() - 45.0).abs() < 0.001,
             "reset moved the bearing to {}",
-            panner.azimuth().get()
+            panner.controls().azimuth().get()
         );
         assert!(
-            (panner.elevation().get() - 15.0).abs() < 0.001,
+            (panner.controls().elevation().get() - 15.0).abs() < 0.001,
             "reset moved the height to {}",
-            panner.elevation().get()
+            panner.controls().elevation().get()
         );
         assert!(
-            (panner.spread().get() - 0.3).abs() < 0.001,
+            (panner.controls().spread().get() - 0.3).abs() < 0.001,
             "reset changed the spread to {}",
-            panner.spread().get()
+            panner.controls().spread().get()
         );
         assert!(
-            (panner.width().get() - 1.5).abs() < 0.001,
+            (panner.controls().width().get() - 1.5).abs() < 0.001,
             "reset changed the width to {}",
-            panner.width().get()
+            panner.controls().width().get()
         );
     }
 
@@ -723,7 +699,9 @@ mod tests {
             // Where the panner ends up once the 50 ms ramp has run out: a hard
             // pan, so the opposite channel is silent.
             let mut settled = prep(VbapPannerNode::stereo().unwrap());
-            settled.set_position(Azimuth(bearing), Elevation::LEVEL);
+            settled
+                .controls()
+                .set_position(Azimuth(bearing), Elevation::LEVEL);
             let mut reference = [0.0f32; 2];
             for _ in 0..48_000 {
                 tick(&mut settled, &input, &mut reference);
@@ -736,7 +714,9 @@ mod tests {
             // No tick between `set_position` and `reset`: the reset must find
             // the commanded bearing on its own.
             let mut panner = prep(VbapPannerNode::stereo().unwrap());
-            panner.set_position(Azimuth(bearing), Elevation::LEVEL);
+            panner
+                .controls()
+                .set_position(Azimuth(bearing), Elevation::LEVEL);
             Node::reset(&mut panner);
 
             let mut after = [0.0f32; 2];
@@ -760,14 +740,18 @@ mod tests {
         let input = [1.0f32, 1.0f32];
 
         let mut settled = prep(VbapPannerNode::stereo().unwrap());
-        settled.set_position(Azimuth(90.0), Elevation::LEVEL);
+        settled
+            .controls()
+            .set_position(Azimuth(90.0), Elevation::LEVEL);
         let mut reference = [0.0f32; 2];
         for _ in 0..48_000 {
             tick(&mut settled, &input, &mut reference);
         }
 
         let mut panner = prep(VbapPannerNode::stereo().unwrap());
-        panner.set_position(Azimuth(90.0), Elevation::LEVEL);
+        panner
+            .controls()
+            .set_position(Azimuth(90.0), Elevation::LEVEL);
         let mut mid_ramp = [0.0f32; 2];
         tick(&mut panner, &input, &mut mid_ramp);
         assert!(
@@ -783,20 +767,22 @@ mod tests {
     #[test]
     fn reset_on_a_clone_does_not_move_the_original() {
         let panner = VbapPannerNode::stereo().unwrap();
-        panner.set_position(Azimuth(-60.0), Elevation(20.0));
+        panner
+            .controls()
+            .set_position(Azimuth(-60.0), Elevation(20.0));
 
         let mut cloned = panner.clone();
         Node::reset(&mut cloned);
 
         assert!(
-            (panner.azimuth().get() - (-60.0)).abs() < 0.001,
+            (panner.controls().azimuth().get() - (-60.0)).abs() < 0.001,
             "resetting the clone moved the original to {}",
-            panner.azimuth().get()
+            panner.controls().azimuth().get()
         );
         assert!(
-            (panner.elevation().get() - 20.0).abs() < 0.001,
+            (panner.controls().elevation().get() - 20.0).abs() < 0.001,
             "resetting the clone moved the original to {}",
-            panner.elevation().get()
+            panner.controls().elevation().get()
         );
     }
 
@@ -829,59 +815,59 @@ mod tests {
         let cloned = panner.clone();
 
         // -- target: azimuth + elevation, set on the original.
-        panner.set_position(90.0, 45.0);
+        panner.controls().set_position(90.0, 45.0);
         assert!(
-            (cloned.azimuth().get() - 90.0).abs() < 0.001,
+            (cloned.controls().azimuth().get() - 90.0).abs() < 0.001,
             "the clone did not see the original's bearing: {}",
-            cloned.azimuth().get()
+            cloned.controls().azimuth().get()
         );
         assert!(
-            (cloned.elevation().get() - 45.0).abs() < 0.001,
+            (cloned.controls().elevation().get() - 45.0).abs() < 0.001,
             "the clone did not see the original's height: {}",
-            cloned.elevation().get()
+            cloned.controls().elevation().get()
         );
 
         // And vice versa.
-        cloned.set_position(-60.0, 10.0);
+        cloned.controls().set_position(-60.0, 10.0);
         assert!(
-            (panner.azimuth().get() - (-60.0)).abs() < 0.001,
+            (panner.controls().azimuth().get() - (-60.0)).abs() < 0.001,
             "the original did not see the clone's bearing: {}",
-            panner.azimuth().get()
+            panner.controls().azimuth().get()
         );
         assert!(
-            (panner.elevation().get() - 10.0).abs() < 0.001,
+            (panner.controls().elevation().get() - 10.0).abs() < 0.001,
             "the original did not see the clone's height: {}",
-            panner.elevation().get()
+            panner.controls().elevation().get()
         );
 
         // -- spread: its own cell.
-        panner.set_spread(Spread(0.3));
+        panner.controls().set_spread(Spread(0.3));
         assert!(
-            (cloned.spread().get() - 0.3).abs() < 0.001,
+            (cloned.controls().spread().get() - 0.3).abs() < 0.001,
             "the clone did not see the original's spread: {} -- a snapshotting \
              clone would freeze an offline render at the clone-time value",
-            cloned.spread().get()
+            cloned.controls().spread().get()
         );
-        cloned.set_spread(Spread(0.8));
+        cloned.controls().set_spread(Spread(0.8));
         assert!(
-            (panner.spread().get() - 0.8).abs() < 0.001,
+            (panner.controls().spread().get() - 0.8).abs() < 0.001,
             "the original did not see the clone's spread: {}",
-            panner.spread().get()
+            panner.controls().spread().get()
         );
 
         // -- width: its own cell too, and previously uncovered in either
         //    direction.
-        panner.set_width(StereoWidth(1.5));
+        panner.controls().set_width(StereoWidth(1.5));
         assert!(
-            (cloned.width().get() - 1.5).abs() < 0.001,
+            (cloned.controls().width().get() - 1.5).abs() < 0.001,
             "the clone did not see the original's width: {}",
-            cloned.width().get()
+            cloned.controls().width().get()
         );
-        cloned.set_width(StereoWidth(0.4));
+        cloned.controls().set_width(StereoWidth(0.4));
         assert!(
-            (panner.width().get() - 0.4).abs() < 0.001,
+            (panner.controls().width().get() - 0.4).abs() < 0.001,
             "the original did not see the clone's width: {}",
-            panner.width().get()
+            panner.controls().width().get()
         );
     }
 
@@ -897,7 +883,9 @@ mod tests {
         let rate = SampleRate(96_000.0);
         let mut original = prepared(VbapPannerNode::stereo().unwrap(), rate, 64);
         let mut clone = original.clone();
-        original.set_position(Azimuth(60.0), Elevation::LEVEL);
+        original
+            .controls()
+            .set_position(Azimuth(60.0), Elevation::LEVEL);
         let (mut a, mut b) = ([0.0f32; 2], [0.0f32; 2]);
         for i in 0..2_000 {
             tick_at(&mut original, rate, &[1.0, 1.0], &mut a);
@@ -919,7 +907,8 @@ mod tests {
         for value in bad {
             for which in 0..4 {
                 let mut node = prep(VbapPannerNode::surround_5_1().unwrap());
-                node.set_position(Azimuth(30.0), Elevation::LEVEL);
+                node.controls()
+                    .set_position(Azimuth(30.0), Elevation::LEVEL);
                 let (mut out, input) = ([0.0f32; 6], [0.5f32, -0.25]);
                 let mut all_finite = true;
                 let mut run = |node: &mut VbapPannerNode, frames: usize| {
@@ -968,9 +957,9 @@ mod tests {
                         .store(0.4, Ordering::Release);
                 }
                 run(&mut node, 4_800);
-                node.set_position(Azimuth(10.0), Elevation(5.0));
-                node.set_spread(Spread(0.1));
-                node.set_width(StereoWidth(1.0));
+                node.controls().set_position(Azimuth(10.0), Elevation(5.0));
+                node.controls().set_spread(Spread(0.1));
+                node.controls().set_width(StereoWidth(1.0));
                 run(&mut node, 4_800);
                 assert!(all_finite, "control {which} = {value} reached the output");
             }

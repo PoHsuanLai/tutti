@@ -13,7 +13,7 @@ use tutti_graph::{
 };
 use tutti_types::{GraphTail, Samples};
 
-use crate::{Error, Result};
+use crate::{ConfigError, Error, Result};
 
 /// A fork's refusal as the render reports it: [`Error::NotForkable`] for
 /// the one a host acts on, [`Error::Fork`] for the rest.
@@ -138,10 +138,7 @@ impl RenderGraph {
         if self.editor.is_paired_with(&self.executor) {
             Ok(())
         } else {
-            Err(Error::InvalidConfig(
-                "the graph's editor does not feed its executor; pass the pair built together"
-                    .into(),
-            ))
+            Err(ConfigError::UnpairedGraph.into())
         }
     }
 

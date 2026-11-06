@@ -124,12 +124,9 @@ impl Normalize {
         let samples = rendered.interleaved();
         measure_loudness(&meter, Interleaved::new(&samples, rendered.layout()))
             .map(|m| self.gain_for(&m))
-            .ok_or_else(|| {
-                crate::Error::Unmeasurable(format!(
-                    "loudness meter rejected {} channels at {} Hz",
-                    rendered.channels(),
-                    rendered.sample_rate.get()
-                ))
+            .ok_or_else(|| crate::Error::Unmeasurable {
+                channels: rendered.layout().count(),
+                sample_rate: rendered.sample_rate.get(),
             })
     }
 }

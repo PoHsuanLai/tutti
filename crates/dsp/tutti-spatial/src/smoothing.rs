@@ -56,6 +56,7 @@ impl ExponentialSmoother {
     /// bearing**: see [`process_angle`](Self::process_angle). The pair is the
     /// point — one entry per space, each typed, so a bearing cannot reach the
     /// linear form by accident.
+    #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process(&mut self, target: Elevation) -> Elevation {
         self.value += self.coeff * (target.get() - self.value);
@@ -72,6 +73,7 @@ impl ExponentialSmoother {
     ///
     /// [`Azimuth::shortest_arc_to`] is the correct difference, and the running
     /// value is re-wrapped each step so it never drifts out of `-180..180`.
+    #[cfg(any(feature = "hrtf", test))]
     #[inline]
     pub fn process_angle(&mut self, target: Azimuth) -> Azimuth {
         let current = Azimuth(self.value).wrap();

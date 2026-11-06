@@ -18,13 +18,10 @@
 //! Reached only through the codec-gated encode arms, so a build with no format
 //! feature on compiles this with no consumers. Scoped to that configuration
 //! rather than allowed outright, so real dead code is still caught elsewhere.
-#![cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(dead_code)
-)]
+#![cfg_attr(not(codec), allow(dead_code))]
 
-use crate::RenderGraph;
 use crate::render::BlockCursor;
+use crate::{ConfigError, RenderGraph};
 use tutti_core::transport::RenderClock;
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
@@ -123,16 +120,15 @@ impl<'a> GraphSource<'a> {
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
         if prepared.get() != sample_rate.get() {
-            return Err(crate::Error::InvalidConfig(format!(
-                "the graph is prepared at {} Hz and the render is at {} Hz; \
-                 prepare it with `RenderGraph::prepare` or fork it with `RenderGraph::fork`",
-                prepared.get(),
-                sample_rate.get()
-            )));
+            return Err(ConfigError::RateMismatch {
+                prepared: prepared.get(),
+                render: sample_rate.get(),
+            }
+            .into());
         }
         let max_block = executor.prepare().max_block().get();
         let topology = &editor.spec().topology;
-        let global_inputs = topology.inputs.count() as usize;
+        let global_inputs = usize::from(topology.inputs.count());
         let planes = vec![vec![0.0f32; max_block]; topology.outputs.len()];
         Ok(Self {
             editor,
@@ -263,7 +259,7 @@ impl FrameSource for PlaneSource<'_> {
         // because `drive`'s block is reused across iterations.
         let layout = out.layout();
         InterleavedMut::new(
-            &mut out.samples_mut()[..n * layout.count() as usize],
+            &mut out.samples_mut()[..n * usize::from(layout.count())],
             layout,
         )
         .interleave_from(self.planes, self.pos.get());
@@ -301,7 +297,7 @@ pub(crate) fn drive<F>(
 where
     F: FnMut(Interleaved<'_>) -> crate::Result<()>,
 {
-    let ch = layout.count() as usize;
+    let ch = usize::from(layout.count());
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
     }

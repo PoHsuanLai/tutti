@@ -31,21 +31,18 @@ use crate::error::Result;
 // `drive` and the buffer views are `pump_blocks`'s, and it carries the same
 // codec gate.
 use crate::Written;
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+#[cfg(codec)]
 use crate::render::drive;
 use crate::render::{FrameSource, PlaneSource, RenderPlan};
 use std::path::Path;
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+#[cfg(codec)]
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// The rate the file is written at: the resample target, else the render rate.
 ///
 /// Along with [`encoder_rate`] and the [`Encoder`] trait, this serves the
 /// per-format arms only, so a build with no format feature has no caller.
-#[cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(codec), allow(dead_code))]
 pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
     config
         .resample
@@ -61,10 +58,7 @@ pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
 /// The boundary is real; it just belongs in one named place rather than at five
 /// call sites, and it lives beside the encoders that need it rather than hanging
 /// off the config as behaviour.
-#[cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(codec), allow(dead_code))]
 pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
     output_rate(config).get().round() as u32
 }
@@ -74,10 +68,7 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// `self` by value: an encoder finalizes exactly once, and taking ownership is
 /// what makes "finalize, then write more" unrepresentable rather than a runtime
 /// error.
-#[cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(codec), allow(dead_code))]
 pub(crate) trait Encoder {
     /// `source_rate` is the rate the incoming frames are **at**, which is not
     /// always `config.render.sample_rate` — `write_buffers` feeds frames
@@ -111,10 +102,7 @@ pub(crate) trait Encoder {
 // `UnsupportedFormat` return — so the parameters go unread and the trailing
 // `Written` construction is unreachable. That is the intended behaviour of a
 // build that can write no formats, not dead code to prune.
-#[cfg_attr(
-    not(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg")),
-    allow(unused_variables, unreachable_code)
-)]
+#[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
 pub(crate) fn encode_to_file(
     src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
@@ -201,7 +189,7 @@ pub(crate) fn encode_to_file(
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
 /// that noise along with the signal and land it somewhere other than one LSB.
-#[cfg(any(feature = "wav", feature = "flac", feature = "ogg", feature = "aiff"))]
+#[cfg(codec)]
 pub(crate) fn pump_blocks<W>(
     src: &mut dyn FrameSource,
     source_rate: tutti_core::SampleRate,
@@ -214,7 +202,7 @@ where
 {
     // Once, at entry — never inside a per-block or per-frame loop.
     let layout = config.encode.channels;
-    let ch = layout.count() as usize;
+    let ch = usize::from(layout.count());
     if ch == 0 {
         return Err(crate::Error::UnsupportedChannels(0));
     }
@@ -269,7 +257,7 @@ where
 
 /// Interleave the resampler's output planes, dither, hand them on, and clear
 /// the planes for the next push.
-#[cfg(any(feature = "wav", feature = "flac", feature = "ogg", feature = "aiff"))]
+#[cfg(codec)]
 fn emit_planes<W>(
     out: &mut [Vec<f32>],
     staging: &mut Vec<f32>,

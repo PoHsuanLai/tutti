@@ -148,7 +148,7 @@ impl VbapMixParts {
         let mut panners = Vec::with_capacity(sources.len());
         for (i, src) in sources.iter().enumerate() {
             let panner = VbapPannerNode::for_layout(layout)?;
-            panner.set_position(src.azimuth, src.elevation);
+            panner.controls().set_position(src.azimuth, src.elevation);
             panners.push(panner);
             // Stereo-in: feed the source's first two outputs into the panner.
             for port in 0..2 {

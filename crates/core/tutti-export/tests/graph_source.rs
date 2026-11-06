@@ -237,7 +237,8 @@ fn quad_vbap() -> GraphBuilder {
                 .with_layout(ChannelLayout::STEREO),
         );
         let pan = VbapPannerNode::for_layout(ChannelLayout::QUAD).expect("quad");
-        pan.set_position(az, tutti_core::Elevation::LEVEL);
+        pan.controls()
+            .set_position(az, tutti_core::Elevation::LEVEL);
         let (pan, _) = g.add_with_controls(pan);
         g.pipe(src, pan);
         for c in 0..4 {

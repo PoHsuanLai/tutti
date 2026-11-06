@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{Error, Result, UnsupportedReason};
+pub use error::{Codec, ConfigError, Error, Result, UnsupportedReason};
 
 mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
@@ -90,7 +90,7 @@ impl Rendered {
     ///
     /// [`channels`](Self::channels) is the same number as a raw stride.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(self.planes.len() as u16)
+        ChannelLayout::from(u16::try_from(self.planes.len()).unwrap_or(u16::MAX))
     }
 
     /// Multiplies every sample by `gain` — the apply half of a

@@ -118,8 +118,8 @@ fn vbap() {
         "VbapPannerNode (7.1.4)",
         || {
             let node = VbapPannerNode::atmos_7_1_4().expect("the Atmos preset builds");
-            node.set_position(30.0, 0.0);
-            node.set_spread(Spread::new_clamped(0.2));
+            node.controls().set_position(30.0, 0.0);
+            node.controls().set_spread(Spread::new_clamped(0.2));
             node
         },
         &[
@@ -142,7 +142,7 @@ fn hrtf() {
             let bytes = synthetic_hrir_sphere(rate, 64);
             let node =
                 HrtfBinauralNode::new(&bytes, SampleRate::from(rate)).expect("the sphere parses");
-            node.set_position(90.0, 0.0);
+            node.controls().set_position(90.0, 0.0);
             node
         },
         &[

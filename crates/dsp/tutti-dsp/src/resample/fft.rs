@@ -1,4 +1,4 @@
-//! A fixed-input FFT resampler over [`tutti_dsp::RealFft`].
+//! A fixed-input FFT resampler over [`RealFft`].
 //!
 //! Overlap-add: each `fft_size_in`-frame block is zero-padded to twice its
 //! length, transformed, multiplied by a windowed-sinc low-pass, truncated or
@@ -19,11 +19,12 @@
 //! design are adapted from rubato 0.16.2 by Henrik Enquist (MIT); the notice is
 //! `LICENSE-rubato`, beside this file.
 
-use crate::error::{Error, Result};
+use super::ResampleError;
+use crate::fft::{Complex32, RealFft};
 use std::f32::consts::PI;
-use tutti_dsp::{Complex32, RealFft};
 
 /// One block's worth of resampling: the filter, the plans and the scratch.
+#[derive(Debug)]
 struct Unit {
     fft_size_in: usize,
     fft_size_out: usize,
@@ -174,11 +175,12 @@ impl Unit {
 /// 32768-frame chunk in one piece, is 786432. This is 2^20, so every one of
 /// those builds (a 2 M-point FFT, tens of MB) while a pair like 1 -> 192000,
 /// which would plan ~98 M points, is refused.
-const MAX_BLOCK: usize = 1 << 20;
+pub(super) const MAX_BLOCK: usize = 1 << 20;
 
 /// A resampler that takes a fixed number of input frames per call and returns
 /// a variable number of output frames (whole blocks of `fft_size_out`).
-pub(super) struct FftFixedIn {
+#[derive(Debug)]
+pub struct FftResampler {
     channels: usize,
     chunk_size_in: usize,
     fft_size_in: usize,
@@ -189,26 +191,29 @@ pub(super) struct FftFixedIn {
     unit: Unit,
 }
 
-impl FftFixedIn {
+impl FftResampler {
     /// `chunk_size_in` input frames per call, split into about `sub_chunks`
     /// blocks (the real count is whatever makes a block a whole number of the
     /// rate pair's repeating unit).
-    pub(super) fn new(
+    ///
+    /// # Errors
+    /// [`ResampleError`] for a zero rate, channel count, chunk or sub-chunk
+    /// count, or a rate pair whose block exceeds the supported size.
+    pub fn new(
         source_hz: usize,
         target_hz: usize,
         chunk_size_in: usize,
         sub_chunks: usize,
         channels: usize,
-    ) -> Result<Self> {
+    ) -> Result<Self, ResampleError> {
         if source_hz == 0 || target_hz == 0 {
-            return Err(Error::Resample(format!(
-                "invalid sample rates, input: {source_hz}, output: {target_hz}"
-            )));
+            return Err(ResampleError::ZeroRate {
+                source_hz,
+                target_hz,
+            });
         }
         if channels == 0 || chunk_size_in == 0 || sub_chunks == 0 {
-            return Err(Error::Resample(
-                "a resampler needs channels, a chunk and sub-chunks".into(),
-            ));
+            return Err(ResampleError::EmptyShape);
         }
         let gcd = gcd(source_hz, target_hz);
         let min_chunk_in = source_hz / gcd;
@@ -217,10 +222,9 @@ impl FftFixedIn {
             fft_chunks
                 .checked_mul(hz / gcd)
                 .filter(|&size| size <= MAX_BLOCK)
-                .ok_or_else(|| {
-                    Error::Resample(format!(
-                        "{source_hz} Hz -> {target_hz} Hz needs a block over {MAX_BLOCK} frames"
-                    ))
+                .ok_or(ResampleError::BlockTooLarge {
+                    source_hz,
+                    target_hz,
                 })
         };
         let fft_size_out = block(target_hz)?;
@@ -238,28 +242,31 @@ impl FftFixedIn {
     }
 
     /// Input frames the next call takes, per channel.
-    pub(super) fn input_frames_next(&self) -> usize {
+    pub fn input_frames_next(&self) -> usize {
         self.chunk_size_in
     }
 
     /// The most output frames a call can produce, per channel.
-    pub(super) fn output_frames_max(&self) -> usize {
+    pub fn output_frames_max(&self) -> usize {
         self.chunk_size_in.div_ceil(self.fft_size_in) * self.fft_size_out
     }
 
     /// Output frames at the head that are filter warm-up, not signal.
-    pub(super) fn output_delay(&self) -> usize {
+    pub fn output_delay(&self) -> usize {
         self.fft_size_out / 2
     }
 
     /// Resample one chunk (`input_frames_next()` frames per plane) into
     /// `wave_out`, which must hold `output_frames_max()` per plane. Returns the
     /// frames produced per plane.
-    pub(super) fn process_into_buffer(
+    ///
+    /// # Errors
+    /// [`ResampleError::BufferMismatch`] when the planes are too few or too short.
+    pub fn process_into_buffer(
         &mut self,
         wave_in: &[Vec<f32>],
         wave_out: &mut [Vec<f32>],
-    ) -> Result<usize> {
+    ) -> Result<usize, ResampleError> {
         let next_saved = self.saved_frames + self.chunk_size_in;
         let ready = next_saved / self.fft_size_in;
         let needed = ready * self.fft_size_out;
@@ -268,10 +275,11 @@ impl FftFixedIn {
             || wave_in.iter().any(|p| p.len() < self.chunk_size_in)
             || wave_out.iter().any(|p| p.len() < needed)
         {
-            return Err(Error::Resample(format!(
-                "buffers do not fit: {} channels of {} frames in, room for {needed} out",
-                self.channels, self.chunk_size_in
-            )));
+            return Err(ResampleError::BufferMismatch {
+                channels: self.channels,
+                frames_in: self.chunk_size_in,
+                frames_out: needed,
+            });
         }
 
         for (buffer, input) in self.input_buffers.iter_mut().zip(wave_in) {
@@ -419,10 +427,10 @@ mod tests {
     /// Mutation (run): derive `fft_size_out` from `source_hz` → 588 -> 588.
     #[test]
     fn block_sizes_are_whole_units_of_the_rate_pair() {
-        let r = FftFixedIn::new(44_100, 48_000, 1024, 2, 1).unwrap();
+        let r = FftResampler::new(44_100, 48_000, 1024, 2, 1).unwrap();
         assert_eq!((r.fft_size_in, r.fft_size_out), (588, 640));
         assert_eq!(r.output_delay(), 320);
-        let r = FftFixedIn::new(48_000, 44_100, 1024, 2, 1).unwrap();
+        let r = FftResampler::new(48_000, 44_100, 1024, 2, 1).unwrap();
         assert_eq!((r.fft_size_in, r.fft_size_out), (640, 588));
     }
 
@@ -443,7 +451,7 @@ mod tests {
             8_000, 11_025, 22_050, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 44_101, 48_001,
         ];
         let ok = |a: usize, b: usize, chunk: usize, sub: usize| {
-            let r = FftFixedIn::new(a, b, chunk, sub, 1);
+            let r = FftResampler::new(a, b, chunk, sub, 1);
             assert!(r.is_ok(), "{a} -> {b} at {chunk}/{sub}: {:?}", r.err());
         };
         for &a in &rates {
@@ -456,7 +464,7 @@ mod tests {
                 ok(a, b, chunk, sub);
             }
         }
-        let err = FftFixedIn::new(1, 192_000, 1024, 2, 1).err().unwrap();
+        let err = FftResampler::new(1, 192_000, 1024, 2, 1).err().unwrap();
         assert!(err.to_string().contains("block"), "{err}");
     }
 
@@ -469,13 +477,13 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn an_overflowing_block_size_is_an_error() {
-        assert!(FftFixedIn::new(1, 1 << 44, 1 << 20, 1, 1).is_err());
+        assert!(FftResampler::new(1, 1 << 44, 1 << 20, 1, 1).is_err());
     }
 
     /// A zero rate is refused, not divided by.
     #[test]
     fn a_zero_rate_is_an_error() {
-        assert!(FftFixedIn::new(0, 48_000, 1024, 2, 1).is_err());
-        assert!(FftFixedIn::new(44_100, 0, 1024, 2, 1).is_err());
+        assert!(FftResampler::new(0, 48_000, 1024, 2, 1).is_err());
+        assert!(FftResampler::new(44_100, 0, 1024, 2, 1).is_err());
     }
 }

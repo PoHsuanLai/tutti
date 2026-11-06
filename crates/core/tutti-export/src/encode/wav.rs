@@ -16,7 +16,7 @@
 
 use crate::config::ExportConfig;
 use crate::encode::{Encoder, pump_blocks};
-use crate::error::{Error, Result};
+use crate::error::{ConfigError, Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
 use hound::{SampleFormat, WavSpec, WavWriter};
@@ -60,11 +60,11 @@ impl WavEncoder {
     ) -> Result<Self> {
         let mask = match &config.encode.topology {
             Some(t) if t.layout() != config.encode.channels => {
-                return Err(Error::InvalidConfig(format!(
-                    "the topology is {:?} wide but the file has {:?}",
-                    t.layout(),
-                    config.encode.channels
-                )));
+                return Err(ConfigError::TopologyWidth {
+                    topology: t.layout(),
+                    file: config.encode.channels,
+                }
+                .into());
             }
             Some(t) => wav::channel_mask(t),
             None => wav::default_channel_mask(config.encode.channels),
@@ -279,7 +279,10 @@ mod tests {
         cfg.encode.topology = Some(tutti_core::ChannelTopology::quad());
         let err = encode(&dir.path().join("bad.wav"), &cfg, 8, &vec![vec![0.0; 8]; 2])
             .expect_err("a quad topology is not stereo");
-        assert!(matches!(err, Error::InvalidConfig(_)), "{err}");
+        assert!(
+            matches!(err, Error::InvalidConfig(ConfigError::TopologyWidth { .. })),
+            "{err}"
+        );
     }
 
     /// A plan that cannot fit is refused before the file is created: bytes

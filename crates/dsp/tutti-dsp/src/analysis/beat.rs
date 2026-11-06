@@ -9,7 +9,7 @@
 //! half the period costs the same as one of double.
 //!
 //! Pure functions over a novelty slice; the public entry points are in
-//! [`crate::tempo`].
+//! [`crate::analysis::tempo`].
 
 /// The standard deviation of the smoothing kernel as a fraction of the period.
 const SMOOTH_PERIOD_FRACTION: f64 = 1.0 / 32.0;

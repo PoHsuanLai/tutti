@@ -3,7 +3,7 @@
 //! The tempo is the strongest peak of the novelty curve's autocorrelation,
 //! weighted by a log-Gaussian prior over tempo (Ellis 2007; the same shape as
 //! librosa's `beat_track`), refined to a fraction of a frame by a parabola
-//! through the peak. The beats come from [`crate::beat`]'s dynamic program,
+//! through the peak. The beats come from [`crate::analysis::beat`]'s dynamic program,
 //! run at that tempo.
 //!
 //! # Time resolution

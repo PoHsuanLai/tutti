@@ -486,6 +486,7 @@ pub(super) fn handle(
                 }
                 Err(e) => return Err(e),
             };
+            channels.note_replied();
             match reply {
                 BridgeMessage::AudioProcessed { seq, midi_out, .. } => {
                     // The wire adapter already decoded the list on the bridge

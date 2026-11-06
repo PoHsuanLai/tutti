@@ -210,6 +210,16 @@ impl PluginBridge {
         self.audio.abandoned_replies()
     }
 
+    /// See [`AudioBridge::starved_blocks`](super::audio::AudioBridge::starved_blocks).
+    pub fn starved_blocks(&self) -> u32 {
+        self.audio.starved_blocks()
+    }
+
+    /// See [`AudioBridge::mark_crashed`](super::audio::AudioBridge::mark_crashed).
+    pub fn mark_crashed(&self, cause: &str) {
+        self.audio.mark_crashed(cause);
+    }
+
     /// Why the bridge died, or `None` while it is alive. See
     /// [`AudioBridge::crash_cause`](super::audio::AudioBridge::crash_cause).
     pub fn crash_cause(&self) -> Option<String> {
@@ -539,6 +549,17 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
 
     fn crash_cause(&self) -> Option<String> {
         self.bridge.crash_cause()
+    }
+
+    fn starved_blocks(&self) -> u32 {
+        self.bridge.starved_blocks()
+    }
+
+    fn terminate(&self, cause: &str) {
+        // The cause first: the kill makes the bridge thread read an EOF, and
+        // the first cause latched wins.
+        self.bridge.mark_crashed(cause);
+        self._guard.terminate();
     }
 
     fn rate_refusal(&self) -> Option<(SampleRate, String)> {

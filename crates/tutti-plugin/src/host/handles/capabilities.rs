@@ -134,6 +134,23 @@ pub trait HostParams: Send + Sync {
         None
     }
 
+    /// How many blocks in a row the audio path gave up waiting for, with no
+    /// reply of any kind (on time or late) since: a plugin that stays alive
+    /// but never returns from `process()` shows here and nowhere else.
+    ///
+    /// Reset by any reply, so a slow plugin that still answers keeps it near
+    /// zero. Defaults to `0`: an in-process backend has no budget to miss.
+    fn starved_blocks(&self) -> u32 {
+        0
+    }
+
+    /// Ends the plugin's server process, latching `cause` as the reason the
+    /// plugin is dead (unless it already died of something else). Defaults
+    /// to nothing: an in-process backend has no process to end.
+    fn terminate(&self, cause: &str) {
+        let _ = cause;
+    }
+
     /// How many parameter-change events the plugin sent that the host lost,
     /// over the backend's life. Monotonic.
     ///

@@ -182,6 +182,21 @@ impl AudioBridge {
         self.lifecycle.set_rate_timeout(timeout);
     }
 
+    /// How many blocks in a row the bridge thread abandoned with no reply of
+    /// any kind since (an on-time reply, or an owed one taken back off the
+    /// socket). The bridge thread writes it and any thread reads it: one
+    /// relaxed atomic, no lock, no allocation.
+    pub fn starved_blocks(&self) -> u32 {
+        self.channels.starved()
+    }
+
+    /// Latches `cause` as the reason the bridge is dead (the first cause
+    /// wins), so a host that ends the server itself reads the reason it
+    /// gave.
+    pub fn mark_crashed(&self, cause: &str) {
+        self.lifecycle.mark_crashed(cause);
+    }
+
     /// How many replies the bridge thread has taken back off the socket after
     /// abandoning the blocks that asked for them.
     ///

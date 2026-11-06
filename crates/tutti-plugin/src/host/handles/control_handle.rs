@@ -539,6 +539,21 @@ impl PluginHandle {
         self.params.is_crashed()
     }
 
+    /// How many blocks in a row the audio path abandoned with no reply of any
+    /// kind since. See [`HostParams::starved_blocks`]. An atomic read.
+    #[must_use]
+    pub fn starved_blocks(&self) -> u32 {
+        self.params.starved_blocks()
+    }
+
+    /// Ends the plugin's server process. The bridge then latches `cause`
+    /// (unless it died of something else first), so [`status`](Self::status)
+    /// turns [`Dead`](PluginStatus::Dead) as for any crash. Nothing for an
+    /// in-process plugin. Not for the audio thread.
+    pub fn terminate(&self, cause: &str) {
+        self.params.terminate(cause);
+    }
+
     /// How many parameter-change events the plugin sent that the host lost,
     /// over the plugin's life. Monotonic; see
     /// [`HostParams::dropped_parameter_events`]. A dropped event costs a

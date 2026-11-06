@@ -13,6 +13,7 @@ mod live;
 mod negotiate;
 mod outbound;
 mod schedule;
+mod split;
 mod sysex;
 
 pub use gather::gather_midi;
@@ -24,7 +25,7 @@ pub use live::{
 };
 pub use negotiate::{
     CiInitiator, CiProperty, CiResponder, DeviceIdentity, DiscoveredCiDevice, DiscoveredEndpoint,
-    EndpointInquiry, EndpointNegotiator, FunctionBlock,
+    EndpointInquiry, EndpointNegotiator, FunctionBlock, ProfileSwitch,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockMaster, ClockNode, JR_CLOCK_INTERVAL, JR_CLOCK_MAX_INTERVAL,
@@ -34,6 +35,7 @@ pub use schedule::{
     CLIP_EVENT_CAPACITY, HARMONY_EVENT_CAPACITY, HarmonyControls, HarmonyNode, MidiClipControls,
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
+pub use split::{BlockSplitter, Overrun, Step};
 // The two capacity ceilings come along: a caller sizing its own SysEx buffer, or
 // choosing a non-default limit, has to name the same bound.
 pub use sysex::{

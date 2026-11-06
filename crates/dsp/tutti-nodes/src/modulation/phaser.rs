@@ -9,8 +9,9 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, LinearModMix};
-use crate::ramp::{self, Ramp, block_driven};
+use crate::ramp::block_driven;
 use tutti_core::{ChannelLayout, Depth, Feedback, Hz, Mix, Phase, PhaseIncrement, SampleRate};
+use tutti_dsp::{Ramp, allpass_chain, allpass_coeff, segments};
 
 const MAX_STAGES: usize = 12;
 
@@ -48,29 +49,6 @@ struct PhaserControls {
     depth: f32,
     fb: f32,
     mix: f32,
-}
-
-/// The lowest frequency an all-pass stage is tuned to (see [`allpass_coeff`]).
-const SWEEP_FLOOR_HZ: f32 = 1.0;
-
-/// One first-order all-pass coefficient for a sweep position.
-///
-/// `tan` of the normalised centre, folded into the all-pass form. It is solved
-/// only at the control points — every 16 samples and a block's last sample —
-/// and interpolated between, rather than per sample and channel.
-///
-/// The sweep is held inside `SWEEP_FLOOR_HZ..=0.49 · sr` first. Outside it
-/// `tan` of the normalised frequency is negative (a sweep below 0 Hz, which a
-/// negative [`Depth`] reaches: `set_depth` allows down to −1) or past its
-/// pole (above Nyquist), `|c|` exceeds 1 and the all-pass diverges. Every
-/// sweep a depth in `0..=1` makes lies in `[min_hz, max_hz]`, inside the hold
-/// (`min_hz >= 20`, `max_hz <= 0.90` of Nyquist), so the hold changes nothing
-/// there.
-#[inline]
-fn allpass_coeff(sweep_hz: f32, sr: f32) -> f32 {
-    let sweep_hz = sweep_hz.max(SWEEP_FLOOR_HZ).min(0.49 * sr);
-    let w = core::f32::consts::PI * sweep_hz / sr;
-    (w.tan() - 1.0) / (w.tan() + 1.0)
 }
 
 /// Phaser of any width: `N` audio inputs, `N` outputs.
@@ -359,7 +337,7 @@ impl PhaserNode {
             } else {
                 coeff_at(0, offset)
             };
-            for (start, end) in ramp::segments(size, !primed) {
+            for (start, end) in segments(size, !primed) {
                 let next = coeff_at(end - 1, offset);
                 let seg = Ramp::new(prev, next, end - start);
                 for i in start..end {
@@ -378,17 +356,13 @@ impl PhaserNode {
             for c in 0..w {
                 self.lane[c] = x(c, i) + self.feedback_sample[c] * fb;
             }
-            for s in 0..self.stages {
-                let x1 = &mut self.x1[s * w..(s + 1) * w];
-                let y1 = &mut self.y1[s * w..(s + 1) * w];
-                for c in 0..w {
-                    let input = self.lane[c];
-                    let out = coeffs[c] * (input - y1[c]) + x1[c];
-                    x1[c] = input;
-                    y1[c] = out;
-                    self.lane[c] = out;
-                }
-            }
+            allpass_chain(
+                self.stages,
+                coeffs,
+                &mut self.lane,
+                &mut self.x1,
+                &mut self.y1,
+            );
             for c in 0..w {
                 self.feedback_sample[c] = self.lane[c];
                 y(c, i, mix.blend(x(c, i), self.lane[c]));

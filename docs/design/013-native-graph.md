@@ -649,7 +649,7 @@ place that loses precision to be written out explicitly:
      wall-clock time), where it used to carry a phase by adding a
      quarter-frame's length each time.
    - **One MTC cycle carries one timecode.** A restarted grid puts its first
-     piece 0 on the next even frame of the timeline (`mtc_align`), and the
+     piece 0 on the next even frame of the timeline (`mtc.align`), and the
      eight nibbles are computed there (`timecode_at`: the nearest frame count,
      `position × num / (den × rate)`, on an even frame; drop-frame labels by
      `SmpteTimecode::from_frame_count`) and cached for pieces 1 to 7. The grid
@@ -3213,7 +3213,7 @@ the two transforms and the overlap-add. A uniform partition costs one
 multiply-accumulate per bin per frame per partition (`L / P` per frame), which
 for a long IR is nearly all of it (a 5 s IR at a 512 partition: 469 partitions
 against two 1024-point transforms), so the convolver is cut into **levels**
-(`convolution/convolver.rs`): a head of the node's partition `B` and tail
+(`tutti-dsp`'s `convolver.rs`): a head of the node's partition `B` and tail
 levels of larger partitions, each a uniform partitioned convolver with its own
 FFT size.
 

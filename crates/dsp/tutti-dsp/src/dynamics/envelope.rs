@@ -5,8 +5,8 @@
 //! `GateEnvelopeFollower` adds the hold stage a gate needs between opening and
 //! releasing.
 
-use super::utils::smooth_envelope;
-use tutti_core::{SampleRate, Seconds};
+use super::curves::smooth_envelope;
+use tutti_types::{SampleRate, Seconds};
 
 const EPSILON: f32 = 0.00001;
 
@@ -15,7 +15,7 @@ const EPSILON: f32 = 0.00001;
 /// Encapsulates the stateful envelope tracking that all dynamics processors share:
 /// attack/release coefficients, lazy recalculation, and one-pole IIR smoothing.
 #[derive(Clone, Debug)]
-pub(crate) struct EnvelopeFollower {
+pub struct EnvelopeFollower {
     value: f32,
     attack_coeff: f32,
     release_coeff: f32,
@@ -25,6 +25,7 @@ pub(crate) struct EnvelopeFollower {
 }
 
 impl EnvelopeFollower {
+    /// A follower at rest with the given times at `sample_rate`.
     pub fn new(
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
@@ -77,30 +78,36 @@ impl EnvelopeFollower {
         self.value
     }
 
+    /// The one-pole coefficient used while the target rises.
     #[inline]
     pub fn attack_coeff(&self) -> f32 {
         self.attack_coeff
     }
 
+    /// The one-pole coefficient used while the target falls.
     #[inline]
     pub fn release_coeff(&self) -> f32 {
         self.release_coeff
     }
 
+    /// The smoothed value now.
     #[inline]
     pub fn value(&self) -> f32 {
         self.value
     }
 
+    /// Sets the value outright.
     #[cfg(test)]
     pub fn set_value(&mut self, value: f32) {
         self.value = value;
     }
 
+    /// Returns the follower to rest: value 0, hold cleared.
     pub fn reset(&mut self) {
         self.value = 0.0;
     }
 
+    /// Re-derives the coefficients (and the hold count) for `sample_rate` at the given times.
     pub fn set_sample_rate(
         &mut self,
         sample_rate: impl Into<SampleRate>,
@@ -123,7 +130,7 @@ impl EnvelopeFollower {
 /// Extends `EnvelopeFollower` with a hold counter that keeps the gate open
 /// for a specified duration after the signal drops below threshold.
 #[derive(Clone, Debug)]
-pub(crate) struct GateEnvelopeFollower {
+pub struct GateEnvelopeFollower {
     inner: EnvelopeFollower,
     hold_counter: usize,
     hold_samples: usize,
@@ -131,6 +138,7 @@ pub(crate) struct GateEnvelopeFollower {
 }
 
 impl GateEnvelopeFollower {
+    /// A follower at rest with the given times at `sample_rate`.
     pub fn new(
         attack: impl Into<Seconds>,
         hold: impl Into<Seconds>,
@@ -182,16 +190,19 @@ impl GateEnvelopeFollower {
         }
     }
 
+    /// The smoothed value now.
     #[inline]
     pub fn value(&self) -> f32 {
         self.inner.value()
     }
 
+    /// Returns the follower to rest: value 0, hold cleared.
     pub fn reset(&mut self) {
         self.inner.reset();
         self.hold_counter = 0;
     }
 
+    /// Re-derives the coefficients (and the hold count) for `sample_rate` at the given times.
     pub fn set_sample_rate(
         &mut self,
         sample_rate: impl Into<SampleRate>,

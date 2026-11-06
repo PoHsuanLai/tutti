@@ -17,16 +17,17 @@
 //!
 //! - Filters: [`SvfFilterNode`] ([`SvfType`]), [`LadderFilterNode`]
 //!   ([`LadderType`]), [`EqBandNode`]; the coefficient solvers
-//!   [`SvfCoeffs::new`] and [`LadderCoeffs::new`]; [`Real`], the
+//!   [`SvfCoeffs::new`](tutti_dsp::SvfCoeffs::new) and
+//!   [`LadderCoeffs::new`](tutti_dsp::LadderCoeffs::new); [`Real`], the
 //!   `f32`/`f64` state type.
-//! - Crossover: [`Crossover`], a 2 to 6 band Linkwitz-Riley 4th-order split
+//! - Crossover: [`Crossover`](tutti_dsp::Crossover), a 2 to 6 band Linkwitz-Riley 4th-order split
 //!   (a plain struct, `f64` state, ramped frequency changes), and
 //!   [`CrossoverNode`] over it, each crossover frequency an indexed
 //!   [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with [`CrossoverError`].
-//! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
+//! - Delay: [`DelayLineNode`] over `tutti_dsp::DelayLine`, with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
-//!   bands over a [`Crossover`], every setting an indexed param: see
+//!   bands over a [`Crossover`](tutti_dsp::Crossover), every setting an indexed param: see
 //!   [`BAND_PARAMS`]) with its [`MultibandControls`].
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
@@ -39,7 +40,7 @@
 //! - Param ports: each node's `*_PARAMS` port list (for example
 //!   [`SVF_PARAMS`]), which a control lane drives
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
-//! - Modules: [`automation`] (lanes and recording), [`buffer`] (ring buffers).
+//! - Modules: [`automation`] (lanes and recording).
 //!
 //! [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
 
@@ -67,8 +68,6 @@ pub use tutti_core::{
 // pool, node authoring markers, spawners, ECS reconcilers, deferred
 // convolver load — is the host's, and deliberately outside this workspace.
 
-pub mod buffer;
-
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for
 // `tutti-mod`'s `Wave` (the one wave function both tiers evaluate).
@@ -80,16 +79,26 @@ pub use lfo::{LFO_PARAMS, LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
 pub use modulator::Modulator;
 
 mod delay;
-pub use delay::{DELAY_PARAMS, DelayLine, DelayLineNode, InterpolationMode};
+pub use delay::{DELAY_PARAMS, DelayLineNode};
+// `InterpolationMode` is in `DelayLineNode::with_interpolation`'s signature;
+// the ring itself (`DelayLine`) is `tutti-dsp`'s only.
+pub use tutti_dsp::InterpolationMode;
 
 mod distortion;
-pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
+pub use distortion::{DISTORTION_PARAMS, DistortionNode};
+// `ShapeKind` is in `DistortionNode::new`'s signature; the curves behind it are
+// `tutti-dsp`'s.
+pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{
-    BandState, Crossover, CrossoverError, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderCoeffs,
-    LadderFilterNode, LadderType, Real, SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType,
+    BandState, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SVF_PARAMS,
+    SvfFilterNode,
 };
+// The types in the filter nodes' signatures stay reachable from here; the
+// algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
+// `tutti-dsp`'s only.
+pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfType};
 
 mod dynamics;
 pub use dynamics::{
@@ -135,8 +144,8 @@ pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
 #[cfg(feature = "convolution")]
 pub use convolution::{
-    CONVOLVER_PARAMS, Convolver, ConvolverNode, IrChannelConfig, IrSpectra, WetDry,
-    generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into,
+    CONVOLVER_PARAMS, ConvolverNode, IrChannelConfig, WetDry, generate_room_ir,
+    generate_room_ir_into, generate_test_ir, generate_test_ir_into,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

@@ -1,7 +1,7 @@
 //! The float the filters' state and coefficients run in: `f32` or `f64`.
 //!
-//! [`SvfFilterNode`](super::SvfFilterNode), [`EqBandNode`](super::EqBandNode)
-//! and [`LadderFilterNode`](super::LadderFilterNode) are generic over it, so a
+//! The `tutti-nodes` filter nodes (`SvfFilterNode`, `EqBandNode` and
+//! `LadderFilterNode`) are generic over it, so a
 //! host picks `f64` state for low cutoffs at high rates, where an `f32`
 //! integrator loses resolution, and `f32` elsewhere. It is exactly the
 //! arithmetic those filters use and nothing more. The transcendental calls go

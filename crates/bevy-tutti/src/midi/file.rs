@@ -11,12 +11,13 @@
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::midi::{MidiFilePlugin, MidiFileWrite, MidiFileWritten};
 //! use tutti_core::Beat;
+//! use tutti_midi_types::MidiChannel;
 //! use tutti_midi_file::{smf, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 //!
 //! let bytes = smf::to_bytes(
 //!     &[vec![SmfTimedEvent {
 //!         time_beats: Beat(0.0),
-//!         channel: 0,
+//!         channel: MidiChannel::FIRST,
 //!         msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
 //!     }]],
 //!     &MidiWriteConfig::default(),

@@ -28,12 +28,13 @@ use crate::{Error, MidiFileKind, Result};
 ///
 /// ```
 /// use tutti_core::Beat;
+/// use tutti_midi_types::MidiChannel;
 /// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///
 /// let bytes = smf::to_bytes(
 ///     &[vec![SmfTimedEvent {
 ///         time_beats: Beat(2.0),
-///         channel: 0,
+///         channel: MidiChannel::FIRST,
 ///         msg: SmfMessage::NoteOn { key: 60.into(), vel: 127.into() },
 ///     }]],
 ///     &MidiWriteConfig::default(),
@@ -192,7 +193,7 @@ impl MidiFile {
             smf.stream.events.iter().filter_map(move |e| {
                 wire.clear();
                 LiveEvent::Midi {
-                    channel: e.channel.into(),
+                    channel: e.channel.get().into(),
                     message: e.msg,
                 }
                 .write(&mut wire)

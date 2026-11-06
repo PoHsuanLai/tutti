@@ -11,6 +11,7 @@ use tutti_core::{AudioTap, MasterMeter};
 use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, ScopedNoDenormals};
 
 use crate::block::OutputBlock;
+use crate::driver::DeviceInfo;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
@@ -100,13 +101,12 @@ impl std::fmt::Debug for AudioEngine {
 
 impl AudioEngine {
     /// Opens a device on the default host and reads its default output config,
-    /// without starting a stream. `None` selects the host's default device.
+    /// without starting a stream.
     ///
     /// # Errors
-    /// [`Error::InvalidDevice`] if `device_index` is out of range, or
-    /// [`Error::DeviceNotAvailable`] if the device has no default output config.
-    pub fn new(device_index: Option<usize>) -> Result<Self> {
-        Self::open(DeviceHost::open(AudioHost::Default)?, device_index.into())
+    /// As [`open`](Self::open).
+    pub fn new(sel: impl Into<DeviceSelector>) -> Result<Self> {
+        Self::open(DeviceHost::open(AudioHost::Default)?, sel.into())
     }
 
     /// Opens a device on the given host and reads its default output config,
@@ -160,7 +160,7 @@ impl AudioEngine {
     /// stream is already running.
     ///
     /// Re-reads the device's default config first, so after a
-    /// [`set_device`](Self::set_device) the [`spec`](Self::spec),
+    /// [`select_device`](Self::select_device) the [`spec`](Self::spec),
     /// [`sample_rate`](Self::sample_rate) and [`channels`](Self::channels)
     /// describe the device that is actually playing. The stream is opened with
     /// a fixed buffer of [`PREFERRED_QUANTUM`](crate::PREFERRED_QUANTUM) frames
@@ -268,14 +268,6 @@ impl AudioEngine {
         self.running.is_some() && !self.faults.is_disconnected()
     }
 
-    /// Selects the device the next [`start`](Self::start) opens, by position
-    /// in the enumeration; `None` means the host default. Does not disturb a
-    /// running stream, and does nothing on an engine built with
-    /// [`from_spec`](Self::from_spec).
-    pub fn set_device(&mut self, index: Option<usize>) {
-        self.select_device(index.into());
-    }
-
     /// Selects the device the next [`start`](Self::start) opens, by name or
     /// index. Does not disturb a running stream, and does nothing on an engine
     /// built with [`from_spec`](Self::from_spec).
@@ -300,127 +292,15 @@ impl AudioEngine {
         Ok(host.device(Direction::Output, sel)?.name()?)
     }
 
-    /// Lists the default host's output devices as `(index, name)` pairs.
-    /// The index is positional — see [`DeviceSelector::Index`].
+    /// Lists the default host's output devices. Each
+    /// [`DeviceInfo::index`] is positional, see [`DeviceSelector::Index`].
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.
-    pub fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
-        Ok(DeviceHost::open(AudioHost::Default)?
-            .output_devices()?
-            .into_iter()
-            .map(|d| (d.index, d.name)))
+    pub fn output_devices() -> Result<Vec<DeviceInfo>> {
+        DeviceHost::open(AudioHost::Default)?.output_devices()
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tutti_core::graph::{Edge, InPort, OutPort, Source};
-    use tutti_core::{Beat, BeatDuration, MotionEvent, Transport};
-    use tutti_core::{Engine, NodeKey, SampleRate, Samples};
-    use tutti_core::{Hz, Q};
-    use tutti_graph::{Editor, Prepare};
-    use tutti_nodes::testing::Osc;
-    use tutti_nodes::{SvfFilterNode, SvfType};
-
-    /// Build an engine + transport pair whose graph actually renders.
-    ///
-    /// An empty graph renders silence without running a node — which would
-    /// leave the transport assertions below reading a playhead nothing
-    /// exercised. A sine through a filter into the output gives the render
-    /// path real nodes to run, buffers to hand between them, and a fold to
-    /// the device width. The playhead is the engine's own clock; there is no
-    /// clock node in the graph.
-    ///
-    /// `tests/rt_no_alloc.rs` mirrors this fixture, because the allocation
-    /// gates need a `#[global_allocator]` that only a test binary root can
-    /// declare.
-    fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
-        let transport = Transport::new(sample_rate);
-
-        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(sample_rate), Samples(512)));
-        let (source, filter) = (NodeKey(1), NodeKey(2));
-        ed.insert(source, "sine", Osc::sine(Hz(220.0)));
-        ed.insert(
-            filter,
-            "filter",
-            SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
-        );
-        ed.spec_mut().topology.edges.insert(
-            InPort {
-                node: filter,
-                port: 0,
-            },
-            Edge::Direct(Source::Node(OutPort {
-                node: source,
-                port: 0,
-            })),
-        );
-        // The filter's single output on both device channels.
-        ed.spec_mut().topology.outputs = vec![
-            Source::Node(OutPort {
-                node: filter,
-                port: 0,
-            });
-            2
-        ];
-        ed.commit().expect("commits");
-        let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-        let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
-        (transport, state)
-    }
-
-    #[test]
-    fn test_transport_advances_with_graph() {
-        let sample_rate = 44100.0;
-        let (transport, state) = build_callback_state(sample_rate);
-
-        transport.settings.set_tempo(120.0);
-        let _ = transport.motion.try_send(MotionEvent::Play);
-
-        let frames = 256;
-        let mut output = vec![0.0f32; frames * 2];
-        process_audio(
-            &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-        );
-
-        let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
-        let actual_beat = transport.settings.beat();
-        assert!(
-            (actual_beat - expected_beat).abs() < BeatDuration(1e-6),
-            "expected {expected_beat:?}, got {actual_beat:?}"
-        );
-    }
-
-    #[test]
-    fn test_transport_loop_wrapping() {
-        let sample_rate = 44100.0;
-        let (transport, state) = build_callback_state(sample_rate);
-
-        transport.settings.set_tempo(120.0);
-        transport
-            .motion
-            .schedule(
-                tutti_core::At::NextBlock,
-                tutti_core::LoopEdit::over(tutti_core::LoopRange::new(0.0, 4.0).expect("ordered")),
-            )
-            .expect("room");
-        let _ = transport.motion.try_send(MotionEvent::Play);
-        transport.motion.seek.request(3.99);
-
-        let frames = 1024;
-        let mut output = vec![0.0f32; frames * 2];
-        process_audio(
-            &state,
-            &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
-        );
-
-        let beat = transport.settings.beat();
-        assert!(
-            beat < Beat(4.0),
-            "expected beat wrapped below 4.0, got {beat:?}"
-        );
-    }
-}
+mod tests;

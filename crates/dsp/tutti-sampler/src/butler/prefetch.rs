@@ -372,12 +372,14 @@ impl RegionOut {
         #[cfg(codec)]
         if let Some(decoder) = self.decoder.as_mut() {
             let ch = self.writer.stride();
-            if decoder.cursor() != at as u64 && decoder.seek(at as u64).is_err() {
+            if decoder.cursor() != Samples(at) && decoder.seek(Samples(at)).is_err() {
                 out.fill(0.0);
                 return false;
             }
             // Frames read before a fault are kept; the rest is silence.
-            let got = decoder.fill_sequential_interleaved(out).unwrap_or(0);
+            let got = decoder
+                .fill_sequential_interleaved(out)
+                .map_or(0, Samples::get);
             out[got * ch..].fill(0.0);
             let Some(fault) = decoder.error() else {
                 self.fault_logged = false;
@@ -606,7 +608,7 @@ mod tests {
         std::fs::write(&path, &bytes[..bytes.len() * 9 / 10]).expect("write");
 
         let decoder = FileIn::open(&path).expect("a cut file still opens");
-        let total = decoder.total_frames().expect("flac reports a length") as usize;
+        let total = decoder.total_frames().expect("flac reports a length").get();
         let (mut writer, _ring) = ring(4096, 2);
         writer.set_decoder(decoder);
 

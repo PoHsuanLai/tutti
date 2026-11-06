@@ -28,9 +28,10 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
+use tutti_core::SampleRate;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -55,7 +56,7 @@ fn load_test_soundfont() -> Arc<SoundFont> {
 
 /// A unit at 44.1 kHz, prepared (outside any gate) and driven by hand.
 fn unit() -> Hand {
-    let settings = SynthesizerSettings::new(44_100);
+    let settings = Settings::new(SampleRate::SR_44K1);
     Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).expect("create SoundFontUnit"))
 }
 

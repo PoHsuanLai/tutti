@@ -5,13 +5,10 @@ use tutti_core::AtomicF32;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::{ChannelLayout, UnitParam};
 
-use super::envelope::EnvelopeFollower;
 use super::params::{AttackRelease, ThresholdParams};
-use super::utils::{
-    amplitude_to_db, apply_gain_lane, compute_compressor_gain_reduction, db_to_amplitude, ramp_db,
-    sidechain_levels,
-};
+use super::utils::{apply_gain_lane, sidechain_levels};
 use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
+use tutti_dsp::{CompressorBlock, CompressorKernel};
 
 use crate::ramp::{LastGood, block_driven, clamp_finite};
 
@@ -23,8 +20,7 @@ pub(super) struct CompressorCore {
     pub timing: AttackRelease,
     pub makeup_db: Param<Db>,
 
-    envelope: f32,
-    follower: EnvelopeFollower,
+    kernel: CompressorKernel,
     /// The makeup gain the previous block ended on, the start of this block's
     /// ramp. `None` until the first block, which then starts on its own value
     /// — a node has no "previous" makeup to ramp in from.
@@ -34,24 +30,6 @@ pub(super) struct CompressorCore {
     /// single NaN or ±∞ leaves NaN for good — so a non-finite write reads as
     /// unchanged (see [`LastGood`]).
     good: [LastGood; 6],
-}
-
-/// The controls one block runs on, read from their atomics **once** at the
-/// top of `process`.
-///
-/// Reading per block keeps four atomic loads per sample out of the gain
-/// computation. The detector-side three (threshold, knee, ratio) are held for the block: they
-/// decide a *target* reduction that the attack/release follower then smooths,
-/// so a step between blocks reaches the output already ramped by the envelope.
-/// Makeup is not smoothed by anything — it multiplies the output directly — so
-/// it ramps linearly from the previous block's value to this one's.
-#[derive(Clone, Copy)]
-pub(super) struct CompressorBlock {
-    threshold: Db,
-    knee: Db,
-    ratio: CompressionRatio,
-    makeup_from: Db,
-    makeup_to: Db,
 }
 
 impl CompressorCore {
@@ -77,8 +55,7 @@ impl CompressorCore {
             ratio: Param::new(ratio),
             timing: AttackRelease::new(attack, release),
             makeup_db: Param::new(Db(0.0)),
-            envelope: 0.0,
-            follower: EnvelopeFollower::new(attack, release, SampleRate::DEFAULT),
+            kernel: CompressorKernel::new(attack, release, SampleRate::DEFAULT),
             last_makeup: None,
             good: [
                 LastGood::new(threshold_db.get()),
@@ -102,7 +79,7 @@ impl CompressorCore {
     }
 
     pub fn gain_reduction_db(&self) -> Db {
-        Db(self.follower.value())
+        self.kernel.gain_reduction_db()
     }
 
     /// Detaches every control cell (see [`Param::detach`]): the `fork_fresh`
@@ -120,12 +97,11 @@ impl CompressorCore {
     /// but is a 0..1 open-fraction, and the types are what stop the two being
     /// swapped.
     pub fn envelope_level(&self) -> Amplitude {
-        Amplitude(self.envelope)
+        self.kernel.envelope_level()
     }
 
     pub fn reset(&mut self) {
-        self.envelope = 0.0;
-        self.follower.reset();
+        self.kernel.reset();
         // Ramp history is state like the envelope: a reset node starts its
         // next block on the current makeup rather than ramping in from a
         // value it held before the discontinuity.
@@ -134,7 +110,7 @@ impl CompressorCore {
 
     pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
         let (attack, release) = self.times([None, None]);
-        self.follower.set_sample_rate(sample_rate, attack, release);
+        self.kernel.set_sample_rate(sample_rate, attack, release);
     }
 
     /// `driven` is the block's attack and release from the node's param
@@ -142,7 +118,7 @@ impl CompressorCore {
     #[inline]
     pub fn update_coefficients(&mut self, driven: [Option<f32>; 2]) {
         let (attack, release) = self.times(driven);
-        self.follower.update_coefficients(attack, release);
+        self.kernel.update_coefficients(attack, release);
     }
 
     /// Attack and release, with non-finite writes held off, floored as
@@ -190,12 +166,8 @@ impl CompressorCore {
         }
     }
 
-    /// Compressor gain (linear) for frame `i` of an `n`-frame block, given the
-    /// sidechain level and an optional per-sample threshold override (dB).
-    /// `None` uses the block's threshold (the fast path); `Some(db)` overrides
-    /// it — the audio-rate modulation path, which stays per sample because it
-    /// is an audio signal, not an atomic. No extra clamp: threshold has no
-    /// min/max in the setter.
+    /// Compressor gain (linear) for frame `i` of an `n`-frame block; see
+    /// [`CompressorKernel::gain`].
     #[inline]
     pub fn gain(
         &mut self,
@@ -205,18 +177,7 @@ impl CompressorCore {
         sc_level: f32,
         threshold_override: Option<Db>,
     ) -> f32 {
-        let input_db = amplitude_to_db(sc_level);
-        // A non-finite port sample falls back to the block's threshold rather
-        // than reaching the follower.
-        let threshold_db = threshold_override
-            .filter(|t| t.get().is_finite())
-            .unwrap_or(block.threshold);
-        let target_reduction =
-            compute_compressor_gain_reduction(input_db, threshold_db, block.ratio, block.knee);
-        let gain_reduction = self.follower.smooth(target_reduction.get());
-        self.envelope = sc_level;
-        let makeup = ramp_db(block.makeup_from, block.makeup_to, i, n);
-        db_to_amplitude(-gain_reduction + makeup.get()).get()
+        self.kernel.gain(block, i, n, sc_level, threshold_override)
     }
 }
 

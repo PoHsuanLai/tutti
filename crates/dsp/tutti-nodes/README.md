@@ -3,7 +3,11 @@
 The Tutti audio engine's built-in DSP nodes: filters, delays, dynamics,
 modulation effects, mixing and automation.
 
-Every node here is a graph node (`tutti_graph::Node`). Build one, insert it
+Every node here is a graph node (`tutti_graph::Node`), and a node file holds
+only the adapter: shape, prepare, process, params and fork. The algorithm each
+one runs is a pure function or struct over slices in `tutti-dsp`: the filter
+coefficients and steps (`SvfCoeffs`, `LadderCoeffs`, `Crossover`), the dynamics
+curves and kernels, `Convolver`, `DelayLine` and the waveshaping curves. Build one, insert it
 into a graph (`tutti_graph::{GraphBuilder, Editor}`), wire it, and the graph
 prepares it at the device rate and renders it. Inserting a node hands back its
 controls, usually a `tutti_graph::ParamSet` addressed by `UnitParam` (a
@@ -12,12 +16,12 @@ node without a lock.
 
 - **Filters** — `SvfFilterNode`, `LadderFilterNode` (both any width, one
   coefficient solve shared across the channels) and `EqBandNode`.
-- **Crossover** — `Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split
-  (the bands sum to flat magnitude; IIR, so not linear-phase and no latency),
-  and `CrossoverNode`, which makes `bands × channels` outputs from it. Each
+- **Crossover** — `CrossoverNode`, which makes `bands × channels` outputs from
+  `tutti_dsp::Crossover`, a 2 to 6 band Linkwitz-Riley 4th-order split (the
+  bands sum to flat magnitude; IIR, so not linear-phase and no latency). Each
   crossover is an indexed `Cutoff` param (`UnitAddr::new(UnitParam::Cutoff, i)`).
 - **Delay** — `DelayLineNode` (any width, with a cross-feedback routing
-  matrix), over the inner `DelayLine`.
+  matrix), over `tutti_dsp::DelayLine`.
 - **Dynamics** — `CompressorNode`, `GateNode`, `BrickwallLimiterNode`,
   `LimiterNode`, and `MultibandCompressorNode` (2 to 4 bands, a linked
   compressor per band of a `Crossover`). Every setting is an indexed param: a
@@ -46,9 +50,12 @@ node without a lock.
   (a curve as audio) and recording units, and `ConvolverNode` with its IR
   generators (behind a feature).
 
-A `*Node` is the graph-facing node; the inner DSP objects some are built
-from — `DelayLine`, `Modulator`, `BandState` — carry no suffix, because
-they are not nodes and can be used on their own.
+A `*Node` is the graph-facing node; the inner objects some are built from —
+`Modulator`, `BandState` — carry no suffix, because they are not nodes and
+can be used on their own. The algorithms are `tutti-dsp`'s (`tutti_dsp::DelayLine`,
+`tutti_dsp::Crossover`, …); this crate re-exports only the types in a node's
+signature: `SvfType`, `LadderType`, `Real`, `CrossoverError`,
+`InterpolationMode` and `ShapeKind`.
 
 Nothing in this crate can fail: there is no `Error` type, and a node is ready
 to insert the moment it is built.
@@ -133,10 +140,12 @@ it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
 
 `default = []`.
 
-- `convolution` — FFT convolution reverb over a partitioned IR (`Convolver`,
-  `ConvolverNode` at any width, with `IrChannelConfig`). Its FFT is `tutti_dsp::RealFft` (scalar, so the output is CPU-independent). An
-  IR's spectra are stored once (`IrSpectra`, behind an `Arc`) and shared by
-  every channel and every fork of the graph.
+- `convolution` — FFT convolution reverb over a partitioned IR
+  (`ConvolverNode` at any width, with `IrChannelConfig`, over
+  `tutti_dsp::Convolver`, whose FFT is `tutti_dsp::RealFft`: scalar, so the
+  output is CPU-independent). An IR's spectra are stored once
+  (`tutti_dsp::IrSpectra`, behind an `Arc`) and shared by every channel and
+  every fork of the graph.
 - `testing` — stimulus and plumbing nodes for tests, examples and benches
   (`Const`, `Osc`, `Through`, `Split`, `Sink`). Enable it from
   `[dev-dependencies]` only.

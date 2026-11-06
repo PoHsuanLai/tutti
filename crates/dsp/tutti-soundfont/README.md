@@ -4,9 +4,9 @@ SoundFont (`.sf2`) playback for the Tutti audio engine, via RustySynth.
 
 The crate has one type, `SoundFontUnit`: a graph node (`tutti_graph::Node`)
 with no audio inputs, stereo out and one MIDI event input. Build it from a
-decoded `SoundFont` and a `SynthesizerSettings`, choose a preset with
+decoded `SoundFont` and a `Settings`, choose a preset with
 `program_change` (or build both in one call with
-`SoundFontUnit::with_preset(font, rate, channel, preset)`), insert it into a
+`SoundFontUnit::with_preset(font, rate, channel, program)`), insert it into a
 graph, and wire a MIDI source (a clip node, a keyboard queue, a hardware
 input) to its event input. Each event is
 applied at its own frame offset within the block, to a resolution of 8
@@ -25,14 +25,16 @@ use std::fs::File;
 use tutti_core::graph::{OutPort, Source};
 use tutti_core::{Arc, NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};
-use tutti_soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
+use tutti_midi_types::MidiChannel;
+use tutti_midi_types::midi2::num::u7;
+use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 let mut file = File::open("piano.sf2")?;
 let soundfont = Arc::new(SoundFont::new(&mut file)?);
 
-let settings = SynthesizerSettings::new(44_100);
+let settings = Settings::new(SampleRate::SR_44K1);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;
-unit.program_change(0, 0); // channel 0 → preset 0
+unit.program_change(MidiChannel::FIRST, u7::new(0)); // channel 0 → program 0
 
 // Into the graph: no audio input, stereo out, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
@@ -65,8 +67,7 @@ inside the same 8-frame window sound together. RustySynth renders voices in
 internal chunks of `block_size` frames and fills each chunk whole, so an event
 cannot take effect part-way into one. This crate always builds the
 synthesizer at a `block_size` of 8, the smallest RustySynth accepts
-(`SYNTH_BLOCK_FRAMES`), and ignores the `block_size` a caller passes; every
-other `SynthesizerSettings` field is used as given.
+(`SYNTH_BLOCK_FRAMES`), and `Settings` has no `block_size`.
 
 At 44.1 kHz that is 0.18 ms. An event at offset N (a multiple of 8) produces
 exactly the offset-0 render shifted by N frames. The smaller chunk costs about
@@ -104,8 +105,7 @@ send MIDI on its event input.
 - No MIDI device I/O: that is `tutti-midi-hardware`; the message types are
   `tutti-midi-types`.
 
-`SoundFont`, `SoundFontError` and `SynthesizerSettings` are re-exported from
-RustySynth, so decoding a file needs no direct `rustysynth` dependency.
+`SoundFont` and `SoundFontError` are re-exported from RustySynth, so decoding a file needs no direct `rustysynth` dependency.
 The `tutti` crate re-exports this one as `tutti::soundfont` behind its
 `soundfont` feature, and `bevy-tutti` uses it behind the same feature.
 

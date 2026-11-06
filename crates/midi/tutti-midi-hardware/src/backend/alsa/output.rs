@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
 use crate::capability::EndpointId;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use tutti_alsa_ump_sys as sys;
 use tutti_midi_types::MidiOut;
 use tutti_midi_types::ump::MidiEvent;
@@ -24,8 +24,9 @@ pub struct AlsaOutput {
 
 struct Sender {
     seq: SeqClient,
-    port: i32,
-    own_client: i32,
+    /// Our client id, as the sequencer addresses it.
+    own_client: u8,
+    port: u8,
 }
 
 impl AlsaOutput {
@@ -40,7 +41,7 @@ impl AlsaOutput {
     ///
     /// # Errors
     ///
-    /// [`Error::Alsa`](crate::Error::Alsa) with the code
+    /// [`Error::Alsa`] with the code
     /// `snd_seq_ump_event_output_direct` returned.
     ///
     /// # Panics
@@ -58,8 +59,8 @@ impl AlsaOutput {
             // must be zeroed rather than left stale.
             type_: 0,
             source: sys::snd_seq_addr_t {
-                client: inner.own_client as u8,
-                port: inner.port as u8,
+                client: inner.own_client,
+                port: inner.port,
             },
             // **Not** the destination's own address, even though it is known.
             //
@@ -117,7 +118,7 @@ impl MidiOut for AlsaOutput {
 ///
 /// # Errors
 ///
-/// [`Error::Alsa`](crate::Error::Alsa) if the sequencer cannot be opened, the
+/// [`Error::Alsa`] if the sequencer cannot be opened, the
 /// port created, or the subscription to `id` made.
 pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     let (dest_client, dest_port) = unpack_id(id);
@@ -130,7 +131,8 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
         sys::SND_SEQ_PORT_CAP_READ | sys::SND_SEQ_PORT_CAP_SUBS_READ,
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
     )?;
-    let own_client = seq.id()?;
+    let own_client = seq_addr_byte(seq.id()?, "snd_seq_client_id")?;
+    let own_port = seq_addr_byte(port, "snd_seq_create_simple_port")?;
 
     // SAFETY: `seq` is open; the address came from enumeration.
     check(
@@ -145,8 +147,19 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     Ok(Box::new(AlsaOutput {
         inner: Mutex::new(Sender {
             seq,
-            port,
             own_client,
+            port: own_port,
         }),
     }))
 }
+
+/// A client or port id as the sequencer's address byte; ids come from the
+/// sequencer and fit, so a wider one is reported rather than truncated.
+fn seq_addr_byte(id: i32, operation: &'static str) -> Result<u8> {
+    u8::try_from(id).map_err(|_| Error::Alsa {
+        operation,
+        code: -EINVAL,
+    })
+}
+
+const EINVAL: i32 = 22;

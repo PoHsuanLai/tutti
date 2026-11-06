@@ -1,12 +1,13 @@
 //! Parametric EQ band: an SVF plus a zero-cost bypass.
 
-use super::Real;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{ChannelLayout, Db, Hz, Q};
+use tutti_dsp::Real;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 
-use super::svf::{SvfFilterNode, SvfType};
+use super::svf::SvfFilterNode;
+use tutti_dsp::SvfType;
 
 /// Enable/bypass state for an EQ band. Replaces a raw `bool` so callers
 /// cannot confuse "active" with unrelated boolean flags, and so the two

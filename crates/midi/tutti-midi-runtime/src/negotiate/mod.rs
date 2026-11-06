@@ -25,7 +25,9 @@
 pub mod capability_inquiry;
 pub mod endpoint;
 
-pub use capability_inquiry::{CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice};
+pub use capability_inquiry::{
+    CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice, ProfileSwitch,
+};
 pub use endpoint::{
     DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,
 };

@@ -75,6 +75,8 @@ pub struct Recorder {
     /// `finish`, `wait`, `finish_in_place` and `drop` runs first leaves `None`.
     /// Boxed so the driver choice does not leak into `Recorder`'s type.
     handle: Option<Box<dyn RunningPump>>,
+    /// Raised by the pump on its first failed pass; see [`failed`](Self::failed).
+    failed: Arc<AtomicBool>,
     /// Written only by `drop`; every other shutdown returns its result.
     status: Arc<FinalizeStatus>,
 }
@@ -206,13 +208,20 @@ impl Recorder {
         let scratch_samples = frames.interleaved_len(layout);
 
         let running = Arc::new(AtomicBool::new(true));
-        let pump_loop = PumpLoop::new(src, sink, vec![S::default(); scratch_samples]);
+        let failed = Arc::new(AtomicBool::new(false));
+        let pump_loop = PumpLoop::new(
+            src,
+            sink,
+            vec![S::default(); scratch_samples],
+            Arc::clone(&failed),
+        );
 
         let handle = driver.drive(pump_loop, Arc::clone(&running));
 
         Ok(Self {
             running,
             handle: Some(Box::new(handle)),
+            failed,
             status: Arc::new(FinalizeStatus::default()),
         })
     }
@@ -244,8 +253,9 @@ impl Recorder {
     /// returns the finalize result as `finish` does.
     ///
     /// **On a [`Starved`](tutti_types::OnEmpty::Starved) source this blocks
-    /// forever**, and every microphone capture is one — the pump parks and
-    /// re-polls rather than ending. Choose the method that matches your
+    /// until the source fails**, and every microphone capture is one — the pump
+    /// parks and re-polls rather than ending, and only a failure
+    /// ([`failed`](Self::failed)) or a stop ends it. Choose the method that matches your
     /// source's `ON_EMPTY`. After [`finish_in_place`](Self::finish_in_place) has already
     /// returned the result, this returns `Ok(())` without blocking.
     ///
@@ -275,6 +285,19 @@ impl Recorder {
     #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
+    }
+
+    /// Whether the take failed: the source broke ([`AudioIn::is_failed`], for a
+    /// microphone its device went away) or the sink did ([`AudioOut::is_failed`],
+    /// for a WAV a write error such as a full disk).
+    ///
+    /// The pump stops and finalizes the frames already written, so the file
+    /// stays readable up to the failure and [`is_finished`](Self::is_finished)
+    /// turns `true` under a [`ThreadDriver`]. The sink's own error, if any,
+    /// comes from [`finish_in_place`](Self::finish_in_place).
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
     }
 
     /// Whether the pump has stopped running passes, so

@@ -27,6 +27,8 @@
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
 //! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
 
+use std::sync::Arc;
+
 use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::{
     HeapCons, HeapProd, HeapRb,
@@ -43,6 +45,7 @@ use tutti_types::{AudioIn, OnEmpty};
 
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
+use crate::faults::StreamFaults;
 use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
 use crate::owner::Owned;
 
@@ -84,6 +87,8 @@ struct StreamHandle(
 pub struct MicIn {
     cons: HeapCons<[f32; 2]>,
     sample_rate: SampleRate,
+    /// What the input stream's error callback reports into.
+    faults: Arc<StreamFaults>,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
 }
@@ -92,6 +97,7 @@ impl std::fmt::Debug for MicIn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MicIn")
             .field("sample_rate", &self.sample_rate)
+            .field("faults", &self.faults.count())
             .field("_stream", &self._stream)
             .finish_non_exhaustive()
     }
@@ -169,6 +175,7 @@ impl MicIn {
         let sample_rate = SampleRate::from(config.sample_rate().0);
         let channels = ChannelLayout::from(usize::from(config.channels()));
 
+        let faults = Arc::new(StreamFaults::new());
         let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
         let (prod, cons) = rb.split();
 
@@ -193,17 +200,18 @@ impl MicIn {
                 "Unsupported input sample format: {sample_format:?}"
             )));
         }
+        let cb_faults = Arc::clone(&faults);
         let owned = Owned::spawn("tutti-input-stream", move || {
             let (d, c, n) = (&device, &cfg, channel_count);
             let stream = match sample_format {
-                cpal::SampleFormat::I8 => build_input::<i8>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::I16 => build_input::<i16>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::I32 => build_input::<i32>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::U8 => build_input::<u8>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::U16 => build_input::<u16>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::U32 => build_input::<u32>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::F32 => build_input::<f32>(d, c, n, prod, mon_prod)?,
-                cpal::SampleFormat::F64 => build_input::<f64>(d, c, n, prod, mon_prod)?,
+                cpal::SampleFormat::I8 => build_input::<i8>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::I16 => build_input::<i16>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::I32 => build_input::<i32>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::U8 => build_input::<u8>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::U16 => build_input::<u16>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::U32 => build_input::<u32>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::F32 => build_input::<f32>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::F64 => build_input::<f64>(d, c, n, prod, mon_prod, cb_faults)?,
                 // Checked above, before the thread is spawned.
                 _ => unreachable!("sample format checked before spawn"),
             };
@@ -214,8 +222,21 @@ impl MicIn {
         Ok(Self {
             cons,
             sample_rate,
+            faults,
             _stream: StreamHandle(owned),
         })
+    }
+
+    /// The faults the input stream has reported, shared with its error callback.
+    ///
+    /// Take it before handing the mic to a `tutti_io::Recorder`, which owns the
+    /// `MicIn`. A disconnect also ends the take: the recorder's
+    /// `failed()` turns `true` once the buffered frames are written. Nothing
+    /// else observes the mic; a host that wants to report it polls this handle,
+    /// as it does the output's.
+    #[must_use]
+    pub fn faults(&self) -> Arc<StreamFaults> {
+        Arc::clone(&self.faults)
     }
 
     /// Returns the rate the capture stream runs at (the `graph_rate` it was
@@ -281,6 +302,12 @@ impl AudioIn for MicIn {
         ChannelLayout::STEREO
     }
 
+    /// The device is gone: the backend reported it disconnected. Any other
+    /// backend error may be transient and does not fail the source.
+    fn is_failed(&self) -> bool {
+        self.faults.is_disconnected()
+    }
+
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         // Pop up to `out.len() / 2` FRAMES the callback has pushed — the return
         // is frames, the slice is samples. A short/zero count is normal for a
@@ -322,6 +349,7 @@ fn build_input<T>(
     channels: usize,
     mut prod: HeapProd<[f32; 2]>,
     mut mon_prod: Option<HeapProd<[f32; 2]>>,
+    faults: Arc<StreamFaults>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
@@ -358,7 +386,9 @@ where
                 }
             }
         },
-        |_err| {},
+        // Not exercised without a device: what it calls, `StreamFaults::record`
+        // and `MicIn::is_failed`, is tested on its own.
+        move |err| faults.record(&err),
         None,
     )?;
     Ok(stream)

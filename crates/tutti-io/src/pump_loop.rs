@@ -35,6 +35,10 @@ pub enum PumpPass {
     Starved,
     /// The source has nothing more, ever ([`OnEmpty::EndOfStream`]). Stop.
     Ended,
+    /// The source broke ([`AudioIn::is_failed`]) after its buffered frames were
+    /// drained, or the sink failed ([`AudioOut::is_failed`]). Stop and
+    /// finalize what was written.
+    Failed,
 }
 
 /// One source→sink pump, with no thread and no clock.
@@ -53,12 +57,21 @@ pub struct PumpLoop<I, O, S = f32> {
     sink: O,
     /// Allocated once at construction; `pump_once` never grows it.
     scratch: Vec<S>,
+    /// Set by the first [`PumpPass::Failed`]; the [`Recorder`] holds the other
+    /// end.
+    failed: Arc<AtomicBool>,
 }
 
 impl<I, O, S> PumpLoop<I, O, S> {
-    /// A loop over `src` and `sink` moving at most `scratch.len()` samples per pass.
-    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>) -> Self {
-        Self { src, sink, scratch }
+    /// A loop over `src` and `sink` moving at most `scratch.len()` samples per
+    /// pass, raising `failed` when a pass fails.
+    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>, failed: Arc<AtomicBool>) -> Self {
+        Self {
+            src,
+            sink,
+            scratch,
+            failed,
+        }
     }
 }
 
@@ -81,9 +94,14 @@ where
     ///
     /// A zero-frame poll is reported as [`Starved`](PumpPass::Starved) or
     /// [`Ended`](PumpPass::Ended) according to the source's own
-    /// [`ON_EMPTY`](AudioIn::ON_EMPTY).
+    /// [`ON_EMPTY`](AudioIn::ON_EMPTY), unless the sink has failed or the
+    /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
     pub fn pump_once(&mut self) -> PumpPass {
         let n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        if self.sink.is_failed() || (n.is_zero() && self.src.is_failed()) {
+            self.failed.store(true, Ordering::Release);
+            return PumpPass::Failed;
+        }
         if !n.is_zero() {
             return PumpPass::Wrote(n);
         }
@@ -215,6 +233,8 @@ impl PumpDriver for ThreadDriver {
                     PumpPass::Starved => std::thread::sleep(park),
                     // Finite source: there is no more to read.
                     PumpPass::Ended => break,
+                    // Broken source or sink: nothing more will come.
+                    PumpPass::Failed => break,
                 }
             }
             // Finalize exactly once, here, where the loop is owned. The result

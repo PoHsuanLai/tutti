@@ -27,6 +27,7 @@
 //! | `Recorder::wait` calls `finish_in_place()` rather than `join_pump()` | `wait_returns_a_complete_finite_take_…` (short file) |
 //! | `PumpPass::Ended => {}` | `is_finished_reports_…` (times out in `wait_until`) |
 //! | `JoinHandle`'s `is_finished` returns `false` | both `is_finished`/`request_stop` tests (time out) |
+//! | `PumpPass::Failed => {}` | `a_dead_source_ends_its_own_take` (times out in `wait_until`) |
 //! | `request_stop` stores `true` | `a_requested_stop_…` (fails at once at `!rec.is_running()`; the test holds the recorder in `ManuallyDrop`, so the unwind leaks the pump rather than joining a take the mutated `request_stop` can no longer end) |
 //!
 //! The last three tests are the Bevy-free half of `bevy-tutti`'s
@@ -516,4 +517,45 @@ fn a_requested_stop_ends_a_live_take_without_blocking() {
         reader.len() > 0,
         "frames landed before the stop; zero means the driver broke on Starved"
     );
+}
+
+/// A live source whose device died: serves 7 frames, then reads empty and is
+/// failed. The thread driver must end the take by itself, keeping the frames,
+/// where it used to park for ever.
+struct Dead {
+    left: usize,
+}
+
+impl AudioIn for Dead {
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::STEREO
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        let n = self.left.min(out.len() / 2);
+        out[..n * 2].fill(0.25);
+        self.left -= n;
+        Samples(n)
+    }
+
+    fn is_failed(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_dead_source_ends_its_own_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dead.wav");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let mut rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
+
+    wait_until("the pump to stop on its own", || rec.is_finished());
+    assert!(rec.failed());
+    rec.finish_in_place()
+        .unwrap()
+        .expect("the prefix finalizes cleanly");
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 14);
 }

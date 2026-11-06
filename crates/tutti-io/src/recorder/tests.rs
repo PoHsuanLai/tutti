@@ -368,11 +368,10 @@ fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
             .expect("the fixture sink is stereo, as AlwaysLive is");
         let status = rec.finalize_status();
         // One pass is enough: the first sample is already too wide, and
-        // `WavOut` latches `first_error` and stops writing from there.
-        assert!(
-            matches!(pump.pump_once(), Some(PumpPass::Wrote(n)) if !n.is_zero()),
-            "the pump reports frames moved; the sink's failure is latched, not returned"
-        );
+        // `WavOut` latches `first_error` and stops writing from there. The
+        // pass reports the latched failure as `Failed`; the error itself still
+        // waits for finalize.
+        assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
         status
     };
 
@@ -584,4 +583,145 @@ fn finish_in_place_finalizes_in_place_exactly_once() {
         reader.len() as usize,
         SCRATCH_FRAMES.interleaved_len(ChannelLayout::STEREO)
     );
+}
+
+/// A live source whose device can die: serves its queued frames, then reads
+/// empty, and `dead` makes `is_failed` true.
+struct DyingMic {
+    queued: std::collections::VecDeque<[f32; 2]>,
+    dead: Arc<AtomicBool>,
+}
+
+impl AudioIn for DyingMic {
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::STEREO
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        let mut n = 0;
+        for chunk in out.chunks_exact_mut(2) {
+            let Some(frame) = self.queued.pop_front() else {
+                break;
+            };
+            chunk.copy_from_slice(&frame);
+            n += 1;
+        }
+        Samples(n)
+    }
+
+    fn is_failed(&self) -> bool {
+        self.dead.load(Ordering::Acquire)
+    }
+}
+
+fn frames(n: usize) -> std::collections::VecDeque<[f32; 2]> {
+    (0..n)
+        .map(|i| [i as f32 / 100.0, -(i as f32) / 100.0])
+        .collect()
+}
+
+/// A mic that dies mid-take ends the take as failed, keeps the frames it
+/// delivered and finalizes them. A healthy but quiet mic does not fail.
+///
+/// Before this, a dead `Starved` source parked the pump forever: no pass was
+/// `Failed`, `failed()` did not exist, and `wait` below never returned.
+///
+/// Mutation: making `is_failed` unread in `pump_once` (dropping the
+/// `n.is_zero() && self.src.is_failed()` arm) fails the `Failed` assertion;
+/// checking `is_failed` before the frames are drained (dropping `n.is_zero()`)
+/// fails the frame count.
+#[test]
+fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dead.wav");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let dead = Arc::new(AtomicBool::new(false));
+    let (driver, pump) = ManualDriver::new();
+    let mut rec = Recorder::start_with(
+        DyingMic {
+            queued: frames(10),
+            dead: Arc::clone(&dead),
+        },
+        wav,
+        driver,
+    )
+    .unwrap();
+
+    assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(10))));
+    assert_eq!(
+        pump.pump_once(),
+        Some(PumpPass::Starved),
+        "quiet is not dead"
+    );
+    assert!(!rec.failed());
+
+    dead.store(true, Ordering::Release);
+    assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
+    assert!(rec.failed());
+
+    rec.finish_in_place()
+        .expect("first collect")
+        .expect("finalize is clean");
+    let reader = hound::WavReader::open(&path).expect("the prefix is a readable file");
+    assert_eq!(reader.len(), 20, "the ten delivered frames are kept");
+}
+
+/// Frames still buffered when the device dies are written before the take
+/// is declared failed.
+///
+/// Mutation: see above (dropping `n.is_zero() &&`) fails this one.
+#[test]
+fn frames_buffered_at_the_fault_are_written_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("buffered.wav");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let (driver, pump) = ManualDriver::new();
+    let mut rec = Recorder::start_with(
+        DyingMic {
+            queued: frames(5),
+            dead: Arc::new(AtomicBool::new(true)),
+        },
+        wav,
+        driver,
+    )
+    .unwrap();
+    assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(5))));
+    assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
+    rec.finish_in_place().unwrap().unwrap();
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 10);
+}
+
+/// A sink that fails mid-take (here the WAV frame limit, the same latch a
+/// full disk sets) fails the take, and the sink's error still comes out of
+/// finalize.
+///
+/// Mutation: deleting the `self.sink.is_failed()` arm in `pump_once` fails
+/// the `Failed` assertion; deleting `WavOut::is_failed` does too.
+#[test]
+fn a_failed_sink_fails_the_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("full.wav");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+        .unwrap()
+        .with_max_frames_for_test(4);
+    let (driver, pump) = ManualDriver::new();
+    let mut rec = Recorder::start_with(
+        DyingMic {
+            queued: frames(10),
+            dead: Arc::new(AtomicBool::new(false)),
+        },
+        wav,
+        driver,
+    )
+    .unwrap();
+    assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
+    assert!(rec.failed());
+    let err = rec
+        .finish_in_place()
+        .unwrap()
+        .expect_err("the sink's error");
+    assert!(err.get_ref().is_some());
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
 }

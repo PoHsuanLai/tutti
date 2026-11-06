@@ -115,3 +115,66 @@ fn a_default_that_already_matches_is_accepted_with_no_ranges() {
     .expect("the default already runs at the graph rate");
     assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
 }
+
+/// A `MicIn` over an empty ring and a fresh fault record, with no device.
+fn mic_without_a_device() -> MicIn {
+    let (_prod, cons) = HeapRb::<[f32; 2]>::new(8).split();
+    MicIn {
+        cons,
+        sample_rate: SampleRate(48_000.0),
+        faults: Arc::new(StreamFaults::new()),
+        _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
+    }
+}
+
+/// A disconnect reported through the shared fault record fails the source, and
+/// `faults()` is that same record. Another backend error does not: it may be
+/// transient. cpal's error callback is `move |err| faults.record(&err)`; the
+/// registration itself needs a device and is not exercised here.
+///
+/// Mutation: `is_failed` returning `false`, or reading `is_faulted()` instead
+/// of `is_disconnected()`, fails the first or last assertion respectively.
+#[test]
+fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
+    let mic = mic_without_a_device();
+    assert!(!AudioIn::is_failed(&mic));
+
+    mic.faults().record(&cpal::StreamError::BackendSpecific {
+        err: cpal::BackendSpecificError {
+            description: "xrun".into(),
+        },
+    });
+    assert!(mic.faults().is_faulted());
+    assert!(!AudioIn::is_failed(&mic), "a backend error is not a death");
+
+    mic.faults().record(&cpal::StreamError::DeviceNotAvailable);
+    assert!(AudioIn::is_failed(&mic));
+}
+
+/// A recorder over a mic whose device disconnects ends the take as failed,
+/// after writing the frames the ring still held.
+///
+/// Mutation: dropping the `is_failed` override in `MicIn` makes the last pass
+/// `Starved` and fails the `Failed` assertion.
+#[test]
+fn a_recorder_on_a_disconnected_mic_fails_the_take() {
+    let (mut prod, cons) = HeapRb::<[f32; 2]>::new(8).split();
+    let mut mic = mic_without_a_device();
+    mic.cons = cons;
+    let faults = mic.faults();
+    let path = std::env::temp_dir().join(format!("tutti-mic-fault-{}.wav", std::process::id()));
+    let sink = mic.matching_sink(&path, BitDepth::Float32).unwrap();
+    let (driver, pump) = tutti_io::ManualDriver::new();
+    let mut rec = tutti_io::Recorder::start_with(mic, sink, driver).unwrap();
+
+    assert!(prod.try_push([0.5, -0.5]).is_ok());
+    faults.record(&cpal::StreamError::DeviceNotAvailable);
+    assert_eq!(
+        pump.pump_once(),
+        Some(tutti_io::PumpPass::Wrote(Samples(1)))
+    );
+    assert_eq!(pump.pump_once(), Some(tutti_io::PumpPass::Failed));
+    assert!(rec.failed());
+    rec.finish_in_place().unwrap().expect("clean finalize");
+    let _ = std::fs::remove_file(&path);
+}

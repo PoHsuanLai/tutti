@@ -43,7 +43,7 @@ const MAX_BLOCK_SIZE: usize = 4096;
 /// the plugin fails to initialize.
 pub fn load_client(
     path: &Path,
-    sample_rate: impl Into<tutti_core::SampleRate>,
+    sample_rate: impl Into<tutti_types::SampleRate>,
 ) -> Result<(InProcessVst2Client, PluginHandle)> {
     // `.get()` here and not at the caller: this is the last hop before
     // `Instance::load`, which crosses the VST2 ABI and takes a bare rate.

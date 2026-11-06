@@ -42,8 +42,8 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tutti_core::{ChannelLayout, Samples};
 use tutti_io::{AudioIn, BitDepth, OnEmpty, Recorder, WavOut};
+use tutti_types::{ChannelLayout, Samples};
 
 /// Block until `cond` holds, or fail the test at `deadline`.
 ///

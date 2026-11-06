@@ -1,7 +1,7 @@
 //! Per-channel butler plan for a streaming playback.
 
 use std::sync::Arc;
-use tutti_core::{PlaybackRate, SampleRate, SrcRatio};
+use tutti_types::{PlaybackRate, SampleRate, SrcRatio};
 
 use super::cache::StreamPin;
 use super::command::RegionId;
@@ -65,8 +65,8 @@ impl Link {
         self.record
             .set_loop(config.as_ref().map_or(crate::voice::LoopSetting::Off, |c| {
                 crate::voice::LoopSetting::On {
-                    start: tutti_core::SamplePosition(c.range.0 as f64),
-                    end: tutti_core::SamplePosition(c.range.1 as f64),
+                    start: tutti_types::SamplePosition(c.range.0 as f64),
+                    end: tutti_types::SamplePosition(c.range.1 as f64),
                     crossfade_frames: c.crossfade_frames,
                 }
             }));
@@ -96,7 +96,7 @@ pub struct ChannelPlan {
     /// How far to pre-roll this channel's read head for plugin delay
     /// compensation, in frames — subtracted from every target file position,
     /// so a larger preroll seeks earlier. Sourced from the published
-    /// compensation table, whose entries are [`Samples`](tutti_core::Samples) at
+    /// compensation table, whose entries are [`Samples`](tutti_types::Samples) at
     /// the session rate.
     pub(crate) pdc_preroll: u64,
     pub(crate) rt_state: Arc<RtState>,

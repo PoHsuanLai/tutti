@@ -41,12 +41,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::fault::FaultLatch;
-use tutti_core::SamplePosition;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_core::Samples;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 use tutti_io::AudioIn;
 use tutti_io::Wave;
+use tutti_types::SamplePosition;
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+use tutti_types::Samples;
 
 use super::LoopSetting;
 use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
@@ -494,7 +494,7 @@ impl Pages {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::SampleRate;
+    use tutti_types::SampleRate;
 
     const LEN: usize = 100_000;
 

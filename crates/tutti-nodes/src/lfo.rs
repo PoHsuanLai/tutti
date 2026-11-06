@@ -15,11 +15,11 @@
 //! `LfoShape` and `Wave` are re-exported so `use tutti_nodes::LfoShape`
 //! resolves here.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
+use tutti_types::AtomicF32;
 
-use tutti_core::{BeatDuration, ChannelLayout, Depth, Hz, Param, PhaseIncrement, SampleRate};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::{BeatDuration, ChannelLayout, Depth, Hz, Param, PhaseIncrement, SampleRate};
 use tutti_types::{Latency, Tail, UnitParam};
 
 // The waveform vocabulary is tutti-mod's floor, re-exported so `use
@@ -34,9 +34,9 @@ pub use tutti_mod::{LfoShape, Wave};
 /// sub-beat detail however far along the transport is. A non-positive span
 /// freezes at cycle zero.
 ///
-/// [`Beat::cycles_of`]: tutti_core::Beat::cycles_of
+/// [`Beat::cycles_of`]: tutti_types::Beat::cycles_of
 #[inline]
-fn beat_cycles(beat: tutti_core::Beat, beats_per_cycle: BeatDuration) -> f64 {
+fn beat_cycles(beat: tutti_types::Beat, beats_per_cycle: BeatDuration) -> f64 {
     beat.cycles_of(beats_per_cycle).unwrap_or(0.0)
 }
 
@@ -509,9 +509,9 @@ impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{Beat, Bpm, Samples};
     use tutti_graph::contract::{Direct, assert_param_fork};
     use tutti_graph::{Solo, Transport};
+    use tutti_types::{Beat, Bpm, Samples};
 
     /// **The ports and their bases.** A free-running LFO declares its depth
     /// and rate ([`LFO_PARAMS`]), each port's base its cell; a beat-synced
@@ -555,7 +555,7 @@ mod tests {
         let rate = SampleRate(48_000.0);
         let mut solo = Solo::new(node, Prepare::new(rate, Samples(256)));
         solo.renderer_mut().set_transport_fn(move |frame| {
-            let mut clock = tutti_core::FrameClock::new(transport.beat(), transport.tempo, rate);
+            let mut clock = tutti_types::FrameClock::new(transport.beat(), transport.tempo, rate);
             if transport.playing {
                 clock.advance(Samples(frame.get() as usize), None);
             }

@@ -18,9 +18,9 @@
 
 use std::f64::consts::TAU;
 
-use tutti_core::{Hz, SampleRate, Tail};
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_types::ChannelLayout;
+use tutti_types::{Hz, SampleRate, Tail};
 
 /// A mono sine source, phase 0 at the first sample.
 ///

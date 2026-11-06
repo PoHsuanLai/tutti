@@ -52,7 +52,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::prelude::*;
-//! use tutti_core::Hz;
+//! use tutti_types::Hz;
 //! use tutti_nodes::testing::Osc;
 //!
 //! /// A host system that edits the graph itself. Every edit made through
@@ -92,7 +92,8 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
-use tutti_core::{Compensation, PrerollTable, Samples};
+use tutti_core::PrerollTable;
+use tutti_types::{Compensation, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
 ///
@@ -251,9 +252,9 @@ pub fn compensate_graph(graph: Option<Res<AudioGraphRes>>) {
 mod tests {
     use super::*;
     use crate::graph::GraphSource;
-    use tutti_core::{ChannelLayout, Db};
     use tutti_nodes::LimiterNode;
     use tutti_nodes::testing::Const;
+    use tutti_types::{ChannelLayout, Db};
 
     /// App with the graph resource and the reconcile pipeline, and **without**
     /// `LatencyCompensationPlugin`: the figures are `commit_graph`'s to
@@ -534,7 +535,7 @@ mod tests {
         app.world_mut()
             .resource_mut::<AudioGraphRes>()
             .graph()
-            .set_sample_rate(tutti_core::SampleRate(48_000.0));
+            .set_sample_rate(tutti_types::SampleRate(48_000.0));
         for _ in 0..3 {
             side.tick(&[], &mut out);
             app.update();

@@ -48,7 +48,7 @@ use crate::plugin::AsyncEvent;
 /// never waits for a helper that has not started a task (the audio thread
 /// runs tasks from the start, and helpers join as they arrive), though a
 /// helper preempted mid-task delays the request.
-fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
+fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
     THREAD_POOL
         .get_or_init(|| {
             let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -67,7 +67,7 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_core::Pool>> {
             })
         })
         .clone()
-        .map(|pool| pool as std::sync::Arc<dyn tutti_core::Pool>)
+        .map(|pool| pool as std::sync::Arc<dyn tutti_graph::Pool>)
 }
 
 /// Participants of the server's pool on a machine with `cores` cores (see

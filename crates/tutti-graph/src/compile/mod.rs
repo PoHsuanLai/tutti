@@ -19,7 +19,7 @@
 //!    that feeds the delay, so the op DAG stays acyclic.
 //! 3. **Order** ([`order::kahn`]) — one deterministic topological sort.
 //! 4. **Latency solve** — `arrival = max(departures)`, `departure = arrival +
-//!    own`: `tutti_types::latency::delays`' solve, over the spec (its
+//!    own`: `tutti_types::delays`' solve, over the spec (its
 //!    `LatencyGraph` impl lists event and param sources). **Event and param
 //!    edges count toward arrival**, and **a `Source::Global` input is a
 //!    merge-point source**, delayed to the node's arrival like any other.

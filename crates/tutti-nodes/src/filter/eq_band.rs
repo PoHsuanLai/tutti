@@ -1,10 +1,10 @@
 //! Parametric EQ band: an SVF plus a zero-cost bypass.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
-use tutti_core::{ChannelLayout, Db, Hz, Q};
+use std::sync::Arc;
 use tutti_dsp::Real;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
+use tutti_types::{ChannelLayout, Db, Hz, Q};
 
 use super::svf::SvfFilterNode;
 use tutti_dsp::SvfType;
@@ -52,7 +52,7 @@ impl From<bool> for BandState {
 ///
 /// The band adds nothing to the filter but [`BandState`] — cutoff, [`Q`] and
 /// gain are the inner SVF's live params, reached through the accessors here and
-/// by [`UnitParam`](tutti_core::UnitParam) through the [`ParamSet`] it is
+/// by [`UnitParam`](tutti_types::UnitParam) through the [`ParamSet`] it is
 /// inserted with. Stack several to build a parametric EQ, one band
 /// per [`SvfType`].
 ///
@@ -141,7 +141,7 @@ impl<F: Real> EqBandNode<F> {
 impl<F: Real + 'static> Node for EqBandNode<F> {
     /// Mono in and out. Unlike the bare filter it declares no modulatable
     /// params: a band is set, not swept.
-    /// Its tail is the inner filter's: [`Tail::Unknown`](tutti_core::Tail::Unknown).
+    /// Its tail is the inner filter's: [`Tail::Unknown`](tutti_types::Tail::Unknown).
     fn shape(&self) -> Shape {
         Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
@@ -205,8 +205,8 @@ impl<F: Real> Clone for EqBandNode<F> {
 mod tests {
     use super::*;
     use crate::filter::test_utils::{generate_sine, rms};
-    use tutti_core::SampleRate;
     use tutti_graph::contract::{assert_param_fork, drive, prepared};
+    use tutti_types::SampleRate;
 
     /// `eq`, prepared at 44.1 kHz, over `input` in one block.
     fn render<F: Real + 'static>(eq: EqBandNode<F>, input: &[f32]) -> Vec<f32> {
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn the_band_rings_on_as_its_filter_does() {
         let band = EqBandNode::<f64>::new(SvfType::Bell, 1000.0, 8.0, 12.0);
-        assert_eq!(band.shape().tail, tutti_core::Tail::Unknown);
+        assert_eq!(band.shape().tail, tutti_types::Tail::Unknown);
     }
 
     #[test]

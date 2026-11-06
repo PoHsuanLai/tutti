@@ -31,8 +31,8 @@ use crate::{Error, Result};
 // imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the
 // engine's `MidiMessage` in a `use tutti_midi_hardware::*` context.
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
-use tutti_core::{Beat, BeatDuration, Bpm};
 use tutti_midi_types::MidiChannel;
+use tutti_types::{Beat, BeatDuration, Bpm};
 
 /// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
 /// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it

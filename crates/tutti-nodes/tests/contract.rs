@@ -35,10 +35,10 @@
 //!
 //! Every row is a graph node (`Row::new`).
 
-use tutti_core::{ChannelLayout, Db, Hz, Samples};
 use tutti_graph::contract::{Detect, Excite, Row};
 use tutti_graph::contract_tests;
 use tutti_nodes::{CrossoverNode, DelayLineNode, LimiterNode, MultibandCompressorNode};
+use tutti_types::{ChannelLayout, Db, Hz, Samples};
 
 fn impulse(port: u16) -> Excite {
     Excite::Impulse {

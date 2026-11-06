@@ -24,10 +24,10 @@ use bevy_tutti::modulation::{
     Macro, ModRange, ModRoute, ModSource, ParamRef, TuttiModulationPlugin,
 };
 use tutti_core::transport::Transport;
-use tutti_core::{AtomicF32, ChannelLayout};
 use tutti_graph::{
     Cx, IntoNode, Io, Node, NodeParts, ParamInput, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::{AtomicF32, ChannelLayout};
 use tutti_types::{Db, Depth, UnitAddr, UnitParam};
 
 const BAND0: UnitAddr = UnitAddr::new(UnitParam::Threshold, 0);

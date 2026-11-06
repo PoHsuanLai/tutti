@@ -307,11 +307,11 @@ struct Stopped;
 impl tutti_core::transport::OfflineClock for Stopped {}
 
 impl tutti_core::Timeline for Stopped {
-    fn beat(&self) -> tutti_core::Beat {
-        tutti_core::Beat(0.0)
+    fn beat(&self) -> tutti_types::Beat {
+        tutti_types::Beat(0.0)
     }
-    fn tempo(&self) -> tutti_core::Bpm {
-        tutti_core::Bpm(120.0)
+    fn tempo(&self) -> tutti_types::Bpm {
+        tutti_types::Bpm(120.0)
     }
     fn is_rolling(&self) -> bool {
         false
@@ -975,7 +975,7 @@ mod tests {
     fn a_frozen_exports_timeline_is_stopped_at_beat_zero() {
         use std::sync::Mutex;
         let mut session = session();
-        let seen: Arc<Mutex<Option<(bool, tutti_core::Beat)>>> = Arc::default();
+        let seen: Arc<Mutex<Option<(bool, tutti_types::Beat)>>> = Arc::default();
         let into = Arc::clone(&seen);
         session
             .export_blocking(
@@ -992,7 +992,7 @@ mod tests {
             .expect("the export renders");
         let (rolling, beat) = seen.lock().unwrap().expect("the edit ran");
         assert!(!rolling, "a frozen export's timeline must not roll");
-        assert_eq!(beat, tutti_core::Beat(0.0));
+        assert_eq!(beat, tutti_types::Beat(0.0));
     }
 
     /// **An export kept in flight past `EXPORT_STALL_WARNING` is warned

@@ -11,7 +11,7 @@
 //! system at a time.
 //!
 //! ```
-//! use tutti_core::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
+//! use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
 //! use tutti_graph::ForkByClone;
 //! use tutti_nodes::testing::Osc;
 //! use tutti_session::Session;

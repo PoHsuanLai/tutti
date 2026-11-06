@@ -9,7 +9,7 @@
 //! settings, or the audio thread.
 //!
 //! ```
-//! use tutti_types::meter::{BarNumber, BeatsPerBar, Meter, MeterChange, MeterMap, TimeSignature};
+//! use tutti_types::{BarNumber, BeatsPerBar, Meter, MeterChange, MeterMap, TimeSignature};
 //! use tutti_types::{Beat, BeatDuration};
 //!
 //! // 4/4 for two bars, then 7/8.

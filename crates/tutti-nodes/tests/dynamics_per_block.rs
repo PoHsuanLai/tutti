@@ -12,10 +12,10 @@
 //! fail a render the refactor did not touch (see CLAUDE.md, "One live platform
 //! difference remains").
 
-use tutti_core::SampleRate;
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
 use tutti_nodes::{CompressorNode, GateNode};
+use tutti_types::SampleRate;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 
@@ -288,7 +288,7 @@ fn a_gate_range_change_ramps_across_the_next_block() {
     let after = run_block(&mut node, &input);
 
     let old_level = before[BLOCK - 1];
-    let new_level = 0.5 * tutti_core::Db(-6.0).to_amplitude().get();
+    let new_level = 0.5 * tutti_types::Db(-6.0).to_amplitude().get();
     assert!(
         (after[0] - old_level).abs() < (new_level - old_level) * 0.05,
         "first frame near the old floor: {} vs {old_level}",

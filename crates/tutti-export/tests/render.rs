@@ -15,13 +15,13 @@
 
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
-use tutti_core::{Amplitude, Hz, SampleRate};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, FrozenClock, RenderClock,
     RenderConfig, RenderGraph, Resample, render_to_buffers, render_to_file,
 };
 use tutti_graph::{Cx, ForkByClone, GraphBuilder, Io, Node, Prepare, Shape, Status};
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::{Amplitude, Hz, SampleRate};
 
 /// The rate [`config`] renders at.
 const RATE: SampleRate = SampleRate(44_100.0);
@@ -562,7 +562,7 @@ fn a_resample_reaches_every_format_not_just_wav() {
     let d = tempfile::tempdir().unwrap();
     let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::STEREO);
     s.render.duration_seconds = 1.0; // 44100 frames in, 48000 expected out
-    s.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+    s.resample = Some(Resample::to(tutti_types::SampleRate(48_000.0)));
 
     // WAV is the control: it was already correct.
     let p = d.path().join("r.wav");
@@ -611,7 +611,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
 
     // Render at 96k...
     let mut render_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    render_cfg.render.sample_rate = tutti_core::SampleRate(96_000.0);
+    render_cfg.render.sample_rate = tutti_types::SampleRate(96_000.0);
     render_cfg.render.duration_seconds = 1.0;
     let audio =
         render_to_buffers(dc(render_cfg.render.sample_rate), &render_cfg, &FrozenClock).unwrap();
@@ -620,7 +620,7 @@ fn write_buffers_resamples_from_the_frames_own_rate() {
     // ...then write with a config whose `render` half is left at its DEFAULT
     // 44100 — the case the doc tells a caller is fine to ignore.
     let mut write_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    write_cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+    write_cfg.resample = Some(Resample::to(tutti_types::SampleRate(48_000.0)));
     assert_eq!(
         write_cfg.render.sample_rate.get(),
         44_100.0,
@@ -960,7 +960,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     let square = || {
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
         let tone = Osc::sine(Hz(11025.0))
-            .with_phase(tutti_core::Phase(0.546))
+            .with_phase(tutti_types::Phase(0.546))
             .with_amplitude(Amplitude(0.98))
             .with_layout(ChannelLayout::STEREO);
         let id = g.add(tone);
@@ -972,7 +972,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     let path = dir.path().join("resampled.wav");
 
     let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+    cfg.resample = Some(Resample::to(tutti_types::SampleRate(48_000.0)));
 
     render_normalized_to_file(
         square(),
@@ -989,7 +989,7 @@ fn a_resampled_normalized_export_still_lands_on_its_dbtp_target() {
     assert_eq!(rate, 48_000, "the resample must have reached the file");
     let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
 
-    let meter = LoudnessConfig::new(tutti_core::SampleRate(rate as f64), ChannelLayout::STEREO);
+    let meter = LoudnessConfig::new(tutti_types::SampleRate(rate as f64), ChannelLayout::STEREO);
     let measured = measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO))
         .expect("stereo at 48k is measurable");
 
@@ -1014,7 +1014,7 @@ fn an_unmeasurable_rate_fails_rather_than_writing_un_normalized_audio() {
 
     // R128 accepts 16 Hz - 2.8 MHz; 4 MHz is outside it.
     let mut cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
-    cfg.render.sample_rate = tutti_core::SampleRate(4_000_000.0);
+    cfg.render.sample_rate = tutti_types::SampleRate(4_000_000.0);
     cfg.render.duration_seconds = 0.0005;
 
     let err = render_normalized_to_file(

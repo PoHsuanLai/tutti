@@ -6,13 +6,13 @@
 use std::sync::Arc;
 
 use tutti_core::WorkerPool;
-use tutti_core::graph::{Edge, InPort, OutPort, Source};
-use tutti_core::{Azimuth, Beat, Bpm, ChannelLayout, Elevation, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };
 use tutti_nodes::ChannelSumNode;
 use tutti_spatial::VbapPannerNode;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{Azimuth, Beat, Bpm, ChannelLayout, Elevation, NodeKey, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 /// Small enough that a stereo `Moderate` panner is under the packing grain.

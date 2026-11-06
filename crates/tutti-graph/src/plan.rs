@@ -1041,7 +1041,7 @@ impl Plan {
 
     /// Per output channel, how far a source *outside* the graph must pre-roll
     /// to stay aligned with the slowest channel — the same figure
-    /// `tutti_types::latency::Compensation::for_channel` reports.
+    /// `tutti_types::Compensation::for_channel` reports.
     pub fn compensation(&self) -> &[Samples] {
         &self.compensation
     }

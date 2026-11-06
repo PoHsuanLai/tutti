@@ -63,11 +63,9 @@ midi = [
     "dep:tutti-midi-types",
     "dep:tutti-midi-runtime",
     "dep:tutti-midi-file",
-    "tutti-core/midi",
 ]
 midi-hardware = ["midi", "dep:tutti-midi-hardware"]
 sampler = ["dep:tutti-sampler"]
-# `midi`: `tutti-soundfont` needs `tutti-core/midi`.
 soundfont = ["midi", "dep:tutti-soundfont"]
 synth = ["dep:tutti-polysynth"]
 # The `SessionNode` impls of the panners only.

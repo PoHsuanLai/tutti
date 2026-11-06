@@ -7,7 +7,7 @@
 //! array index rather than the trigonometry.
 
 use std::sync::Arc;
-use tutti_core::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
+use tutti_types::{Amplitude, AtomicF32, Cents, Pan, Param, Phase, Spread};
 
 pub(crate) const MAX_UNISON_VOICES: usize = 16;
 

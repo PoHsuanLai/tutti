@@ -18,13 +18,13 @@
 mod support;
 
 use support::{BLOCK, Hand};
-use tutti_core::{Amplitude, Seconds};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
+use tutti_types::{Amplitude, Seconds};
 
 const SR: f64 = 48_000.0;
 
@@ -55,7 +55,7 @@ fn flat_envelope() -> Adsr {
 
 fn config(osc: OscillatorType) -> SynthConfig {
     SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(SR),
+        sample_rate: tutti_types::SampleRate::from(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()

@@ -7,10 +7,10 @@
 //! running — silently, since a test that is never compiled cannot fail.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::SampleRate;
 use tutti_graph::contract::BlockRig;
 use tutti_graph::{IntoNode, Node};
 use tutti_spatial::VbapPannerNode;
+use tutti_types::SampleRate;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -233,7 +233,7 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");
-    let prepare = Prepare::new(SampleRate(48_000.0), tutti_core::Samples(256));
+    let prepare = Prepare::new(SampleRate(48_000.0), tutti_types::Samples(256));
     assert_no_alloc::assert_no_alloc(|| node.prepare(&prepare));
 }
 
@@ -247,9 +247,9 @@ fn hrtf_binaural_same_rate_prepare_is_allocation_free() {
 #[cfg(feature = "hrtf")]
 #[test]
 fn hrtf_binaural_resampled_set_in_split_blocks_is_allocation_free() {
-    use tutti_core::{Samples, Tail};
     use tutti_graph::Prepare;
     use tutti_spatial::HrtfBinauralNode;
+    use tutti_types::{Samples, Tail};
 
     let bytes = synthetic_hrir_sphere(48_000, 64);
     let mut node = HrtfBinauralNode::new(&bytes, 48_000.0).expect("synthetic sphere parses");

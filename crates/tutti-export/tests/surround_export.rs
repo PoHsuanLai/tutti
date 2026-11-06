@@ -19,7 +19,7 @@ use tutti_graph::GraphBuilder;
 use tutti_types::NodeKey;
 
 /// The rate [`export`] renders at, and so the rate every graph is built for.
-const RATE: tutti_core::SampleRate = tutti_core::SampleRate(48_000.0);
+const RATE: tutti_types::SampleRate = tutti_types::SampleRate(48_000.0);
 
 /// Render `g` to `path` as float WAV at `layout`, for `secs`.
 ///

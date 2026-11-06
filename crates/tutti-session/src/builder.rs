@@ -4,9 +4,10 @@
 use std::sync::Arc;
 
 use tutti_core::{
-    AudioNode, AudioTap, ChannelLayout, ClickNode, ClickSettings, MAX_ROOT_CHANNELS, MasterMeter,
-    PrerollTable, SampleRate, Samples, Transport,
+    AudioNode, AudioTap, ClickNode, ClickSettings, MAX_ROOT_CHANNELS, MasterMeter, PrerollTable,
+    Transport,
 };
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
 use crate::{Result, Session};
@@ -14,7 +15,7 @@ use crate::{Result, Session};
 /// Builds a [`Session`].
 ///
 /// ```
-/// use tutti_core::{ChannelLayout, SampleRate, Samples};
+/// use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// use tutti_session::Session;
 ///
 /// let session = Session::builder()

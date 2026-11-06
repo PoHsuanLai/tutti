@@ -3,10 +3,10 @@
 //! Construction needs a measured HRIR sphere, so [`HrtfBinauralNode::new`]
 //! takes the dataset bytes.
 
-use tutti_core::ChannelLayout;
-use tutti_core::{Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::ChannelLayout;
 use tutti_types::Latency;
+use tutti_types::{Azimuth, Elevation, Mix, Param, SampleRate, Samples, Tail};
 
 use super::panner::{HrtfBinaural, HrtfBinauralError, LATENCY};
 use crate::SpatialTarget;
@@ -95,7 +95,7 @@ impl HrtfBinauralControls {
     /// dry mono. Lock-free.
     ///
     /// Not to be confused with the VBAP panner's `set_width`, a mid/side
-    /// [`StereoWidth`](tutti_core::StereoWidth).
+    /// [`StereoWidth`](tutti_types::StereoWidth).
     pub fn set_blend(&self, blend: impl Into<Mix>) {
         self.blend.store(Mix::new_clamped(blend.into().get()));
     }

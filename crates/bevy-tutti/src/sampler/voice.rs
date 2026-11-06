@@ -38,8 +38,8 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::ChannelLayout;
 use tutti_sampler::{Voice, VoiceNode, VoiceNodeHandle};
+use tutti_types::ChannelLayout;
 
 use crate::graph::NodeControls;
 use crate::graph::insert_and_bind;

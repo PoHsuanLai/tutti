@@ -28,12 +28,12 @@ use bevy_ecs::prelude::*;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_core::{ChannelLayout, SampleRate, Tail};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,
 };
 use tutti_io::Wave;
+use tutti_types::{ChannelLayout, SampleRate, Tail};
 
 // ---------------------------------------------------------------------------
 // ECS components — live on the track entity.
@@ -56,7 +56,7 @@ pub struct VoicePoolRef(pub VoicePoolHandle);
 /// here would be a second owner of state the graph already owns.
 #[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
-pub struct VoicePoolNode(pub tutti_core::NodeKey);
+pub struct VoicePoolNode(pub tutti_types::NodeKey);
 
 // ---------------------------------------------------------------------------
 // Retirement — values the audio thread must not drop.

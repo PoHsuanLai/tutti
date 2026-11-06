@@ -1,14 +1,14 @@
 //! CompressorNode with external sidechain, soft knee and makeup gain.
 
-use tutti_core::Arc;
-use tutti_core::AtomicF32;
+use std::sync::Arc;
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
+use tutti_types::AtomicF32;
 use tutti_types::{ChannelLayout, UnitParam};
 
 use super::params::{AttackRelease, ThresholdParams};
 use super::utils::{apply_gain_lane, sidechain_levels};
-use tutti_core::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 use tutti_dsp::{CompressorBlock, CompressorKernel};
+use tutti_types::{Amplitude, CompressionRatio, Db, Param, SampleRate, Seconds, Tail};
 
 use crate::ramp::{LastGood, block_driven, clamp_finite};
 
@@ -39,7 +39,7 @@ impl CompressorCore {
     /// than only as coefficients — the seconds are the recoverable form, the
     /// coefficients are not.
     ///
-    /// [`SampleRate::DEFAULT`]: tutti_core::SampleRate::DEFAULT
+    /// [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
     pub fn new(
         threshold_db: impl Into<Db>,
         ratio: impl Into<CompressionRatio>,
@@ -108,7 +108,7 @@ impl CompressorCore {
         self.last_makeup = None;
     }
 
-    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_core::SampleRate>) {
+    pub fn set_sample_rate(&mut self, sample_rate: impl Into<tutti_types::SampleRate>) {
         let (attack, release) = self.times([None, None]);
         self.kernel.set_sample_rate(sample_rate, attack, release);
     }

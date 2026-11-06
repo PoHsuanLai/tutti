@@ -19,7 +19,7 @@
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use tutti_core::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use crate::MAX_FRAMES;
 use crate::block::OutputBlock;
@@ -287,7 +287,8 @@ impl CpalDriver {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use tutti_core::{AudioTap, ChannelLayout, Engine, MasterMeter, SampleRate, Samples, Transport};
+/// use tutti_core::{AudioTap, Engine, MasterMeter, Transport};
+/// use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// use tutti_cpal::{AudioCallbackState, AudioEngine, ManualStreamDriver, OutputSpec};
 /// use tutti_graph::{Editor, Prepare};
 ///

@@ -20,13 +20,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_core::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
 use tutti_graph::contract::drive;
 use tutti_graph::{Node, Prepare};
 use tutti_nodes::{
     DelayLineNode, InterpolationMode, LadderFilterNode, LadderType, ModDelayNode, PhaserNode,
     SvfFilterNode, SvfType,
 };
+use tutti_types::{AtomicF32, ChannelLayout, PhaseIncrement, SampleRate, Samples};
 
 const SR: SampleRate = SampleRate(48_000.0);
 const LEN: usize = 2_048;

@@ -18,9 +18,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use tutti_core::{MeterMap, MeterSlotReader, ProjectMeter, Samples};
+use tutti_core::{MeterSlotReader, ProjectMeter};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::{MeterMap, Samples};
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext};
 
 use super::instance::Instance;
@@ -394,7 +395,7 @@ impl InProcessVst2Client {
     /// `pending_sample_rate`), or, on a fork, dispatched here. What the
     /// node's `prepare` does with its rate. (The transport snapshot's rate is
     /// the block's own, from its `Env`.)
-    pub(super) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    pub(super) fn set_rate(&mut self, sample_rate: tutti_types::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         let changed = sample_rate != self.sample_rate;
         self.sample_rate = sample_rate;
@@ -495,10 +496,10 @@ fn apply_params(instance: &mut Instance, params: &ParamDelivery) {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
-    use tutti_core::TimeSignature;
-    use tutti_core::{Beat, BeatsPerBar, Bpm, Frame, MeterChange, NoteValue, SampleRate};
     use tutti_graph::{Env, Transport, TransportChanges, TransportHistory};
     use tutti_types::Latency;
+    use tutti_types::TimeSignature;
+    use tutti_types::{Beat, BeatsPerBar, Bpm, Frame, MeterChange, NoteValue, SampleRate};
 
     /// A rolling block of 64 frames at 132 BPM from beat 4, at 48 kHz: 132,
     /// not the 120 the default snapshot carries, so a live read is told

@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use tutti_core::ChannelLayout;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventKind, EventOut, ForkByClone, ParamIn, ParamRange,
     ScheduleError,
@@ -24,6 +23,7 @@ use tutti_mod::{
     SignalKind, Source as ModSource, SourceId, SourceKey, SourceNode, TargetDecl, TargetKey,
     compile,
 };
+use tutti_types::ChannelLayout;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{At, AtomicF32, NodeKey, ParamAddr};
 

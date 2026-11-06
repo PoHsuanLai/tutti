@@ -5,7 +5,7 @@
 //! each core reads as "this processor takes these *groups* of parameters"
 //! rather than a flat list of seven atomics.
 
-use tutti_core::{Db, Param, Seconds};
+use tutti_types::{Db, Param, Seconds};
 
 /// Envelope-follower attack/release times in seconds.
 #[derive(Clone, Debug)]

@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node, Prepare,
     Shape, Status, Transport, Ump, Unforkable,
@@ -29,8 +29,8 @@ struct Sink(Arc<Mutex<Tally>>);
 impl Node for Sink {
     fn shape(&self) -> Shape {
         Shape::audio(
-            tutti_core::ChannelLayout::EMPTY,
-            tutti_core::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
+            tutti_types::ChannelLayout::EMPTY,
         )
         .with_events(1, 0)
     }

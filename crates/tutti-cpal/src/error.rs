@@ -63,9 +63,9 @@ pub enum Error {
         /// The input device's name, as the OS reports it.
         device_name: String,
         /// The rate of the device's default input config.
-        device: tutti_core::SampleRate,
+        device: tutti_types::SampleRate,
         /// The rate that was asked for.
-        graph: tutti_core::SampleRate,
+        graph: tutti_types::SampleRate,
     },
 
     /// A plain [`TuttiDriver::restart`](crate::TuttiDriver::restart) found
@@ -83,9 +83,9 @@ pub enum Error {
     )]
     RateChanged {
         /// The rate the output device now reports.
-        device: tutti_core::SampleRate,
+        device: tutti_types::SampleRate,
         /// The rate the graph runs at ([`TuttiDriver::graph_rate`](crate::TuttiDriver::graph_rate)).
-        graph: tutti_core::SampleRate,
+        graph: tutti_types::SampleRate,
     },
 
     /// I/O failure while reading or writing audio data.

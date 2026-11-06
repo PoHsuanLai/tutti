@@ -15,11 +15,11 @@ use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
 
-use tutti_core::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
 use tutti_graph::{Env, ForkHealth, ForkMode, IntoNode, Node, Prepare, TransportChanges, contract};
 use tutti_sampler::{
     Command, DiskStreamer, DiskVoice, LoopSetting, Playback, Voice, VoiceNode, VoiceSource,
 };
+use tutti_types::{Beat, Bpm, Frame, FrameClock, LoopRange, SamplePosition, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -478,7 +478,7 @@ fn a_varispeed_change_lands_on_a_forks_next_block() {
     let clock = clock_at(SR);
     let mut first = fork(&voice, SR);
     let left = render(&mut *first.node, &clock, 32);
-    voice.set_speed(tutti_core::PlaybackRate::new(2.0));
+    voice.set_speed(tutti_types::PlaybackRate::new(2.0));
     // A fork's controls are a snapshot: the 2x reaches a fork taken after it.
     let mut second = fork(&voice, SR);
     let right = render(&mut *second.node, &clock, 32);
@@ -617,7 +617,7 @@ fn a_stretched_fork_reads_at_the_stretchers_rate() {
     write_ramp(&path, SR as u32, 20_000);
     let streamer = streamer_on(&path);
     let voice = live_voice(&streamer, 0.0);
-    voice.set_stretch_rate(tutti_core::ReadRate(0.5));
+    voice.set_stretch_rate(tutti_types::ReadRate(0.5));
     let clock = clock_at(SR);
     let mut copy = fork(&voice, SR);
     let [l, _] = render(&mut *copy.node, &clock, 8_192);
@@ -848,7 +848,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
             let _ = streamer.step_until_settled(1_000);
         }
         let mut voice = live_voice(&streamer, 1.0);
-        voice.set_speed(tutti_core::PlaybackRate::new(case.speed));
+        voice.set_speed(tutti_types::PlaybackRate::new(case.speed));
         if case.reverse {
             voice.set_direction(tutti_sampler::Direction::Reverse);
         }
@@ -858,7 +858,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         }
         let clock = clock_at(SR);
         let mut source = tutti_sampler::MemorySource::placed(Arc::new(wave), Beat(1.0), None);
-        source.set_speed(tutti_core::PlaybackRate::new(case.speed));
+        source.set_speed(tutti_types::PlaybackRate::new(case.speed));
         source.set_loop_setting(case.loop_);
         let mut memory: Box<dyn Node> = if case.reverse {
             Box::new(VoiceNode::with_channels(

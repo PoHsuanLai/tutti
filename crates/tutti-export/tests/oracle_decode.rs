@@ -49,14 +49,14 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
-use tutti_core::Amplitude;
-use tutti_core::Hz;
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, Flac, FrozenClock,
     RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
+use tutti_types::Amplitude;
+use tutti_types::Hz;
 
 const SR: f64 = 44_100.0;
 const DUR: f64 = 0.25;
@@ -65,7 +65,7 @@ const DUR: f64 = 0.25;
 /// renders at (a graph prepared at another is refused, not re-rated).
 fn built(g: GraphBuilder) -> RenderGraph {
     let (editor, executor) = g
-        .build(RenderGraph::prepare(tutti_core::SampleRate(SR)))
+        .build(RenderGraph::prepare(tutti_types::SampleRate(SR)))
         .expect("builds");
     RenderGraph::new(editor, executor).expect("built together")
 }
@@ -93,7 +93,7 @@ fn sine_graph(freq: f32) -> RenderGraph {
 fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
-            sample_rate: tutti_core::SampleRate(SR),
+            sample_rate: tutti_types::SampleRate(SR),
             duration_seconds: DUR,
             ..Default::default()
         },
@@ -182,11 +182,11 @@ fn rms(samples: &[f32]) -> f64 {
 ///
 /// This is the exact question the export README says the Rust suite cannot ask,
 /// and the one that caught a private FLAC quantizer that truncated where
-/// `tutti_core::pcm` rounds.
+/// `tutti_types::pcm` rounds.
 ///
 /// Mutation: `flac.rs`'s `f32_to_i32` swapped back to the historical
 /// truncating converter (`(clamped * 32767.0) as i32` in place of
-/// `tutti_core::pcm::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
+/// `tutti_types::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
 /// 22936 vs 22935. One LSB, which is the whole point: the float-tolerance
 /// draft of this test passed under exactly this mutation.
 #[test]
@@ -478,9 +478,9 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
             for frames in [1usize, 15, 63, 64, 4095, 4096, 4097, 3 * 4096 + 17] {
                 let cfg = |format| ExportConfig {
                     render: RenderConfig {
-                        sample_rate: tutti_core::SampleRate(SR),
+                        sample_rate: tutti_types::SampleRate(SR),
                         duration_seconds: 0.0,
-                        tail: tutti_core::Samples(frames),
+                        tail: tutti_types::Samples(frames),
                         ..Default::default()
                     },
                     encode: EncodeConfig {

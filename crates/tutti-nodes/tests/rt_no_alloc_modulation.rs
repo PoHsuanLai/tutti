@@ -12,10 +12,10 @@
 //! and range edits between blocks.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{ChannelLayout, SampleRate};
 use tutti_graph::IntoNode;
 use tutti_graph::contract::BlockRig;
 use tutti_nodes::{DelayLineNode, LfoNode, LfoShape, ModDelayNode, PhaserNode};
+use tutti_types::{ChannelLayout, SampleRate};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -113,7 +113,7 @@ fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
 #[test]
 fn chorus_node_process_is_allocation_free() {
     gate(
-        ModDelayNode::chorus(tutti_core::ChannelLayout::STEREO),
+        ModDelayNode::chorus(tutti_types::ChannelLayout::STEREO),
         0.4,
         2_000,
         |_| {},
@@ -123,7 +123,7 @@ fn chorus_node_process_is_allocation_free() {
 #[test]
 fn flanger_node_process_is_allocation_free() {
     gate(
-        ModDelayNode::flanger(tutti_core::ChannelLayout::STEREO),
+        ModDelayNode::flanger(tutti_types::ChannelLayout::STEREO),
         0.4,
         2_000,
         |_| {},
@@ -305,7 +305,7 @@ fn lane_block(
 /// (the gate is per thread).
 struct GatedPool(tutti_core::WorkerPool);
 
-impl tutti_core::Pool for GatedPool {
+impl tutti_graph::Pool for GatedPool {
     fn participants(&self) -> usize {
         self.0.participants()
     }
@@ -313,7 +313,7 @@ impl tutti_core::Pool for GatedPool {
         self.0
             .run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)));
     }
-    fn waits(&self) -> tutti_core::BlockWaits {
+    fn waits(&self) -> tutti_types::BlockWaits {
         self.0.waits()
     }
 }
@@ -1100,7 +1100,6 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
 #[test]
 fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     use std::sync::Arc;
-    use tutti_core::graph::{Edge, InPort, OutPort, Source};
     use tutti_graph::{Editor, ForkByClone, Prepare, Transport};
     use tutti_mod::{
         Clock, CurveType, Declarations, Polarity, RouteDecl, RouteKey, RouteTarget,
@@ -1108,6 +1107,7 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     };
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::{
         AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds,
         UnitParam,

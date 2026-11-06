@@ -19,7 +19,7 @@
 //! # Examples
 //!
 //! ```
-//! use tutti_core::{ChannelLayout, Hz, SampleRate, Samples};
+//! use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
 //! use tutti_graph::{GraphBuilder, Prepare};
 //! use tutti_nodes::testing::Osc;
 //!
@@ -46,8 +46,8 @@ pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 
 use std::f64::consts::TAU;
 
-use tutti_core::{Amplitude, ChannelLayout, Hz, Phase, SampleRate};
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+use tutti_types::{Amplitude, ChannelLayout, Hz, Phase, SampleRate};
 
 /// Each stimulus node is its own [`IntoNode`]: forkable by clone, as none
 /// shares state with its clones.
@@ -401,8 +401,8 @@ impl Node for Sink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Samples;
     use tutti_graph::Solo;
+    use tutti_types::Samples;
 
     /// `node` alone in a graph at `rate`, in blocks of `block` frames.
     fn solo<N: IntoNode<Controls = ()>>(node: N, rate: SampleRate, block: usize) -> Solo<()> {

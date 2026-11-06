@@ -31,7 +31,7 @@ pub struct Wave {
     /// One vector per channel.
     vec: Vec<Vec<f32>>,
     /// The rate the samples were recorded at. Nothing here resamples.
-    sample_rate: tutti_core::SampleRate,
+    sample_rate: tutti_types::SampleRate,
     /// Length in frames. 0 if there are no channels.
     len: usize,
 }
@@ -47,7 +47,7 @@ impl std::fmt::Debug for Wave {
 
 impl Wave {
     /// Creates an empty wave with `channels` channels.
-    pub fn new(channels: usize, sample_rate: impl Into<tutti_core::SampleRate>) -> Self {
+    pub fn new(channels: usize, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
         Self::with_capacity(channels, sample_rate, 0)
     }
 
@@ -55,7 +55,7 @@ impl Wave {
     /// `capacity` frames.
     pub fn with_capacity(
         channels: usize,
-        sample_rate: impl Into<tutti_core::SampleRate>,
+        sample_rate: impl Into<tutti_types::SampleRate>,
         capacity: usize,
     ) -> Self {
         Self {
@@ -70,7 +70,7 @@ impl Wave {
     /// Creates an all-zero wave `duration` seconds long, rounded to the
     /// nearest frame.
     ///
-    /// `duration` is `f64` rather than [`Seconds`](tutti_core::Seconds)
+    /// `duration` is `f64` rather than [`Seconds`](tutti_types::Seconds)
     /// (an `f32`) so a frame count in a long file stays exact.
     ///
     /// # Panics
@@ -78,7 +78,7 @@ impl Wave {
     /// If `channels` is 0 and the duration rounds to at least one frame.
     pub fn zero(
         channels: usize,
-        sample_rate: impl Into<tutti_core::SampleRate>,
+        sample_rate: impl Into<tutti_types::SampleRate>,
         duration: f64,
     ) -> Self {
         let sample_rate = sample_rate.into();
@@ -92,7 +92,7 @@ impl Wave {
     }
 
     /// Creates a mono wave holding a copy of `samples`.
-    pub fn from_samples(sample_rate: impl Into<tutti_core::SampleRate>, samples: &[f32]) -> Self {
+    pub fn from_samples(sample_rate: impl Into<tutti_types::SampleRate>, samples: &[f32]) -> Self {
         Self {
             vec: vec![samples.to_vec()],
             sample_rate: sample_rate.into(),
@@ -102,7 +102,7 @@ impl Wave {
 
     /// Returns the rate the samples were recorded at.
     #[inline]
-    pub fn sample_rate(&self) -> tutti_core::SampleRate {
+    pub fn sample_rate(&self) -> tutti_types::SampleRate {
         self.sample_rate
     }
 

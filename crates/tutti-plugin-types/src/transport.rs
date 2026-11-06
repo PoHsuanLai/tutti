@@ -13,7 +13,7 @@
 //! its own boundary via `From` — the same shape `ChannelLayout` uses for speaker
 //! arrangements.
 
-use tutti_types::meter::{BarNumber, TimeSignature};
+use tutti_types::{BarNumber, TimeSignature};
 
 /// A transport snapshot passed into a plugin's process call.
 ///

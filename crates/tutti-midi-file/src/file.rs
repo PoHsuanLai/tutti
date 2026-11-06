@@ -12,9 +12,9 @@ use std::path::Path;
 
 use midly::Smf;
 use midly::live::LiveEvent;
-use tutti_core::{Beat, Bpm};
 use tutti_midi_types::ump::flex_tempo_bpm;
 use tutti_midi_types::{MidiEvent, ParsedClipFile, normalize};
+use tutti_types::{Beat, Bpm};
 
 use crate::smf::{ParsedMidiFile, SmfTrack, tracks_of};
 use crate::{Error, MidiFileKind, Result};
@@ -27,7 +27,7 @@ use crate::{Error, MidiFileKind, Result};
 /// lacks; [`iter`](Self::iter) is the one view both have.
 ///
 /// ```
-/// use tutti_core::Beat;
+/// use tutti_types::Beat;
 /// use tutti_midi_types::MidiChannel;
 /// use tutti_midi_file::{smf, MidiFile, MidiWriteConfig, SmfMessage, SmfTimedEvent};
 ///

@@ -4307,7 +4307,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-graph",
- "tutti-midi-types",
  "tutti-types",
 ]
 
@@ -4324,6 +4323,7 @@ dependencies = [
  "tutti-graph",
  "tutti-io",
  "tutti-nodes",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4398,6 +4398,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4408,8 +4409,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
- "tutti-core",
  "tutti-midi-types",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4425,11 +4426,11 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tutti-alsa-ump-sys",
- "tutti-core",
  "tutti-graph",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4442,6 +4443,7 @@ dependencies = [
  "tutti-core",
  "tutti-graph",
  "tutti-midi-types",
+ "tutti-types",
 ]
 
 [[package]]
@@ -4548,9 +4550,11 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-core",
  "tutti-fixtures",
+ "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-types",
+ "tutti-types",
  "tutti-vst2-host",
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
@@ -4589,6 +4593,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-mod",
  "tutti-nodes",
+ "tutti-types",
  "wide",
 ]
 
@@ -4605,6 +4610,7 @@ version = "0.0.1"
 dependencies = [
  "approx",
  "assert_no_alloc",
+ "atomic_float",
  "bevy_ecs",
  "criterion",
  "crossbeam-channel",
@@ -4673,13 +4679,13 @@ dependencies = [
  "assert_no_alloc",
  "rustysynth",
  "thiserror 2.0.21",
- "tutti-core",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-nodes",
  "tutti-rustysynth",
+ "tutti-types",
 ]
 
 [[package]]

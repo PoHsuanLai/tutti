@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RegionId(pub u64);
 
-use tutti_core::PlaybackRate;
+use tutti_types::PlaybackRate;
 
 use crate::voice::types::Direction;
 

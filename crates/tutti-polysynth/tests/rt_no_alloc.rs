@@ -24,11 +24,11 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
-use tutti_core::{Hz, Q, SampleRate};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
+use tutti_types::{Hz, Q, SampleRate};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -52,7 +52,7 @@ fn polysynth_process_idle_is_allocation_free() {
     // bookkeeping and the MIDI inbox poll.
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -75,7 +75,7 @@ fn polysynth_process_idle_is_allocation_free() {
 fn polysynth_process_with_active_voices_is_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             filter: FilterType::Svf {
@@ -113,7 +113,7 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
 fn polysynth_one_frame_blocks_with_active_voices_are_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Triangle,
             ..Default::default()
@@ -140,7 +140,7 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     // the event-driven boundaries.
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -201,7 +201,7 @@ fn polysynth_all_voices_finishing_together_is_allocation_free() {
 
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: MAX_VOICES,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -271,7 +271,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 
     let build = || {
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: MAX_VOICES,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -342,7 +342,7 @@ fn polysynth_allocates_nothing_on_a_fresh_instance() {
 fn a_first_block_on_a_cold_thread_is_allocation_free() {
     let mut synth = Hand::new(
         PolySynth::new(SynthConfig {
-            sample_rate: tutti_core::SampleRate::from(48_000.0),
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
             max_voices: 8,
             oscillator: OscillatorType::Saw,
             ..Default::default()
@@ -365,9 +365,9 @@ fn a_first_block_on_a_cold_thread_is_allocation_free() {
 /// `Vec` before merging → the gate aborts.
 #[test]
 fn a_clip_into_a_synth_is_allocation_free() {
-    use tutti_core::{Beat, Bpm, NodeKey, Samples};
     use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Prepare, Transport};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+    use tutti_types::{Beat, Bpm, NodeKey, Samples};
 
     const BLOCK: usize = 256;
     // A note on or off every 37 frames over the first 8 192.
@@ -404,7 +404,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
     );
     ed.spec_mut().topology.outputs = (0..2)
         .map(|port| {
-            tutti_core::graph::Source::Node(tutti_core::graph::OutPort {
+            tutti_types::graph::Source::Node(tutti_types::graph::OutPort {
                 node: NodeKey(2),
                 port,
             })

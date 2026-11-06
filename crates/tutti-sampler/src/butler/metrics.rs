@@ -22,7 +22,7 @@
 
 use parking_lot::Mutex;
 use std::time::Instant;
-use tutti_core::Seconds;
+use tutti_types::Seconds;
 
 /// Disk read throughput over a sliding window, the sole input varifill takes
 /// from measurement rather than from the ring's own fill level.

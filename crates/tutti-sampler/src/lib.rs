@@ -20,7 +20,7 @@
 //! - [`voice::interp`]: the block interpolation and transport-placement
 //!   helpers the voices share.
 //! - [`AudioIn`], [`AudioOut`], [`pump`]: the engine's I/O edge vocabulary,
-//!   re-exported from `tutti-core` because the butler's refill path speaks it.
+//!   re-exported from `tutti-types` because the butler's refill path speaks it.
 //!
 //! ## License
 //!
@@ -40,7 +40,7 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 
 /// Reject the empty layout for anything that is a graph node.
 ///
-/// [`ChannelLayout`](tutti_core::ChannelLayout) can represent an empty bus
+/// [`ChannelLayout`](tutti_types::ChannelLayout) can represent an empty bus
 /// (`Multi(0)`) — deliberately, because a plugin port genuinely can be zero
 /// wide. A sampler node cannot: a node that reports zero outputs is a node
 /// nothing can be wired to. So the widths a node's `Shape` declares go
@@ -52,9 +52,9 @@ pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
 /// a per-read stack ceiling, not a limit on what a node may declare, and only
 /// [`DiskVoice`] needs it.
 #[inline]
-pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::ChannelLayout {
+pub(crate) fn nonempty(layout: tutti_types::ChannelLayout) -> tutti_types::ChannelLayout {
     if layout.count() == 0 {
-        tutti_core::ChannelLayout::MONO
+        tutti_types::ChannelLayout::MONO
     } else {
         layout
     }
@@ -66,11 +66,10 @@ pub(crate) fn nonempty(layout: tutti_core::ChannelLayout) -> tutti_core::Channel
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-// The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
-// `tutti-core`. Re-exported again here because the butler's refill path speaks
-// it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
+// The I/O edge vocabulary is defined once in `tutti-types`. Re-exported here
+// because the butler's refill path speaks it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
 // itself an `AudioOut`, both carrying their width as a runtime `ChannelLayout`.
-pub use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
+pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
 // `Voice`'s memory tier) is `tutti-io`'s. Re-exported so a consumer building a

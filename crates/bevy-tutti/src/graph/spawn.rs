@@ -39,7 +39,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, NodeControls};
 /// use bevy_app::prelude::*;
 /// use bevy_ecs::prelude::*;
 /// use bevy_tutti::prelude::*;
-/// use tutti_core::{Hz, Q};
+/// use tutti_types::{Hz, Q};
 /// use tutti_graph::ForkByClone;
 /// use tutti_nodes::testing::Osc;
 /// use tutti_nodes::{SvfFilterNode, SvfType};
@@ -253,9 +253,9 @@ pub fn crossfade_plugin_node(
 }
 
 /// Every crossfade's fade.
-const FADE: tutti_core::Seconds = tutti_core::Seconds(0.005);
+const FADE: tutti_types::Seconds = tutti_types::Seconds(0.005);
 /// Every crossfade's curve.
-const CURVE: tutti_core::CrossfadeCurve = tutti_core::CrossfadeCurve::EqualAmplitude;
+const CURVE: tutti_graph::CrossfadeCurve = tutti_graph::CrossfadeCurve::EqualAmplitude;
 
 /// The entity's node and the graph, or a warning and `None`.
 fn crossfade_target(

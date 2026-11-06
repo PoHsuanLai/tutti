@@ -29,12 +29,12 @@ use bevy_ecs::prelude::*;
 use bevy_log::{error, info};
 use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
-use tutti_core::SampleRate;
 use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::Plugin;
 use tutti_plugin::catalog::PluginId;
 use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_session::{PluginLoadRequest, PluginLoaded};
+use tutti_types::SampleRate;
 
 use crate::graph::{AudioGraphRes, CapturedControls};
 use crate::plugin_host::PluginsRes;

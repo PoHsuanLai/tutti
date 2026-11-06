@@ -1,5 +1,5 @@
 use super::error::Result;
-use tutti_core::{ArcDegrees, Azimuth, Elevation, SampleRate, Samples, Spread, StereoWidth};
+use tutti_types::{ArcDegrees, Azimuth, Elevation, SampleRate, Samples, Spread, StereoWidth};
 use vbap::VBAPanner;
 
 use crate::AngleSmoother;

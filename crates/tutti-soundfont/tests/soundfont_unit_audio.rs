@@ -10,12 +10,12 @@ use std::sync::Arc;
 mod support;
 
 use support::Hand;
-use tutti_core::SampleRate;
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_nodes::testing::assert_golden;
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_types::SampleRate;
 
 /// Path to the committed test SoundFont.
 fn test_soundfont_path() -> PathBuf {
@@ -361,7 +361,7 @@ fn a_same_rate_reprepare_mid_stream_does_not_disturb_rendering() {
     // A re-prepare at the unit's own rate, between blocks.
     tutti_graph::Node::prepare(
         &mut *interrupted,
-        &tutti_graph::Prepare::new(tutti_core::SampleRate(44_100.0), tutti_core::Samples(128)),
+        &tutti_graph::Prepare::new(tutti_types::SampleRate(44_100.0), tutti_types::Samples(128)),
     );
     got.extend(render_process_blocks(
         &mut interrupted,
@@ -598,20 +598,20 @@ fn digest(samples: &[(f32, f32)]) -> u64 {
 fn a_preset_units_first_note_on_renders_that_preset() {
     const PRESET: u7 = u7::new(40);
     const CHANNEL: MidiChannel = MidiChannel::new(3);
-    let rate = tutti_core::SampleRate(44_100.0);
+    let rate = tutti_types::SampleRate(44_100.0);
     let unit = SoundFontUnit::with_preset(load_test_soundfont(), rate, CHANNEL, PRESET)
         .expect("TimGM6mb builds at 44.1 kHz");
     assert_eq!(unit.sample_rate(), rate);
     let fractional = SoundFontUnit::with_preset(
         load_test_soundfont(),
-        tutti_core::SampleRate(44_100.6),
+        tutti_types::SampleRate(44_100.6),
         CHANNEL,
         PRESET,
     )
     .expect("TimGM6mb builds at 44.1 kHz");
     assert_eq!(
         fractional.sample_rate(),
-        tutti_core::SampleRate(44_101.0),
+        tutti_types::SampleRate(44_101.0),
         "the rate rounds to the nearest hertz"
     );
 

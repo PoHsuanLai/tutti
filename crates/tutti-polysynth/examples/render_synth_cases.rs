@@ -17,7 +17,6 @@
 
 use std::path::Path;
 
-use tutti_core::{Amplitude, Hz, Q, Samples, Seconds, Spread};
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
@@ -26,6 +25,7 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
+use tutti_types::{Amplitude, Hz, Q, Samples, Seconds, Spread};
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -112,7 +112,7 @@ fn main() {
     std::fs::create_dir_all(out).expect("create output dir");
 
     let base = |osc: OscillatorType| SynthConfig {
-        sample_rate: tutti_core::SampleRate::from(SR),
+        sample_rate: tutti_types::SampleRate::from(SR),
         oscillator: osc,
         envelope: flat_envelope(),
         ..Default::default()

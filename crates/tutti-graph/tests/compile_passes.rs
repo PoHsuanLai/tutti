@@ -290,7 +290,7 @@ fn ties_break_by_key_across_edge_kinds() {
 // ---------------------------------------------------------------------------
 
 /// Every per-port delay, every output alignment, the per-channel pre-roll and
-/// the total agree with `tutti_types::latency::delays` on all thirteen shapes.
+/// the total agree with `tutti_types::delays` on all thirteen shapes.
 ///
 /// Mutation: in `compile`, use `arrival[n]` (not `arrival + latency`) as a
 /// source's departure → `pdc_diamond` loses its 512-frame delay → fails.

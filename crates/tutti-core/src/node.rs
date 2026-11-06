@@ -12,7 +12,7 @@
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Component;
 
-use tutti_types::graph::NodeKey;
+use tutti_types::NodeKey;
 
 /// Component identity for a graph node.
 ///

@@ -5,8 +5,8 @@
 //! back for the engine's `MotionAudio` to publish.
 
 use super::motion::{FadeOut, MotionEvent, Then};
-use crate::Beat;
-use crate::Samples;
+use tutti_types::Beat;
+use tutti_types::Samples;
 
 /// What the transport is doing.
 ///

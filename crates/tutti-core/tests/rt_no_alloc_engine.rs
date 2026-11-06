@@ -28,10 +28,10 @@ mod support;
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;
-use tutti_core::{
-    ChannelLayout, ClickNode, ClickSettings, InterleavedMut, MetronomeMode, SampleRate, Transport,
-};
-use tutti_core::{Engine, LoopEdit, LoopRange};
+use tutti_core::{ClickNode, ClickSettings, MetronomeMode, Transport};
+use tutti_core::{Engine, LoopEdit};
+use tutti_types::LoopRange;
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -45,7 +45,7 @@ impl tutti_graph::Node for TransportTone {
     fn shape(&self) -> tutti_graph::Shape {
         tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
             .with_events(1, 0)
-            .with_tail(tutti_core::Tail::Unbounded)
+            .with_tail(tutti_types::Tail::Unbounded)
     }
     fn prepare(&mut self, _: &tutti_graph::Prepare) {}
     fn process(
@@ -82,16 +82,17 @@ impl tutti_graph::Node for TransportTone {
 /// a snapshot) → fails.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
-    use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
+    use tutti_core::{MotionEvent, TransportCommand};
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump, Unforkable};
     use tutti_types::NodeKey;
     use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{At, Beat, Bpm, Frame};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_core::Samples(512),
+        tutti_types::Samples(512),
     ));
     ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
     ed.spec_mut().topology.outputs = (0..2)
@@ -185,9 +186,10 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// `ClickNode::render` → the gate panics → fails.
 #[test]
 fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
-    use tutti_core::{At, Beat, Bpm, Frame, MotionEvent, TransportCommand};
+    use tutti_core::{MotionEvent, TransportCommand};
     use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
     use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{At, Beat, Bpm, Frame};
     use tutti_types::{NodeKey, Tail};
 
     /// The beat of every frame, whole beats then the fraction.
@@ -216,7 +218,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
 
     let (mut ed, exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_core::Samples(512),
+        tutti_types::Samples(512),
     ));
     let (clock, sink) = (NodeKey(1), NodeKey(2));
     ed.insert(clock, "clock", Unforkable(BeatWalk));
@@ -276,7 +278,7 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
 /// thread).
 struct GatedPool(tutti_core::WorkerPool);
 
-impl tutti_core::Pool for GatedPool {
+impl tutti_graph::Pool for GatedPool {
     fn participants(&self) -> usize {
         self.0.participants()
     }
@@ -284,7 +286,7 @@ impl tutti_core::Pool for GatedPool {
         self.0
             .run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)));
     }
-    fn waits(&self) -> tutti_core::BlockWaits {
+    fn waits(&self) -> tutti_types::BlockWaits {
         self.0.waits()
     }
 }
@@ -308,7 +310,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
     let transport = Transport::new(sample_rate);
     let (mut ed, mut exec) = Editor::new(Prepare::new(
         SampleRate(sample_rate),
-        tutti_core::Samples(512),
+        tutti_types::Samples(512),
     ));
     // Parks quickly, so the gated blocks below wake parked helpers.
     let pool = tutti_core::WorkerPool::builder(4)
@@ -320,7 +322,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
         ed.insert(
             NodeKey(k + 1),
             "sine",
-            ForkByClone(support::Sine::new(tutti_core::Hz(220.0 * (k + 1) as f32))),
+            ForkByClone(support::Sine::new(tutti_types::Hz(220.0 * (k + 1) as f32))),
         );
         ed.insert(
             NodeKey(k + 11),

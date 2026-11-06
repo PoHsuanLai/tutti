@@ -9,8 +9,8 @@
 //! lane evaluate one function ([`Wave::raw_at`]), so a random LFO is one
 //! sequence whichever tier runs it.
 
-use tutti_core::PhaseIncrement;
 use tutti_mod::Wave;
+use tutti_types::PhaseIncrement;
 
 /// A pure `cycles -> value` function: the position, in unwrapped cycles, is
 /// all it reads. It holds no state, so it is `Sync`, and a node that runs it
@@ -50,8 +50,8 @@ impl Modulator for Wave {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::Phase;
     use tutti_mod::LfoShape;
+    use tutti_types::Phase;
 
     fn shape(shape: LfoShape) -> Wave {
         Wave::Shape { shape, seed: 0 }

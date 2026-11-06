@@ -9,7 +9,7 @@
 mod conformance_support;
 
 use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
-use tutti_types::meter::{BarNumber, TimeSignature};
+use tutti_types::{BarNumber, TimeSignature};
 use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, PrefetchSupport, TransportInfo};
 
 use conformance_support::*;

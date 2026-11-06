@@ -3,8 +3,8 @@
 //!
 //! # The plugin boundary in the engine's I/O vocabulary
 //!
-//! In [`tutti_types::io`] terms a plugin is an [`AudioOut`](tutti_types::io::AudioOut)
-//! back-to-back with an [`AudioIn`](tutti_types::io::AudioIn): its **input** side
+//! In [`tutti_types::io`] terms a plugin is an [`AudioOut`](tutti_types::AudioOut)
+//! back-to-back with an [`AudioIn`](tutti_types::AudioIn): its **input** side
 //! is written (the host pushes a block in), its **output** side is polled (the
 //! host pulls the processed block out), and the format-native `process` is the
 //! private in→out step wedged between. [`AudioBuffer<T>`] is that back-to-back
@@ -43,7 +43,7 @@ use std::ffi::c_void;
 /// Generic process code such as `Vst3Instance::process` / `ClapProcessor::process`
 /// is written `<T: Sample>`, so the compiler monomorphizes one specialization
 /// per concrete width. This is the element type `S` of the engine's
-/// [`AudioIn`](tutti_types::io::AudioIn) / [`AudioOut`](tutti_types::io::AudioOut)
+/// [`AudioIn`](tutti_types::AudioIn) / [`AudioOut`](tutti_types::AudioOut)
 /// vocabulary, narrowed to the two widths a plugin bus can negotiate: `f32`
 /// (the whole edge world) and `f64` (a 64-bit plugin bus).
 pub trait Sample: Copy + Default + Send + 'static {}

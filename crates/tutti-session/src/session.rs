@@ -5,9 +5,8 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tutti_core::{
-    AudioNode, AudioTap, ClickSettings, MasterMeter, PrerollTable, Samples, Transport,
-};
+use tutti_core::{AudioNode, AudioTap, ClickSettings, MasterMeter, PrerollTable, Transport};
+use tutti_types::Samples;
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 
@@ -347,7 +346,7 @@ pub struct MidiNodes {
 /// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
-/// use tutti_core::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+/// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 /// use tutti_session::{GraphSource, Session};
 /// use tutti_nodes::testing::Const;
 ///
@@ -547,7 +546,7 @@ impl Session {
     /// The events the graph's ports lost since the last update, as
     /// [`SessionEvent::EventsDropped`], one per port.
     fn report_event_losses(&mut self, out: &mut Vec<SessionEvent>) {
-        let mut sums: std::collections::BTreeMap<(tutti_core::NodeKey, Option<u16>), u64> =
+        let mut sums: std::collections::BTreeMap<(tutti_types::NodeKey, Option<u16>), u64> =
             std::collections::BTreeMap::new();
         for loss in self.graph.take_event_losses() {
             *sums.entry((loss.node, loss.port)).or_default() += u64::from(loss.count);
@@ -667,7 +666,7 @@ impl Session {
     /// On a session not built with
     /// [`build_offline`](crate::SessionBuilder::build_offline): its engine
     /// is a device's callback, or there is none.
-    pub fn render(&self, output: &mut tutti_core::InterleavedMut<'_>) {
+    pub fn render(&self, output: &mut tutti_types::InterleavedMut<'_>) {
         self.engine
             .as_ref()
             .expect("render needs an offline session (SessionBuilder::build_offline)")

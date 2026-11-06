@@ -24,7 +24,7 @@
 //!
 //! let config = ExportConfig {
 //!     render: RenderConfig {
-//!         sample_rate: tutti_core::SampleRate(44_100.0),
+//!         sample_rate: tutti_types::SampleRate(44_100.0),
 //!         duration_seconds: 0.05,
 //!         ..Default::default()
 //!     },
@@ -45,7 +45,7 @@
 //! app.add_plugins((bevy_app::TaskPoolPlugin::default(), ExportPlugin));
 //! app.insert_resource(graph);
 //! app.insert_resource(AudioConfig {
-//!     sample_rate: tutti_core::SampleRate(44_100.0),
+//!     sample_rate: tutti_types::SampleRate(44_100.0),
 //!     channels: ChannelLayout::STEREO,
 //! });
 //! // `start_exports` is gated on the engine state, not on the graph resource.

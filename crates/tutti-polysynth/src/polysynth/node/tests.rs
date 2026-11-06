@@ -9,8 +9,8 @@ use crate::{PolySynth, SynthConfig};
 /// unison → fails.
 #[test]
 fn the_shape_declares_volume_and_the_unison_params() {
-    use tutti_core::UnitParam;
     use tutti_graph::Node;
+    use tutti_types::UnitParam;
 
     let plain = PolySynth::new(SynthConfig::default()).expect("builds");
     plain.set_volume(0.5);
@@ -21,8 +21,8 @@ fn the_shape_declares_volume_and_the_unison_params() {
     let unison = PolySynth::new(SynthConfig {
         unison: Some(crate::UnisonConfig {
             voice_count: 3,
-            detune_cents: tutti_core::Cents(12.0),
-            stereo_spread: tutti_core::Spread::new_clamped(0.25),
+            detune_cents: tutti_types::Cents(12.0),
+            stereo_spread: tutti_types::Spread::new_clamped(0.25),
             phase_randomize: false,
         }),
         ..SynthConfig::default()

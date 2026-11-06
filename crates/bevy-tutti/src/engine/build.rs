@@ -160,7 +160,7 @@ pub(crate) fn build_on(
 
 #[cfg(test)]
 mod tests {
-    use tutti_core::ChannelLayout;
+    use tutti_types::ChannelLayout;
 
     /// **The engine publishes the tap its callback feeds**, not a fresh
     /// disconnected one: a host opens `AudioTapRes` and sees the frames the
@@ -175,8 +175,8 @@ mod tests {
     #[test]
     fn the_engine_publishes_the_tap_its_callback_feeds() {
         use crate::graph::AudioTapRes;
-        use tutti_core::SampleRate;
         use tutti_cpal::{ManualStreamDriver, OutputSpec};
+        use tutti_types::SampleRate;
 
         let mut app = bevy_app::App::new();
         let (driver, stream) = ManualStreamDriver::new();
@@ -212,8 +212,8 @@ mod tests {
     #[test]
     fn the_resource_reads_the_load_its_callback_measures() {
         use crate::graph::AudioGraphRes;
-        use tutti_core::SampleRate;
         use tutti_cpal::{ManualStreamDriver, OutputSpec};
+        use tutti_types::SampleRate;
 
         let mut app = bevy_app::App::new();
         let (driver, stream) = ManualStreamDriver::new();

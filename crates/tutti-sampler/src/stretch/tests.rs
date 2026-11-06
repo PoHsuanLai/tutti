@@ -7,7 +7,7 @@ use super::fft::{Complex32, Fft};
 use super::unit::*;
 use super::vocoder::*;
 use super::*;
-use tutti_core::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor};
+use tutti_types::{Cents, ChannelLayout, Radians, ReadRate, Samples, StretchFactor};
 
 use std::f32::consts::PI;
 use std::sync::Arc;

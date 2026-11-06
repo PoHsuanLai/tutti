@@ -33,13 +33,13 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
 };
 
-use tutti_core::ChannelLayout;
 use tutti_core::MAX_ROOT_CHANNELS;
-use tutti_core::SampleRate;
-use tutti_core::Samples;
-use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_core::pcm::BitDepth;
 use tutti_io::{MicMonitorNode, MicRing, WavOut};
+use tutti_types::ChannelLayout;
+use tutti_types::SampleRate;
+use tutti_types::Samples;
+use tutti_types::pcm::BitDepth;
+use tutti_types::{AudioIn, OnEmpty};
 
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
@@ -303,7 +303,7 @@ impl AudioIn for MicIn {
 /// Reading `frame[0]` and `frame[1]` and discarding the rest would, on a 5.1
 /// capture device, silently throw away the **centre channel — the dialogue —
 /// and both surrounds**. Every device frame instead routes through
-/// [`fold_frame`](tutti_core::fold_frame), the engine's single ITU-R BS.775 /
+/// [`fold_frame`](tutti_types::fold_frame), the engine's single ITU-R BS.775 /
 /// Dolby implementation, so a wide capture arrives correctly downmixed and a
 /// mono one still duplicates into both sides (the fold's 1→2 arm).
 ///
@@ -344,7 +344,7 @@ where
                 // The engine's one downmix: mono fans, stereo passes, surround
                 // folds per ITU/Dolby with the LFE dropped.
                 let mut stereo = [0.0f32; 2];
-                tutti_core::fold_frame(&src[..fold_width], &mut stereo);
+                tutti_types::fold_frame(&src[..fold_width], &mut stereo);
                 // Drop on overrun: a full ring means the consumer fell behind.
                 // Never block the RT input thread.
                 let _ = prod.try_push(stereo);

@@ -16,11 +16,11 @@ use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
-use tutti_core::{Amplitude, Param, Tail};
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{CCNumber, MidiChannel, NoteId, cc};
+use tutti_types::{Amplitude, Param, Tail};
 
 use std::sync::Arc;
 
@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// # Examples
 ///
 /// ```
-/// use tutti_core::{Hz, Resonance, SampleRate, Samples};
+/// use tutti_types::{Hz, Resonance, SampleRate, Samples};
 /// use tutti_graph::{Prepare, Solo};
 /// use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 ///
@@ -212,21 +212,21 @@ impl PolySynth {
     /// Returns the shared master-volume cell, for control-rate modulation (the
     /// cell the synth's `ParamSet` addresses as `Volume`). Clones the `Arc`;
     /// call it during setup, not from the audio path.
-    pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
+    pub fn volume_atomic(&self) -> Arc<tutti_types::AtomicF32> {
         self.master_volume.as_atomic()
     }
 
     /// Returns the shared unison-detune cell (cents), for control-rate
     /// modulation.
     /// `None` when this synth has no unison engine.
-    pub fn detune_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
+    pub fn detune_atomic(&self) -> Option<Arc<tutti_types::AtomicF32>> {
         self.unison.as_ref().map(|u| u.detune_atomic())
     }
 
     /// Returns the shared unison stereo-spread cell (0..1), for control-rate
     /// modulation.
     /// `None` when this synth has no unison engine.
-    pub fn spread_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
+    pub fn spread_atomic(&self) -> Option<Arc<tutti_types::AtomicF32>> {
         self.unison.as_ref().map(|u| u.spread_atomic())
     }
 
@@ -251,11 +251,11 @@ impl PolySynth {
         self.unison.as_ref().map_or(1, |u| u.voice_count())
     }
 
-    /// Sets the unison detune in [`Cents`](tutti_core::Cents), applied
+    /// Sets the unison detune in [`Cents`](tutti_types::Cents), applied
     /// symmetrically either side of the written pitch. Negative values clamp to
     /// zero. Recomputes the per-sub-voice pitch ratios immediately, so it
     /// affects sounding notes as well as future ones. No-op without unison.
-    pub fn set_unison_detune(&mut self, cents: impl Into<tutti_core::Cents>) {
+    pub fn set_unison_detune(&mut self, cents: impl Into<tutti_types::Cents>) {
         if let Some(unison) = &mut self.unison {
             unison.set_detune(cents);
         }
@@ -370,7 +370,7 @@ impl PolySynth {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 let bend = bend_u32_to_signed_f32(m.pitch_bend_data());
                 let semitones =
-                    tutti_core::Semitones(bend * self.config.mpe_pitch_bend_range.get());
+                    tutti_types::Semitones(bend * self.config.mpe_pitch_bend_range.get());
                 self.set_voice_mpe(id, MpeControl::PitchBend(semitones));
             }
             Cv2::KeyPressure(m) => {
@@ -441,7 +441,7 @@ impl PolySynth {
                 let range =
                     tutti_midi_types::mpe::PitchBendSensitivity::from_rpn_bits(m.controller_data())
                         .as_semitones_f32();
-                self.set_mpe_pitch_bend_range(tutti_core::Semitones(range));
+                self.set_mpe_pitch_bend_range(tutti_types::Semitones(range));
             }
             _ => {}
         }
@@ -549,7 +549,7 @@ impl PolySynth {
     /// (M2-104 §7.4.13). Updates both the scaling range used to convert an
     /// incoming per-note bend to semitones and every voice's clamp range, so
     /// currently-sounding notes and future ones share the new sensitivity.
-    fn set_mpe_pitch_bend_range(&mut self, range: tutti_core::Semitones) {
+    fn set_mpe_pitch_bend_range(&mut self, range: tutti_types::Semitones) {
         self.config.mpe_pitch_bend_range = range;
         for voice in &mut self.voices {
             voice.set_mpe_pitch_bend_range(range);
@@ -796,7 +796,7 @@ impl PolySynth {
     }
 
     /// Re-rate the voice bank and the glide.
-    pub(crate) fn set_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+    pub(crate) fn set_rate(&mut self, sample_rate: tutti_types::SampleRate) {
         self.bank.set_sample_rate(sample_rate);
         if let Some(ref mut porta) = self.portamento {
             porta.set_sample_rate(sample_rate);

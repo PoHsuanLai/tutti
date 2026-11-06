@@ -51,7 +51,8 @@ pub use play::PlayReading;
 pub use samples::Samples;
 pub use tail::Tail;
 pub use timeline::{
-    FRAME_TOLERANCE, TimelineSegment, first_frame_at_or_after, snap_to_whole_frame,
+    FRAME_TOLERANCE, TimelineSegment, beats_per_sample, first_frame_at_or_after,
+    snap_to_whole_frame,
 };
 pub use unit_param::{ParamAddr, ParamKey, UnitAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{

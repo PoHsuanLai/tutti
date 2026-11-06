@@ -19,11 +19,11 @@ thiserror = "2"
 tracing = "0.1"
 
 tutti-midi-types = { path = "../tutti-midi-types" }
-tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
 
 # midly's workspace base is no_std; re-add the `std` + `parallel` features this
 # crate's SMF I/O relies on (midly's own default).
 midly = { workspace = true, features = ["std", "parallel"] }
+tutti-types = { path = "../tutti-types", default-features = false }
 
 [dev-dependencies]
 # The path-based clip tests need a private directory. nextest runs each test in

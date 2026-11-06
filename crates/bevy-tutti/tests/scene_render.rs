@@ -49,10 +49,10 @@ use bevy_tutti::graph::{
     AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide, GraphReconcilePlugin, GraphSource,
     MasterSources, PortSource, PortSources, SpawnAudioNode, crossfade_audio_node,
 };
-use tutti_core::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, UnitParam};
 use tutti_graph::{Cx, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::testing::{Osc, assert_golden};
 use tutti_nodes::{DistortionNode, LimiterNode, ShapeKind, SvfFilterNode, SvfType};
+use tutti_types::{ChannelLayout, Db, Drive, Hz, Q, SampleRate, Samples, UnitParam};
 
 const RATE: f64 = 48_000.0;
 

@@ -31,7 +31,7 @@ use tutti_core::transport::{ClickState, Timeline, Transport};
 ///   `motion.loop_region()` reads what the engine last applied, as a
 ///   [`LoopRegion`](tutti_core::transport::LoopRegion): the bounds (kept while
 ///   disarmed) and whether looping is armed. A brace mid-drag is the UI's own
-///   state: [`LoopRange::new`](tutti_core::transport::LoopRange::new) refuses
+///   state: [`LoopRange::new`](tutti_types::LoopRange::new) refuses
 ///   an inverted pair, so the engine only ever holds a valid one.
 ///
 /// Everything takes `&self` (the state is atomics and queues), so `Res` suffices. That also

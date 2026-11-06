@@ -7,10 +7,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use atomic_float::AtomicF64;
 use dashmap::DashMap;
-use tutti_core::{AtomicF64, Ordering, SampleRate, SrcRatio};
+use std::sync::atomic::Ordering;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 use tutti_io::AudioIn;
+use tutti_types::{SampleRate, SrcRatio};
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};

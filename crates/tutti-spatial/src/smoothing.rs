@@ -1,7 +1,7 @@
 //! One-pole exponential smoother that de-zippers the panners' position
 //! changes.
 
-use tutti_core::{Azimuth, Elevation, SampleRate, Samples, Seconds};
+use tutti_types::{Azimuth, Elevation, SampleRate, Samples, Seconds};
 
 pub const DEFAULT_POSITION_SMOOTH_TIME: Seconds = Seconds(0.05);
 

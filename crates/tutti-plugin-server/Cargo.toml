@@ -45,7 +45,9 @@ tutti-plugin = { path = "../tutti-plugin" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 
 # Core types
-tutti-core = { path = "../tutti-core", default-features = false, features = ["midi"] }
+tutti-core = { path = "../tutti-core", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false }
+tutti-graph = { path = "../tutti-graph" }
 
 # MIDI support
 tutti-midi-types = { path = "../tutti-midi-types" }

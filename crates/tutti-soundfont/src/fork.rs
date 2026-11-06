@@ -74,13 +74,13 @@ impl SoundFontUnit {
 mod tests {
     use std::sync::Arc;
 
-    use tutti_core::{SampleRate, Samples};
     use tutti_graph::contract::drive_input;
     use tutti_graph::{
         Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
     };
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_types::{SampleRate, Samples};
 
     use crate::{Settings, SoundFont, SoundFontUnit};
     use tutti_midi_types::midi2::num::u7;
@@ -123,7 +123,7 @@ mod tests {
         let mut frame = 0u64;
         while out.len() < frames {
             let env = Env {
-                frame: tutti_core::Frame(frame),
+                frame: tutti_types::Frame(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
                 transport: Transport::default(),
@@ -213,7 +213,7 @@ mod tests {
         let mut frame = 0u64;
         while out.len() < frames {
             let env = Env {
-                frame: tutti_core::Frame(frame),
+                frame: tutti_types::Frame(frame),
                 sample_rate: rate,
                 block_len: Samples(64),
                 transport: Transport::default(),

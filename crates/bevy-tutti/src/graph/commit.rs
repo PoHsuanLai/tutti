@@ -114,7 +114,8 @@ mod tests {
     use std::sync::Arc;
 
     use bevy_app::App;
-    use tutti_core::{Beat, MeterChange, MeterMap, MeterSlot, TimeSignature};
+    use tutti_core::MeterSlot;
+    use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     use crate::graph::AudioGraphRes;
 

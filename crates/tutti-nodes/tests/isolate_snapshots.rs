@@ -24,15 +24,15 @@
 //! default differs fail. Make a control's write a no-op → that control
 //! fails with "moving it did not change a fresh fork's output".
 
-use tutti_core::{
-    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement, Q,
-    Resonance, Seconds,
-};
 use tutti_graph::contract::IsolateRow;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, EqBandNode,
     GateNode, LadderFilterNode, LadderType, LfoNode, LfoShape, LimiterNode, ModDelayNode,
     PhaserNode, ShapeKind, SvfFilterNode, SvfType,
+};
+use tutti_types::{
+    Amplitude, ChannelLayout, CompressionRatio, Db, Depth, Drive, Hz, Pan, PhaseIncrement, Q,
+    Resonance, Seconds,
 };
 
 #[test]
@@ -50,7 +50,8 @@ fn compressor() {
     .control("release", |c| c.set_release(Seconds(0.2)))
     .control("makeup", |c| c.set_makeup(Db(6.0)))
     .control("knee", |c| {
-        c.knee_width().store(9.0, tutti_core::Ordering::Release)
+        c.knee_width()
+            .store(9.0, std::sync::atomic::Ordering::Release)
     })
     .check();
 }
@@ -64,11 +65,12 @@ fn gate() {
     .control("threshold", |g| g.set_threshold(Db(-35.0)))
     .control("attack", |g| g.set_attack(Seconds(0.01)))
     .control("hold", |g| {
-        g.hold_time().store(0.05, tutti_core::Ordering::Release)
+        g.hold_time()
+            .store(0.05, std::sync::atomic::Ordering::Release)
     })
     .control("release", |g| g.set_release(Seconds(0.1)))
     .control("range", |g| {
-        g.range().store(-10.0, tutti_core::Ordering::Release)
+        g.range().store(-10.0, std::sync::atomic::Ordering::Release)
     })
     .check();
 }
@@ -90,7 +92,8 @@ fn brickwall_limiter() {
         BrickwallLimiterNode::new(Db(-3.0))
     })
     .control("ceiling", |l| {
-        l.ceiling().store(-9.0, tutti_core::Ordering::Release)
+        l.ceiling()
+            .store(-9.0, std::sync::atomic::Ordering::Release)
     })
     .check();
 }
@@ -207,8 +210,8 @@ fn bus_strip() {
 #[cfg(feature = "convolution")]
 #[test]
 fn convolver() {
-    use tutti_core::Mix;
     use tutti_nodes::ConvolverNode;
+    use tutti_types::Mix;
     // A short decaying tail: a fixed LCG, so the IR is the same every run.
     let ir: Vec<f32> = (0..512u32)
         .map(|n| {

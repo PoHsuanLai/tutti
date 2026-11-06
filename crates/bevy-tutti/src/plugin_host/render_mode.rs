@@ -109,8 +109,8 @@ mod tests {
         app.add_plugins(bevy_app::TaskPoolPlugin::default());
         app.insert_resource(graph);
         app.insert_resource(AudioConfig {
-            sample_rate: tutti_core::SampleRate(48_000.0),
-            channels: tutti_core::ChannelLayout::STEREO,
+            sample_rate: tutti_types::SampleRate(48_000.0),
+            channels: tutti_types::ChannelLayout::STEREO,
         });
         app.insert_resource(AudioEngineState::Running);
         app.add_plugins(ExportPlugin);
@@ -131,7 +131,7 @@ mod tests {
                     crate::export::ExportTarget::Buffers,
                     tutti_export::ExportConfig {
                         render: tutti_export::RenderConfig {
-                            sample_rate: tutti_core::SampleRate(48_000.0),
+                            sample_rate: tutti_types::SampleRate(48_000.0),
                             duration_seconds: 0.01,
                             ..Default::default()
                         },

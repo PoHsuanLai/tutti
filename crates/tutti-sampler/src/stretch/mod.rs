@@ -2,7 +2,7 @@
 //!
 //! Changes duration WITHOUT changing pitch, or pitch without duration — the
 //! operation varispeed cannot express, since resampling couples the two. See
-//! [`PlaybackRate`](tutti_core::PlaybackRate) for the coupled kind.
+//! [`PlaybackRate`](tutti_types::PlaybackRate) for the coupled kind.
 //!
 //! [`Unit`] is a pure frame-in → frame-out filter: it owns no source, so the
 //! caller ticks its own source and feeds each frame in. Nothing here knows
@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```
-//! use tutti_core::{Cents, StretchFactor};
+//! use tutti_types::{Cents, StretchFactor};
 //! use tutti_sampler::stretch;
 //!
 //! // A pure filter: it owns no source, so the caller ticks its own and feeds
@@ -56,7 +56,7 @@
 /// still pass, because a `Vec` that reallocates is correct, just not RT-safe.
 const MAX_BUFFER_SIZE: usize = 8192;
 
-use tutti_core::{SampleRate, Samples, Seconds};
+use tutti_types::{SampleRate, Samples, Seconds};
 
 /// An analysis window length, in samples.
 ///

@@ -19,12 +19,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Transport};
 use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_types::{NodeKey, SampleRate, Samples};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

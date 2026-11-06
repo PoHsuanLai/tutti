@@ -294,10 +294,11 @@ mod tests {
     use crate::{AudioEngineState, TuttiPlugin};
     use bevy_app::App;
     use std::sync::{Arc, Mutex};
+    use tutti_core::MotionEvent;
     use tutti_core::transport::{MetronomeMode, OfflineTimeline, OfflineTimelineConfig};
-    use tutti_core::{Beat, Bpm, ChannelLayout, MotionEvent, SampleRate};
     use tutti_cpal::{ManualStreamDriver, OutputSpec};
     use tutti_export::{ExportConfig, RenderConfig};
+    use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate};
 
     const RATE: f64 = 48_000.0;
 
@@ -310,7 +311,7 @@ mod tests {
     impl tutti_graph::Node for BeatWalk {
         fn shape(&self) -> tutti_graph::Shape {
             tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
-                .with_tail(tutti_core::Tail::Unbounded)
+                .with_tail(tutti_types::Tail::Unbounded)
         }
         fn prepare(&mut self, _: &tutti_graph::Prepare) {}
         fn process(

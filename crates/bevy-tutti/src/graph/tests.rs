@@ -4,8 +4,9 @@
 //! passes its own.
 
 use bevy_app::prelude::*;
-use tutti_core::{AudioNode, ChannelLayout, Drive, UnitParam};
+use tutti_core::AudioNode;
 use tutti_graph::{IntoNode, NodeParts, ParamSet, Prepare};
+use tutti_types::{ChannelLayout, Drive, UnitParam};
 
 use crate::AudioEngineState;
 use crate::graph::{
@@ -123,7 +124,7 @@ fn every_param_write_path_reaches_a_fork() {
     let mut graph = AudioGraphRes::headless(0, 4);
     graph
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(48_000.0));
+        .set_sample_rate(tutti_types::SampleRate(48_000.0));
     let mut app = App::new();
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
@@ -231,7 +232,7 @@ fn a_crossfade_during_a_re_prepare_lands_after_it() {
     let mut graph = AudioGraphRes::headless(0, 1);
     graph
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(48_000.0));
+        .set_sample_rate(tutti_types::SampleRate(48_000.0));
     let mut side = graph.graph().take_audio_side();
     let mut app = App::new();
     app.insert_resource(graph);
@@ -263,7 +264,7 @@ fn a_crossfade_during_a_re_prepare_lands_after_it() {
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(44_100.0));
+        .set_sample_rate(tutti_types::SampleRate(44_100.0));
     crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));
     app.world_mut().flush();
     assert_eq!(
@@ -338,7 +339,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     let mut graph = AudioGraphRes::headless(0, 1);
     graph
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(48_000.0));
+        .set_sample_rate(tutti_types::SampleRate(48_000.0));
     let mut app = App::new();
     app.insert_resource(graph);
     app.insert_resource(AudioEngineState::Running);
@@ -360,7 +361,7 @@ fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
         .graph()
-        .set_sample_rate(tutti_core::SampleRate(96_000.0));
+        .set_sample_rate(tutti_types::SampleRate(96_000.0));
     let before = handle_ptr(&app, knob);
 
     crate::graph::crossfade_audio_node(&mut app.world_mut().commands(), knob, Knob::at(3.0));

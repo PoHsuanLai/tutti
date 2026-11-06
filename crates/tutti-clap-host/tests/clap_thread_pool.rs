@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::ThreadPoolCapture;
-use tutti_core::{Pool, WorkerPool};
+use tutti_core::WorkerPool;
+use tutti_graph::Pool;
 
 mod support;
 use support::active::{Activate, Active};
@@ -331,7 +332,7 @@ impl Pool for GatedPool {
         self.0
             .try_run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)))
     }
-    fn waits(&self) -> tutti_core::BlockWaits {
+    fn waits(&self) -> tutti_types::BlockWaits {
         self.0.waits()
     }
 }

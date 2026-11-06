@@ -33,8 +33,9 @@
 //! comes out right by accident. Only a push that *exceeds* the scratch forces
 //! the bad bound to be used. Keep `FRAMES` above `SCRATCH_FRAMES`.
 
-use tutti_core::{AudioTap, ChannelLayout, Samples};
+use tutti_core::AudioTap;
 use tutti_io::{AudioIn, BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+use tutti_types::{ChannelLayout, Samples};
 
 /// Frames pushed into the tap, as the audio callback would.
 const FRAMES: usize = 4096;

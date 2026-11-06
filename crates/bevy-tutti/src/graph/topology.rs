@@ -55,7 +55,10 @@ use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
 use tutti_types::ChannelLayout;
-use tutti_types::graph::{Edge, InPort, NodeKey, NodeSpec, OutPort, Source, Topology};
+use tutti_types::{
+    NodeKey, Topology,
+    graph::{Edge, InPort, NodeSpec, OutPort, Source},
+};
 
 use super::wire::{MasterSources, PortSource, PortSources};
 use super::{AudioGraphRes, GraphSource};
@@ -79,7 +82,7 @@ pub const ENTITY_NODE_KIND: &str = "bevy-tutti:entity";
 /// schedules between `Spawn` and `Compensate` — after [`apply`] has brought the
 /// engine into line with it, and by nothing else. Read by tests, and by
 /// anything wanting to ask a question about the graph without a runtime in
-/// hand: [`Topology::validate`](tutti_types::graph::Topology::validate)
+/// hand: [`Topology::validate`](tutti_types::Topology::validate)
 /// reports every structural fault at once.
 ///
 /// It holds only the audio edges and outputs the ECS declares: no port a host

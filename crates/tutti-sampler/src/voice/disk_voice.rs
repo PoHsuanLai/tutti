@@ -20,13 +20,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::MAX_SAMPLER_CHANNELS;
-use tutti_core::{
-    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SamplePosition,
-    SampleRate, SrcRatio, Tail,
-};
 use tutti_graph::{
     Cx, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Io, Node,
     NodeParts, Prepare, Shape, Status,
+};
+use tutti_types::{
+    Amplitude, Beat, BeatDuration, ChannelLayout, PlaybackRate, ReadRate, SamplePosition,
+    SampleRate, SrcRatio, Tail,
 };
 
 use super::clock::{BlockClock, Clock};
@@ -127,7 +127,7 @@ impl DiskSource {
     /// read path stacks): the file's own layout.
     pub(crate) fn with_reader(
         consumer: SharedReader,
-        reader: Option<tutti_core::PosReader>,
+        reader: Option<tutti_types::PosReader>,
         shared_state: Arc<RtState>,
     ) -> Self {
         let stride = (consumer.channels().count() as usize).clamp(1, MAX_SAMPLER_CHANNELS);

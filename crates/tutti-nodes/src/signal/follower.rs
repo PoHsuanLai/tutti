@@ -1,11 +1,11 @@
 //! [`EnvelopeFollowerNode`]: an audio input's level, sent to control lanes
 //! on the play-clock grid (design doc 014 §6).
 
-use tutti_core::{ChannelLayout, SampleRate, Seconds};
 use tutti_graph::{
     Cost, Cx, Event, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape, Status,
 };
 use tutti_mod::{SignalKind, SourceId, SourceNode};
+use tutti_types::{ChannelLayout, SampleRate, Seconds};
 use tutti_types::{SamplePosition, Samples};
 
 use super::PlayWalk;

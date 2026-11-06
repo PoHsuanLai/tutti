@@ -5,7 +5,7 @@
 //! a caller writes what it means and lets `..Default::default()` cover the rest:
 //!
 //! ```
-//! # use tutti_core::SampleRate;
+//! # use tutti_types::SampleRate;
 //! # use tutti_export::{AudioFormat, EncodeConfig, ExportConfig, Flac, RenderConfig};
 //! let config = ExportConfig {
 //!     render: RenderConfig {
@@ -34,7 +34,7 @@
 
 use crate::options::{AudioFormat, BitDepth, Dither};
 use crate::process::ChunkSize;
-use tutti_core::SampleRate;
+use tutti_types::SampleRate;
 use tutti_types::{ChannelLayout, Samples};
 
 /// The render stage: what to produce, and for how long.

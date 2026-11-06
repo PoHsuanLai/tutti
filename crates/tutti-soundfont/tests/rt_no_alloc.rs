@@ -27,10 +27,10 @@ use assert_no_alloc::AllocDisabler;
 mod support;
 
 use support::Hand;
-use tutti_core::SampleRate;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_types::SampleRate;
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

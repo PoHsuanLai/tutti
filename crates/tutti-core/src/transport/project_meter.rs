@@ -28,7 +28,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
-use tutti_types::meter::MeterMap;
+use tutti_types::MeterMap;
 use tutti_types::{ArcLend, Reader};
 
 /// What a following node reads: the project's meter, or none (the node then
@@ -302,8 +302,8 @@ impl std::fmt::Debug for MeterSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::meter::{MeterChange, TimeSignature};
     use tutti_types::value::Beat;
+    use tutti_types::{MeterChange, TimeSignature};
 
     fn meter_of(n: u32) -> Arc<MeterMap> {
         Arc::new(MeterMap::new([MeterChange::new(

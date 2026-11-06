@@ -1,8 +1,8 @@
 use super::*;
 use tutti_core::transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
-use tutti_core::{Beat, Bpm, SampleRate};
 use tutti_graph::GraphBuilder;
 use tutti_types::ChannelLayout;
+use tutti_types::{Beat, Bpm, SampleRate};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

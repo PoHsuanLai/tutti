@@ -29,13 +29,7 @@ convolution = []
 testing = []
 
 [dependencies]
-# Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`) from tutti-core's
-# root. default-features = false: tutti-nodes is pure DSP and needs none of
-# tutti-core's Bevy layer.
-tutti-core = { path = "../tutti-core", default-features = false }
-
 # Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
-# tutti-core re-exports these too, but the impl needs to name `Curve` directly.
 # default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
 
@@ -58,6 +52,9 @@ tutti-graph = { path = "../tutti-graph" }
 audio-automation = { workspace = true }
 
 [dev-dependencies]
+# The engine and worker pool the tests and benches render with.
+tutti-core = { path = "../tutti-core", default-features = false }
+
 # The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
 # `libm`'s pure-Rust routines, as `tutti-dsp`'s filters do, so they do not
 # depend on the platform's C math library.

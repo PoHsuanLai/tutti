@@ -128,7 +128,7 @@ fn main() {
     app.insert_resource(AudioGraphRes::headless(0, 2));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE.into(),
-        channels: tutti_core::ChannelLayout::STEREO,
+        channels: tutti_types::ChannelLayout::STEREO,
     });
     app.insert_resource(TransportRes(transport));
     // The metronome, for its meter cell rather than its click: the meter is
@@ -280,7 +280,7 @@ fn narrate_editor(
 /// (`clock_links`): with an engine running, taking it would be refused.
 fn drive_transport(transport: Res<TransportRes>) {
     let beat = transport.settings.beat();
-    let per_tick = tutti_core::BeatDuration(TEMPO / 60.0 / SAMPLE_RATE * BLOCK);
+    let per_tick = tutti_types::BeatDuration(TEMPO / 60.0 / SAMPLE_RATE * BLOCK);
     transport
         .clock_links()
         .expect("the only playhead writer")

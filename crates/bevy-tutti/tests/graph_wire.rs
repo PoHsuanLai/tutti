@@ -32,8 +32,8 @@ mod graph_wire {
     // `GraphSource` is the graph's own spelling of what feeds a port.
     use bevy_tutti::graph::GraphSource;
     use tutti_core::AudioNode;
-    use tutti_core::{ChannelLayout, Hz};
     use tutti_nodes::testing::{Osc, Through};
+    use tutti_types::{ChannelLayout, Hz};
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     fn app() -> App {
@@ -333,8 +333,8 @@ mod graph_wire {
     fn latent() -> tutti_nodes::LimiterNode {
         tutti_nodes::LimiterNode::with_channels(
             ChannelLayout::MONO,
-            tutti_core::Db(-6.0),
-            tutti_core::Db(-1.0),
+            tutti_types::Db(-6.0),
+            tutti_types::Db(-1.0),
         )
     }
 
@@ -605,7 +605,7 @@ mod graph_wire {
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
-            tutti_core::ChannelLayout::from(6u16),
+            tutti_types::ChannelLayout::from(6u16),
         ));
         app.update();
 
@@ -635,7 +635,7 @@ mod graph_wire {
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
-            tutti_core::ChannelLayout::from(6u16),
+            tutti_types::ChannelLayout::from(6u16),
         ));
         app.update();
         // A second frame: the commit runs in `Commit`, after `rebuild`'s widening.
@@ -667,7 +667,7 @@ mod graph_wire {
 
         app.insert_resource(MasterSources::from_node_at_width(
             wide,
-            tutti_core::ChannelLayout::from(6u16),
+            tutti_types::ChannelLayout::from(6u16),
         ));
         app.update();
         assert_eq!(
@@ -709,8 +709,8 @@ mod graph_wire {
     /// fails.
     #[test]
     fn shrinking_the_master_releases_the_dropped_channel() {
-        use tutti_core::Db;
         use tutti_nodes::LimiterNode;
+        use tutti_types::Db;
 
         let mut app = app();
         let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
@@ -774,7 +774,7 @@ mod graph_wire {
         let plan = graph.graph_ref().latency_plan();
         assert_eq!(
             plan.total(),
-            tutti_core::Samples(0),
+            tutti_types::Samples(0),
             "no output reaches the limiter any more (it was {latency:?})"
         );
         assert_eq!(plan.channels().len(), 2, "one figure per root channel");
@@ -827,7 +827,7 @@ mod graph_wire {
             .entity_mut(sink)
             .insert(PortSources::from_node_at_width(
                 src,
-                tutti_core::ChannelLayout::from(6u16),
+                tutti_types::ChannelLayout::from(6u16),
             ));
         app.update();
 
@@ -851,7 +851,7 @@ mod graph_wire {
         let e = spawn_node(&mut app, Through::mono());
 
         assert_eq!(
-            PortSources::from_node_at_width(e, tutti_core::ChannelLayout::STEREO),
+            PortSources::from_node_at_width(e, tutti_types::ChannelLayout::STEREO),
             PortSources::stereo_from(e)
         );
     }
@@ -871,10 +871,10 @@ mod param_mod_wire {
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, PortSource, PortSources};
     use tutti_core::AudioNode;
-    use tutti_core::Hz;
     use tutti_graph::{EventOut, ParamRange};
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{DistortionNode, ShapeKind};
+    use tutti_types::Hz;
     use tutti_types::UnitParam;
 
     fn app() -> App {
@@ -906,8 +906,8 @@ mod param_mod_wire {
     impl tutti_graph::Node for Sends {
         fn shape(&self) -> tutti_graph::Shape {
             tutti_graph::Shape::audio(
-                tutti_core::ChannelLayout::EMPTY,
-                tutti_core::ChannelLayout::EMPTY,
+                tutti_types::ChannelLayout::EMPTY,
+                tutti_types::ChannelLayout::EMPTY,
             )
             .with_events(0, 1)
         }

@@ -7,9 +7,10 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use super::state::LoopRange;
-use crate::{AtomicF64, AtomicU64, Ordering};
-use crate::{Beat, BeatDuration, Bpm, FrameClock, SampleRate, Samples};
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_types::LoopRange;
+use tutti_types::{Beat, BeatDuration, Bpm, FrameClock, SampleRate, Samples};
 
 /// Configuration for constructing an [`OfflineTimeline`].
 #[derive(Debug, Clone)]
@@ -44,7 +45,8 @@ impl Default for OfflineTimelineConfig {
 ///
 /// # Example
 /// ```
-/// # use tutti_core::{Beat, Bpm, SampleRate, Timeline};
+/// # use tutti_types::{Beat, Bpm, SampleRate};
+/// # use tutti_core::Timeline;
 /// # use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 /// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
 ///     start_beat: Beat(0.0),
@@ -123,7 +125,7 @@ impl OfflineTimeline {
             )),
             tempo: config.tempo,
             sample_rate: config.sample_rate,
-            beats_per_sample: super::state::beats_per_sample(config.tempo, config.sample_rate),
+            beats_per_sample: tutti_types::beats_per_sample(config.tempo, config.sample_rate),
             loop_range: config.loop_range,
         }
     }
@@ -430,8 +432,9 @@ mod tests {
     #[test]
     fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64};
+        use atomic_float::AtomicF64;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
 
         let sample_rate = 44100.0;
         let tempo = 120.0;
@@ -519,8 +522,9 @@ mod tests {
     #[test]
     fn a_long_render_stands_on_the_closed_form() {
         use crate::transport::TransportClock;
-        use crate::{AtomicBool, AtomicF64};
+        use atomic_float::AtomicF64;
         use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
 
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = move || {

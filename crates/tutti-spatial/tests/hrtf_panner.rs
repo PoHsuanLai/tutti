@@ -32,10 +32,10 @@
 //! conventional impulse and recovers the encoded IR at unity gain.
 
 use approx::assert_abs_diff_eq;
-use tutti_core::{Azimuth, Elevation, Radians, SampleRate, Samples};
 use tutti_graph::Node;
 use tutti_graph::contract::{drive, prepared};
 use tutti_spatial::HrtfBinauralNode;
+use tutti_types::{Azimuth, Elevation, Radians, SampleRate, Samples};
 
 const SAMPLE_RATE: u32 = 44_100;
 const IR_LEN: usize = 64;

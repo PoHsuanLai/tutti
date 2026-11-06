@@ -31,9 +31,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::SampleRate;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, RenderMode, in_process_vst2_client};
+use tutti_types::SampleRate;
 use tutti_vst2_test_plugin::ProcessCapture;
 
 #[path = "support/probe_path.rs"]
@@ -140,15 +140,15 @@ fn drive_blocks(unit: &mut InProcessVst2Client, max: usize, frames: usize) {
 fn drive_blocks_at(unit: &mut InProcessVst2Client, hz: f64, max: usize, frames: usize) {
     use tutti_graph::{Env, Node, Prepare, Transport, TransportChanges};
     let rate = SampleRate(hz);
-    Node::prepare(unit, &Prepare::new(rate, tutti_core::Samples(max)));
+    Node::prepare(unit, &Prepare::new(rate, tutti_types::Samples(max)));
     let silence = vec![0.0f32; frames];
     let inputs: Vec<&[f32]> = (0..Node::shape(unit).audio_in.count())
         .map(|_| &silence[..])
         .collect();
     let env = Env {
-        frame: tutti_core::Frame(0),
+        frame: tutti_types::Frame(0),
         sample_rate: rate,
-        block_len: tutti_core::Samples(frames),
+        block_len: tutti_types::Samples(frames),
         transport: Transport::default(),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,

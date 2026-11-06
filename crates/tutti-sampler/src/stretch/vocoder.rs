@@ -13,8 +13,8 @@ use super::fft::{Complex32, Fft};
     reason = "`Unit` is referenced only by the intra-doc link on `clone_fresh` below; rustdoc needs the name in scope to resolve it"
 )]
 use super::{FftSize, Unit};
-use tutti_core::Radians;
 use tutti_dsp::StftGeometry;
+use tutti_types::Radians;
 
 /// One channel of phase-vocoder state.
 ///

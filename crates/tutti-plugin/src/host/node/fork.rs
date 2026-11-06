@@ -124,11 +124,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use tutti_core::Samples;
 use tutti_graph::{
     ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node,
     NodeParts,
 };
+use tutti_types::Samples;
 use tutti_types::{Latency, SampleRate};
 
 use super::controls::ForkedSources;
@@ -355,7 +355,7 @@ struct Capture {
     /// The live instance's plugin id, which the fresh one must match.
     id: String,
     /// The live node's rate, which the fresh instance is launched at.
-    sample_rate: tutti_core::SampleRate,
+    sample_rate: tutti_types::SampleRate,
     sources: ForkedSources,
     offline: bool,
 }
@@ -531,8 +531,8 @@ impl IntoNode for PluginClient<Bound> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::SampleRate;
     use tutti_plugin_types::PluginTail;
+    use tutti_types::SampleRate;
 
     /// A fork's health reports a latency that moved after its graph was
     /// compiled — `Failed`, with `PluginRenderFault::LatencyChanged` naming

@@ -28,9 +28,6 @@ bevy_ecs = ["bevy"]
 # No codec features: decoding (`Wave`, `FileIn`, and the Bevy `WaveAsset`) is
 # `tutti-io`'s. Name `tutti-io/wav` etc. instead.
 
-# Gates nothing in this crate; the MIDI subsystems are separate crates.
-midi = []
-
 # `Serialize`/`Deserialize` on the shared value vocabulary — the meter types and
 # `ChannelLayout`. Needed by hosts that persist a document (the app writes its
 # meter map into a CRDT); off by default, since the engine itself never
@@ -44,9 +41,6 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 # The graph runtime: `Engine` renders a `tutti_graph::Executor`. No cycle:
 # tutti-graph depends on no tutti crate but tutti-types.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
-
-# MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
-tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 
 # Shared RT primitives (AudioThreadCell, RtVec).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }

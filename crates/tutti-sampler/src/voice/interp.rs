@@ -21,12 +21,12 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use tutti_core::{
+use tutti_io::Wave;
+use tutti_types::cubic_hermite;
+use tutti_types::{
     Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition, SampleRate, Samples, TimelineSegment,
     fold_frame, snap_to_whole_frame,
 };
-use tutti_io::Wave;
-use tutti_types::cubic_hermite;
 
 use super::clock::{BlockClock, Run};
 use super::loop_span::{LoopSpan, blend};
@@ -70,7 +70,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// forever.
 ///
 /// [`ReadRate`] is the product's own type, so `rate` can only be built through
-/// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate) — the one
+/// [`PlaybackRate::read_rate`](tutti_types::PlaybackRate::read_rate) — the one
 /// place the two factors compose. A caller holding a bare varispeed cannot pass
 /// it here by accident.
 ///
@@ -480,8 +480,8 @@ pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{PlaybackRate, SrcRatio};
     use tutti_graph::{Env, Offset, Transport, TransportChanges};
+    use tutti_types::{PlaybackRate, SrcRatio};
 
     /// A position a hair under a whole frame reads that frame exactly.
     /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns

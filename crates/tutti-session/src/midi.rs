@@ -81,7 +81,7 @@ impl UmpOut {
     /// soon as possible", discarding the timing entirely.
     pub fn new(
         sink: Box<dyn tutti_midi_types::MidiOut>,
-        sample_rate: impl Into<tutti_core::SampleRate>,
+        sample_rate: impl Into<tutti_types::SampleRate>,
     ) -> Self {
         let sample_rate = sample_rate.into();
         Self {

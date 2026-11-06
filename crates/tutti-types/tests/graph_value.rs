@@ -10,12 +10,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use tutti_types::graph::{
-    Edge, FeedbackFrom, InPort, Invalid, NodeKey, NodeSpec, OutPort, ParamValue, Source, Topology,
-};
-use tutti_types::latency::{self, Feed, LatencyGraph};
-use tutti_types::tail::graph_tail;
+use tutti_types::graph_tail;
 use tutti_types::{ChannelLayout, Samples, Tail};
+use tutti_types::{Feed, LatencyGraph, latency};
+use tutti_types::{
+    NodeKey, Topology,
+    graph::{Edge, FeedbackFrom, InPort, Invalid, NodeSpec, OutPort, ParamValue, Source},
+};
 
 const A: NodeKey = NodeKey(1);
 const B: NodeKey = NodeKey(2);

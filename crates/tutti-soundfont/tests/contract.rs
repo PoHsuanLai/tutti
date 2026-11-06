@@ -16,11 +16,11 @@
 
 use std::sync::Arc;
 
-use tutti_core::Samples;
 use tutti_graph::contract::{Detect, Excite, Row, SAMPLE_RATE};
 use tutti_graph::{EventKind, Ump};
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_types::Samples;
 
 /// Frames from a note's onset to its first non-zero sample on the fixture's
 /// preset 0 at 48 kHz.

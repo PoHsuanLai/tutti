@@ -77,6 +77,7 @@ use tutti_graph::{
     CommitError, Due, Editor, Env, Executor, Limits, Offset, Playhead, TransportChanges,
 };
 
+use crate::LoadMeter;
 #[cfg(doc)]
 use crate::MotionFsm;
 use crate::transport::Control;
@@ -85,10 +86,10 @@ use crate::transport::{
     FadeOut, MotionAudio, MotionEvent, MotionState, TransportClock, TransportCommand,
 };
 use crate::transport::{SCHEDULE_CAPACITY, Schedule, Scheduled};
-use crate::{AudioThreadCell, InterleavedMut, LoadMeter, SampleRate, Samples, Seconds};
 use std::sync::Arc;
 use std::time::Instant;
 use tutti_types::{At, Frame};
+use tutti_types::{AudioThreadCell, InterleavedMut, SampleRate, Samples, Seconds};
 
 /// The widest graph root an engine renders — the most global outputs it
 /// folds to the device. The executor must be handed a buffer for **every**
@@ -1046,8 +1047,9 @@ impl GraphRender {
 mod tests {
     use super::*;
     use crate::transport::LoopRegion;
-    use crate::{Bpm, MotionEvent, Transport};
+    use crate::{MotionEvent, Transport};
     use tutti_graph::Prepare;
+    use tutti_types::Bpm;
 
     /// A graph walk's `Pieces` that stores a new tempo from "the control
     /// thread" while each piece runs: the store races the walk, staged
@@ -1324,7 +1326,7 @@ mod tests {
                 tutti_types::ChannelLayout::EMPTY,
                 tutti_types::ChannelLayout::from_count(self.0),
             )
-            .with_tail(crate::Tail::Unbounded)
+            .with_tail(tutti_types::Tail::Unbounded)
         }
         fn prepare(&mut self, _: &Prepare) {}
         fn process(

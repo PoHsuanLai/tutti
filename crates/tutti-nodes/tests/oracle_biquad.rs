@@ -70,7 +70,7 @@ fn measured_gain_db(mut render: impl FnMut(f32) -> f32, freq: f32) -> f64 {
 
 /// Drive tutti's SVF one sample at a time, as a graph node prepared at `SR`.
 fn svf_gain_db(kind: SvfType, freq: f32) -> f64 {
-    let rate = tutti_core::SampleRate(SR);
+    let rate = tutti_types::SampleRate(SR);
     let mut node =
         tutti_graph::contract::prepared(SvfFilterNode::<f64>::new(kind, CUTOFF, Q), rate, 1);
     measured_gain_db(

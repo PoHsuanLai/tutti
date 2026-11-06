@@ -31,10 +31,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tutti_core::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, Tail, UnitParam};
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_types::{Amplitude, AtomicF32, ChannelLayout, Pan, Param, Tail, UnitParam};
 
 /// The params a [`BusStripNode`] lets the graph modulate, in port order.
 pub const STRIP_PARAMS: [UnitParam; 2] = [UnitParam::Volume, UnitParam::Pan];
@@ -165,14 +165,14 @@ impl BusStripNode {
     /// cell the strip's `ParamSet` addresses as `Volume`, and a control-rate
     /// route's target speaks `Arc<AtomicF32>`. To *read* the value, use
     /// [`volume_value`](Self::volume_value), which keeps the unit.
-    pub fn volume(&self) -> Arc<tutti_core::AtomicF32> {
+    pub fn volume(&self) -> Arc<tutti_types::AtomicF32> {
         self.volume.as_atomic()
     }
 
     /// Atomic handle for the UI / automation to share the pan cell. See
     /// [`volume`](Self::volume) on why this one is untyped; the typed read is
     /// [`pan_value`](Self::pan_value).
-    pub fn pan(&self) -> Arc<tutti_core::AtomicF32> {
+    pub fn pan(&self) -> Arc<tutti_types::AtomicF32> {
         self.pan.as_atomic()
     }
 
@@ -188,7 +188,7 @@ impl BusStripNode {
 
     /// Sets the fader position as a linear [`Amplitude`], unclamped.
     ///
-    /// Linear, not [`Db`](tutti_core::Db): `1.0` is unity, `0.0` silent, and
+    /// Linear, not [`Db`](tutti_types::Db): `1.0` is unity, `0.0` silent, and
     /// values above 1.0 amplify. Read once per block and ramped to across it.
     pub fn set_volume(&self, volume: impl Into<Amplitude>) {
         self.volume.store(volume.into());

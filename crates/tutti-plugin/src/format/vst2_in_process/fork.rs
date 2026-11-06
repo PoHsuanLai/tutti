@@ -165,7 +165,7 @@ impl Vst2Fork {
         drop(live);
 
         let (mut fork, handle) =
-            super::load_client(&self.origin, tutti_core::SampleRate(self.sample_rate)).map_err(
+            super::load_client(&self.origin, tutti_types::SampleRate(self.sample_rate)).map_err(
                 |source| PluginForkError::Load {
                     path: self.origin.to_path_buf(),
                     source,

@@ -37,10 +37,10 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use tutti_core::{SampleRate, Samples};
 use tutti_cpal::{
     DeviceInfo, DeviceSelector, OutputSpec, StreamDriver, StreamFault, StreamFaults, TuttiDriver,
 };
+use tutti_types::{SampleRate, Samples};
 
 use crate::{Error, Result, Session};
 

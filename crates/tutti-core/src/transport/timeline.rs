@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::{Beat, Bpm};
+use tutti_types::{Beat, Bpm};
 
 /// A musical timeline: the position, the tempo, whether it is moving, and
 /// which stretch of straight-line time the position is on.

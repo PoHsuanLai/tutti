@@ -75,8 +75,8 @@ use crate::util::transport::shm::AudioSlab;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use tutti_core::Samples;
 use tutti_graph::Prepare;
+use tutti_types::Samples;
 
 /// The largest chunk that crosses the process edge: the largest device
 /// callback a live plugin keeps in step with, and so the ceiling on the
@@ -629,7 +629,7 @@ impl Batcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::SampleRate;
+    use tutti_types::SampleRate;
 
     /// A fresh batcher has nothing in flight, so its first chunk must be silence
     /// rather than whatever the output slot happens to contain.

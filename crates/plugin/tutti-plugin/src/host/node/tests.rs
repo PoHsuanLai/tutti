@@ -9,12 +9,13 @@ use crate::host::handles::control_handle::PluginHandle;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, PROTOCOL_VERSION, ParamId,
-    ParameterInfo, PluginDescriptor, PluginTail, Samples,
+    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, Normalized,
+    PROTOCOL_VERSION, ParamId, ParameterInfo, PluginDescriptor, PluginTail, Samples,
 };
 use crate::protocol::{EditorPresence, PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
 use std::sync::Arc;
+use tutti_types::SampleRate;
 
 fn unique_socket_path(label: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,7 +91,7 @@ fn handle_with_mock_server(
         path.clone(),
         buffer,
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
 
@@ -192,7 +193,7 @@ fn handle_with_multi_reply_server(
         path.clone(),
         buffer,
         std::path::PathBuf::from("test.vst3"),
-        48_000.0,
+        SampleRate(48_000.0),
     )
     .unwrap();
 
@@ -282,12 +283,14 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                     samples: Samples(256),
                 },
                 BridgeMessage::ParameterChanged {
-                    index: 7,
-                    value: 0.42,
+                    index: ParamId::new(7),
+                    value: Normalized::new(0.42),
                 },
             ],
             HostMessage::GetParameter { param_id } if param_id == ParamId::new(0) => {
-                vec![BridgeMessage::ParameterValue { value: Some(0.5) }]
+                vec![BridgeMessage::ParameterValue {
+                    value: Some(Normalized::new(0.5)),
+                }]
             }
             HostMessage::GetParameter { .. } => vec![BridgeMessage::ParameterValue { value: None }],
             _ => {
@@ -308,7 +311,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                 latency_seen.store(samples.get(), Ordering::Release);
             }
             BridgeEvent::ParameterChanged { index, value } => {
-                *param_seen.lock() = Some((index as u32, value));
+                *param_seen.lock() = Some((index.get(), value.get() as f32));
             }
             BridgeEvent::TailChanged { .. }
             | BridgeEvent::Resync(_)
@@ -326,7 +329,10 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
 
     // Second request: the helper must peel the two trailing events off
     // before returning the real `ParameterValue` reply.
-    assert_eq!(handle.params().parameter_value(ParamId::new(0)), Some(0.5));
+    assert_eq!(
+        handle.params().parameter_value(ParamId::new(0)),
+        Some(Normalized::new(0.5))
+    );
 
     // Give the bridge thread a moment to fire the listener after the
     // dispatch that drained the unsolicited queue.
@@ -361,7 +367,9 @@ fn a_tail_change_reaches_the_listener() {
                 },
             ],
             HostMessage::GetParameter { .. } => {
-                vec![BridgeMessage::ParameterValue { value: Some(0.5) }]
+                vec![BridgeMessage::ParameterValue {
+                    value: Some(Normalized::new(0.5)),
+                }]
             }
             _ => vec![],
         });
@@ -379,7 +387,10 @@ fn a_tail_change_reaches_the_listener() {
     // First request takes the reply; the trailing event waits in the socket
     // buffer until the next `recv_reply` drains it.
     assert_eq!(handle.params().parameter_descriptors().unwrap().len(), 1);
-    assert_eq!(handle.params().parameter_value(ParamId::new(0)), Some(0.5));
+    assert_eq!(
+        handle.params().parameter_value(ParamId::new(0)),
+        Some(Normalized::new(0.5))
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(
@@ -431,7 +442,9 @@ fn handle_get_parameter_list() {
 fn handle_get_parameter_value() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
         HostMessage::GetParameter { param_id } if param_id == ParamId::new(42) => {
-            Some(BridgeMessage::ParameterValue { value: Some(0.75) })
+            Some(BridgeMessage::ParameterValue {
+                value: Some(Normalized::new(0.75)),
+            })
         }
         HostMessage::GetParameter { .. } => Some(BridgeMessage::ParameterValue { value: None }),
         _ => None,
@@ -439,7 +452,7 @@ fn handle_get_parameter_value() {
 
     assert_eq!(
         handle.params().parameter_value(ParamId::new(42)),
-        Some(0.75)
+        Some(Normalized::new(0.75))
     );
 }
 

@@ -12,7 +12,8 @@ use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::AutomationMode;
 use crate::protocol::{
-    ChannelTopology, LayoutSupport, LoadedPlugin, PluginDescriptor, PresetSupport,
+    ChannelTopology, LayoutSupport, LoadedPlugin, Normalized, ParamId, PluginDescriptor,
+    PresetSupport,
 };
 use crate::util::window::{ContentScale, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -441,10 +442,7 @@ impl PluginHandle {
                 cause: "the backend reported a crash without a cause".to_string(),
             },
             None => match self.params.rate_refusal() {
-                Some((rate, reason)) => PluginStatus::RateRefused {
-                    rate: tutti_types::SampleRate(rate),
-                    reason,
-                },
+                Some((rate, reason)) => PluginStatus::RateRefused { rate, reason },
                 None => PluginStatus::Alive,
             },
         }
@@ -698,7 +696,10 @@ impl PluginHandle {
     /// backend; on the GUI thread (during `editor_idle`) for the in-process
     /// VST2 backend. Move heavy work to another thread before touching graph
     /// state. Replaces any previous callback.
-    pub fn on_parameter_changed<F: Fn(u32, f32) + Send + Sync + 'static>(&self, f: F) -> &Self {
+    pub fn on_parameter_changed<F: Fn(ParamId, Normalized) + Send + Sync + 'static>(
+        &self,
+        f: F,
+    ) -> &Self {
         self.param_sink.set(f);
         self
     }
@@ -784,7 +785,7 @@ mod tests {
             fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
                 None
             }
-            fn parameter_value(&self, _id: ParamId) -> Option<f32> {
+            fn parameter_value(&self, _id: ParamId) -> Option<Normalized> {
                 None
             }
             fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}

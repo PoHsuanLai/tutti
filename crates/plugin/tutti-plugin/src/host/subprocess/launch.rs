@@ -17,6 +17,7 @@ use std::process::{Child, Command};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 /// How long to keep retrying the connect while the plugin-server binds.
 ///
@@ -68,7 +69,7 @@ pub struct LaunchedServer {
 pub fn launch(
     config: &BridgeConfig,
     plugin_path: &Path,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 ) -> Result<LaunchedServer> {
     launch_with(&ServerLocator::from_env(), config, plugin_path, sample_rate)
 }
@@ -86,7 +87,7 @@ pub(super) fn launch_with(
     locator: &ServerLocator,
     config: &BridgeConfig,
     plugin_path: &Path,
-    sample_rate: f64,
+    sample_rate: SampleRate,
 ) -> Result<LaunchedServer> {
     let mut process = spawn_process(locator, config)?;
 
@@ -196,7 +197,7 @@ fn load_plugin(
     stream: &mut ControlStream,
     config: &BridgeConfig,
     plugin_path: &Path,
-    sample_rate: f64,
+    sample_rate: SampleRate,
     shm_name: &str,
 ) -> Result<(Box<PluginDescriptor>, LoadedPlugin, SampleFormat)> {
     ipc::send(
@@ -392,7 +393,7 @@ mod tests {
             &ServerLocator::at(&stand_in),
             &config,
             Path::new("/nonexistent.vst3"),
-            48_000.0,
+            SampleRate(48_000.0),
         ) {
             Err(e) => e,
             // Cannot happen (`sleep` never sends `Ready`), but reap rather than

@@ -129,7 +129,7 @@ use tutti_graph::{
     ForkBuild, ForkCause, ForkFaultKind, ForkHealth, ForkMode, ForkSource, Forked, IntoNode, Node,
     NodeParts,
 };
-use tutti_types::Latency;
+use tutti_types::{Latency, SampleRate};
 
 use super::controls::ForkedSources;
 use super::{Bound, PluginClient, PluginControls, ProcessGuard};
@@ -164,7 +164,7 @@ pub(super) struct ForkWatch {
     /// Latched, with its exit status, when the server was found dead.
     died: Mutex<Option<String>>,
     /// Latched when the fork's plugin was found refusing its rate.
-    refusal: Mutex<Option<(f64, String)>>,
+    refusal: Mutex<Option<(SampleRate, String)>>,
     budget: Duration,
 }
 
@@ -195,7 +195,7 @@ impl ForkWatch {
 
     /// Latch a rate refusal: the fork renders silence, at once, for the rest
     /// of the render.
-    pub(super) fn latch_refusal(&self, refusal: (f64, String)) {
+    pub(super) fn latch_refusal(&self, refusal: (SampleRate, String)) {
         let mut slot = lock(&self.refusal);
         if slot.is_none() {
             *slot = Some(refusal);

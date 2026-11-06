@@ -5,8 +5,8 @@
 //! immutable and shared between clones; the scratch is per vocoder. A
 //! transform allocates nothing.
 
-pub(crate) use tutti_types::Complex32;
-use tutti_types::RealFft;
+pub(crate) use tutti_dsp::Complex32;
+use tutti_dsp::RealFft;
 
 /// Forward and inverse plans for one window length, and the scratch both use.
 pub(super) struct Fft {

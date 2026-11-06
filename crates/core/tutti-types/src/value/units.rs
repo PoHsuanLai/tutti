@@ -1609,7 +1609,7 @@ impl Semitones {
 //     The fix is to move the policy to the consumers that hold opinions about
 //     it, not to pick a default and bury it. `Amplitude` → `Db` is the worked
 //     example: the silence floor lives at the three boundaries that care
-//     (`tutti-nodes`' dynamics detectors, `ms_ratio` in `tutti-analysis`, and
+//     (`tutti-nodes`' dynamics detectors, `ms_ratio` in `tutti-dsp`, and
 //     its true-peak reading), which leaves one answer here and makes the
 //     `From` impl honest. Collapsing such a set of names *without* relocating
 //     the policy is the failure this clause is about.

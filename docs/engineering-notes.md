@@ -126,7 +126,8 @@ crates/
     tutti-soundfont   # SoundFont (.sf2) playback. Its own crate, not a polysynth
                       #   feature: a .sf2 player shares no voice engine with a
                       #   subtractive synth.
-    tutti-analysis    # Audio analysis (waveform, transient, pitch)
+    tutti-dsp    # Pure algorithms over slices: the real FFT and the analyzers
+                 #   (waveform, transient, pitch, loudness). Names only tutti-types.
   midi/
     tutti-midi-types    # MIDI value types (MIDI 2.0 / UMP native)
     tutti-midi-runtime  # MIDI engine (routing, allocation, expression)

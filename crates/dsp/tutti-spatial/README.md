@@ -138,7 +138,7 @@ changes and loading an HRIR dataset allocate and belong on the control thread.
 `default = []`.
 
 - `hrtf` — real HRTF binaural rendering (`HrtfBinauralNode`), by FFT convolution
-  against a measured HRIR sphere, on `tutti_types::RealFft`.
+  against a measured HRIR sphere, on `tutti_dsp::RealFft`.
 
 `tutti-spatial` depends on `tutti-nodes` for its mixing primitives. The
 `tutti` crate re-exports it as `tutti::spatial` behind its `spatial` feature,

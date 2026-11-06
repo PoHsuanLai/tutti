@@ -29,10 +29,10 @@ tutti-types = { path = "../tutti-types", default-features = false }
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
 # tutti-graph depends on no tutti crate but tutti-types.
 tutti-graph = { path = "../tutti-graph" }
-# EBU R128 loudness measurement lives in tutti-analysis (the crate's
+# EBU R128 loudness measurement lives in tutti-dsp (the crate's
 # Config/State/step analysis home) — `render_normalized_to_file` measures with
-# it. Acyclic: tutti-analysis does NOT depend on tutti-export.
-tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
+# it — and so does the resampler's `RealFft`. Acyclic: tutti-dsp does NOT depend on tutti-export.
+tutti-dsp = { path = "../../dsp/tutti-dsp", default-features = false }
 hound = { version = "3.5", optional = true }
 # No default features: the encoder drives flacenc's frame encoder on its own
 # workers, so flacenc's `par` (and its `serde`/`log`) are unused.

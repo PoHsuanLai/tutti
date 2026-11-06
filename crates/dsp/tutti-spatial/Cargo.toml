@@ -18,7 +18,7 @@ workspace = true
 default = []
 # HRTF (head-related transfer function) binaural rendering via FFT
 # convolution against a measured HRIR sphere (`HrtfBinauralNode`), on
-# `tutti_types::RealFft`. The HRIR dataset is supplied by the caller as bytes
+# `tutti_dsp::RealFft`. The HRIR dataset is supplied by the caller as bytes
 # (see `HrtfBinauralNode::new`).
 hrtf = []
 
@@ -29,6 +29,10 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # `ChannelLayout` and `NodeKey`, named directly by `build_vbap_mix`'s signature.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
+
+# The HRTF panner's FFT: `tutti_dsp::RealFft`. tutti-dsp names no tutti crate
+# but `tutti-types`, so the edge adds no cycle.
+tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 # `build_vbap_mix` assembles its graph out of general-purpose units:
 # `ChannelSumNode` folds the panners, `SvfFilterNode` low-passes the LFE send.

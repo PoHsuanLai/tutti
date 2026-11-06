@@ -74,7 +74,7 @@ be checked against the tree.
   `pub fn` that documents the panic. `Stopped` (a token constructible only
   inside `TuttiDriver`'s restart, after the old stream is dropped and before
   the new one starts) is still the way in that cannot panic.
-- **`tutti-polysynth`, `tutti-analysis`** — mentions in prose only, no
+- **`tutti-polysynth`, `tutti-dsp`** — mentions in prose only, no
   `unsafe` code.
 
 Every library with no `unsafe` carries `#![forbid(unsafe_code)]`

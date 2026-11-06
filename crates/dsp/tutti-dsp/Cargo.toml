@@ -1,0 +1,67 @@
+[package]
+name = "tutti-dsp"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Pure DSP algorithms for Tutti over plain sample slices: a CPU-independent real FFT and audio analysis (waveform blocks, onsets, pitch, loudness, stereo correlation, STFT)"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-dsp"
+readme = "README.md"
+keywords = ["audio", "dsp", "fft", "pitch", "analysis"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …),
+# `ChannelLayout`, `Interleaved` and the downmix helpers. Nothing here needs
+# the engine runtime, so this is the only tutti edge.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
+
+# EBU R128 loudness metering (`loudness`). An online meter, which is why the
+# streaming Config/State/step shape fits it without buffering the signal.
+ebur128 = "0.1"
+
+# `RealFft` (`fft/real.rs`), the one real-input FFT of the convolver, the
+# analysis kernels, the time-stretch vocoder, the HRTF panner and the export
+# resampler, planned on rustfft's *scalar* planner. Its auto planner (and so
+# `realfft`, which cannot be handed another) picks AVX, SSE or NEON at run
+# time, and those round differently, so a render would differ bitwise between
+# CPUs. Same version as `Cargo.lock`'s.
+rustfft = { version = "6.4", default-features = false }
+
+# The `Error` enum's Display/Error impls.
+thiserror.workspace = true
+
+[features]
+# No `bevy` feature, and no default features. This crate is a library of
+# analysis algorithms over `&[f32]`; a host that wants these results in an ECS
+# wires them up on its own side.
+default = []
+
+[dev-dependencies]
+# The README's "Reading from a running graph" doctest shows the engine-side
+# seam (`tutti_core::AudioTap`); nothing in the library reaches tutti-core.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
+# Reproducible noise for the correlation tests, which otherwise hand-roll a
+# generator. Seeded, so an uncorrelated-input assertion is not flaky.
+#
+# No `assert_no_alloc` here, unlike most sibling crates: everything this crate
+# does is cold-path batch analysis that legitimately allocates its output.
+rand = "0.8"
+# `benches/fft_analyses`.
+criterion.workspace = true
+# An independent YIN, as a second opinion on ours, for `tests/oracle_pitch.rs`.
+# Unmaintained (last release 2022) — see that file's header for why it is still
+# a usable oracle and what is deliberately not compared against it.
+pitch-detection = "0.3"
+
+[[bench]]
+name = "fft_analyses"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

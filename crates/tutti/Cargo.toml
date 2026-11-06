@@ -32,7 +32,7 @@ tutti-sampler = { path = "../dsp/tutti-sampler", default-features = false, optio
 tutti-polysynth = { path = "../dsp/tutti-polysynth", optional = true }
 tutti-soundfont = { path = "../dsp/tutti-soundfont", optional = true }
 tutti-spatial = { path = "../dsp/tutti-spatial", default-features = false, optional = true }
-tutti-analysis = { path = "../dsp/tutti-analysis", default-features = false, optional = true }
+tutti-dsp = { path = "../dsp/tutti-dsp", default-features = false, optional = true }
 tutti-midi-types = { path = "../midi/tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../midi/tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../midi/tutti-midi-file", optional = true }
@@ -81,7 +81,7 @@ full = [
     "audio-io",
     "export",
     "spatial",
-    "analysis",
+    "dsp",
     "modulation",
     "convolution",
 ]
@@ -140,8 +140,8 @@ modulation = ["dep:tutti-mod", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # Axes bevy-tutti does not have: bevy-tutti does not depend on
-# `tutti-analysis` at all.
-analysis = ["dep:tutti-analysis"]
+# `tutti-dsp` at all.
+dsp = ["dep:tutti-dsp"]
 
 # --- plugin hosting ---------------------------------------------------------
 #
@@ -163,7 +163,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "headless_export"
-required-features = ["export", "analysis", "wav"]
+required-features = ["export", "dsp", "wav"]
 
 # Cannot RUN in CI — it opens a sound card — but `cargo clippy --all-targets`
 # compiles it, which is the gate that matters for an example whose job is to

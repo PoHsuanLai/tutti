@@ -7,6 +7,9 @@ use std::time::Duration;
 use tutti_core::Samples;
 use tutti_core::io::{AudioIn, AudioOut, OnEmpty, pump};
 
+#[cfg(doc)]
+use crate::Recorder;
+
 /// How long a default [`ThreadDriver`] parks when a
 /// [`Starved`](OnEmpty::Starved) source yields nothing. A live mic has nothing
 /// ready between callback pushes; sleeping avoids busy-spinning a core while

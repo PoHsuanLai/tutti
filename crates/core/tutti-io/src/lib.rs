@@ -9,7 +9,7 @@ mod error;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 mod file_in;
 mod mic;
-mod pump;
+mod pump_loop;
 mod recorder;
 mod tap_in;
 mod wav_out;
@@ -17,7 +17,7 @@ mod wave;
 
 pub use error::{Error, Result};
 pub use mic::{MicMonitorNode, MicRing};
-pub use pump::{
+pub use pump_loop::{
     IDLE_PARK, ManualDriver, ManualPump, PumpDriver, PumpLoop, PumpPass, RunningPump, ThreadDriver,
 };
 pub use recorder::{FinalizeStatus, Recorder};

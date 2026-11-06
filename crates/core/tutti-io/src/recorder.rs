@@ -23,7 +23,9 @@ use tutti_core::Samples;
 use tutti_core::io::{AudioIn, AudioOut};
 
 use crate::error::{Error, Result};
-use crate::pump::{PumpDriver, PumpLoop, RunningPump, ThreadDriver};
+#[cfg(doc)]
+use crate::pump_loop::ManualDriver;
+use crate::pump_loop::{PumpDriver, PumpLoop, RunningPump, ThreadDriver};
 
 /// Frames moved per pump pass unless the caller names a capacity.
 const SCRATCH_FRAMES: Samples = Samples(1024);

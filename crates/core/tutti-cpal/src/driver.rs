@@ -126,7 +126,7 @@ impl TuttiDriver {
     /// must run at the rate the graph was built at.
     ///
     /// Stops the current stream, selects `device` (a
-    /// [`DeviceSelector`](crate::DeviceSelector), or an `Option<usize>`
+    /// [`DeviceSelector`], or an `Option<usize>`
     /// position with `None` for the default), reads its config and starts a
     /// new stream on it.
     ///
@@ -154,7 +154,7 @@ impl TuttiDriver {
     /// its error returned: nothing plays at a rate the graph was not moved
     /// to. Its `Ok` is the claim that the graph now runs at the spec's rate
     /// ([`graph_rate`](Self::graph_rate)); after a failure the driver keeps
-    /// the previous rate and [`spec`](Self::spec), so a plain `restart` onto
+    /// the previous rate and [`spec`](AudioEngine::spec), so a plain `restart` onto
     /// the previous device recovers.
     ///
     /// The hook is also handed a [`Stopped`]: the engine, reachable from the
@@ -255,7 +255,7 @@ impl TuttiDriver {
     }
 
     /// Stops any running stream and starts a new one on a driver of the
-    /// caller's choosing, at the current [`spec`](Self::spec).
+    /// caller's choosing, at the current [`spec`](AudioEngine::spec).
     ///
     /// The device path is [`restart`](Self::restart), which builds a real
     /// CPAL stream. This lets a host or a test run the same lifecycle over a

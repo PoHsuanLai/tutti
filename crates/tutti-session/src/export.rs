@@ -19,6 +19,14 @@
 //! [`Session::finish_export_unannounced`] instead, so its plugins are not
 //! told Realtime and then Offline again between two exports.
 //!
+//! **Cancelling and watching.** A job carries an [`ExportHandle`]
+//! ([`ExportJob::handle`]), cloned to whoever watches: [`cancel`](ExportHandle::cancel)
+//! stops the render at its next block (or before it starts), and
+//! [`progress`](ExportHandle::progress) reads how far it is. A cancelled job
+//! returns [`Outcome::Cancelled`] from [`Session::finish_export`] like any
+//! other job returns, drops its token when the render has stopped, and
+//! leaves no file at a [`File`](ExportTarget::File) target's path.
+//!
 //! **A token that never drops** (a job `mem::forget`ed, or kept unrun
 //! forever) keeps the export in flight: the plugins stay Offline and every
 //! later export is refused. [`Phase::Collect`](crate::Phase::Collect) warns,
@@ -35,13 +43,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use tutti_core::AudioNode;
 use tutti_core::transport::OfflineTransport;
 use tutti_export::{
-    ConfigError, ExportConfig, Normalize, RenderClock, RenderGraph, Rendered, Written,
+    ConfigError, ExportConfig, Flow, Normalize, Outcome, Pass, Progress, RenderClock, RenderGraph,
+    Rendered, Written,
 };
 use tutti_types::{NodeKey, Samples};
 
@@ -84,7 +94,8 @@ pub enum ExportTarget {
     /// graph a block at a time); `Some(..)` is a two-pass render that holds
     /// the whole signal to measure a gain from it.
     File {
-        /// Where to write. An abandoned render may leave a partial file.
+        /// Where to write. A cancelled render removes the file, including
+        /// one that was there before (the encoder truncates it on create).
         path: PathBuf,
         /// `None` streams; `Some` measures a gain over the whole signal.
         normalize: Option<Normalize>,
@@ -491,6 +502,91 @@ impl<T: Send + 'static> Drop for ToMain<T> {
     }
 }
 
+/// Frames in a packed reading: the low 48 bits of a word.
+const FRAMES_MASK: u64 = (1 << 48) - 1;
+
+/// What a job and its handles share: a stop request and the latest
+/// [`Progress`], as two words so a reader on any thread loads them without
+/// a lock.
+///
+/// A word is the pass (`index << 56 | count << 48`) over the frames.
+/// `count` is at least 1, so a word of 0 is "no reading yet". The total is
+/// stored before the produced count, and a reader that finds the two words
+/// at different passes reads again, so a reading is always one pass's.
+#[derive(Debug, Default)]
+struct Shared {
+    stop: AtomicBool,
+    total: AtomicU64,
+    produced: AtomicU64,
+}
+
+fn pack(pass: Pass, frames: Samples) -> u64 {
+    let frames = (frames.get() as u64).min(FRAMES_MASK);
+    (u64::from(pass.index()) << 56) | (u64::from(pass.count()) << 48) | frames
+}
+
+fn unpack(word: u64) -> (Option<Pass>, Samples) {
+    let pass = Pass::new((word >> 56) as u8, (word >> 48) as u8);
+    (pass, Samples((word & FRAMES_MASK) as usize))
+}
+
+/// A handle on a running export: stops it, and reads how far it is. Cheap
+/// to clone, `Send` and `Sync`; any host reads the same reading, from any
+/// thread, without waiting on the render.
+#[derive(Debug, Clone, Default)]
+pub struct ExportHandle(Arc<Shared>);
+
+impl ExportHandle {
+    /// Asks the render to stop. It does at the end of its current block
+    /// (before the first, for a job that has not rendered one), reports
+    /// [`Outcome::Cancelled`] and drops the export's token; the file it
+    /// was writing is removed. A render that has finished is unaffected.
+    pub fn cancel(&self) {
+        self.0.stop.store(true, Ordering::Release);
+    }
+
+    /// How far the render is: the latest block's reading, or `None` before
+    /// the first block. For a normalized file export the passes come in
+    /// order ([`Progress::pass`]).
+    #[must_use]
+    pub fn progress(&self) -> Option<Progress> {
+        loop {
+            let produced = self.0.produced.load(Ordering::Acquire);
+            let total = self.0.total.load(Ordering::Acquire);
+            if produced == 0 {
+                return None;
+            }
+            if produced >> 48 != total >> 48 {
+                // The render moved to its next pass between the loads.
+                continue;
+            }
+            let (pass, produced) = unpack(produced);
+            return Some(Progress {
+                pass: pass?,
+                produced,
+                total: unpack(total).1,
+            });
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.0.stop.load(Ordering::Acquire)
+    }
+
+    /// The render's tick: records the block and answers whether to go on.
+    fn tick(&self, p: Progress) -> Flow {
+        self.0.total.store(pack(p.pass, p.total), Ordering::Release);
+        self.0
+            .produced
+            .store(pack(p.pass, p.produced), Ordering::Release);
+        if self.stop_requested() {
+            Flow::Stop
+        } else {
+            Flow::Continue
+        }
+    }
+}
+
 /// An export, gathered on the control thread: `Send`, and
 /// [`run`](Self::run) builds the fork (a hosted plugin's fork launches a
 /// `plugin-server` and loads its state), runs the edit, and renders, on
@@ -518,6 +614,7 @@ pub struct ExportJob {
     tail_from_graph: Option<Samples>,
     drops: Sender<Box<dyn Send>>,
     token: Arc<()>,
+    handle: ExportHandle,
 }
 
 impl std::fmt::Debug for ExportJob {
@@ -535,8 +632,15 @@ impl std::fmt::Debug for ExportJob {
 }
 
 impl ExportJob {
+    /// The handle that cancels this job and reads its progress.
+    #[must_use]
+    pub fn handle(&self) -> ExportHandle {
+        self.handle.clone()
+    }
+
     /// Builds the fork, runs the edit, commits it, and renders. Any thread;
-    /// it blocks for the whole render.
+    /// it blocks for the whole render, or until [`ExportHandle::cancel`]
+    /// stops it.
     pub fn run(self) -> ExportRendered {
         let Self {
             pending,
@@ -549,7 +653,18 @@ impl ExportJob {
             tail_from_graph,
             drops,
             token,
+            handle,
         } = self;
+        if handle.stop_requested() {
+            // Cancelled before it began: nothing is built, and what the job
+            // holds goes back to the main thread.
+            drop((pending, edit));
+            return ExportRendered {
+                result: Ok(Outcome::Cancelled),
+                graph: None,
+                _token: token,
+            };
+        }
         let mut graph = match pending.take().build() {
             Ok(graph) => ToMain::new(graph, drops),
             Err((e, remains)) => {
@@ -594,26 +709,39 @@ impl ExportJob {
                 .remaining_after(config.render.latency);
             config.render.tail = tail + kept;
         }
+        if handle.stop_requested() {
+            // Cancelled while the fork was building (a plugin's server
+            // launches here, half a second or more).
+            return ExportRendered {
+                result: Ok(Outcome::Cancelled),
+                graph: Some(graph),
+                _token: token,
+            };
+        }
+        let tick = &mut |p| handle.tick(p);
         let result = match target {
             ExportTarget::File {
                 path,
                 normalize: None,
-            } => tutti_export::render_to_file(&mut *graph, &config, clock.as_ref(), &path)
-                .map(ExportOutput::File),
+            } => {
+                tutti_export::render_to_file_with(&mut *graph, &config, clock.as_ref(), &path, tick)
+                    .map(|o| o.map(ExportOutput::File))
+            }
             ExportTarget::File {
                 path,
                 normalize: Some(normalize),
-            } => tutti_export::render_normalized_to_file(
+            } => tutti_export::render_normalized_to_file_with(
                 &mut *graph,
                 &config,
                 clock.as_ref(),
                 normalize,
                 &path,
+                tick,
             )
-            .map(ExportOutput::File),
+            .map(|o| o.map(ExportOutput::File)),
             ExportTarget::Buffers => {
-                tutti_export::render_to_buffers(&mut *graph, &config, clock.as_ref())
-                    .map(ExportOutput::Buffers)
+                tutti_export::render_to_buffers_with(&mut *graph, &config, clock.as_ref(), tick)
+                    .map(|o| o.map(ExportOutput::Buffers))
             }
         };
         ExportRendered {
@@ -629,7 +757,7 @@ impl ExportJob {
 /// export's token. `Send`.
 #[must_use = "finish the export with `Session::finish_export` (or `finish_export_unannounced`)"]
 pub struct ExportRendered {
-    result: tutti_export::Result<ExportOutput>,
+    result: tutti_export::Result<Outcome<ExportOutput>>,
     graph: Option<ToMain<RenderGraph>>,
     _token: Arc<()>,
 }
@@ -640,8 +768,11 @@ impl std::fmt::Debug for ExportRendered {
             .field(
                 "result",
                 &match &self.result {
-                    Ok(ExportOutput::File(w)) => format!("Ok(File({}))", w.path.display()),
-                    Ok(ExportOutput::Buffers(_)) => "Ok(Buffers)".to_string(),
+                    Ok(Outcome::Finished(ExportOutput::File(w))) => {
+                        format!("Ok(File({}))", w.path.display())
+                    }
+                    Ok(Outcome::Finished(ExportOutput::Buffers(_))) => "Ok(Buffers)".to_string(),
+                    Ok(Outcome::Cancelled) => "Cancelled".to_string(),
                     Err(_) => "Err".to_string(),
                 },
             )
@@ -719,6 +850,7 @@ impl Session {
             tail_from_graph,
             drops,
             token: Arc::clone(&self.export.token),
+            handle: ExportHandle::default(),
         };
         // Offline is announced here, on the control thread, before the job
         // can render a block.
@@ -739,7 +871,10 @@ impl Session {
     /// The render's [`Error::Export`]: a failed fork build or render (a
     /// fork that failed mid-render names its node's key), an I/O or encoder
     /// error.
-    pub fn finish_export(&mut self, rendered: ExportRendered) -> crate::Result<ExportOutput> {
+    pub fn finish_export(
+        &mut self,
+        rendered: ExportRendered,
+    ) -> crate::Result<Outcome<ExportOutput>> {
         let result = self.finish_export_unannounced(rendered);
         #[cfg(feature = "plugin")]
         self.render_mode_phase();
@@ -769,7 +904,7 @@ impl Session {
     pub fn finish_export_unannounced(
         &mut self,
         rendered: ExportRendered,
-    ) -> crate::Result<ExportOutput> {
+    ) -> crate::Result<Outcome<ExportOutput>> {
         crate::main_thread();
         let ExportRendered {
             result,
@@ -789,7 +924,10 @@ impl Session {
     /// # Errors
     ///
     /// As `export` and `finish_export`.
-    pub fn export_blocking(&mut self, request: ExportRequest) -> crate::Result<ExportOutput> {
+    pub fn export_blocking(
+        &mut self,
+        request: ExportRequest,
+    ) -> crate::Result<Outcome<ExportOutput>> {
         let job = self.export(request)?;
         self.finish_export(job.run())
     }
@@ -946,10 +1084,11 @@ mod tests {
             )
             .with_reported_tail(Samples(48_000))
         };
-        let planes = |out: crate::Result<ExportOutput>| match out.expect("renders") {
-            ExportOutput::Buffers(r) => r.planes,
-            ExportOutput::File(_) => unreachable!("buffers were asked for"),
-        };
+        let planes =
+            |out: crate::Result<Outcome<ExportOutput>>| match out.expect("renders").finished() {
+                Some(ExportOutput::Buffers(r)) => r.planes,
+                _ => unreachable!("buffers were asked for"),
+            };
 
         let untrimmed = planes(session.export_blocking(request()));
         assert_eq!(untrimmed[0].len(), DURATION + LATENCY, "duration + latency");

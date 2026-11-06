@@ -18,7 +18,7 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 
-use tutti_export::{ExportConfig, RenderClock};
+use tutti_export::{ExportConfig, Progress, RenderClock};
 use tutti_graph::{ForkCause, ForkFaultKind};
 use tutti_types::{NodeKey, Samples};
 
@@ -226,17 +226,40 @@ pub struct ExportInFlight {
     /// The node bindings when the render started, which name a node a
     /// failure is about.
     names: NodeNames,
+    /// The session's handle on the job: what [`cancel`](Self::cancel) and
+    /// [`progress`](Self::progress) forward to.
+    handle: tutti_session::ExportHandle,
 }
 
 impl ExportInFlight {
-    pub(crate) fn new(task: Task<tutti_session::ExportRendered>, names: NodeNames) -> Self {
-        Self { task, names }
+    pub(crate) fn new(
+        task: Task<tutti_session::ExportRendered>,
+        names: NodeNames,
+        handle: tutti_session::ExportHandle,
+    ) -> Self {
+        Self {
+            task,
+            names,
+            handle,
+        }
     }
 
     /// An in-flight export with no node bindings, for the render-mode tests.
     #[cfg(all(test, feature = "plugin"))]
-    pub(crate) fn for_test(task: Task<tutti_session::ExportRendered>) -> Self {
-        Self::new(task, NodeNames::default())
+    pub(crate) fn for_test(
+        task: Task<tutti_session::ExportRendered>,
+        handle: tutti_session::ExportHandle,
+    ) -> Self {
+        Self::new(task, NodeNames::default(), handle)
+    }
+
+    /// How far the render is, as the session reads it
+    /// ([`ExportHandle::progress`](tutti_session::ExportHandle::progress)):
+    /// `None` before its first block. A normalized file export is two
+    /// passes ([`Progress::pass`]).
+    #[must_use]
+    pub fn progress(&self) -> Option<Progress> {
+        self.handle.progress()
     }
 
     /// The finished job's return, for `Session::finish_export` on the main
@@ -247,23 +270,21 @@ impl ExportInFlight {
         Some((done, &self.names))
     }
 
-    /// Aborts the render, discarding whatever it has done so far.
+    /// Stops the render at the end of its current block (or before its
+    /// first). The frame that sees it stopped triggers [`ExportCancelled`]
+    /// on the request entity instead of [`ExportDone`], releases the
+    /// session's export token, and a [`File`](ExportTarget::File) target
+    /// is removed, including a file that was at its path before (the
+    /// encoder truncates it on create).
     ///
-    /// No [`ExportDone`] fires for a cancelled export. A cancelled
-    /// [`ExportTarget::File`] may leave a partial file at its path — the encoder
-    /// writes as it goes, and stopping mid-render does not unlink it.
+    /// Despawning the entity does the same without the event: dropping the
+    /// component cancels, and drops the task.
     ///
-    /// Despawning the entity does the same thing implicitly: dropping the
-    /// component drops the task, which cancels it.
-    ///
-    /// Whatever the export holds, whenever it is cancelled (before its fork
-    /// is built, or mid-render: a render already running finishes its poll
-    /// first), goes back to the session and is dropped by its next
-    /// `Phase::Collect` (the frame's commit), on the main thread, where a
-    /// forked in-process VST2 plugin in it must close. The export's token
-    /// goes with the task, so the next frame's
-    /// `plugin_render_mode` (the `plugin` feature) tells
-    /// the hosted plugins `Realtime`.
+    /// Whatever the export holds goes back to the session and is dropped by
+    /// its next `Phase::Collect` (the frame's commit), on the main thread,
+    /// where a forked in-process VST2 plugin in it must close. The next
+    /// frame's `plugin_render_mode` (the `plugin` feature) tells the hosted
+    /// plugins `Realtime`.
     ///
     /// **At shutdown**, an export still in flight when the world (and its
     /// session) is dropped has nowhere to send what it holds when its task
@@ -273,9 +294,28 @@ impl ExportInFlight {
     /// for minutes, and an exit should not); a host with such a plugin in
     /// its exports keeps updating until they have reported (`ExportInFlight`
     /// gone) before it drops the world.
-    pub fn cancel(self) {
-        drop(self.task);
+    pub fn cancel(&self) {
+        self.handle.cancel();
     }
+}
+
+impl Drop for ExportInFlight {
+    /// Removing the component stops the render too, so a despawned request
+    /// does not render to its end and hold the session's export token.
+    fn drop(&mut self) {
+        self.handle.cancel();
+    }
+}
+
+/// Triggered on the request entity when a render was cancelled
+/// ([`ExportInFlight::cancel`]) and has stopped: the session's export token is
+/// released and no file is left. Not an [`ExportDone`]: a cancelled export is
+/// not a failed one. The entity is still alive and no longer carries
+/// [`ExportInFlight`]; the caller despawns it.
+#[derive(EntityEvent, Debug)]
+pub struct ExportCancelled {
+    /// The request entity.
+    pub entity: Entity,
 }
 
 /// Triggered on the request entity when its render finishes — successfully or

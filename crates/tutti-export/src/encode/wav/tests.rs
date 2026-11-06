@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::{EncodeConfig, RenderConfig};
+use crate::control::Pass;
 use crate::options::AudioFormat;
 use crate::render::PlaneSource;
 use tutti_types::SampleRate;
@@ -26,12 +27,15 @@ fn encode(path: &Path, config: &ExportConfig, max_frames: u64, planes: &[Vec<f32
     let plan = RenderPlan::new(&config.render);
     assert_eq!(plan.output_length, Samples(8));
     let rate = config.render.sample_rate;
-    WavEncoder::create_with_limit(path, config, rate, &plan, max_frames)?.encode(
-        &mut PlaneSource::new(planes),
-        rate,
-        &plan,
-        config,
-    )
+    WavEncoder::create_with_limit(path, config, rate, &plan, max_frames)?
+        .encode(
+            &mut PlaneSource::new(planes),
+            rate,
+            &plan,
+            config,
+            &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+        )
+        .map(|_| ())
 }
 
 /// An export at exactly the limit succeeds, and its 6-channel header
@@ -118,7 +122,13 @@ fn a_render_that_crosses_the_limit_removes_its_partial_file() {
     let enc = WavEncoder::create_with_limit(&path, &config, rate, &short_plan, 6).unwrap();
     let planes = vec![vec![0.5f32; 8]; 2];
     let err = enc
-        .encode(&mut PlaneSource::new(&planes), rate, &plan, &config)
+        .encode(
+            &mut PlaneSource::new(&planes),
+            rate,
+            &plan,
+            &config,
+            &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+        )
         .expect_err("8 frames cross a limit of 6");
     assert!(
         matches!(err, Error::WavTooLarge { limit_frames: 6 }),

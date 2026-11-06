@@ -11,6 +11,7 @@
 //! beyond the PCM scaling every format does.
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::encode::{Encoder, pump_blocks};
 use crate::error::{Codec, ConfigError, Error, Result};
 use crate::options::BitDepth;
@@ -66,10 +67,11 @@ impl Encoder for AiffEncoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()> {
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>> {
         let mut ints: Vec<i32> = Vec::new();
         let mut shorts: Vec<i16> = Vec::new();
-        pump_blocks(src, source_rate, plan, config, |frames| {
+        let pumped = pump_blocks(src, source_rate, plan, config, control, |frames| {
             // `aifc` takes an interleaved sample run, which is the shape the
             // render already hands over.
             let buf = frames.samples();
@@ -88,10 +90,13 @@ impl Encoder for AiffEncoder {
             }
             .map_err(|e| Error::encoding(Codec::Aiff, format!("write failed: {e:?}")))
         })?;
+        if pumped == Outcome::Cancelled {
+            return Ok(Outcome::Cancelled);
+        }
 
         self.writer
             .finalize()
             .map_err(|e| Error::encoding(Codec::Aiff, format!("finalization failed: {e:?}")))?;
-        Ok(())
+        Ok(Outcome::Finished(()))
     }
 }

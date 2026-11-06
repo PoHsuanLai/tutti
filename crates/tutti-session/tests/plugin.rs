@@ -171,8 +171,14 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     assert!(s.export_in_flight());
 
     let done = job.run();
-    let output = s.finish_export(done).expect("the export renders");
-    assert!(matches!(output, tutti_session::ExportOutput::Buffers(_)));
+    let output = s
+        .finish_export(done)
+        .expect("the export renders")
+        .finished();
+    assert!(matches!(
+        output,
+        Some(tutti_session::ExportOutput::Buffers(_))
+    ));
     assert!(!s.export_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "told Realtime by finish_export");

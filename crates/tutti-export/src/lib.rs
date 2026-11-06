@@ -9,11 +9,15 @@ mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
+mod control;
+use control::{Control, never_stop};
+pub use control::{Flow, Outcome, Pass, Progress};
+
 mod config;
 pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{Normalize, render_normalized_to_file};
+pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -169,7 +173,21 @@ pub fn write_buffers(
     path: impl AsRef<Path>,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    encode::encode_planes(rendered, config, path.as_ref())
+    let written = encode::encode_planes(
+        rendered,
+        config,
+        path.as_ref(),
+        &mut Control::new(Pass::ONLY, &mut never_stop),
+    )?;
+    Ok(finished(written))
+}
+
+/// The value of an outcome no tick could have cancelled.
+fn finished<T>(outcome: Outcome<T>) -> T {
+    match outcome {
+        Outcome::Finished(t) => t,
+        Outcome::Cancelled => unreachable!("`never_stop` never cancels"),
+    }
 }
 
 /// Renders `graph` and writes it to `path`.
@@ -195,19 +213,50 @@ pub fn write_buffers(
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
 /// render — the file may exist but is not a valid render.
 pub fn render_to_file(
-    mut graph: impl BorrowMut<RenderGraph>,
+    graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: impl AsRef<Path>,
 ) -> Result<Written> {
+    render_to_file_with(graph, config, clock, path, &mut never_stop).map(finished)
+}
+
+/// [`render_to_file`], reporting to `tick` after each block.
+///
+/// `tick` sees the [`Progress`] of the pass (one frame count rising to its
+/// total) and answers [`Flow::Stop`] to end the render, which returns
+/// [`Outcome::Cancelled`] with no file left at `path`: the one this render
+/// wrote is removed, and so is one that was there before, which the encoder
+/// truncated on create.
+///
+/// # Errors
+///
+/// As [`render_to_file`]. A cancelled render is not an error.
+pub fn render_to_file_with(
+    mut graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    path: impl AsRef<Path>,
+    tick: &mut dyn FnMut(Progress) -> Flow,
+) -> Result<Outcome<Written>> {
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
     let plan = render::RenderPlan::new(&config.render);
+    let mut control = Control::new(Pass::ONLY, tick);
     render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
-        |src| encode::encode_to_file(src, config.render.sample_rate, &plan, config, path),
+        |src| {
+            encode::encode_to_file(
+                src,
+                config.render.sample_rate,
+                &plan,
+                config,
+                path,
+                &mut control,
+            )
+        },
     )
 }
 
@@ -240,10 +289,36 @@ pub fn render_to_file(
 /// editor does not feed its executor; [`Error::ForkFailed`] if a forked node
 /// failed during the render.
 pub fn render_to_buffers(
-    mut graph: impl BorrowMut<RenderGraph>,
+    graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
+    render_to_buffers_with(graph, config, clock, &mut never_stop).map(finished)
+}
+
+/// [`render_to_buffers`], reporting to `tick` after each block; see
+/// [`render_to_file_with`]. A cancelled render returns [`Outcome::Cancelled`]
+/// and the planes rendered so far are dropped.
+///
+/// # Errors
+///
+/// As [`render_to_buffers`].
+pub fn render_to_buffers_with(
+    graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    tick: &mut dyn FnMut(Progress) -> Flow,
+) -> Result<Outcome<Rendered>> {
+    render_pass(graph, config, clock, &mut Control::new(Pass::ONLY, tick))
+}
+
+/// One render into memory, reporting through `control`.
+fn render_pass(
+    mut graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    control: &mut Control<'_>,
+) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
     let plan = render::RenderPlan::new(&config.render);
 
@@ -252,20 +327,20 @@ pub fn render_to_buffers(
     let mut planes: Vec<Vec<f32>> = (0..ch)
         .map(|_| Vec::with_capacity(plan.output_length.get()))
         .collect();
-    render::with_source(
+    let driven = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
         |src| {
-            render::drive(src, config.encode.channels, &plan, |block| {
+            render::drive(src, config.encode.channels, &plan, control, |block| {
                 block.append_to_planes(&mut planes);
                 Ok(())
             })
         },
     )?;
 
-    Ok(Rendered {
+    Ok(driven.map(|()| Rendered {
         planes,
         sample_rate: config.render.sample_rate,
-    })
+    }))
 }

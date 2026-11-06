@@ -24,7 +24,10 @@ use tutti_types::Db;
 use tutti_types::Interleaved;
 
 use crate::config::ExportConfig;
-use crate::{Result, Written, render_to_buffers, write_buffers};
+use crate::control::{Control, never_stop};
+use crate::{Flow, Outcome, Pass, Progress, Result, Written};
+#[cfg(doc)]
+use crate::{render_to_buffers, render_to_file_with, write_buffers};
 
 /// A gain chosen by measuring the rendered signal.
 ///
@@ -147,7 +150,7 @@ impl Normalize {
 /// converted signal is what makes the dBTP figure a promise about the file
 /// rather than about an intermediate nobody hears.
 ///
-/// The trailing [`write_buffers`] is then given a config with `resample`
+/// The trailing write (as [`write_buffers`]) is then given a config with `resample`
 /// cleared: the conversion already happened, and running it twice would resample
 /// from a rate the samples are not at.
 ///
@@ -173,8 +176,33 @@ pub fn render_normalized_to_file(
     normalize: Normalize,
     path: impl AsRef<Path>,
 ) -> Result<Written> {
+    render_normalized_to_file_with(graph, config, clock, normalize, path, &mut never_stop)
+        .map(crate::finished)
+}
+
+/// [`render_normalized_to_file`], reporting to `tick` after each block of
+/// both passes: pass 0 renders the graph, pass 1 writes the gained audio
+/// ([`Progress::pass`]). Stopping either returns [`Outcome::Cancelled`] with
+/// no file at `path`, as [`render_to_file_with`] does; the measurement and
+/// the resample between the passes do not tick.
+///
+/// # Errors
+///
+/// As [`render_normalized_to_file`].
+pub fn render_normalized_to_file_with(
+    graph: impl std::borrow::BorrowMut<crate::RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    normalize: Normalize,
+    path: impl AsRef<Path>,
+    tick: &mut dyn FnMut(Progress) -> Flow,
+) -> Result<Outcome<Written>> {
     let path = path.as_ref();
-    let rendered = render_to_buffers(graph, config, clock)?;
+    let mut control = Control::new(Pass::FIRST_OF_TWO, tick);
+    let Outcome::Finished(rendered) = crate::render_pass(graph, config, clock, &mut control)?
+    else {
+        return Ok(Outcome::Cancelled);
+    };
 
     // Convert first, so what is measured is what is written.
     let (mut rendered, config) = match config.resample {
@@ -195,7 +223,12 @@ pub fn render_normalized_to_file(
 
     rendered.apply_gain(normalize.gain_for_rendered(&rendered)?);
 
-    write_buffers(&rendered, &config, path)
+    crate::encode::encode_planes(
+        &rendered,
+        &config,
+        path,
+        &mut control.pass(Pass::SECOND_OF_TWO),
+    )
 }
 
 #[cfg(test)]

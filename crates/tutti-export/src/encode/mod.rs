@@ -27,6 +27,7 @@ pub(crate) mod ogg;
 pub(crate) mod wav;
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::error::Result;
 // `drive` and the buffer views are `pump_blocks`'s, and it carries the same
 // codec gate.
@@ -89,10 +90,16 @@ pub(crate) trait Encoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()>;
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>>;
 }
 
 /// Render `src` to `path` in the format `config` names.
+///
+/// A render `control` stops removes `path`: the encoder has dropped its
+/// writer by then, and a half-written file must not pass for a finished
+/// one. A file that was at `path` before is gone too, since every encoder
+/// truncates it on create.
 ///
 /// The one dispatch. A format whose cargo feature is off is a clean
 /// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
@@ -109,7 +116,8 @@ pub(crate) fn encode_to_file(
     plan: &RenderPlan,
     config: &ExportConfig,
     path: &Path,
-) -> Result<Written> {
+    control: &mut Control<'_>,
+) -> Result<Outcome<Written>> {
     use crate::options::AudioFormat;
     #[allow(
         unused_imports,
@@ -117,13 +125,14 @@ pub(crate) fn encode_to_file(
     )]
     use crate::{Error, UnsupportedReason};
 
-    match config.encode.format {
+    let outcome: Outcome<()> = match config.encode.format {
         #[cfg(feature = "wav")]
         AudioFormat::Wav => wav::WavEncoder::create(path, config, source_rate, plan)?.encode(
             src,
             source_rate,
             plan,
             config,
+            control,
         )?,
         #[cfg(not(feature = "wav"))]
         AudioFormat::Wav => {
@@ -134,9 +143,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "flac")]
-        AudioFormat::Flac(opts) => {
-            flac::FlacEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::Flac(opts) => flac::FlacEncoder::create(path, config, opts)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "flac"))]
         AudioFormat::Flac(_) => {
             return Err(Error::UnsupportedFormat {
@@ -146,9 +159,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => {
-            aiff::AiffEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::Aiff => aiff::AiffEncoder::create(path, config)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "aiff"))]
         AudioFormat::Aiff => {
             return Err(Error::UnsupportedFormat {
@@ -158,9 +175,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "ogg")]
-        AudioFormat::OggVorbis(opts) => {
-            ogg::OggEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::OggVorbis(opts) => ogg::OggEncoder::create(path, config, opts)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
             return Err(Error::UnsupportedFormat {
@@ -168,13 +189,17 @@ pub(crate) fn encode_to_file(
                 reason: UnsupportedReason::FeatureDisabled,
             });
         }
-    }
+    };
 
+    if outcome == Outcome::Cancelled {
+        std::fs::remove_file(path)?;
+        return Ok(Outcome::Cancelled);
+    }
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    Ok(Written {
+    Ok(Outcome::Finished(Written {
         path: path.to_path_buf(),
         bytes,
-    })
+    }))
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.
@@ -195,8 +220,9 @@ pub(crate) fn pump_blocks<W>(
     source_rate: tutti_types::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
+    control: &mut Control<'_>,
     mut write: W,
-) -> Result<()>
+) -> Result<Outcome<()>>
 where
     W: FnMut(Interleaved<'_>) -> Result<()>,
 {
@@ -234,19 +260,23 @@ where
     };
 
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        drive(src, layout, plan, |block| {
+        let driven = drive(src, layout, plan, control, |block| {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
             emit_planes(out, &mut staging, &mut dither, layout, &mut write)
         })?;
+        if driven == Outcome::Cancelled {
+            return Ok(Outcome::Cancelled);
+        }
         rs.finish(out)?;
-        emit_planes(out, &mut staging, &mut dither, layout, &mut write)
+        emit_planes(out, &mut staging, &mut dither, layout, &mut write)?;
+        Ok(Outcome::Finished(()))
     } else if dither.is_off() {
         // Nothing to add, so nothing to copy: the gated block goes straight
         // to the encoder.
-        drive(src, layout, plan, write)
+        drive(src, layout, plan, control, write)
     } else {
-        drive(src, layout, plan, |block| {
+        drive(src, layout, plan, control, |block| {
             staging.clear();
             staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
@@ -290,7 +320,8 @@ pub(crate) fn encode_planes(
     rendered: &crate::Rendered,
     config: &ExportConfig,
     path: &Path,
-) -> Result<Written> {
+    control: &mut Control<'_>,
+) -> Result<Outcome<Written>> {
     let frames = rendered.frames();
     let mut src = PlaneSource::new(&rendered.planes);
     let plan = RenderPlan {
@@ -300,5 +331,5 @@ pub(crate) fn encode_planes(
     };
     // The frames' OWN rate, never `config.render.sample_rate`: these planes may
     // have been rendered under a different config entirely.
-    encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)
+    encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)
 }

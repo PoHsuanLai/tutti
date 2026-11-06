@@ -103,11 +103,15 @@ fn the_changes_replay_to_the_new_snapshot() {
     let mut model = Snapshot::default();
     for _ in 0..500 {
         let pick = |n: &mut dyn FnMut() -> u32| -> Vec<&str> {
-            names.iter().copied().filter(|_| n() % 2 == 0).collect()
+            names
+                .iter()
+                .copied()
+                .filter(|_| n().is_multiple_of(2))
+                .collect()
         };
         let outs = pick(&mut next);
         let ins = pick(&mut next);
-        let default_out = outs.first().copied().filter(|_| next() % 3 != 0);
+        let default_out = outs.first().copied().filter(|_| !next().is_multiple_of(3));
         let snap =
             Snapshot::from_names(outs.iter().copied(), ins.iter().copied(), default_out, None);
         for change in roster.apply(snap.clone()) {

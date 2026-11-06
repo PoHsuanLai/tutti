@@ -64,11 +64,16 @@ pub enum DeviceChange { Appeared(Direction, DeviceId), Vanished(Direction, Devic
 pub trait SnapshotSource { fn poll(&mut self) -> Option<Snapshot>; }
 
 // tutti-session
-pub struct DevicePolicy { follow_default, reconnect, retry_startup: bool, backoff: Backoff }
-Session::watch_devices(source, policy)
-Session::restart_followed(device, request, now)   // runs a wanted restart, reports the outcome
-SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted,
-               DeviceRestarted { previous_rate, rate }, RestartFailed}
+pub struct DevicePolicy { follow_default, reconnect, retry_startup: bool, poll_interval, backoff: Backoff }
+pub struct Follow;   // step(FollowEvent, &Snapshot, Instant) -> Option<DeviceRestart>, pure
+pub struct DeviceWatch;   // source + roster + Follow; poll(now, &mut Vec<SessionEvent>)
+Session::watch_devices(source, policy, want, running_on)
+SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted(DeviceRestart),
+               DeviceRestarted(DeviceRestarted { previous_rate, rate }), RestartFailed(String)}
+
+// bevy-tutti
+TuttiPlugin { output_device: DeviceSelector, watch_devices: Option<DevicePolicy>, .. }
+AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
 ```
 
 ## 4. Decisions
@@ -93,17 +98,26 @@ SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted,
   `Session::restart` (the stream stopped, the old spec and rate kept); the
   watch records a strike and tries again after the delay.
 - **The session decides, the host executes.** `Device` is `!Send` and the
-  host owns it, so `Poll` reports `RestartWanted` and the host calls
-  `restart_followed`, which restarts and tells the watch the outcome. Bevy's
-  system is that call.
+  host owns it, so `Poll` reports `RestartWanted(request)` and the host calls
+  `Session::restart` with it. Every restart, wanted or the host's own, tells
+  the watch the outcome and is reported by the next poll
+  (`DeviceRestarted` or `RestartFailed`); a restart onto a different selector
+  is the host choosing, and the policy then follows that choice. Bevy's
+  system queues `restart_device` for the request.
 - **The mic is the host's.** The session holds no `MicIn`, so it cannot reopen
   one. After a successful restart it reports `DeviceRestarted` with both
   rates; the host reopens its mic when `rate_changed()`. Mic stream faults
   are the input-faults lane's.
-- **Startup retry is a watch with no session.** `DeviceWatch` runs alone for
-  an app that has no device yet; the adapter builds the engine when it says
-  to, and `AudioEngineState::Failed` is no longer terminal when the policy is
-  on.
+- **Startup retry is a watch with no session.** `DeviceWatch::without_stream`
+  runs alone for an app that has no device yet; the adapter builds the engine
+  when it says to, and `AudioEngineState::Failed` is no longer terminal when
+  `retry_startup` is on. Systems that ran once at startup (`Startup`) have
+  not seen that engine; only the engine-gated ones run once it is built.
+- **A lost stream is latched.** A device not listed while the stream runs on
+  it marks the stream broken, and it stays broken when the device is listed
+  again: the stream did not follow it back.
+- **The poller watches the default host** (`AudioHost::Default`); a JACK app
+  polls through its own `SnapshotSource`.
 - **What this does not claim.** Nothing here was exercised on real hardware,
   and the cost of enumeration on WASAPI, CoreAudio and JACK is unknown. The
   poll interval is therefore a policy value, 2 s by default.

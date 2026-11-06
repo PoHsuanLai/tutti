@@ -65,6 +65,13 @@ impl DeviceSelector {
     }
 }
 
+impl From<Option<DeviceId>> for DeviceSelector {
+    /// `None` is the default device.
+    fn from(id: Option<DeviceId>) -> Self {
+        id.map_or(Self::Default, Self::Id)
+    }
+}
+
 impl From<DeviceId> for DeviceSelector {
     fn from(id: DeviceId) -> Self {
         Self::Id(id)

@@ -100,7 +100,7 @@ impl Device {
 
     /// The backend fault record, which survives stop and restart.
     /// [`Session::update`] reports each new fault as
-    /// [`SessionEvent::DeviceFault`](crate::SessionEvent::DeviceFault).
+    /// [`SessionEvent::DeviceFault`].
     pub fn faults(&self) -> Arc<StreamFaults> {
         self.driver.engine().faults()
     }
@@ -316,7 +316,7 @@ impl Session {
     }
 
     /// Starts watching the host's devices (design 018): `source` is polled on
-    /// every [`Phase::Poll`], its changes are reported as events, and
+    /// every [`Phase::Poll`](crate::Phase::Poll), its changes are reported as events, and
     /// `policy` decides which of them restart the stream. `want` is the
     /// selector the stream was started with, which the policy never
     /// overrides, and `running_on` the device it opened (`Device::device_name`;
@@ -331,7 +331,7 @@ impl Session {
         self.device_watch = Some(DeviceWatch::new(source, policy, want, running_on));
     }
 
-    /// The [`Phase::Poll`] body: what restarts reported, the stream's own
+    /// The [`Phase::Poll`](crate::Phase::Poll) body: what restarts reported, the stream's own
     /// faults, then the watch.
     pub(crate) fn device_poll(&mut self, now: std::time::Instant, out: &mut Vec<SessionEvent>) {
         out.append(&mut self.device_events);

@@ -152,6 +152,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_types::SampleRate;
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -325,11 +326,11 @@ mod tests {
             },
             BridgeMessage::ParameterValueFromText { value: None },
             BridgeMessage::SampleRateSet {
-                rate: 96_000.0,
+                rate: SampleRate(96_000.0),
                 error: None,
             },
             BridgeMessage::SampleRateSet {
-                rate: 96_000.0,
+                rate: SampleRate(96_000.0),
                 error: Some("refused".to_string()),
             },
         ];
@@ -608,7 +609,7 @@ mod tests {
     fn test_load_plugin_f64_serialization() {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/reverb.vst3"),
-            sample_rate: 96000.0,
+            sample_rate: SampleRate(96000.0),
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
             shm_name: "test_shm".to_string(),
@@ -626,7 +627,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(path, PathBuf::from("/test/reverb.vst3"));
-                assert_eq!(sample_rate, 96000.0);
+                assert_eq!(sample_rate, SampleRate(96000.0));
                 assert_eq!(block_size, 1024);
                 assert_eq!(preferred_format, SampleFormat::Float64);
             }

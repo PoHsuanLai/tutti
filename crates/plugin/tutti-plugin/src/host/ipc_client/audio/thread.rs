@@ -227,7 +227,9 @@ mod tests {
     use crate::host::ipc_client::audio::messages::{
         ProcessPayload, ResyncKind, UNSOLICITED_PARAMS,
     };
+    use crate::protocol::{Normalized, ParamId};
     use std::sync::Arc;
+    use tutti_types::SampleRate;
 
     /// **A crash's drain counts the queued chunks' MIDI.**
     ///
@@ -238,7 +240,7 @@ mod tests {
         use crate::protocol::MidiEvent;
         use tutti_midi_types::{MidiChannel, MidiGroup};
 
-        let channels = Channels::new(48_000.0);
+        let channels = Channels::new(SampleRate(48_000.0));
         for n in [3, 0, 2] {
             let mut payload = Box::new(ProcessPayload::empty());
             for _ in 0..n {
@@ -272,7 +274,7 @@ mod tests {
         use crate::protocol::MidiEvent;
         use tutti_midi_types::{MidiChannel, MidiGroup};
 
-        let channels = Channels::new(48_000.0);
+        let channels = Channels::new(SampleRate(48_000.0));
         let lifecycle = Lifecycle::new();
         let mut payload = Box::new(ProcessPayload::empty());
         for _ in 0..4 {
@@ -312,7 +314,7 @@ mod tests {
     /// adding → the second drain's count replaces the first → fails.
     #[test]
     fn a_drain_reports_the_drops() {
-        let channels = Channels::new(48_000.0);
+        let channels = Channels::new(SampleRate(48_000.0));
         let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let listener: ListenerSlot = {
             let heard = Arc::clone(&heard);
@@ -324,7 +326,7 @@ mod tests {
         let over = 72;
         for round in 1..=2u64 {
             for i in 0..(UNSOLICITED_PARAMS + over) as i32 {
-                inbox.param(i, 0.0);
+                inbox.param(ParamId::new(i as u32), Normalized::default());
             }
             drain_unsolicited(&mut inbox, &channels, &listener);
             assert_eq!(channels.dropped_param_events(), round * over as u64);

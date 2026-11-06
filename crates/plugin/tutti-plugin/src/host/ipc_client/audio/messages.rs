@@ -56,7 +56,7 @@ pub(super) enum Command {
     Process(Box<ProcessPayload>),
     SetParameter {
         param_id: ParamId,
-        value: f32,
+        value: Normalized,
     },
     SetAutomationState {
         /// Format-neutral automation mode; each format loader encodes it onto its
@@ -65,7 +65,7 @@ pub(super) enum Command {
         mode: crate::protocol::AutomationMode,
     },
     SetSampleRate {
-        rate: f64,
+        rate: SampleRate,
     },
     /// Format-neutral render mode, encoded onto each format's own ABI at the
     /// FFI edge (VST3 `ProcessSetup::processMode`, CLAP `clap.render`, AU
@@ -97,7 +97,7 @@ pub(super) enum Command {
     },
     GetParameter {
         param_id: ParamId,
-        reply: Reply<Option<f32>>,
+        reply: Reply<Option<Normalized>>,
     },
     GetPresetList {
         reply: Reply<Option<Vec<Preset>>>,
@@ -171,8 +171,8 @@ pub enum BridgeEvent {
         tail: PluginTail,
     },
     ParameterChanged {
-        index: i32,
-        value: f32,
+        index: ParamId,
+        value: Normalized,
     },
     /// The plugin asked the host to resync some aspect of its state at runtime
     /// (preset load, param-title change, IO change, full reload). Carries no
@@ -180,7 +180,7 @@ pub enum BridgeEvent {
     Resync(ResyncKind),
     /// The plugin refused the rate it was asked to run at (`Some`: the rate in
     /// Hz and the plugin's reason), or took a rate after refusing one (`None`).
-    RateRefusal(Option<(f64, String)>),
+    RateRefusal(Option<(SampleRate, String)>),
     /// The bridge died: the subprocess never connected, failed the handshake,
     /// or its stream dropped mid-session.
     ///
@@ -248,10 +248,10 @@ pub(super) const UNSOLICITED_PARAMS: usize = 128;
 /// so [`Crashed`](BridgeEvent::Crashed), which the bridge sends from the site
 /// that noticed, cannot come through here.
 pub(super) struct Unsolicited {
-    params: std::collections::VecDeque<(i32, f32)>,
+    params: std::collections::VecDeque<(ParamId, Normalized)>,
     latency: Option<Samples>,
     tail: Option<PluginTail>,
-    rate: Option<Option<(f64, String)>>,
+    rate: Option<Option<(SampleRate, String)>>,
     /// Rate changes the bridge stopped waiting for, whose answers have not
     /// arrived.
     late_rate_owed: u32,
@@ -283,7 +283,7 @@ impl Unsolicited {
     }
 
     /// Queue a parameter event, dropping (and counting) the oldest when full.
-    pub(super) fn param(&mut self, index: i32, value: f32) {
+    pub(super) fn param(&mut self, index: ParamId, value: Normalized) {
         if self.params.len() == UNSOLICITED_PARAMS {
             self.params.pop_front();
             self.dropped += 1;
@@ -319,7 +319,7 @@ impl Unsolicited {
     /// it **now**: it is read in stream order, ahead of whatever is read after
     /// it, so a later answer (the request being waited on) lands after it and
     /// wins. `false` when it answers the request being waited on.
-    pub(super) fn late_rate_reply(&mut self, rate: f64, error: Option<String>) -> bool {
+    pub(super) fn late_rate_reply(&mut self, rate: SampleRate, error: Option<String>) -> bool {
         if self.late_rate_owed == 0 {
             return false;
         }
@@ -331,7 +331,7 @@ impl Unsolicited {
     }
 
     /// A rate refusal, or its clearing, replacing one already held.
-    pub(super) fn rate_refusal(&mut self, refusal: Option<(f64, String)>) {
+    pub(super) fn rate_refusal(&mut self, refusal: Option<(SampleRate, String)>) {
         self.rate = Some(refusal);
     }
 
@@ -538,7 +538,7 @@ mod tests {
     fn the_inbox_keeps_arrival_order_and_empties() {
         let mut inbox = Unsolicited::new();
         for i in 0..3 {
-            inbox.param(i, 0.0);
+            inbox.param(ParamId::new(i as u32), Normalized::default());
         }
         inbox.latency(Samples::new(64));
         assert_eq!(labels(&mut inbox), ["p0", "p1", "p2", "latency 64"]);
@@ -570,7 +570,7 @@ mod tests {
         inbox.latency(Samples::new(64));
         let n = UNSOLICITED_PARAMS as i32;
         for i in 0..n + 2 {
-            inbox.param(i, 0.0);
+            inbox.param(ParamId::new(i as u32), Normalized::default());
         }
         assert_eq!(inbox.params.capacity(), cap, "the inbox reallocated");
         assert_eq!(inbox.take_dropped(), 2);
@@ -606,8 +606,8 @@ mod tests {
         inbox.latency(Samples::new(16));
         inbox.resync(ResyncKind::Io);
         inbox.resync(ResyncKind::Reloaded);
-        inbox.param(0, 0.0);
-        inbox.param(1, 0.0);
+        inbox.param(ParamId::new(0), Normalized::default());
+        inbox.param(ParamId::new(1), Normalized::default());
         inbox.resync(ResyncKind::Reloaded);
         assert_eq!(
             labels(&mut inbox),

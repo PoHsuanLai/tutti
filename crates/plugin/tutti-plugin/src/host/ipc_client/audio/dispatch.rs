@@ -15,6 +15,7 @@ use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
 use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
 use std::time::Duration;
+use tutti_types::SampleRate;
 
 /// How many block periods the bridge thread will wait for a `ProcessAudio`
 /// reply before abandoning the block.
@@ -119,7 +120,8 @@ const MAX_BEHIND: u64 = RING_SLOTS as u64 - 1;
 ///
 /// `num_samples`/`rate` stay raw: both come off the IPC wire, where the unit
 /// mandate stops.
-fn process_timeout(num_samples: usize, rate: f64) -> Duration {
+fn process_timeout(num_samples: usize, rate: SampleRate) -> Duration {
+    let rate = rate.get();
     let rate = if rate.is_finite() && rate > 0.0 {
         rate
     } else {
@@ -833,7 +835,7 @@ fn recv_state_reply(
 pub(super) fn apply_rate_reply(
     lifecycle: &Lifecycle,
     inbox: &mut Unsolicited,
-    rate: f64,
+    rate: SampleRate,
     error: Option<String>,
 ) {
     match error {
@@ -1043,11 +1045,16 @@ mod tests {
     /// Every production block size / rate combination the engine can present.
     /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout
     /// must hold at every size.
-    const RATES: [f64; 4] = [44_100.0, 48_000.0, 96_000.0, 192_000.0];
+    const RATES: [SampleRate; 4] = [
+        SampleRate(44_100.0),
+        SampleRate(48_000.0),
+        SampleRate(96_000.0),
+        SampleRate(192_000.0),
+    ];
     const BLOCKS: [usize; 4] = [64, 128, 256, 512];
 
-    fn period(num_samples: usize, rate: f64) -> Duration {
-        Duration::from_secs_f64(num_samples as f64 / rate)
+    fn period(num_samples: usize, rate: SampleRate) -> Duration {
+        Duration::from_secs_f64(num_samples as f64 / rate.get())
     }
 
     /// A fixed 500 ms timeout sits ~750x above the audio thread's 667 us budget
@@ -1100,7 +1107,7 @@ mod tests {
     #[test]
     fn non_finite_rate_falls_back() {
         for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-            let t = process_timeout(64, bad);
+            let t = process_timeout(64, SampleRate(bad));
             assert!(
                 t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT,
                 "rate={bad}: {t:?}"

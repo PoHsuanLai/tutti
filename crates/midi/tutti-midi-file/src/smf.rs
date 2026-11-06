@@ -32,6 +32,7 @@ use crate::{Error, Result};
 // engine's `MidiMessage` in a `use tutti_midi_hardware::*` context.
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
 use tutti_core::{Beat, BeatDuration, Bpm};
+use tutti_midi_types::MidiChannel;
 
 /// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
 /// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
@@ -45,8 +46,8 @@ use tracing::debug;
 pub struct SmfTimedEvent {
     /// Absolute position from the start of the file.
     pub time_beats: Beat,
-    /// MIDI channel (0-15).
-    pub channel: u8,
+    /// The message's channel.
+    pub channel: MidiChannel,
     /// The channel-voice message. This is a **MIDI 1.0** `midly` message
     /// (re-exported as [`SmfMessage`]), not the engine's MIDI-2 `MidiMessage`.
     pub msg: SmfMessage,
@@ -180,7 +181,7 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
         if let TrackEventKind::Midi { channel, message } = &event.kind {
             events.push(SmfTimedEvent {
                 time_beats: Beat(tick as f64 / f64::from(ticks_per_beat)),
-                channel: channel.as_int(),
+                channel: MidiChannel::new(channel.as_int()),
                 msg: *message,
             });
         }
@@ -258,10 +259,9 @@ fn sort_by_time(events: &mut [SmfTimedEvent]) {
 /// One note, paired from its NoteOn/NoteOff, in beats from track start.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SmfNote {
-    /// MIDI channel, 0..=15. Pairing is per-channel: a NoteOff only closes a
-    /// NoteOn on the *same* channel, which is what multi-channel tracks
-    /// (the norm for General MIDI Type-0 files) require.
-    pub channel: u8,
+    /// Pairing is per-channel: a NoteOff only closes a NoteOn on the *same*
+    /// channel, which multi-channel tracks (General MIDI Type-0) require.
+    pub channel: MidiChannel,
     /// MIDI key number, 0..=127.
     pub key: u8,
     /// NoteOn velocity, 1..=127 (velocity-0 NoteOn is treated as NoteOff).
@@ -321,29 +321,31 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     let mut now_ticks: u64 = 0;
     // The held onset is a `Beat`, so `end - start` below *is* a `BeatDuration`
     // rather than a float that has to be trusted to be one.
-    let mut held: BTreeMap<(u8, u8), Vec<(Beat, u8)>> = BTreeMap::new();
+    let mut held: BTreeMap<(MidiChannel, u8), Vec<(Beat, u8)>> = BTreeMap::new();
     let mut out: Vec<SmfNote> = Vec::new();
 
-    let mut close =
-        |held: &mut BTreeMap<(u8, u8), Vec<(Beat, u8)>>, channel: u8, key: u8, end: Beat| {
-            if let Some(stack) = held.get_mut(&(channel, key))
-                && let Some((start, velocity)) = stack.pop()
-            {
-                out.push(SmfNote {
-                    channel,
-                    key,
-                    velocity,
-                    start_beats: start,
-                    duration_beats: (end - start).max(BeatDuration(0.0)),
-                });
-            }
-        };
+    let mut close = |held: &mut BTreeMap<(MidiChannel, u8), Vec<(Beat, u8)>>,
+                     channel: MidiChannel,
+                     key: u8,
+                     end: Beat| {
+        if let Some(stack) = held.get_mut(&(channel, key))
+            && let Some((start, velocity)) = stack.pop()
+        {
+            out.push(SmfNote {
+                channel,
+                key,
+                velocity,
+                start_beats: start,
+                duration_beats: (end - start).max(BeatDuration(0.0)),
+            });
+        }
+    };
 
     for event in track.iter() {
         now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));
         let beat = Beat(now_ticks as f64 / ticks_per_beat);
         if let TrackEventKind::Midi { channel, message } = event.kind {
-            let channel = channel.as_int();
+            let channel = MidiChannel::new(channel.as_int());
             match message {
                 SmfMessage::NoteOn { key, vel } => {
                     let (key, vel) = (key.as_int(), vel.as_int());
@@ -535,7 +537,7 @@ fn build_track<'a>(
         track.push(TrackEvent {
             delta: delta.into(),
             kind: TrackEventKind::Midi {
-                channel: (event.channel & 0x0F).into(),
+                channel: event.channel.get().into(),
                 message: event.msg,
             },
         });

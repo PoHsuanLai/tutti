@@ -32,6 +32,7 @@ mod support;
 use support::{Division, RawEvent, build_smf};
 use tutti_midi_file::SmfFile;
 use tutti_midi_file::smf::ParsedMidiFile;
+use tutti_midi_types::MidiChannel;
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;
@@ -163,8 +164,14 @@ fn a_note_off_does_not_close_another_channels_note() {
 
     let notes = &SmfFile::from_bytes(&data).expect("parses").into_tracks()[0].notes;
     assert_eq!(notes.len(), 2, "one note per channel");
-    let ch0 = notes.iter().find(|n| n.channel == 0).expect("channel 0");
-    let ch1 = notes.iter().find(|n| n.channel == 1).expect("channel 1");
+    let ch0 = notes
+        .iter()
+        .find(|n| n.channel == MidiChannel::new(0))
+        .expect("channel 0");
+    let ch1 = notes
+        .iter()
+        .find(|n| n.channel == MidiChannel::new(1))
+        .expect("channel 1");
 
     assert!(
         (ch0.start_beats.get() - 0.0).abs() < 1e-9 && (ch0.duration_beats.get() - 2.0).abs() < 1e-9,

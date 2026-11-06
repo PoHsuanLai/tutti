@@ -44,7 +44,7 @@ fn a_degenerate_tempo_is_absent_rather_than_infinite() {
     };
     let track = vec![vec![SmfTimedEvent {
         time_beats: Beat(0.0),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: SmfMessage::NoteOn {
             key: 60.into(),
             vel: 100.into(),
@@ -89,7 +89,7 @@ fn test_write_and_read_roundtrip() {
     let events = vec![
         SmfTimedEvent {
             time_beats: Beat(0.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             msg: SmfMessage::NoteOn {
                 key: 60.into(),
                 vel: 100.into(),
@@ -97,7 +97,7 @@ fn test_write_and_read_roundtrip() {
         },
         SmfTimedEvent {
             time_beats: Beat(1.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             msg: SmfMessage::NoteOff {
                 key: 60.into(),
                 vel: 0.into(),
@@ -132,7 +132,7 @@ fn test_write_and_read_roundtrip() {
 fn beat_to_tick_rounds_to_nearest() {
     let at = |beats: f64| SmfTimedEvent {
         time_beats: Beat(beats),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: SmfMessage::NoteOn {
             key: 60.into(),
             vel: 100.into(),
@@ -187,7 +187,7 @@ fn delta_time_varint_golden_bytes() {
     // to 480 — a one-byte difference in the file.
     let events = vec![SmfTimedEvent {
         time_beats: Beat(1.001_5),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: SmfMessage::NoteOn {
             key: 60.into(),
             vel: 100.into(),
@@ -234,7 +234,7 @@ fn tracks_pairs_note_on_off_with_duration() {
     let events = vec![
         SmfTimedEvent {
             time_beats: Beat(0.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             msg: SmfMessage::NoteOn {
                 key: 60.into(),
                 vel: 100.into(),
@@ -242,7 +242,7 @@ fn tracks_pairs_note_on_off_with_duration() {
         },
         SmfTimedEvent {
             time_beats: Beat(1.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             msg: SmfMessage::NoteOff {
                 key: 60.into(),
                 vel: 0.into(),
@@ -277,7 +277,7 @@ fn tracks_pair_notes_per_channel() {
     // and 2 — i.e. the wrong note gets the wrong length.
     let note = |time_beats: f64, channel: u8, on: bool| SmfTimedEvent {
         time_beats: Beat(time_beats),
-        channel,
+        channel: MidiChannel::new(channel),
         msg: if on {
             SmfMessage::NoteOn {
                 key: 60.into(),
@@ -311,12 +311,12 @@ fn tracks_pair_notes_per_channel() {
     let ch0 = parsed[0]
         .notes
         .iter()
-        .find(|n| n.channel == 0)
+        .find(|n| n.channel == MidiChannel::new(0))
         .expect("channel 0 note");
     let ch1 = parsed[0]
         .notes
         .iter()
-        .find(|n| n.channel == 1)
+        .find(|n| n.channel == MidiChannel::new(1))
         .expect("channel 1 note");
 
     assert!(
@@ -336,7 +336,7 @@ fn tracks_treats_velocity_zero_note_on_as_off() {
     let events = vec![
         SmfTimedEvent {
             time_beats: Beat(0.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             msg: SmfMessage::NoteOn {
                 key: 64.into(),
                 vel: 80.into(),
@@ -344,7 +344,7 @@ fn tracks_treats_velocity_zero_note_on_as_off() {
         },
         SmfTimedEvent {
             time_beats: Beat(2.0),
-            channel: 0,
+            channel: MidiChannel::FIRST,
             // Running-status note-off: NoteOn with velocity 0.
             msg: SmfMessage::NoteOn {
                 key: 64.into(),

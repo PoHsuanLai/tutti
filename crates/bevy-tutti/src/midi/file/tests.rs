@@ -32,7 +32,7 @@ fn smf_bytes() -> Vec<u8> {
         &[vec![
             SmfTimedEvent {
                 time_beats: Beat(0.0),
-                channel: 0,
+                channel: MidiChannel::FIRST,
                 msg: SmfMessage::NoteOn {
                     key: 60.into(),
                     vel: 100.into(),
@@ -40,7 +40,7 @@ fn smf_bytes() -> Vec<u8> {
             },
             SmfTimedEvent {
                 time_beats: Beat(1.0),
-                channel: 0,
+                channel: MidiChannel::FIRST,
                 msg: SmfMessage::NoteOff {
                     key: 60.into(),
                     vel: 0.into(),

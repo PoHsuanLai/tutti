@@ -30,12 +30,7 @@ fn test_create_ports() {
     assert_eq!(input_ports.len(), 1);
     let input_info = &input_ports[0];
     assert_eq!(input_info.name, "Test Input");
-    assert_eq!(input_info.port_type, PortType::Input);
     assert!(input_info.active);
-
-    // Output is not a port-manager concern: it has no backing store, so it
-    // always lists empty (outbound MIDI rides the mailbox → OutputThread).
-    assert!(manager.port_info(PortType::Output, input_id).is_none());
 }
 
 /// A multi-port sweep must not push either scratch buffer past its reserved
@@ -86,13 +81,13 @@ fn test_port_active_state() {
     let manager = Arc::new(HardwareMidiInputs::new(256));
 
     let port_id = manager.open_input_port("Test").port_id();
-    assert!(manager.is_port_active(PortType::Input, port_id));
+    assert!(manager.is_port_active(port_id));
 
-    manager.set_port_active(PortType::Input, port_id, false);
-    assert!(!manager.is_port_active(PortType::Input, port_id));
+    manager.set_port_active(port_id, false);
+    assert!(!manager.is_port_active(port_id));
 
-    manager.set_port_active(PortType::Input, port_id, true);
-    assert!(manager.is_port_active(PortType::Input, port_id));
+    manager.set_port_active(port_id, true);
+    assert!(manager.is_port_active(port_id));
 }
 
 /// A drained event is tagged with the port it came from.
@@ -134,7 +129,7 @@ fn test_inactive_ports_ignored() {
     let event = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 0x3C, 0x7F);
     assert!(producer_handle.push(event, now()));
 
-    manager.set_port_active(PortType::Input, input_id, false);
+    manager.set_port_active(input_id, false);
 
     let events = drain_cycle(&manager, 512);
     assert_eq!(events.len(), 0);
@@ -415,7 +410,7 @@ fn hot_plug_cycles_reuse_freed_slots() {
         !manager.remove_input_port(trailing_gone),
         "a removed port is gone"
     );
-    assert!(manager.port_info(PortType::Input, trailing_gone).is_none());
+    assert!(manager.port_info(trailing_gone).is_none());
 }
 
 /// A removed port, and the ring its producer no longer holds, are freed by
@@ -504,7 +499,7 @@ fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
         assert!(a.push(MidiEvent::noop(), now()));
         nested += drain_of(&manager).cycle_start_read_all_inputs(512, |_, _| nested_visits += 1);
         assert_eq!(manager.list_input_ports().len(), 2);
-        assert!(manager.set_port_active(PortType::Input, b.port_id(), true));
+        assert!(manager.set_port_active(b.port_id(), true));
         manager.set_sample_rate(48_000.0);
     });
 
@@ -540,14 +535,12 @@ fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
     assert_eq!(b_id.index(), a.index(), "B reuses A's slot");
     assert_ne!(b_id, a);
 
-    assert!(!manager.set_port_active(PortType::Input, a, false));
-    assert!(!manager.is_port_active(PortType::Input, a));
-    assert!(manager.port_info(PortType::Input, a).is_none());
+    assert!(!manager.set_port_active(a, false));
+    assert!(!manager.is_port_active(a));
+    assert!(manager.port_info(a).is_none());
     assert!(!manager.remove_input_port(a), "a stale id removes nothing");
 
-    let info = manager
-        .port_info(PortType::Input, b_id)
-        .expect("B is still there");
+    let info = manager.port_info(b_id).expect("B is still there");
     assert_eq!((info.name.as_str(), info.active), ("B", true));
     assert!(b.push(MidiEvent::noop(), now()));
     let events = drain_cycle(&manager, 512);

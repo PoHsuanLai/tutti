@@ -21,20 +21,6 @@ use tutti_core::{ArcLend, Reader, RtVec, SampleRate};
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
 
-/// Which direction a port carries.
-///
-/// Only [`Input`](PortType::Input) is backed by anything here — see
-/// [`HardwareMidiInputs::port_info`] for what `Output` does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortType {
-    /// A hardware source feeding this engine, backed by a ring.
-    Input,
-    /// A hardware destination. Not a port-manager concern: outbound MIDI rides
-    /// the engine mailbox to a [`MidiOut`](tutti_midi_types::MidiOut) sink, so
-    /// no ring exists and every query answers empty.
-    Output,
-}
-
 /// One port's identity: its slot in the manager, and which of the ports ever
 /// created there it is.
 ///
@@ -89,20 +75,16 @@ pub struct PortInfo {
     /// The endpoint name the port was created with — for an open connection,
     /// the name the OS reported for that device.
     pub name: String,
-    /// Which direction this port carries. Always
-    /// [`Input`](PortType::Input) in practice, since only inputs are backed.
-    pub port_type: PortType,
     /// Whether the drain reads this port. An inactive port keeps accepting
     /// pushes into its ring; they are simply never taken.
     pub active: bool,
 }
 
 impl PortInfo {
-    fn of(port: &HardwareMidiInput, port_type: PortType) -> Self {
+    fn of(port: &HardwareMidiInput) -> Self {
         Self {
             id: port.id(),
             name: port.name().to_string(),
-            port_type,
             active: port.is_active(),
         }
     }
@@ -179,7 +161,7 @@ fn read_inputs(
     nframes: usize,
     buffer_start: Instant,
 ) -> usize {
-    let nframes_u32 = nframes as u32;
+    let nframes_u32 = u32::try_from(nframes).unwrap_or(u32::MAX);
     let frame_offset = |arrival: Instant| {
         let delta = buffer_start.saturating_duration_since(arrival);
         let samples_ago = (delta.as_secs_f64() * sample_rate.get()) as u32;
@@ -413,20 +395,9 @@ impl HardwareMidiInputs {
         self.input_ports.current()
     }
 
-    /// The port set for `port_type`. Only [`PortType::Input`] is backed by an
-    /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox to a
-    /// `MidiOut` sink, not a port ring — so `Output` returns `None` (lists as
-    /// empty / no-op).
-    fn ports_of(&self, port_type: PortType) -> Option<Arc<PortSlots>> {
-        match port_type {
-            PortType::Input => Some(self.published_slots()),
-            PortType::Output => None,
-        }
-    }
-
     /// The live port `id` names, if any: a stale id names none.
-    fn port(&self, port_type: PortType, id: PortId) -> Option<Arc<HardwareMidiInput>> {
-        self.ports_of(port_type)?
+    fn port(&self, id: PortId) -> Option<Arc<HardwareMidiInput>> {
+        self.published_slots()
             .get(id.index)
             .and_then(Option::clone)
             .filter(|port| port.id() == id)
@@ -434,26 +405,16 @@ impl HardwareMidiInputs {
 
     /// A snapshot of one port, or `None` when `id` names no live port.
     /// Control side, as every query here: see `published_slots`.
-    ///
-    /// Always `None` for [`PortType::Output`]: outputs are not backed here.
-    pub fn port_info(&self, port_type: PortType, id: PortId) -> Option<PortInfo> {
-        self.port(port_type, id)
-            .map(|port| PortInfo::of(&port, port_type))
+    pub fn port_info(&self, id: PortId) -> Option<PortInfo> {
+        self.port(id).map(|port| PortInfo::of(&port))
     }
 
     /// Every input port, in slot order. Allocates — control thread only.
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
-        self.list_ports(PortType::Input)
-    }
-
-    fn list_ports(&self, port_type: PortType) -> Vec<PortInfo> {
-        let Some(ports) = self.ports_of(port_type) else {
-            return Vec::new();
-        };
-        ports
+        self.published_slots()
             .iter()
             .flatten()
-            .map(|port| PortInfo::of(port, port_type))
+            .map(|port| PortInfo::of(port))
             .collect()
     }
 
@@ -465,14 +426,13 @@ impl HardwareMidiInputs {
     }
 
     /// Sets whether the drain reads the port `id` names. Returns `false`, and
-    /// changes nothing, when `id` names no live port (always so for
-    /// [`PortType::Output`]).
+    /// changes nothing, when `id` names no live port.
     ///
     /// Deactivating does not drain or clear the ring: a driver keeps pushing and
     /// the events sit there until the port is active again, so a long pause is
     /// followed by a burst rather than by silence.
-    pub fn set_port_active(&self, port_type: PortType, id: PortId, active: bool) -> bool {
-        match self.port(port_type, id) {
+    pub fn set_port_active(&self, id: PortId, active: bool) -> bool {
+        match self.port(id) {
             Some(port) => {
                 port.set_active(active);
                 true
@@ -481,11 +441,9 @@ impl HardwareMidiInputs {
         }
     }
 
-    /// Whether the drain currently reads the port `id` names. `false` for a
-    /// stale id and for every [`PortType::Output`] query.
-    pub fn is_port_active(&self, port_type: PortType, id: PortId) -> bool {
-        self.port(port_type, id)
-            .is_some_and(|port| port.is_active())
+    /// Whether the drain currently reads the port `id` names. `false` for a stale id.
+    pub fn is_port_active(&self, id: PortId) -> bool {
+        self.port(id).is_some_and(|port| port.is_active())
     }
 }
 

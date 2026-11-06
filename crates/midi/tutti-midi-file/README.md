@@ -35,11 +35,12 @@ what lets an imported clip be placed without a conversion step:
 
 ```rust
 use tutti_core::{Beat, BeatDuration, Bpm};
+use tutti_midi_types::MidiChannel;
 use tutti_midi_file::{
     smf, MidiFileKind, MidiWriteConfig, SmfFile, SmfMessage, SmfTimedEvent,
 };
 
-let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: 0, msg };
+let note = |beat, msg| SmfTimedEvent { time_beats: Beat(beat), channel: MidiChannel::FIRST, msg };
 let track = vec![
     note(0.0, SmfMessage::NoteOn { key: 60.into(), vel: 100.into() }),
     note(1.5, SmfMessage::NoteOff { key: 60.into(), vel: 0.into() }),
@@ -71,9 +72,10 @@ lost after the wire).
 ```rust
 # use tutti_midi_file::{smf, MidiWriteConfig, ParsedMidiFile, SmfMessage, SmfTimedEvent};
 # use tutti_core::{Beat, Bpm};
+# use tutti_midi_types::MidiChannel;
 # let track = vec![SmfTimedEvent {
 #     time_beats: Beat(0.0),
-#     channel: 0,
+#     channel: MidiChannel::FIRST,
 #     msg: SmfMessage::NoteOn { key: 60.into(), vel: 100.into() },
 # }];
 let bytes = smf::to_bytes(

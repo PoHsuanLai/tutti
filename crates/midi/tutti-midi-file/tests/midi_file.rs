@@ -31,7 +31,7 @@ fn smf_bytes() -> Vec<u8> {
         &[vec![
             SmfTimedEvent {
                 time_beats: Beat(0.0),
-                channel: 0,
+                channel: MidiChannel::FIRST,
                 msg: SmfMessage::NoteOn {
                     key: 60.into(),
                     vel: 100.into(),
@@ -39,7 +39,7 @@ fn smf_bytes() -> Vec<u8> {
             },
             SmfTimedEvent {
                 time_beats: Beat(1.0),
-                channel: 0,
+                channel: MidiChannel::FIRST,
                 msg: SmfMessage::NoteOff {
                     key: 60.into(),
                     vel: 0.into(),
@@ -423,7 +423,7 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
 fn a_nan_beat_is_an_smf_encode_error() {
     let note = |beat: f64, key: u8| SmfTimedEvent {
         time_beats: Beat(beat),
-        channel: 0,
+        channel: MidiChannel::FIRST,
         msg: SmfMessage::NoteOn {
             key: key.into(),
             vel: 100.into(),

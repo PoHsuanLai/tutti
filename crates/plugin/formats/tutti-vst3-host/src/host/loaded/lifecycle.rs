@@ -13,7 +13,7 @@ impl Vst3Loaded {
     /// SDK allows those queries (`getBusCount`, `canProcessSampleSize`) only on
     /// an initialized component, so the result carries none, no MIDI and
     /// 32-bit only, whatever the plugin has. A loaded instance's
-    /// [`info`](Self::info) is the answer for them.
+    /// [`info`](tutti_plugin_types::Control::info) is the answer for them.
     ///
     /// # Errors
     ///
@@ -23,7 +23,7 @@ impl Vst3Loaded {
     pub fn probe(path: impl AsRef<Path>) -> Result<PluginInfo> {
         let path = path.as_ref();
         check_exists(path)?;
-        let library = Vst3Library::load(path)?;
+        let library = Library::load(path)?;
         ensure_has_classes(&library, path)?;
 
         let class = find_audio_class(&library, path)?;
@@ -55,7 +55,7 @@ impl Vst3Loaded {
         let path = path.as_ref();
         let class_name = options.class.as_deref();
         check_exists(path)?;
-        let library = Vst3Library::load(path)?;
+        let library = Library::load(path)?;
         ensure_has_classes(&library, path)?;
 
         let class = match class_name {
@@ -69,7 +69,7 @@ impl Vst3Loaded {
                 CreateError::NoAudioProcessor => Vst3Error::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Instantiation,
-                    reason: "VST3 plugin does not support IAudioProcessor".to_string(),
+                    cause: LoadCause::NoAudioProcessor,
                 },
                 CreateError::Create(e) => Vst3Error::PluginError {
                     stage: LoadStage::Instantiation,
@@ -96,7 +96,7 @@ impl Vst3Loaded {
     /// Builds `Self` from an already-created plugin. No side effects — the
     /// caller runs [`initialize`](Self::initialize).
     pub(super) fn assemble(
-        library: Arc<Vst3Library>,
+        library: Arc<Library>,
         plugin: Plugin,
         info: PluginInfo,
         origin: LoadOrigin,
@@ -339,7 +339,7 @@ impl Vst3Loaded {
     /// `setActive(0)` has not.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.active
+        self.active.is_active()
     }
 
     /// Re-queries the `IMidiMapping` CC to parameter table from the controller
@@ -364,7 +364,7 @@ pub(super) fn check_exists(path: &Path) -> Result<()> {
         return Err(Vst3Error::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Scanning,
-            reason: "Plugin file not found".to_string(),
+            cause: LoadCause::FileNotFound,
         });
     }
     Ok(())
@@ -373,10 +373,8 @@ pub(super) fn check_exists(path: &Path) -> Result<()> {
 /// One factory class — the handful of fields that must stay together when
 /// walking the `IPluginFactory`. Returned by [`find_audio_class`].
 pub(in crate::host) struct AudioClass {
-    /// Steinberg-signed class id, used for `IPluginFactory::createInstance`.
+    /// The class id, as `IPluginFactory::createInstance` takes it.
     pub cid: [i8; 16],
-    /// Unsigned byte form of the cid — used for human-readable IDs only.
-    pub cid_bytes: [u8; 16],
     /// Display name from `PClassInfo::name`.
     pub name: String,
     /// Per-class vendor, when declared. `None` falls back to the factory's.
@@ -388,12 +386,12 @@ pub(in crate::host) struct AudioClass {
     pub sub_categories: Option<String>,
 }
 
-pub(super) fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
+pub(super) fn ensure_has_classes(library: &Library, path: &Path) -> Result<()> {
     if library.count_classes() == 0 {
         return Err(Vst3Error::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Factory,
-            reason: "VST3 factory contains no classes".to_string(),
+            cause: LoadCause::NoClasses,
         });
     }
     Ok(())
@@ -407,7 +405,7 @@ pub(super) fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<(
 /// empty defaults: the SDK allows those queries only on an initialized
 /// component. `probe` never initializes, and the load path reads them after
 /// `initialize` (`Vst3Loaded::reconcile_bus_counts`).
-pub(super) fn build_plugin_info_raw(library: &Vst3Library, class: &AudioClass) -> PluginInfo {
+pub(super) fn build_plugin_info_raw(library: &Library, class: &AudioClass) -> PluginInfo {
     // The class's own vendor wins over the factory's: `ipluginbase.h:357`
     // documents the field as "overwrite vendor information from factory info".
     // They differ on distributor-published bundles, where the factory names the
@@ -425,7 +423,7 @@ pub(super) fn build_plugin_info_raw(library: &Vst3Library, class: &AudioClass) -
     let version = class.version.clone().unwrap_or_else(|| "1.0.0".to_string());
 
     PluginInfo::new(
-        format!("vst3.{}", cid_to_string(&class.cid_bytes)),
+        format!("vst3.{}", cid_to_string(&class.cid.map(|b| b as u8))),
         class.name.clone(),
     )
     .vendor(vendor)
@@ -440,7 +438,7 @@ pub(super) fn build_plugin_info_raw(library: &Vst3Library, class: &AudioClass) -
 
 /// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
 pub(super) fn find_audio_class_named(
-    library: &Vst3Library,
+    library: &Library,
     path: &Path,
     wanted: &str,
 ) -> Result<AudioClass> {
@@ -454,7 +452,6 @@ pub(super) fn find_audio_class_named(
         .find(|info| info.name == wanted)
         .map(|info| AudioClass {
             cid: info.cid,
-            cid_bytes: info.cid_bytes,
             name: info.name.clone(),
             vendor: info.vendor.clone(),
             version: info.version.clone(),
@@ -463,14 +460,14 @@ pub(super) fn find_audio_class_named(
         .ok_or_else(|| Vst3Error::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Factory,
-            reason: format!(
-                "no audio class named {wanted:?}; this bundle exports {:?}",
-                audio.iter().map(|i| &i.name).collect::<Vec<_>>()
-            ),
+            cause: LoadCause::ClassNotFound {
+                wanted: wanted.to_string(),
+                offered: audio.iter().map(|i| i.name.clone()).collect(),
+            },
         })
 }
 
-pub(super) fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
+pub(super) fn find_audio_class(library: &Library, path: &Path) -> Result<AudioClass> {
     let count = library.count_classes();
     (0..count)
         .find_map(|i| {
@@ -480,7 +477,6 @@ pub(super) fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<Aud
             }
             Some(AudioClass {
                 cid: info.cid,
-                cid_bytes: info.cid_bytes,
                 name: info.name,
                 vendor: info.vendor,
                 version: info.version,
@@ -490,6 +486,6 @@ pub(super) fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<Aud
         .ok_or_else(|| Vst3Error::LoadFailed {
             path: path.to_path_buf(),
             stage: LoadStage::Factory,
-            reason: "No audio processor classes found in VST3".to_string(),
+            cause: LoadCause::NoAudioClass,
         })
 }

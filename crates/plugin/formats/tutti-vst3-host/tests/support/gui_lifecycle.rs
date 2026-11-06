@@ -30,7 +30,7 @@
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 
-use tutti_vst3_host::{ContentScale, EditorSize, WindowHandle};
+use tutti_vst3_host::{ContentScale, EditorSize, KeyEvent, WindowHandle};
 
 #[path = "active.rs"]
 mod active;
@@ -743,7 +743,7 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     // Before the editor exists every forwarder must decline rather than reach
     // through a `None` view.
     assert!(
-        !inst.send_key_down('a' as u16, 0, 0),
+        !inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed(),
         "a key was reported consumed with no editor open"
     );
     assert!(
@@ -761,11 +761,11 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     // entitled to ignore every key that follows.
     inst.set_editor_focus(true);
 
-    let consumed_char = inst.send_key_down('a' as u16, 0, 0);
-    let _ = inst.send_key_up('a' as u16, 0, 0);
+    let consumed_char = inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed();
+    let _ = inst.send_key_up(KeyEvent::character('a' as u16));
     // A non-character keystroke: virtual key set, character zero. VKEY_LEFT.
-    let consumed_arrow = inst.send_key_down(0, 11, 0);
-    let _ = inst.send_key_up(0, 11, 0);
+    let consumed_arrow = inst.send_key_down(KeyEvent::virtual_key(11)).is_consumed();
+    let _ = inst.send_key_up(KeyEvent::virtual_key(11));
     let consumed_wheel = inst.send_wheel(1.0);
     let _ = inst.send_wheel(-1.0);
 
@@ -789,7 +789,7 @@ fn editor_accepts_keyboard_wheel_and_focus() {
 
     // And the forwarders decline again once it is gone.
     assert!(
-        !inst.send_key_down('a' as u16, 0, 0),
+        !inst.send_key_down(KeyEvent::character('a' as u16)).is_consumed(),
         "a key was reported consumed after the editor closed"
     );
 }

@@ -1,4 +1,4 @@
-//! Plugin lifecycle types: [`Vst3Library`] (loaded DSO + factory),
+//! Plugin lifecycle types: [`Library`] (loaded DSO + factory),
 //! [`Vst3Loaded`] (initialized plugin, no audio), and the two halves an
 //! activation splits it into, [`Vst3Processor`] (renders blocks) and
 //! [`Vst3Controller`] (everything else). The stages are distinct types and the
@@ -32,9 +32,9 @@ mod speakers;
 
 pub use control::descriptor_of;
 pub use controller::Vst3Controller;
-pub use library::{ClassInfo, FactoryInfo, Vst3Library, factory_flags};
+pub use library::{ClassInfo, FactoryInfo, Library, factory_flags};
 pub use loaded::{LoadOptions, RestartOutcome, Vst3Loaded};
-pub use processor::{ProcessFailed, Vst3Processor, Vst3ProcessorAny};
+pub use processor::{ProcessFailed, ProcessorAny, Vst3Processor};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are
 /// reached in production only through `open_editor`/`close_editor`, which need
@@ -54,35 +54,12 @@ use crate::helpers::sdk_enum_i32;
 
 /// Whether this host activates a bus at load, given its `busType` and `flags`.
 ///
-/// **`kMain` unconditionally; `kAux` only when it asks.** The two halves are
-/// decided by different arguments.
-///
-/// A main bus is the plugin's actual signal path, so a host that skipped one
-/// would render silence. The flag is not trustworthy enough to gate that:
-/// `ivstcomponent.h:54-55` calls it *"only a wish, the host is allow to not
-/// follow it"*, and a plugin that simply forgot to set it on its main output
-/// is a real and unremarkable bug. Steinberg's own VST2/AU wrapper reaches the
-/// same conclusion from the other direction — `basewrapper.cpp:1061-1085`
-/// activates every `kMain` without consulting the flag at all.
-///
-/// An aux bus is where the flag carries information. Sidechains and extra stem
-/// outputs are exactly what a plugin declares but does not expect fed by
-/// default, and host-checker's ten unflagged aux inputs are the shape: a host
-/// that activates them all must then stage ten silent buses every block.
-///
-/// This is a preference, not conformance. Activating everything was legal —
-/// the SDK's own validator *requires* an unflagged bus to be activatable
-/// (`busactivation.cpp:66-71` fails a plugin that refuses). What this policy
-/// does is stop overriding a signal the plugin took the trouble to send.
-///
-/// # Why not the strict reading
-///
-/// Honouring the flag on main buses too is what `auwrapper.mm:553` does behind
-/// `SMTG_AUWRAPPER_ACTIVATE_ONLY_DEFAULT_ACTIVE_BUSES`, and its own CMake note
-/// says why it is off by default: *"This may not work on some hosts because
-/// they never activate a bus later."* That is this host today — there is no
-/// public per-bus activation API, so a bus skipped here is unreachable for the
-/// lifetime of the instance rather than merely inactive.
+/// A `kMain` bus is always activated: it is the signal path, and
+/// `kDefaultActive` is only a wish the host may ignore (`ivstcomponent.h:54`).
+/// An aux bus is activated only when it sets `kDefaultActive`: sidechains and
+/// extra stem outputs are what a plugin declares but does not expect fed by
+/// default. No per-bus activation API exists, so a bus skipped here stays
+/// inactive for the life of the instance.
 pub(super) fn wants_activation(bus_type: i32, flags: u32) -> bool {
     bus_type == K_MAIN || (flags & BUS_DEFAULT_ACTIVE) != 0
 }

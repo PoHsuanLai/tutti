@@ -18,7 +18,7 @@ use tutti_plugin_types::{
     Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
     Samples, Stage, State,
 };
-use tutti_vst3_host::{LoadOptions, Vst3Loaded, Vst3ProcessorAny};
+use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
 use crate::loaders::common::Meta;
 use crate::plugin::AsyncEvent;
@@ -29,7 +29,7 @@ pub use tutti_vst3_host;
 pub struct Vst3Instance {
     lifecycle: Lifecycle<Vst3Loaded>,
     state: State,
-    hand: Hand<Vst3ProcessorAny>,
+    hand: Hand<ProcessorAny>,
     meta: Meta,
     /// What the plugin asked of the host since the last pass, reused.
     requests: Vec<Request>,
@@ -42,14 +42,10 @@ pub struct Vst3Instance {
 /// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
 fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
     match e {
-        tutti_vst3_host::Vst3Error::LoadFailed {
+        tutti_vst3_host::Vst3Error::LoadFailed { path, stage, cause } => BridgeError::LoadFailed {
             path,
             stage,
-            reason,
-        } => BridgeError::LoadFailed {
-            path,
-            stage,
-            reason,
+            reason: cause.to_string(),
         },
         tutti_vst3_host::Vst3Error::PluginError { stage, code } => {
             BridgeError::PluginError { stage, code }
@@ -1038,12 +1034,9 @@ mod tests {
             .program_change_parameter(*list_id)
             .expect("the list has a program-change parameter");
         assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = Control::parameter(
-            instance.vst3_loaded(),
-            tutti_plugin_types::ParamId::new(param_id),
-        )
-        .expect("the plugin has a controller")
-        .get();
+        let raw = Control::parameter(instance.vst3_loaded(), param_id)
+            .expect("the plugin has a controller")
+            .get();
         let expected = f64::from(*index) / f64::from(step_count);
         assert!(
             (raw - expected).abs() < 1e-9,

@@ -15,7 +15,7 @@ use super::{
 /// Borrowed bundle of every input event stream staged into a VST3 plugin's event
 /// list for one block: MIDI plus the five per-note-expressive families.
 #[derive(Clone, Copy, Default, Debug)]
-pub struct Vst3InputEvents<'a> {
+pub struct InputEvents<'a> {
     /// UMP MIDI for the block, in ascending frame-offset order.
     pub midi: &'a [MidiEvent],
     /// Continuous per-note expression values, addressed by note id.
@@ -32,7 +32,7 @@ pub struct Vst3InputEvents<'a> {
     pub expr_ints: &'a [NoteExpressionIntValue],
 }
 
-impl Vst3InputEvents<'_> {
+impl InputEvents<'_> {
     /// True when no stream carries an event this block, so staging can be
     /// skipped entirely.
     #[must_use]
@@ -46,7 +46,7 @@ impl Vst3InputEvents<'_> {
     }
 }
 
-/// Fills a plugin's input [`EventList`] from [`Vst3InputEvents`], keeping the
+/// Fills a plugin's input [`EventList`] from [`InputEvents`], keeping the
 /// MIDI stream's per-note bend ranges across blocks.
 #[derive(Debug, Default)]
 pub struct Stager {
@@ -65,7 +65,7 @@ impl Stager {
     /// after the room check, so a dropped event spends none of it. Events end up
     /// in frame order, stably: on one frame they keep the order of the sources
     /// above and each source's own. Never allocates.
-    pub fn stage(&mut self, list: &EventList, src: &Vst3InputEvents<'_>) {
+    pub fn stage(&mut self, list: &EventList, src: &InputEvents<'_>) {
         let mut stage = list.begin();
         // In frame order, so a per-note bend sensitivity applies to the bends after it.
         for event in src.midi {

@@ -17,7 +17,10 @@ use super::loaded::Vst3Loaded;
 /// A `Vst3Error` as the shared vocabulary's error.
 pub(super) fn plugin_error(error: Vst3Error) -> PluginError {
     match error {
-        Vst3Error::LoadFailed { stage, reason, .. } => PluginError::Load { stage, reason },
+        Vst3Error::LoadFailed { stage, cause, .. } => PluginError::Load {
+            stage,
+            reason: cause.to_string(),
+        },
         Vst3Error::PluginError { stage, code } => PluginError::Load {
             stage,
             reason: format!("the plugin returned code {code}"),
@@ -74,7 +77,7 @@ impl Vst3Loaded {
         let mut features = Features::empty();
         // 64-bit only while activated as such: the session's format and the
         // activation agree.
-        features.set(Features::F64_AUDIO, self.active.f64);
+        features.set(Features::F64_AUDIO, self.active.is_f64());
         features.set(Features::MIDI_IN, self.info.has_midi_input);
         features.set(Features::MIDI_OUT, self.info.has_midi_output);
         features.set(Features::EDITOR, has_editor);
@@ -116,19 +119,12 @@ impl Vst3Loaded {
     /// from. Matching on the *flag* rather than on a name or position is what
     /// makes this work for a plugin with several lists.
     ///
-    /// **The flag check is uncovered, measured rather than assumed.** Dropping
-    /// `is_program_change()` and taking the unit's first parameter leaves every
-    /// test green: the SDK's `multiple_programchanges` sample gives each unit
-    /// exactly one parameter, so the two rules coincide. The fixture that would
-    /// separate them is `mda-vst3`, whose controllers add a Bypass parameter to
-    /// the same root unit *before* the preset one, but its shell exposes the
-    /// base controller (dangling `programListId`, zero published lists) and
-    /// `load` cannot re-open the bundle while the first load holds it. So no
-    /// available input distinguishes the two. The flag is correct per
-    /// `vsteditcontroller.cpp:604`; it is the test that is missing, not the
-    /// rule.
+    /// The flag is `kIsProgramChange` (`vsteditcontroller.cpp:604`), not the
+    /// unit's first parameter: a unit may carry a bypass parameter before the
+    /// preset one. No available fixture separates the two rules, so the flag
+    /// check is not covered by a test.
     #[must_use]
-    pub fn program_change_parameter(&self, list_id: i32) -> Option<(u32, i32)> {
+    pub fn program_change_parameter(&self, list_id: i32) -> Option<(ParamId, i32)> {
         let owning_unit = self
             .units()
             .into_iter()
@@ -139,11 +135,11 @@ impl Vst3Loaded {
     /// The program-change parameter belonging to `owning_unit`: the half of
     /// [`program_change_parameter`](Self::program_change_parameter) that does
     /// not walk the unit tree, for a caller that already holds the unit.
-    fn program_change_parameter_of(&self, owning_unit: i32) -> Option<(u32, i32)> {
+    fn program_change_parameter_of(&self, owning_unit: i32) -> Option<(ParamId, i32)> {
         (0..self.parameter_count()).find_map(|i| {
-            let info = self.parameter_info(i)?;
+            let info = self.parameter_info_at(i)?;
             (info.is_program_change() && info.unit_id == owning_unit)
-                .then_some((info.id, info.step_count))
+                .then_some((ParamId::new(info.id), info.step_count))
         })
     }
 
@@ -172,7 +168,7 @@ impl Vst3Loaded {
             return None;
         }
         Some((
-            ParamId::new(param_id),
+            param_id,
             Normalized::new(f64::from(*index) / f64::from(step_count)),
         ))
     }
@@ -195,7 +191,7 @@ impl Control for Vst3Loaded {
     /// (`getLatencySamples` is `[UI-thread & Setup Done]`, read after
     /// `setActive(1)`); a loaded plugin reports none.
     fn wiring(&self) -> LoadedPlugin {
-        let latency_samples = if self.active.active {
+        let latency_samples = if self.active.is_active() {
             Samples(self.latency_samples() as usize)
         } else {
             Samples(0)
@@ -322,7 +318,7 @@ impl Control for Vst3Loaded {
         if step_count <= 0 {
             return None;
         }
-        let normalized = self.parameter(ParamId::new(param_id))?.get();
+        let normalized = self.parameter(param_id)?.get();
         // Inverse of the write: `FromNormalized` is `value * stepCount`, then
         // rounded; the parameter is a discrete list, so a value between two
         // steps belongs to the nearer one.
@@ -340,7 +336,7 @@ impl Control for Vst3Loaded {
         // Encoded onto the `IAutomationState` bitmask here, at the VST3 edge,
         // by the crate's own SDK-backed conversion; a no-op if the plugin does
         // not implement the interface.
-        self.apply_automation_state(crate::automation_state::from_mode(mode));
+        self.apply_automation_state(mode);
     }
 
     /// Nothing is cached: parameters are read live from the controller.

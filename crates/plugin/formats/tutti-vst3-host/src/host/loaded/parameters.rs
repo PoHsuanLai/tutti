@@ -1,71 +1,40 @@
 //! The parameter tree and the controller's optional interfaces: note expression, keyswitches, remaps, representations.
 
 use super::*;
+use crate::types::PlainRange;
+use tutti_plugin_types::AutomationMode;
 
 impl Vst3Loaded {
-    // ── Parameters: ParamID vs index ──────────────────────────────────────────
-    //
-    // `IEditController` uses TWO different address spaces and conflating them
-    // is silent — you get a plausible `f64` for the wrong parameter:
-    //
-    // - `getParameterInfo(int32 paramIndex, ..)` is addressed by **index**,
-    //   `0 .. getParameterCount()`, and yields the `ParameterInfo` whose `.id`
-    //   is the ParamID.
-    // - `getParamNormalized(ParamID)` / `setParamNormalized(ParamID, ..)` are
-    //   addressed by **ParamID**, an opaque plugin-chosen `uint32`. It is not
-    //   an index and is under no obligation to be small, dense, or ordered —
-    //   plenty of plugins derive it from a hash of the parameter name.
-    //
-    // The methods below are therefore named and documented for the space they
-    // actually take, and the `*_by_index` pair resolves `index → ParamID`
-    // through `getParameterInfo` instead of passing an index straight into a
-    // ParamID slot (which reads whichever parameter happens to own that numeric
-    // id, or nothing at all).
+    // VST3 enumerates parameters by index (`getParameterInfo`) and addresses
+    // them by ParamID, an opaque plugin-chosen `uint32`. Only the enumeration
+    // below touches indices; everything else takes a `ParamId`.
 
-    /// Number of automatable parameters exposed by the edit controller — the
-    /// exclusive upper bound of the **index** space.
-    /// Returns `0` if the plugin has no controller.
+    /// How many parameters the edit controller reports; `0` without one.
     pub fn parameter_count(&self) -> u32 {
         self.plugin.parameter_count()
     }
 
-    /// The **ParamID** of the parameter at `index` in `0 .. parameter_count()`.
-    /// `None` when the index is out of range or the plugin has no controller.
-    ///
-    /// This is the bridge between the two address spaces: anything iterating
-    /// `0..parameter_count()` must go through it (or
-    /// [`parameter_info`](Self::parameter_info)) before calling
-    /// [`Control::parameter`] / [`Control::set_parameter`].
-    pub fn parameter_id_at(&self, index: u32) -> Option<u32> {
-        self.parameter_info(index).map(|info| info.id)
+    /// The id of every parameter, in the plugin's own order. Empty without an
+    /// edit controller.
+    pub fn parameter_ids(&self) -> Vec<ParamId> {
+        (0..self.parameter_count())
+            .filter_map(|i| self.plugin.parameter_info(i))
+            .map(|info| ParamId::new(info.id))
+            .collect()
     }
 
-    /// Reads the normalized value of the parameter at **index**, resolving the
-    /// index to its ParamID first. `None` if the index is out of range or the
-    /// plugin has no controller.
-    pub fn parameter_by_index(&self, index: u32) -> Option<f64> {
-        let id = ParamId::new(self.parameter_id_at(index)?);
-        Control::parameter(self, id).map(Normalized::get)
+    /// The descriptor of parameter `id`; `None` if the plugin has no such
+    /// parameter or no controller. Walks the list, so prefer
+    /// [`parameter_list`](Self::parameter_list) for more than one. Each call is
+    /// an O(n) walk of FFI calls into the plugin.
+    pub fn parameter_info(&self, id: ParamId) -> Option<Vst3ParameterInfo> {
+        (0..self.parameter_count())
+            .filter_map(|i| self.plugin.parameter_info(i))
+            .find(|info| info.id == id.get())
     }
 
-    /// Writes a normalized `value` to the parameter at **index**, resolving the
-    /// index to its ParamID first. Returns `false` when the index is out of
-    /// range or the plugin has no controller (nothing was written).
-    pub fn set_parameter_by_index(&mut self, index: u32, value: f64) -> bool {
-        match self.parameter_id_at(index) {
-            Some(id) => {
-                Control::set_parameter(self, ParamId::new(id), Normalized::new(value));
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Descriptor for the parameter at **index** (title, units, flags, default,
-    /// and `id` — the ParamID to address it by).
-    /// Returns `None` if the index is out of range or the plugin has no
-    /// controller.
-    pub fn parameter_info(&self, index: u32) -> Option<Vst3ParameterInfo> {
+    /// The descriptor at list position `index`, for the walks that enumerate.
+    pub(in crate::host) fn parameter_info_at(&self, index: u32) -> Option<Vst3ParameterInfo> {
         self.plugin.parameter_info(index)
     }
 
@@ -73,11 +42,8 @@ impl Vst3Loaded {
     /// [`tutti_plugin_types::ParameterInfo`] — the boundary vocabulary every
     /// host crate speaks.
     ///
-    /// This is the single VST3 `narrow -> shared` mapping. VST3 addresses
-    /// parameters by an opaque `ParamID` but *enumerates* them by index, so
-    /// this walks `0 .. parameter_count()` and carries each descriptor's own
-    /// `id` into the entry's [`ParamId`] — index `n` is not id `n`, and a
-    /// caller must address through the entry rather than its position.
+    /// Each entry carries its descriptor's own `id`; a list position is not an
+    /// id, so address a parameter through the entry.
     ///
     /// The unit tree is read **once**, not once per parameter: `units()` is a
     /// round trip into the plugin per unit, and a parameter list is the one
@@ -92,8 +58,8 @@ impl Vst3Loaded {
 
         (0..self.parameter_count())
             .filter_map(|i| {
-                let info = self.parameter_info(i)?;
-                let plain = self.parameter_plain_range(info.id);
+                let info = self.parameter_info_at(i)?;
+                let plain = self.parameter_plain_range(ParamId::new(info.id));
                 Some(build_param_info(info, plain, &groups))
             })
             .collect()
@@ -120,8 +86,8 @@ impl Vst3Loaded {
     ///
     /// Must run on the main thread with the controller connected, per the SDK's
     /// `[UI-thread & Connected]` annotation on the method.
-    pub fn parameter_plain_range(&self, id: u32) -> Option<(f64, f64)> {
-        let at = |n: f64| self.plugin.normalized_to_plain(id, n);
+    pub fn parameter_plain_range(&self, id: ParamId) -> Option<PlainRange> {
+        let at = |n: f64| self.plugin.normalized_to_plain(id.get(), n);
 
         let (lo, mid, hi) = (at(0.0)?, at(0.5)?, at(1.0)?);
         if !lo.is_finite() || !mid.is_finite() || !hi.is_finite() {
@@ -131,7 +97,10 @@ impl Vst3Loaded {
         // contradicts them is not a mappable range. Inclusive because a
         // legitimately constant parameter probes flat.
         let monotonic = (lo <= mid && mid <= hi) || (hi <= mid && mid <= lo);
-        monotonic.then_some(if lo <= hi { (lo, hi) } else { (hi, lo) })
+        monotonic.then_some(PlainRange {
+            min: lo.min(hi),
+            max: lo.max(hi),
+        })
     }
 
     /// Number of per-note expression types the plugin supports on the given
@@ -147,40 +116,30 @@ impl Vst3Loaded {
         self.plugin.note_expression_count(bus_index, channel)
     }
 
-    /// Raw `IProcessContextRequirements::getProcessContextRequirements` bitmask
-    /// the plugin returned at load (see [`process_context_flags`]). `u32::MAX`
-    /// means the plugin doesn't implement the interface — treat as "wants
-    /// everything", matching the pre-interface unconditional behaviour.
+    /// The `IProcessContextRequirements::getProcessContextRequirements`
+    /// bitmask the plugin returned at load (see [`process_context_flags`]), or
+    /// `None` if it doesn't implement the interface, which a host treats as
+    /// "wants everything".
     ///
     /// [`process_context_flags`]: crate::types::process_context_flags
-    pub fn context_requirements(&self) -> u32 {
-        self.plugin.process_context_requirements()
+    pub fn context_requirements(&self) -> Option<u32> {
+        requirements(self.plugin.process_context_requirements())
     }
 
     /// `true` if the plugin asked for any transport field (tempo, playhead,
     /// bar, cycle, time-sig, or transport state). A plugin that implements
     /// `IProcessContextRequirements` and requests none of these does not want a
     /// transport snapshot each block; one that doesn't implement the interface
-    /// (`u32::MAX`) wants everything.
+    /// wants everything.
     pub fn wants_transport(&self) -> bool {
-        use crate::types::process_context_flags as f;
-        let req = self.plugin.process_context_requirements();
-        const TRANSPORT_BITS: u32 = f::NEED_TEMPO
-            | f::NEED_PROJECT_TIME_MUSIC
-            | f::NEED_BAR_POSITION_MUSIC
-            | f::NEED_CYCLE_MUSIC
-            | f::NEED_TIME_SIGNATURE
-            | f::NEED_TRANSPORT_STATE
-            | f::NEED_CONTINOUS_TIME_SAMPLES;
-        req & TRANSPORT_BITS != 0
+        wants_transport(self.context_requirements())
     }
 
     /// `true` if the plugin asked for the host-track chord field
     /// (`kNeedChord`) — the VST3 signal that it consumes sequencer context
     /// (chord / scale). Distinct from note-expression.
     pub fn wants_sequencer_context(&self) -> bool {
-        use crate::types::process_context_flags as f;
-        self.plugin.process_context_requirements() & f::NEED_CHORD != 0
+        wants_sequencer_context(self.context_requirements())
     }
 
     /// Descriptor for the note-expression type at `index` on the given event
@@ -240,11 +199,12 @@ impl Vst3Loaded {
     pub fn remap_param_id(
         &self,
         plugin_to_replace_uid: &[i8; 16],
-        old_param_id: u32,
-    ) -> Option<u32> {
+        old_param_id: ParamId,
+    ) -> Option<ParamId> {
         tutti_plugin_types::assert_main_thread();
         self.plugin
-            .compatible_param_id(plugin_to_replace_uid, old_param_id)
+            .compatible_param_id(plugin_to_replace_uid, old_param_id.get())
+            .map(ParamId::new)
     }
 
     /// Resolves a well-known parameter *function name* (the VST3 spec defines
@@ -259,10 +219,11 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
+    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<ParamId> {
         tutti_plugin_types::assert_main_thread();
         self.plugin
             .param_id_for_function_name(unit_id, function_name)
+            .map(ParamId::new)
     }
 
     /// Maps the plugin's physical UI controls to the note-expression dimensions
@@ -308,9 +269,7 @@ impl Vst3Loaded {
     }
 
     /// Tells the plugin the host's current automation read/write mode via
-    /// `IAutomationState`. `state` is one of the
-    /// [`automation_state`](crate::automation_state) constants
-    /// (`NONE` / `READ` / `WRITE` / `READ_WRITE`).
+    /// `IAutomationState`.
     ///
     /// Some plugins change behaviour during automation playback vs recording
     /// (e.g. snapping a knob to the automation lane while reading). No-op if the
@@ -321,10 +280,36 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn apply_automation_state(&mut self, state: i32) -> bool {
+    pub fn apply_automation_state(&mut self, mode: AutomationMode) -> bool {
         tutti_plugin_types::assert_main_thread();
-        self.plugin.set_automation_state(state)
+        self.plugin
+            .set_automation_state(tutti_vst3_ffi::automation_state::from_mode(mode))
     }
+}
+
+/// Whether `req` asks for any transport field; no interface wants everything.
+fn wants_transport(req: Option<u32>) -> bool {
+    use crate::types::process_context_flags as f;
+    const TRANSPORT_BITS: u32 = f::NEED_TEMPO
+        | f::NEED_PROJECT_TIME_MUSIC
+        | f::NEED_BAR_POSITION_MUSIC
+        | f::NEED_CYCLE_MUSIC
+        | f::NEED_TIME_SIGNATURE
+        | f::NEED_TRANSPORT_STATE
+        | f::NEED_CONTINOUS_TIME_SAMPLES;
+    req.is_none_or(|req| req & TRANSPORT_BITS != 0)
+}
+
+/// Whether `req` asks for the chord field; no interface wants everything.
+fn wants_sequencer_context(req: Option<u32>) -> bool {
+    use crate::types::process_context_flags as f;
+    req.is_none_or(|req| req & f::NEED_CHORD != 0)
+}
+
+/// `None` for the sentinel the FFI layer keeps for "interface not
+/// implemented".
+pub(crate) fn requirements(raw: u32) -> Option<u32> {
+    (raw != u32::MAX).then_some(raw)
 }
 
 /// Index a plugin's unit list by id, keeping only units that can name a group.
@@ -355,7 +340,7 @@ pub(super) fn unit_names(units: &[Vst3UnitInfo]) -> HashMap<i32, &str> {
 /// which is what the ABI alone reports.
 pub(super) fn build_param_info(
     info: Vst3ParameterInfo,
-    plain: Option<(f64, f64)>,
+    plain: Option<PlainRange>,
     groups: &HashMap<i32, &str>,
 ) -> ParameterInfo {
     // VST3 reports every one of these, so all six are known.
@@ -377,7 +362,7 @@ pub(super) fn build_param_info(
     // `defaultNormalizedValue` is normalized even when the range is plain, so
     // it goes through the same map as any other incoming value.
     let range = match plain {
-        Some((min, max)) => {
+        Some(PlainRange { min, max }) => {
             let r = ParamRange::Plain {
                 min,
                 max,
@@ -492,5 +477,41 @@ mod unit_group_tests {
         let units = [unit(1, "")];
         let groups = unit_names(&units);
         assert_eq!(groups.get(&1), None);
+    }
+}
+
+#[cfg(test)]
+mod requirements_tests {
+    use super::{requirements, wants_sequencer_context, wants_transport};
+    use crate::types::process_context_flags as f;
+
+    /// The FFI layer keeps `u32::MAX` for "interface not implemented"; every
+    /// other word, including `0` (implemented, asks for nothing), is a real
+    /// answer.
+    ///
+    /// Mutation (run): `!=` to `==` in `requirements` fails all three rows;
+    /// returning `Some(raw)` always fails the first.
+    #[test]
+    fn only_the_sentinel_means_no_interface() {
+        assert_eq!(requirements(u32::MAX), None);
+        assert_eq!(requirements(0), Some(0));
+        assert_eq!(requirements(f::NEED_TEMPO), Some(f::NEED_TEMPO));
+    }
+
+    /// A plugin without the interface wants every field; one that has it wants
+    /// exactly what it flags.
+    ///
+    /// Mutation (run): replacing `is_none_or` with `is_some_and` in the transport
+    /// predicate fails the `None` row; dropping `NEED_CHORD` from the
+    /// sequencer predicate (testing `req != 0`) fails the tempo-only row.
+    #[test]
+    fn no_interface_wants_everything() {
+        assert!(wants_transport(None));
+        assert!(wants_sequencer_context(None));
+        assert!(!wants_transport(Some(0)));
+        assert!(!wants_sequencer_context(Some(0)));
+        assert!(wants_transport(Some(f::NEED_TEMPO)));
+        assert!(!wants_sequencer_context(Some(f::NEED_TEMPO)));
+        assert!(wants_sequencer_context(Some(f::NEED_CHORD)));
     }
 }

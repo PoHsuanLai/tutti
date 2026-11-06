@@ -17,7 +17,7 @@ use crate::types::{ProcessMode, Vst3Sample};
 use super::control::plugin_error;
 use super::instance::Staged;
 use super::loaded::{Activation, Vst3Loaded};
-use super::processor::{EDIT_CAPACITY, ProcessorParts, Vst3Processor, Vst3ProcessorAny};
+use super::processor::{EDIT_CAPACITY, ProcessorAny, ProcessorParts, Vst3Processor};
 use super::shell::Shell;
 
 /// The main-thread half of an activation: the whole control surface of a
@@ -248,7 +248,7 @@ impl Control for Vst3Controller {
 
 impl Controller for Vst3Controller {
     type Loaded = Vst3Loaded;
-    type Processor = Vst3ProcessorAny;
+    type Processor = ProcessorAny;
 
     fn latency(&self) -> Samples {
         Samples(self.latency_samples() as usize)
@@ -264,7 +264,7 @@ impl Vst3Loaded {
     /// the realtime [`Vst3Processor<T>`] and the main-thread
     /// [`Vst3Controller`]. This is [`Loaded::activate`] for a user who fixes the
     /// sample type at compile time; the trait's version picks `T` from
-    /// [`Prepare::format`] and wraps the processor in [`Vst3ProcessorAny`].
+    /// [`Prepare::format`] and wraps the processor in [`ProcessorAny`].
     ///
     /// Runs `setBusArrangements`, `setupProcessing` (the render mode is
     /// [`Prepare::mode`]: VST3 delivers it here and nowhere else, so a change
@@ -327,7 +327,7 @@ impl Vst3Loaded {
                 ),
             });
         };
-        let context_requirements = loaded.plugin.process_context_requirements();
+        let context_requirements = loaded.context_requirements();
         let shell = Arc::new(Shell::new());
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
         let processor = Vst3Processor::new(ProcessorParts {
@@ -409,7 +409,7 @@ impl Vst3Loaded {
     /// processing by now (`rejoin` stops it, and sends `setProcessing(0)` only
     /// if it was on), so it is not told twice.
     fn deactivate_plugin(&mut self) {
-        if !self.active.active {
+        if !self.active.is_active() {
             return;
         }
         // A refusal of `setActive(0)` leaves nothing this host could act on:
@@ -435,36 +435,33 @@ fn latest_per_parameter(pending: Vec<(ParamId, Normalized)>) -> Vec<(ParamId, No
 }
 
 impl Loaded for Vst3Loaded {
-    type Processor = Vst3ProcessorAny;
+    type Processor = ProcessorAny;
     type Controller = Vst3Controller;
 
     /// VST3 restarts for latency and for the buses (`kIoChanged`).
     const RESTARTS: RestartRules = RestartRules::VST3;
 
-    fn activate(
-        self,
-        prepare: Prepare,
-    ) -> Result<(Vst3ProcessorAny, Vst3Controller), Refused<Self>> {
+    fn activate(self, prepare: Prepare) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>> {
         match prepare.format {
             SampleFormat::Float64 => self
                 .activate_typed::<f64>(prepare)
-                .map(|(p, c)| (Vst3ProcessorAny::F64(p), c)),
+                .map(|(p, c)| (ProcessorAny::F64(p), c)),
             _ => self
                 .activate_typed::<f32>(prepare)
-                .map(|(p, c)| (Vst3ProcessorAny::F32(p), c)),
+                .map(|(p, c)| (ProcessorAny::F32(p), c)),
         }
     }
 
     fn deactivate(
-        processor: Vst3ProcessorAny,
+        processor: ProcessorAny,
         controller: Vst3Controller,
-    ) -> Result<Self, Stuck<Vst3ProcessorAny, Vst3Controller>> {
+    ) -> Result<Self, Stuck<ProcessorAny, Vst3Controller>> {
         Self::rejoin(
             processor,
             controller,
             |p| p.shell(),
             Processor::stop,
-            Vst3ProcessorAny::take_edits,
+            ProcessorAny::take_edits,
         )
         .map_err(|(processor, controller, reason)| Stuck {
             processor,

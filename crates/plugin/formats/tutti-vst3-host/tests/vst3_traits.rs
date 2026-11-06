@@ -17,7 +17,7 @@ use tutti_plugin_types::{
     RescanScope, SampleFormat, SampleRate, Samples,
 };
 use tutti_vst3_host::host::conformance::plugin_restart_component;
-use tutti_vst3_host::{LoadOptions, Vst3Loaded, Vst3ProcessorAny};
+use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -116,7 +116,7 @@ fn id(raw: u32) -> ParamId {
 /// first sample of the first output channel. Three channels in and three out:
 /// the probe's buses are `[2, 1]` each way.
 fn render(
-    processor: &mut Vst3ProcessorAny,
+    processor: &mut ProcessorAny,
     format: SampleFormat,
     ctx: &ProcessContext<'_>,
 ) -> Result<f64, PluginError> {
@@ -154,7 +154,7 @@ fn render(
     }
 }
 
-fn render_f32(processor: &mut Vst3ProcessorAny) -> f64 {
+fn render_f32(processor: &mut ProcessorAny) -> f64 {
     render(processor, SampleFormat::Float32, &ProcessContext::new()).expect("a block renders")
 }
 
@@ -163,7 +163,7 @@ fn render_f32(processor: &mut Vst3ProcessorAny) -> f64 {
 /// of the other width is an error rather than a mis-cast.
 ///
 /// Mutation (run): `Loaded::activate` always taking the `f32` arm → the
-/// `is_f64` assertion in the second half fails; `Vst3ProcessorAny::render`
+/// `is_f64` assertion in the second half fails; `ProcessorAny::render`
 /// matching `(F64, F32)` to the `F32` arm → the mismatch is not an error.
 #[test]
 fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
@@ -350,7 +350,7 @@ impl Block {
     }
 
     /// One block through `processor`; builds nothing on the heap.
-    fn run(&mut self, processor: &mut Vst3ProcessorAny) -> Result<(), PluginError> {
+    fn run(&mut self, processor: &mut ProcessorAny) -> Result<(), PluginError> {
         let Self {
             input,
             outputs,

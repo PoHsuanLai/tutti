@@ -97,8 +97,8 @@ impl Vst3Loaded {
     /// Which unit a given bus channel belongs to, or `None` if the plugin
     /// doesn't implement `IUnitInfo` or maps nothing to that channel.
     ///
-    /// `media_type` and `direction` take the same `K_AUDIO`/`K_EVENT` and
-    /// `K_INPUT`/`K_OUTPUT` constants as the bus accessors. Main/UI thread.
+    /// `media_type` and `direction` are the SDK's `MediaTypes` and
+    /// `BusDirections` values. Main/UI thread.
     ///
     /// # Panics
     ///
@@ -138,7 +138,7 @@ impl Vst3Loaded {
     }
 
     /// Captures the plugin's state as an opaque byte blob suitable for
-    /// persisting and later feeding back to [`load_state`](Control::load_state).
+    /// persisting and later feeding back to [`load_state`](tutti_plugin_types::Control::load_state).
     ///
     /// This carries **both** of the plugin's streams. The spec gives the
     /// controller its own `getState`/`setState` pair, distinct from the
@@ -184,14 +184,14 @@ impl Vst3Loaded {
     /// controller, it does not implement the call, or it fails.
     ///
     /// Failure is folded into `None` rather than surfaced: see
-    /// [`save_state`](Control::save_state) for why a controller's UI state is best-effort
+    /// [`save_state`](tutti_plugin_types::Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
     pub(super) fn read_controller_state(&self) -> Option<Vec<u8>> {
         self.plugin.controller_state()
     }
 
     /// Writes the component's `getState` blob into a fresh `IBStream` and return
-    /// the bytes. Shared by [`save_state`](Control::save_state) and the load-time
+    /// the bytes. Shared by [`save_state`](tutti_plugin_types::Control::save_state) and the load-time
     /// controller state-sync in [`initialize`](Self::initialize).
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
@@ -211,12 +211,12 @@ impl Vst3Loaded {
     /// blob is empty. Errors from the controller are tolerated (some plugins
     /// return `kResultFalse` when they have no controller state to load) —
     /// this is best-effort synchronisation, shared by
-    /// [`load_state`](Control::load_state) and [`initialize`](Self::initialize).
+    /// [`load_state`](tutti_plugin_types::Control::load_state) and [`initialize`](Self::initialize).
     pub(super) fn push_controller_state(&self, data: &[u8]) {
         self.plugin.sync_controller_to_component_state(data);
     }
 
-    /// Restores plugin state from a blob produced by [`save_state`](Control::save_state).
+    /// Restores plugin state from a blob produced by [`save_state`](tutti_plugin_types::Control::save_state).
     ///
     /// Three things happen, in the order the spec requires. The component gets
     /// its own stream via `IComponent::setState`. The controller is then shown
@@ -233,7 +233,7 @@ impl Vst3Loaded {
     /// `IBStream` wrapper cannot be created, or
     /// [`Vst3Error::PluginError`] if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
-    /// own stream is tolerated, matching [`save_state`](Control::save_state).
+    /// own stream is tolerated, matching [`save_state`](tutti_plugin_types::Control::save_state).
     ///
     /// # Panics
     ///

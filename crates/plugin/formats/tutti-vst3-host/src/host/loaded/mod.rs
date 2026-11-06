@@ -1,47 +1,39 @@
 //! Post-`initialize()` VST3 state. Audio processing is **not** active here:
 //! [`Loaded::activate`](tutti_plugin_types::Loaded::activate) splits the plugin
-//! into a [`Vst3ProcessorAny`](crate::Vst3ProcessorAny), which renders, and a
+//! into a [`ProcessorAny`](crate::ProcessorAny), which renders, and a
 //! [`Vst3Controller`](crate::Vst3Controller), which holds everything else.
 //!
-//! `Vst3Loaded` is what you want for GUI-only hosting, offline parameter
-//! inspection, and state save/restore. `process()` lives exclusively on the
-//! Processor; the type system enforces that you can't call it here.
-//!
-//! The size of this file is the argument for the type existing. Nearly forty
-//! public methods are legal in this state and need no audio buffer: the
-//! parameter tree with its plain/normalized conversions, units and program
-//! lists, note expression and keyswitch tables, `IMidiLearn`, physical UI
-//! mapping, XML representations, the compatibility JSON, state save/restore,
-//! and the entire editor surface. A host that only browses metadata, or only
-//! shows a GUI, calls `initialize()` and stops: activation is a cost it never
-//! pays.
-//!
-//! Everything here stays reachable while the plugin renders: the Controller
-//! `Deref`s to the `Vst3Loaded` it holds.
+//! `Vst3Loaded` serves GUI-only hosting, offline parameter inspection and state
+//! save/restore: the parameter tree, units and program lists, note expression
+//! and keyswitch tables, `IMidiLearn`, XML representations, state, and the
+//! editor. `process()` lives on the Processor only. The Controller `Deref`s to
+//! the `Vst3Loaded` it holds, so all of this stays reachable while the plugin
+//! renders.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use tutti_plugin_types::{
-    Control, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
-    PluginDescriptor, Request,
+    Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginDescriptor,
+    Request, SampleFormat,
 };
 use tutti_types::{ArcLend, ChannelTopology};
 use tutti_vst3_ffi::{
     BusDirection, CreateError, EditorError, MediaType, Plugin, PluginNotification, RestartFlags,
 };
 
-use crate::error::{LoadStage, Result, Vst3Error};
+use crate::error::{LoadCause, LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::unit_ids;
 use crate::types::{
-    ContentScale, EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo,
-    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
+    ContentScale, EditorCapabilities, EditorSize, KeyEvent, KeyOutcome, PluginInfo,
+    PrefetchSupport, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    Vst3ProgramListInfo, Vst3UnitInfo, WindowHandle,
 };
 
 use super::instance::usable_topology;
-use super::library::Vst3Library;
+use super::library::Library;
 use super::midi_learn::MidiLearnConsumer;
 use super::midi_mapping::{MidiCcCell, MidiCcMapping};
 
@@ -62,7 +54,7 @@ pub struct Vst3Loaded {
     // Every COM object below is implemented *inside* the plugin DSO, so its
     // vtable lives in that module's text: releasing one after the DSO is gone
     // jumps through a dangling function pointer. `_library` therefore has to be
-    // the LAST field, not the first. (Same rule `Vst3Library` documents for its
+    // the LAST field, not the first. (Same rule `Library` documents for its
     // own fields.)
     pub(super) plugin: Plugin,
     pub(super) info: PluginInfo,
@@ -84,7 +76,7 @@ pub struct Vst3Loaded {
     pub(super) midi_cc: Arc<ArcLend<MidiCcCell>>,
     /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
     /// the teardown-order note at the top of this struct.
-    pub(super) _library: Arc<Vst3Library>,
+    pub(super) _library: Arc<Library>,
 }
 
 /// How a plugin was loaded, kept so [`Loaded::rebuild`] loads it again.
@@ -99,10 +91,19 @@ pub(super) struct LoadOrigin {
 /// The plugin's activation, as the host last made it.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Activation {
-    /// `setActive(1)` has run and `setActive(0)` has not.
-    pub(super) active: bool,
-    /// The sample width of that activation.
-    pub(super) f64: bool,
+    /// The sample format of the current activation; `None` while `setActive(1)`
+    /// has not run or `setActive(0)` has since.
+    pub(super) format: Option<SampleFormat>,
+}
+
+impl Activation {
+    pub(super) fn is_active(self) -> bool {
+        self.format.is_some()
+    }
+
+    pub(super) fn is_f64(self) -> bool {
+        self.format == Some(SampleFormat::Float64)
+    }
 }
 
 /// How to load a plugin from a bundle.
@@ -121,7 +122,7 @@ impl LoadOptions {
     }
 
     /// Loads the audio class with this display name from a bundle that exports
-    /// several (a name from [`Vst3Library::class_info`]).
+    /// several (a name from [`Library::class_info`]).
     ///
     /// One VST3 bundle may export many plugins: that is the normal shape for a
     /// commercial suite, and `mda-vst3` exports 34 audio classes from one
@@ -154,6 +155,11 @@ impl std::fmt::Debug for Vst3Loaded {
 /// A host that drives a [`Lifecycle`](tutti_plugin_types::Lifecycle) reads the
 /// same flags as the core's requests
 /// ([`Vst3Loaded::take_requests`]); this is for a plugin held without one.
+///
+/// The last six restart fields (`note_expression_changed` through
+/// `param_id_mapping_changed`) stop at this format layer: carrying them further
+/// needs new `AsyncEvent` variants, and appending one is a `PROTOCOL_VERSION`
+/// bump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RestartOutcome {
     /// `kLatencyChanged` fired — the caller should call
@@ -191,21 +197,11 @@ pub struct RestartOutcome {
     /// `IKeyswitchController`.
     pub keyswitch_changed: bool,
     /// `kParamIDMappingChanged` fired (3.7.11) — the `IRemapParamID` mapping
-    /// changed. Emitted during *project load*, when a newer plugin version
-    /// remaps the ids an older session saved: dropping it silently detaches
-    /// every automation lane that referenced a remapped parameter. The host
-    /// reports it as a changed parameter list; remapping the ids through
-    /// `IRemapParamID` is deferred.
+    /// changed. Emitted during project load when a newer plugin version remaps
+    /// the ids an older session saved; ignoring it detaches automation lanes
+    /// from remapped parameters. Remap through
+    /// [`Vst3Loaded::remap_param_id`].
     pub param_id_mapping_changed: bool,
-    // The six fields above stop here, at the format layer, on purpose. Carrying
-    // them further means new `AsyncEvent` variants, and bincode encodes a
-    // discriminant, so appending one is a `PROTOCOL_VERSION` bump — paid for a
-    // signal nothing acts on yet. Shipping flags across a versioned boundary to
-    // no receiver only adds write-only protocol surface.
-    //
-    // The signal *exists* here, where a consumer can reach it, and
-    // `every_decoded_restart_flag_reaches_the_outcome` keeps it that way.
-    // Plumbing follows a consumer, not the other way round.
     /// Not a restart flag: the plugin sent more notifications than the queue
     /// holds since the last poll, and the newest were dropped (see
     /// [`NOTIFICATION_CAPACITY`](crate::NOTIFICATION_CAPACITY)). An edit
@@ -234,11 +230,7 @@ impl RestartOutcome {
 
     /// Fold one `restartComponent` bitmask into the coalesced outcome.
     ///
-    /// Every flag `RestartFlags` decodes is forwarded. Six of the twelve used
-    /// to stop here — decoded into the struct above and then dropped, so a
-    /// plugin could signal them into a consumer that had no field to receive
-    /// them. `param_id_mapping_changed` is the one that bites: it fires during
-    /// project load and losing it detaches automation from remapped parameters.
+    /// Every flag `RestartFlags` decodes is forwarded.
     fn merge_flags(&mut self, flags: RestartFlags) {
         self.latency_changed |= flags.latency_changed;
         self.param_values_changed |= flags.param_values_changed;
@@ -362,5 +354,29 @@ mod restart_outcome_tests {
             "these restart flags are decoded but never forwarded, so no \
              consumer can act on them: {dropped:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::Activation;
+    use tutti_plugin_types::SampleFormat;
+
+    /// Inactive is the absence of a format; only a 64-bit activation is f64.
+    ///
+    /// Mutation (run): `is_f64` returning `self.format.is_some()` fails the
+    /// 32-bit row; `is_active` returning `true` fails the default row.
+    #[test]
+    fn activation_is_its_format() {
+        let off = Activation::default();
+        assert!(!off.is_active() && !off.is_f64());
+        let f32_ = Activation {
+            format: Some(SampleFormat::Float32),
+        };
+        assert!(f32_.is_active() && !f32_.is_f64());
+        let f64_ = Activation {
+            format: Some(SampleFormat::Float64),
+        };
+        assert!(f64_.is_active() && f64_.is_f64());
     }
 }

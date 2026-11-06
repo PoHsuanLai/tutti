@@ -67,8 +67,8 @@ use std::sync::Mutex;
 
 use tutti_plugin_types::ParamId;
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
-    Vst3InputEvents, Vst3Loaded, Vst3Sample, host::conformance,
+    AudioBuffer, InputEvents, LoadOptions, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
+    Vst3Loaded, Vst3Sample, host::conformance,
 };
 #[path = "active.rs"]
 pub mod active;
@@ -265,7 +265,7 @@ pub fn accepts_midi(path: &Path) -> bool {
 /// The plugin's first declared ParamID, if it has any parameters.
 pub fn first_parameter_id(path: &Path) -> Option<u32> {
     let inst = Active::<f32>::load(path, 48_000.0, 512).ok()?;
-    (inst.parameter_count() > 0).then(|| inst.parameter_id_at(0))?
+    inst.parameter_ids().first().map(|id| id.get())
 }
 
 /// Assert the harness is usable, **panicking with the reason when it is not**.
@@ -473,10 +473,8 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // Register the plugin's parameter ids so unknown-id and out-of-range
     // param queues are reported. `hc_configure` (below, per block) resets only
     // the event log, not the parameter table, so registering once is enough.
-    for i in 0..inst.parameter_count() {
-        if let Some(id) = inst.parameter_id_at(i) {
-            unsafe { hc_add_parameter(id as c_uint) };
-        }
+    for id in inst.parameter_ids() {
+        unsafe { hc_add_parameter(id.get() as c_uint) };
     }
 
     // Capture the counts the observer produces for this block.
@@ -536,7 +534,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
             num_samples: block.frames,
             sample_rate,
         };
-        let events = Vst3InputEvents {
+        let events = InputEvents {
             midi: block.midi,
             ..Default::default()
         };

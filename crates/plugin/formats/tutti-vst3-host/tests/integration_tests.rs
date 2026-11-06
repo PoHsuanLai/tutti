@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_midi_types::{MidiChannel, MidiGroup};
-use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents};
+use tutti_plugin_types::{Control, Normalized, ParamId};
+use tutti_vst3_host::{AudioBuffer, InputEvents, MidiEvent, TransportInfo};
 #[path = "support/active.rs"]
 mod active;
 #[allow(unused_imports)]
@@ -448,7 +449,7 @@ fn test_process_silence() {
 
     let _output_events = plugin.process(
         &mut buffer,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &midi,
             ..Default::default()
         },
@@ -496,7 +497,7 @@ fn test_process_with_midi() {
 
     let _output_events = plugin.process(
         &mut buffer,
-        &Vst3InputEvents {
+        &InputEvents {
             midi: &midi,
             ..Default::default()
         },
@@ -558,7 +559,7 @@ fn test_process_multiple_buffers() {
 
         plugin.process(
             &mut buffer,
-            &Vst3InputEvents {
+            &InputEvents {
                 midi: &midi,
                 ..Default::default()
             },
@@ -616,23 +617,24 @@ fn test_get_parameters() {
     let param_count = plugin.parameter_count();
     println!("Plugin has {} parameters", param_count);
 
-    // `parameter_count()` bounds the INDEX space; `parameter()` takes a
-    // ParamID. Iterating indices straight into `parameter()` reads whichever
-    // parameter happens to own that numeric id — go through the index-addressed
-    // accessor, which resolves index → ParamID via `getParameterInfo`.
-    for i in 0..param_count.min(10) {
-        let id = plugin
-            .parameter_id_at(i)
-            .unwrap_or_else(|| panic!("index {i} < parameter_count but has no ParameterInfo"));
-        let value = plugin
-            .parameter_by_index(i)
-            .expect("resolved index has a value");
+    // The ids are the plugin's own, not list positions: read each through the
+    // id it reported.
+    let ids = plugin.parameter_ids();
+    assert_eq!(
+        ids.len(),
+        param_count as usize,
+        "every index below parameter_count must yield a ParameterInfo"
+    );
+    for id in ids.into_iter().take(10) {
+        let value = Control::parameter(&*plugin, id)
+            .expect("a listed parameter has a value")
+            .get();
         assert_eq!(
             value,
-            plugin.get_parameter(id),
-            "by-index and by-ParamID reads must agree for index {i} (id {id})"
+            plugin.get_parameter(id.get()),
+            "typed and raw reads must agree for id {id:?}"
         );
-        println!("  [{i}] id {id} value: {value}");
+        println!("  id {id:?} value: {value}");
     }
 }
 
@@ -652,25 +654,49 @@ fn test_set_parameter() {
         Active::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     if plugin.parameter_count() > 0 {
-        // Index 0, resolved to its ParamID — `set_parameter(0, ..)` would have
-        // written to *ParamID* 0, which need not be the first parameter (or
-        // exist at all).
-        let id = plugin
-            .parameter_id_at(0)
-            .expect("index 0 has ParameterInfo");
-        println!("Setting parameter index 0 (ParamID {id}) to 0.5");
-        assert!(plugin.set_parameter_by_index(0, 0.5));
-        let value = plugin
-            .parameter_by_index(0)
-            .expect("index 0 resolves for reads too");
-        assert_eq!(value, plugin.get_parameter(id));
+        // The first listed parameter, by the id it reported: ParamID 0 need
+        // not be the first parameter (or exist at all).
+        let id = *plugin
+            .parameter_ids()
+            .first()
+            .expect("a nonzero count lists a parameter");
+        println!("Setting ParamID {id:?} to 0.5");
+        Control::set_parameter(&mut *plugin, id, Normalized::new(0.5));
+        let value = Control::parameter(&*plugin, id)
+            .expect("a listed parameter reads back")
+            .get();
+        assert_eq!(value, plugin.get_parameter(id.get()));
         println!("Read back value: {value}");
 
-        // An out-of-range index must be reported, not silently written to a
-        // numerically-equal ParamID.
-        let past_end = plugin.parameter_count();
-        assert!(!plugin.set_parameter_by_index(past_end, 0.5));
-        assert_eq!(plugin.parameter_by_index(past_end), None);
+        // An id the plugin never listed has no descriptor.
+        let listed = plugin.parameter_ids();
+        let unlisted = (0..=u32::MAX)
+            .map(ParamId::new)
+            .find(|c| !listed.contains(c))
+            .expect("some id is unlisted");
+        assert!(plugin.parameter_info(unlisted).is_none());
+        // Not silently written: `getParamNormalized` answers 0 for an unknown
+        // id, so it reads as `Some(0.0)` (the controller has no way to say
+        // "unknown"), and a write to it must leave every listed parameter and
+        // that read unchanged.
+        assert_eq!(
+            Control::parameter(&*plugin, unlisted),
+            Some(Normalized::new(0.0))
+        );
+        let before: Vec<_> = listed
+            .iter()
+            .map(|i| plugin.get_parameter(i.get()))
+            .collect();
+        Control::set_parameter(&mut *plugin, unlisted, Normalized::new(0.25));
+        assert_eq!(
+            Control::parameter(&*plugin, unlisted),
+            Some(Normalized::new(0.0))
+        );
+        let after: Vec<_> = listed
+            .iter()
+            .map(|i| plugin.get_parameter(i.get()))
+            .collect();
+        assert_eq!(before, after);
     }
 }
 
@@ -707,7 +733,7 @@ fn test_rapid_process_calls() {
         let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
         plugin.process(
             &mut buffer,
-            &Vst3InputEvents {
+            &InputEvents {
                 midi: &midi,
                 ..Default::default()
             },
@@ -763,16 +789,17 @@ fn plain_range_probe_recovers_real_ranges() {
             continue;
         };
 
-        let count = loaded.parameter_count();
         let mut probed = 0usize;
         let mut non_unit = 0usize;
-        for i in 0..count.min(64) {
-            let Some(info) = loaded.parameter_info(i) else {
+        for entry in loaded.parameter_list().into_iter().take(64) {
+            let id = entry.id;
+            let Some(info) = loaded.parameter_info(id) else {
                 continue;
             };
             // `None` is legitimate: no controller, or an incoherent map. That
             // is the case the caller turns into `ParamRange::Normalized`.
-            let Some((min, max)) = loaded.parameter_plain_range(info.id) else {
+            let Some(tutti_vst3_host::PlainRange { min, max }) = loaded.parameter_plain_range(id)
+            else {
                 continue;
             };
             probed += 1;

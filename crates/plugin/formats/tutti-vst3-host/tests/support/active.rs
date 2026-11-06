@@ -18,8 +18,8 @@ use tutti_plugin_types::{
     Samples,
 };
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, ParameterChanges, ProcessFailed, ProcessMode, ProcessOutputRef,
-    TransportInfo, Vst3Controller, Vst3Error, Vst3InputEvents, Vst3Loaded, Vst3Processor,
+    AudioBuffer, InputEvents, LoadOptions, ParameterChanges, ProcessFailed, ProcessMode,
+    ProcessOutputRef, TransportInfo, Vst3Controller, Vst3Error, Vst3Loaded, Vst3Processor,
     Vst3Sample,
 };
 
@@ -160,7 +160,7 @@ impl<T: Vst3Sample> Active<T> {
     pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        events: &Vst3InputEvents,
+        events: &InputEvents,
         param_changes: Option<&ParameterChanges>,
         transport: &TransportInfo,
     ) -> ProcessOutputRef<'_> {
@@ -172,7 +172,7 @@ impl<T: Vst3Sample> Active<T> {
     pub fn try_process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        events: &Vst3InputEvents,
+        events: &InputEvents,
         param_changes: Option<&ParameterChanges>,
         transport: &TransportInfo,
     ) -> Result<ProcessOutputRef<'_>, ProcessFailed> {

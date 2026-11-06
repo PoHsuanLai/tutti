@@ -12,7 +12,7 @@ use std::os::raw::{c_int, c_uint, c_void};
 use std::sync::Mutex;
 
 use tutti_vst3_host::{
-    AudioBuffer, LoadOptions, ProcessMode, TransportInfo, Vst3InputEvents, Vst3Loaded,
+    AudioBuffer, InputEvents, LoadOptions, ProcessMode, TransportInfo, Vst3Loaded,
     host::conformance,
 };
 
@@ -189,10 +189,8 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
         .collect();
     let event_in = info.has_midi_input as c_int;
     let event_out = info.has_midi_output as c_int;
-    for i in 0..inst.parameter_count() {
-        if let Some(id) = inst.parameter_id_at(i) {
-            unsafe { hc_add_parameter(id as c_uint) };
-        }
+    for id in inst.parameter_ids() {
+        unsafe { hc_add_parameter(id.get() as c_uint) };
     }
 
     // Record the mode pair the host presented each block alongside the
@@ -249,7 +247,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
             num_samples: 512,
             sample_rate: 48_000.0,
         };
-        inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+        inst.process(&mut buffer, &InputEvents::default(), None, &transport);
 
         let findings = findings_from(&counts_cell.lock().unwrap());
         let errs = errors(&findings);
@@ -371,7 +369,7 @@ fn plugin_observes_the_offline_mode_we_requested() {
             num_samples: 512,
             sample_rate: 48_000.0,
         };
-        let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+        let out = inst.process(&mut buffer, &InputEvents::default(), None, &transport);
         if let Some(queue) = out
             .parameter_changes
             .queue(param_address(K_PARAM_PROCESS_MODE_TAG))

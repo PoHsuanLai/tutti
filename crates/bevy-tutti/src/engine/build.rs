@@ -66,6 +66,10 @@ pub(crate) fn build_on(
         .inputs(plugin.inputs)
         .outputs_floor(plugin.outputs)
         .render_workers(plugin.render_workers);
+    #[cfg(feature = "plugin")]
+    {
+        builder = builder.plugin_recovery(plugin.plugin_recovery);
+    }
     #[cfg(feature = "midi-hardware")]
     {
         builder = builder.midi_hardware(true);

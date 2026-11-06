@@ -70,7 +70,10 @@ pub use editor::{
     plugin_editor_window_close_system, plugin_editor_window_resize_system,
     set_editor_visible_observer,
 };
-pub use health::{PluginHealth, PluginLiveness, plugin_health_poll, plugin_state_snapshot};
+pub use health::{
+    PluginGaveUp, PluginHealth, PluginLiveness, PluginRecovered, PluginReloading,
+    plugin_health_poll, plugin_state_snapshot,
+};
 pub use load::{
     PendingPlugin, PluginLoadDone, PluginLoadTerminated, PluginRequest, plugin_load_promote,
     plugin_load_start,

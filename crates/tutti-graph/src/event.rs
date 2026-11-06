@@ -1639,4 +1639,87 @@ mod tests {
         assert_eq!(late.raw_value_after(Samples(5)), 1.5);
         assert_eq!(late.arrives_after(), Some(Samples(7)));
     }
+
+    fn off(offset: u32) -> Event {
+        Event::midi(Offset::raw(offset), [0x2080_3c00, 0, 0, 0])
+    }
+
+    /// A merge that must cut keeps the note-offs and cuts the others, later
+    /// ones first, and keeps the merge order. Sources `a = [on@0, on@1,
+    /// off@2]` and `b = [on@0, off@3]` into room for 3: both note-offs land
+    /// (2), leaving one other, which is the first in merge order (`a`'s
+    /// note-on at 0). The three others cut are counted: 2.
+    ///
+    /// Mutation: treat every event alike in `merge_into` (drop the
+    /// note-off arm) → the output is `[a0, b0, a1]` and loses both
+    /// note-offs → fails.
+    #[test]
+    fn a_merge_that_must_cut_keeps_its_note_offs() {
+        let a = [ev(0, 1), ev(1, 2), off(2)];
+        let b = [ev(0, 3), off(3)];
+        let mut out = Vec::with_capacity(3);
+        let dropped = merge_into(&[&a, &b], &mut out, 3);
+        assert_eq!(dropped, 2);
+        assert_eq!(out, vec![ev(0, 1), off(2), off(3)]);
+    }
+
+    /// A merge that fits is the plain merge, note-offs or not.
+    #[test]
+    fn a_merge_that_fits_cuts_nothing() {
+        let a = [ev(0, 1), off(2)];
+        let b = [off(1), ev(3, 3)];
+        let mut out = Vec::with_capacity(4);
+        assert_eq!(merge_into(&[&a, &b], &mut out, 4), 0);
+        assert_eq!(out, vec![ev(0, 1), off(1), off(2), ev(3, 3)]);
+    }
+
+    /// A writer at its capacity refuses a note-on and takes a note-off, up
+    /// to `note_off_room`, and every refusal and every withheld event is
+    /// counted once.
+    ///
+    /// Mutation: `room: note_off_room(cap)` → `room: cap` in `new` → the
+    /// note-off is refused → fails. Mutation: `withhold` without
+    /// `count_lost` → the count is one short → fails.
+    #[test]
+    fn a_writer_at_capacity_takes_note_offs_to_its_room() {
+        let mut buf = Vec::with_capacity(16);
+        let dropped = Cell::new(0);
+        let mut w = EventWriter::new(&mut buf, 2, 16, &dropped);
+        w.push(ev(0, 1)).unwrap();
+        w.push(ev(1, 2)).unwrap();
+        assert_eq!(w.push(ev(2, 3)), Err(EventRejected::Full));
+        // Room for 2 + 0 + 8: eight note-offs.
+        for k in 0..8 {
+            assert_eq!(w.push(off(3 + k)), Ok(()), "note-off {k}");
+        }
+        assert_eq!(w.push(off(12)), Err(EventRejected::Full));
+        w.withhold();
+        assert_eq!(dropped.get(), 3);
+        assert_eq!(w.len(), 10);
+    }
+
+    /// The capacity a density asks for: the floor on a short block, one per
+    /// frame on a long one, the cap beyond that, rounded up.
+    ///
+    /// Mutation: drop the `clamp` → the first and last figures are wrong →
+    /// fails.
+    #[test]
+    fn a_density_sizes_a_port_by_the_block() {
+        let at = |density: EventDensity, block| {
+            density.capacity(&crate::Prepare::new(
+                tutti_types::SampleRate(48_000.0),
+                Samples(block),
+            ))
+        };
+        let frame = EventDensity::per_frame(1);
+        assert_eq!(at(frame, 1), MIN_EVENT_PORT_CAPACITY);
+        assert_eq!(at(frame, 512), 512);
+        assert_eq!(at(frame, 8192), 8192);
+        assert_eq!(at(frame, 1 << 20), MAX_EVENT_PORT_CAPACITY);
+        // A quarter per frame, rounded up: 1000 frames hold 250.
+        let quarter = EventDensity::per_kiloframe(256);
+        assert_eq!(at(quarter, 4096), 1024);
+        assert_eq!(at(quarter, 1001), MIN_EVENT_PORT_CAPACITY);
+        assert_eq!(at(EventDensity::per_kiloframe(1), 4097), MIN_EVENT_PORT_CAPACITY);
+    }
 }

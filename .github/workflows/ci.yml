@@ -493,8 +493,10 @@ jobs:
       # debug-only once (two `&mut T` from safe code in release), and nothing
       # but this run would have caught it outside the loom job. `arc-lend`
       # too: its stress test runs far more interleavings at release speed.
-      - name: Test tutti-types and arc-lend (release)
-        run: cargo nextest run --locked --release -p tutti-types -p arc-lend
+      # `tutti-graph`'s executor guards (a caller bug asserts in debug and
+      # renders silence in release) have a test per build.
+      - name: Test tutti-types, arc-lend and tutti-graph (release)
+        run: cargo nextest run --locked --release -p tutti-types -p arc-lend -p tutti-graph
 
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the

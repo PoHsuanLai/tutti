@@ -76,6 +76,28 @@ fn rendering_a_narrow_graph_to_a_wide_file_does_not_panic() {
     }
 }
 
+/// The planes follow the committed plan, not the editor's spec: outputs
+/// narrowed in the spec with no `commit()` leave the executor's plan as wide
+/// as it was, and the render must carry every channel of it (an undersized
+/// plane list made the executor render silence in release).
+///
+/// Mutation (run): size `planes` from `editor.spec().topology.outputs`
+/// again → the plan is wider than the planes; the debug build asserts and
+/// release renders silence → fails.
+#[test]
+fn a_spec_narrowed_without_a_commit_still_renders_the_committed_width() {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let k = g.add(tutti_nodes::testing::Const::mono(0.5));
+    g.pipe_output(k);
+    let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
+    let mut graph = RenderGraph::new(editor, executor).expect("built together");
+    let committed = graph.editor().spec().topology.outputs.len();
+    assert!(committed >= 2, "a stereo graph has two outputs");
+    graph.editor_mut().spec_mut().topology.outputs.truncate(1);
+    let frames = render(&mut graph, &FrozenClock, 2, 16);
+    assert!(frames.iter().all(|f| f[0] == 0.5 && f[1] == 0.5));
+}
+
 /// `GraphSource` must NOT prime the clock: the render is
 /// emit-then-advance, so the first rendered frame carries the start
 /// beat, and after N frames the clock stands exactly N frames on. A

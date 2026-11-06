@@ -341,6 +341,66 @@ fn a_block_past_max_block_is_refused() {
     render(&mut exec, 65, 1);
 }
 
+/// Two const outputs (`0.5`, `0.25`) at the globals, committed and queued
+/// without a block run.
+fn queue_two_outputs(ed: &mut Editor) {
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.insert(FX, "b", Unforkable(const_node(0.25)));
+    ed.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort { node: SRC, port: 0 }),
+        Source::Node(OutPort { node: FX, port: 0 }),
+    ];
+    ed.commit().expect("commits");
+}
+
+/// `render_applied` does not apply: a commit queued before it waits for the
+/// next block, whatever its width; `process` applies it first.
+///
+/// Mutation (run): have `render_applied` call `apply_pending` → the first
+/// render writes the new plan's channels → fails.
+#[test]
+fn render_applied_leaves_a_queued_commit_for_the_next_block() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    queue_two_outputs(&mut ed);
+    exec.render_applied(
+        16,
+        &Transport::default(),
+        &tutti_graph::TransportChanges::NONE,
+        &[],
+        &mut [],
+    );
+    assert!(exec.plan().is_none(), "still queued");
+    let out = render(&mut exec, 16, 2);
+    assert!(out[0].iter().all(|&x| x == 0.5));
+    assert!(out[1].iter().all(|&x| x == 0.25));
+}
+
+/// Fewer slices than the plan has outputs is a caller bug: a debug build
+/// asserts, a release build renders silence into what it was given and runs
+/// no node. Neither panics on an index.
+///
+/// Mutation (run): drop the guard in `process_with_changes` → "index out of
+/// bounds" in release, a different message in debug → fails.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "for a plan with 0 global inputs and 2 outputs")]
+fn too_few_output_slices_assert_in_debug() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    queue_two_outputs(&mut ed);
+    render(&mut exec, 16, 1);
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn too_few_output_slices_render_silence_in_release() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    queue_two_outputs(&mut ed);
+    let mut bufs = vec![vec![7.0f32; 16]; 1];
+    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+    exec.process(16, &Transport::default(), &[], &mut refs);
+    assert!(bufs[0].iter().all(|&x| x == 0.0));
+}
+
 /// A builder that hands back a typed control: the replacement for
 /// `node_as::<T>`.
 struct GainBuilder;
@@ -1103,4 +1163,33 @@ fn an_unchanged_commit_sends_nothing_and_a_change_still_sends() {
     assert_eq!(ed.in_flight(), 3, "a latency change sends");
     ed.commit().expect("commits");
     assert_eq!(ed.in_flight(), 3, "and once sent, is unchanged again");
+}
+
+/// An input the plan reads, with no slice for it: the same caller bug as a
+/// short `outputs`, caught before `global_in` indexes `inputs`.
+///
+/// Mutation (run): drop the `inputs.len()` half of the guard → "index out of
+/// bounds" in `global_in` → fails.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "for a plan with 1 global inputs and 1 outputs")]
+fn too_few_input_slices_assert_in_debug() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.spec_mut().topology.inputs = tutti_types::ChannelLayout::MONO;
+    ed.spec_mut().topology.outputs = vec![Source::Global(0)];
+    ed.commit().expect("commits");
+    render(&mut exec, 16, 1);
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn too_few_input_slices_render_silence_in_release() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.spec_mut().topology.inputs = tutti_types::ChannelLayout::MONO;
+    ed.spec_mut().topology.outputs = vec![Source::Global(0)];
+    ed.commit().expect("commits");
+    let out = render(&mut exec, 16, 1);
+    assert!(out[0].iter().all(|&x| x == 0.0));
 }

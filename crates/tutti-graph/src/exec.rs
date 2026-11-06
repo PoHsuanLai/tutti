@@ -1285,7 +1285,9 @@ impl Executor {
     /// `inputs` must have a slice per global input channel the plan reads, and
     /// `outputs` one per global output channel; every slice at least `frames`
     /// long. Applies queued commits first ([`apply_pending`](Self::apply_pending));
-    /// with none queued it never allocates. Marks the thread with
+    /// with none queued it never allocates. A caller that sizes the block from
+    /// the executor's plan or prepare applies once itself and renders with
+    /// [`render_applied`](Self::render_applied). Marks the thread with
     /// [`RtScope::enter`] for the duration.
     ///
     /// # Panics
@@ -1321,11 +1323,43 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
+        let _ftz = ScopedNoDenormals::new();
+        self.apply_pending();
+        self.render_applied(frames, transport, changes, inputs, outputs);
+    }
+
+    /// As [`process_with_changes`](Self::process_with_changes), without
+    /// applying queued commits: the block renders the plan, prepare and rate
+    /// the executor holds now, and a commit sent later waits for the next
+    /// block.
+    ///
+    /// For a caller that reads [`plan`](Self::plan) or
+    /// [`prepare`](Self::prepare) to size the block (its length, `outputs`)
+    /// and must have them still true when it renders: it calls
+    /// [`apply_pending`](Self::apply_pending) once, sizes from the result and
+    /// renders here. [`process`](Self::process) would apply again, and a
+    /// commit sent in between (a wider plan, a smaller `MaxBlock` from a
+    /// re-prepare's resume) would change what the sizes were read from.
+    ///
+    /// `inputs` and `outputs` must have one slice per global input and output
+    /// channel of the plan. Slices past those are ignored, serial or on a
+    /// pool. Fewer of either is a caller bug: it panics in debug builds, and
+    /// in release the block renders silence into what was given, running no
+    /// node.
+    ///
+    /// # Panics
+    ///
+    /// As [`process_with_changes`](Self::process_with_changes).
+    pub fn render_applied(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
         let _rt = RtScope::enter();
         let _ftz = ScopedNoDenormals::new();
-        // Before the bound is checked: a queued resume changes it, and the
-        // first longer block may be the one that arrives with it.
-        self.apply_pending();
         if self.suspended {
             // Between a re-prepare's two commits the units are on the control
             // thread: render silence, for whatever block arrives — the device
@@ -1404,6 +1438,23 @@ impl Executor {
             *frame += Samples(frames);
             return;
         };
+        if outputs.len() < plan.global_outputs() || inputs.len() < usize::from(plan.global_inputs())
+        {
+            debug_assert!(
+                false,
+                "{} input and {} output slices for a plan with {} global inputs and {} outputs",
+                inputs.len(),
+                outputs.len(),
+                plan.global_inputs(),
+                plan.global_outputs()
+            );
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            commands.observe(&env);
+            *frame += Samples(frames);
+            return;
+        }
         let State {
             arena,
             flags,
@@ -1462,7 +1513,9 @@ impl Executor {
                     max,
                     cap,
                     inputs,
-                    outputs,
+                    // The claim table is sized for the plan's width; slices
+                    // past it are ignored here as on the serial path.
+                    outputs: &mut outputs[..plan.global_outputs()],
                     arena,
                     flags,
                     events,

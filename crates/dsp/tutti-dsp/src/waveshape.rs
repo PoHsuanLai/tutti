@@ -81,7 +81,7 @@ impl ShapeKind {
     /// tests depend on it bit for bit.
     #[inline(always)]
     #[must_use]
-    pub fn curve(self, hardness: f32, x: f32) -> f32 {
+    fn curve(self, hardness: f32, x: f32) -> f32 {
         use core::f32::consts::PI;
         match self {
             Self::Tanh => (x * hardness).tanh(),
@@ -179,6 +179,7 @@ impl Shaper {
     }
 
     /// One sample through the curve.
+    #[inline]
     #[must_use]
     pub fn shape(&self, x: f32) -> f32 {
         self.kind.curve(self.hardness, x)

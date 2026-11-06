@@ -29,9 +29,6 @@ convolution = []
 testing = []
 
 [dependencies]
-# The filters' `Real` (`src/filter/real.rs`) calls `libm`'s pure-Rust
-# transcendentals, so results do not depend on the platform's C math library.
-libm = "0.2.15"
 # Engine vocabulary (units, `Param`, `ChannelLayout`, `Tail`) from tutti-core's
 # root. default-features = false: tutti-nodes is pure DSP and needs none of
 # tutti-core's Bevy layer.
@@ -61,6 +58,10 @@ tutti-graph = { path = "../../core/tutti-graph" }
 audio-automation = { workspace = true }
 
 [dev-dependencies]
+# The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
+# `libm`'s pure-Rust routines, as `tutti-dsp`'s filters do, so they do not
+# depend on the platform's C math library.
+libm = "0.2.15"
 # The crate's own `testing` module, for its integration tests and bench. A
 # self dev-dependency rather than `required-features`, which would *skip*
 # those targets when the feature is off — see `tutti-sampler`'s manifest.

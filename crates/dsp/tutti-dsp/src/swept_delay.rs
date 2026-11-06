@@ -51,7 +51,9 @@ impl SweptLines<'_> {
         }
     }
 
-    /// Channel-outer over the lines. `depth_at` / `fb_at` / `mix_at` give the
+    /// Renders the block, channel-outer over the lines.
+    ///
+    /// `depth_at` / `fb_at` / `mix_at` give the
     /// controls at sample `i`; constant closures compile to constants.
     ///
     /// The LFO's sine is evaluated only at control points, every
@@ -74,7 +76,6 @@ impl SweptLines<'_> {
     /// step of about 0.05 samples/sample^2 at 20 Hz and 10 ms: a small
     /// ripple on the pitch modulation.
     #[inline(always)]
-    /// Renders the block; see the type.
     pub fn run(
         self,
         x: impl Fn(usize, usize) -> f32,

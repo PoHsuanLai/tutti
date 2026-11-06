@@ -14,7 +14,8 @@ use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepar
 use tutti_types::{Tail, UnitParam};
 
 use super::shared::{LfoDrive, TimeModMix};
-use crate::ramp::{COEFF_INTERVAL, Ramp, block_driven};
+use crate::ramp::block_driven;
+use tutti_dsp::{COEFF_INTERVAL, Ramp};
 use tutti_dsp::{DelayLine, SweptLines};
 
 /// Everything that distinguishes one modulated-delay effect from another: the

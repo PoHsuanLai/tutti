@@ -17,7 +17,8 @@ use tutti_graph::{
 };
 use tutti_types::UnitParam;
 
-use crate::ramp::{LastGood, Ramp, block_driven, finite_or};
+use crate::ramp::{LastGood, block_driven, finite_or};
+use tutti_dsp::Ramp;
 use tutti_dsp::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 
 /// The block's raw scalar controls — what the next block's ramps start from.
@@ -409,7 +410,7 @@ impl DelayLineNode {
     /// modulates them (the node's param ports); they are read per sample.
     /// `mix_port` is the block's driven mix (clamped as `set_mix` clamps).
     /// Everything else ramps from where the previous block ended (see
-    /// [`ramp`](crate::ramp)).
+    /// `tutti_dsp::Ramp`).
     fn render(
         &mut self,
         size: usize,

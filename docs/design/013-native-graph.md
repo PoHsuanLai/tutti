@@ -3213,7 +3213,7 @@ the two transforms and the overlap-add. A uniform partition costs one
 multiply-accumulate per bin per frame per partition (`L / P` per frame), which
 for a long IR is nearly all of it (a 5 s IR at a 512 partition: 469 partitions
 against two 1024-point transforms), so the convolver is cut into **levels**
-(`convolution/convolver.rs`): a head of the node's partition `B` and tail
+(`tutti-dsp`'s `convolver.rs`): a head of the node's partition `B` and tail
 levels of larger partitions, each a uniform partitioned convolver with its own
 FFT size.
 

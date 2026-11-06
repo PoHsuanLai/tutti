@@ -73,6 +73,7 @@
 //! - [`Grid`] and its typed
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
+mod allpass;
 mod analysis;
 mod buffer;
 mod control;
@@ -88,9 +89,10 @@ mod resample;
 #[cfg(test)]
 mod test_support;
 
+pub use allpass::{allpass_chain, allpass_coeff};
 pub use analysis::*;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
-pub use control::COEFF_INTERVAL;
+pub use control::{COEFF_INTERVAL, LANES, Ramp, lane_group, segments};
 pub use convolver::{Convolver, IrSpectra};
 pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dynamics::{

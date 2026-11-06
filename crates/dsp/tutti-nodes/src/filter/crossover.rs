@@ -504,16 +504,25 @@ mod tests {
     }
 
     /// `prepare` takes the cells' values whole, so the first block does not
-    /// ramp in from the constructor's frequencies.
+    /// ramp in from the constructor's frequencies: the node's filter renders
+    /// the same bits as a crossover built at the new frequency.
     ///
     /// Mutation (run): drop the `set_frequencies` in `prepare` → the filter
-    /// is still at the constructor's 500 Hz → fails.
+    /// is still at the constructor's 500 Hz and ramps → fails. (The
+    /// assertion now compares a render with a fresh `Crossover` where it
+    /// used to read the filter's solved and target frequencies.)
     #[test]
     fn prepare_reads_the_cells() {
         let node = CrossoverNode::new(ChannelLayout::MONO, &[Hz(500.0)]).unwrap();
         node.param_set().set(Splits::addr(0), 2_000.0);
         let node = prepared(node);
-        assert_eq!(node.filters[0].solved_frequency(0), Some(Hz(2_000.0)));
         assert_eq!(node.filters[0].frequency(0), Some(Hz(2_000.0)));
+        let x = sine(1_500.0, RATE, 512);
+        let mut a = node.filters[0].clone();
+        let mut b = Crossover::new(&[Hz(2_000.0)], SampleRate(48_000.0)).unwrap();
+        let (mut oa, mut ob) = (vec![0.0; 1024], vec![0.0; 1024]);
+        a.split_block(&x, &mut oa);
+        b.split_block(&x, &mut ob);
+        assert_eq!(oa, ob);
     }
 }

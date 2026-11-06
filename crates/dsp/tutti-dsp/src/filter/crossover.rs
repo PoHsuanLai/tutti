@@ -284,14 +284,6 @@ impl Crossover {
         (i < self.splits()).then(|| Hz(self.target[i] as f32))
     }
 
-    /// Crossover `i`'s frequency the coefficients are solved at now, or `None`
-    /// past the last. It trails [`frequency`](Self::frequency) while a change
-    /// ramps.
-    #[must_use]
-    pub fn solved_frequency(&self, i: usize) -> Option<Hz> {
-        (i < self.splits()).then(|| Hz(self.current[i] as f32))
-    }
-
     /// The sample rate the coefficients are solved at.
     #[must_use]
     pub fn sample_rate(&self) -> SampleRate {

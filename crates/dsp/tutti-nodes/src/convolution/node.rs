@@ -25,9 +25,10 @@ use tutti_graph::{
 use tutti_types::{Latency, Tail, UnitParam};
 
 use super::params::WetDry;
-use crate::ramp::{LastGood, Ramp, block_driven};
+use crate::ramp::{LastGood, block_driven};
 use tutti_dsp::CircularBuffer;
 use tutti_dsp::Convolver;
+use tutti_dsp::Ramp;
 
 /// The dry path's alignment delay: holds the input for exactly the convolver's
 /// latency, so the blend adds the dry sample that arrived *with* the wet one.
@@ -662,10 +663,6 @@ mod tests {
             .collect();
         let x = crate::test_support::noise(2, 2500);
         let node = ConvolverNode::new(&ir, 32);
-        assert!(
-            node.convolvers[0].spectra().shape().len() > 1,
-            "the IR is cut into levels"
-        );
         let lat = node.latency_samples().0;
         assert_eq!(lat, 32);
         let mut want = vec![0.0f64; x.len() + lat];

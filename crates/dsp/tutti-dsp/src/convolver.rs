@@ -356,8 +356,9 @@ impl IrSpectra {
     }
 
     /// The partition size and partition count of each level, head first.
+    #[cfg(test)]
     #[must_use]
-    pub fn shape(&self) -> Vec<(usize, usize)> {
+    pub(super) fn shape(&self) -> Vec<(usize, usize)> {
         self.levels
             .iter()
             .map(|l| (l.part, l.segments.len()))
@@ -1639,6 +1640,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A 6000-tap IR at a 32-frame head is cut into more than one level (the
+    /// node's long-IR render test relies on it).
+    ///
+    /// Mutation (run): `MIN_GAIN` lowered to 0.0 keeps the layout uniform →
+    /// fails.
+    #[test]
+    fn a_long_ir_is_cut_into_levels() {
+        let ir = vec![0.1f32; 6000];
+        assert!(Convolver::new(&ir, 32).spectra().shape().len() > 1);
     }
 
     /// The cost model keeps the uniform layout where an extra level does not

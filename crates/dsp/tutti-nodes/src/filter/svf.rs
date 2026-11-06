@@ -15,7 +15,8 @@ use tutti_graph::{
 };
 use tutti_types::UnitParam;
 
-use crate::ramp::{self, LastGood, Ramp};
+use crate::ramp::LastGood;
+use tutti_dsp::{Ramp, lane_group, segments};
 
 use tutti_dsp::{SvfCoefficients, SvfType, svf_step};
 
@@ -288,7 +289,7 @@ impl<F: Real> SvfFilterNode<F> {
 
     /// Render with the current coefficients held for the whole block.
     ///
-    /// The channels go through in groups of up to `ramp::LANES`, sample-inner, with
+    /// The channels go through in groups of up to `tutti_dsp::LANES`, sample-inner, with
     /// the group's integrators in registers. A recursive filter is
     /// latency-bound on one channel — each sample waits for the last — so
     /// running one channel at a time (measured: 2.7× slower at width 6) wastes
@@ -298,7 +299,7 @@ impl<F: Real> SvfFilterNode<F> {
         let w = self.width();
         let mut first = 0;
         while first < w {
-            let n = ramp::lane_group(w - first);
+            let n = lane_group(w - first);
             match n {
                 8 => self.held_group::<8>(first, size, input, output),
                 7 => self.held_group::<7>(first, size, input, output),
@@ -357,7 +358,7 @@ impl<F: Real> SvfFilterNode<F> {
             let (f, q, g) = param_at(0);
             prev = SvfCoefficients::solve(self.filter_type, f, q, g, self.sample_rate);
         }
-        for (start, end) in ramp::segments(size, unprimed) {
+        for (start, end) in segments(size, unprimed) {
             let (f, q, g) = param_at(end - 1);
             let next = self.solve_toward(&prev, f, q, g);
             let n = F::from_f64((end - start) as f64);

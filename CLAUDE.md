@@ -244,21 +244,18 @@ crates/
   control arrives per call as a plain typed value. It holds the real FFT, the
   analyzers, the SVF, ladder and Linkwitz-Riley filters (and their `Real`
   float), the dynamics curves, followers and kernels, the partitioned
-  convolver, the delay line and swept-delay kernel, the export resampler, the
+  convolver, the delay line and swept-delay kernel, the phaser's all-pass chain, the
+  block ramps, the export resampler, the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,
   `Real`, `CrossoverError`, `InterpolationMode`, `ShapeKind`).
-  `tutti-sampler`, `tutti-spatial` and `tutti-export` are still to become
-  adapters over it.
 - **A pure algorithm over slices goes in `tutti-dsp`; a node file holds only
   the `Node` adapter.** Where an algorithm needs a `Param<U>` read, an atomic or
   a non-finite guard (`LastGood`), the node reads and guards it and hands the
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
-  What has not moved yet: the sampler vocoder, and `tutti-nodes`'
-  `LfoDrive`/`LinearModMix`/`TimeModMix` groupings, the phaser's all-pass
-  chain, the delay node's coupled-channel loop and the multiband compressor's
-  band logic, all of which read graph buffers or `Param` cells in their loops.
+  A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
+  stays in the node.
 - `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs

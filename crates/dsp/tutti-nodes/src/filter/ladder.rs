@@ -18,8 +18,9 @@ use tutti_graph::{
 };
 use tutti_types::UnitParam;
 
-use crate::ramp::{self, LastGood, Ramp, finite_or};
+use crate::ramp::{LastGood, finite_or};
 use tutti_dsp::{LadderCoefficients, LadderType, ladder_step};
+use tutti_dsp::{Ramp, lane_group, segments};
 
 /// A Moog-style four-stage ladder filter with resonance and drive, of any
 /// width: `N` audio inputs, `N` outputs.
@@ -243,7 +244,7 @@ impl<F: Real> LadderFilterNode<F> {
     /// Coefficients held for the block. `drive_at(i)` is the drive at sample
     /// `i`.
     ///
-    /// The channels go through in groups of up to `ramp::LANES`, sample-inner, the
+    /// The channels go through in groups of up to `tutti_dsp::LANES`, sample-inner, the
     /// group's stage words in registers and each channel on its own planar
     /// slice. One channel alone is latency-bound — every sample's `tanh` waits
     /// on the previous sample's fourth stage — and running the independent
@@ -259,7 +260,7 @@ impl<F: Real> LadderFilterNode<F> {
         let w = self.width();
         let mut first = 0;
         while first < w {
-            let n = ramp::lane_group(w - first);
+            let n = lane_group(w - first);
             match n {
                 8 => self.held_group::<8>(first, size, input, output, drive_at),
                 7 => self.held_group::<7>(first, size, input, output, drive_at),
@@ -319,7 +320,7 @@ impl<F: Real> LadderFilterNode<F> {
             let (f, r) = param_at(0);
             prev = LadderCoefficients::solve(f, r, self.sample_rate);
         }
-        for (start, end) in ramp::segments(size, unprimed) {
+        for (start, end) in segments(size, unprimed) {
             let (f, r) = param_at(end - 1);
             let next = self.solve_toward(&prev, f, r);
             let n = F::from_f64((end - start) as f64);

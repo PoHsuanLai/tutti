@@ -41,8 +41,8 @@ thiserror.workspace = true
 
 [features]
 # No `bevy` feature, and no default features. This crate is a library of
-# analysis algorithms over `&[f32]`; a host that wants these results in an ECS
-# wires them up on its own side.
+# algorithms over `&[f32]` (analysis, filters, dynamics, convolution, delay);
+# a host that wants these results in an ECS wires them up on its own side.
 default = []
 
 [dev-dependencies]

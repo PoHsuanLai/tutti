@@ -1283,10 +1283,21 @@ impl Executor {
     /// Renders one block of `frames` into `outputs`, reading `inputs`.
     ///
     /// `inputs` must have a slice per global input channel the plan reads, and
-    /// `outputs` one per global output channel; every slice at least `frames`
-    /// long. Applies queued commits first ([`apply_pending`](Self::apply_pending));
-    /// with none queued it never allocates. Marks the thread with
+    /// `outputs` at least one per global output channel; every slice at least
+    /// `frames` long. Applies queued commits first
+    /// ([`apply_pending`](Self::apply_pending)), so "the plan" is the one
+    /// installed by that call: a commit sent after the caller last looked at
+    /// [`plan`](Self::plan) may already be it. A caller that sizes `outputs`
+    /// from the plan therefore passes more than it needs and reads
+    /// [`plan`](Self::plan) again afterwards. Channels past the plan's width
+    /// are left as they were, except when the block renders silence (no plan,
+    /// or between a re-prepare's commits), which clears every slice. With
+    /// none queued it never allocates. Marks the thread with
     /// [`RtScope::enter`] for the duration.
+    ///
+    /// An `outputs` shorter than the plan needs is a caller bug: it panics in
+    /// debug builds, and in release the block renders silence into what was
+    /// given, without running a node.
     ///
     /// # Panics
     ///
@@ -1308,6 +1319,10 @@ impl Executor {
     /// [`Env`] carrying the changes, and scheduled `At::Beat`
     /// commands resolve against the transport in force where playback
     /// reaches their beat.
+    ///
+    /// `inputs` and `outputs` are as for [`process`](Self::process): the plan
+    /// that renders is the one in force after this call's own
+    /// [`apply_pending`](Self::apply_pending).
     ///
     /// # Panics
     ///
@@ -1404,6 +1419,19 @@ impl Executor {
             *frame += Samples(frames);
             return;
         };
+        if outputs.len() < plan.global_outputs() {
+            debug_assert!(
+                false,
+                "{} output slices for a plan with {} global outputs",
+                outputs.len(),
+                plan.global_outputs()
+            );
+            for o in outputs.iter_mut() {
+                o[..frames].fill(0.0);
+            }
+            *frame += Samples(frames);
+            return;
+        }
         let State {
             arena,
             flags,

@@ -341,6 +341,80 @@ fn a_block_past_max_block_is_refused() {
     render(&mut exec, 65, 1);
 }
 
+/// Two const outputs (`0.5`, `0.25`) at the globals, committed and queued
+/// without a block run.
+fn queue_two_outputs(ed: &mut Editor) {
+    ed.insert(SRC, "a", Unforkable(const_node(0.5)));
+    ed.insert(FX, "b", Unforkable(const_node(0.25)));
+    ed.spec_mut().topology.outputs = vec![
+        Source::Node(OutPort { node: SRC, port: 0 }),
+        Source::Node(OutPort { node: FX, port: 0 }),
+    ];
+    ed.commit().expect("commits");
+}
+
+/// `outputs` is sized for the plan the caller last saw, and a commit queued
+/// since is the plan that renders (`process` applies it first): a caller that
+/// passes more slices than the plan needs gets the plan's channels and leaves
+/// the rest alone, with no plan before (the engine's CI crash) and after a
+/// narrowing commit.
+///
+/// The engine-level interleaving is `engine::tests::a_commit_between_settle_and_render_renders_at_its_own_width`;
+/// this pins the executor half of it.
+///
+/// Mutation (run): in `process_with_changes`, make the ordinary path demand
+/// `outputs.len() == plan.global_outputs()` → the first render fails.
+#[test]
+fn a_commit_applied_by_process_may_be_wider_than_the_outputs_were_sized_for() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    assert!(exec.plan().is_none());
+    queue_two_outputs(&mut ed);
+    // Four slices for a plan that arrives with two.
+    let mut bufs = vec![vec![7.0f32; 16]; 4];
+    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+    exec.process(16, &Transport::default(), &[], &mut refs);
+    assert_eq!(exec.plan().map(|p| p.global_outputs()), Some(2));
+    assert!(bufs[0].iter().all(|&x| x == 0.5));
+    assert!(bufs[1].iter().all(|&x| x == 0.25));
+    assert!(bufs[2..].iter().flatten().all(|&x| x == 7.0), "untouched");
+
+    // Narrowing to one output in the gap.
+    ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: SRC, port: 0 })];
+    ed.commit().expect("commits");
+    let mut bufs = vec![vec![7.0f32; 16]; 4];
+    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+    exec.process(16, &Transport::default(), &[], &mut refs);
+    assert_eq!(exec.plan().map(|p| p.global_outputs()), Some(1));
+    assert!(bufs[0].iter().all(|&x| x == 0.5));
+    assert!(bufs[1..].iter().flatten().all(|&x| x == 7.0), "untouched");
+}
+
+/// Fewer slices than the plan has outputs is a caller bug: a debug build
+/// asserts, a release build renders silence into what it was given and runs
+/// no node. Neither panics on an index.
+///
+/// Mutation (run): drop the guard in `process_with_changes` → "index out of
+/// bounds" in release, a different message in debug → fails.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "output slices for a plan with 2 global outputs")]
+fn too_few_output_slices_assert_in_debug() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    queue_two_outputs(&mut ed);
+    render(&mut exec, 16, 1);
+}
+
+#[test]
+#[cfg(not(debug_assertions))]
+fn too_few_output_slices_render_silence_in_release() {
+    let (mut ed, mut exec) = Editor::new(prepare(64));
+    queue_two_outputs(&mut ed);
+    let mut bufs = vec![vec![7.0f32; 16]; 1];
+    let mut refs: Vec<&mut [f32]> = bufs.iter_mut().map(Vec::as_mut_slice).collect();
+    exec.process(16, &Transport::default(), &[], &mut refs);
+    assert!(bufs[0].iter().all(|&x| x == 0.0));
+}
+
 /// A builder that hands back a typed control: the replacement for
 /// `node_as::<T>`.
 struct GainBuilder;

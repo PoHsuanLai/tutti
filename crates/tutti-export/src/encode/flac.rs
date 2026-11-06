@@ -427,9 +427,9 @@ fn bits_for(bit_depth: BitDepth) -> usize {
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
     match bit_depth {
-        BitDepth::Int16 => i32::from(tutti_types::pcm::f32_to_i16(sample)),
+        BitDepth::Int16 => i32::from(tutti_types::f32_to_i16(sample)),
         // Float32 is rejected in `create`, so this is the Int24 path.
-        _ => tutti_types::pcm::f32_to_i24(sample),
+        _ => tutti_types::f32_to_i24(sample),
     }
 }
 

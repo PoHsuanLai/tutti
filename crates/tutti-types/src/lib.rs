@@ -25,7 +25,7 @@ mod interp;
 mod rt;
 mod topology;
 
-// Public: consumers spell `tutti_types::io::AudioIn` and the like through
+// Public: consumers spell `tutti_types::AudioIn` and the like through
 // these modules. Privatizing one here breaks that path.
 pub mod graph;
 pub mod io;

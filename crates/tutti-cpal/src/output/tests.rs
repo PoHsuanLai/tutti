@@ -4,10 +4,10 @@ use tutti_core::{MotionEvent, Transport};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, BeatDuration};
 use tutti_types::{Hz, Q};
 use tutti_types::{NodeKey, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 /// Build an engine + transport pair whose graph actually renders.
 ///

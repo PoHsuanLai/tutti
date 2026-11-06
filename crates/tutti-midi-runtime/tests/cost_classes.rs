@@ -15,8 +15,8 @@ use tutti_midi_runtime::{
     MidiQueueNode, TimedMidiEvent,
 };
 use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;

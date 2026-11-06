@@ -21,8 +21,8 @@ use tutti_cpal::{AudioCallbackState, OutputSpec};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 

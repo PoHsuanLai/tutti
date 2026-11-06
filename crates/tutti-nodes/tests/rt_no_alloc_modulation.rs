@@ -1107,11 +1107,11 @@ fn an_apply_that_republishes_is_allocation_free_on_the_audio_thread() {
     };
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{Feed, ModHost, Modulation, SvfFilterNode, SvfType, Target};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
     use tutti_types::{
         AtomicF32, Beat, Bpm, Depth, Hz, NodeKey, ParamAddr, PhaseIncrement, Q, Samples, Seconds,
         UnitParam,
     };
-    use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
     struct Host {
         filter: NodeKey,

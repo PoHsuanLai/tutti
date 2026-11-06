@@ -53,9 +53,9 @@ use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 use tutti_types::Samples;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};
 use tutti_types::{Db, Hz, Q};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 
@@ -303,7 +303,7 @@ impl tutti_graph::Node for Lowpass {
 /// otherwise the reference pair.
 fn depth_graph_engine(depth: usize, ours: bool) -> Engine {
     use tutti_types::NodeKey;
-    use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
+    use tutti_types::graph::{Edge, InPort, OutPort, Source};
     let (mut ed, exec) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
         SampleRate(SR),
         tutti_types::Samples(512),

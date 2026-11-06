@@ -135,7 +135,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tutti_plugin_types::PluginTail;
-use tutti_types::meter::MeterMap;
+use tutti_types::MeterMap;
 use tutti_types::{SampleRate, Samples};
 
 /// The typestate of a [`PluginClient`] that is loaded but not yet a graph node.

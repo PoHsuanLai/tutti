@@ -32,7 +32,7 @@ both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 
 ```rust,no_run
 use std::sync::Arc;
-use tutti_types::{graph::OutPort, graph::Source};
+use tutti_types::graph::{OutPort, Source};
 use tutti_core::{AudioTap, Engine, MasterMeter, Transport};
 use tutti_types::{Hz, NodeKey, Samples};
 use tutti_graph::{Editor, Prepare};
@@ -83,7 +83,7 @@ assert!(driver.engine().is_running());
   error callback cannot return anywhere else.
 - [`ManualStreamDriver`] — runs the same lifecycle with no device, the caller
   rendering each callback; for tests.
-- `MicIn` (feature `capture`) — a microphone as a `tutti_types::io::AudioIn`,
+- `MicIn` (feature `capture`) — a microphone as a `tutti_types::AudioIn`,
   optionally with a live-monitor graph node.
 
 ## Real-time behaviour

@@ -38,8 +38,8 @@ use tutti_graph::{Editor, Executor, ForkMode, ForkTarget, Prepare, Transport, Un
 use tutti_io::Wave;
 use tutti_sampler::testing::{MockTransport, block};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, BeatDuration, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::OutPort, graph::Source};
 
 const RATE: SampleRate = SampleRate(48_000.0);
 

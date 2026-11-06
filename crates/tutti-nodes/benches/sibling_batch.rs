@@ -42,8 +42,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use tutti_graph::{Cost, Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport};
 use tutti_graph::{ForkByClone, Unforkable};
 use tutti_nodes::BusStripNode;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 use wide::f32x8;
 
 const SR: f64 = 48_000.0;

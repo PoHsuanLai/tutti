@@ -157,5 +157,5 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 // `Samples` is the frame count `poll_into` and `pump` return, and the unit an
 // `AudioPump`'s capacity is given in — the same "needs it named here" reason.
 pub use tutti_types::pcm::BitDepth;
+pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 pub use tutti_types::{ChannelLayout, Samples};
-pub use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};

@@ -40,9 +40,9 @@ use tutti_graph::{
     Shape, Status,
 };
 use tutti_types::AtomicF32;
-use tutti_types::meter::{Meter, MeterMap};
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
 use tutti_types::{ChannelLayout, Reader, Tail};
+use tutti_types::{Meter, MeterMap};
 
 /// How far two beat onsets must differ to count as different beats.
 ///
@@ -652,7 +652,7 @@ mod tests {
     use tutti_graph::contract::{drive_input, prepared};
     use tutti_graph::{Offset, TransportChanges};
     use tutti_types::Frame;
-    use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
+    use tutti_types::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Bpm, FrameClock};
 
     const SR: f64 = 44_100.0;

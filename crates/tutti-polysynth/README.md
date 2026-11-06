@@ -27,7 +27,7 @@ from the values last set through it.
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SynthConfig,
 };
-use tutti_types::{graph::OutPort, graph::Source};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Amplitude, Hz, NodeKey, Resonance, SampleRate, Samples, Seconds, UnitParam};
 use tutti_graph::{Editor, Prepare};
 

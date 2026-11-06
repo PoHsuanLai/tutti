@@ -44,8 +44,8 @@ use tutti_core::WorkerPool;
 use tutti_graph::{Editor, Executor, Prepare, Transport, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 const FRAMES: usize = 256;

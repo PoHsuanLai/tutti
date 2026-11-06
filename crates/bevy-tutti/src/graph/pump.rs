@@ -1,7 +1,7 @@
 //! Moving frames between the engine's I/O edges, with the ECS owning the
 //! lifetime.
 //!
-//! [`tutti_types::io::pump`] is the whole of "recording" minus the loop and the
+//! [`tutti_types::pump`] is the whole of "recording" minus the loop and the
 //! stop condition, which its own docs call the caller's policy. [`AudioPump`] is
 //! that policy for a Bevy host: a [`Recorder`] running the loop on its own
 //! thread, a component holding it, and a drain system that collects it.
@@ -10,7 +10,7 @@
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
-//! use tutti_types::io::{AudioIn, AudioOut, OnEmpty};
+//! use tutti_types::{AudioIn, AudioOut, OnEmpty};
 //! use tutti_types::{ChannelLayout, Samples};
 //! use std::sync::{Arc, Mutex};
 //!
@@ -76,7 +76,7 @@
 //! it and all converge on one join:
 //!
 //! - [`AudioPump::stop`] clears the flag; [`drain_audio_pumps`] joins.
-//! - The source ends on its own (see [`OnEmpty`](tutti_types::io::OnEmpty));
+//! - The source ends on its own (see [`OnEmpty`](tutti_types::OnEmpty));
 //!   the same drain joins.
 //! - The entity despawns mid-pump; [`finalize_removed_pumps`] joins.
 //!
@@ -114,9 +114,9 @@ use bevy_ecs::prelude::*;
 
 use tutti_io::{Recorder, ThreadDriver};
 use tutti_types::Samples;
-use tutti_types::{io::AudioIn, io::AudioOut};
+use tutti_types::{AudioIn, AudioOut};
 
-/// How long the pump parks when a [`Starved`](tutti_types::io::OnEmpty::Starved)
+/// How long the pump parks when a [`Starved`](tutti_types::OnEmpty::Starved)
 /// source yields nothing: `tutti_io`'s default, long enough not to spin a
 /// core, far shorter than the ring it drains can overrun.
 pub use tutti_io::IDLE_PARK;
@@ -192,8 +192,8 @@ impl<S> AudioPump<S> {
 
     /// [`start`](Self::start) with the back-off named.
     ///
-    /// Only reached for a [`Starved`](tutti_types::io::OnEmpty::Starved) source —
-    /// an [`EndOfStream`](tutti_types::io::OnEmpty::EndOfStream) one never parks,
+    /// Only reached for a [`Starved`](tutti_types::OnEmpty::Starved) source —
+    /// an [`EndOfStream`](tutti_types::OnEmpty::EndOfStream) one never parks,
     /// it exits. How long to wait is the consumer's tuning; *whether* to wait is
     /// the source's nature, which is why only this half is an argument.
     pub fn start_with_park<I, O>(src: I, dst: O, capacity: Samples, park: Duration) -> Self
@@ -230,7 +230,7 @@ impl<S> AudioPump<S> {
     /// Whether the pump thread is still supposed to be running.
     ///
     /// This reports the *flag*, not the thread: an
-    /// [`EndOfStream`](tutti_types::io::OnEmpty::EndOfStream) source that ran out
+    /// [`EndOfStream`](tutti_types::OnEmpty::EndOfStream) source that ran out
     /// has exited while this still reads `true`, until the drain observes it. A
     /// pump refused at start was never running.
     #[must_use]

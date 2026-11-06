@@ -23,8 +23,8 @@ use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::OutPort, graph::Source};
 
 const RATE: SampleRate = SampleRate(44_100.0);
 

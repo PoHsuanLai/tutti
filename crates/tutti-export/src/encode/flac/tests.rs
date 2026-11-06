@@ -18,12 +18,12 @@ fn quantization_matches_the_engines_canonical_converter() {
     for level in [0.7f32, -0.7, 0.3, -0.3, 0.123_45, 0.999] {
         assert_eq!(
             f32_to_i32(level, BitDepth::Int16),
-            i32::from(tutti_types::pcm::f32_to_i16(level)),
+            i32::from(tutti_types::f32_to_i16(level)),
             "Int16: FLAC and tutti_types::pcm disagree on {level}"
         );
         assert_eq!(
             f32_to_i32(level, BitDepth::Int24),
-            tutti_types::pcm::f32_to_i24(level),
+            tutti_types::f32_to_i24(level),
             "Int24: FLAC and tutti_types::pcm disagree on {level}"
         );
     }

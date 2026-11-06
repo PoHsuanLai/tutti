@@ -26,18 +26,18 @@
 //! not make silently.
 //!
 //! The live driver is [`Recorder`](crate::Recorder), which pumps any live source
-//! ([`AudioIn`](tutti_types::io::AudioIn)) into this sink ([`AudioOut`])
+//! ([`AudioIn`](tutti_types::AudioIn)) into this sink ([`AudioOut`])
 //! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use tutti_types::AudioOut;
 use tutti_types::SampleRate;
-use tutti_types::io::AudioOut;
+use tutti_types::pcm::{BitDepth, Sample};
+use tutti_types::wav::{self, DataLimitExceeded};
 use tutti_types::{ChannelLayout, ChannelTopology};
-use tutti_types::{pcm::BitDepth, pcm::Sample};
-use tutti_types::{wav, wav::DataLimitExceeded};
 
 /// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
 ///

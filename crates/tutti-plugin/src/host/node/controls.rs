@@ -327,7 +327,7 @@ impl std::fmt::Debug for PluginControls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::meter::MeterMap;
+    use tutti_types::MeterMap;
 
     fn controls() -> PluginControls {
         PluginControls::new(Samples(0), PluginTail::default(), SampleRate(44_100.0))

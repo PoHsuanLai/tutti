@@ -13,7 +13,7 @@ use tutti_graph::{
     Cx, Event, EventKind, Harmony, HarmonyKind, Io, MAX_PORTS, Node, Offset, Prepare, Shape,
     SortedEvents, Status,
 };
-use tutti_types::meter::MeterMap;
+use tutti_types::MeterMap;
 use tutti_types::{ChannelLayout, Samples};
 
 use super::MidiIntake;

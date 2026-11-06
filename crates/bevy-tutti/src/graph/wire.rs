@@ -65,7 +65,7 @@
 //!
 //! # The value is the truth for edges and outputs
 //!
-//! [`rebuild`] derives a [`Topology`](tutti_types::graph::Topology) from the
+//! [`rebuild`] derives a [`Topology`](tutti_types::Topology) from the
 //! declarations, compares it against [`LiveGraph`] — one comparison, the whole
 //! change detection — and, when it differs, writes the ports that differ through
 //! `Graph::set_source` / `set_output_source`. A *value* decides those
@@ -74,7 +74,7 @@
 //! **Units are not the value's.** A node is added by
 //! [`spawn_audio_node`](super::SpawnAudioNode) and removed by the
 //! `On<Remove, AudioNode>` observer; the value names nodes by
-//! [`NodeKey`](tutti_types::graph::NodeKey) and never builds one. That split is
+//! [`NodeKey`](tutti_types::NodeKey) and never builds one. That split is
 //! deliberate and is what keeps a hosted plugin's C-pointer state, the sampler's
 //! butler-shared buffers and a queued crossfade alive across a rebuild — see the
 //! [`topology`] module docs for the two runtime constraints

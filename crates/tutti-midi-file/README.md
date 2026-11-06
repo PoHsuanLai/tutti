@@ -30,7 +30,7 @@ that only reads files never links CoreMIDI or the ALSA sequencer. Ports are in
 
 The codec works on **byte slices**, so a round trip needs no file at all. Write
 a note, read it back as a paired note positioned in `Beat` and measured in
-`BeatDuration` — the same `tutti-core` vocabulary the transport uses, which is
+`BeatDuration` — the same `tutti-types` vocabulary the transport uses, which is
 what lets an imported clip be placed without a conversion step:
 
 ```rust

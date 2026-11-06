@@ -115,7 +115,7 @@ fn dither_off_leaves_a_constant_perfectly_flat() {
     );
     assert_eq!(
         first,
-        tutti_types::pcm::f32_to_i16(0.25) as i32,
+        tutti_types::f32_to_i16(0.25) as i32,
         "undithered quantization must match the engine's canonical converter"
     );
 }

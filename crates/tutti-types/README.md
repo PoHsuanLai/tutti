@@ -8,8 +8,8 @@ the `AudioIn`/`AudioOut` I/O traits.
 The common definitions every other Tutti crate shares rather than duplicating —
 `tutti-core`, the graph, the plugin hosts, export, analysis. Use it directly
 when you need only the vocabulary (a crate that implements `AudioIn`, or one
-that only needs `Beat`); otherwise reach it through `tutti-core` or the `tutti`
-umbrella, which re-export it. What is in it:
+that only needs `Beat`); otherwise reach it through the `tutti` umbrella, which
+re-exports it as `tutti::types`. What is in it:
 
 - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
   trait, the measurement newtypes (`Hz`, `Seconds`, `Db`, `Beat`, `Bpm`,
@@ -50,7 +50,7 @@ umbrella, which re-export it. What is in it:
 and `tutti_types::AudioThreadCell` resolve directly — import from the root, or
 from `prelude` for the common subset, not through a module path. Most modules
 are private for that reason; the ones that stay public are the ones
-consumers name as modules (`tutti_types::io::AudioIn`).
+consumers name as modules (`tutti_types::AudioIn`).
 
 ## What this crate does not own
 

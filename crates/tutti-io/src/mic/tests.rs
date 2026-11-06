@@ -175,7 +175,7 @@ fn the_declared_shape_matches_what_the_graph_is_told() {
 fn the_mic_refuses_to_fork() {
     use tutti_graph::{Editor, ForkError, ForkMode, ForkTarget};
     use tutti_types::NodeKey;
-    use tutti_types::{graph::OutPort, graph::Source};
+    use tutti_types::graph::{OutPort, Source};
 
     let (ring, _prod) = ring_with(&[[1.0, 2.0]]);
     let prepare = Prepare::new(RATE, tutti_types::Samples(64));

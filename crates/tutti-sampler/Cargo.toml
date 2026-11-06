@@ -89,6 +89,8 @@ rayon = "1.10"
 
 # Thread priority
 thread-priority = "1.1"
+
+# `AtomicF64`, for the butler's shared cells.
 atomic_float = "1.1"
 
 [dev-dependencies]

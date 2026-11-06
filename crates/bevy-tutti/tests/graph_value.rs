@@ -52,7 +52,7 @@ fn node_id(app: &App, entity: Entity) -> AudioNode {
     *app.world().get::<AudioNode>(entity).expect("AudioNode")
 }
 
-fn live(app: &App) -> &tutti_types::graph::Topology {
+fn live(app: &App) -> &tutti_types::Topology {
     app.world().resource::<LiveGraph>().topology()
 }
 

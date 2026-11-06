@@ -32,8 +32,8 @@ use symphonia::core::audio::{AudioBuffer, Signal};
 use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
+use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
-use tutti_types::{io::AudioIn, io::OnEmpty};
 
 use crate::WaveError;
 use crate::decode::{decode_packet_into, first_audio_track, probe_path};

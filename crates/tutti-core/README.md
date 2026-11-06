@@ -54,7 +54,7 @@ does exactly this around a real device; here the block is pulled by hand, so
 the whole thing runs headless.
 
 ```rust
-use tutti_types::{graph::OutPort, graph::Source};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples, Tail};
 use tutti_core::{Engine, MotionEvent, Timeline, Transport};
 use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};

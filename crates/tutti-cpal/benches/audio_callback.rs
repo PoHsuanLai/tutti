@@ -24,8 +24,8 @@ use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_types::SampleRate;
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, InterleavedMut, NodeKey, Samples};
-use tutti_types::{graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 

@@ -30,10 +30,10 @@ use tutti_core::{Engine, FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transpo
 use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare};
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     At, Beat, Cents, ChannelLayout, Frame, InterleavedMut, LoopRange, NodeKey, SampleRate, Samples,
 };
-use tutti_types::{graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.

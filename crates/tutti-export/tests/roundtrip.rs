@@ -263,7 +263,7 @@ fn wav_and_flac_quantize_a_sample_identically() {
     // truncated (`as i32`) where `tutti_types::pcm` rounds, so 0.7 encoded as
     // 22936 in a FLAC and 22937 in a WAV from the same render. Fixed by making
     // the FLAC encoder call the shared helpers.
-    let canonical = tutti_types::pcm::f32_to_i16(level);
+    let canonical = tutti_types::f32_to_i16(level);
     let from_wav = (wav[0] * 32_767.0).round() as i16;
     assert_eq!(
         from_wav, canonical,

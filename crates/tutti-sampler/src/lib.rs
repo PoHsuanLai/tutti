@@ -69,7 +69,7 @@ pub mod testing;
 // The I/O edge vocabulary is defined once in `tutti-types`. Re-exported here
 // because the butler's refill path speaks it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
 // itself an `AudioOut`, both carrying their width as a runtime `ChannelLayout`.
-pub use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};
+pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
 // `Voice`'s memory tier) is `tutti-io`'s. Re-exported so a consumer building a

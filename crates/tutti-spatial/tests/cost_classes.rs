@@ -11,8 +11,8 @@ use tutti_graph::{
 };
 use tutti_nodes::ChannelSumNode;
 use tutti_spatial::VbapPannerNode;
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Azimuth, Beat, Bpm, ChannelLayout, Elevation, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 const SR: f64 = 48_000.0;
 /// Small enough that a stereo `Moderate` panner is under the packing grain.

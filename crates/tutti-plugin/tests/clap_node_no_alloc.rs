@@ -35,9 +35,7 @@ use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarit
 use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
 use tutti_types::{Beat, Bpm, Samples};
 use tutti_types::{BeatDuration, Depth, PhaseIncrement};
-use tutti_types::{
-    meter::BeatsPerBar, meter::MeterChange, meter::MeterMap, meter::NoteValue, meter::TimeSignature,
-};
+use tutti_types::{BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The graph's `MaxBlock`: blocks of 64 (as the engine rendered in passes

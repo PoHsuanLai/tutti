@@ -186,7 +186,7 @@ fn rms(samples: &[f32]) -> f64 {
 ///
 /// Mutation: `flac.rs`'s `f32_to_i32` swapped back to the historical
 /// truncating converter (`(clamped * 32767.0) as i32` in place of
-/// `tutti_types::pcm::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
+/// `tutti_types::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
 /// 22936 vs 22935. One LSB, which is the whole point: the float-tolerance
 /// draft of this test passed under exactly this mutation.
 #[test]

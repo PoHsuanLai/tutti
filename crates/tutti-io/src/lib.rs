@@ -45,4 +45,4 @@ pub use wave::Wave;
 // The traits this crate implements, re-exported so a consumer reaches the
 // vocabulary and its live impls from one place.
 pub use tutti_types::pcm::BitDepth;
-pub use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};
+pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};

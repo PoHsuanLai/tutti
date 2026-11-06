@@ -47,9 +47,12 @@ use tutti_graph::{
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::graph::{Edge, InPort, NodeKey, OutPort, Source};
 use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
 use tutti_types::{Compensation, Samples, Tail};
+use tutti_types::{
+    NodeKey,
+    graph::{Edge, InPort, OutPort, Source},
+};
 
 use crate::SessionNode;
 

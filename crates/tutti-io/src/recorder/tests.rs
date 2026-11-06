@@ -2,9 +2,9 @@ use super::*;
 use crate::WavOut;
 use crate::pump_loop::{ManualDriver, PumpPass};
 use tutti_types::ChannelLayout;
-use tutti_types::io::pump;
 use tutti_types::pcm::BitDepth;
-use tutti_types::{io::AudioIn, io::OnEmpty};
+use tutti_types::pump;
+use tutti_types::{AudioIn, OnEmpty};
 
 /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
 /// frames in bounded chunks, returning a short-then-zero count at

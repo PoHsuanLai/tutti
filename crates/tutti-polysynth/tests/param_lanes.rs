@@ -16,11 +16,11 @@ use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
 use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     AtomicF32, Beat, BeatDuration, Bpm, Cents, Depth, NodeKey, PhaseIncrement, SampleRate, Samples,
     Seconds, Spread, UnitParam,
 };
-use tutti_types::{graph::OutPort, graph::Source};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;

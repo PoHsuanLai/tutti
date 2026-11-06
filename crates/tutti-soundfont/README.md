@@ -22,7 +22,7 @@ This needs a `.sf2` on disk, so it is `no_run`.
 
 ```rust,no_run
 use std::fs::File;
-use tutti_types::{graph::OutPort, graph::Source};
+use tutti_types::graph::{OutPort, Source};
 use std::sync::Arc;
 use tutti_types::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};

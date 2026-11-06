@@ -23,8 +23,8 @@ use tutti_core::{MotionEvent, Transport};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterNode, SvfType};
+use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, NodeKey, Q, SampleRate, Samples};
-use tutti_types::{graph::Edge, graph::InPort, graph::OutPort, graph::Source};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

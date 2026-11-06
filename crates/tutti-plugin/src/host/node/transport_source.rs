@@ -29,7 +29,7 @@
 use tutti_graph::{Continuity, Cx, Offset, Transport};
 use tutti_types::Samples;
 use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
-use tutti_types::{meter::Meter, meter::MeterMap};
+use tutti_types::{Meter, MeterMap};
 
 use crate::protocol::TransportInfo;
 
@@ -475,11 +475,8 @@ mod tests {
     use std::time::Instant;
     use tutti_graph::{Env, LoopRange, Transport, TransportChanges, TransportHistory};
     use tutti_types::Latency;
+    use tutti_types::{BarNumber, BeatsPerBar, MeterChange, NoteValue, TimeSignature};
     use tutti_types::{Frame, FrameClock, Samples};
-    use tutti_types::{
-        meter::BarNumber, meter::BeatsPerBar, meter::MeterChange, meter::NoteValue,
-        meter::TimeSignature,
-    };
 
     const SR: SampleRate = SampleRate(48_000.0);
 

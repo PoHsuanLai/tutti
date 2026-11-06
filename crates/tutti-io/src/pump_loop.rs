@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tutti_types::Samples;
-use tutti_types::{io::AudioIn, io::AudioOut, io::OnEmpty, io::pump};
+use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 #[cfg(doc)]
 use crate::Recorder;

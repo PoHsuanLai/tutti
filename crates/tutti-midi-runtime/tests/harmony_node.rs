@@ -13,8 +13,8 @@ use tutti_graph::{
     Io, LoopRange, Node, Prepare, Shape, Status, Transport,
 };
 use tutti_midi_runtime::{HarmonyControls, HarmonyNode, TimedHarmony};
+use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
-use tutti_types::{graph::OutPort, graph::Source};
 
 const RATE: f64 = 48_000.0;
 const FRAMES_PER_BEAT: f64 = 24_000.0;

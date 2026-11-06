@@ -39,7 +39,7 @@ use tutti_types::ChannelLayout;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
 use tutti_types::pcm::BitDepth;
-use tutti_types::{io::AudioIn, io::OnEmpty};
+use tutti_types::{AudioIn, OnEmpty};
 
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};

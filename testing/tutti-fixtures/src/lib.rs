@@ -71,7 +71,11 @@ pub fn repo_root() -> &'static Path {
 /// If the file is absent, naming the full path (and, for a soundfont, how to
 /// fetch it). A missing asset fails the test; it never skips it.
 pub fn asset(rel: &str) -> PathBuf {
-    let path = repo_root().join("assets").join(rel);
+    // One component at a time, so the path and the panic are native on every
+    // platform (`rel` always uses `/`).
+    let path = rel
+        .split('/')
+        .fold(repo_root().join("assets"), |dir, part| dir.join(part));
     assert!(
         path.is_file(),
         "test asset missing at {}.{}",
@@ -362,14 +366,30 @@ mod tests {
         assert!(asset("audio/stereo.flac").is_file());
     }
 
-    /// A missing asset fails, naming the full path.
+    /// A missing asset fails, naming the full path in the platform's own
+    /// separators (the path is built component by component).
     ///
     /// Mutation: return the path without the `is_file` assert -> no panic ->
-    /// fails.
+    /// fails; join `rel` as one component -> on Windows the message has mixed
+    /// separators and no longer equals the native path -> fails there.
     #[test]
-    #[should_panic(expected = "assets/audio/no_such_file.wav")]
     fn a_missing_asset_panics_with_its_path() {
-        asset("audio/no_such_file.wav");
+        let native = repo_root()
+            .join("assets")
+            .join("audio")
+            .join("no_such_file.wav");
+        let panic = std::panic::catch_unwind(|| asset("audio/no_such_file.wav"))
+            .expect_err("a missing asset must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+            .expect("a string panic");
+        assert!(
+            message.contains(&native.display().to_string()),
+            "{message:?} does not name {}",
+            native.display()
+        );
     }
 
     /// Mutation: test `rel.starts_with("sound/")` in `asset` -> the hint is

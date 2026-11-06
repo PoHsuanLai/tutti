@@ -27,7 +27,6 @@ mod common;
 /// checkout and fails loudly with the resolved path, rather than skipping and
 /// passing without running.
 mod soundfont_spawn {
-    use std::path::PathBuf;
 
     use bevy_app::prelude::*;
     use bevy_asset::{AssetPlugin, Assets, Handle};
@@ -263,7 +262,6 @@ mod soundfont_spawn {
 /// checkout and fails loudly with the resolved path, rather than skipping and
 /// passing without running.
 mod midi_soundfont_audio {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use bevy_app::prelude::*;
@@ -526,7 +524,6 @@ mod midi_soundfont_audio {
 ///   (`input_ports`) → a note on channel 2 goes nowhere → silent → fails.
 /// - A rule for another channel (the check below) → silent.
 mod midi_route {
-    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use bevy_app::prelude::*;

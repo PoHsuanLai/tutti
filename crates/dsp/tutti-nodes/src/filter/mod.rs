@@ -1,19 +1,16 @@
-//! Frequency-domain filters: state-variable, Moog ladder, parametric EQ band,
-//! and the Linkwitz-Riley crossover.
+//! Filter nodes: state-variable, Moog ladder, parametric EQ band, and the
+//! Linkwitz-Riley crossover. The algorithms are `tutti-dsp`'s.
 
 mod crossover;
 pub mod eq_band;
 pub mod ladder;
-mod real;
 pub mod svf;
 
-pub use real::Real;
-
+pub use crossover::CrossoverNode;
 pub(crate) use crossover::Splits;
-pub use crossover::{Crossover, CrossoverError, CrossoverNode};
 pub use eq_band::{BandState, EqBandNode};
-pub use ladder::{LADDER_PARAMS, LadderCoeffs, LadderFilterNode, LadderType};
-pub use svf::{SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType};
+pub use ladder::{LADDER_PARAMS, LadderFilterNode};
+pub use svf::{SVF_PARAMS, SvfFilterNode};
 
 #[cfg(test)]
 pub(super) mod test_utils {

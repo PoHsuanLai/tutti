@@ -58,10 +58,20 @@
 //!   indices for frame-by-bin data; [`enum@Error`] and [`Result`].
 
 mod analysis;
+mod control;
 mod fft;
+mod filter;
+
+#[cfg(test)]
+mod test_support;
 
 pub use analysis::*;
+pub use control::COEFF_INTERVAL;
 pub use fft::{Complex32, FftScratch, RealFft, StagedRealFft};
+pub use filter::{
+    Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
+    SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
+};
 pub use tutti_types::ChannelLayout;
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a

@@ -11,8 +11,9 @@ use tutti_graph::{
 use tutti_types::{ChannelLayout, UnitAddr, UnitParam};
 
 use super::compressor::CompressorCore;
-use crate::filter::{Crossover, CrossoverError, Splits};
+use crate::filter::Splits;
 use crate::ramp::block_driven;
+use tutti_dsp::{Crossover, CrossoverError};
 
 /// The crossover frequencies a band count starts with.
 fn default_crossovers(bands: usize) -> &'static [Hz] {

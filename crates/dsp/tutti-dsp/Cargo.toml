@@ -32,6 +32,10 @@ ebur128 = "0.1"
 # CPUs. Same version as `Cargo.lock`'s.
 rustfft = { version = "6.4", default-features = false }
 
+# The filters' `Real` (`filter/real.rs`) calls `libm`'s pure-Rust
+# transcendentals, so results do not depend on the platform's C math library.
+libm = "0.2.15"
+
 # The `Error` enum's Display/Error impls.
 thiserror.workspace = true
 

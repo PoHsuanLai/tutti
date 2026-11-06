@@ -87,9 +87,13 @@ pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
 
 mod filter;
 pub use filter::{
-    BandState, Crossover, CrossoverError, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderCoeffs,
-    LadderFilterNode, LadderType, Real, SVF_PARAMS, SvfCoeffs, SvfFilterNode, SvfType,
+    BandState, CrossoverNode, EqBandNode, LADDER_PARAMS, LadderFilterNode, SVF_PARAMS,
+    SvfFilterNode,
 };
+// The types in the filter nodes' signatures stay reachable from here; the
+// algorithms behind them (`SvfCoeffs`, `LadderCoeffs`, `Crossover`) are
+// `tutti-dsp`'s only.
+pub use tutti_dsp::{CrossoverError, LadderType, Real, SvfType};
 
 mod dynamics;
 pub use dynamics::{

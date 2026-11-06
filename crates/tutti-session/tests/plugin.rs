@@ -488,6 +488,8 @@ fn renders_sound(s: &mut Session) -> bool {
 struct Drive {
     now: Instant,
     events: Vec<SessionEvent>,
+    /// Run when a reload job is handed out, before it is run.
+    on_reload_due: Option<Box<dyn Fn()>>,
 }
 
 impl Drive {
@@ -495,6 +497,7 @@ impl Drive {
         Self {
             now: Instant::now(),
             events: Vec::new(),
+            on_reload_due: None,
         }
     }
 
@@ -509,14 +512,19 @@ impl Drive {
         s.run_phase(Phase::Plugins, PhaseCx::at(self.now), &mut out);
         for event in out {
             if let SessionEvent::PluginReloadDue(job) = event {
+                if let Some(check) = &self.on_reload_due {
+                    check();
+                }
                 let landed = s.land_reload(job.run(), self.now);
                 self.events.extend(landed);
             } else {
                 self.events.push(event);
             }
         }
-        // The commit that puts a replacement into the executor's plan.
+        // The commit that puts a replacement into the executor's plan, and the
+        // collect that frees the plan's old unit on this thread.
         s.run_phase(Phase::Commit, PhaseCx::at(self.now), &mut Vec::new());
+        s.run_phase(Phase::Collect, PhaseCx::at(self.now), &mut Vec::new());
     }
 
     /// Steps until an event satisfies `stop` (10 s of wall time at most).
@@ -777,4 +785,128 @@ fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
         s.plugin(node).unwrap().liveness(),
         PluginLiveness::Recovering { .. }
     ));
+}
+
+/// Whether the process `pid` is gone (reaped, or dead and awaiting reaping).
+#[cfg(target_os = "linux")]
+fn process_ended(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit(')')
+            .next()
+            .is_some_and(|rest| rest.trim_start().starts_with(['Z', 'X'])),
+    }
+}
+
+/// A policy that suspects a hang after 16 blocks and 100 ms of the clock the
+/// test drives (20 ms a step).
+fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
+    tutti_session::RecoveryPolicy {
+        hang_blocks: 16,
+        hang_window: Duration::from_millis(100),
+        backoff: Duration::from_millis(1),
+        ..Default::default()
+    }
+}
+
+/// **A plugin that stops answering is ended, then replaced.** The probe's
+/// first server parks in `process()` for good (the once-file: a replacement
+/// does not): it never crashes, so only the abandoned-block count shows it.
+/// The session ends its server (the death reads "stopped answering"), the
+/// node is kept, and when the replacement's load is handed out the hung
+/// server is already gone: a live server is never left beside its
+/// replacement. The replacement renders.
+///
+/// Mutations (each run, each failed): the hang verdict not calling
+/// `terminate` (the hung server is never ended: no `PluginReloading`);
+/// `terminate` not latching its cause (the death reads "Bridge process
+/// crashed", not "stopped answering"); `terminate` not killing the server
+/// (the server is still alive when the load is handed out).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plugin_that_stops_answering_is_ended_and_replaced() {
+    let once = once_file("recovery-hang.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
+        ],
+        |b| b.plugin_recovery(Some(quick_hang_policy())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    let pid = s
+        .plugin(node)
+        .unwrap()
+        .handle()
+        .server_pid()
+        .expect("an out-of-process plugin has a server");
+
+    let mut drive = Drive::new();
+    drive.on_reload_due = Some(Box::new(move || {
+        assert!(
+            process_ended(pid),
+            "the hung server {pid} was still alive when its replacement was loaded"
+        );
+    }));
+    drive.until(&mut s, "recovered", |e| {
+        matches!(e, SessionEvent::PluginRecovered { .. })
+    });
+    let Some(SessionEvent::PluginReloading { cause, .. }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginReloading { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(cause.contains("stopped answering"), "{cause}");
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !renders_sound(&mut s) {
+        assert!(Instant::now() < deadline, "the replacement renders nothing");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A slow plugin that still answers is not declared hung.** Every block
+/// takes the probe 80 ms, far over the bridge's budget for a 512-frame block:
+/// blocks are abandoned all the time, and every one's reply comes back late.
+/// The run of abandoned blocks never reaches the policy's 16 (a reply, even
+/// an owed one, ends it), so the plugin is left alone for three seconds of
+/// the driven clock, and the count did rise (else the test proves nothing).
+///
+/// Mutation (run, failed): `Channels::note_settled` not clearing the count
+/// (an owed reply is no answer): the run climbs, the verdict ends the server,
+/// `PluginReloading` appears.
+#[test]
+fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
+    let mut s = session_built(
+        &[PASSTHROUGH, ("TUTTI_CLAP_PROBE_STALL_US", "80000")],
+        |b| b.plugin_recovery(Some(quick_hang_policy())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    let mut drive = Drive::new();
+    let mut most = 0;
+    for _ in 0..150 {
+        drive.step(&mut s);
+        most = most.max(s.plugin(node).unwrap().handle().starved_blocks());
+    }
+    assert!(
+        most > 0,
+        "no block was ever abandoned: the plugin is not slow enough"
+    );
+    assert!(
+        most < 16,
+        "{most} blocks abandoned in a row though replies kept coming"
+    );
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginReloading { .. })),
+        0
+    );
+    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
 }

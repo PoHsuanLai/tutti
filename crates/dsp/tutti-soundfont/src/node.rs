@@ -2,7 +2,7 @@
 //! event input, on its frame (to rustysynth's 8-frame chunk, see
 //! [`SoundFontUnit`]'s "How an event's offset is honoured").
 //!
-//! It **follows its graph's rate**: `prepare` rebuilds the synthesizer at the
+//! It follows its graph's rate: `prepare` rebuilds the synthesizer at the
 //! prepared rate (control thread, where that may allocate), keeping the
 //! preset.
 

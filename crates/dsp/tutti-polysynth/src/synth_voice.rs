@@ -17,10 +17,13 @@
 //! on the event's frame.
 
 use crate::bank::VoiceBank;
+use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
 use tutti_core::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
+use tutti_midi_types::MidiChannel;
+use tutti_midi_types::midi2::num::u7;
 
 /// A gate edge waiting for the next control step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +39,8 @@ enum GateEdge {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SynthVoice {
-    note: u8,
-    channel: u8,
+    note: u7,
+    channel: MidiChannel,
     velocity: f32,
     gate: bool,
     edge: GateEdge,
@@ -77,17 +80,15 @@ pub(crate) struct SynthVoice {
     envelope_level: f32,
     active: bool,
     mpe: MpeVoiceState,
-    mpe_enabled: bool,
-    mpe_pitch_bend_range: Semitones,
     base_note_freq: Hz,
     sub_voices: usize,
 }
 
 impl SynthVoice {
-    pub(crate) fn note(&self) -> u8 {
+    pub(crate) fn note(&self) -> u7 {
         self.note
     }
-    pub(crate) fn channel(&self) -> u8 {
+    pub(crate) fn channel(&self) -> MidiChannel {
         self.channel
     }
     /// The voice's base (pre-bend) frequency — reflects any Pitch 7.25 / 7.9
@@ -139,7 +140,7 @@ impl SynthVoice {
     }
 
     /// Update note and channel for legato retrigger (without re-gating).
-    pub(crate) fn update_legato(&mut self, note: u8, channel: u8) {
+    pub(crate) fn update_legato(&mut self, note: u7, channel: MidiChannel) {
         self.note = note;
         self.channel = channel;
     }
@@ -152,8 +153,8 @@ impl SynthVoice {
         };
 
         Self {
-            note: 0,
-            channel: 0,
+            note: u7::new(0),
+            channel: MidiChannel::FIRST,
             velocity: 0.0,
             gate: false,
             edge: GateEdge::None,
@@ -171,9 +172,7 @@ impl SynthVoice {
             lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
-            mpe: MpeVoiceState::default(),
-            mpe_enabled: config.mpe_enabled,
-            mpe_pitch_bend_range: config.mpe_pitch_bend_range,
+            mpe: MpeVoiceState::new(config.mpe_enabled, config.mpe_pitch_bend_range),
             base_note_freq: Hz(440.0),
             sub_voices: unison_count.max(1),
         }
@@ -181,8 +180,8 @@ impl SynthVoice {
 
     pub(crate) fn note_on(
         &mut self,
-        note: u8,
-        channel: u8,
+        note: u7,
+        channel: MidiChannel,
         velocity: f32,
         base_freq: impl Into<Hz>,
     ) {
@@ -216,8 +215,8 @@ impl SynthVoice {
     /// Return the voice to its just-built state. The caller silences its lanes
     /// (`VoiceBank::kill`); this resets only the control state.
     pub(crate) fn reset(&mut self) {
-        self.note = 0;
-        self.channel = 0;
+        self.note = u7::new(0);
+        self.channel = MidiChannel::FIRST;
         self.velocity = 0.0;
         self.envelope_level = 0.0;
         self.active = false;
@@ -244,10 +243,9 @@ impl SynthVoice {
     /// unlike [`base_note_freq`](Self::base_note_freq). The first sub-voice
     /// sounds exactly this without unison.
     pub(crate) fn sounding_freq(&self) -> Hz {
-        if self.mpe_enabled && self.mpe.pitch_bend_semitones.get().abs() > 0.001 {
-            Hz(self.pitch.get() * self.mpe.pitch_bend_semitones.to_pitch_ratio())
-        } else {
-            self.pitch
+        match self.mpe.effective_bend() {
+            Some(bend) => Hz(self.pitch.get() * bend.to_pitch_ratio()),
+            None => self.pitch,
         }
     }
 
@@ -319,11 +317,7 @@ impl SynthVoice {
 
     /// Velocity, MPE pressure and per-note gain, combined.
     fn voice_gain(&self) -> f32 {
-        let (pressure_gain, note_gain) = if self.mpe_enabled {
-            (1.0 + self.mpe.pressure * 0.5, self.mpe.gain.get())
-        } else {
-            (1.0, 1.0)
-        };
+        let (pressure_gain, note_gain) = self.mpe.gain_factors();
         self.velocity * pressure_gain * note_gain
     }
 
@@ -366,8 +360,8 @@ impl SynthVoice {
         }
 
         // Slide modulates the cutoff around its center.
-        if self.mpe_enabled && (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
-            cutoff *= (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
+        if let Some(slide) = self.mpe.effective_slide() {
+            cutoff *= (4.0_f32).powf(slide - SLIDE_CENTER);
         }
 
         Hz(cutoff)
@@ -400,36 +394,9 @@ impl SynthVoice {
         self.cc_resonance_value = value;
     }
 
-    pub(crate) fn set_mpe_pitch_bend(&mut self, semitones: impl Into<Semitones>) {
-        if self.mpe.detached {
-            return;
-        }
-        let semitones = semitones.into().get();
-        let range = self.mpe_pitch_bend_range.get();
-        self.mpe.pitch_bend_semitones = Semitones(semitones.clamp(-range, range));
-    }
-
-    pub(crate) fn set_mpe_pressure(&mut self, pressure: f32) {
-        if self.mpe.detached {
-            return;
-        }
-        self.mpe.pressure = pressure.clamp(0.0, 1.0);
-    }
-
-    pub(crate) fn set_mpe_slide(&mut self, slide: f32) {
-        if self.mpe.detached {
-            return;
-        }
-        self.mpe.slide = slide.clamp(0.0, 1.0);
-    }
-
-    pub(crate) fn set_mpe_gain(&mut self, gain: f32) {
-        if self.mpe.detached {
-            return;
-        }
-        // The clamp is per-note Volume's `0..1` range, narrower than
-        // `Amplitude`'s own floor-at-zero bound.
-        self.mpe.gain = Amplitude(gain.clamp(0.0, 1.0));
+    /// Stores one per-note controller (ignored once detached).
+    pub(crate) fn apply_mpe(&mut self, control: MpeControl) {
+        self.mpe.apply(control);
     }
 
     /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
@@ -450,7 +417,7 @@ impl SynthVoice {
     /// Update the per-note pitch-bend range (semitones) this voice clamps to.
     /// Set by the per-note pitch-bend sensitivity RPN (M2-104 §7.4.13).
     pub(crate) fn set_mpe_pitch_bend_range(&mut self, range: Semitones) {
-        self.mpe_pitch_bend_range = range;
+        self.mpe.set_bend_range(range);
     }
 
     /// Whether this voice applies its per-note (MPE) state at render time.
@@ -462,33 +429,19 @@ impl SynthVoice {
     /// [`PolySynth::mpe_enabled`]: crate::PolySynth::mpe_enabled
     #[cfg(test)]
     pub(crate) fn mpe_enabled(&self) -> bool {
-        self.mpe_enabled
+        self.mpe.is_enabled()
     }
 
-    /// Turn per-note (MPE) response on or off for this voice.
-    ///
-    /// Switching **off** also resets the per-note state rather than merely
-    /// ignoring it. The setters store unconditionally, so state accumulated
-    /// while disabled would otherwise sit latent and snap into effect the
-    /// instant MPE is re-enabled — a sounding note jumping in pitch or gain from
-    /// bends it received minutes earlier. Resetting makes "off" mean the note
-    /// renders at its note-on defaults, which is what both the caller and the
-    /// listener expect.
+    /// Turns per-note (MPE) response on or off; off also resets it.
     pub(crate) fn set_mpe_enabled(&mut self, enabled: bool) {
-        if self.mpe_enabled == enabled {
-            return;
-        }
-        self.mpe_enabled = enabled;
-        if !enabled {
-            self.reset_mpe();
-        }
+        self.mpe.set_enabled(enabled);
     }
 
     /// Override this voice's pitch to an absolute frequency (M2-104 §7.4.15.2/3:
     /// Registered Per-Note Controller #3 Pitch 7.25 and Note-On Attribute #3
     /// Pitch 7.9). The note number loses its pitch meaning and becomes an index;
     /// `freq` is the sounding pitch. This updates `base_note_freq` so per-note /
-    /// channel pitch bend correctly acts as an **offset from** the overridden
+    /// channel pitch bend correctly acts as an offset from the overridden
     /// pitch (per the spec), and drives the oscillators to it immediately.
     pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>) {
         let freq = freq.into();

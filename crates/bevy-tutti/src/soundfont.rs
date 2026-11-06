@@ -19,6 +19,8 @@ use std::sync::Arc;
 use crate::graph::{
     AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems, engine_ready,
 };
+use tutti_midi_types::MidiChannel;
+use tutti_midi_types::midi2::num::u7;
 use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
 
 /// A parsed `.sf2` as a loadable asset.
@@ -149,7 +151,7 @@ const _: () = {
 pub struct PlaySoundFont {
     /// The `.sf2` to play. No meaningful default; set it explicitly.
     pub source: Handle<SoundFontAsset>,
-    /// SoundFont preset (instrument) number, as the file numbers them.
+    /// SoundFont preset (instrument) number, `0..128`.
     pub preset: i32,
     /// MIDI channel the voice listens on, `0..16`.
     pub channel: i32,
@@ -205,10 +207,28 @@ pub fn soundfont_playback_system(
 
         let soundfont = source.0.clone();
         let sample_rate = config.sample_rate;
-        let (channel, preset) = (play.channel, play.preset);
+        // The component keeps plain integers for reflection; the unit takes
+        // checked MIDI values.
+        let (Some(channel), Some(program)) = (
+            u8::try_from(play.channel)
+                .ok()
+                .filter(|&c| c < MidiChannel::COUNT)
+                .map(MidiChannel::new),
+            u8::try_from(play.preset)
+                .ok()
+                .and_then(|p| u7::try_from(p).ok()),
+        ) else {
+            bevy_log::error!(
+                "PlaySoundFont: channel {} or preset {} is out of range",
+                play.channel,
+                play.preset
+            );
+            commands.entity(entity).remove::<PlaySoundFont>();
+            continue;
+        };
 
         let task = AsyncComputeTaskPool::get().spawn(async move {
-            SoundFontUnit::with_preset(soundfont, sample_rate, channel, preset)
+            SoundFontUnit::with_preset(soundfont, sample_rate, channel, program)
         });
 
         commands

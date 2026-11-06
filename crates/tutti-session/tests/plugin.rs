@@ -555,9 +555,9 @@ impl Drive {
 /// Mutations (each run, each failed): `install_reload` not calling
 /// `replace_plugin` (the node stays dead: no sound, no `PluginRecovered`);
 /// the job built with `state: None` (the parameter reads its default);
-/// `HostedPlugin::adopt`'s snapshot clearing left in place of the carry-over
-/// (the second recovery in `a_recovered_plugin_keeps_its_snapshot` restores
-/// nothing); the latency pair not read from the editor (`(before, before)`).
+/// `install_reload` not putting the snapshot back after the swap, which
+/// clears it (no recovery point after the first recovery); the latency pair
+/// not read after the swap (`(before, before)`).
 #[test]
 fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     const EXTRA: usize = 48;
@@ -658,6 +658,9 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
     );
     assert!(s.graph_ref().contains(node));
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    // The snapshot is still the node's recovery point: a second failure
+    // restores it again.
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
 
     // The state came back.
     let deadline = Instant::now() + Duration::from_secs(10);

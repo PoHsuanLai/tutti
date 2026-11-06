@@ -1,6 +1,6 @@
-# RustySynth
+# tutti-rustysynth
 
-RustySynth is a SoundFont MIDI synthesizer written in pure Rust, ported from [MeltySynth](https://github.com/sinshu/meltysynth).
+`tutti-rustysynth` is tutti's SoundFont MIDI synthesizer, a fork of Nobuaki Tanaka's [rustysynth](https://github.com/sinshu/rustysynth) (itself ported from [MeltySynth](https://github.com/sinshu/meltysynth)) that adds `Clone` support. It is written in pure Rust, and `tutti-soundfont` is its one dependent. The crate is named `tutti_rustysynth` in code.
 
 
 
@@ -101,4 +101,4 @@ sequencer.render(&mut left[..], &mut right[..]);
 
 ## License
 
-RustySynth is available under [the MIT license](LICENSE.txt).
+This crate is available under [the MIT license](LICENSE.txt); the copyright is the original author's.

@@ -5,10 +5,9 @@ authors = ["Nobuaki Tanaka"]
 edition.workspace = true
 rust-version.workspace = true
 
-description = "A SoundFont MIDI synthesizer written in pure Rust (Tutti fork with Clone support)"
-documentation = "https://docs.rs/rustysynth/latest/rustysynth/"
+description = "A SoundFont MIDI synthesizer written in pure Rust (tutti's fork of rustysynth, with Clone support)"
 readme = "README.md"
-repository = "https://github.com/PoHsuanLai/rustysynth"
+repository = "https://github.com/PoHsuanLai/Tutti"
 license = "MIT"
 keywords = ["soundfont", "midi", "synthesizer", "audio", "music"]
 categories = ["multimedia::audio"]

@@ -27,6 +27,15 @@ readonly EXCLUDES=(
 
 status=0
 
+# A moved root must fail here: grep over a missing directory finds nothing and
+# the gate would pass having read nothing.
+for root in crates testing; do
+  if [ -z "$(find "$root" -name '*.rs' -print -quit 2>/dev/null)" ]; then
+    echo "FAIL: $root/ holds no .rs file; was the layout changed?"
+    exit 1
+  fi
+done
+
 echo "==> chained tutti_X::tutti_Y:: paths"
 # Matches a tutti crate reached THROUGH another tutti crate. The trailing `::`
 # is required so a bare `pub use tutti_types;` (the declaration being removed,

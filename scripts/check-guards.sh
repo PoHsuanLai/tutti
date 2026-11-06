@@ -85,7 +85,20 @@ def guarded(body):
 
 
 bad, seen = [], 0
-for path in glob.glob("crates/tutti-clap-ffi/src/**/*.rs", recursive=True):
+
+
+# Mutation (run): pointing either glob at a wrong crate path (`tutti-clap-fff`,
+# `src/comm`) -> exits 1, "matches no file".
+def matches(pattern):
+    """The files `pattern` names; a pattern that names none is a moved path,
+    and a scan of nothing would pass."""
+    paths = glob.glob(pattern, recursive=True)
+    if not paths:
+        sys.exit(f"check-guards: {pattern} matches no file; was the crate moved?")
+    return paths
+
+
+for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s
@@ -94,7 +107,7 @@ for path in glob.glob("crates/tutti-clap-ffi/src/**/*.rs", recursive=True):
         if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
             bad.append((path, m.group(1)))
 
-for path in glob.glob("crates/tutti-vst3-ffi/src/com/*.rs"):
+for path in matches("crates/tutti-vst3-ffi/src/com/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s

@@ -71,8 +71,8 @@ real time.
 The four format hosts ([VST3](crates/tutti-vst3-host),
 [CLAP](crates/tutti-clap-host),
 [AU](crates/tutti-au-host),
-[VST2](crates/tutti-vst2-host)) sit under `tutti-plugin`, which
-is what you use; each speaks one plugin ABI.
+[VST2](crates/tutti-vst2-host)) are what `tutti-plugin` hosts; `tutti-plugin`
+is what you use, and each host speaks one plugin ABI.
 
 ## Quick start
 

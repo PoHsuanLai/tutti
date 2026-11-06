@@ -116,7 +116,10 @@ def attrs(path):
 
 bad, scanned = [], 0
 for name, HOST, FFI, OUTSIDE in FORMATS:
-    for path in sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True)):
+    host_files = sorted(glob.glob(f"{HOST}/src/**/*.rs", recursive=True))
+    if not host_files:
+        sys.exit(f"check-plugin-ffi: {HOST}/src matches no file; was the crate moved?")
+    for path in host_files:
         scanned += 1
         line = first_unsafe(path, False)
         if line:

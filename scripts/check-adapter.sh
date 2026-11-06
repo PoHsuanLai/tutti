@@ -121,6 +121,14 @@ cd "$(dirname "$0")/.."
 readonly ADAPTER_SRC=crates/bevy-tutti/src
 readonly SESSION_SRC=crates/tutti-session/src
 
+# A moved crate must fail here rather than leave both scans reading nothing.
+for dir in "$ADAPTER_SRC" "$SESSION_SRC"; do
+  if [ -z "$(find "$dir" -name '*.rs' -print -quit 2>/dev/null)" ]; then
+    echo "FAIL: $dir holds no .rs file; was the crate moved?"
+    exit 1
+  fi
+done
+
 # DENY: `type|owner, and what to call instead`. The owner is printed on a hit.
 readonly deny_list='
 Editor|tutti_session::Session and its Graph (the graph'"'"'s control half): Session::graph(), Graph::commit

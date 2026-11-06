@@ -261,7 +261,7 @@ a NaN anywhere in a layer, so a program is `Eq`. `value_at` and
 
 | | Native param port | Plugin parameter |
 |---|---|---|
-| Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/core/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block. `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
+| Knob | **The node's own `Param` cell** (`ParamSet::cell`, `crates/tutti-graph/src/controls.rs:113`), cloned into the lane at creation and loaded once per block. `write_param` writes it; nothing else does. | A lane-owned `AtomicF32`, written by `LaneControls::set_knob` (the API's writes and the plugin's GUI edits, §8.2) |
 | Range | **The port's range cell** (`Editor::set_param_range`, already a store with no commit, `editor.rs:904`). The port clamps per frame. The lane holds a read handle to the same cell (`ParamRanges` holds a `PackedAtomic<ParamRange>` per port, with a public accessor) and loads it once per block for the span only. | A lane-owned `PackedAtomic<ParamRange>`, loaded once per block for the span and for the clamp, which splits pieces at crossings (§2) |
 | Program | `ArcLend<ControlProgram>` (`LaneControls::publish`) | same |
 
@@ -300,7 +300,7 @@ is the curve's own segment, which has no in-flight start to glide from.
 
 **Beats.** `phase = frac(beat / per_cycle + offset)` from the transport's
 beat at the frame. The beat is closed form from the segment's frame count
-(`FrameClock`), live and offline alike (`crates/core/tutti-core/src/transport/offline.rs`,
+(`FrameClock`), live and offline alike (`crates/tutti-core/src/transport/offline.rs`,
 `OfflineTimeline::advance` and `beat`, with the test
 `a_block_on_a_beat_is_that_beat_exactly`), so it lands on the same bits at
 any block size. Seeks and loop wraps are followed; stopped, the beat holds.
@@ -333,7 +333,7 @@ counter starts at 1). The reference interpreter keeps its own clock.
 
 **Read at the input's time.** A node reads it through **`Cx::play_at(offset)`**,
 which answers at the input's arrival time, as `Cx::transport_at` does
-(`crates/core/tutti-graph/src/node.rs:875`, through
+(`crates/tutti-graph/src/node.rs:875`, through
 `Env::transport_before(.., arrival, history)`). `TransportHistory` is
 extended to carry `(play_epoch, play)` beside the transport, so a play start
 up to `arrival` frames back, in the previous block, is answered correctly.
@@ -381,8 +381,8 @@ program and the play clock; the lane keeps no phase state.
 A beat layer is never anchored: it stays locked to the bar.
 
 **Export == live, and where it does not hold.** An export renders a
-`ForkMode::Offline` fork (`crates/core/tutti-graph/src/fork.rs:490`) on a
-timeline rolling from its first frame (`crates/core/tutti-types/src/timeline.rs:54`),
+`ForkMode::Offline` fork (`crates/tutti-graph/src/fork.rs:490`) on a
+timeline rolling from its first frame (`crates/tutti-types/src/timeline.rs:54`),
 whose play clock is 0 there, as a live play start's is. So "play from beat
 X" and "export from beat X" give equal program, knob and inputs equal
 values, bit for bit, from that frame. It does not hold for:
@@ -407,7 +407,7 @@ stopped: the usual retrigger on play.
 
 A signal source's node sends `ParamSegment::foreign(source.0, …)` with its
 **raw** value into the lane's one event input. Fan-in merges by offset, then
-source order (`crates/core/tutti-graph/src/compile/mod.rs:1388-1394`), and
+source order (`crates/tutti-graph/src/compile/mod.rs:1388-1394`), and
 the address tells sources apart, so adding a source is an edge, never a new
 lane shape. The lane tracks each input's current segment in a fixed array
 (the port's `Ramp` arithmetic) and reads it at each point; an input that has
@@ -500,7 +500,7 @@ the play clock plus every corner.
 **Corners** (exact, whatever the step): an automation breakpoint; a
 square's edge, a saw's wrap, a random step; a triangle's peak; a drawn
 point; and **every zero crossing of a bipolar layer with a non-Linear
-curve**, because `shape()` curves `|x|` (`shape` in `crates/core/tutti-mod/src/shape.rs`):
+curve**, because `shape()` curves `|x|` (`shape` in `crates/tutti-mod/src/shape.rs`):
 the offset `sign(x)·f(|x|)` is continuous at a crossing (every curve has
 `f(0) = 0`; `Elastic` by a special case, its formula's limit being about
 −5e-4) with the same slope either side, but where `f''(0) ≠ 0` its
@@ -809,7 +809,7 @@ pub struct Adsr { pub attack: Seconds, pub decay: Seconds,
 pub enum RouteTarget { Param(TargetKey), Depth(RouteKey) }
 
 /// Named so it cannot collide with `routing`'s `Route`/`RouteTo` root
-/// exports (`crates/core/tutti-mod/src/lib.rs:45`) while both existed.
+/// exports (`crates/tutti-mod/src/lib.rs:45`) while both existed.
 pub struct RouteDecl {
     pub source: SourceKey,
     /// A target param, or another route's depth (`depth_by`).
@@ -911,7 +911,7 @@ open:
   `LayerId` collision (`LayerIdCollision`). The cycle refusal is the
   reconcile's (§6).
 
-| Module (`crates/core/tutti-mod/src`) | Fate |
+| Module (`crates/tutti-mod/src`) | Fate |
 |---|---|
 | `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `audio-automation`'s `CurveType::interpolate`, the editor's evaluation |
 | `curve.rs` | kept, moved into the floor |
@@ -1691,7 +1691,7 @@ pointer names this design.
 
 **Existing tests whose assertions change, with the reason:**
 
-- The floor, `crates/core/tutti-graph/tests/param_mod.rs`:
+- The floor, `crates/tutti-graph/tests/param_mod.rs`:
   - `an_event_sources_held_value_survives_another_source_joining`:
     reshaping the event source is now refused
     (`ShapedEventParamSource`); it asserts the refusal, then reconnects
@@ -1704,20 +1704,20 @@ pointer names this design.
     clamp rewrites neither) stands.
   - the differential proptest (`modulated_graphs_match_the_reference`): the
     generator follows the rule; one regression seed recorded.
-  - `crates/core/tutti-graph/src/history.rs`,
+  - `crates/tutti-graph/src/history.rs`,
     `a_counting_host_keeps_only_the_jumps_whatever_the_reach`: the size
     bound moves to 24..=28 KiB (a history piece carries the play reading).
 - **Unchanged** though listed when this was planned: `a_fork_carries_its_event_sources_ramps`,
-  `crates/core/tutti-graph/tests/parallel.rs:288` and
-  `crates/core/tutti-graph/tests/rt_no_alloc.rs:712`. Their ports' base is
+  `crates/tutti-graph/tests/parallel.rs:288` and
+  `crates/tutti-graph/tests/rt_no_alloc.rs:712`. Their ports' base is
   0, so base + event and event alone render the same; the fork test is
   still ported with the lane (below), when `ParamTap`'s seed stops being its
   mechanism.
-- The lane, `crates/dsp/tutti-nodes/tests/automation_segments.rs`:
+- The lane, `crates/tutti-nodes/tests/automation_segments.rs`:
   `an_unrepresentable_piece_is_linear_between_block_edges` and
   `a_curve_without_pieces_takes_the_fallback` assert block-edge sampling,
   which moves to the play-clock grid (§5.4).
-- The lane, `crates/dsp/tutti-nodes/tests/rt_no_alloc_modulation.rs:248`: its
+- The lane, `crates/tutti-nodes/tests/rt_no_alloc_modulation.rs:248`: its
   lanes become `ControlLaneNode`s and its elastic and sine lanes emit grid
   points; the no-alloc property stands.
 
@@ -2031,7 +2031,7 @@ No questions remain open. These were open in review and are now decided:
    (requirement 3). Re-binding the node on the plugin's rescan notice is
    still to do.
 2. **The in-process VST2 node drops parameter events**
-   (`crates/plugin/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
+   (`crates/tutti-plugin/src/format/vst2_in_process/node.rs:55-66`):
    the node runs the plugin delivery (requirements 1–5, with requirement 4 as
    amended: its fork is seeded from the live record), with the block as
    its chunk and each parameter's last point in the block set before the

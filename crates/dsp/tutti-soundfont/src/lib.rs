@@ -40,25 +40,12 @@ const MIDI_BUFFER_CAPACITY: usize = 256;
 /// The RustySynth `block_size` every unit is built at, in frames: the
 /// resolution of the unit's MIDI timing.
 ///
-/// A block is split at each event's offset (see "How an event's offset is
-/// honoured" on [`SoundFontUnit`]), but RustySynth serves frames out of an
-/// internal `block_size` chunk that it fills whole: voices render a chunk at a
-/// time and mix gains ramp across it, so an event applied part-way into an
-/// already-rendered chunk cannot affect it. Two offsets inside one chunk
-/// therefore sound together.
-///
-/// 8 is the smallest `block_size` RustySynth accepts
-/// (`SynthesizerSettings::check_block_size` rejects anything outside
-/// `8..=1024`), so timing resolves to 8 frames: 0.18 ms at 44.1 kHz.
-/// [`SoundFontUnit::new`] overrides whatever `block_size` the caller passes
-/// with this value.
-///
-/// # Cost
-///
-/// Measured in a release build with 8 sustained voices, per 64-frame block:
-/// 10.7 µs at a `block_size` of 8 against 5.8 µs at 64 (0.74% against 0.40%
-/// of the real-time budget). The rendered audio differs from a 64-frame
-/// chunk by at most about 5% of signal RMS, from finer gain-ramp granularity.
+/// RustySynth fills an internal chunk of this many frames whole, so an event
+/// applied part-way into a rendered chunk cannot affect it, and two offsets
+/// inside one chunk sound together. 8 is the smallest size it accepts (0.18 ms
+/// at 44.1 kHz). Measured per 64-frame block with 8 sustained voices, it costs
+/// 10.7 µs against 5.8 µs at a size of 64, and the audio differs from the
+/// 64-frame render by at most about 5% of signal RMS.
 pub const SYNTH_BLOCK_FRAMES: usize = 8;
 
 /// A stereo graph node that renders MIDI through a decoded SoundFont.
@@ -93,34 +80,22 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 ///
 /// # How an event's offset is honoured
 ///
-/// The block is **split at every distinct event offset**. For events at
-/// offsets `o1 < o2 < …`, the sequence is: render `[0, o1)`, apply every event
-/// at `o1`, render `[o1, o2)`, apply every event at `o2`, … , render the tail
-/// to the block's end. An event at offset `o` therefore affects the sample at
-/// `o` and every sample after it, and no sample before it.
+/// The block is split at every distinct event offset: render up to it, apply
+/// every event at it in arrival order, and carry on. An event at `o` affects
+/// the sample at `o` and every sample after it.
 ///
-/// **8 frames, not 1.** The split is exact, but rustysynth serves frames out
-/// of a [`SYNTH_BLOCK_FRAMES`]-frame internal chunk it fills whole, so two
-/// offsets inside one such chunk still collapse together. Offsets 0, 8, 16, …
-/// resolve distinctly and each shifts the output by exactly its own delta;
-/// offsets 16 and 20 do not. That is a floor rustysynth imposes — 8 is the
-/// smallest `block_size` it accepts — and the node declares it
-/// (`Resolution::Frames(8)`). Callers that need finer than 0.18 ms (at
-/// 44.1 kHz) cannot get it from this unit without a change inside the
-/// vendored synthesizer.
+/// The split is exact, but RustySynth fills a [`SYNTH_BLOCK_FRAMES`]-frame
+/// chunk whole, so offsets inside one chunk still sound together: 0, 8, 16, …
+/// resolve distinctly, 16 and 20 do not. The node declares this as
+/// `Resolution::Frames(8)`.
 ///
-/// Events at the same offset apply in the order they arrived, all of them
-/// before the first frame they govern is rendered.
+/// # The rate
 ///
-/// # The rate: fixed per synthesizer, followed per node
-///
-/// RustySynth builds its voice tables against a rate at construction and
-/// offers no way to re-rate them. [`new`](Self::new) builds at
+/// RustySynth cannot re-rate a synthesizer. [`new`](Self::new) builds at
 /// `Settings::sample_rate`; the node's `prepare` swaps in
-/// [`with_sample_rate`](Self::with_sample_rate) (on the control thread,
-/// keeping the preset) when its graph runs at another rate, so a graph never
-/// plays it at the wrong pitch. A rate RustySynth refuses (outside
-/// 16–192 kHz) leaves it at its own.
+/// [`with_sample_rate`](Self::with_sample_rate) (control thread, keeping the
+/// preset) when its graph runs at another rate. A rate RustySynth refuses
+/// (outside 16–192 kHz) leaves it at its own.
 pub struct SoundFontUnit {
     synthesizer: Synthesizer,
     sample_rate: SampleRate,
@@ -262,17 +237,10 @@ impl SoundFontUnit {
         );
     }
 
-    /// Render exactly `range` of this block's scratch buffers, advancing the
-    /// synthesizer by `range.len()` frames.
-    ///
-    /// `Synthesizer::render` accepts a buffer of any length and keeps its own
-    /// chunk cursor (`block_read`) across calls, refilling only when that
-    /// cursor runs out. Rendering `[0, 16)` then `[16, 64)` is therefore
-    /// sample-for-sample identical to rendering `[0, 64)` in one call given the
-    /// same synthesizer state, and a state change made between the two
-    /// segments takes effect at frame 16 (to the chunk resolution). No
-    /// buffering of our own sits in between, or it would delay events to the
-    /// next buffer refill.
+    /// Renders `range` of the scratch buffers, advancing the synthesizer by
+    /// `range.len()` frames. RustySynth keeps its own chunk cursor across
+    /// calls, so `[0, 16)` then `[16, 64)` equals `[0, 64)`, and a state change
+    /// between them takes effect at frame 16 (to the chunk size).
     fn render_range(&mut self, range: core::ops::Range<usize>) {
         if range.is_empty() {
             return;
@@ -283,11 +251,9 @@ impl SoundFontUnit {
         );
     }
 
-    /// Render `size` frames into the scratch, applying the first `count`
-    /// (sorted) events of `midi_buffer` at their offsets: the loop
-    /// [`SoundFontUnit`]'s "How an event's offset is honoured" documents. An
-    /// offset at or past `size` (which a graph's event input never carries)
-    /// is clamped to the last frame rather than dropped.
+    /// Renders `size` frames into the scratch, applying the first `count`
+    /// (sorted) events of `midi_buffer` at their offsets. An offset at or past
+    /// `size` is clamped to the last frame.
     fn render_events(&mut self, size: usize, count: usize) {
         let mut walk = BlockSplitter::new(size, Overrun::ClampToLastFrame);
         while let Some(step) = walk.step(&self.midi_buffer[..count]) {

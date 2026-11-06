@@ -69,7 +69,7 @@ pub enum VoiceMode {
     /// used, however large `max_voices` is.
     Mono,
     /// Monophonic with legato: a new note while one is already sounding takes
-    /// over the same voice **without** retriggering the envelope, so the note
+    /// over the same voice without retriggering the envelope, so the note
     /// glides or steps in at the envelope's current level. The first note of a
     /// phrase (nothing sounding) triggers normally. This is what makes
     /// [`PortamentoMode::LegatoOnly`](crate::PortamentoMode::LegatoOnly)

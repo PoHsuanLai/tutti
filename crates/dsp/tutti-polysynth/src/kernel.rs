@@ -56,7 +56,7 @@ pub(crate) fn sine(p: V) -> V {
 /// The two-sample polynomial band-limited step residual (Välimäki, 2007).
 ///
 /// `t` is the phase in turns and `dt` the increment; the result is the
-/// correction for a unit **upward** step at `t = 0`, scaled so that adding it
+/// correction for a unit upward step at `t = 0`, scaled so that adding it
 /// to a naive `-1 → +1` edge (a step of 2) rounds that edge. Nonzero only
 /// within one increment of the wrap.
 #[inline(always)]

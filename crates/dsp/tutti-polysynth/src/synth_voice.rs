@@ -441,7 +441,7 @@ impl SynthVoice {
     /// Registered Per-Note Controller #3 Pitch 7.25 and Note-On Attribute #3
     /// Pitch 7.9). The note number loses its pitch meaning and becomes an index;
     /// `freq` is the sounding pitch. This updates `base_note_freq` so per-note /
-    /// channel pitch bend correctly acts as an **offset from** the overridden
+    /// channel pitch bend correctly acts as an offset from the overridden
     /// pitch (per the spec), and drives the oscillators to it immediately.
     pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>) {
         let freq = freq.into();

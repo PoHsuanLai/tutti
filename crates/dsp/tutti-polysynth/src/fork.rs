@@ -6,18 +6,18 @@
 //! # A `ParamNode` fork
 //!
 //! The synth is a `tutti_graph::ParamNode`, inserted through
-//! `tutti_graph::param_parts`: the editor keeps a **template** (a clone taken
+//! `tutti_graph::param_parts`: the editor keeps a template (a clone taken
 //! at insert, never processed, sharing the live synth's `Param` cells) and
 //! the synth's `ParamSet`. A fork is the template's
 //! [`fork_fresh`](tutti_graph::ParamNode::fork_fresh) —
 //! [`fork_instance`](PolySynth::fork_instance): a clone with its `Param`
-//! cells **detached** (so a live move after the fork does not reach the
+//! cells detached (so a live move after the fork does not reach the
 //! render, nor a move on the fork the live synth) and every voice silenced —
-//! and then each param set to its **authored** value: what the host last
+//! and then each param set to its authored value: what the host last
 //! set through the `ParamSet`, not whatever a modulation source had added to
 //! the cell at the instant of the fork (the export runs its own modulation).
 //!
-//! What the fork does **not** carry: sounding voices, and by-value state the
+//! What the fork does not carry: sounding voices, and by-value state the
 //! live synth reached through MIDI after the template was taken (a pitch
 //! bend, a CC-driven cutoff, an MPE toggle) — the clip replays whatever of
 //! that it holds.

@@ -1,20 +1,15 @@
-//! The synth itself: a graph node that owns an
-//! allocator and a fixed set of voices, and renders their sum.
+//! The synth: a graph node that owns an allocator and a fixed set of voices,
+//! and renders their sum.
 //!
-//! This is where MIDI becomes sound. Everything else in the crate is a piece
-//! this module drives — allocation (`crate::voice`), per-note DSP
-//! (`crate::synth_voice`), glide, unison and tuning — and the MIDI 2.0 decoding
-//! that routes a per-note message to exactly one voice lives here because only
-//! this module holds both the note-id map and the voices.
+//! It decodes MIDI and drives allocation (`crate::voice`), per-note control
+//! (`crate::synth_voice`), glide, unison and tuning. Per-note messages are
+//! routed here because only this module holds both the note-id map and the
+//! voices.
 //!
-//! The render path is real-time: `Node::process` splits its block at MIDI
-//! event boundaries so events land on the right frame. It never allocates.
-//!
-//! The renderer works in control steps of at most `CONTROL_BLOCK` frames:
-//! each step the voices (and any glide) write their lane targets into the
-//! voice bank, and the bank renders the step, ramping every lane to its
-//! targets sample by sample. The mix of one step lives in the bank, so no
-//! scratch is sized to a block — any block length renders every frame.
+//! Rendering works in control steps of at most `CONTROL_BLOCK` frames: each
+//! step the voices and any glide write lane targets into the voice bank, which
+//! renders the step and ramps every lane to its targets. The mix lives in the
+//! bank, so no scratch is sized to a block.
 
 use crate::SynthConfig;
 use crate::bank::{CONTROL_BLOCK, VoiceBank};
@@ -83,14 +78,8 @@ pub struct PolySynth {
     master_volume: Param<Amplitude>,
     /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
-    /// Voices that finished this block, collected during the render loop and
-    /// drained after it.
-    ///
-    /// Sized to `max_voices` at construction and only ever `clear()`ed, so it
-    /// never reallocates: the worst case is every voice releasing at once,
-    /// which is exactly its capacity. Growing it would be a `malloc` on the
-    /// audio thread, which the allocation gates (`tests/rt_no_alloc.rs`)
-    /// watch for.
+    /// Voices that finished this span. Sized to `max_voices` and only cleared,
+    /// so it never allocates on the audio thread.
     finished_indices: Vec<usize>,
 }
 
@@ -115,9 +104,6 @@ impl PolySynth {
                 "max_voices must be at least 1".into(),
             ));
         }
-        // Read before `config` is moved into the struct below; this is the
-        // one-time sizing that keeps `finished_indices` off the allocator for
-        // the rest of its life.
         let max_voices = config.max_voices;
         let allocator_config = VoiceAllocatorConfig {
             max_voices: config.max_voices,
@@ -127,8 +113,7 @@ impl PolySynth {
         let allocator = VoiceAllocator::new(allocator_config);
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
-        // The engine's clamped count, not the config's raw one: the voices and
-        // the bank must agree with the sub-voice params the engine produces.
+        // The engine's clamped count: voices and bank must match its params.
         let unison_count = unison.as_ref().map_or(1, UnisonEngine::voice_count);
 
         let voices = (0..config.max_voices)
@@ -180,24 +165,15 @@ impl PolySynth {
 
     /// Returns whether per-note (MPE) expression is applied at render time.
     ///
-    /// Ask before concluding MPE is active: the per-note setters accept
-    /// unconditionally, and the per-note pitch-bend *sensitivity* RPN applies
-    /// whether or not this is on. So an MPE host could send an MCM, observe
-    /// sensitivity take effect, and reasonably infer MPE was enabled when it was
-    /// not — with every per-note bend, pressure, slide and gain being dropped at
-    /// render time. This is the accessor that distinguishes the two.
+    /// The per-note controllers and the bend-sensitivity RPN are accepted
+    /// either way, so a host cannot tell from their effect whether MPE is on.
     pub fn mpe_enabled(&self) -> bool {
         self.config.mpe_enabled
     }
 
-    /// Turns per-note (MPE) expression on or off, affecting sounding notes as
-    /// well as future ones.
-    ///
-    /// Disabling **resets** each voice's per-note state rather than merely
-    /// ignoring it. The per-note setters store unconditionally, so expression
-    /// received while disabled would otherwise sit latent and snap into effect
-    /// the instant MPE is re-enabled — a sounding note jumping in pitch or gain
-    /// from bends it received minutes earlier.
+    /// Turns per-note (MPE) expression on or off, for sounding notes as well
+    /// as future ones. Disabling resets each voice's per-note state, so nothing
+    /// received while off snaps into effect when it is re-enabled.
     pub fn set_mpe_enabled(&mut self, enabled: bool) {
         self.config.mpe_enabled = enabled;
         for voice in &mut self.voices {
@@ -296,7 +272,7 @@ impl PolySynth {
 
     /// Sets the number of stacked sub-voices per note, clamped to 1..=16.
     ///
-    /// **Allocates**: the voice bank is rebuilt at the new width (sounding
+    /// Allocates: the voice bank is rebuilt at the new width (sounding
     /// sub-voices keep their state). Call it from the control thread, never the
     /// audio thread.
     ///
@@ -418,11 +394,8 @@ impl PolySynth {
                     _ => {}
                 }
             }
-            // Registered per-note controllers carry a *semantic* controller enum
-            // (index resolved to Volume/Pan/Brightness/…). Only the dims a synth
-            // voice can apply are honored: Volume → per-note gain, Brightness
-            // (CC74 / SoundController index 5) → slide. Pan stays recognized-but-unwired
-            // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
+            // Registered per-note controllers: Volume is per-note gain, Brightness
+            // (CC74, SoundController 5) is slide. Pan has no per-note DSP yet.
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
@@ -445,21 +418,9 @@ impl PolySynth {
                     _ => {}
                 }
             }
-            // MIDI 2.0 Per-Note Management (M2-104 §7.4.5). D and S are distinct:
-            //
-            // **Detach (D=1)**: currently-playing notes on this note number keep
-            // their current per-note controller values but stop responding to any
-            // further per-note controllers (they play out frozen).
-            //
-            // **Reset (S=1)**: reset the note's per-note controllers to defaults
-            // (pitch bend→0, pressure→0, slide→center) while it keeps sounding
-            // *and* keeps responding.
-            //
-            // **D=1 & S=1**: the spec detaches the *currently playing* note (it
-            // holds its values) while the Reset "applies to future notes only".
-            // In this voice model a new note-on already starts at defaults, so the
-            // future-notes reset needs no state — the live voice is simply detached.
-            // Hence: detach wins for the live voice when both bits are set.
+            // Per-Note Management (M2-104 §7.4.5). Detach freezes the live
+            // note's controllers; Reset returns them to defaults. With both
+            // bits set Detach wins: a new note already starts at defaults.
             Cv2::PerNoteManagement(m) => {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 if m.detach() {
@@ -668,19 +629,9 @@ impl PolySynth {
             return;
         }
 
-        // Multiplicative, matching every other bend site. They must all agree,
-        // and the ratio is the only derivation they all *can* share:
-        // `handle_note_on` bends `porta.current()` and the glide
-        // (`control_step`) bends `porta.advance(..)` — interpolated
-        // frequencies with no note number to look up in the tuning table.
-        //
-        // Adding the bend to the note number and re-entering
-        // `fractional_note_to_freq` is the tempting alternative and is wrong
-        // here. On an equal-tempered table it gives the same number; on any
-        // unequal one it does not, so the same wheel position moves a held note
-        // and a newly-struck note to different pitches — 3.9 cents apart on
-        // just intonation. Agreeing everywhere is worth more than the table's
-        // shape applying to the bend interval itself.
+        // The bend is a frequency ratio at every site (note-on and glide bend
+        // interpolated frequencies, which have no note number). Adding it to
+        // the note number instead would differ on an unequal tuning table.
         let bend_multiplier = (self.config.pitch_bend_range * self.pitch_bend).to_pitch_ratio();
         let tuning = &self.config.tuning;
         self.voices
@@ -748,12 +699,9 @@ impl PolySynth {
     /// Works in control steps of at most [`CONTROL_BLOCK`] frames, so it
     /// renders every frame of any `frames` with no scratch sized to a block.
     ///
-    /// The steps sit on a fixed grid of [`CONTROL_BLOCK`] frames measured from
-    /// the block start, cut additionally at each MIDI event. So where the
-    /// control points fall does not depend on where events split the block —
-    /// and for any host block that is a multiple of the grid, not on the block
-    /// size either: one 512-frame block renders sample-identically to eight
-    /// 64-frame ones.
+    /// The steps sit on a fixed grid of [`CONTROL_BLOCK`] frames from the block
+    /// start, cut additionally at each MIDI event, so a host block that is a
+    /// multiple of the grid renders sample-identically however it is sized.
     fn render_span(
         &mut self,
         start: usize,
@@ -793,10 +741,7 @@ impl PolySynth {
             }
         }
 
-        // Index rather than `mem::take`: `take` would swap in a fresh `Vec` and
-        // free the outgoing one here, on the audio thread, then re-allocate it
-        // next span. (`drain` would not borrow-check: `mark_voice_finished`
-        // takes `&mut self`.) `clear()` above resets the length each span.
+        // Index, not `mem::take`: taking would free the `Vec` on the audio thread.
         for i in 0..self.finished_indices.len() {
             let slot_index = self.finished_indices[i];
             self.mark_voice_finished(slot_index);

@@ -3,9 +3,9 @@
 //!
 //! # Layout
 //!
-//! One **lane** per sub-voice. Voice `v`'s `U` unison sub-voices occupy lanes
+//! One lane per sub-voice. Voice `v`'s `U` unison sub-voices occupy lanes
 //! `v*U .. v*U + U`, so a note and its unison stack sit next to each other and
-//! share lane groups; eight lanes form a **group**, one `f32x8` per field. A
+//! share lane groups; eight lanes form a group, one `f32x8` per field. A
 //! group none of whose lanes belongs to a sounding voice is skipped outright,
 //! so the cost is proportional to the sounding sub-voices rounded up to a
 //! group, not to `max_voices`.
@@ -24,7 +24,7 @@
 //!
 //! # Control rate
 //!
-//! The synth writes lane **targets** once per control step (at most
+//! The synth writes lane targets once per control step (at most
 //! [`CONTROL_BLOCK`] frames apart, and at every MIDI event boundary). The render
 //! ramps each lane linearly from where it is to its target across the step, so
 //! pitch — including a portamento glide — changes every sample rather than in

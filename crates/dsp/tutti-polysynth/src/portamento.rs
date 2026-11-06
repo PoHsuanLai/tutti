@@ -30,7 +30,7 @@ pub enum PortamentoMode {
 
 /// The shape of the glide's progress over its duration.
 ///
-/// All three interpolate the pitch itself **logarithmically** — the glide is
+/// All three interpolate the pitch itself logarithmically — the glide is
 /// even in musical interval, not in [`Hz`] — and all three end exactly on the
 /// target. The curve only reshapes how the progress fraction advances.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -84,7 +84,7 @@ cargo fmt
 scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
 scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
-scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
+scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
@@ -311,7 +311,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   holds only code that names two or more engine crates, or the order they
   run in, has no `bevy` feature (`scripts/check-bevy-free.sh`) and
   re-exports no crate whole. `bevy-tutti` reaches the engine's composition
-  only through it (`scripts/check-adapter.sh`), and does not re-export it.
+  only through it, reads no clock but as a session phase's argument and holds
+  no `usize`/`Duration` limit const (`scripts/check-adapter.sh`, whose short
+  exception list names the lane that removes each), and does not re-export it.
 
 ## Unit types (MANDATORY)
 

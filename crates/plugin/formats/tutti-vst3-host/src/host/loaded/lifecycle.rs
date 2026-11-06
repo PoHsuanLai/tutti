@@ -13,7 +13,7 @@ impl Vst3Loaded {
     /// SDK allows those queries (`getBusCount`, `canProcessSampleSize`) only on
     /// an initialized component, so the result carries none, no MIDI and
     /// 32-bit only, whatever the plugin has. A loaded instance's
-    /// [`info`](Self::info) is the answer for them.
+    /// [`info`](tutti_plugin_types::Control::info) is the answer for them.
     ///
     /// # Errors
     ///

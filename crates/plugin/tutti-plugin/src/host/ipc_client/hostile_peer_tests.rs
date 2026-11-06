@@ -25,13 +25,15 @@ use super::PluginBridge;
 use crate::error::StateError;
 use crate::host::ipc_client::audio::BridgeThread;
 use crate::protocol::{
-    BridgeMessage, ChannelLayout, HostMessage, PROTOCOL_VERSION, ParamId, SampleFormat, SlabLayout,
+    BridgeMessage, ChannelLayout, HostMessage, Normalized, PROTOCOL_VERSION, ParamId, SampleFormat,
+    SlabLayout,
 };
 use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tutti_types::SampleRate;
 
 use interprocess::local_socket::{ListenerOptions, Stream, traits::Listener as _};
 
@@ -224,7 +226,7 @@ impl MockServer {
             path.clone(),
             slab,
             std::path::PathBuf::from("test.vst3"),
-            48_000.0,
+            SampleRate(48_000.0),
             state_progress_timeout,
         )
         .expect("bridge");
@@ -409,7 +411,9 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
             // Answer the first request, die on the second. Answering once is
             // what makes this "died mid-session" rather than "never worked".
             if SEEN.fetch_add(1, Ordering::SeqCst) == 0 {
-                Action::Reply(Box::new(BridgeMessage::ParameterValue { value: Some(0.5) }))
+                Action::Reply(Box::new(BridgeMessage::ParameterValue {
+                    value: Some(Normalized::new(0.5)),
+                }))
             } else {
                 Action::Die
             }
@@ -420,7 +424,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
     let first = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         first,
-        Some(0.5),
+        Some(Normalized::new(0.5)),
         "the mock must answer the first request, or this test is just \
          `bridge_with_no_server` under another name"
     );
@@ -915,15 +919,15 @@ fn a_refused_rate_is_reported_without_crashing_the_bridge() {
         }
         _ => Action::Silent,
     });
-    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     assert_eq!(
         mock.bridge.rate_refusal(),
-        Some((96_000.0, "no".to_string()))
+        Some((SampleRate(96_000.0), "no".to_string()))
     );
     assert!(!mock.bridge.is_crashed(), "a refusal is not a crash");
 
-    assert!(mock.bridge.set_sample_rate_rt(48_000.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(48_000.0)));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_none()));
     assert!(!mock.bridge.is_crashed());
 }
@@ -946,15 +950,17 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
             gap: Duration::from_millis(800),
         },
         HostMessage::GetParameter { .. } => {
-            Action::Reply(Box::new(BridgeMessage::ParameterValue { value: Some(0.5) }))
+            Action::Reply(Box::new(BridgeMessage::ParameterValue {
+                value: Some(Normalized::new(0.5)),
+            }))
         }
         _ => Action::Silent,
     });
     mock.bridge.set_rate_timeout(Duration::from_millis(300));
-    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     let (rate, reason) = mock.bridge.rate_refusal().unwrap();
-    assert_eq!(rate, 96_000.0);
+    assert_eq!(rate, SampleRate(96_000.0));
     assert!(reason.contains("did not answer"), "{reason}");
     assert!(
         !mock.bridge.is_crashed(),
@@ -965,7 +971,11 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
     // command finds the late answer ahead of its own reply and applies it.
     std::thread::sleep(Duration::from_millis(1_000));
     let value = mock.bridge.parameter(ParamId::new(1));
-    assert_eq!(value, Some(0.5), "the reply is its own, not the late one");
+    assert_eq!(
+        value,
+        Some(Normalized::new(0.5)),
+        "the reply is its own, not the late one"
+    );
     assert!(
         wait_until(|| mock.bridge.rate_refusal().is_none()),
         "the late answer clears the refusal"
@@ -1002,14 +1012,14 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
         _ => Action::Silent,
     });
     mock.bridge.set_rate_timeout(Duration::from_millis(300));
-    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
     assert!(wait_until(|| mock.bridge.rate_refusal().is_some()));
     // B, queued behind A's wait; its answer follows A's on the stream.
-    assert!(mock.bridge.set_sample_rate_rt(88_200.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(88_200.0)));
     std::thread::sleep(Duration::from_millis(2_000));
     assert_eq!(
         mock.bridge.rate_refusal(),
-        Some((88_200.0, "no".to_string())),
+        Some((SampleRate(88_200.0), "no".to_string())),
         "the later answer stands"
     );
     assert!(!mock.bridge.is_crashed());
@@ -1024,7 +1034,7 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
 #[test]
 fn dropping_the_bridge_ends_a_hung_rate_change() {
     let mut mock = MockServer::start("hung_rate", |_| Action::Silent);
-    assert!(mock.bridge.set_sample_rate_rt(96_000.0));
+    assert!(mock.bridge.set_sample_rate_rt(SampleRate(96_000.0)));
     // Let the bridge thread reach the wait.
     std::thread::sleep(Duration::from_millis(300));
 

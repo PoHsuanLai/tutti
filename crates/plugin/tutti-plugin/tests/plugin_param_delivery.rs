@@ -51,6 +51,7 @@ fn read(handle: &PluginHandle, i: usize) -> Option<f32> {
     handle
         .params()
         .parameter_value(ParamId::new((i32::try_from(i).expect("small")) as u32))
+        .map(|v| v.get() as f32)
 }
 
 /// A rolling graph with the plugin fed by `lanes`.

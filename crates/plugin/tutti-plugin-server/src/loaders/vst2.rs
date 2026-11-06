@@ -217,8 +217,13 @@ impl Vst2Instance {
         if let Some(loaded) = self.loaded_ref() {
             // An empty queue is an empty `Vec`, which allocates nothing.
             for (index, value) in loaded.drain_param_changes() {
-                self.events
-                    .push(AsyncEvent::ParameterChanged { index, value });
+                // A report with a negative index names no parameter.
+                if let Ok(index) = u32::try_from(index) {
+                    self.events.push(AsyncEvent::ParameterChanged {
+                        index: ParamId::new(index),
+                        value: Normalized::new(f64::from(value)),
+                    });
+                }
             }
         }
         std::mem::take(&mut self.events)

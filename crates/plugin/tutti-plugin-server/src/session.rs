@@ -12,26 +12,28 @@ use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::Result;
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, ContentScale, HostMessage, IpcMidiEvent, IpcMidiEventVec,
-    MAX_STATE_BYTES, MidiEventVec, Normalized, ParameterQueue, SampleFormat, WindowHandle,
-    midi_from_wire,
+    AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
+    ParameterQueue, SampleFormat, WindowHandle,
 };
 
-/// Convert a block's plugin MIDI-out for the wire. Already capped at
+/// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
 /// carries at most that many; `dropped` is what the cap cost this block, from
 /// a pathological plugin, and is logged.
-fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> IpcMidiEventVec {
+fn encode_midi_out(events: &MidiEventVec, dropped: usize) -> MidiEventVec {
     if dropped > 0 {
         tracing::warn!(
             "plugin emitted {} MIDI events this block; dropped {dropped} past the cap",
             events.len() + dropped,
         );
     }
-    events.iter().map(IpcMidiEvent::from).collect()
+    events.clone()
 }
 
 /// What [`Session::handle`] asks the transport loop to do.
+// One value per message, moved once to the transport loop; a `BridgeMessage`
+// carries a block's inline MIDI list.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
@@ -150,7 +152,7 @@ impl Session {
                 block_size,
                 preferred_format,
                 shm_name: _,
-            } => self.handle_load(path, sample_rate, block_size, preferred_format),
+            } => self.handle_load(path, sample_rate.get(), block_size, preferred_format),
             M::UnloadPlugin => {
                 self.plugin = None;
                 self.rate_refused = None;
@@ -159,7 +161,7 @@ impl Session {
             }
 
             M::ProcessAudio(data) => {
-                let midi = midi_from_wire(&data.midi_events);
+                let midi = &data.midi_events;
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
@@ -172,18 +174,16 @@ impl Session {
                 self.handle_process(AudioBlock {
                     seq: data.seq,
                     num_samples: data.num_samples,
-                    midi: &midi,
+                    midi,
                     extras: Some(extras),
                 })
             }
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    // The wire carries a bare `f32` from another process, so
-                    // this is where an out-of-range or NaN value would enter a
-                    // live plugin. `Normalized::new` is the clamp, applied once
-                    // at the boundary rather than trusted from the peer.
-                    let value = Normalized::new(value as f64);
+                    // The wire's decode is the clamp (`Normalized::new`), so an
+                    // out-of-range or NaN value from the peer never reaches a
+                    // live plugin as such.
                     plugin.instance_mut().set_parameter(param_id, value);
                 }
                 Ok(Reaction::None)
@@ -198,7 +198,7 @@ impl Session {
                 let value = self
                     .plugin
                     .as_mut()
-                    .map(|p| p.instance_mut().get_parameter(param_id) as f32);
+                    .map(|p| Normalized::new(p.instance_mut().get_parameter(param_id)));
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
@@ -282,12 +282,12 @@ impl Session {
                 // leaves it silent (`handle_process` publishes nothing) and
                 // the host is told, because a rolled-back plugin would
                 // otherwise render at its old rate against the host's blocks.
-                self.clock.sample_rate = rate;
+                self.clock.sample_rate = rate.get();
                 let error = match self.plugin.as_mut() {
-                    Some(plugin) => match plugin.instance_mut().set_sample_rate(rate) {
+                    Some(plugin) => match plugin.instance_mut().set_sample_rate(rate.get()) {
                         Ok(()) => None,
                         Err(e) => {
-                            tracing::warn!(requested = rate, "sample rate not applied: {e}");
+                            tracing::warn!(requested = %rate, "sample rate not applied: {e}");
                             Some(e.to_string())
                         }
                     },
@@ -455,7 +455,7 @@ impl Session {
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
                 seq,
-                midi_out: IpcMidiEventVec::new(),
+                midi_out: MidiEventVec::new(),
             }
             .into());
         }
@@ -474,7 +474,7 @@ impl Session {
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
                 seq,
-                midi_out: IpcMidiEventVec::new(),
+                midi_out: MidiEventVec::new(),
             }
             .into());
         };
@@ -622,7 +622,7 @@ mod tests {
     #[cfg(feature = "clap")]
     use tutti_plugin::server::Features;
     use tutti_plugin::server::{
-        IpcMidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
+        MidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -695,7 +695,7 @@ mod tests {
                 HostMessage::ProcessAudio(Box::new(tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 256,
-                    midi_events: IpcMidiEventVec::new(),
+                    midi_events: MidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
@@ -715,7 +715,7 @@ mod tests {
                 "SetParameter",
                 HostMessage::SetParameter {
                     param_id: ParamId::new(0),
-                    value: 0.5,
+                    value: Normalized::new(0.5),
                 },
                 Silent,
             ),
@@ -756,12 +756,14 @@ mod tests {
     fn set_sample_rate_no_plugin_updates_clock() {
         let mut s = Session::new();
         let r = s
-            .handle(HostMessage::SetSampleRate { rate: 96000.0 })
+            .handle(HostMessage::SetSampleRate {
+                rate: tutti_plugin_types::SampleRate(96000.0),
+            })
             .unwrap()
             .into_reply();
         assert!(matches!(
             r,
-            BridgeMessage::SampleRateSet { rate, error: None } if rate == 96000.0
+            BridgeMessage::SampleRateSet { rate, error: None } if rate.get() == 96000.0
         ));
         assert_eq!(s.clock.sample_rate, 96000.0);
     }
@@ -813,7 +815,7 @@ mod tests {
         let err = s
             .handle(HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
-                sample_rate: 44100.0,
+                sample_rate: tutti_plugin_types::SampleRate(44100.0),
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: "x".into(),
@@ -853,7 +855,7 @@ mod tests {
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
             path: std::path::PathBuf::from(clap_plugin()),
-            sample_rate: 44100.0,
+            sample_rate: tutti_plugin_types::SampleRate(44100.0),
             block_size: 512,
             preferred_format,
             shm_name: name.to_string(),
@@ -925,9 +927,11 @@ mod tests {
         let (mut s, shm) = load_clap("rate_refusal_cycle", SampleFormat::Float64);
         assert_eq!(s.clock.format, SampleFormat::Float64, "fixture");
         let set = |s: &mut Session, rate: f64| {
-            s.handle(HostMessage::SetSampleRate { rate })
-                .unwrap()
-                .into_reply()
+            s.handle(HostMessage::SetSampleRate {
+                rate: tutti_plugin_types::SampleRate(rate),
+            })
+            .unwrap()
+            .into_reply()
         };
 
         let accepted = set(&mut s, 48000.0);
@@ -947,7 +951,7 @@ mod tests {
             matches!(
                 &refused,
                 BridgeMessage::SampleRateSet { rate, error: Some(e) }
-                    if *rate == 96000.0 && !e.is_empty()
+                    if rate.get() == 96000.0 && !e.is_empty()
             ),
             "the host is told, with a reason: {refused:?}"
         );
@@ -1311,7 +1315,7 @@ mod tests {
         let r = s
             .handle(HostMessage::SetParameter {
                 param_id,
-                value: 0.5,
+                value: Normalized::new(0.5),
             })
             .unwrap();
         assert_none(r);
@@ -1417,7 +1421,9 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("set_sr_clap", SampleFormat::Float32);
         let r = s
-            .handle(HostMessage::SetSampleRate { rate: 96000.0 })
+            .handle(HostMessage::SetSampleRate {
+                rate: tutti_plugin_types::SampleRate(96000.0),
+            })
             .unwrap()
             .into_reply();
         assert!(matches!(
@@ -1450,7 +1456,7 @@ mod tests {
                 tutti_plugin::server::ProcessAudioData {
                     seq: 0,
                     num_samples: 512,
-                    midi_events: IpcMidiEventVec::new(),
+                    midi_events: MidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
@@ -1477,7 +1483,7 @@ mod tests {
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
             path: bundle,
-            sample_rate: 48_000.0,
+            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: name.to_string(),
@@ -1632,7 +1638,7 @@ mod tests {
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
             path: crate::test_utils::vst2_probe_staged_path().to_path_buf(),
-            sample_rate: 48_000.0,
+            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "idle_vst2".to_string(),
@@ -1674,7 +1680,7 @@ mod tests {
         let mut s = Session::new();
         s.handle(HostMessage::LoadPlugin {
             path: bundle,
-            sample_rate: 48_000.0,
+            sample_rate: tutti_plugin_types::SampleRate(48_000.0),
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "refit_vst3".to_string(),

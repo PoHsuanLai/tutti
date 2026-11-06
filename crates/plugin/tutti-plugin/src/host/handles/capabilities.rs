@@ -26,6 +26,8 @@
 
 use std::ffi::c_void;
 
+use tutti_types::SampleRate;
+
 use crate::error::{EditorError, StateError};
 use crate::protocol::{
     AutomationMode, Normalized, ParamId, ParameterInfo, Preset, PresetId, RenderMode,
@@ -53,7 +55,7 @@ pub trait HostParams: Send + Sync {
     /// `None` if unavailable, including when `id` uses the other addressing
     /// model, which addresses no parameter of this backend. See
     /// [`ParamId`].
-    fn parameter_value(&self, id: ParamId) -> Option<f32>;
+    fn parameter_value(&self, id: ParamId) -> Option<Normalized>;
 
     /// Writes one parameter value, for a UI knob or an initial value.
     ///
@@ -128,7 +130,7 @@ pub trait HostParams: Send + Sync {
 
     /// The sample rate (Hz) the plugin refused and its reason, while it is
     /// refused. Defaults to `None`: an in-process backend cannot refuse.
-    fn rate_refusal(&self) -> Option<(f64, String)> {
+    fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         None
     }
 

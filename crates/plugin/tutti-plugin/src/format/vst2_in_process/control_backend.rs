@@ -45,13 +45,13 @@ impl HostParams for InProcessVst2Backend {
         Some(self.inner.lock().parameter_list())
     }
 
-    fn parameter_value(&self, id: ParamId) -> Option<f32> {
+    fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
         // Forwarded, not re-wrapped: `Control::parameter` already returns
         // `None` for a plugin exposing no `getParameter`, which is exactly this
         // trait's "unavailable". Wrapping it in `Some` would report a missing
         // accessor as a present value. An id the plugin does not have takes the
         // same `None`.
-        Control::parameter(&**self.inner.lock(), id).map(|v| v.get() as f32)
+        Control::parameter(&**self.inner.lock(), id)
     }
 
     fn set_parameter_value(&self, id: ParamId, value: Normalized) {
@@ -226,7 +226,10 @@ impl HostEditor for InProcessVst2Backend {
         // sink callback for the subprocess backend (which fires on the
         // bridge thread). After the lock is released: a callback may call back.
         for (index, value) in param_changes {
-            self.param_sink.fire(index as u32, value);
+            if let Ok(index) = u32::try_from(index) {
+                self.param_sink
+                    .fire(ParamId::new(index), Normalized::new(f64::from(value)));
+            }
         }
         use crate::handles::PluginInvalidation;
         if let Some(samples) = changes.latency {

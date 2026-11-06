@@ -48,7 +48,7 @@ fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
             reason: cause.to_string(),
         },
         tutti_vst3_host::Vst3Error::PluginError { stage, code } => {
-            BridgeError::PluginError { stage, code }
+            BridgeError::FormatCode { stage, code }
         }
         _ => BridgeError::LoadFailed {
             path: path.to_path_buf(),

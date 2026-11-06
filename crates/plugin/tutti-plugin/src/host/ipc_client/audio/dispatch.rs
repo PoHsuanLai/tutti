@@ -8,13 +8,14 @@ use super::progress::StateProgress;
 use crate::error::{BridgeError, Result, StateError};
 use crate::host::node::MidiIntake;
 use crate::protocol::{
-    BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ParamId, ParameterChanges, ParameterPoint,
-    ParameterQueue, ProcessAudioData, midi_from_wire,
+    BridgeMessage, HostMessage, ParamId, ParameterChanges, ParameterPoint, ParameterQueue,
+    ProcessAudioData,
 };
 use crate::util::transport::control::{self as ipc, ControlStream, PartialFrame};
 use crate::util::transport::shm::RING_SLOTS;
 use crate::util::transport::state_chunk::{self, ChunkError, Reassembler};
 use std::time::Duration;
+use tutti_types::SampleRate;
 
 /// How many block periods the bridge thread will wait for a `ProcessAudio`
 /// reply before abandoning the block.
@@ -119,7 +120,8 @@ const MAX_BEHIND: u64 = RING_SLOTS as u64 - 1;
 ///
 /// `num_samples`/`rate` stay raw: both come off the IPC wire, where the unit
 /// mandate stops.
-fn process_timeout(num_samples: usize, rate: f64) -> Duration {
+fn process_timeout(num_samples: usize, rate: SampleRate) -> Duration {
+    let rate = rate.get();
     let rate = if rate.is_finite() && rate > 0.0 {
         rate
     } else {
@@ -319,7 +321,6 @@ impl Owed {
             self.count -= 1;
             match Self::take_one(stream, inbox, &mut self.partial) {
                 Ok(BridgeMessage::AudioProcessed { seq, midi_out, .. }) => {
-                    let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
                     channels.push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
                     taken += 1;
                 }
@@ -395,7 +396,7 @@ pub(super) fn handle(
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 seq: payload.seq,
                 num_samples: payload.num_samples,
-                midi_events: payload.midi_events.iter().map(IpcMidiEvent::from).collect(),
+                midi_events: payload.midi_events.clone(),
                 param_changes: core::mem::take(&mut payload.param_changes),
                 note_expression: core::mem::take(&mut payload.note_expression),
                 chords: core::mem::take(&mut payload.chords),
@@ -487,12 +488,9 @@ pub(super) fn handle(
             };
             match reply {
                 BridgeMessage::AudioProcessed { seq, midi_out, .. } => {
-                    // Convert IpcMidiEvent → MidiEvent HERE, on the bridge
-                    // thread (off-RT). The RT thread only drains the built
-                    // list — no per-event conversion, no heap traffic on
-                    // the audio thread. Past the cap the server's list is
-                    // cut (`midi_from_wire`).
-                    let midi_out = midi_from_wire(&midi_out);
+                    // The wire adapter already decoded the list on the bridge
+                    // thread (off-RT) and refused one past the cap; the RT
+                    // thread only drains it.
                     // The reply now carries MIDI only; whether the *audio* is
                     // there is settled by the slab's sequence numbers, which the
                     // server published before sending this. The echoed `seq` is
@@ -559,7 +557,6 @@ pub(super) fn handle(
                 match reply {
                     BridgeMessage::AudioProcessed { seq, midi_out, .. } if owed.count > 0 => {
                         owed.count -= 1;
-                        let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
                         channels
                             .push_audio_response(AudioResponse::AudioProcessed { seq, midi_out });
                         channels.note_settled(1);
@@ -838,7 +835,7 @@ fn recv_state_reply(
 pub(super) fn apply_rate_reply(
     lifecycle: &Lifecycle,
     inbox: &mut Unsolicited,
-    rate: f64,
+    rate: SampleRate,
     error: Option<String>,
 ) {
     match error {
@@ -1048,11 +1045,16 @@ mod tests {
     /// Every production block size / rate combination the engine can present.
     /// A chunk is one device callback (`MAX_CHUNK` at most), so the timeout
     /// must hold at every size.
-    const RATES: [f64; 4] = [44_100.0, 48_000.0, 96_000.0, 192_000.0];
+    const RATES: [SampleRate; 4] = [
+        SampleRate(44_100.0),
+        SampleRate(48_000.0),
+        SampleRate(96_000.0),
+        SampleRate(192_000.0),
+    ];
     const BLOCKS: [usize; 4] = [64, 128, 256, 512];
 
-    fn period(num_samples: usize, rate: f64) -> Duration {
-        Duration::from_secs_f64(num_samples as f64 / rate)
+    fn period(num_samples: usize, rate: SampleRate) -> Duration {
+        Duration::from_secs_f64(num_samples as f64 / rate.get())
     }
 
     /// A fixed 500 ms timeout sits ~750x above the audio thread's 667 us budget
@@ -1105,7 +1107,7 @@ mod tests {
     #[test]
     fn non_finite_rate_falls_back() {
         for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
-            let t = process_timeout(64, bad);
+            let t = process_timeout(64, SampleRate(bad));
             assert!(
                 t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT,
                 "rate={bad}: {t:?}"

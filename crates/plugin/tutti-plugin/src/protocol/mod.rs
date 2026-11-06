@@ -7,9 +7,10 @@
 
 pub mod audio;
 pub mod envelope;
-pub mod midi;
+pub mod frame;
 pub mod process;
 pub mod shm;
+pub mod wire;
 
 /// Wire protocol version, exchanged in the [`BridgeMessage::Ready`] handshake.
 ///
@@ -114,10 +115,10 @@ pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
 }
 
 pub use envelope::{BridgeMessage, HostMessage};
-pub use midi::{IpcMidiEvent, IpcMidiEventVec, MIDI_STACK_CAPACITY, MidiEventVec, midi_from_wire};
 pub use process::ProcessAudioData;
 pub use shm::SlabLayout;
 pub use tutti_plugin_types::SampleFormat;
+pub use tutti_plugin_types::{MIDI_STACK_CAPACITY, MidiEventVec};
 
 pub use tutti_midi_types::ump::MidiEvent;
 
@@ -151,6 +152,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+    use tutti_types::SampleRate;
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -324,11 +326,11 @@ mod tests {
             },
             BridgeMessage::ParameterValueFromText { value: None },
             BridgeMessage::SampleRateSet {
-                rate: 96_000.0,
+                rate: SampleRate(96_000.0),
                 error: None,
             },
             BridgeMessage::SampleRateSet {
-                rate: 96_000.0,
+                rate: SampleRate(96_000.0),
                 error: Some("refused".to_string()),
             },
         ];
@@ -425,7 +427,7 @@ mod tests {
     #[test]
     fn audio_processed_round_trips_midi_out() {
         // The plugin's MIDI-out must survive the AudioProcessed reply wire trip.
-        let midi_out: IpcMidiEventVec = [
+        let midi_out: MidiEventVec = [
             MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
@@ -441,8 +443,7 @@ mod tests {
             )
             .with_frame_offset(64),
         ]
-        .iter()
-        .map(IpcMidiEvent::from)
+        .into_iter()
         .collect();
         let msg = BridgeMessage::AudioProcessed {
             latency_us: 42,
@@ -463,7 +464,7 @@ mod tests {
                 // must survive the wire trip for diagnostics to mean anything.
                 assert_eq!(seq, 7);
                 assert_eq!(midi_out.len(), 2);
-                let events: Vec<MidiEvent> = midi_out.iter().map(|&e| e.into()).collect();
+                let events = midi_out;
                 assert_eq!(events[0].frame_offset, 0);
                 assert!(is_note_on(&events[0]));
                 assert_eq!(events[1].frame_offset, 64);
@@ -504,27 +505,50 @@ mod tests {
         assert!(super::check_protocol_version(super::PROTOCOL_VERSION + 1).is_err());
     }
 
+    /// **`AudioProcessed` encodes its MIDI-out as a sequence**: the variant
+    /// index, `latency_us`, `seq`, then a length and each event as
+    /// `frame_offset` and four data words, all little-endian. The bytes are
+    /// written out, so a layout change fails here instead of as a desync
+    /// between two binaries built apart.
+    ///
+    /// Mutation (run): the adapter encoding each event as `(data,
+    /// frame_offset)` → the bytes differ → fails.
     #[test]
-    fn test_ipc_midi_event_roundtrip() {
-        let event = MidiEvent::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            midi1_velocity_to_midi2(100),
-        )
-        .with_frame_offset(128);
-        let ipc_event = IpcMidiEvent::from(&event);
-        assert_eq!(ipc_event.frame_offset, 128);
-
-        let restored: MidiEvent = ipc_event.into();
-        assert_eq!(restored.frame_offset, 128);
-        assert!(is_note_on(&restored));
-        assert_eq!(note_number(&restored), Some(60));
+    fn audio_processed_midi_out_has_pinned_bytes() {
+        #[rustfmt::skip]
+        const BYTES: [u8; 68] = [
+            2, 0, 0, 0, // variant
+            42, 0, 0, 0, 0, 0, 0, 0, // latency_us
+            7, 0, 0, 0, 0, 0, 0, 0, // seq
+            2, 0, 0, 0, 0, 0, 0, 0, // two events
+            5, 0, 0, 0, 0x40, 0x3C, 0x90, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            4, 3, 2, 1, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 255, 255, 255, 255,
+        ];
+        let midi_out: MidiEventVec = [
+            MidiEvent {
+                frame_offset: 5,
+                data: [0x2090_3C40, 0, 0, 0],
+            },
+            MidiEvent {
+                frame_offset: 0x0102_0304,
+                data: [1, 2, 3, 0xFFFF_FFFF],
+            },
+        ]
+        .into_iter()
+        .collect();
+        let msg = BridgeMessage::AudioProcessed {
+            latency_us: 42,
+            seq: 7,
+            midi_out,
+        };
+        assert_eq!(bincode::serialize(&msg).unwrap(), BYTES);
+        let back: BridgeMessage = bincode::deserialize(&BYTES).unwrap();
+        assert_eq!(bincode::serialize(&back).unwrap(), BYTES);
     }
 
     #[test]
     fn test_midi_message_serialization() {
-        let midi_events: IpcMidiEventVec = [
+        let midi_events: MidiEventVec = [
             MidiEvent::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
@@ -547,8 +571,7 @@ mod tests {
             )
             .with_frame_offset(256),
         ]
-        .iter()
-        .map(IpcMidiEvent::from)
+        .into_iter()
         .collect();
 
         let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
@@ -567,7 +590,7 @@ mod tests {
                 assert_eq!(data.num_samples, 512);
                 assert_eq!(data.midi_events.len(), 3);
 
-                let events: Vec<MidiEvent> = data.midi_events.iter().map(|&e| e.into()).collect();
+                let events = data.midi_events;
                 assert_eq!(events.len(), 3);
                 assert_eq!(events[0].frame_offset, 0);
                 assert!(is_note_on(&events[0]));
@@ -585,7 +608,7 @@ mod tests {
     fn test_load_plugin_f64_serialization() {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/reverb.vst3"),
-            sample_rate: 96000.0,
+            sample_rate: SampleRate(96000.0),
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
             shm_name: "test_shm".to_string(),
@@ -603,7 +626,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(path, PathBuf::from("/test/reverb.vst3"));
-                assert_eq!(sample_rate, 96000.0);
+                assert_eq!(sample_rate, SampleRate(96000.0));
                 assert_eq!(block_size, 1024);
                 assert_eq!(preferred_format, SampleFormat::Float64);
             }

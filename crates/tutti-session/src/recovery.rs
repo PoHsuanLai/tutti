@@ -487,6 +487,12 @@ mod tests {
             assert_eq!(starved(&mut r, t0 + i * S, 20), Action::Wait, "i {i}");
             assert_eq!(starved(&mut r, t0 + i * S + S / 2, 0), Action::Wait);
         }
+        // A plugin that answered for a while (zeros) and then lost blocks
+        // is a new suspicion, not a continuing one.
+        let mut r = Recovery::new(policy());
+        assert_eq!(starved(&mut r, t0, 0), Action::Wait);
+        assert_eq!(starved(&mut r, t0 + S, 0), Action::Wait);
+        assert_eq!(starved(&mut r, t0 + 7 * S, 20), Action::Wait, "fresh");
         // Reset and regrown between two observations: 90 then 30.
         let mut r = Recovery::new(policy());
         assert_eq!(starved(&mut r, t0, 90), Action::Wait);

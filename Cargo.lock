@@ -4461,6 +4461,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "bitflags 2.13.2",
+ "criterion",
  "midi2",
  "midly",
  "serde",
@@ -4743,7 +4744,11 @@ dependencies = [
 name = "tutti-ump"
 version = "0.0.1"
 dependencies = [
+ "assert_no_alloc",
  "bytemuck",
+ "criterion",
+ "midi2",
+ "proptest",
  "serde",
 ]
 

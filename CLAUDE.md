@@ -221,9 +221,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-types.
-  tutti-ump      the Universal MIDI Packet (`Ump`) and the `MidiGroup`, `MidiChannel`
-                 and `CCNumber` addresses it carries; no dependencies but `bytemuck`
-                 (and optional `serde`)
+  tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
+                 `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
+                 the only code that knows a bit position; no dependencies but
+                 `bytemuck` (and optional `serde`)
   tutti-types    vocabulary only: units, channel layouts, io edge traits, rt
                  primitives, Topology; no FFT and no new algorithms. Downmix, interp
                  and sample conversion stay until a follow-up moves them

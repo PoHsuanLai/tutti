@@ -61,9 +61,12 @@ mod analysis;
 mod buffer;
 mod control;
 mod convolver;
+mod delay;
 mod dynamics;
 mod fft;
 mod filter;
+mod swept_delay;
+mod waveshape;
 
 #[cfg(test)]
 mod test_support;
@@ -72,6 +75,7 @@ pub use analysis::*;
 pub use buffer::{CircularBuffer, MonotonicMinDeque};
 pub use control::COEFF_INTERVAL;
 pub use convolver::{Convolver, IrSpectra};
+pub use delay::{DelayLine, InterpolationMode, delay_step, fractional_samples};
 pub use dynamics::{
     CompressorBlock, CompressorKernel, EnvelopeFollower, GateBlock, GateEnvelopeFollower,
     GateKernel, LimiterCurve, LookaheadRing, amplitude_to_db, brickwall_clip,
@@ -83,7 +87,9 @@ pub use filter::{
     Crossover, CrossoverError, LadderCoefficients, LadderCoeffs, LadderType, MAX_SPLITS, Real,
     SOLVE_CEILING, SvfCoefficients, SvfCoeffs, SvfType, fit_to_rate, ladder_step, svf_step,
 };
+pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
+pub use waveshape::{ShapeKind, Shaper};
 
 /// Notes and pitch classes, re-exported from the engine vocabulary: a
 /// [`Pitch`] names one, and callers should not need a second import to read it.

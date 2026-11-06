@@ -23,7 +23,7 @@
 //!   (a plain struct, `f64` state, ramped frequency changes), and
 //!   [`CrossoverNode`] over it, each crossover frequency an indexed
 //!   [`Cutoff`](tutti_types::UnitParam::Cutoff) param, with [`CrossoverError`].
-//! - Delay: [`DelayLineNode`] over [`DelayLine`], with [`InterpolationMode`].
+//! - Delay: [`DelayLineNode`] over `tutti_dsp::DelayLine`, with [`InterpolationMode`].
 //! - Dynamics: [`CompressorNode`], [`GateNode`], [`LimiterNode`],
 //!   [`BrickwallLimiterNode`], and [`MultibandCompressorNode`] (2 to 4
 //!   bands over a [`Crossover`], every setting an indexed param: see
@@ -78,10 +78,16 @@ pub use lfo::{LFO_PARAMS, LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
 pub use modulator::Modulator;
 
 mod delay;
-pub use delay::{DELAY_PARAMS, DelayLine, DelayLineNode, InterpolationMode};
+pub use delay::{DELAY_PARAMS, DelayLineNode};
+// `InterpolationMode` is in `DelayLineNode::with_interpolation`'s signature;
+// the ring itself (`DelayLine`) is `tutti-dsp`'s only.
+pub use tutti_dsp::InterpolationMode;
 
 mod distortion;
-pub use distortion::{DISTORTION_PARAMS, DistortionNode, ShapeKind};
+pub use distortion::{DISTORTION_PARAMS, DistortionNode};
+// `ShapeKind` is in `DistortionNode::new`'s signature; the curves behind it are
+// `tutti-dsp`'s.
+pub use tutti_dsp::ShapeKind;
 
 mod filter;
 pub use filter::{

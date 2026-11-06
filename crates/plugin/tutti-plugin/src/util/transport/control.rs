@@ -17,6 +17,7 @@
 //! subsumes the other.
 
 use crate::error::{BridgeError, Result};
+use crate::protocol::frame::{decode_prefix, write_frame};
 use crate::protocol::{BridgeMessage, HostMessage, MAX_FRAME_BYTES};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -25,7 +26,7 @@ use interprocess::local_socket::{GenericFilePath, ToFsName as _};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName as _};
 use interprocess::local_socket::{Name, Stream};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -76,28 +77,9 @@ pub fn connect(socket: &Path) -> Result<ControlStream> {
 }
 
 pub fn send(stream: &mut ControlStream, msg: &HostMessage) -> Result<()> {
-    let data = bincode::serialize(msg)?;
-    // Refuse to emit a frame the peer is now required to reject, and — the
-    // sharper reason — never let `as u32` truncate the length. A payload above
-    // `u32::MAX` would be prefixed with its low 32 bits, so the peer would read
-    // that many bytes and treat whatever followed as the next frame's header:
-    // permanent desync rather than a clean error, on a stream that has no
-    // resynchronisation point. The cap is well under `u32::MAX`, so checking it
-    // subsumes the truncation.
-    //
-    // Reachable through `LoadState { data }`, whose chunk comes from a project
-    // file. A corrupt or hostile document is the path in.
-    if data.len() > MAX_FRAME_BYTES {
-        return Err(BridgeError::ConnectionFailed(format!(
-            "outgoing frame is {} bytes, over the {MAX_FRAME_BYTES}-byte protocol limit",
-            data.len()
-        )));
-    }
-    let len = (data.len() as u32).to_be_bytes();
-    stream.write_all(&len)?;
-    stream.write_all(&data)?;
-    stream.flush()?;
-    Ok(())
+    // A frame the peer must reject is refused here with nothing written, so the
+    // stream stays synchronised: a send the host itself declines is not a crash.
+    write_frame(stream, msg)
 }
 
 /// How long the unbounded [`recv`] entry may wait for a whole frame.
@@ -370,25 +352,16 @@ fn recv_by(
         r.map_err(|e| annotate(e, "length prefix"))
             .map_err(crashed_on_eof)?;
 
-        let len = u32::from_be_bytes(partial.prefix) as usize;
-        // Reject before allocating. The length is the peer's word for how much
-        // memory to reserve, so honouring it unchecked lets a corrupt server ask
-        // for 4 GiB. See [`MAX_FRAME_BYTES`].
-        //
-        // The verdict is `ProcessCrashed` rather than a decode error: a peer that
-        // cannot frame is a peer the host has no way to keep talking to, and the
-        // stream is now desynchronised — the bytes after this prefix are not a
-        // frame boundary. `pump` turns the error into `crash()`, which is the
-        // correct end state. This is the *receive* side specifically; a send the
-        // host itself declines is **not** a crash, because nothing was written and
-        // the stream is still synchronised. See [`send`].
-        if len > MAX_FRAME_BYTES {
-            tracing::warn!(
-                "plugin server sent a {len}-byte frame, over the {MAX_FRAME_BYTES}-byte limit; \
-                 treating it as a crash"
-            );
-            return Err(BridgeError::ProcessCrashed);
-        }
+        // Reject before allocating: the length is the peer's word for how much
+        // memory to reserve. The verdict is `ProcessCrashed` rather than a
+        // decode error: a peer that cannot frame is one the host cannot keep
+        // talking to, and the stream is desynchronised. `pump` turns it into
+        // `crash()`. A send the host itself declines is **not** a crash; see
+        // [`send`].
+        let len = decode_prefix(partial.prefix).map_err(|e| {
+            tracing::warn!("plugin server sent a {e}; treating it as a crash");
+            BridgeError::ProcessCrashed
+        })?;
         partial.body = vec![0u8; len];
         partial.body_filled = 0;
         partial.have_len = true;

@@ -30,6 +30,7 @@ pub use crate::protocol::audio::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample,
 };
 
+pub use crate::protocol::frame::{FrameTooLarge, read_frame, write_frame};
 pub use crate::protocol::{
     AuComponentType, AutomationMode, BridgeMessage, BusChannels, BusTopologies, ChannelLayout,
     ChordChanges, ChordValue, ClapFeature, EditorPresence, Features, HostMessage, LoadedPlugin,

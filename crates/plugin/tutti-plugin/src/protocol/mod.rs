@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod envelope;
+pub mod frame;
 pub mod process;
 pub mod shm;
 pub mod wire;

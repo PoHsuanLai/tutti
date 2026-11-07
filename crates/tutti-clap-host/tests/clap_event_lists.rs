@@ -737,3 +737,42 @@ fn input_event_pointers_have_the_alignment_their_payload_needs() {
         assert_eq!(h as usize % needs[i as usize], 0, "event {i} at {h:p}");
     }
 }
+
+/// **A MIDI 1.0 Note On at velocity 0 reaches the plugin as a `NOTE_OFF` with
+/// velocity `0x8000 / 0xFFFF` (about 0.5), not 0** (M2-104 Appendix D.3.1).
+/// The plugin reads it through the raw `clap_input_events` vtable, so the
+/// figure is the one in the `clap_event_note` it is handed. A Note On at
+/// MIDI 1.0 velocity 100 is a `NOTE_ON` near 100/127.
+///
+/// Mutation (run): `from_voice1` folding a Note On at velocity 0 into a Note
+/// Off at velocity 0 → the first assertion fails.
+#[test]
+fn a_midi1_note_on_at_velocity_zero_reaches_the_plugin_as_a_release_at_half() {
+    let mut list = InputEventList::new();
+    list.reserve(4);
+    list.add_midi(&MidiEvent::from_ump(7, &[0x2091_3C00]));
+    list.add_midi(&MidiEvent::from_ump(8, &[0x2091_3C64]));
+    let raw = raw_in(&list);
+    assert_eq!(unsafe { ((*raw).size.unwrap())(raw) }, 2);
+
+    let off = unsafe { ((*raw).get.unwrap())(raw, 0) };
+    assert_eq!(unsafe { (*off).type_ }, CLAP_EVENT_NOTE_OFF);
+    assert_eq!(unsafe { (*off).time }, 7);
+    let off = unsafe { &*off.cast::<clap_event_note>() };
+    assert_eq!((off.channel, off.key), (1, 60));
+    assert!(
+        (off.velocity - 32768.0 / 65535.0).abs() < 1e-6,
+        "{}",
+        off.velocity
+    );
+
+    let on = unsafe { ((*raw).get.unwrap())(raw, 1) };
+    assert_eq!(unsafe { (*on).type_ }, CLAP_EVENT_NOTE_ON);
+    let on = unsafe { &*on.cast::<clap_event_note>() };
+    // Min-Center-Max scaling (M2-115 section 3) keeps 100 within 1% of 100/127.
+    assert!(
+        (on.velocity - 100.0 / 127.0).abs() < 0.01,
+        "{}",
+        on.velocity
+    );
+}

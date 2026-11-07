@@ -208,12 +208,8 @@ impl MidiEvent {
         else {
             return None;
         };
-        let bank = m.bank()?;
-        Some((
-            u8::from(m.channel()),
-            u16::from(bank),
-            u8::from(m.program()),
-        ))
+        let bank = Self::program_change_bank_of(self.data_words())?;
+        Some((u8::from(m.channel()), bank, u8::from(m.program())))
     }
 
     fn cv1_to_midi1_bytes(&self) -> Option<([u8; 3], u8)> {

@@ -4273,6 +4273,7 @@ dependencies = [
  "tutti-core",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",

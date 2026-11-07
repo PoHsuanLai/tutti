@@ -9,10 +9,9 @@
 //!
 //! Both ends speak flat interleaved `&[f32]` at a runtime width, with the
 //! stride owned by the type and every count denominated in frames. The sink
-//! end, [`RegionOut`](crate::butler::prefetch::RegionOut), states that shape as
-//! the engine's [`AudioOut`](tutti_types::AudioOut) trait. `WaveIn` deliberately
-//! does not implement the matching [`AudioIn`](tutti_types::AudioIn) — see its
-//! type docs, which is where that decision and its reasoning live.
+//! end is [`RegionOut::push_interleaved`](crate::butler::prefetch::RegionOut::push_interleaved).
+//! `WaveIn` deliberately does not implement [`AudioIn`](tutti_types::AudioIn) —
+//! see its type docs, which is where that decision and its reasoning live.
 
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 use tutti_io::Wave;
@@ -71,11 +70,9 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
 ///
 /// # Deliberately NOT an [`AudioIn`](tutti_types::AudioIn), and not because of the width
 ///
-/// Width is no obstacle: [`AudioIn`](tutti_types::AudioIn) and
-/// [`AudioOut`](tutti_types::AudioOut) carry a runtime [`ChannelLayout`], which is
-/// exactly why [`RegionOut`](crate::butler::prefetch::RegionOut) — the sink at
-/// the other end of this refill — does implement `AudioOut`. `WaveIn` stays
-/// inherent for a different reason, about what a short count *means*.
+/// Width is no obstacle: [`AudioIn`](tutti_types::AudioIn) carries a runtime
+/// [`ChannelLayout`]. `WaveIn` stays inherent for a different reason, about
+/// what a short count *means*.
 ///
 /// [`AudioIn::poll_into`](tutti_types::AudioIn::poll_into)'s contract is entirely
 /// about what a short or zero count means: `0` is either "the producer has

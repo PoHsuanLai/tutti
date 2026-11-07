@@ -423,27 +423,6 @@ impl RegionOut {
     }
 }
 
-/// The ring is the engine's [`AudioOut`](tutti_types::AudioOut) shape: flat
-/// interleaved in, a runtime [`ChannelLayout`] for the width, counts in
-/// frames. `write` appends at the window's end; the inherent
-/// [`push_interleaved`](RegionOut::push_interleaved) stays the one production
-/// callers use, because it returns what landed.
-impl tutti_types::AudioOut<f32> for RegionOut {
-    fn layout(&self) -> ChannelLayout {
-        self.ring.channels
-    }
-
-    /// Append frames, discarding the landed count.
-    fn write(&mut self, interleaved: &[f32]) {
-        let _ = self.push_interleaved(interleaved);
-    }
-
-    /// No-op: the ring is live, never a stream that gets closed.
-    fn finalize(self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Constructor namespace for a region's ring.
 pub(crate) struct RegionBuffer;
 
@@ -526,7 +505,6 @@ impl RegionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::AudioOut;
 
     /// `frames` frames at `channels`, sample `c` of frame `f` carrying
     /// `f * channels + c`, so a rotation or a tear is a wrong value.
@@ -538,18 +516,18 @@ mod tests {
         RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), capacity, channels)
     }
 
-    /// Frames written through the `AudioOut` trait land by position,
-    /// every channel in its place at six channels, a trailing partial frame
-    /// dropped. (The ring's own protocol is `PosRing`'s tests and loom model.)
+    /// Frames pushed land by position, every channel in its place at six
+    /// channels, a trailing partial frame dropped. (The ring's own protocol is
+    /// `PosRing`'s tests and loom model.)
     ///
-    /// Mutation (run): `write` pushing nothing → fails.
+    /// Mutation (run): `push_interleaved` discarding its push → fails.
     #[test]
-    fn frames_written_through_the_trait_land_by_position() {
+    fn pushed_frames_land_by_position() {
         let (mut writer, ring) = ring(64, 6);
-        assert_eq!(AudioOut::layout(&writer), ChannelLayout::from(6u16));
+        assert_eq!(writer.channels(), ChannelLayout::from(6u16));
         let mut data = indexed(12, 6);
         data.extend_from_slice(&[99.0, 99.0, 99.0]);
-        writer.write(&data);
+        assert_eq!(writer.push_interleaved(&data), Samples(12));
         assert_eq!(ring.window(), (0, 12), "twelve whole frames");
         let mut reader = ring.take_reader(false).expect("the ring's reader");
         let claim = reader.claim(0, [(0, 12), (0, 0)]);

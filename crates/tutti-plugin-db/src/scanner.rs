@@ -74,8 +74,8 @@ pub struct ScanResult {
 /// Scans plugin directories into a [`PluginCatalog`], with crash recovery.
 ///
 /// Each new or changed plugin is probed through the scanner's probe (the host's
-/// out-of-process one); unchanged ones (same modification time) are skipped. A plugin that fails to
-/// load, hangs or crashes its probe is blacklisted with the reason, and a
+/// out-of-process one); unchanged ones (same modification time) are skipped. A
+/// plugin that fails to load, hangs or crashes its probe is blacklisted with the reason, and a
 /// sentinel file (the "dead-man's pedal") blacklists the plugin a crashed scan
 /// was probing on the next run. `tutti_plugin::catalog::Plugins` drives a
 /// scanner for most hosts.
@@ -85,8 +85,13 @@ pub struct PluginScanner {
     probe: Box<ProbeFn>,
 }
 
+const _: () = {
+    const fn assert_sync<T: Sync>() {}
+    assert_sync::<PluginScanner>();
+};
+
 /// What a scanner calls to read one plugin file's metadata.
-type ProbeFn = dyn Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure> + Send;
+type ProbeFn = dyn Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure> + Send + Sync;
 
 impl std::fmt::Debug for PluginScanner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -107,7 +112,10 @@ impl PluginScanner {
     pub fn new(
         catalog: Box<dyn PluginCatalog>,
         pedal_path: impl Into<PathBuf>,
-        probe: impl Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure> + Send + 'static,
+        probe: impl Fn(&Path, PluginFormat) -> Result<PluginDescriptor, ProbeFailure>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         let pedal = Pedal::new(pedal_path.into());
         Self {

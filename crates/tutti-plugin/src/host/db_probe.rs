@@ -8,8 +8,8 @@ use tutti_plugin_db::{
     Blacklist, FileFacts, PluginFormat, PluginRecord, ProbeFailure, probe_plugin_fallback,
 };
 
-/// The whole blacklist decision, in one pure function so tests exercise
-/// *this* code rather than a copy of it.
+/// The blacklist decision for a failed probe, kept as a conversion so tests
+/// exercise this code rather than a copy of it.
 ///
 /// The split is "did we learn something about the plugin, or about our own
 /// environment?" — not severity. A crash and a broken library are equally

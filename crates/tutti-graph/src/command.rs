@@ -629,8 +629,8 @@ pub(crate) fn rescale(f: tutti_types::Frame, ratio: f64) -> tutti_types::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Ump;
     use tutti_types::{Frame, NodeKey};
+    use tutti_ump::Ump;
 
     // Mutation: make `is_transient` return true for `Poisoned` (or false for
     // `Backpressure`); this fails.

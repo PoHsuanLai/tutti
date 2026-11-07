@@ -1,7 +1,7 @@
 //! The legacy MIDI CC a plugin sends to the host, as a `MidiEvent`.
 
 use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 use tutti_vst3_ffi::sdk_enum_i32;
 use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 

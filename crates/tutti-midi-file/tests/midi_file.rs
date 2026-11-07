@@ -14,8 +14,9 @@ use tutti_midi_file::{
     ClipEvent, ClipHeader, Error, MidiFile, MidiFileKind, MidiWriteConfig, SmfMessage,
     SmfTimedEvent, smf, write_clip_file_from_beats, write_clip_file_with_header,
 };
-use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_midi_types::MidiEvent;
 use tutti_types::{Beat, Bpm};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
 const TPQ: u16 = 480;

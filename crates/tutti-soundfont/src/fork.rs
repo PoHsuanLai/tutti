@@ -79,8 +79,8 @@ mod tests {
         Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, Transport, TransportChanges,
     };
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_types::{SampleRate, Samples};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     use crate::{Settings, SoundFont, SoundFontUnit};
     use tutti_midi_types::midi2::num::u7;

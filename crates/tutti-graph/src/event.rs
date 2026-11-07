@@ -10,27 +10,17 @@
 //! absolute, between their own endpoints), both moving along a closed set of
 //! shapes ([`SegmentShape`]) a param port evaluates per frame.
 //!
-//! # Why a raw UMP payload and not `tutti-midi-types`
 //!
-//! `tutti_midi_types::MidiEvent` is the right *shape* (a frame offset plus four
-//! UMP words), but the crate links `midi2`, `midly`, `bitflags` and `thiserror`,
-//! and this crate sits below everything that would ever build a node. [`Ump`]
-//! carries the same four words, so converting at a node's edge is a copy of 16
-//! bytes, and the graph does not link a MIDI codec to move them.
+//! A MIDI event carries a [`tutti_ump::Ump`]. The graph reads one fact of it,
+//! [`Event::is_note_off`], which the delay FIFO's overflow policy needs, and
+//! that decode is `tutti-ump`'s.
 
 use std::cell::Cell;
 
 use tutti_types::{ParamAddr, ParamKey, SamplePosition, Samples, Unit, UnitAddr};
+use tutti_ump::Ump;
 
 use crate::time::Offset;
-
-/// Four raw Universal MIDI Packet words.
-///
-/// The meaningful prefix is determined by the message type in the first word's
-/// top nibble, exactly as `tutti_midi_types::MidiEvent::data_words` reads it;
-/// unused words are zero. The graph never inspects them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Ump(pub [u32; 4]);
 
 /// A ramp of one parameter from the value it has at the event's frame to a
 /// target, starting there: linear, or along a [`SegmentShape`]
@@ -762,16 +752,7 @@ impl Event {
     /// lose — see the delay FIFO's overflow policy.
     #[must_use]
     pub fn is_note_off(&self) -> bool {
-        let EventKind::Midi(Ump(w)) = self.kind else {
-            return false;
-        };
-        let mt = w[0] >> 28;
-        let status = (w[0] >> 20) & 0xf;
-        match mt {
-            0x2 => status == 0x8 || (status == 0x9 && w[0] & 0x7f == 0),
-            0x4 => status == 0x8,
-            _ => false,
-        }
+        matches!(self.kind, EventKind::Midi(u) if u.is_note_off())
     }
 
     /// A parameter ramp starting at `offset`.
@@ -1348,23 +1329,15 @@ mod tests {
         assert_eq!(builtin.foreign_target(0), None);
     }
 
-    /// The three MIDI spellings of a note-off are recognised, and a note-on
-    /// or a ramp is not one.
+    /// An event is a note-off when its packet is (`Ump::is_note_off` pins the
+    /// spellings); a ramp is not one.
     ///
-    /// Mutation: drop the velocity-0 note-on arm → fails.
+    /// Mutation: make `is_note_off` ignore the kind and return true -> the ramp
+    /// assertion fails.
     #[test]
-    fn note_offs_are_recognised() {
-        let m1 = |status: u32, vel: u32| {
-            Event::midi(
-                Offset::ZERO,
-                [0x2000_0000 | (status << 16) | (60 << 8) | vel, 0, 0, 0],
-            )
-        };
-        assert!(m1(0x80, 64).is_note_off());
-        assert!(m1(0x90, 0).is_note_off());
-        assert!(!m1(0x90, 64).is_note_off());
-        assert!(Event::midi(Offset::ZERO, [0x4080_3c00, 0x8000_0000, 0, 0]).is_note_off());
-        assert!(!Event::midi(Offset::ZERO, [0x4090_3c00, 0x8000_0000, 0, 0]).is_note_off());
+    fn only_a_midi_note_off_event_is_a_note_off() {
+        assert!(Event::midi(Offset::ZERO, [0x2080_3c40, 0, 0, 0]).is_note_off());
+        assert!(!Event::midi(Offset::ZERO, [0x2090_3c40, 0, 0, 0]).is_note_off());
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 

@@ -21,9 +21,9 @@ use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
-use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
 use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
+use tutti_ump::MidiChannel;
 
 /// A gate edge waiting for the next control step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

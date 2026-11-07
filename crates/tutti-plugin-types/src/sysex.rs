@@ -8,11 +8,11 @@
 //! never grown, so reassembly does not allocate and a pointer handed to the
 //! plugin is never moved during the block it was handed out in.
 
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{
     SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
     SYSEX7_STATUS_START, UmpMessageType,
 };
+use tutti_ump::MidiGroup;
 
 use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, RtMidiEvents};
 
@@ -595,7 +595,7 @@ mod tests {
     /// never completes → fails.
     #[test]
     fn other_messages_do_not_end_a_run() {
-        use tutti_midi_types::MidiChannel;
+        use tutti_ump::MidiChannel;
         let body = payload(20);
         let pkts = packets(MidiGroup::FIRST, &body);
         let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(0), 60, 0x8000);

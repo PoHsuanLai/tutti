@@ -12,9 +12,10 @@
 
 use tutti_core::{Engine, MotionEvent, Transport};
 use tutti_graph::contract::{Latent, Pulse};
-use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Ump, Unforkable};
+use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
 use tutti_types::{Latency, NodeKey};
+use tutti_ump::Ump;
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at the transport's default 120 BPM.

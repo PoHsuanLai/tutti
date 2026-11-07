@@ -11,7 +11,6 @@
 //! pure (no interior mutation), so it is trivially testable and safe to call
 //! from any thread.
 
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::midi2::UmpMessage;
 use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
@@ -19,6 +18,7 @@ use tutti_midi_types::{
     ALL_FUNCTION_BLOCKS, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
 };
+use tutti_ump::MidiGroup;
 
 /// One Function Block this endpoint exposes (M2-104 §7.1.3).
 ///

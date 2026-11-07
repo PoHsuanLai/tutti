@@ -18,8 +18,8 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Control, Controller, Request};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{
     MidiEvent, Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext, WindowHandle,
 };

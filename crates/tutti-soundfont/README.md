@@ -26,7 +26,7 @@ use tutti_types::graph::{OutPort, Source};
 use std::sync::Arc;
 use tutti_types::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};
-use tutti_midi_types::MidiChannel;
+use tutti_ump::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 

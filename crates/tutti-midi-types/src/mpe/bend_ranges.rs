@@ -27,7 +27,8 @@ use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIV
 ///
 /// ```
 /// use tutti_midi_types::ump::{RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-/// use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup, PerNoteBendRanges, PitchBendSensitivity};
+/// use tutti_midi_types::{MidiEvent, PerNoteBendRanges, PitchBendSensitivity};
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let mut ranges = PerNoteBendRanges::default();
 /// assert_eq!(ranges.semitones(3), 48.0);

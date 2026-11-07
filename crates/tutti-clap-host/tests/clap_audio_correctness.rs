@@ -1011,7 +1011,7 @@ fn drive_midi_block(inst: &mut Active<f32>, midi: &[tutti_clap_host::MidiEvent])
 /// are spliced and delivered → fails.
 #[test]
 fn a_multi_packet_sysex_reaches_the_plugin_whole() {
-    use tutti_midi_types::MidiGroup;
+    use tutti_ump::MidiGroup;
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let mut inst = session.activate();
     let _ = take_sysex_input(&session.controls);
@@ -1070,7 +1070,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
 /// nothing is counted) and cannot catch a regression that is not expressible.
 #[test]
 fn a_sysex_open_across_a_reset_is_dropped() {
-    use tutti_midi_types::MidiGroup;
+    use tutti_ump::MidiGroup;
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     let mut inst = session.activate();
     let _ = take_sysex_input(&session.controls);

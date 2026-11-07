@@ -30,11 +30,12 @@ use std::sync::Arc;
 use arrayvec::ArrayVec;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, SortedEvents,
-    Status, Ump,
+    Status,
 };
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::Latency;
 use tutti_types::{ChannelLayout, Samples};
+use tutti_ump::Ump;
 
 use super::client::{InProcessVst2Client, drive_f32};
 use crate::host::node::{DeliveryCounters, ParamDeliveryStats, PluginMeter, param_input};
@@ -417,8 +418,8 @@ mod owed_tests {
     /// A 60-byte SysEx's ten packets, then a 12-byte one's two, all on
     /// group 1, as graph events at frame 0.
     fn dumps() -> (Vec<Event>, Vec<Event>) {
-        use tutti_midi_types::MidiGroup;
         use tutti_midi_types::ump::MidiEvent;
+        use tutti_ump::MidiGroup;
         let packets = |len: usize| {
             let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
             let mut out = Vec::new();

@@ -1,13 +1,14 @@
 //! `MidiEvent` to VST3 event and back.
 
+use tutti_midi_types::PerNoteBendRanges;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
 use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::ump::SYSEX7_STATUS_SINGLE;
-use tutti_midi_types::{MidiChannel, MidiGroup, PerNoteBendRanges};
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use super::{
     Data, Event, K_DATA_TYPE_MIDI_SYSEX, MidiEvent, NoteOff, NoteOn, Payload, PolyPressure,

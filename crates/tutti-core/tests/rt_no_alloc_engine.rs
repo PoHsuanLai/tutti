@@ -83,10 +83,11 @@ impl tutti_graph::Node for TransportTone {
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
     use tutti_core::{MotionEvent, TransportCommand};
-    use tutti_graph::{Editor, EventIn, EventKind, Prepare, Ump, Unforkable};
+    use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
     use tutti_types::NodeKey;
     use tutti_types::graph::{OutPort, Source};
     use tutti_types::{At, Beat, Bpm, Frame};
+    use tutti_ump::Ump;
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);

@@ -9,12 +9,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Event, Hand, HostOp, Lifecycle, Loaded,
     Normalized, Notice, ParamId, ParameterChanges, PluginError, PluginIo, Prepare, ProcessContext,
     ProcessOutput, Processor, RenderMode, SampleFormat, SampleRate, Samples, Stage,
 };
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{MidiEvent, Vst2Controller, Vst2Loaded, Vst2Processor};
 use tutti_vst2_test_plugin::{ProcessCapture, ProcessEntry};
 

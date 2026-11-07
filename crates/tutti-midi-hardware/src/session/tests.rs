@@ -22,7 +22,7 @@ fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 }
 
 fn note() -> MidiEvent {
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
     MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)
 }
 

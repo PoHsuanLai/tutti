@@ -23,7 +23,7 @@
 mod midi_out_device {
     use bevy_tutti::midi::{MidiOutDrops, MidiOutRouter};
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A router with no transport at all — the state an app is in before it selects
     /// an output device.
@@ -163,7 +163,7 @@ mod midi_hardware_frame_offset {
 
     use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A block long enough that a 1 ms offset is a large, unambiguous fraction of
     /// it, and short enough to stay a plausible audio block.
@@ -246,7 +246,7 @@ mod midi_session_without_hardware {
     use tutti_midi_hardware::test_support::FakeBackend;
     use tutti_midi_hardware::{EndpointId, HardwareMidiInputs, MidiSession};
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     fn session() -> (MidiSession, tutti_midi_hardware::test_support::FakeCounters) {
         let (backend, counters) = FakeBackend::build();

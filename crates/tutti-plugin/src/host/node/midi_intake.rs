@@ -153,8 +153,8 @@ impl DeliveryCounters {
 mod tests {
     use super::*;
     use crate::protocol::MIDI_STACK_CAPACITY;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin_types::{SysExAssembler, SysExStep};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     fn packets(group: MidiGroup, len: usize) -> Vec<MidiEvent> {
         let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();

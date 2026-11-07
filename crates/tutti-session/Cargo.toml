@@ -25,6 +25,7 @@ workspace = true
 # Always: the graph, the engine and transport, the vocabulary, and the nodes
 # the builder inserts (the click) and modulation applies (`Modulation`).
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }

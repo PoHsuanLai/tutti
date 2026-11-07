@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn a_crash_drain_counts_the_queued_midi() {
         use crate::protocol::MidiEvent;
-        use tutti_midi_types::{MidiChannel, MidiGroup};
+        use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));
         for n in [3, 0, 2] {
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn a_failed_connect_counts_the_queued_midi() {
         use crate::protocol::MidiEvent;
-        use tutti_midi_types::{MidiChannel, MidiGroup};
+        use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate(48_000.0));
         let lifecycle = Lifecycle::new();

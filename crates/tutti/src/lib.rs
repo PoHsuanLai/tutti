@@ -157,6 +157,7 @@ pub mod prelude {
     pub use tutti_graph::CrossfadeCurve;
     pub use tutti_types::LoopRange;
     pub use tutti_types::prelude::*;
+    pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and its enumeration record.
     #[cfg(feature = "device")]

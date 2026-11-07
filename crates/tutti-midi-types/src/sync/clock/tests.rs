@@ -1,6 +1,6 @@
 use super::*;
-use tutti_types::MidiChannel;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiChannel;
+use tutti_ump::MidiGroup;
 
 fn us_per_tick(bpm: f64) -> u64 {
     // 1 beat = PPQN ticks; 1 beat at bpm = 60/bpm seconds = 60_000_000/bpm us

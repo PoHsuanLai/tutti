@@ -12,9 +12,10 @@ use tutti_graph::{
     Transport,
 };
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_midi_types::MidiEvent;
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 use tutti_types::{Beat, Bpm, NodeKey, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 const BLOCK: usize = 256;
 

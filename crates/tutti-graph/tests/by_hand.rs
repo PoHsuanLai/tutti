@@ -7,9 +7,10 @@
 use tutti_graph::contract::{Direct, Emitter, drive_input};
 use tutti_graph::{
     Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, Status, Transport,
-    TransportChanges, Ump,
+    TransportChanges,
 };
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples};
+use tutti_ump::Ump;
 
 const RATE: SampleRate = SampleRate(48_000.0);
 const NOTE: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));

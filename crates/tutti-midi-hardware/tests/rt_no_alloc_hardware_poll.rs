@@ -23,8 +23,8 @@ use tutti_graph::{Editor, EventEdge, EventIn, EventOut, Executor, Prepare, Trans
 use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle};
 use tutti_midi_runtime::{MidiInputNode, MidiOutControls, MidiOutNode};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_types::{NodeKey, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

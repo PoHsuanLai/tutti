@@ -7,7 +7,7 @@
 //! the upper zone's is `15`.
 
 use super::PitchBendSensitivity;
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Which of the two RP-053 zones (or neither) a configuration describes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

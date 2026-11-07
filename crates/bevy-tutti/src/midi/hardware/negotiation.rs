@@ -47,8 +47,8 @@ use bevy_ecs::prelude::*;
 use tutti_midi_runtime::{CiInitiator, CiResponder, DiscoveredCiDevice};
 use tutti_midi_runtime::{DiscoveredEndpoint, EndpointInquiry};
 use tutti_midi_types::EndpointDiscoveryRequest;
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ci::{CiMessage, DiscoveryData, Muid};
+use tutti_ump::MidiGroup;
 
 /// The default group MIDI-CI negotiation runs on (function-block-wide).
 const CI_GROUP: MidiGroup = MidiGroup::FIRST;

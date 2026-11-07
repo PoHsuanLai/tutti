@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 

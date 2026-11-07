@@ -21,8 +21,8 @@ use tutti_midi_runtime::{
     MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
     TimedMidiEvent, compile_routes,
 };
-use tutti_midi_types::MidiChannel;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_ump::MidiChannel;
 
 use crate::graph::{Feeder, Graph};
 use crate::{Error, EventSource, MidiNodes, Result};
@@ -771,7 +771,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
-    use tutti_midi_types::MidiGroup;
+    use tutti_ump::MidiGroup;
 
     /// Counts what reached the wire. Stands in for a real OS endpoint so
     /// these tests run on every platform.

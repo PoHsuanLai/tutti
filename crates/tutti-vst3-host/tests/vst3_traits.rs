@@ -12,9 +12,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamId, PluginError,
-    PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor, RenderMode, Request,
-    RescanScope, SampleFormat, SampleRate, Samples,
+    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, MaxBlock, Normalized, ParamId,
+    PluginError, PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor,
+    RenderMode, Request, RescanScope, SampleFormat, SampleRate, Samples,
 };
 use tutti_vst3_host::host::conformance::plugin_restart_component;
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
@@ -50,12 +50,7 @@ fn probe_path() -> PathBuf {
 }
 
 fn prepare() -> Prepare {
-    Prepare {
-        rate: SampleRate(48_000.0),
-        max_block: Samples(256),
-        format: SampleFormat::Float32,
-        mode: RenderMode::Realtime,
-    }
+    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))).expect("a real rate")
 }
 
 /// The lock, and the misbehaviour the next load sees.
@@ -198,8 +193,7 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     let loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
     assert!(!loaded.is_active());
 
-    let mut wide = prepare();
-    wide.format = SampleFormat::Float64;
+    let wide = prepare().with_format(SampleFormat::Float64);
     let (mut processor, controller) = loaded.activate(wide).expect("activates at 64-bit");
     assert!(processor.is_f64());
     render(
@@ -256,8 +250,8 @@ fn a_refused_activation_hands_the_plugin_back() {
 fn a_controller_write_reaches_the_plugin_in_the_next_block() {
     let probe = Probe::behaving();
     let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.25));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.25));
     assert_eq!(
         controller.parameter(id(PARAM_RAMP)).map(Normalized::get),
         Some(0.25),
@@ -276,8 +270,8 @@ fn a_controller_write_reaches_the_plugin_in_the_next_block() {
 fn automation_in_the_block_overrides_a_queued_write() {
     let probe = Probe::behaving();
     let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.25));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.25));
     let mut automation = tutti_plugin_types::ParameterChanges::reserved(1, 4);
     automation.add_change(ParamId::new(PARAM_RAMP), 0, 0.75);
     let ctx = ProcessContext::new().params(&automation);
@@ -297,9 +291,12 @@ fn automation_in_the_block_overrides_a_queued_write() {
 fn a_full_ring_keeps_the_latest_write_and_retries_it() {
     let probe = Probe::behaving();
     let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
     for step in 0..600 {
-        controller.set_parameter(id(PARAM_RAMP), Normalized::new(f64::from(step) / 1000.0));
+        controller.set_parameter(
+            id(PARAM_RAMP),
+            Normalized::clamped(f64::from(step) / 1000.0),
+        );
     }
     assert!(controller.refused_edits() > 0, "the ring filled");
     render_f32(&mut processor);
@@ -323,8 +320,8 @@ fn a_full_ring_keeps_the_latest_write_and_retries_it() {
 fn a_write_survives_a_rejoin() {
     let probe = Probe::behaving();
     let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.4));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.4));
     // No block has run: both writes are still in the ring.
     let loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
     let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
@@ -399,9 +396,9 @@ fn draining_the_ring_does_not_allocate() {
     let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
     let mut block = Block::new();
     block.run(&mut processor).expect("warm");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
     for step in 0..64 {
-        controller.set_parameter(id(PARAM_RAMP), Normalized::new(f64::from(step) / 100.0));
+        controller.set_parameter(id(PARAM_RAMP), Normalized::clamped(f64::from(step) / 100.0));
     }
     assert_no_alloc(|| block.run(&mut processor)).expect("renders");
     assert_eq!(block.outputs[0][0], 0.63, "the writes were drained");
@@ -488,7 +485,7 @@ fn halves_of_two_activations_are_stuck() {
 fn a_rebuild_keeps_the_state() {
     let probe = Probe::behaving();
     let mut loaded = probe.load();
-    Control::set_parameter(&mut loaded, id(PARAM_UI_STATE), Normalized::new(0.625));
+    Control::set_parameter(&mut loaded, id(PARAM_UI_STATE), Normalized::of(0.625));
     let rebuilt = loaded.rebuild().expect("the probe loads again");
     assert_eq!(
         Control::parameter(&rebuilt, id(PARAM_UI_STATE)).map(Normalized::get),
@@ -508,7 +505,7 @@ fn a_rebuild_keeps_the_state() {
 fn a_write_is_in_the_state_saved_before_any_block() {
     let probe = Probe::behaving();
     let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_UI_STATE), Normalized::new(0.375));
+    controller.set_parameter(id(PARAM_UI_STATE), Normalized::of(0.375));
     let saved = controller.save_state().expect("the probe saves");
     let (processor2, mut fresh) = probe.load().activate(prepare()).expect("a second instance");
     fresh.load_state(&saved).expect("restores");
@@ -531,8 +528,7 @@ fn the_render_mode_is_the_activations() {
     let loaded = probe.load();
     let (processor, controller) = loaded.activate(prepare()).expect("realtime is accepted");
     let loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
-    let mut offline = prepare();
-    offline.mode = RenderMode::Offline;
+    let offline = prepare().with_mode(RenderMode::Offline);
     let refused = loaded.activate(offline).expect_err("offline is refused");
     assert!(refused.plugin.is_some(), "the plugin comes back");
     let (processor, controller) = refused
@@ -553,8 +549,9 @@ fn a_refused_rate_leaves_the_plugin_loaded() {
     let probe = Probe::misbehaving(REFUSES_HIGH_RATES);
     let (processor, controller) = probe.load().activate(prepare()).expect("48 kHz");
     let loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
-    let mut high = prepare();
-    high.rate = SampleRate(96_000.0);
+    let high = prepare()
+        .with_rate(SampleRate(96_000.0))
+        .expect("a real rate");
     let refused = loaded.activate(high).expect_err("96 kHz is refused");
     let plugin = refused.plugin.expect("the plugin comes back");
     assert!(!plugin.is_active());
@@ -617,10 +614,10 @@ const PASSTHROUGH: f64 = 1.0;
 fn a_write_on_a_loaded_plugin_overrides_a_carried_one() {
     let probe = Probe::behaving();
     let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.3));
     let mut loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
-    Control::set_parameter(&mut loaded, id(PARAM_RAMP), Normalized::new(0.9));
+    Control::set_parameter(&mut loaded, id(PARAM_RAMP), Normalized::of(0.9));
     let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
     let rendered = render_f32(&mut processor);
     assert!((rendered - 0.9).abs() < 1e-6, "{rendered}");
@@ -637,8 +634,8 @@ fn a_state_load_on_a_loaded_plugin_drops_the_carried_writes() {
     let probe = Probe::behaving();
     let state = default_state(&probe);
     let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.3));
     let mut loaded = Vst3Loaded::deactivate(processor, controller).expect("a pair");
     Control::load_state(&mut loaded, &state).expect("restores");
     let (mut processor, controller) = loaded.activate(prepare()).expect("activates again");
@@ -657,8 +654,8 @@ fn a_state_load_makes_the_queued_writes_stale() {
     let probe = Probe::behaving();
     let state = default_state(&probe);
     let (mut processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.3));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.3));
     controller.load_state(&state).expect("restores");
     assert_eq!(
         render_f32(&mut processor),
@@ -666,8 +663,8 @@ fn a_state_load_makes_the_queued_writes_stale() {
         "the stale writes did not land"
     );
     // What is written after the load is not stale.
-    controller.set_parameter(id(PARAM_MODE), Normalized::new(MODE_PARAM_RAMP));
-    controller.set_parameter(id(PARAM_RAMP), Normalized::new(0.6));
+    controller.set_parameter(id(PARAM_MODE), Normalized::clamped(MODE_PARAM_RAMP));
+    controller.set_parameter(id(PARAM_RAMP), Normalized::of(0.6));
     let rendered = render_f32(&mut processor);
     assert!((rendered - 0.6).abs() < 1e-6, "{rendered}");
     Vst3Loaded::deactivate(processor, controller).expect("a pair");

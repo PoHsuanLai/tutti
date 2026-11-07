@@ -105,7 +105,10 @@ impl Call {
             3 => Self::Rebuild,
             4 => Self::Process(a as usize),
             5 => Self::Stop,
-            6 => Self::Edit(ParamId::new(a as u32), Normalized::new(f64::from_bits(b))),
+            6 => Self::Edit(
+                ParamId::new(a as u32),
+                Normalized::clamped(f64::from_bits(b)),
+            ),
             7 => Self::Latency,
             8 => Self::Tail,
             9 => Self::Wiring,
@@ -498,15 +501,16 @@ impl Loaded for FakeLoaded {
 
     fn activate(self, prepare: Prepare) -> Result<(FakeProcessor, FakeController), Refused<Self>> {
         let shared = self.shared.clone();
-        shared
-            .log
-            .push(Call::Activate(prepare.rate, prepare.max_block));
+        shared.log.push(Call::Activate(
+            prepare.rate(),
+            prepare.max_block().samples(),
+        ));
         assert!(
             !shared.panic_on_activate.load(Ordering::Relaxed),
             "the fake was told to panic in activate"
         );
         let refused = f64::from_bits(shared.refuse_rate.load(Ordering::Relaxed));
-        if refused != 0.0 && refused == prepare.rate.0 {
+        if refused != 0.0 && refused == prepare.rate().0 {
             let reason = PluginError::Other(format!("the fake refuses {refused} Hz"));
             let plugin = (!shared.lose_on_refuse.load(Ordering::Relaxed)).then_some(self);
             return Err(Refused { plugin, reason });

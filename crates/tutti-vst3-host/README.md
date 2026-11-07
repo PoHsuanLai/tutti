@@ -61,7 +61,7 @@ bundle on disk.
 
 ```rust,no_run
 use tutti_ump::{MidiChannel, MidiGroup};
-use tutti_plugin_types::{Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, LoadOptions, MidiEvent, TransportInfo, Vst3Loaded,
 };
@@ -75,12 +75,8 @@ println!("{} by {}", loaded.plugin_info().name, loaded.plugin_info().vendor);
 // Activated. `T` fixes the sample width: `f64` is refused unless the plugin
 // advertises 64-bit support, and a refusal hands the plugin back in the error,
 // so it can be retried at `f32` without reloading.
-let prepare = Prepare {
-    rate: SampleRate(48_000.0),
-    max_block: Samples(512),
-    format: SampleFormat::Float32,
-    mode: RenderMode::Realtime,
-};
+let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+    .expect("a real rate");
 let (mut processor, controller) = loaded
     .activate_typed::<f32>(prepare)
     .map_err(|refused| tutti_vst3_host::Vst3Error::NotSupported(refused.reason.to_string()))?;
@@ -143,7 +139,7 @@ for id in plugin.parameter_ids() {
 
 // The write takes the id and a normalized `0..=1` value.
 if let Some(&id) = plugin.parameter_ids().first() {
-    plugin.set_parameter(id, Normalized::new(0.75));
+    plugin.set_parameter(id, Normalized::of(0.75));
 }
 
 // State save/restore is legal before any buffer exists — a project load

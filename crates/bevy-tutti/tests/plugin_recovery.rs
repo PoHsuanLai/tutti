@@ -242,7 +242,7 @@ fn a_modulation_lane_on_the_plugin_survives_its_replacement() {
             .parameter_value(ParamId::new(77))
     };
     // The default is 60/72 of the range; the lane moves it down a quarter.
-    let lowered = Normalized::new(60.0 / 72.0 - 0.25);
+    let lowered = Normalized::clamped(60.0 / 72.0 - 0.25);
     let near = |v: Option<Normalized>| v.is_some_and(|v| (v.get() - lowered.get()).abs() < 1e-3);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !near(value(&app)) {

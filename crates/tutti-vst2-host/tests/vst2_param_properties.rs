@@ -765,7 +765,7 @@ fn an_out_of_range_id_never_reaches_the_plugin() {
             "reading out-of-range id {id} must not dispatch"
         );
         assert!(
-            !instance.write_parameter(pid(id), Normalized::new(0.5)),
+            !instance.write_parameter(pid(id), Normalized::of(0.5)),
             "writing out-of-range id {id} must not dispatch"
         );
         assert!(
@@ -819,7 +819,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
 
     for id in 0..count.min(4) {
         assert!(
-            instance.write_parameter(pid(id), Normalized::new(0.25)),
+            instance.write_parameter(pid(id), Normalized::of(0.25)),
             "param {id} should accept a write"
         );
 
@@ -842,7 +842,7 @@ fn a_parameter_display_carries_the_current_value_and_its_unit() {
     }
 
     // It tracks the parameter rather than caching: a second value reads differently.
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.75)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.75)));
     let after = instance
         .parameter_display(pid(0))
         .expect("param 0 has a display");
@@ -875,7 +875,7 @@ fn a_refused_string_parse_reports_none_and_writes_nothing() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.5)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.5)));
 
     for text in ["0.75", "-6 dB", "Bandpass", ""] {
         assert_eq!(
@@ -917,12 +917,12 @@ fn the_display_string_describes_only_the_current_value() {
     let _guard = lock_probe();
     let (instance, _path) = load_probe();
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.25)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.25)));
     let at_quarter = instance
         .parameter_display(pid(0))
         .expect("param 0 has a display");
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.75)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.75)));
     let at_three_quarters = instance
         .parameter_display(pid(0))
         .expect("param 0 has a display");
@@ -953,7 +953,7 @@ fn a_plugins_echo_of_a_host_write_is_not_reported() {
         f(true);
     });
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.5)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.5)));
     let echoed = instance.drain_param_changes();
     reset_switches(&path);
 

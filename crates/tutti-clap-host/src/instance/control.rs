@@ -288,7 +288,7 @@ impl Control for ClapLoaded {
     /// answers in its plain range and the declared bounds map it back.
     fn parameter(&self, id: ParamId) -> Option<Normalized> {
         let plain = self.plain_value(id.get())?;
-        Some(Normalized::new(normalize(
+        Some(Normalized::clamped(normalize(
             self.parameter_range(id.get()),
             plain,
         )))
@@ -312,7 +312,7 @@ impl Control for ClapLoaded {
     /// [`set_parameter`](Self::set_parameter).
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         let plain = self.text_to_value(id.get(), text)?;
-        Some(Normalized::new(normalize(
+        Some(Normalized::clamped(normalize(
             self.parameter_range(id.get()),
             plain,
         )))

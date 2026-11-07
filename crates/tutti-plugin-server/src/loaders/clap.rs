@@ -16,11 +16,11 @@ use tutti_plugin::server::{
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Seat, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Seat, Stage, State,
 };
 
-use crate::loaders::common::Meta;
+use crate::loaders::common::{Meta, standing};
 use crate::plugin::AsyncEvent;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
@@ -207,12 +207,14 @@ impl ClapInstance {
         let format = loaded
             .negotiate_format(requested)
             .map_err(|e| activation_failed(e.to_string()))?;
-        let prepare = Prepare {
-            rate: SampleRate(sample_rate),
-            max_block: Samples(block_size),
-            format,
-            mode: RenderMode::Realtime,
-        };
+        let prepare = MaxBlock::new(Samples(block_size))
+            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+            .ok_or_else(|| {
+                activation_failed(format!(
+                    "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                ))
+            })?
+            .with_format(format);
 
         let mut instance = Self {
             lifecycle: Lifecycle::new(loaded),
@@ -518,11 +520,15 @@ impl PluginAudio for ClapInstance {
                 "CLAP plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        let mut wanted = previous;
-        wanted.rate = SampleRate(rate);
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
+            )));
+        };
         let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
             None => Ok(()),
             Some(reason) => {
@@ -535,7 +541,7 @@ impl PluginAudio for ClapInstance {
                 Err(PluginError::Other(format!(
                     "CLAP plugin refused sample rate {rate} ({}): {reason}",
                     if rolled_back {
-                        format!("running at {}", previous.rate.0)
+                        format!("running at {}", previous.rate().0)
                     } else {
                         "deactivated".to_string()
                     }
@@ -1860,7 +1866,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
-        instance.set_parameter(param_id, Normalized::new(0.5));
+        instance.set_parameter(param_id, Normalized::of(0.5));
     }
 
     // ── Group A: Plugin Lifecycle ──
@@ -2007,7 +2013,7 @@ mod tests {
         let original = instance.get_parameter(param_id);
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
 
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
         assert_eq!(
             instance.get_parameter(param_id),
             original,
@@ -2032,6 +2038,64 @@ mod tests {
         assert!(flush_out_of_band(true, false), "before the first block");
         assert!(flush_out_of_band(false, true));
         assert!(flush_out_of_band(false, false));
+    }
+
+    /// **A rate that is no rate is refused before the plugin is touched**: the
+    /// instance runs on at the configuration it has, the plugin is not activated
+    /// again, and the error says where it runs.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
+    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
+    /// activation count moves).
+    #[test]
+    fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+        let prepare = instance.state.prepare();
+        for rate in [0.0, -44_100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = instance
+                .set_sample_rate(rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(err.to_string().contains("running at 44100"), "{err}");
+            assert!(instance.is_active(), "{rate}");
+        }
+        assert_eq!(instance.state.prepare(), prepare);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+        instance.set_sample_rate(48_000.0).expect("a real rate");
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+    }
+
+    /// **A load at no rate or no block is refused** at the activation stage:
+    /// zero, negative and non-finite rates, and a block of no frames. The plugin
+    /// is never activated.
+    ///
+    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
+    /// accepting zero, each -> the matching case loads -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        crate::test_utils::clap_probe_reset_activation_count();
+        for (rate, block) in [
+            (0.0, 512),
+            (-44_100.0, 512),
+            (f64::NAN, 512),
+            (f64::INFINITY, 512),
+            (f64::NEG_INFINITY, 512),
+            (44_100.0, 0),
+        ] {
+            match ClapInstance::load(Path::new(clap_plugin()), rate, block, false) {
+                Err(BridgeError::LoadFailed {
+                    stage: LoadStage::Activation,
+                    reason,
+                    ..
+                }) => assert!(reason.contains("cannot run at"), "{reason}"),
+                Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
     }
 
     /// **A refused rate is rolled back**: the plugin is activated again at the
@@ -2086,7 +2150,7 @@ mod tests {
         instance.set_render_mode(RenderMode::Offline);
         assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
         assert_eq!(
-            instance.state.prepare().map(|p| p.mode),
+            instance.state.prepare().map(|p| p.mode()),
             Some(RenderMode::Offline)
         );
         instance.set_render_mode(RenderMode::Realtime);
@@ -2116,7 +2180,7 @@ mod tests {
 
         // Set to a different value
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
         // The bridge also applies the write now (see `set_parameter`), and the
         // queued copy reaches the next block.
         process_blocks(&mut instance, 1);
@@ -2170,7 +2234,7 @@ mod tests {
 
         // Change parameter
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
 
         // Restore state
         instance.set_state(&saved).expect("restore should succeed");
@@ -2378,7 +2442,7 @@ mod tests {
 
         let original_value = instance.get_parameter(param_id);
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
 
         instance.set_state(&saved).expect("restore should succeed");
 

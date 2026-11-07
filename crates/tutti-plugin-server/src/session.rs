@@ -181,7 +181,7 @@ impl Session {
 
             M::SetParameter { param_id, value } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    // The wire's decode is the clamp (`Normalized::new`), so an
+                    // The wire's decode is the clamp (`Normalized::clamped`), so an
                     // out-of-range or NaN value from the peer never reaches a
                     // live plugin as such.
                     plugin.instance_mut().set_parameter(param_id, value);
@@ -198,7 +198,7 @@ impl Session {
                 let value = self
                     .plugin
                     .as_mut()
-                    .map(|p| Normalized::new(p.instance_mut().get_parameter(param_id)));
+                    .map(|p| Normalized::clamped(p.instance_mut().get_parameter(param_id)));
                 Ok(BridgeMessage::ParameterValue { value }.into())
             }
             M::GetParameterList => {
@@ -728,7 +728,7 @@ mod tests {
                 "SetParameter",
                 HostMessage::SetParameter {
                     param_id: ParamId::new(0),
-                    value: Normalized::new(0.5),
+                    value: Normalized::of(0.5),
                 },
                 Silent,
             ),
@@ -1330,7 +1330,7 @@ mod tests {
         let r = s
             .handle(HostMessage::SetParameter {
                 param_id,
-                value: Normalized::new(0.5),
+                value: Normalized::of(0.5),
             })
             .unwrap();
         assert_none(r);

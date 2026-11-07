@@ -51,14 +51,14 @@ fn right_of(i: usize) -> f32 {
 }
 
 /// Push `n` interleaved stereo frames into `tap` the way the CPAL callback
-/// does — one bulk `push` of a `frames`-long block.
+/// does — one bulk `push` of an `n`-frame block.
 fn push_block(tap: &AudioTap, from: usize, n: usize) {
     let mut block = Vec::with_capacity(n * 2);
     for i in from..from + n {
         block.push(left_of(i));
         block.push(right_of(i));
     }
-    tap.push(&block, n);
+    tap.push(&block);
 }
 
 /// **The whole chain, driven pass by pass, with every sample checked.**

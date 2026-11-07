@@ -29,7 +29,7 @@
 //! it.
 
 use std::sync::Arc;
-use tutti_metering::{MeteringContext, meter_output};
+use tutti_metering::meter_output;
 use tutti_types::{ChannelLayout, InterleavedMut};
 
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
@@ -52,7 +52,6 @@ pub struct OutputBlock {
     channels: usize,
     buffer: Vec<f32>,
     meter_buf: Vec<f32>,
-    metering_ctx: MeteringContext,
     last_rendered_frames: usize,
 }
 
@@ -62,7 +61,6 @@ impl std::fmt::Debug for OutputBlock {
             .field("state", &self.state)
             .field("layout", &self.layout)
             .field("channels", &self.channels)
-            .field("metering_ctx", &self.metering_ctx)
             .field("last_rendered_frames", &self.last_rendered_frames)
             .finish_non_exhaustive()
     }
@@ -80,7 +78,6 @@ impl OutputBlock {
             channels,
             buffer: vec![0.0f32; MAX_FRAMES * channels],
             meter_buf: vec![0.0f32; MAX_FRAMES * 2],
-            metering_ctx: MeteringContext::new(),
             last_rendered_frames: 0,
         }
     }
@@ -151,24 +148,20 @@ impl OutputBlock {
         // closed, `meter_output` does nothing, so neither is the fold done.
         // Each flag is one atomic load; a flag that flips after this check
         // is seen from the next callback.
-        if self.state.meter.is_enabled() || self.state.tap.is_open() {
-            let meter = &mut self.meter_buf[..frames * 2];
+        let mut meter = self.state.meter.borrow_mut();
+        if meter.is_enabled() || self.state.tap.is_open() {
+            let stereo = &mut self.meter_buf[..frames * 2];
             if self.layout == ChannelLayout::STEREO {
-                meter.copy_from_slice(mix);
+                stereo.copy_from_slice(mix);
             } else {
-                for (i, out) in meter.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                for (i, out) in stereo.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                     let f = &mix[i * channels..i * channels + channels];
                     tutti_types::fold_frame(f, out);
                 }
             }
-            meter_output(
-                meter,
-                frames,
-                &self.state.meter,
-                &self.state.tap,
-                &mut self.metering_ctx,
-            );
+            meter_output(stereo, &mut meter, &self.state.tap);
         }
+        drop(meter);
 
         write_output(data, channels, mix, frames);
     }

@@ -17,7 +17,7 @@ use tutti_clap_host::{
     instance::ProcessOutputRef,
 };
 use tutti_plugin_types::{
-    AudioBufferMut, Loaded, PluginError, Prepare, RenderMode, Sample, SampleFormat, SampleRate,
+    AudioBufferMut, Loaded, MaxBlock, PluginError, Prepare, Sample, SampleFormat, SampleRate,
     Samples,
 };
 
@@ -55,12 +55,10 @@ pub struct Active<T: Width> {
 }
 
 fn prepare_for<T: Width>(rate: f64, frames: u32) -> Prepare {
-    Prepare {
-        rate: SampleRate(rate),
-        max_block: Samples(frames as usize),
-        format: T::FORMAT,
-        mode: RenderMode::Realtime,
-    }
+    let block = MaxBlock::new(Samples(frames as usize)).expect("a block of at least one frame");
+    Prepare::new(SampleRate(rate), block)
+        .expect("a positive finite rate")
+        .with_format(T::FORMAT)
 }
 
 /// Activation at a rate and block size, on a loaded plugin.
@@ -216,10 +214,8 @@ impl<T: Width> Active<T> {
 
     /// Deactivates and activates at the configuration it has.
     pub fn reactivate(&mut self) -> Result<(), PluginError> {
-        let Prepare {
-            rate, max_block, ..
-        } = self.prepare;
-        self.reconfigure(rate.0, max_block.0 as u32)
+        let prepare = self.prepare;
+        self.reconfigure(prepare.rate().0, prepare.max_block().get() as u32)
     }
 }
 

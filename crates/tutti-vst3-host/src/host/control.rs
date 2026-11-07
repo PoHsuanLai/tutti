@@ -188,7 +188,7 @@ impl Vst3Loaded {
         }
         Some((
             param_id,
-            Normalized::new(f64::from(*index) / f64::from(step_count)),
+            Normalized::clamped(f64::from(*index) / f64::from(step_count)),
         ))
     }
 
@@ -236,7 +236,9 @@ impl Control for Vst3Loaded {
     /// with no edit controller.
     fn parameter(&self, id: ParamId) -> Option<Normalized> {
         self.parameter_info(id)?;
-        self.plugin.parameter_normalized(id).map(Normalized::new)
+        self.plugin
+            .parameter_normalized(id)
+            .map(Normalized::clamped)
     }
 
     /// Applied now, as `setParamNormalized` on the edit controller. A plugin
@@ -278,7 +280,7 @@ impl Control for Vst3Loaded {
         tutti_plugin_types::assert_main_thread();
         self.plugin
             .parameter_from_text(id, text)
-            .map(Normalized::new)
+            .map(Normalized::clamped)
     }
 
     fn save_state(&mut self) -> PluginResult<Vec<u8>> {

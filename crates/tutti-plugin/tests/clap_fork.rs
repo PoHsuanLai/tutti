@@ -58,7 +58,7 @@ const TAG_P0C0: f32 = 1.0;
 
 /// The normalized value that lands on `db`.
 fn gain_at(db: f64) -> Normalized {
-    Normalized::new((db - GAIN_DB_MIN) / (GAIN_DB_MAX - GAIN_DB_MIN))
+    Normalized::clamped((db - GAIN_DB_MIN) / (GAIN_DB_MAX - GAIN_DB_MIN))
 }
 
 /// The linear amplitude the probe multiplies by at `db`, computed as the probe

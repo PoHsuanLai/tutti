@@ -103,7 +103,7 @@ impl Control for Vst2Loaded {
         let index = self.param_index(id)?;
         self.params
             .get_parameter(index)
-            .map(|v| Normalized::new(f64::from(v)))
+            .map(|v| Normalized::clamped(f64::from(v)))
     }
 
     /// Applied now, with `setParameter`, which the SDK allows from either thread.

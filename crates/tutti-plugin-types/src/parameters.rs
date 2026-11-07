@@ -40,47 +40,69 @@ use serde::{Deserialize, Serialize};
 /// `set_parameter(id, 20_000.0)` against a filter cutoff compiles and sets the
 /// parameter to full scale rather than 20 kHz.
 ///
-/// # The clamp is silent
-///
-/// [`new`](Self::new) clamps into `0..=1` and maps NaN to `0.0`, reporting
-/// neither. A `Normalized` is therefore always a finite value on the unit
-/// interval — but a caller who passes `40.0` gets `1.0` back with no error, no
-/// `Result` and no log line, and a run of such values reads downstream as a
-/// legitimate parameter sweep pinned at maximum rather than as bad input.
-/// Normalize before constructing; this type will not tell you that you did not.
-///
-/// That structural guard is the same one [`ParamRange::to_plain`] applies
-/// internally — it exists here so a caller cannot skip it.
+/// A `Normalized` is always a finite value on `0..=1`. [`new`](Self::new)
+/// refuses anything else (NaN included) and so does deserializing one.
+/// [`clamped`](Self::clamped) is the named saturation, for a value that
+/// arrives from outside and is better pinned than dropped (automation output,
+/// a plugin's own report).
 ///
 /// Deliberately no `Deref`, no `From<f64>` and no arithmetic: those are the
 /// routes by which a raw float becomes a `Normalized` without passing the
-/// clamp, which is the whole point. Same discipline as [`ParamId`] — a number
-/// does not silently become one.
+/// check. Same discipline as [`ParamId`].
 ///
 /// There is no matching `Plain` newtype. A plain value's legal range is
 /// per-parameter, so the type could promise only "finite"; conversions go
 /// through [`ParamRange`] instead.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_plugin_types::Normalized;
+///
+/// assert_eq!(Normalized::new(0.25).map(Normalized::get), Some(0.25));
+/// assert_eq!(Normalized::new(40.0), None);
+/// assert_eq!(Normalized::clamped(40.0), Normalized::of(1.0));
+/// assert_eq!(Normalized::clamped(f64::NAN), Normalized::of(0.0));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 pub struct Normalized(f64);
 
 impl Normalized {
-    /// Clamps `v` onto `0..=1`, **silently**.
+    /// `v`, if it lies on `0..=1`; [`None`] for anything else, NaN included.
+    #[must_use]
+    pub const fn new(v: f64) -> Option<Self> {
+        if v >= 0.0 && v <= 1.0 {
+            Some(Self(v))
+        } else {
+            None
+        }
+    }
+
+    /// `v` for a literal or a constant.
     ///
-    /// Out-of-range input saturates at the nearest bound and NaN becomes `0.0`,
-    /// with nothing returned to say so — an encoding mistake at the call site
-    /// survives as a plausible value rather than surfacing as an error.
+    /// # Panics
     ///
-    /// Infallible by design: every caller of a `Result` here would
-    /// `unwrap_or(0.0)` or clamp anyway, and the values arriving are automation
-    /// output and IPC payloads rather than user input — a rejected write would
-    /// be a dropped automation point, which is worse than a clamped one.
+    /// If `v` is not on `0..=1`, in a `const` context at compile time.
+    #[must_use]
+    pub const fn of(v: f64) -> Self {
+        match Self::new(v) {
+            Some(n) => n,
+            None => panic!("a Normalized lies on 0..=1"),
+        }
+    }
+
+    /// `v` pinned onto `0..=1`: out-of-range input saturates at the nearest
+    /// bound, and NaN becomes `0.0`.
     ///
     /// NaN maps to `0.0` rather than clamping, because `f64::clamp` returns NaN
     /// for a NaN input. This value reaches a live plugin parameter, and a NaN in
     /// a filter coefficient does not stay confined to the parameter it entered.
+    /// The saturation reports nothing, so use it only where a pinned value is
+    /// better than a dropped one.
     #[must_use]
-    pub fn new(v: f64) -> Self {
+    pub fn clamped(v: f64) -> Self {
         Self(clamp_unit(v))
     }
 
@@ -90,6 +112,25 @@ impl Normalized {
         self.0
     }
 }
+
+impl TryFrom<f64> for Normalized {
+    type Error = InvalidNormalized;
+
+    fn try_from(v: f64) -> Result<Self, InvalidNormalized> {
+        Self::new(v).ok_or(InvalidNormalized(v))
+    }
+}
+
+impl From<Normalized> for f64 {
+    fn from(n: Normalized) -> f64 {
+        n.0
+    }
+}
+
+/// A value that is not on `0..=1` (see [`Normalized::new`]).
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("{0} is not on 0..=1")]
+pub struct InvalidNormalized(pub f64);
 
 /// What the plugin declared about a parameter's value range.
 ///
@@ -692,13 +733,14 @@ mod tests {
             (f64::NEG_INFINITY, 0.0),
             (f64::NAN, 0.0),
         ] {
-            let n = Normalized::new(input);
-            assert_eq!(n.get(), want, "Normalized::new({input})");
+            let n = Normalized::clamped(input);
+            assert_eq!(n.get(), want, "Normalized::clamped({input})");
             assert!((0.0..=1.0).contains(&n.get()));
         }
     }
 
-    /// A plain value handed to `Normalized::new` is clamped, not carried.
+    /// A plain value handed to `Normalized::clamped` is clamped, not carried;
+    /// `Normalized::new` refuses it.
     ///
     /// This is the mistake the type exists to stop: `set_parameter(id, 20_000.0)`
     /// against a `[10, 22050]` Hz cutoff sets full scale, not 20 kHz. The write
@@ -708,7 +750,49 @@ mod tests {
     /// value arrives saturated rather than rejected.
     #[test]
     fn a_plain_value_cannot_masquerade_as_a_normalized_one() {
-        assert_eq!(Normalized::new(20_000.0).get(), 1.0);
+        assert_eq!(Normalized::clamped(20_000.0).get(), 1.0);
+        assert_eq!(Normalized::new(20_000.0), None);
+    }
+
+    /// The range contract (`new`, `of`, `TryFrom`, `Into`, serde), checked by
+    /// the shared helper.
+    ///
+    /// Mutation (run): the upper bound loosened to `1.0000000000000002` ->
+    /// "new accepted"; the `v >= 0.0` clause dropped -> "new accepted"; `new`
+    /// accepting NaN (`!(v < 0.0 || v > 1.0)`) -> "new accepted NaN"; the
+    /// `serde(try_from)` attribute removed -> "deserialize accepted". `of` is
+    /// const and panics through `new`, so it cannot be mutated apart from it.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_normalized_keeps_the_range_contract() {
+        tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+            new: Normalized::new,
+            get: Normalized::get,
+            of: Some(Normalized::of),
+            valid: &[0.0, f64::MIN_POSITIVE, 0.25, 0.5, 1.0 - f64::EPSILON, 1.0],
+            invalid: &[
+                -f64::MIN_POSITIVE,
+                -0.1,
+                1.0 + f64::EPSILON,
+                2.0,
+                1e300,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ],
+        });
+    }
+
+    /// `clamped` pins to the nearest bound and maps NaN to zero.
+    ///
+    /// Mutation (run): `clamp_unit` without the NaN arm -> NaN comes back.
+    #[test]
+    fn clamped_saturates_and_maps_nan_to_zero() {
+        assert_eq!(Normalized::clamped(-3.0).get(), 0.0);
+        assert_eq!(Normalized::clamped(3.0).get(), 1.0);
+        assert_eq!(Normalized::clamped(0.25).get(), 0.25);
+        assert_eq!(Normalized::clamped(f64::NAN).get(), 0.0);
+        assert_eq!(Normalized::clamped(f64::INFINITY).get(), 1.0);
     }
 
     /// A grouped parameter qualifies its name; an ungrouped one does not.

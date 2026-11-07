@@ -597,7 +597,7 @@ mod audio_tap {
         assert!(app.world().resource::<AudioTapRes>().is_open());
 
         // Two interleaved stereo frames, as a block would arrive.
-        callback_side.push(&[0.25, -0.5, 0.75, -1.0], 2);
+        callback_side.push(&[0.25, -0.5, 0.75, -1.0]);
 
         assert_eq!(consumer.try_pop(), Some((0.25, -0.5)));
         assert_eq!(consumer.try_pop(), Some((0.75, -1.0)));
@@ -620,7 +620,7 @@ mod audio_tap {
         app.world().resource::<AudioTapRes>().close();
         assert!(!app.world().resource::<AudioTapRes>().is_open());
 
-        callback_side.push(&[0.25, -0.5], 1);
+        callback_side.push(&[0.25, -0.5]);
 
         assert_eq!(consumer.try_pop(), None, "a closed tap copies nothing");
     }
@@ -630,7 +630,7 @@ mod audio_tap {
     #[test]
     fn pushing_into_a_closed_tap_is_a_no_op() {
         let tap = AudioTapRes::default();
-        tap.0.push(&[0.1, 0.2, 0.3, 0.4], 2);
+        tap.0.push(&[0.1, 0.2, 0.3, 0.4]);
         assert!(!tap.is_open());
     }
 

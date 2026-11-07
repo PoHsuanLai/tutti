@@ -561,7 +561,7 @@ mod master_record {
 
         // Play the audio callback: interleaved stereo, the shape `push` takes.
         let block: Vec<f32> = (0..256).flat_map(|i| [i as f32 / 256.0, -1.0]).collect();
-        tap.push(&block, 256);
+        tap.push(&block);
 
         // Give the pump a pass at the ring before stopping it.
         for _ in 0..4 {

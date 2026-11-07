@@ -86,27 +86,28 @@ assert_eq!(cutoff.id, ParamId::new(0x8000_0001));
 assert_eq!(mix.id.get(), 3);
 
 // The seam speaks normalized `0..=1`; `to_plain` maps onto the declared range.
-assert_eq!(cutoff.to_plain(Normalized::new(1.0).get()), 20_000.0);
+assert_eq!(cutoff.to_plain(Normalized::of(1.0).get()), 20_000.0);
 ```
 
-## The clamp in `Normalized::new` is silent
+## `Normalized::clamped` is silent; `Normalized::new` refuses
 
-It saturates out-of-range input at the nearest bound and maps NaN to `0.0`,
-returning no error and logging nothing. Encode ordering data — or any plain value
-— as a `Normalized` and every entry above `1.0` becomes `1.0`, which reads
-downstream as a legitimate sweep pinned at maximum rather than as bad input.
-Normalize before constructing; this type will not tell you that you did not:
+`Normalized::new` returns `None` for anything off `0..=1`, NaN included, and so
+does deserializing one. `Normalized::clamped` saturates out-of-range input at the
+nearest bound and maps NaN to `0.0`, returning no error and logging nothing.
+Encode ordering data — or any plain value — through it and every entry above
+`1.0` becomes `1.0`, which reads downstream as a legitimate sweep pinned at
+maximum rather than as bad input. Normalize before constructing:
 
 ```rust
 use tutti_plugin_types::Normalized;
 
 // A plain 20 kHz cutoff, handed to the normalized seam.
-assert_eq!(Normalized::new(20_000.0).get(), 1.0);
+assert_eq!(Normalized::clamped(20_000.0).get(), 1.0);
 
 // Three distinct positions collapse onto one value, in silence.
 let ranks: Vec<f64> = [7.0, 42.0, 79.0]
     .into_iter()
-    .map(|r| Normalized::new(r).get())
+    .map(|r| Normalized::clamped(r).get())
     .collect();
 assert_eq!(ranks, [1.0, 1.0, 1.0]);
 
@@ -114,7 +115,7 @@ assert_eq!(ranks, [1.0, 1.0, 1.0]);
 let span = 79.0;
 let ranks: Vec<f64> = [7.0, 42.0, 79.0]
     .into_iter()
-    .map(|r| Normalized::new(r / span).get())
+    .map(|r| Normalized::clamped(r / span).get())
     .collect();
 assert!(ranks[0] < ranks[1] && ranks[1] < ranks[2]);
 ```

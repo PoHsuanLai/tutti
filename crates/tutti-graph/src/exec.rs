@@ -167,7 +167,7 @@ use std::sync::atomic::AtomicU64;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_rt::{RtScope, with_no_denormals};
-use tutti_types::{Frame, NodeKey, Samples, Tail};
+use tutti_types::{Frame, MaxBlock, NodeKey, Samples, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
@@ -181,8 +181,8 @@ use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::loss::{Dropped, EventLoss};
 use crate::node::{
-    ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, MaxBlock, Node, Prepare, SilenceMask, Status,
-    Transport, TransportChanges,
+    ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, Node, Prepare, SilenceMask, Status, Transport,
+    TransportChanges,
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};

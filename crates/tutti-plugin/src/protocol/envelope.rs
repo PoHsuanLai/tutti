@@ -180,6 +180,7 @@ pub enum HostMessage {
         /// Which parameter — opaque handle or positional index, per format.
         param_id: crate::protocol::ParamId,
         /// The value to render, normalized.
+        #[serde(with = "super::wire::normalized_f64")]
         value: crate::protocol::Normalized,
     },
     /// Ask the plugin to parse `text` into a value.
@@ -387,6 +388,7 @@ pub enum BridgeMessage {
     /// could not parse it, and the caller must leave its field unchanged.
     ParameterValueFromText {
         /// The parsed value, normalized.
+        #[serde(with = "super::wire::normalized_f64_opt")]
         value: Option<Normalized>,
     },
     /// Acknowledges a `HostMessage::LoadState`, carrying the plugin's refusal

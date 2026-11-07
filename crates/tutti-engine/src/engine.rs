@@ -80,7 +80,7 @@ use tutti_graph::{
 
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder, MasterMeter, MeterWriter};
-use tutti_rt::AudioThreadCell;
+use tutti_rt::{AudioThreadCell, RtScope};
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
@@ -169,6 +169,10 @@ pub struct Engine {
     heard: AudioThreadCell<Heard>,
     /// The reading half of `heard`'s writer.
     master: MasterMeter,
+    /// The tap after the fader, the audio thread's ends.
+    hearing: AudioThreadCell<crate::hearing::Hearing>,
+    /// Its control side.
+    heard_taps: crate::HeardTaps,
 }
 
 /// What the engine measures of the block it just rendered, after the fader.
@@ -340,6 +344,7 @@ impl Engine {
         let dropped_seen = executor.dropped_event_count();
         let (recorder, meter) = LoadMeter::pair();
         let (writer, master) = MasterMeter::pair();
+        let (heard_taps, hearing) = crate::hearing::link();
         Ok(Self {
             graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
@@ -358,6 +363,8 @@ impl Engine {
                 fold: vec![0.0; 2 * stride],
             }),
             master,
+            hearing: AudioThreadCell::new(hearing),
+            heard_taps,
         })
     }
 
@@ -397,6 +404,14 @@ impl Engine {
         &self.master
     }
 
+    /// The control side of the tap after the fader ("what I'm hearing"): the
+    /// device-width output of every [`process`](Self::process) and
+    /// [`process_segment`](Self::process_segment) call, read through a
+    /// [`TapReader`](tutti_graph::TapReader). See [`HeardTaps`](crate::HeardTaps).
+    pub fn heard_taps(&self) -> crate::HeardTaps {
+        self.heard_taps.clone()
+    }
+
     /// Renders the whole of `output` with no transport motion and no declick.
     ///
     /// `output` is an interleaved device buffer that carries its own width.
@@ -432,11 +447,16 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
+        // A free in a block is a debug panic: the hand-over of the heard tap
+        // sends what it replaces back to the control side.
+        let _rt = RtScope::enter();
+        self.hearing.borrow_mut().swap();
         // Refused only while the control side holds the graph
         // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
             self.heard.borrow_mut().measure(output, out_ch);
+            self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
             }
@@ -462,6 +482,9 @@ impl Engine {
             });
             g.transport.advance(len, &t);
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
+            self.hearing
+                .borrow_mut()
+                .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
         self.heard.borrow_mut().measure(output, out_ch);
@@ -488,6 +511,10 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
+        // A free in a block is a debug panic: the hand-over of the heard tap
+        // sends what it replaces back to the control side.
+        let _rt = RtScope::enter();
+        self.hearing.borrow_mut().swap();
         // The audio thread never panics on a borrow. The graph is refused
         // only while the control side holds it (`apply_pending` racing a
         // callback): this block is silent, and the motion queue, which the
@@ -498,6 +525,7 @@ impl Engine {
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
             self.heard.borrow_mut().measure(output, out_ch);
+            self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
             }
@@ -531,6 +559,9 @@ impl Engine {
             let mut fader = self.fader.borrow_mut();
             fader.fade = fade_frames(rate);
             fader.apply(&walk.gain, frame0, output, out_ch, done, len);
+            self.hearing
+                .borrow_mut()
+                .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
         self.heard.borrow_mut().measure(output, out_ch);

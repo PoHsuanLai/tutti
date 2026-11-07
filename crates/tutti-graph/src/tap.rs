@@ -41,7 +41,7 @@ use crate::slots::AudioSlots;
 /// writes and one reads, which is why the minimums below are safe: a ring's
 /// vacancy only grows under the reader and its occupancy only grows under the
 /// writer, so a count taken before a push can only be an underestimate.
-pub(crate) struct TapWriter {
+pub struct TapWriter {
     lanes: Vec<HeapProd<f32>>,
     /// Frames the rings refused, shared with the reader.
     lost: Arc<AtomicU64>,
@@ -56,6 +56,63 @@ impl std::fmt::Debug for TapWriter {
 impl Drop for TapWriter {
     fn drop(&mut self) {
         RtScope::check_outside("a tap writer");
+    }
+}
+
+impl TapWriter {
+    /// How many lanes (channels) this writer fills.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.lanes.len()
+    }
+
+    /// Writes a block of whole interleaved frames, `width` samples a frame
+    /// (a tail shorter than a frame is ignored), to the lanes together: every
+    /// lane takes the same count, the fewest frames any ring has room for, and
+    /// the rest is counted lost, once. With no reader there is nothing to
+    /// write or count. Audio thread: allocates nothing, locks nothing.
+    #[inline]
+    pub fn push_interleaved(&mut self, block: &[f32]) {
+        let width = self.lanes.len();
+        if width == 0 || !self.lanes.first().is_some_and(Observer::read_is_held) {
+            return;
+        }
+        let frames = block.len() / width;
+        let room = self
+            .lanes
+            .iter()
+            .map(Observer::vacant_len)
+            .min()
+            .unwrap_or(0);
+        let take = room.min(frames);
+        for (channel, lane) in self.lanes.iter_mut().enumerate() {
+            let pushed = lane.push_iter(
+                block
+                    .iter()
+                    .skip(channel)
+                    .step_by(width)
+                    .copied()
+                    .take(take),
+            );
+            debug_assert_eq!(pushed, take, "room was counted across every lane");
+        }
+        self.count_lost(frames - take);
+    }
+
+    /// Counts `frames` as lost without writing them: a block this writer
+    /// could not take (a device of another width).
+    #[inline]
+    pub fn skip(&mut self, frames: usize) {
+        if self.lanes.first().is_some_and(Observer::read_is_held) {
+            self.count_lost(frames);
+        }
+    }
+
+    #[inline]
+    fn count_lost(&self, frames: usize) {
+        if frames > 0 {
+            self.lost.fetch_add(frames as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -131,8 +188,17 @@ impl TapReader {
         (reader, TapWriter { lanes: prods, lost })
     }
 
-    /// A handle the editor keeps to see whether this reader is still alive.
-    pub(crate) fn watch(&self) -> Weak<()> {
+    /// A reader and its writer, for a writer that is not an op of a plan (the
+    /// engine's, after the fader): `width` lanes of `capacity` frames each.
+    #[must_use]
+    pub fn standalone(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
+        Self::pair(id, width, capacity)
+    }
+
+    /// A handle to see whether this reader is still alive: its strong count
+    /// is zero once the reader is dropped.
+    #[must_use]
+    pub fn watch(&self) -> Weak<()> {
         Arc::downgrade(&self.alive)
     }
 

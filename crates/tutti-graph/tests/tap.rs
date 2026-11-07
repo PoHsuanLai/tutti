@@ -576,6 +576,16 @@ fn closing_a_tap_twice_is_a_no_op() {
     assert!(!plan.ops().iter().any(|o| matches!(o, Op::Tap { .. })));
 }
 
+/// Sets its flag when dropped, so a panic while rendering still lets the reader
+/// thread finish (instead of hanging the scope).
+struct Raise<'a>(&'a std::sync::atomic::AtomicBool);
+
+impl Drop for Raise<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The lanes of a tap cannot tear, whatever the reader does. A reader thread
 /// drains in small pops with pauses against a ring that overflows (256 frames,
 /// 100-frame blocks), so frames are dropped; every frame that arrives must have
@@ -627,10 +637,11 @@ fn concurrent_drain(workers: usize, width: usize, align: TapAlign) {
             }
             (got, tap.take_lost().get())
         });
+        let finished = Raise(&done);
         for i in 0..BLOCKS {
             block(&mut r, BLOCK, (i * BLOCK) as u64);
         }
-        done.store(true, std::sync::atomic::Ordering::Release);
+        drop(finished);
         reader.join().expect("the reader finished")
     });
     assert!(lost > 0, "the ring overflowed, so the test saw drops");

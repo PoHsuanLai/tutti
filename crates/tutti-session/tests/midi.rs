@@ -577,8 +577,8 @@ fn plug(
 // - `midi_input_phase` not polling the devices: all four fail;
 // - `midi_input_phase` not closing a held input on `Removed`: the held-input
 //   test fails (the port and the connection stay, the audit's defect);
-// - `midi_input_phase` closing the output on any `Removed`: the unheld test
-//   fails;
+// - `midi_input_phase` closing the output on any `Removed`:
+//   `another_devices_removal_leaves_a_held_input_open` fails;
 // - `midi_input_phase` leaving the output open: the output test fails.
 
 /// **A device that comes and goes reaches `Session::update` as an event**,
@@ -654,16 +654,18 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     assert!(!io.is_output_connected());
 }
 
-/// **Another device's removal leaves a held input alone.**
+/// **Another device's removal leaves a held input and output alone.**
 #[cfg(feature = "midi-hardware")]
 #[test]
 fn another_devices_removal_leaves_a_held_input_open() {
     let (mut s, fake) = hot_plug_session();
     plug(&fake, 1, "Keys", Direction::Input);
     plug(&fake, 2, "Pads", Direction::Input);
+    plug(&fake, 10, "Synth", Direction::Output);
     s.update();
     let io = s.midi_io().expect("the OS MIDI layer").clone();
     io.connect_input_by_name("keys").expect("connects");
+    io.connect_output_by_name("synth").expect("connects");
 
     fake.unplug(EndpointId::from_raw(2));
     assert_eq!(
@@ -672,6 +674,7 @@ fn another_devices_removal_leaves_a_held_input_open() {
     );
     assert_eq!(io.connected_input_names(), ["Keys"]);
     assert_eq!(io.ports().list_input_ports().len(), 1);
+    assert!(io.is_output_connected());
 }
 
 /// **The feeds are partial, as audio's declarations are: an edge a host

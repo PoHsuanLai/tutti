@@ -25,8 +25,7 @@ fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
     assert!(gone.upgrade().is_none(), "freed by the reclaim");
 }
 
-/// **A clip node's held-note table is 24 KiB**, allocated with the node, not
-/// the 143 KB of per-key arrays it replaced.
+/// **A clip node's held-note table is 24 KiB**, allocated with the node.
 ///
 /// Mutation (run): `LEDGER_CAPACITY` of 16,384 → 196 KB, fails.
 #[test]

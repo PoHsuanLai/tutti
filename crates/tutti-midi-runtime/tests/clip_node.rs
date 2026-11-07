@@ -413,7 +413,7 @@ fn a_loop_shorter_than_a_block_plays_every_pass() {
 /// at frame 64 ends it.
 ///
 /// Mutation (run): the clip's event visit writing each event as it is (no
-/// `HeldNotes::play`) → the stream is on, on, off: a stacking receiver keeps
+/// `Sending::send`) → the stream is on, on, off: a stacking receiver keeps
 /// a voice the clip no longer holds, and the seek ends nothing → fails.
 #[test]
 fn a_note_started_twice_and_ended_once_leaves_nothing_sounding() {
@@ -509,9 +509,9 @@ fn a_note_nested_in_another_of_its_key_ends_at_its_own_end() {
 /// swallowed, C's ends the key at 50.
 ///
 /// Mutation (run): a note-off ends its key whoever owns it (the
-/// `owner[key] == note` check dropped) → A's note-off cuts C at 30 → fails.
-/// Mutation (run): a restart not taking the key (`owner[key] = note` dropped
-/// from the held branch of `HeldNotes::play`) → A still owns the key, and
+/// `e.owner == owner` check dropped) → A's note-off cuts C at 30 → fails.
+/// Mutation (run): a restart not taking the key (`owner` stored in the entry dropped
+/// from the held branch of `Sending::on`) → A still owns the key, and
 /// its note-off cuts C at 30 → fails.
 #[test]
 fn three_overlapping_notes_of_one_key_leave_the_newest_whole() {

@@ -54,45 +54,41 @@ pub use format::vst2_in_process::{
 
 /// Discovering, persisting, and loading plugins.
 ///
-/// **Bring your own store.** [`discover`](catalog::discover) walks directories
-/// and returns paths; [`PluginRecord::probe`](catalog::PluginRecord::probe)
-/// turns one path into one record. Two pure functions, no state, no feature
+/// Discovery itself lives in `tutti-plugin-db`; this module supplies what needs
+/// the plugin server and loads what was found.
+///
+/// **Bring your own store.** [`discover`](tutti_plugin_db::discover) walks
+/// directories and returns paths; [`probe_record`](catalog::probe_record)
+/// turns one path into one record. Two functions, no state, no feature
 /// flags — put the results wherever you like:
 ///
 /// ```no_run
-/// use tutti_plugin::catalog::{discover, PluginRecord};
+/// use tutti_plugin::catalog::probe_record;
+/// use tutti_plugin_db::{PluginRecord, discover};
 /// # let dirs = vec![std::path::PathBuf::from("/Library/Audio/Plug-Ins/VST3")];
 /// let records: Vec<PluginRecord> = discover(&dirs)
 ///     .iter()
-///     .filter_map(|(path, _format)| PluginRecord::probe(path).ok())
+///     .filter_map(|(path, _format)| probe_record(path).ok())
 ///     .collect();
 /// ```
 ///
 /// **Or let the library manage it.** [`Plugins`](catalog::Plugins) wraps a
-/// [`PluginCatalog`](catalog::PluginCatalog) — a pluggable record store — and
-/// adds the two things the pure path cannot give you: incremental rescan
-/// (probe only what changed, via stored mtimes — the difference between a
+/// [`PluginCatalog`](tutti_plugin_db::PluginCatalog) — a pluggable record
+/// store — and adds the two things the pure path cannot give you: incremental
+/// rescan (probe only what changed, via stored mtimes — the difference between a
 /// multi-minute startup and an instant one) and crash recovery (a plugin that
 /// hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// `JsonCatalog` is one such store, behind the opt-in
-/// `json` feature. Implement [`PluginCatalog`](catalog::PluginCatalog) yourself
-/// for SQLite, a CRDT, or an in-memory map.
+/// `JsonCatalog` is one such store, behind the opt-in `json` feature.
+/// Implement [`PluginCatalog`](tutti_plugin_db::PluginCatalog) yourself for
+/// SQLite, a CRDT, or an in-memory map.
 pub mod catalog {
-    #[cfg(feature = "json")]
-    pub use crate::host::discovery::JsonCatalog;
-    #[cfg(feature = "json")]
-    pub use crate::host::discovery::parse_records;
-    pub use crate::host::discovery::{
-        AuComponentType, Blacklist, CatalogExt, ClapFeature, FileFacts, PluginCatalog, PluginClass,
-        PluginDescriptor, PluginFormat, PluginRecord, PluginRole, PluginScanner, ScanDecision,
-        ScanHandle, ScanPhase, ScanProgress, ScanResult, Vst2Category, Vst3PlugType,
-        Vst3SubCategories, blacklist_record, classify, discover, is_blacklisted_and_unchanged,
-        missing, needs_rescan,
-    };
+    pub use crate::host::db_probe::probe_record;
+    // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::Plugin;
     pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
     pub use crate::util::config::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
+    pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }
 
 // Per-plugin handles: the graph node and the main-thread control surface.

@@ -301,7 +301,7 @@ mod tests {
 
     /// A catalog written before this field existed still loads.
     ///
-    /// The plugin database is JSON (`discovery/database.rs`), not bincode, so it
+    /// The plugin database is JSON (`tutti-plugin-db`'s `database.rs`), not bincode, so it
     /// is self-describing and an old record simply lacks the key. Without
     /// `serde(default)` that is a parse error, and `load` quarantines the whole
     /// file — every scan result and blacklist entry gone because one field was

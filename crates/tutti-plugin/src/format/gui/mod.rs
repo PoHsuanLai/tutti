@@ -83,7 +83,7 @@ pub(crate) trait PluginEditor: Send {
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
 pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
-    use crate::host::discovery::{PluginFormat, format_from_path};
+    use tutti_plugin_db::{PluginFormat, format_from_path};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
         path: path.to_path_buf(),

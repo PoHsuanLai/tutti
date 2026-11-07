@@ -157,7 +157,7 @@ impl UnisonEngine {
         let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
 
         let amplitude = Amplitude(1.0 / (count as f32).sqrt());
-        // A converter, not a divide: `Cents` is `unit_scalable!`, so
+        // A converter, not a divide: `Cents` is `Scalable`, so
         // `detune_cents / 100.0` would compile and hand back `Cents` — wrong by
         // 100x, with a type that says it is fine.
         let detune_semitones = self.config.detune_cents.to_semitones();

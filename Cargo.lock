@@ -405,6 +405,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-plugin",
+ "tutti-plugin-db",
  "tutti-plugin-server",
  "tutti-polysynth",
  "tutti-rt",
@@ -4529,7 +4530,6 @@ dependencies = [
  "parking_lot",
  "raw-window-handle",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "thread-priority",
@@ -4545,6 +4545,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-mod",
  "tutti-nodes",
+ "tutti-plugin-db",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
@@ -4553,6 +4554,18 @@ dependencies = [
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
  "windows 0.52.0",
+]
+
+[[package]]
+name = "tutti-plugin-db"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-channel",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tutti-plugin-types",
 ]
 
 [[package]]

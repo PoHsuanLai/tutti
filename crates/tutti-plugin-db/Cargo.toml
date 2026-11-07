@@ -1,0 +1,38 @@
+[package]
+name = "tutti-plugin-db"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Plugin discovery for the Tutti audio engine: directory walk, scan with crash recovery, and the plugin catalog"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-plugin-db"
+readme = "README.md"
+# Not published: whether and when this goes to crates.io is the maintainer's
+# call, not a side effect of a workspace change. Remove this line to publish.
+publish = false
+keywords = ["audio", "plugin", "vst3", "clap", "discovery"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# `JsonCatalog`, a JSON-file-backed `PluginCatalog`.
+json = ["dep:serde_json"]
+
+[dependencies]
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+tracing = "0.1"
+# The scan's progress, result and catalog channels.
+crossbeam-channel = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

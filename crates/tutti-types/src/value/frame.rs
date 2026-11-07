@@ -44,42 +44,40 @@ use core::ops::{Add, AddAssign};
 use super::samples::Samples;
 use super::units::Beat;
 
-/// An absolute frame position on the engine's clock: frames rendered since it
-/// started. See the [module docs](self).
-///
-/// Two positions do not add, and do not subtract with `-`:
-///
-/// ```compile_fail
-/// use tutti_types::Frame;
-/// let _ = Frame(10) + Frame(20);
-/// ```
-///
-/// ```compile_fail
-/// use tutti_types::Frame;
-/// let _ = Frame(20) - Frame(10);
-/// ```
-///
-/// A bare integer is not a frame count either:
-///
-/// ```compile_fail
-/// use tutti_types::Frame;
-/// let _ = Frame(10) + 5u64;
-/// ```
-///
-/// What does compile says what it means:
-///
-/// ```
-/// use tutti_types::{Frame, Samples};
-/// let start = Frame(48_000);
-/// let later = start + Samples(512);
-/// assert_eq!(later.since(start), Some(Samples(512)));
-/// assert_eq!(start.since(later), None); // not a count: it is in the past
-/// ```
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Frame(pub u64);
+unit! {
+    /// An absolute frame position on the engine's clock: frames rendered since it
+    /// started. See the [module docs](self).
+    ///
+    /// Two positions do not add, and do not subtract with `-`:
+    ///
+    /// ```compile_fail
+    /// use tutti_types::Frame;
+    /// let _ = Frame(10) + Frame(20);
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tutti_types::Frame;
+    /// let _ = Frame(20) - Frame(10);
+    /// ```
+    ///
+    /// A bare integer is not a frame count either:
+    ///
+    /// ```compile_fail
+    /// use tutti_types::Frame;
+    /// let _ = Frame(10) + 5u64;
+    /// ```
+    ///
+    /// What does compile says what it means:
+    ///
+    /// ```
+    /// use tutti_types::{Frame, Samples};
+    /// let start = Frame(48_000);
+    /// let later = start + Samples(512);
+    /// assert_eq!(later.since(start), Some(Samples(512)));
+    /// assert_eq!(start.since(later), None); // not a count: it is in the past
+    /// ```
+    pub struct Frame(pub u64): Display;
+}
 
 impl Frame {
     /// The first frame the clock renders.
@@ -110,13 +108,6 @@ impl Frame {
     pub fn since(self, earlier: Frame) -> Option<Samples> {
         let d = self.0.checked_sub(earlier.0)?;
         usize::try_from(d).ok().map(Samples)
-    }
-}
-
-impl core::fmt::Display for Frame {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.0, f)
     }
 }
 

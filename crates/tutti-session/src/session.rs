@@ -578,7 +578,7 @@ pub struct Session {
     /// a device (the callback holds it) or detached.
     pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
-    pub(crate) load: Option<Arc<tutti_metering::LoadMeter>>,
+    pub(crate) load: Option<tutti_metering::LoadMeter>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
     pub(crate) click: Option<NodeKey>,
@@ -960,7 +960,7 @@ impl Session {
     /// Fed by every block the device callback (or, offline,
     /// [`render`](Self::render)) renders; `None` on a detached session,
     /// which has no engine.
-    pub fn load_meter(&self) -> Option<&Arc<tutti_metering::LoadMeter>> {
+    pub fn load_meter(&self) -> Option<&tutti_metering::LoadMeter> {
         self.load.as_ref()
     }
 

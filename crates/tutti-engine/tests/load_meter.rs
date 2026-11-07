@@ -74,7 +74,7 @@ fn budget(frames: usize) -> Duration {
 #[test]
 fn a_block_past_its_deadline_counts_and_peaks_once() {
     let (engine, _t, _ed) = engine(budget(64) * 2, 64);
-    let meter = std::sync::Arc::clone(engine.load_meter());
+    let meter = engine.load_meter().clone();
     let mut out = vec![0.0f32; 64];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     let r = meter.take();
@@ -103,7 +103,7 @@ fn a_block_past_its_deadline_counts_and_peaks_once() {
 #[test]
 fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
     let (engine, _t, _ed) = engine(budget(4096).mul_f64(1.5), 4096);
-    let meter = std::sync::Arc::clone(engine.load_meter());
+    let meter = engine.load_meter().clone();
     let mut out = vec![0.0f32; 8192];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     let r = meter.take();
@@ -190,7 +190,7 @@ fn events_past_a_ports_capacity_reach_the_meter() {
     })];
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    let meter = std::sync::Arc::clone(engine.load_meter());
+    let meter = engine.load_meter().clone();
     let mut out = vec![0.0f32; 64];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
     assert_eq!(meter.peek().dropped_events, 100);

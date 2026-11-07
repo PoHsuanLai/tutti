@@ -1,5 +1,6 @@
 //! Render-deadline telemetry: how long each block took against its budget.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use tutti_types::{AtomicF32, Seconds};
 
@@ -55,24 +56,17 @@ impl LoadReading {
     }
 }
 
-/// The engine's DSP-load meter: written once per device block by the audio
-/// thread (`Engine::process` and
-/// `Engine::process_segment`), read by any thread.
-///
-/// Built by the engine; a host gets it with
-/// `Engine::load_meter` and polls
-/// [`take`](Self::take). Always on.
-///
-/// Every field is its own relaxed atomic, and no reading depends on the
-/// order of two of them: a reading may straddle two blocks, which a meter
-/// accepts. The peak is a `fetch_max` on the bits of a non-negative `f32`
-/// (which order like `u32`), and [`take`](Self::take) swaps it to zero: both
-/// are read-modify-writes on one location, so a block's peak racing a take
-/// lands in this take or the next and is never lost.
+/// The cells both halves share. Every field is its own relaxed atomic, and
+/// no reading depends on the order of two of them: a reading may straddle
+/// two blocks, which a meter accepts. The peak is a `fetch_max` on the bits
+/// of a non-negative `f32` (which order like `u32`), and
+/// [`take`](LoadMeter::take) swaps it to zero: both are read-modify-writes on
+/// one location, so a block's peak racing a take lands in this take or the
+/// next and is never lost.
 #[derive(Debug, Default)]
-pub struct LoadMeter {
+struct Cells {
     last: AtomicF32,
-    /// Written only by the audio thread (a load, then a store).
+    /// Written only by the recorder (a load, then a store).
     mean: AtomicF32,
     /// `f32` bits, so the max is one `fetch_max`.
     peak: AtomicU32,
@@ -82,82 +76,118 @@ pub struct LoadMeter {
     dropped_events: AtomicU64,
 }
 
+/// The audio thread's half of the DSP-load meter: the only value that
+/// records. Written once per device block by `Engine::process` and
+/// `Engine::process_segment`.
+///
+/// Not `Clone`, and every method takes `&mut self`, so there is one writer by
+/// ownership, which the mean's load-then-store needs. Allocation-free and
+/// wait-free. Built with [`LoadMeter::pair`].
+#[derive(Debug)]
+pub struct LoadRecorder {
+    cells: Arc<Cells>,
+}
+
+/// The reading half of the DSP-load meter: any thread, any number of clones,
+/// and none can record. A host gets it with `Engine::load_meter` and polls
+/// [`take`](Self::take). Always on.
+///
+/// A reader cannot record, and the recorder cannot be duplicated:
+///
+/// ```compile_fail
+/// let (_rec, meter) = tutti_metering::LoadMeter::pair();
+/// meter.record_silenced();
+/// ```
+///
+/// ```compile_fail
+/// let (rec, _meter) = tutti_metering::LoadMeter::pair();
+/// let _second = rec.clone();
+/// ```
+///
+/// Mutation (run): a `record_silenced(&self)` on `LoadMeter`, and
+/// `#[derive(Clone)]` on `LoadRecorder` → each snippet compiles → the
+/// doctest fails.
+#[derive(Clone, Debug)]
+pub struct LoadMeter {
+    cells: Arc<Cells>,
+}
+
 impl LoadMeter {
-    /// A meter that has measured nothing.
+    /// A meter that has measured nothing: its recorder and a reader of it.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn pair() -> (LoadRecorder, Self) {
+        let cells = Arc::new(Cells::default());
+        (
+            LoadRecorder {
+                cells: Arc::clone(&cells),
+            },
+            Self { cells },
+        )
     }
 
     /// The current reading, taking the peak: the next take reports the
     /// largest load since this one. A UI polling at frame rate sees every
     /// spike once.
     ///
-    /// The reset is the meter's, not the caller's: every holder of the
-    /// `Arc` shares one peak, so two consumers that both `take` split the
-    /// spikes between them. One owner takes; any other reads with
-    /// [`peek`](Self::peek).
+    /// The reset is the meter's, not the caller's: every clone shares one
+    /// peak, so two consumers that both `take` split the spikes between
+    /// them. One owner takes; any other reads with [`peek`](Self::peek).
     pub fn take(&self) -> LoadReading {
-        self.reading(f32::from_bits(self.peak.swap(0, Ordering::Relaxed)))
+        self.reading(f32::from_bits(self.cells.peak.swap(0, Ordering::Relaxed)))
     }
 
     /// The current reading, leaving the peak in place for the next
     /// [`take`](Self::take).
     pub fn peek(&self) -> LoadReading {
-        self.reading(f32::from_bits(self.peak.load(Ordering::Relaxed)))
+        self.reading(f32::from_bits(self.cells.peak.load(Ordering::Relaxed)))
     }
 
     fn reading(&self, peak: f32) -> LoadReading {
+        let c = &*self.cells;
         LoadReading {
-            last: self.last.load(Ordering::Relaxed),
-            mean: self.mean.load(Ordering::Relaxed),
+            last: c.last.load(Ordering::Relaxed),
+            mean: c.mean.load(Ordering::Relaxed),
             peak,
-            over_budget: self.over_budget.load(Ordering::Relaxed),
-            blocks: self.blocks.load(Ordering::Relaxed),
-            silenced: self.silenced.load(Ordering::Relaxed),
-            dropped_events: self.dropped_events.load(Ordering::Relaxed),
+            over_budget: c.over_budget.load(Ordering::Relaxed),
+            blocks: c.blocks.load(Ordering::Relaxed),
+            silenced: c.silenced.load(Ordering::Relaxed),
+            dropped_events: c.dropped_events.load(Ordering::Relaxed),
         }
     }
 
     /// Zero the over-budget, block, silenced and dropped-event counts and
-    /// the peak; the
-    /// mean is seeded afresh by the next block. A block measured during the
-    /// reset may count on either side of it.
+    /// the peak; the mean is seeded afresh by the next block. A block
+    /// measured during the reset may count on either side of it.
     pub fn reset(&self) {
-        self.over_budget.store(0, Ordering::Relaxed);
-        self.blocks.store(0, Ordering::Relaxed);
-        self.silenced.store(0, Ordering::Relaxed);
-        self.dropped_events.store(0, Ordering::Relaxed);
-        self.peak.store(0, Ordering::Relaxed);
+        let c = &*self.cells;
+        c.over_budget.store(0, Ordering::Relaxed);
+        c.blocks.store(0, Ordering::Relaxed);
+        c.silenced.store(0, Ordering::Relaxed);
+        c.dropped_events.store(0, Ordering::Relaxed);
+        c.peak.store(0, Ordering::Relaxed);
     }
+}
 
-    /// Count `n` events the graph dropped. Audio thread; only `Engine` calls
-    /// it (public because the engine is another crate). Another caller adds
-    /// to the same counter and skews the reading.
-    pub fn record_dropped_events(&self, n: u64) {
+impl LoadRecorder {
+    /// Count `n` events the graph dropped.
+    pub fn record_dropped_events(&mut self, n: u64) {
         if n > 0 {
-            self.dropped_events.fetch_add(n, Ordering::Relaxed);
+            self.cells.dropped_events.fetch_add(n, Ordering::Relaxed);
         }
     }
 
-    /// Count one block rendered silent, refused the graph. Audio thread; only
-    /// `Engine` calls it (public because the engine is another crate). Another
-    /// caller adds to the same counter and skews the reading.
-    pub fn record_silenced(&self) {
-        self.silenced.fetch_add(1, Ordering::Relaxed);
+    /// Count one block rendered silent, refused the graph.
+    pub fn record_silenced(&mut self) {
+        self.cells.silenced.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record one block that took `elapsed` against a budget of `budget`.
-    /// Audio thread, one writer: atomics only, no allocation, no lock. A
+    /// Record one block that took `elapsed` against a budget of `budget`. A
     /// block with no budget (no frames) records nothing.
-    ///
-    /// Only `Engine` calls it (public because the engine is another crate).
-    /// The mean is a load then a store, not a read-modify-write, so a second
-    /// writer can lose an update and skew the mean.
-    pub fn record(&self, elapsed: Seconds, budget: Seconds) {
+    pub fn record(&mut self, elapsed: Seconds, budget: Seconds) {
         if budget.0 <= 0.0 {
             return;
         }
+        let c = &*self.cells;
         // Non-negative and not NaN, so the bits below are a non-negative
         // float's and `fetch_max` on them is a float max; finite, so an
         // infinite load (a budget that underflowed) cannot make the mean NaN.
@@ -167,21 +197,21 @@ impl LoadMeter {
         } else {
             ratio.clamp(0.0, f32::MAX)
         };
-        let n = self.blocks.fetch_add(1, Ordering::Relaxed);
+        let n = c.blocks.fetch_add(1, Ordering::Relaxed);
         let mean = if n == 0 {
             load
         } else {
             // Exact exponential smoothing over audio time, so the mean's
             // response does not depend on the block size.
             let a = LOAD_MEAN_TIME_CONSTANT.one_pole_coeff_over(budget);
-            let m = self.mean.load(Ordering::Relaxed);
+            let m = c.mean.load(Ordering::Relaxed);
             m + a * (load - m)
         };
-        self.mean.store(mean, Ordering::Relaxed);
-        self.last.store(load, Ordering::Relaxed);
-        self.peak.fetch_max(load.to_bits(), Ordering::Relaxed);
+        c.mean.store(mean, Ordering::Relaxed);
+        c.last.store(load, Ordering::Relaxed);
+        c.peak.fetch_max(load.to_bits(), Ordering::Relaxed);
         if load > 1.0 {
-            self.over_budget.fetch_add(1, Ordering::Relaxed);
+            c.over_budget.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -203,10 +233,10 @@ mod tests {
     /// at budget counts → fails.
     #[test]
     fn only_a_block_past_its_budget_counts_as_over() {
-        let m = LoadMeter::new();
-        m.record(at(0.5), BLOCK);
-        m.record(at(1.0), BLOCK);
-        m.record(at(2.5), BLOCK);
+        let (mut rec, m) = LoadMeter::pair();
+        rec.record(at(0.5), BLOCK);
+        rec.record(at(1.0), BLOCK);
+        rec.record(at(2.5), BLOCK);
         let r = m.take();
         assert_eq!(r.over_budget, 1);
         assert_eq!(r.blocks, 3);
@@ -222,13 +252,13 @@ mod tests {
     /// fails.
     #[test]
     fn a_take_reports_the_peak_since_the_last_and_resets_it() {
-        let m = LoadMeter::new();
-        m.record(at(0.4), BLOCK);
-        m.record(at(3.0), BLOCK);
-        m.record(at(0.2), BLOCK);
+        let (mut rec, m) = LoadMeter::pair();
+        rec.record(at(0.4), BLOCK);
+        rec.record(at(3.0), BLOCK);
+        rec.record(at(0.2), BLOCK);
         assert!((m.take().peak - 3.0).abs() < 1e-4);
         assert_eq!(m.take().peak, 0.0, "taken");
-        m.record(at(0.7), BLOCK);
+        rec.record(at(0.7), BLOCK);
         assert!((m.take().peak - 0.7).abs() < 1e-4);
     }
 
@@ -243,22 +273,22 @@ mod tests {
     fn the_mean_converges_to_a_constant_load_at_its_time_constant() {
         for frames in [64.0f32, 1024.0] {
             let block = Seconds(frames / 48_000.0);
-            let m = LoadMeter::new();
-            m.record(Seconds(block.0 * 0.2), block);
+            let (mut rec, m) = LoadMeter::pair();
+            rec.record(Seconds(block.0 * 0.2), block);
             assert!((m.take().mean - 0.2).abs() < 1e-6, "seeded");
             let blocks = (5.0 * LOAD_MEAN_TIME_CONSTANT.0 / block.0).ceil() as usize;
             for _ in 0..blocks {
-                m.record(Seconds(block.0 * 0.8), block);
+                rec.record(Seconds(block.0 * 0.8), block);
             }
             let mean = m.take().mean;
             let bound = 0.6 * (-5.0f32).exp() + 1e-4;
             assert!((mean - 0.8).abs() <= bound, "{frames}: {mean}");
             // And not already there a time constant in: it is smoothed.
-            let m = LoadMeter::new();
-            m.record(Seconds(block.0 * 0.2), block);
+            let (mut rec, m) = LoadMeter::pair();
+            rec.record(Seconds(block.0 * 0.2), block);
             let one = (LOAD_MEAN_TIME_CONSTANT.0 / block.0).floor() as usize;
             for _ in 0..one {
-                m.record(Seconds(block.0 * 0.8), block);
+                rec.record(Seconds(block.0 * 0.8), block);
             }
             let mean = m.take().mean;
             assert!(mean < 0.8 - 0.6 * 0.3, "{frames}: {mean}");
@@ -272,17 +302,17 @@ mod tests {
     /// seed, the mean stays near 0.1 → fails.
     #[test]
     fn a_reset_restarts_the_counts_and_the_mean() {
-        let m = LoadMeter::new();
+        let (mut rec, m) = LoadMeter::pair();
         for _ in 0..10 {
-            m.record(at(0.1), BLOCK);
+            rec.record(at(0.1), BLOCK);
         }
-        m.record(at(1.5), BLOCK);
+        rec.record(at(1.5), BLOCK);
         m.reset();
         let r = m.take();
         assert_eq!((r.over_budget, r.blocks, r.peak), (0, 0, 0.0));
-        m.record(Seconds(1.0), Seconds(0.0));
+        rec.record(Seconds(1.0), Seconds(0.0));
         assert_eq!(m.take().blocks, 0, "no budget, no block");
-        m.record(at(0.9), BLOCK);
+        rec.record(at(0.9), BLOCK);
         let r = m.take();
         assert!((r.mean - 0.9).abs() < 1e-4, "{}", r.mean);
         assert_eq!(r.blocks, 1);
@@ -295,8 +325,8 @@ mod tests {
     /// reports 0 → fails.
     #[test]
     fn a_peek_leaves_the_peak_for_the_take() {
-        let m = LoadMeter::new();
-        m.record(at(2.0), BLOCK);
+        let (mut rec, m) = LoadMeter::pair();
+        rec.record(at(2.0), BLOCK);
         assert!((m.peek().peak - 2.0).abs() < 1e-4);
         assert!((m.take().peak - 2.0).abs() < 1e-4, "still there");
         assert_eq!(m.peek().peak, 0.0);
@@ -310,10 +340,10 @@ mod tests {
     /// the mean goes `inf`, then NaN → fails.
     #[test]
     fn an_infinite_load_leaves_the_mean_finite() {
-        let m = LoadMeter::new();
-        m.record(at(0.5), BLOCK);
-        m.record(Seconds(1.0), Seconds(1e-45));
-        m.record(at(0.5), BLOCK);
+        let (mut rec, m) = LoadMeter::pair();
+        rec.record(at(0.5), BLOCK);
+        rec.record(Seconds(1.0), Seconds(1e-45));
+        rec.record(at(0.5), BLOCK);
         let r = m.take();
         assert!(r.mean.is_finite(), "{}", r.mean);
         assert_eq!(r.over_budget, 1);

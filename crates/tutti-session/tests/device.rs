@@ -61,7 +61,7 @@ fn the_session_reads_the_load_its_callback_measures() {
     let (session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
-    let meter = std::sync::Arc::clone(session.load_meter().expect("a device's engine"));
+    let meter = session.load_meter().expect("a device's engine").clone();
     for _ in 0..3 {
         stream.render_block(64).expect("the stream is open");
     }

@@ -30,11 +30,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::devices::Devices;
-use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::devices::{Devices, OpenInput, OpenOutput};
+use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
-use crate::{HardwareMidiInputs, PortId};
 use tutti_midi_device::{DeviceId, DeviceInfo};
 use tutti_midi_types::MidiOut;
 use tutti_midi_types::ump::MidiEvent;
@@ -52,37 +52,24 @@ pub struct MidiSession {
 ///
 /// # Drop order
 ///
-/// Stated, not left to field order alone: [`Drop`] closes every input first
-/// (each connection, then its port), and only then do the fields drop, in
-/// declaration order: what is left open (the output), then the ring manager
-/// handle, then the backend whose client every connection was opened on.
-/// Closing a connection stops its driver: the ALSA backend joins its pump
-/// thread, which drops the producer handle before the port is retired. On
-/// macOS the handle lives in the input callback, which CoreMIDI retains and
-/// may release (and so drop the handle) after the port is disposed; a push
-/// in that window lands in a ring nobody drains, which is harmless. The order
-/// is about not leaving ports behind, not about soundness: each handle owns
-/// its half of the ring and cannot outlive the memory it pushes into.
+/// Fields drop in declaration order: the open endpoints first (each
+/// [`OpenInput`] closes its connection, then retires its port; the output
+/// closes), then the ring manager handle, then the devices and the backend
+/// whose client every connection was opened on. Closing a connection stops its
+/// driver: the ALSA backend joins its pump thread, which drops the producer
+/// handle before the port is retired. On macOS the handle lives in the input
+/// callback, which CoreMIDI retains and may release (and so drop the handle)
+/// after the port is disposed; a push in that window lands in a ring nobody
+/// drains, which is harmless. The order is about not leaving ports behind, not
+/// about soundness: each handle owns its half of the ring and cannot outlive
+/// the memory it pushes into.
 struct Inner {
     open: Mutex<Open>,
-    /// Ring manager the backend pushes inbound events into. Held so
-    /// `connect_input` can mint a producer handle per connection, and
-    /// `disconnect_input` can retire the port it fed.
+    /// Ring manager the backend pushes inbound events into: each open input
+    /// takes a port from it and retires the port on close.
     ports: Arc<HardwareMidiInputs>,
     /// The devices present, and the backend that opens them.
     devices: Devices,
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        let open = self
-            .open
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (_, input) in open.inputs.drain() {
-            input.close(&self.ports);
-        }
-    }
 }
 
 /// What is currently connected.
@@ -92,33 +79,6 @@ struct Open {
     inputs: HashMap<DeviceId, OpenInput>,
     /// The single output sink, if one is connected.
     output: Option<OpenOutput>,
-}
-
-/// One open input: the driver connection, and the port it feeds.
-struct OpenInput {
-    /// Dropping it closes the driver side, which is the whole reason it is
-    /// held rather than discarded.
-    connection: Box<dyn InputConnection>,
-    /// The manager port this connection's producer handle feeds.
-    port: PortId,
-    /// So a caller can report what is connected without re-enumerating (which
-    /// would miss a device that has since gone).
-    name: String,
-}
-
-impl OpenInput {
-    /// Closes the connection, then retires its port.
-    ///
-    /// In that order: dropping the connection stops the driver (on ALSA it
-    /// joins the pump thread, which drops the producer handle; on macOS the
-    /// handle can outlive this, and anything it pushes is discarded with the
-    /// ring). The port's slot is then free for the next connection, which is
-    /// what keeps a hot-plug cycle from growing the port set by one ring each
-    /// time.
-    fn close(self, ports: &HardwareMidiInputs) {
-        drop(self.connection);
-        ports.remove_input_port(self.port);
-    }
 }
 
 impl Inner {
@@ -132,30 +92,24 @@ impl Inner {
     }
 }
 
-struct OpenOutput {
-    id: DeviceId,
-    name: String,
-    sink: Box<dyn MidiOut>,
-}
-
 impl core::fmt::Debug for MidiSession {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let open = self.inner.open();
         f.debug_struct("MidiSession")
             .field("inputs", &open.inputs.len())
-            .field("output", &open.output.as_ref().map(|o| &o.name))
+            .field("output", &open.output.as_ref().map(OpenOutput::name))
             .finish_non_exhaustive()
     }
 }
 
 impl MidiSession {
-    /// A session over this platform's backend.
+    /// Opens a session over this platform's backend.
     ///
     /// # Errors
     ///
     /// As [`Devices::open`].
-    pub fn new(ports: Arc<HardwareMidiInputs>) -> Result<Self> {
-        Self::with_backend(backend::active(), ports)
+    pub fn open(ports: Arc<HardwareMidiInputs>) -> Result<Self> {
+        Self::open_over(backend::active(), ports)
     }
 
     /// A session over a supplied backend.
@@ -167,8 +121,8 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// As [`Devices::with_backend`].
-    pub fn with_backend(
+    /// As [`Devices::open_over`].
+    pub fn open_over(
         backend: Box<dyn MidiEndpoints>,
         ports: Arc<HardwareMidiInputs>,
     ) -> Result<Self> {
@@ -176,13 +130,14 @@ impl MidiSession {
             inner: Arc::new(Inner {
                 open: Mutex::new(Open::default()),
                 ports,
-                devices: Devices::with_backend(backend)?,
+                devices: Devices::open_over(backend)?,
             }),
         })
     }
 
-    /// The devices present and their changes. A host polls it for hot-plug
-    /// ([`Devices::poll`]); the session's `Phase::Poll` does.
+    /// The devices present. A host that wants hot-plug subscribes
+    /// ([`Devices::subscribe`]); the session's `Phase::Poll` has a
+    /// subscription of its own.
     pub fn devices(&self) -> &Devices {
         &self.inner.devices
     }
@@ -232,42 +187,19 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no present input — the shape a
-    /// stale id takes after a hot-plug. Otherwise whatever the backend raises
-    /// while opening the port.
+    /// [`Error::NoDevice`] when `id` names no present device — the shape a
+    /// stale id takes after a hot-plug — and [`Error::WrongDirection`] when it
+    /// is not an input. Otherwise whatever the backend raises while opening the
+    /// port.
     pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
         let mut open = self.inner.open();
         if open.inputs.contains_key(id) {
             return Ok(());
         }
 
-        let info = self
-            .inputs()
-            .into_iter()
-            .find(|d| d.id == *id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI input {id}")))?;
-
-        // One ring per connection, and its only producer goes to the backend.
-        let producer = self.inner.ports.open_input_port(info.name.as_str());
-        let port = producer.port_id();
-        let connection = match self.inner.devices.open_input(id, producer) {
-            Ok(connection) => connection,
-            Err(e) => {
-                // The backend dropped the handle; the port it would have fed
-                // must not outlive the failed open.
-                self.inner.ports.remove_input_port(port);
-                return Err(e);
-            }
-        };
-
-        open.inputs.insert(
-            id.clone(),
-            OpenInput {
-                connection,
-                port,
-                name: info.name,
-            },
-        );
+        // One ring per connection, retired with it.
+        let input = self.inner.devices.open_input(id, &self.inner.ports)?;
+        open.inputs.insert(id.clone(), input);
         Ok(())
     }
 
@@ -283,11 +215,11 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when nothing matches. A device that is absent is an
-    /// error here, never a silent no-op.
+    /// [`Error::NoDeviceNamed`] when nothing matches. A device that is absent is
+    /// an error here, never a silent no-op.
     pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
-        let info = Self::find(self.inputs(), name)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI input matching '{name}'")))?;
+        let info =
+            Self::find(self.inputs(), name).ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;
         self.connect_input(&info.id)
     }
 
@@ -296,14 +228,7 @@ impl MidiSession {
     ///
     /// Events still queued in that port are discarded with it.
     pub fn disconnect_input(&self, id: &DeviceId) -> bool {
-        let mut open = self.inner.open();
-        match open.inputs.remove(id) {
-            Some(input) => {
-                input.close(&self.inner.ports);
-                true
-            }
-            None => false,
-        }
+        self.inner.open().inputs.remove(id).is_some()
     }
 
     /// Closes one open input whose name contains `name`, matched
@@ -324,7 +249,7 @@ impl MidiSession {
             let open = self.inner.open();
             open.inputs
                 .iter()
-                .find(|(_, input)| input.name.to_lowercase().contains(&needle))
+                .find(|(_, input)| input.name().to_lowercase().contains(&needle))
                 .map(|(id, _)| id.clone())
         };
         if let Some(id) = id {
@@ -334,10 +259,7 @@ impl MidiSession {
 
     /// Closes every open input, retiring each one's port.
     pub fn disconnect_all_inputs(&self) {
-        let mut open = self.inner.open();
-        for (_, input) in open.inputs.drain() {
-            input.close(&self.inner.ports);
-        }
+        self.inner.open().inputs.clear();
     }
 
     /// Whether any input is open.
@@ -360,7 +282,7 @@ impl MidiSession {
             .open()
             .inputs
             .values()
-            .map(|input| input.name.clone())
+            .map(|input| input.name().to_owned())
             .collect()
     }
 
@@ -373,22 +295,12 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no present output, plus whatever
-    /// the backend raises while opening.
+    /// [`Error::NoDevice`] when `id` names no present device,
+    /// [`Error::WrongDirection`] when it is not an output, plus whatever the
+    /// backend raises while opening.
     pub fn connect_output(&self, id: &DeviceId) -> Result<()> {
-        let info = self
-            .outputs()
-            .into_iter()
-            .find(|d| d.id == *id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI output {id}")))?;
-
-        let sink = self.inner.devices.open_output(id)?;
-        let mut open = self.inner.open();
-        open.output = Some(OpenOutput {
-            id: id.clone(),
-            name: info.name,
-            sink,
-        });
+        let output = self.inner.devices.open_output(id)?;
+        self.inner.open().output = Some(output);
         Ok(())
     }
 
@@ -402,10 +314,10 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when nothing matches.
+    /// [`Error::NoDeviceNamed`] when nothing matches.
     pub fn connect_output_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.outputs(), name)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI output matching '{name}'")))?;
+            .ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;
         self.connect_output(&info.id)
     }
 
@@ -422,12 +334,16 @@ impl MidiSession {
 
     /// The open output's name, if any.
     pub fn output_device_name(&self) -> Option<String> {
-        self.inner.open().output.as_ref().map(|o| o.name.clone())
+        self.inner
+            .open()
+            .output
+            .as_ref()
+            .map(|o| o.name().to_owned())
     }
 
     /// The open output's device, if any.
     pub fn output_device(&self) -> Option<DeviceId> {
-        self.inner.open().output.as_ref().map(|o| o.id.clone())
+        self.inner.open().output.as_ref().map(|o| o.id().clone())
     }
 
     /// Whether `id` is an open input.
@@ -453,7 +369,7 @@ impl MidiSession {
     pub fn send(&self, events: &[MidiEvent]) -> usize {
         let open = self.inner.open();
         match open.output.as_ref() {
-            Some(out) => out.sink.queue(events),
+            Some(out) => out.queue(events),
             None => 0,
         }
     }

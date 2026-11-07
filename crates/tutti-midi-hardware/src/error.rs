@@ -20,9 +20,26 @@ pub enum Error {
     #[error("MIDI port error: {0}")]
     MidiPort(String),
 
-    /// The named device could not be found or could not be driven — including
-    /// "no endpoint has this [`EndpointId`](crate::EndpointId)", which is what
-    /// a stale id resolves to.
+    /// No device is present under this id: what a stale id resolves to.
+    #[error("no MIDI device {0}")]
+    NoDevice(tutti_midi_device::DeviceId),
+
+    /// The device is present but does not go the way asked: an output opened
+    /// as an input, or the reverse.
+    #[error("MIDI device {id} is {direction:?}")]
+    WrongDirection {
+        /// The device.
+        id: tutti_midi_device::DeviceId,
+        /// Which way it does go.
+        direction: tutti_midi_device::Direction,
+    },
+
+    /// No present device has a name containing this text.
+    #[error("no MIDI device named like '{0}'")]
+    NoDeviceNamed(String),
+
+    /// The named device could not be driven, with the backend's own
+    /// description.
     #[error("MIDI device error: {0}")]
     MidiDevice(String),
 
@@ -57,10 +74,6 @@ pub enum Error {
     /// fact behind a runtime one.
     #[error("no native-UMP MIDI backend on this platform: {0}")]
     Unsupported(&'static str),
-
-    /// A caller-supplied setting the backend cannot honour.
-    #[error("Invalid config: {0}")]
-    InvalidConfig(String),
     // NOTE: there is deliberately no `File(tutti_midi_file::Error)` variant.
     // A parse failure is not a port failure — a consumer that reads files owns
     // that error itself (`bevy_tutti::midi::file::MidiFileError::Smf` is the

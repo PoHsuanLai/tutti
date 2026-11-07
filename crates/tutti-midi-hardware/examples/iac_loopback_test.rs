@@ -18,10 +18,10 @@ use tutti_midi_hardware::{
 use tutti_ump::{MidiChannel, MidiGroup};
 
 fn main() {
-    let pm = Arc::new(HardwareMidiInputs::new(256));
+    let pm = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     // The audio side's drain: what a `MidiInputNode` would own.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
-    let io = MidiSession::new(pm.clone()).expect("open MIDI");
+    let io = MidiSession::open(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
     let Some(iac_input) = inputs.iter().find(|d| d.name.contains("IAC")) else {

@@ -93,6 +93,8 @@ struct Parts {
     midi: Option<crate::MidiNodes>,
     #[cfg(feature = "midi-hardware")]
     midi_io: Option<tutti_midi_hardware::MidiSession>,
+    #[cfg(feature = "midi-hardware")]
+    device_events: Option<tutti_midi_hardware::DeviceEvents>,
 }
 
 impl SessionBuilder {
@@ -139,8 +141,8 @@ impl SessionBuilder {
     /// MIDI input node from its ports. Default off.
     #[cfg(feature = "midi-hardware")]
     #[must_use]
-    pub fn midi_hardware(mut self, open: bool) -> Self {
-        self.midi_hardware = open;
+    pub fn midi_hardware(mut self) -> Self {
+        self.midi_hardware = true;
         self
     }
 
@@ -223,20 +225,25 @@ impl SessionBuilder {
         let backend = self.midi_backend.take();
         #[cfg(feature = "midi-hardware")]
         let midi_io = self.midi_hardware.then(|| -> Result<_> {
-            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::default());
             // It times each inbound event by turning a wall-clock delta into a
-            // frame offset, which takes the device's real rate: told here,
-            // before any callback runs.
-            ports.set_sample_rate(rate);
-            Ok(match backend {
+            // frame offset, which takes the device's real rate.
+            let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::new(
+                tutti_midi_hardware::HardwareMidiInputs::DEFAULT_FIFO,
+                rate,
+            ));
+            let io = match backend {
                 Some(MidiBackend(backend)) => {
-                    tutti_midi_hardware::MidiSession::with_backend(backend, ports)?
+                    tutti_midi_hardware::MidiSession::open_over(backend, ports)?
                 }
-                None => tutti_midi_hardware::MidiSession::new(ports)?,
-            })
+                None => tutti_midi_hardware::MidiSession::open(ports)?,
+            };
+            // Subscribed before anything can plug in unseen: `Phase::Poll`
+            // is this subscription's only reader.
+            let events = io.devices().subscribe();
+            Ok((io, events))
         });
         #[cfg(feature = "midi-hardware")]
-        let midi_io = midi_io.transpose()?;
+        let (midi_io, device_events) = midi_io.transpose()?.unzip();
 
         let mut graph = Graph::new(self.inputs, outputs, rate, max_block, quantum);
         graph.set_render_workers(self.render_workers);
@@ -291,6 +298,8 @@ impl SessionBuilder {
             midi,
             #[cfg(feature = "midi-hardware")]
             midi_io,
+            #[cfg(feature = "midi-hardware")]
+            device_events,
         })
     }
 
@@ -330,8 +339,10 @@ impl SessionBuilder {
             resumed: false,
             #[cfg(feature = "midi")]
             midi: parts.midi,
-            #[cfg(feature = "midi")]
+            #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]
             midi_state: Default::default(),
+            #[cfg(feature = "midi-hardware")]
+            midi_state: crate::midi::MidiState::with_device_events(parts.device_events),
             #[cfg(feature = "modulation")]
             mods: crate::modulation::ModSession::new(self.unresolved_warning),
             #[cfg(feature = "midi-hardware")]
@@ -406,6 +417,8 @@ impl SessionBuilder {
                 midi: None,
                 #[cfg(feature = "midi-hardware")]
                 midi_io: None,
+                #[cfg(feature = "midi-hardware")]
+                device_events: None,
             },
             None,
             false,

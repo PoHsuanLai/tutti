@@ -256,7 +256,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone
   tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
-                 the pure `DeviceTable`; no dependencies, no OS, no thread
+                 the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
@@ -337,7 +337,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS.
+  threads and the OS. A consumer that persists a `DeviceInfo` depends on it with
+  its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
+  breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
+  is safe to bind unasked: an ALSA identity is a name, so a lone device with
+  the saved name is `SameName` (bind or ask), and an ordinal above 0 or several
+  alike devices are `Ambiguous`. Comparing a saved id with a listed one by hand
+  can bind another keyboard of the same model.
 - `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
   private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
   CI runs the per-module path gate on each), are `publish = false`,

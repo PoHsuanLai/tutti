@@ -8,9 +8,10 @@ use super::*;
 /// A real `Added` event, from a fake OS.
 fn added() -> DeviceEvent {
     let (backend, fake) = FakeBackend::build_with(Vec::new(), Vec::new(), 0);
-    let devices = Devices::with_backend(backend).unwrap();
+    let devices = Devices::open_over(backend).unwrap();
+    let events = devices.subscribe();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    devices.poll().remove(0)
+    events.try_iter().next().expect("an Added")
 }
 
 fn world() -> World {

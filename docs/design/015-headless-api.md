@@ -511,7 +511,7 @@ let mut s = Session::builder()
 
 // With the sound card (`device`): two halves.
 let (mut s, mut device) = Session::builder()
-    .midi_hardware(true)                               // `midi-hardware`
+    .midi_hardware()                               // `midi-hardware`
     .build_device(DeviceSelector::Default)?;           // build_on + assemble
 s.restart(&mut device, DeviceSelector::named("USB Audio"))?;  // rerate, §2.1
 device.stop(); device.start()?;

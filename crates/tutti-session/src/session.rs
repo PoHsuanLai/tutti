@@ -290,7 +290,7 @@ pub enum SessionEvent {
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.
     #[cfg(feature = "midi-hardware")]
-    MidiWatchFailed(String),
+    MidiWatchFailed(tutti_midi_hardware::WatchFailure),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal

@@ -28,10 +28,10 @@ fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware
 }
 
 fn main() {
-    let pm = Arc::new(HardwareMidiInputs::new(256));
+    let pm = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     // The audio side's drain: what a `MidiInputNode` would own.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
-    let io = MidiSession::new(pm.clone()).expect("open MIDI");
+    let io = MidiSession::open(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
     let outputs = io.outputs();

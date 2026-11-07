@@ -1,6 +1,6 @@
 //! A MIDI backend with no OS behind it, for testing the session layer.
 //!
-//! [`MidiSession::with_backend`](crate::MidiSession::with_backend) is the seam
+//! [`MidiSession::open_over`](crate::MidiSession::open_over) is the seam
 //! this exists for: the session owns no driver code, so a supplied
 //! [`MidiEndpoints`] drives every connect / disconnect / send path
 //! deterministically, on any platform, including one with no MIDI hardware at
@@ -147,7 +147,7 @@ impl FakeCounters {
     /// Plugs `endpoint` in, as `direction` says, and tells every running
     /// watch. A device already plugged in under that id is replaced, which a
     /// watch sees as a change. The watch thread delivers it, and this returns
-    /// once it has: the event is waiting for the next `Devices::poll`.
+    /// once it has: the event is waiting in every subscriber's queue.
     pub fn plug(&self, endpoint: EndpointInfo, direction: Direction) {
         let mut devices = self.devices();
         let id = endpoint.id;
@@ -164,7 +164,7 @@ impl FakeCounters {
 
     /// Makes every running watch fail with `reason`, as a real one does when
     /// the OS call it blocks in fails: the list freezes and
-    /// `Devices::watch_failure` says why.
+    /// every subscriber's `DeviceEvents::failure` says why.
     pub fn fail_watch(&self, reason: &str) {
         self.devices().deliver(&Report::Fail(reason.to_string()));
     }
@@ -331,7 +331,7 @@ impl MidiEndpoints for FakeBackend {
                         Report::Change(change) => sink.send(change),
                         Report::Fail(why) => {
                             // Like a real watch that has died: nothing more.
-                            sink.fail(why);
+                            sink.fail(Error::MidiPort(why));
                             let _ = done.send(());
                             return;
                         }

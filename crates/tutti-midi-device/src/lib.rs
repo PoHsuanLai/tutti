@@ -35,4 +35,4 @@ mod id;
 mod table;
 
 pub use id::{DeviceId, DeviceInfo, Direction, EndpointId, Identity};
-pub use table::{DeviceEvent, DeviceTable, OsChange, OsDevice};
+pub use table::{DeviceEvent, DeviceTable, OsChange, OsDevice, Resolved};

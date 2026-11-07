@@ -12,6 +12,48 @@ use tutti_midi_device::{DeviceEvent, DeviceId, DeviceInfo, Identity};
 /// Long enough to be a failure, not a race: the announce arrives at once.
 const PATIENCE: Duration = Duration::from_secs(20);
 
+/// `Devices` with one subscription, and the blocking batch `wait` these tests
+/// are written around.
+struct Watched {
+    devices: Devices,
+    events: crate::DeviceEvents,
+}
+
+impl Watched {
+    fn open() -> Self {
+        Self::of(Devices::open().unwrap())
+    }
+
+    fn with_backend(backend: Box<dyn crate::MidiEndpoints>) -> Self {
+        Self::of(Devices::open_over(backend).unwrap())
+    }
+
+    fn of(devices: Devices) -> Self {
+        let events = devices.subscribe();
+        Self { devices, events }
+    }
+
+    /// The change that comes within `timeout` and any queued behind it.
+    fn wait(&self, timeout: Duration) -> Vec<DeviceEvent> {
+        self.events
+            .recv_timeout(timeout)
+            .into_iter()
+            .chain(self.events.try_iter())
+            .collect()
+    }
+
+    fn watch_failure(&self) -> Option<crate::WatchFailure> {
+        self.events.failure()
+    }
+}
+
+impl std::ops::Deref for Watched {
+    type Target = Devices;
+    fn deref(&self) -> &Devices {
+        &self.devices
+    }
+}
+
 /// A device named `name` until dropped.
 struct Virtual(SeqClient);
 
@@ -43,14 +85,14 @@ fn unique(tag: &str) -> String {
 
 /// Waits until an event satisfies `want`, and returns it. Events about other
 /// clients (the machine has its own) pass by.
-fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent {
+fn until(devices: &Watched, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent {
     until_in(devices, &mut Vec::new(), want)
 }
 
 /// As [`until`], keeping in `backlog` the events that arrived with the wanted
 /// one, and taking from it first: the next wait finds them.
 fn until_in(
-    devices: &Devices,
+    devices: &Watched,
     backlog: &mut Vec<DeviceEvent>,
     want: impl Fn(&DeviceEvent) -> bool,
 ) -> DeviceEvent {
@@ -83,7 +125,7 @@ fn removed(id: DeviceId) -> impl Fn(&DeviceEvent) -> bool {
 /// number's previous owner after a new client has taken it; the watch then
 /// re-reports the device (`Removed`, `Added`, the same id) and the id is
 /// unlisted for a moment, so an open in that moment is refused.
-fn when_listed<T>(devices: &Devices, open: impl Fn() -> crate::Result<T>) -> T {
+fn when_listed<T>(devices: &Watched, open: impl Fn() -> crate::Result<T>) -> T {
     let deadline = Instant::now() + PATIENCE;
     loop {
         match open() {
@@ -97,13 +139,11 @@ fn when_listed<T>(devices: &Devices, open: impl Fn() -> crate::Result<T>) -> T {
 }
 
 fn open_input_when_listed(
-    devices: &Devices,
+    devices: &Watched,
     id: &DeviceId,
-    ports: &HardwareMidiInputs,
-) -> Box<dyn crate::InputConnection> {
-    when_listed(devices, || {
-        devices.open_input(id, ports.open_input_port("test"))
-    })
+    ports: &std::sync::Arc<HardwareMidiInputs>,
+) -> crate::OpenInput {
+    when_listed(devices, || devices.open_input(id, ports))
 }
 
 fn info(event: DeviceEvent) -> DeviceInfo {
@@ -169,7 +209,7 @@ fn watch_threads() -> usize {
 /// A client that appears is listed with its identity.
 #[test]
 fn a_client_that_appears_is_added_and_listed() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("appear");
     let _device = plug(&name);
     let device = info(until(&devices, added(&name)));
@@ -182,7 +222,7 @@ fn a_client_that_appears_is_added_and_listed() {
 /// fired.
 #[test]
 fn a_client_that_exits_is_removed_and_unlisted() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("vanish");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -192,10 +232,34 @@ fn a_client_that_exits_is_removed_and_unlisted() {
     assert!(devices.list().iter().all(|d| d.id != id));
 }
 
+/// On ALSA the identity is the name, so a saved device comes back as a
+/// same-name match and never as exact, whether it is the same client or
+/// another of that name. Mutation: the ALSA arm of `DeviceTable::resolve`
+/// answering `Exact` fails the last assertion.
+#[test]
+fn a_saved_alsa_device_resolves_by_name_only() {
+    let devices = Watched::open();
+    let name = unique("saved");
+    let first = plug(&name);
+    let saved = info(until(&devices, added(&name)));
+    assert_eq!(
+        devices.resolve(&saved),
+        crate::Resolved::SameName(saved.clone())
+    );
+
+    drop(first);
+    until(&devices, removed(saved.id.clone()));
+    assert_eq!(devices.resolve(&saved), crate::Resolved::Missing);
+
+    let _second = plug(&name);
+    let again = info(until(&devices, added(&name)));
+    assert_eq!(devices.resolve(&saved), crate::Resolved::SameName(again));
+}
+
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
-    let devices = Devices::open().unwrap();
-    let ports = HardwareMidiInputs::new(16);
+    let devices = Watched::open();
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let name = unique("held");
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
@@ -203,17 +267,13 @@ fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let connection = open_input_when_listed(&devices, &id, &ports);
     drop(device);
     until(&devices, removed(id.clone()));
-    assert!(
-        devices
-            .open_input(&id, ports.open_input_port("gone"))
-            .is_err()
-    );
+    assert!(devices.open_input(&id, &ports).is_err());
     drop(connection);
 }
 
 #[test]
 fn two_identical_clients_are_two_devices() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("twin");
     let first = plug(&name);
     until(&devices, added(&name));
@@ -245,7 +305,7 @@ fn two_identical_clients_are_two_devices() {
 #[test]
 fn dropping_devices_ends_the_watch_thread() {
     assert_eq!(watch_threads(), 0);
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     settle_watch_threads(1);
     drop(devices);
     settle_watch_threads(0);
@@ -253,8 +313,8 @@ fn dropping_devices_ends_the_watch_thread() {
 
 #[test]
 fn opening_twice_gives_each_its_own_watch() {
-    let a = Devices::open().unwrap();
-    let b = Devices::open().unwrap();
+    let a = Watched::open();
+    let b = Watched::open();
     settle_watch_threads(2);
     let name = unique("both");
     let _device = plug(&name);
@@ -267,7 +327,7 @@ fn opening_twice_gives_each_its_own_watch() {
 /// are announced to it).
 #[test]
 fn an_idle_devices_does_not_wake_itself() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     // The watch must be running: without a sequencer there is no thread, and
     // this would pass for the wrong reason.
     settle_watch_threads(1);
@@ -292,8 +352,8 @@ fn an_idle_devices_does_not_wake_itself() {
 /// output's lists `tutti-out` as an input.
 #[test]
 fn the_engines_own_clients_are_not_listed() {
-    let devices = Devices::open().unwrap();
-    let ports = HardwareMidiInputs::new(16);
+    let devices = Watched::open();
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let name = unique("own");
     let device = plug(&name);
     let mut backlog = Vec::new();
@@ -320,7 +380,7 @@ fn the_engines_own_clients_are_not_listed() {
 /// `tutti-` hides it.
 #[test]
 fn a_device_called_like_an_engine_client_is_listed() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let _device = plug("tutti-in");
     let device = info(until(
         &devices,
@@ -336,7 +396,7 @@ fn a_device_called_like_an_engine_client_is_listed() {
 /// (this loop hits it within a few cycles; a miss only passes).
 #[test]
 fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("swap");
     let mut backlog = Vec::new();
     let mut device = plug(&name);
@@ -356,7 +416,7 @@ fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
 /// the old id, and the wait for `Removed` times out.
 #[test]
 fn a_renamed_client_is_removed_and_added_under_its_new_name() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("rename");
     let device = plug(&name);
     let mut backlog = Vec::new();
@@ -372,7 +432,7 @@ fn a_renamed_client_is_removed_and_added_under_its_new_name() {
 /// `SND_SEQ_CLIENT_SYSTEM` skip lists `System: Announce` and `System: Timer`.
 #[test]
 fn the_kernels_system_client_is_not_listed() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let system = |d: &DeviceInfo| matches!(d.id.identity(), Identity::Alsa { client, .. } if client == "System");
     assert!(!devices.list().iter().any(system), "{:?}", devices.list());
 }
@@ -419,8 +479,8 @@ impl crate::MidiEndpoints for Panicky {
 #[test]
 fn a_watch_that_panics_reports_its_failure() {
     let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let devices = Devices::with_backend(Box::new(Panicky(std::sync::Arc::clone(&armed)))).unwrap();
-    assert_eq!(devices.watch_failure(), None);
+    let devices = Watched::with_backend(Box::new(Panicky(std::sync::Arc::clone(&armed))));
+    assert!(devices.watch_failure().is_none());
     armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let _device = plug(&unique("panic"));
     let deadline = Instant::now() + PATIENCE;
@@ -428,7 +488,10 @@ fn a_watch_that_panics_reports_its_failure() {
         assert!(Instant::now() < deadline, "no failure reported");
         devices.wait(Duration::from_millis(50));
     }
-    assert!(devices.watch_failure().unwrap().contains("panicked"));
+    assert!(matches!(
+        devices.watch_failure(),
+        Some(crate::WatchFailure::Panicked)
+    ));
 }
 
 /// Asking the backend what a device can carry enumerates, and must not open a
@@ -436,7 +499,7 @@ fn a_watch_that_panics_reports_its_failure() {
 /// `AlsaEndpoints::list` opening a client per call fails with 1000 opens.
 #[test]
 fn asking_for_capabilities_does_not_wake_the_watch() {
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     let name = unique("caps");
     let _device = plug(&name);
     let id = info(until(&devices, added(&name))).id;

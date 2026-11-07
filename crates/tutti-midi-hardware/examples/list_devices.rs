@@ -14,17 +14,18 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_midi_hardware::{Devices, Error};
+use tutti_midi_hardware::{Devices, Error, RecvTimeoutError};
 
 fn main() -> Result<(), Error> {
     let devices = Devices::open()?;
+    let events = devices.subscribe();
 
     println!("=== MIDI devices ===");
-    let list = devices.list();
+    let list = events.initial();
     if list.is_empty() {
         println!("  (none found)");
     }
-    for d in &list {
+    for d in list {
         let protocol = devices.capability(&d.id).map(|c| c.protocol);
         println!(
             "  {:<48} {:<32} {:?} {protocol:?}",
@@ -35,8 +36,10 @@ fn main() -> Result<(), Error> {
     println!("\nwatching for 10 s; plug or unplug a device");
     let until = Instant::now() + Duration::from_secs(10);
     while let Some(left) = until.checked_duration_since(Instant::now()) {
-        for event in devices.wait(left) {
-            println!("  {event:?}");
+        match events.recv_timeout(left) {
+            Ok(event) => println!("  {event:?}"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(ended) => return Err(Error::MidiPort(ended.to_string())),
         }
     }
     Ok(())

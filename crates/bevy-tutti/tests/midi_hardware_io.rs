@@ -179,7 +179,7 @@ mod midi_hardware_frame_offset {
     /// and the drain's read takes the block start. So the age is
     /// exactly [`AGE`] and nothing in between can change it.
     fn offset_at(sample_rate: Option<f64>) -> u32 {
-        let inputs = Arc::new(HardwareMidiInputs::new(256));
+        let inputs = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
         if let Some(rate) = sample_rate {
             inputs.set_sample_rate(rate);
         }
@@ -234,7 +234,7 @@ mod midi_hardware_frame_offset {
 
 /// The session layer is drivable with no MIDI hardware present.
 ///
-/// `MidiSession::with_backend` takes a `MidiEndpoints`, and
+/// `MidiSession::open_over` takes a `MidiEndpoints`, and
 /// `tutti_midi_hardware::test_support::FakeBackend` is one with a fixed device
 /// list and no OS behind it. Before it was exported, every path through this
 /// layer was reachable from `bevy-tutti` only against a real port — which a
@@ -250,9 +250,9 @@ mod midi_session_without_hardware {
 
     fn session() -> (MidiSession, tutti_midi_hardware::test_support::FakeCounters) {
         let (backend, counters) = FakeBackend::build();
-        let ports = Arc::new(HardwareMidiInputs::new(64));
+        let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
         (
-            MidiSession::with_backend(backend, ports).expect("the fake backend watches"),
+            MidiSession::open_over(backend, ports).expect("the fake backend watches"),
             counters,
         )
     }
@@ -311,8 +311,11 @@ mod midi_session_without_hardware {
         let (s, counters) = session();
         // An id that was listed and is gone: the shape of a stale id.
         let gone = input(&s, "IAC Bus 1");
+        let events = s.devices().subscribe();
         counters.unplug(tutti_midi_hardware::EndpointId::from_raw(2));
-        s.devices().wait(std::time::Duration::from_secs(10));
+        events
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the unplug is reported");
         assert!(s.connect_input(&gone).is_err());
         assert!(!s.is_any_input_connected());
         assert_eq!(counters.opens(), 0, "a refused connect opens nothing");

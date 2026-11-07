@@ -140,6 +140,22 @@ pub struct SegmentOrigin {
     pub sample_rate: SampleRate,
 }
 
+/// One pass of a block, from [`FrameClock::passes`]: the frames
+/// `start..start + len` of the block, over which the playhead rolls linearly
+/// from `beat`, the beat on frame `start`.
+///
+/// Counts are in frames, like [`FrameClock::advance`]'s: `start` is a frame
+/// offset into the block, so it is a count of frames from the block's first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pass {
+    /// The block frame the pass starts on.
+    pub start: Samples,
+    /// Frames in the pass (at least one).
+    pub len: Samples,
+    /// The beat on `start`.
+    pub beat: Beat,
+}
+
 /// A playhead kept as a frame count on a [`TimelineSegment`], with its beat
 /// derived in closed form.
 ///
@@ -288,6 +304,36 @@ impl FrameClock {
         while let Some(rolled) = self.advance_to_wrap(left, looping) {
             left = Samples(left.get() - rolled.get());
         }
+    }
+
+    /// The passes a block of `frames` makes under `looping`: the stretches
+    /// over which the playhead rolls linearly, cut at each loop wrap, in
+    /// order. A block with no wrap is one pass; an empty block has none.
+    ///
+    /// Rolls this clock as the iterator is consumed, so once it is
+    /// exhausted the clock stands where [`advance`](Self::advance) would
+    /// leave it.
+    ///
+    /// For a node that places something on a frame by the beat (a tick, an
+    /// event): it asks each pass for its frames from the pass's own first
+    /// beat, instead of assuming the beat runs on from the block's start.
+    pub fn passes(
+        &mut self,
+        frames: Samples,
+        looping: Option<LoopRange>,
+    ) -> impl Iterator<Item = Pass> + '_ {
+        let mut start = Samples::ZERO;
+        std::iter::from_fn(move || {
+            let left = frames.remaining_after(start);
+            if left.is_zero() {
+                return None;
+            }
+            let beat = self.beat();
+            let len = self.advance_to_wrap(left, looping).unwrap_or(left);
+            let pass = Pass { start, len, beat };
+            start = Samples(start.get() + len.get());
+            Some(pass)
+        })
     }
 
     /// Rolls forward to the loop's next wrap, if it falls within `frames`:
@@ -539,6 +585,80 @@ mod tests {
         assert_eq!(stops, 64);
         whole.advance(Samples(64), tiny);
         assert_eq!(walked.beat(), whole.beat());
+    }
+
+    /// A block with no wrap is one pass from the block's beat, an empty block
+    /// has none, and a loop the block never reaches is no loop.
+    ///
+    /// Mutation (run): read the pass's beat after rolling it (`self.beat()`
+    /// moved below `advance_to_wrap`) → the beat is the block's end → fails.
+    /// Mutation (run): drop the last frame of the block (`left` less one) →
+    /// the pass is 511 long → fails.
+    #[test]
+    fn a_block_with_no_wrap_is_one_pass() {
+        let mut c = FrameClock::new(Beat(1.0), Bpm(90.0), SR);
+        let passes: Vec<_> = c.passes(Samples(512), None).collect();
+        assert_eq!(
+            passes,
+            [Pass {
+                start: Samples(0),
+                len: Samples(512),
+                beat: Beat(1.0)
+            }]
+        );
+        assert_eq!(c.passes(Samples(0), None).count(), 0, "empty block");
+
+        let far = LoopRange::new(8.0, 9.0);
+        let mut c = FrameClock::new(Beat(1.0), Bpm(90.0), SR);
+        assert_eq!(c.passes(Samples(512), far).count(), 1);
+    }
+
+    /// Several wraps in one block: each pass starts where the last one's
+    /// frames end, at the loop's start beat, and the lengths add up to the
+    /// block. 90 BPM at 48 kHz is 32 000 frames a beat; a loop of 0..0.1
+    /// beat (3 200 frames) in a 10 000-frame block wraps three times.
+    ///
+    /// Mutation (run): read the pass's beat after rolling it → the entry
+    /// beat of the second case is the loop start → fails. Mutation (run):
+    /// a no-wrap pass one frame short (`unwrap_or(left - 1)`) → the last
+    /// pass is 399 long → fails. Mutation (run): drop the last frame of the
+    /// block → fails.
+    #[test]
+    fn several_wraps_in_a_block_are_several_passes() {
+        let region = LoopRange::new(0.0, 0.1);
+        let mut c = FrameClock::new(Beat(0.0), Bpm(90.0), SR);
+        let passes: Vec<_> = c.passes(Samples(10_000), region).collect();
+        let starts: Vec<_> = passes.iter().map(|p| p.start.get()).collect();
+        let lens: Vec<_> = passes.iter().map(|p| p.len.get()).collect();
+        assert_eq!(starts, [0, 3_200, 6_400, 9_600]);
+        assert_eq!(lens, [3_200, 3_200, 3_200, 400]);
+        assert!(passes.iter().all(|p| p.beat == Beat(0.0)));
+
+        // Entered mid-loop, the first pass starts at the entry beat.
+        let mut c = FrameClock::new(Beat(0.05), Bpm(90.0), SR);
+        let passes: Vec<_> = c.passes(Samples(5_000), region).collect();
+        assert_eq!(passes[0].beat, Beat(0.05));
+        assert_eq!(passes[0].len, Samples(1_600));
+        assert_eq!(passes[1].start, Samples(1_600));
+        assert_eq!(passes[1].beat, Beat(0.0));
+    }
+
+    /// Consuming the passes leaves the clock where `advance` leaves it, bit
+    /// for bit, and no pass is empty.
+    ///
+    /// Mutation (run): a no-wrap pass one frame short (`unwrap_or(left - 1)`)
+    /// → the lengths sum to 40 000 → fails. Mutation (run): drop the last
+    /// frame of the block → fails.
+    #[test]
+    fn passes_leave_the_clock_where_advance_does() {
+        let region = LoopRange::new(1.0 / 3.0, 2.0 / 3.0);
+        let mut a = FrameClock::new(Beat(0.5), Bpm(133.0), SR);
+        let mut b = a;
+        let passes: Vec<_> = a.passes(Samples(40_001), region).collect();
+        b.advance(Samples(40_001), region);
+        assert_eq!(passes.iter().map(|p| p.len.get()).sum::<usize>(), 40_001);
+        assert!(passes.iter().all(|p| !p.len.is_zero()));
+        assert_eq!(a.beat(), b.beat());
     }
 
     /// After N blocks at any tempo and rate, the beat equals the closed form

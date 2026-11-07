@@ -52,7 +52,7 @@ pub use value::{
 // The frame is the source of truth for time: the one frame↔beat conversion,
 // and the one rule for which frame a beat lands on.
 pub use value::{
-    FRAME_TOLERANCE, FrameClock, LoopRange, SegmentOrigin, TimelineSegment, beats_per_sample,
+    FRAME_TOLERANCE, FrameClock, LoopRange, Pass, SegmentOrigin, TimelineSegment, beats_per_sample,
     first_frame_at_or_after, snap_to_whole_frame,
 };
 

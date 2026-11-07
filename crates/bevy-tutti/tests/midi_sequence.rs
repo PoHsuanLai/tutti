@@ -50,7 +50,7 @@ fn note(number: u8, start: Beat, duration: BeatDuration, velocity: u16) -> [Time
             start,
             MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
         ),
-        // `Beat + BeatDuration` is the affine operator (`unit_affine!`): a
+        // `Beat + BeatDuration` is the affine operator (`Affine`): a
         // position plus a span is a position.
         TimedMidiEvent::new(
             start + duration,

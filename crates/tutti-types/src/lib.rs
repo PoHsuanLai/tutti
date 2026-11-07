@@ -6,14 +6,14 @@
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
-// it defines are in scope for the modules below — `macro_rules!` are textually
-// scoped, so a module declared *before* the one defining them cannot see them.
+// `value` is declared first and `#[macro_use]`d so `unit!`, the macro that
+// defines every quantity, is in scope for the modules below — `macro_rules!`
+// are textually scoped, so a module declared *before* the one defining them
+// cannot see them.
 //
-// The macros stay crate-private rather than `#[macro_export]`ed: eight names as
-// generic as `unit_bounded!` would sit permanently at the root of a published
-// crate, un-renameable and un-feature-gateable. Every unit is defined here, so
-// nothing pays for that privacy in hand-written operators.
+// The macro stays crate-private rather than `#[macro_export]`ed: a name as
+// generic as `unit!` would sit permanently at the root of a published crate,
+// un-renameable and un-feature-gateable.
 #[macro_use]
 pub mod value;
 

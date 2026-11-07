@@ -174,7 +174,8 @@ fn a_full_port_takes_note_offs_before_note_ons() {
         vec![EventLoss {
             node: NodeKey(1),
             port: Some(0),
-            count: 14
+            count: 14,
+            recovered: 0
         }]
     );
 }
@@ -209,15 +210,20 @@ fn a_loss_is_charged_to_its_port() {
         node: NodeKey(1),
         port: Some(1),
         count: 5,
+        recovered: 0,
     };
     assert_eq!(losses, vec![each, each]);
     assert_eq!(exec.dropped_event_count(), 10);
 }
 
-/// The parallel executor reports the same losses and totals as the serial
-/// one, whatever the worker count: each worker's log is added to the
-/// block's. Four writers over capacity on different ports, so the tasks
-/// spread.
+/// The parallel executor reports the same totals, and here the same set of
+/// losses, as the serial one, whatever the worker count: each worker's log is
+/// added to the block's. Four writers over capacity on different ports, so
+/// the tasks spread. The entries are compared **sorted**: in a parallel block
+/// they come in the order the workers finished, and a block that lost at more
+/// places than a log holds (not this one) would leave out different ones. The
+/// totals and the render are exact and identical; the order and truncation of
+/// entries are not promised to match.
 ///
 /// Mutation: drop `Dropped::absorb` in `run_block` → a parallel render
 /// reports no loss → fails.

@@ -159,6 +159,7 @@ use tutti_types::{Frame, NodeKey, RtScope, Samples, ScopedNoDenormals, Tail};
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
 use crate::cost::Schedule;
+use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::fade::CrossfadeCurve;
 use crate::history::TransportHistory;
@@ -493,6 +494,8 @@ pub(crate) struct Channels {
     pub(crate) play: PlayReader,
     /// Where the executor says which ports lost events.
     pub(crate) losses: HeapCons<EventLoss>,
+    /// Refusals the log and the ring could not name.
+    pub(crate) unreported: Arc<AtomicU64>,
 }
 
 /// The executor's ends of the rings.
@@ -502,6 +505,7 @@ pub(crate) struct ExecutorEnds {
     fade_back: HeapProd<Box<Crossfade>>,
     play: Arc<AtomicU64>,
     losses: HeapProd<EventLoss>,
+    unreported: Arc<AtomicU64>,
 }
 
 /// Build the rings: the editor's ends and the executor's.
@@ -510,6 +514,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     let (back_tx, back_rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY + 1).split();
     let (fade_tx, fade_rx) = HeapRb::<Box<Crossfade>>::new(FADE_CAPACITY).split();
     let play = Arc::new(AtomicU64::new(0));
+    let unreported = Arc::new(AtomicU64::new(0));
     let (loss_tx, loss_rx) = HeapRb::<EventLoss>::new(crate::loss::RING_CAPACITY).split();
     (
         Channels {
@@ -518,6 +523,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
             faded: fade_rx,
             play: PlayReader(Arc::clone(&play)),
             losses: loss_rx,
+            unreported: Arc::clone(&unreported),
         },
         ExecutorEnds {
             queue: rx,
@@ -525,6 +531,7 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
             fade_back: fade_tx,
             play,
             losses: loss_tx,
+            unreported,
         },
     )
 }
@@ -657,6 +664,7 @@ pub struct Executor {
     dropped: Dropped,
     /// Where each block's log goes, for the editor to drain.
     losses: HeapProd<EventLoss>,
+    unreported: Arc<AtomicU64>,
     commands: CommandRx,
     /// `seq` of the last commit applied.
     applied: u64,
@@ -752,6 +760,7 @@ impl Executor {
             frame: Frame::ZERO,
             dropped: Dropped::new(),
             losses: ends.losses,
+            unreported: ends.unreported,
             commands,
             applied: 0,
             suspended: false,
@@ -855,6 +864,14 @@ impl Executor {
     /// A merge never drops: its slot holds all its inputs.
     pub fn dropped_event_count(&self) -> u64 {
         self.dropped.total()
+    }
+
+    /// Events that never arrived: [`dropped_event_count`](Self::dropped_event_count)
+    /// less the refusals a node recovered (a note-off it kept owed and wrote
+    /// in a later block, `EventWriter::recovered`). What an export fails on.
+    /// A refusal still owed counts as lost.
+    pub fn lost_event_count(&self) -> u64 {
+        self.dropped.lost()
     }
 
     /// Scheduled commands that were already past due when the executor
@@ -1425,6 +1442,7 @@ impl Executor {
             frame,
             dropped,
             losses,
+            unreported,
             commands,
             applied,
             suspended: _,
@@ -1645,7 +1663,7 @@ impl Executor {
             }
         }
 
-        dropped.flush(plan, losses);
+        dropped.flush(plan, losses, unreported);
         for f in event_fb.iter_mut().flatten() {
             f.advance(frames);
         }
@@ -2231,7 +2249,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         };
         let (n, lost) = st.due.overlay(unit, base, st.overlay, &mut views);
         n_views = n;
-        st.dropped.count(u64::from(lost));
+        st.dropped.at_node(rec.unit, lost);
     }
 
     // The table only for a unit whose step delivered frames this block;
@@ -2443,7 +2461,7 @@ impl<'p> Call<'p, '_> {
             evin[port as usize] = SortedEvents::trusted(&overlay[a as usize..b as usize], frames);
         }
         // One count per port, so a loss is charged to the port that had it.
-        let drops: [Cell<u32>; M] = std::array::from_fn(|_| Cell::new(0));
+        let drops: [PortCount; M] = std::array::from_fn(|_| PortCount::default());
         let mut evout: [EventWriter<'_>; M] = std::array::from_fn(|_| EventWriter::detached());
         for ((w, b), d) in evout
             .iter_mut()
@@ -2455,6 +2473,7 @@ impl<'p> Call<'p, '_> {
             b.clear();
             *w = EventWriter::new(b, self.cap, frames as u32, d);
         }
+        let unplaced = Cell::new(0u32);
         let io = Io::new(
             self.max,
             frames,
@@ -2466,11 +2485,16 @@ impl<'p> Call<'p, '_> {
             &evin[..e_in],
             &mut evout[..e_out],
         )
-        .with_params(self.params);
+        .with_params(self.params)
+        .with_lost(&unplaced);
         let status = node.process(&self.cx(), io);
+        if unplaced.get() != 0 {
+            dropped.at_node(rec.unit, unplaced.get());
+        }
         for (port, d) in drops.iter().take(e_out).enumerate() {
-            if d.get() != 0 {
-                dropped.at_port(rec.unit, port as u16, d.get());
+            let (refused, recovered) = (d.refused.get(), d.recovered.get());
+            if refused != 0 || recovered != 0 {
+                dropped.at_port(rec.unit, port as u16, refused, recovered);
             }
         }
         status

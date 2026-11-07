@@ -122,11 +122,13 @@ impl Rig {
 /// (32,000 events a second): the note-on on frame `3 i`, its note-off on
 /// frame `3 i + 2`. Whatever the block, the port is sized for it, so every
 /// one of the 20,000 events arrives and nothing is reported. At 512 frames
-/// a block holds about 341 events, at 1,024 about 683, at 16,384 about 10,923:
-/// each under that block's capacity (512, 1,024 and 16,384).
+/// a block holds about 341 events, at 1,024 about 683, at 8,192 about 5,461:
+/// each under that block's capacity (512, 1,024 and 8,192).
 ///
-/// The same clip lost 25% at 512 frames, 62% at 1,024 and 97% at 16,384 with
-/// the fixed 256.
+/// The same clip lost 25% at 512 frames, 62% at 1,024 and 94% at 8,192 with
+/// the fixed 256. (A block past 8,192 gets 8,192: at 16,384 the clip's 10,923
+/// events a block overflow, and that is reported;
+/// `a_block_past_the_cap_overflows_and_says_so`.)
 ///
 /// Mutation: size the port at a fixed 256 (`capacity: 256` regardless of
 /// `prepare`, in `MidiClipNode::prepare`) → the longer blocks lose events →
@@ -139,7 +141,7 @@ fn a_dense_clip_loses_nothing_whatever_the_block() {
             [at(f, on(i % 2048)), at(f + 2, off(i % 2048))]
         })
     };
-    for block in [64usize, 256, 512, 1024, 2048, 4096, 16_384] {
+    for block in [64usize, 256, 512, 1024, 2048, 4096, 8192] {
         let mut r = rig(events(), block);
         let losses = r.roll(30_100, block);
         let t = r.tally.lock().unwrap();
@@ -250,6 +252,8 @@ fn a_refused_note_off_goes_out_in_a_following_block() {
     assert_eq!((t.ons, t.offs), (400, 400));
     assert!(t.held.is_empty());
     assert_eq!(r.exec.dropped_event_count(), 104);
+    // Every note-off arrived: refused once, none lost.
+    assert_eq!(r.exec.lost_event_count(), 0);
 }
 
 /// The port is sized from the block the node was prepared for, and again
@@ -266,7 +270,8 @@ fn the_port_follows_the_block() {
         (256, 256),
         (1024, 1024),
         (8192, 8192),
-        (1 << 20, 16_384),
+        (16_384, 8_192),
+        (1 << 20, 8_192),
     ] {
         let mut node = MidiClipNode::new([]);
         node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
@@ -279,9 +284,9 @@ fn the_port_follows_the_block() {
 }
 
 /// The hardware input is sized from the block it is prepared for: 512 events
-/// up to a 2,048-frame block (one in four frames below that), a quarter of
-/// the block's frames past it, up to 4,096 at 16,384; and its wire is told
-/// (`MidiIn::reserve`), so the drain takes as many.
+/// up to a 4,096-frame block, an eighth of the block's frames past that (1,024
+/// at 8,192, 2,048 at 16,384); and its wire is told (`MidiIn::reserve`), so
+/// the drain takes as many.
 ///
 /// Mutation: ignore `prepare` in `MidiInputNode::prepare` → 8,192 reads 512
 /// and the wire is told nothing → fails.
@@ -301,7 +306,7 @@ fn the_hardware_input_follows_the_block() {
         }
     }
 
-    for (block, want) in [(64usize, 512u32), (2048, 512), (8192, 2048), (16_384, 4096)] {
+    for (block, want) in [(64usize, 512u32), (4096, 512), (8192, 1024), (16_384, 2048)] {
         let told = Arc::new(AtomicUsize::new(0));
         let mut node = MidiInputNode::new(Some(Box::new(Wire(Arc::clone(&told)))));
         node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
@@ -323,7 +328,7 @@ fn the_hardware_input_follows_the_block() {
 #[test]
 fn the_harmony_port_follows_the_block() {
     use tutti_midi_runtime::HarmonyNode;
-    for (block, want) in [(64usize, 256u32), (1024, 2048), (16_384, 16_384)] {
+    for (block, want) in [(64usize, 256u32), (1024, 2048), (16_384, 8_192)] {
         let mut node = HarmonyNode::new([]);
         node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(block)));
         assert_eq!(
@@ -332,4 +337,108 @@ fn the_harmony_port_follows_the_block() {
             "block {block}"
         );
     }
+}
+
+/// A note-off refused again while owed is the same loss, and one sent after
+/// is no loss. Blocks of 64 (port 256, room 296): 400 notes sound by the third
+/// block, where 300 more start on frame 130 and the 400 end on frame 140.
+/// Block 3: 256 note-ons land and 44 are refused; 40 note-offs land after
+/// them and 360 are refused. Block 4: the retry sends 296 (the port's room)
+/// and is refused on the 297th, so 64 are still owed. Block 5: they go.
+/// Refused or withheld: 44 + 360 + 1 repeat = 405 (the writer counts every
+/// attempt); the repeat and the 360 sent are taken back, so 44 are lost, the
+/// note-ons. All 400 note-offs arrive.
+///
+/// Mutation: drop `out.recovered()` in the failed branch of `retry` → lost is
+/// 45 → fails. Mutation: drop it after a sent note-off → lost is 404 → fails.
+#[test]
+fn a_note_off_refused_twice_and_sent_is_not_lost() {
+    let held = (0..400).flat_map(|i| {
+        let start = if i < 200 { 10 } else { 70 };
+        [at(start, on(i)), at(140 + 64, off(i))]
+    });
+    let more = (400..700).map(|i| at(130 + 64, on(i)));
+    let mut r = rig(held.chain(more), 64);
+    let t = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    for k in 0..7u64 {
+        r.exec.process(64, &t(64 * k), &[], &mut []);
+    }
+    let tally = r.tally.lock().unwrap();
+    assert_eq!(tally.offs, 400, "every owed note-off arrived");
+    drop(tally);
+    assert_eq!(r.exec.dropped_event_count(), 405);
+    assert_eq!(r.exec.lost_event_count(), 44);
+}
+
+/// Note A's note-on refused, note B taking the key and A's note-off
+/// swallowed: the withheld note-off is counted, because B starting does not
+/// clear A's mark. 256 other notes fill the port on frame 10 with A the
+/// 257th (refused); B starts the key on frame 70 (a later block) and A ends
+/// on frame 100, B on frame 200. Lost: A's note-on and A's note-off, 2.
+///
+/// Mutation: clear the refused mark when a note-on takes the key (the old
+/// line in `HeldNotes::play`) → the count is 1 → fails.
+#[test]
+fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
+    let filler = (1..257).map(|i| at(10, on(i)));
+    let a = [at(10, on(0)), at(100, off(0))];
+    let b = [at(70, on(0)), at(200, off(0))];
+    // Pairing is by list order: A's on then B's on, A's off then B's off.
+    let events: Vec<_> = filler.chain([a[0], b[0], a[1], b[1]]).collect();
+    let mut r = rig(events, 64);
+    let losses = r.roll(256, 64);
+    assert_eq!(r.exec.dropped_event_count(), 2, "{losses:?}");
+    assert_eq!(r.exec.lost_event_count(), 2);
+}
+
+/// A mark left by a refused note-on does not survive a seek: playing on
+/// from beat 0 with the note-on refused, then seeking past it, its note-off
+/// is not a loss of this pass.
+///
+/// Mutation: skip the `refused.fill(0)` in `HeldNotes::release` → the
+/// note-off after the seek is counted → fails.
+#[test]
+fn a_seek_forgets_what_the_port_refused() {
+    let filler = (1..257).map(|i| at(10, on(i)));
+    let events: Vec<_> = filler.chain([at(10, on(0)), at(10_000, off(0))]).collect();
+    let mut r = rig(events, 64);
+    let t = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    r.exec.process(64, &t(0), &[], &mut []);
+    assert_eq!(r.exec.dropped_event_count(), 1);
+    // Seek to just before the note-off: the pass starts after the note-on.
+    r.exec.process(64, &t(9_950), &[], &mut []);
+    r.exec.process(64, &t(10_014), &[], &mut []);
+    assert_eq!(
+        r.exec.dropped_event_count(),
+        1,
+        "the off is not this pass's loss"
+    );
+}
+
+/// A block past the cap overflows and says so. At 16,384 frames the dense
+/// clip (10,922 events a block) meets a port of 8,192 (`MAX_EVENT_PORT_CAPACITY`):
+/// the first block's 10,922 events keep 8,192 and a note-off has room past
+/// that; what is lost is counted exactly (`lost_event_count` equals the
+/// events that did not arrive), never zero.
+///
+/// Mutation: lift the cap (`MAX_EVENT_PORT_CAPACITY` 16,384) → nothing is lost
+/// → fails.
+#[test]
+fn a_block_past_the_cap_overflows_and_says_so() {
+    let events = (0..10_000u32).flat_map(|i| {
+        let f = 3 * u64::from(i);
+        [at(f, on(i % 2048)), at(f + 2, off(i % 2048))]
+    });
+    let mut r = rig(events, 16_384);
+    r.roll(30_100, 16_384);
+    let t = r.tally.lock().unwrap();
+    let arrived = t.ons + t.offs;
+    drop(t);
+    let lost = r.exec.lost_event_count();
+    assert!(lost > 0, "the port is capped");
+    assert_eq!(
+        arrived as u64 + lost,
+        20_000,
+        "every event arrived or is counted"
+    );
 }

@@ -120,7 +120,7 @@ impl Node for InProcessVst2Client {
                         frame_offset: e.offset.get(),
                         data,
                     };
-                    midi_dropped += u64::from(!intake.push(midi, event));
+                    midi_dropped += intake.push_displacing(midi, event);
                 }
                 // VST 2.4 has no chord or scale event; the walk keeps the
                 // parameter events for itself; a plugin re-sends nothing.
@@ -131,6 +131,7 @@ impl Node for InProcessVst2Client {
             },
         );
         self.params.count_midi_dropped(midi_dropped);
+        io.count_lost(midi_dropped);
         // Built before the plugin is entered: `drive_f32` publishes it to the
         // cell `audioMasterGetTime` reads, then calls `process`.
         let transport = self.transport.block(cx, size, self.features);
@@ -190,6 +191,7 @@ impl Node for InProcessVst2Client {
             // The block's MIDI was dropped with it (`drive_f32`): counted,
             // and the rest of every SysEx open in it is skipped.
             self.params.count_midi_dropped(block_midi as u64);
+            io.count_lost(block_midi as u64);
             self.intake.lost();
         }
         if sends {

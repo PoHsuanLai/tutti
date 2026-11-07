@@ -5455,7 +5455,7 @@ under both.
   counted (`Executor::dropped_event_count`, per port in
   `Editor::take_event_losses`); with no cursor they are not retried. The port
   is one event a frame of the block the node was prepared for
-  (`CLIP_EVENT_DENSITY`, 256 to 16,384 events), and a note-off has room past
+  (`CLIP_EVENT_DENSITY`, 256 to 8,192 events), and a note-off has room past
   it (`note_off_room`). A note-off the port still refuses stays owed and goes
   out at the first frame of a following block (`HeldNotes::retry`); a
   note-on it refuses leaves its note-off withheld and counted, so nothing

@@ -334,6 +334,36 @@ fn a_fan_out_with_no_room_is_dropped_whole_and_counted() {
     assert_eq!(controls.dropped_events(), 7);
 }
 
+/// **A note-off has room when a block is full of other messages.** 505
+/// notes on the master, a bend-range run on member 2 that fans out to seven
+/// (505 + 7 fill the 512 the other messages may use) and four note-offs on
+/// member 1: all four go out, in the room past the capacity, and nothing is
+/// dropped or counted. A note-on in their place would be dropped.
+///
+/// Mutation (run): limit a note-off to the capacity like the others (`limit`
+/// in `stage`) → the four note-offs are dropped and counted → fails.
+#[test]
+fn a_note_off_has_room_past_the_capacity() {
+    let mut batch: Vec<MidiEvent> = (0..505).map(|i| note(0, 60, i)).collect();
+    batch.extend([
+        cc_ev(2, cc::RPN_MSB, 0),
+        cc_ev(2, cc::RPN_LSB, 0),
+        cc_ev(2, cc::DATA_ENTRY, 12),
+    ]);
+    batch.extend((0..4).map(|k| {
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 61 + k as u8, 0)
+            .with_frame_offset(510 + k)
+    }));
+    assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);
+    let node = MidiInputNode::new(Some(Wire::new(vec![batch])))
+        .with_mpe(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+    let (_ed, mut exec, controls, seen) = rig(node, MIDI_INPUT_PORTS as u16, 512);
+    block(&mut exec, 512);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.iter().filter(|s| s.2.is_note_off()).count(), 4);
+    assert_eq!(controls.dropped_events(), 0);
+}
+
 /// **An input node's fork reads no wire.**
 ///
 /// Mutation: the fork polling the live wire → it takes the batch → fails.

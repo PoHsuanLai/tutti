@@ -66,6 +66,9 @@ pub struct Io<'a> {
     /// Per declared param port, what it reads this block; a port past the
     /// end reads its base.
     params: &'a [ParamInput<'a>],
+    /// Where [`count_lost`](Self::count_lost) adds; `None` where nothing
+    /// counts (a hand-built `Io`).
+    lost: Option<&'a std::cell::Cell<u32>>,
 }
 
 impl std::fmt::Debug for Io<'_> {
@@ -206,6 +209,7 @@ impl<'a> Io<'a> {
             events_in,
             events_out,
             params: &[],
+            lost: None,
         }
     }
 
@@ -215,6 +219,25 @@ impl<'a> Io<'a> {
     pub(crate) fn with_params(mut self, params: &'a [ParamInput<'a>]) -> Self {
         self.params = params;
         self
+    }
+
+    /// These buffers, counting [`count_lost`](Self::count_lost) into `lost`.
+    #[inline]
+    pub(crate) fn with_lost(mut self, lost: &'a std::cell::Cell<u32>) -> Self {
+        self.lost = Some(lost);
+        self
+    }
+
+    /// Counts `n` events this node took from its inputs and did not deliver
+    /// (a plugin's intake past its cap): the executor adds them to
+    /// [`Executor::dropped_event_count`](crate::Executor::dropped_event_count) and
+    /// reports them for the node ([`EventLoss`](crate::EventLoss), `port: None`),
+    /// so an export that watches the count sees them. Audio thread: one add.
+    #[inline]
+    pub fn count_lost(&self, n: u64) {
+        if let Some(c) = self.lost {
+            c.set(c.get().saturating_add(u32::try_from(n).unwrap_or(u32::MAX)));
+        }
     }
 
     /// The block length in frames — at most the prepared

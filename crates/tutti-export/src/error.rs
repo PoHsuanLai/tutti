@@ -124,7 +124,8 @@ pub enum Error {
     /// a note whose note-off was dropped may sound to the end. Raised under
     /// [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail), the default;
     /// a file export removes the file. `count` is the executor's
-    /// `dropped_event_count` over the render.
+    /// `lost_event_count` over the render: events that never arrived, not a
+    /// note-off that was refused and sent again.
     #[error("Export failed: the graph dropped {count} events during the render")]
     EventsDropped {
         /// How many.

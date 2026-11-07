@@ -227,9 +227,9 @@ pub(crate) fn with_source<R>(
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let (editor, executor) = graph.parts_mut();
-    let dropped_before = executor.dropped_event_count();
+    let dropped_before = executor.lost_event_count();
     let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
-    let dropped = executor.dropped_event_count() - dropped_before;
+    let dropped = executor.lost_event_count().saturating_sub(dropped_before);
     // A forked unit that failed mid-render (a plugin's server crashed or
     // hung) rendered silence from then on, and `process` has no error
     // channel: the probe is the only place the failure shows. A render that

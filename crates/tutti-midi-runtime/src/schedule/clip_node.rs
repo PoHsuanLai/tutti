@@ -56,15 +56,19 @@ use super::walk::{Beated, Visit, Walk};
 /// The events per frame a [`MidiClipNode`]'s port is sized for, which with
 /// its block makes its declared [`event_capacity`](Shape::event_capacity)
 /// ([`EventDensity::capacity`]): one a frame, from 256 events for a short
-/// block to 16,384 for the longest. A clip's events are on distinct frames
+/// block to 8,192 (`MAX_EVENT_PORT_CAPACITY`, the engine's default largest
+/// block). A clip's events are on distinct frames
 /// but for a chord, which the floor covers; 48,000 events a second is a
 /// 16-channel MPE recording with a bend, a pressure and a slide each
 /// millisecond on every channel.
 ///
-/// Memory is the capacity times an event (32 bytes at most) per port, once
-/// for the port and a second time for each PDC delay it feeds, and a graph's
-/// event slots are shared where their lifetimes allow: 8 KB for a 256-frame
-/// block, 32 KB for 1,024, 512 KB for 16,384.
+/// Memory, with the note-off room (`note_off_room`: capacity, an eighth and 8)
+/// at 32 bytes an event: the port's slot is 9.5 KB at 256 events, 37 KB at
+/// 1,024 and 295 KB at 8,192 (slots are shared where lifetimes allow). Each
+/// PDC delay on the port adds a FIFO of `3.75 ×` that many entries of 40
+/// bytes and an output slot of 32, 72 bytes an entry: 81 KB, 314 KB and 2.5 MB
+/// for a delay no longer than the block, more for a longer one (`⌈len /
+/// block⌉ + 2` blocks of the rate, not 3).
 ///
 /// A block that reaches more has the rest refused, and the graph counts them
 /// (`Editor::take_event_losses`); a note-off the port refuses stays owed and
@@ -543,16 +547,19 @@ impl HeldNotes {
         }
     }
 
-    /// The key `(i, n)` is no longer held: its note-off went out.
-    fn end(&mut self, i: usize, n: u32) {
+    /// The key `(i, n)` is no longer held: its note-off went out. Returns
+    /// whether that note-off had been refused before (it was owed).
+    fn end(&mut self, i: usize, n: u32) -> bool {
         let bit = 1u128 << n;
         self.bits[i] &= !bit;
         self.owner[i * 128 + n as usize] = None;
         self.count -= 1;
-        if self.pending[i] & bit != 0 {
+        let was_owed = self.pending[i] & bit != 0;
+        if was_owed {
             self.pending[i] &= !bit;
             self.pending_count -= 1;
         }
+        was_owed
     }
 
     /// The port refused a note-on of the key with `bit` in `refused[i]`.
@@ -562,11 +569,18 @@ impl HeldNotes {
     }
 
     /// The port refused the note-off of the held key `(i, n)`: it is owed.
-    fn owe(&mut self, i: usize, n: u32) {
+    ///
+    /// The writer counted this refusal. A note-off refused again while it was
+    /// already owed is the same loss, so that second count is taken back
+    /// ([`EventWriter::recovered`]); a note-off that goes out is taken back
+    /// once ([`end`](Self::end)'s caller), so a delayed note-off nets zero.
+    fn owe(&mut self, out: &EventWriter<'_>, i: usize, n: u32) {
         let bit = 1u128 << n;
         if self.pending[i] & bit == 0 {
             self.pending[i] |= bit;
             self.pending_count += 1;
+        } else {
+            out.recovered();
         }
     }
 
@@ -602,18 +616,19 @@ impl HeldNotes {
                     if out.push(off_event(at, g, c, n)).is_err() {
                         // The old note stays, its off owed, and the new note
                         // does not start.
-                        self.owe(i, n);
+                        self.owe(out, i, n);
                         self.refuse(i, bit);
                         out.withhold();
                         return;
                     }
-                    self.end(i, n);
+                    if self.end(i, n) {
+                        out.recovered();
+                    }
                 }
                 if out.push(Event::midi(at, e.data)).is_ok() {
                     self.bits[i] |= bit;
                     self.count += 1;
                     self.owner[key] = note;
-                    self.refused[i] &= !bit;
                 } else {
                     self.refuse(i, bit);
                 }
@@ -622,9 +637,11 @@ impl HeldNotes {
             if note.is_some() {
                 if held && self.owner[key] == note {
                     if out.push(Event::midi(at, e.data)).is_ok() {
-                        self.end(i, n);
+                        if self.end(i, n) {
+                            out.recovered();
+                        }
                     } else {
-                        self.owe(i, n);
+                        self.owe(out, i, n);
                     }
                 } else if self.refused[i] & bit != 0 {
                     // The off of a note whose on the port refused.
@@ -650,9 +667,13 @@ impl HeldNotes {
             while self.pending[i] != 0 {
                 let n = self.pending[i].trailing_zeros();
                 if out.push(off_event(at, i / 16, i % 16, n)).is_err() {
+                    // Owed already: the writer's count for this attempt is
+                    // the same loss as before.
+                    out.recovered();
                     return;
                 }
                 self.end(i, n);
+                out.recovered();
             }
         }
     }
@@ -674,9 +695,12 @@ impl HeldNotes {
                 let n = self.bits[i].trailing_zeros();
                 if out.push(off_event(at, i / 16, i % 16, n)).is_err() {
                     self.owed = true;
+                    self.owe(out, i, n);
                     return;
                 }
-                self.end(i, n);
+                if self.end(i, n) {
+                    out.recovered();
+                }
             }
         }
         self.owed = false;

@@ -1015,10 +1015,13 @@ pub const fn note_off_room(cap: usize) -> usize {
 pub const MIN_EVENT_PORT_CAPACITY: u32 = 256;
 
 /// The most events per block [`EventDensity::capacity`] sizes a port for: one
-/// per frame of the largest block an engine hands over
-/// (`tutti_core::DEFAULT_BLOCK_CAPACITY` is 8192; a larger block is rare).
-/// Past it a port still refuses and counts, it does not grow.
-pub const MAX_EVENT_PORT_CAPACITY: u32 = 16_384;
+/// per frame of the engine's default largest block
+/// (`tutti_core::DEFAULT_BLOCK_CAPACITY`, 8192). A longer block does not get a
+/// larger port: a port is 32 bytes an event, 295 KB at the cap with its
+/// note-off room, and a PDC delay on it holds up to `3.75 ×` that again
+/// (about 2.5 MB: see `EventSlotCapacity::fifo`). Past the cap a port still
+/// refuses and counts, it does not grow.
+pub const MAX_EVENT_PORT_CAPACITY: u32 = 8_192;
 
 /// How many events a source writes per frame at the most, for sizing its
 /// event port: a port of a block of `n` frames then holds `n × density`,
@@ -1041,7 +1044,7 @@ pub const MAX_EVENT_PORT_CAPACITY: u32 = 16_384;
 /// let at = |block| one_per_frame.capacity(&Prepare::new(SampleRate(48_000.0), Samples(block)));
 /// assert_eq!(at(64), 256); // the floor
 /// assert_eq!(at(1024), 1024);
-/// assert_eq!(at(1 << 20), 16_384); // the cap
+/// assert_eq!(at(1 << 20), 8_192); // the cap
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventDensity {
@@ -1079,6 +1082,14 @@ impl EventDensity {
     }
 }
 
+/// What one writer counted this block: events refused or withheld, and
+/// refused events a node later wrote (`EventWriter::recovered`).
+#[derive(Debug, Default)]
+pub(crate) struct PortCount {
+    pub(crate) refused: Cell<u32>,
+    pub(crate) recovered: Cell<u32>,
+}
+
 /// The preallocated sink a node writes one event output port through.
 ///
 /// Never allocates: it refuses past its capacity rather than growing, and the
@@ -1110,7 +1121,7 @@ pub struct EventWriter<'a> {
     // Counted into a cell rather than a field: the executor reads it after
     // the node returns, while the writer itself is still borrowed by the `Io`
     // the node consumed. One per port, so the loss is reported per port.
-    dropped: Option<&'a Cell<u32>>,
+    dropped: Option<&'a PortCount>,
 }
 
 impl std::fmt::Debug for EventWriter<'_> {
@@ -1131,7 +1142,7 @@ impl<'a> EventWriter<'a> {
         buf: &'a mut Vec<Event>,
         cap: usize,
         frames: u32,
-        dropped: &'a Cell<u32>,
+        dropped: &'a PortCount,
     ) -> Self {
         debug_assert!(buf.is_empty());
         Self {
@@ -1161,7 +1172,7 @@ impl<'a> EventWriter<'a> {
 
     fn count_lost(&self) {
         if let Some(d) = self.dropped {
-            d.set(d.get() + 1);
+            d.refused.set(d.refused.get() + 1);
         }
     }
 
@@ -1201,6 +1212,16 @@ impl<'a> EventWriter<'a> {
     /// it the port's count is short by the notes a refusal then unpaired.
     pub fn withhold(&self) {
         self.count_lost();
+    }
+
+    /// Says that an event the port refused earlier (counted when it was) has
+    /// now been written: a note-off a node kept owed and sent in a later
+    /// block. The refusal stays in the dropped count; the executor's lost
+    /// count (`Executor::lost_event_count`) takes it back.
+    pub fn recovered(&self) {
+        if let Some(d) = self.dropped {
+            d.recovered.set(d.recovered.get() + 1);
+        }
     }
 
     /// How many events this port has accepted so far this block.
@@ -1359,7 +1380,7 @@ mod tests {
     #[test]
     fn writer_rejects_out_of_order_out_of_block_and_overflow() {
         let mut buf = Vec::with_capacity(4);
-        let dropped = Cell::new(0);
+        let dropped = PortCount::default();
         let mut w = EventWriter::new(&mut buf, 2, 16, &dropped);
         assert_eq!(w.push(ev(5, 0)), Ok(()));
         assert_eq!(w.push(ev(4, 0)), Err(EventRejected::OutOfOrder));
@@ -1367,7 +1388,7 @@ mod tests {
         assert_eq!(w.push(ev(5, 0)), Ok(()));
         assert_eq!(w.push(ev(6, 0)), Err(EventRejected::Full));
         assert_eq!(w.len(), 2);
-        assert_eq!(dropped.get(), 3);
+        assert_eq!(dropped.refused.get(), 3);
     }
 
     /// The splitter under test, written the obvious way: every distinct
@@ -1683,7 +1704,7 @@ mod tests {
     #[test]
     fn a_writer_at_capacity_takes_note_offs_to_its_room() {
         let mut buf = Vec::with_capacity(16);
-        let dropped = Cell::new(0);
+        let dropped = PortCount::default();
         let mut w = EventWriter::new(&mut buf, 2, 16, &dropped);
         w.push(ev(0, 1)).unwrap();
         w.push(ev(1, 2)).unwrap();
@@ -1694,7 +1715,8 @@ mod tests {
         }
         assert_eq!(w.push(off(12)), Err(EventRejected::Full));
         w.withhold();
-        assert_eq!(dropped.get(), 3);
+        w.recovered();
+        assert_eq!((dropped.refused.get(), dropped.recovered.get()), (3, 1));
         assert_eq!(w.len(), 10);
     }
 

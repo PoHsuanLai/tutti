@@ -173,11 +173,20 @@ pub enum SessionEvent {
     EventsDropped {
         /// The node.
         node: AudioNode,
-        /// Its event output port.
+        /// Its event output port, `None` for a loss the node had that no
+        /// output port owns: events a plugin took in and did not deliver, a
+        /// scheduled command that did not fit.
         port: Option<u16>,
-        /// How many events.
+        /// How many events were refused or withheld.
         count: u64,
+        /// How many of them a node says it then wrote (a note-off it sent
+        /// again): `count - recovered` never arrived, summed over updates.
+        recovered: u64,
     },
+    /// Events the graph lost that no [`EventsDropped`](Self::EventsDropped)
+    /// names: a merge's, and those a block that lost at more than 64 places
+    /// or a full report ring left out. The count since the last update.
+    EventsDroppedElsewhere(u64),
     /// The audio backend reported a fault (a device unplugged mid-session):
     /// the most recent one since the last poll.
     #[cfg(feature = "device")]
@@ -277,11 +286,21 @@ impl std::fmt::Debug for SessionEvent {
             Self::MidiInputDropped(count) => {
                 f.debug_tuple("MidiInputDropped").field(count).finish()
             }
-            Self::EventsDropped { node, port, count } => f
+            Self::EventsDropped {
+                node,
+                port,
+                count,
+                recovered,
+            } => f
                 .debug_struct("EventsDropped")
                 .field("node", node)
                 .field("port", port)
                 .field("count", count)
+                .field("recovered", recovered)
+                .finish(),
+            Self::EventsDroppedElsewhere(count) => f
+                .debug_tuple("EventsDroppedElsewhere")
+                .field(count)
                 .finish(),
             #[cfg(feature = "plugin")]
             Self::PluginDied { node, cause } => f
@@ -546,19 +565,29 @@ impl Session {
     /// The events the graph's ports lost since the last update, as
     /// [`SessionEvent::EventsDropped`], one per port.
     fn report_event_losses(&mut self, out: &mut Vec<SessionEvent>) {
-        let mut sums: std::collections::BTreeMap<(tutti_types::NodeKey, Option<u16>), u64> =
+        let mut sums: std::collections::BTreeMap<(tutti_types::NodeKey, Option<u16>), (u64, u64)> =
             std::collections::BTreeMap::new();
         for loss in self.graph.take_event_losses() {
-            *sums.entry((loss.node, loss.port)).or_default() += u64::from(loss.count);
+            let sum = sums.entry((loss.node, loss.port)).or_default();
+            sum.0 += u64::from(loss.count);
+            sum.1 += u64::from(loss.recovered);
         }
         out.extend(
             sums.into_iter()
-                .map(|((node, port), count)| SessionEvent::EventsDropped {
-                    node: AudioNode(node),
-                    port,
-                    count,
-                }),
+                .filter(|(_, (count, recovered))| *count > 0 || *recovered > 0)
+                .map(
+                    |((node, port), (count, recovered))| SessionEvent::EventsDropped {
+                        node: AudioNode(node),
+                        port,
+                        count,
+                        recovered,
+                    },
+                ),
         );
+        let elsewhere = self.graph.take_unreported_event_losses();
+        if elsewhere > 0 {
+            out.push(SessionEvent::EventsDroppedElsewhere(elsewhere));
+        }
     }
 
     /// The [`Reclaim`](Phase::Reclaim) phase: every cell the session

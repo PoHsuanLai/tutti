@@ -42,16 +42,17 @@ pub const MIDI_INPUT_PORTS: usize = CHANNELLESS_PORT + 1;
 /// declared event capacity at the shortest blocks.
 pub const MIDI_INPUT_EVENT_CAPACITY: usize = 512;
 
-/// The events per frame a [`MidiInputNode`] is sized for: one in four
-/// (12,000 a second at 48 kHz, where a 16-channel MPE controller sending a
-/// bend, a pressure and a slide every 4 ms on each channel is 12,000), which
+/// The events per frame a [`MidiInputNode`] is sized for: one in eight
+/// (6,000 a second at 48 kHz, where a 16-channel MPE controller sending a
+/// bend, a pressure and a slide every 8 ms on each channel is 6,000), which
 /// with its block is the node's poll and port capacity when that is more than
-/// [`MIDI_INPUT_EVENT_CAPACITY`] (blocks past 2,048 frames). A hardware wire
-/// carries far less than one event a frame, so this is headroom, not a
-/// forecast. The cost is the capacity times the 32-byte event on each of the
-/// 17 ports, 2 MB at the longest block (16,384 frames), 0.5 MB at 4,096 and
-/// nothing extra at 2,048 or less.
-pub const MIDI_INPUT_DENSITY: EventDensity = EventDensity::per_kiloframe(256);
+/// [`MIDI_INPUT_EVENT_CAPACITY`] (blocks past 4,096 frames). A hardware wire
+/// carries far less than that, so this is headroom, not a forecast. The cost
+/// is on each of the 17 ports the capacity and its note-off room at 32 bytes
+/// an event: 0.3 MB in all at 512 events, 1.3 MB at 2,048 (a 16,384-frame
+/// block); and for each port a PDC delay is on, 72 bytes an entry of `3.75 ×`
+/// that (0.16 MB at 512, 0.62 MB at 2,048).
+pub const MIDI_INPUT_DENSITY: EventDensity = EventDensity::per_kiloframe(128);
 
 /// The port an event leaves a [`MidiInputNode`] from.
 pub fn input_port_of(event: &MidiEvent) -> usize {
@@ -128,7 +129,8 @@ impl MidiInputNode {
             mpe_request: cell.reader(),
             input,
             scratch: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
-            out: vec![MidiEvent::noop(); MIDI_INPUT_EVENT_CAPACITY].into_boxed_slice(),
+            out: vec![MidiEvent::noop(); tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
+                .into_boxed_slice(),
             translator: Midi1ToMidi2Translator::new(),
             mpe: MpeIngest::new(MpeMode::Disabled),
             dropped: Arc::new(AtomicU64::new(0)),
@@ -227,7 +229,8 @@ impl Node for MidiInputNode {
         if capacity != self.capacity || self.scratch.len() != capacity {
             self.capacity = capacity;
             self.scratch = vec![MidiEvent::noop(); capacity].into_boxed_slice();
-            self.out = vec![MidiEvent::noop(); capacity].into_boxed_slice();
+            self.out =
+                vec![MidiEvent::noop(); tutti_graph::note_off_room(capacity)].into_boxed_slice();
         }
         if let Some(input) = self.input.as_mut() {
             input.reserve(capacity);
@@ -245,9 +248,18 @@ impl Node for MidiInputNode {
         let mut dropped = 0;
         // An event's translation goes in whole or not at all: a fan-out cut
         // partway would leave some of a zone's channels at another range.
-        let mut stage = |events: Translated| {
+        // A note-off may use the room past the capacity (the port's own
+        // `note_off_room`), so a block full of other messages (a bend range
+        // fanned out over a zone) cannot keep it out.
+        let capacity = self.capacity;
+        let mut stage = |events: Translated, note_off: bool| {
             let n = events.len();
-            match self.out.get_mut(kept..kept + n) {
+            let limit = if note_off {
+                self.out.len()
+            } else {
+                capacity.min(self.out.len())
+            };
+            match (kept + n <= limit).then(|| &mut self.out[kept..kept + n]) {
                 Some(slots) => {
                     for (slot, ev) in slots.iter_mut().zip(events) {
                         *slot = ev;
@@ -260,17 +272,19 @@ impl Node for MidiInputNode {
         // A host-set mode's ranges, at frame 0, ahead of the block's events
         // (the sort below is stable).
         if let Some(reset) = reset {
-            stage(reset);
+            stage(reset, false);
         }
         let n = input.poll_block(block_len.get(), &mut self.scratch);
         for raw in &self.scratch[..n.min(self.scratch.len())] {
             let Some(ev) = self.translator.translate(raw) else {
                 continue;
             };
-            stage(self.mpe.translate(&ev));
+            stage(self.mpe.translate(&ev), ev.is_note_off());
         }
         if dropped > 0 {
             self.dropped.fetch_add(dropped, Ordering::Relaxed);
+            // The executor's too, so an export watching its count sees it.
+            io.count_lost(dropped);
         }
         let events = &mut self.out[..kept];
         in_offset_order(events);

@@ -91,6 +91,49 @@ impl MidiIntake {
         false
     }
 
+    /// [`push`](Self::push), but a note-off that finds the list full takes
+    /// the place of a note-on already in it (the one of its own key if the
+    /// list has it, else the latest; failing that, the latest channel
+    /// message that is not a note-off): the list is a chunk's worth of events
+    /// the wire cannot grow, and a note-on lost is a missed note where a
+    /// note-off lost is a note that never ends. Returns how many events this
+    /// call lost: 0 if `event` went in with room, 1 if it was refused, or
+    /// went in over an event it displaced. The caller counts them. A
+    /// displaced note-on's own note-off, if already in the list, reaches the
+    /// plugin as an off for a note it never heard, which a plugin ignores.
+    /// Never allocates (`ArrayVec::remove` shifts in place).
+    #[must_use = "the lost events are counted by the caller"]
+    pub(crate) fn push_displacing(&mut self, list: &mut MidiEventVec, event: MidiEvent) -> u64 {
+        if self.push(list, event) {
+            return 0;
+        }
+        if !event.is_note_off() || !list.is_full() {
+            return 1;
+        }
+        let same_key = |e: &MidiEvent| {
+            e.is_note_on()
+                && e.group() == event.group()
+                && e.channel() == event.channel()
+                && e.note() == event.note()
+        };
+        let victim = list
+            .iter()
+            .rposition(same_key)
+            .or_else(|| list.iter().rposition(MidiEvent::is_note_on))
+            .or_else(|| {
+                list.iter()
+                    .rposition(|e| e.channel().is_some() && !e.is_note_off())
+            });
+        match victim {
+            Some(i) => {
+                list.remove(i);
+                let _ = list.try_push(event);
+                1
+            }
+            None => 1,
+        }
+    }
+
     /// Everything passed on since the last chunk that arrived was lost
     /// (a whole chunk's MIDI never reached the reassembler, or the node was
     /// reset): skip the rest of every message open in it. Never allocates.
@@ -378,5 +421,49 @@ mod tests {
             assert!(!intake.push(&mut chunk, p), "group 1's tail stays cut");
         }
         assert_eq!(chunk.as_slice(), single.as_slice());
+    }
+
+    fn on(key: u8) -> MidiEvent {
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0xFFFF)
+    }
+
+    fn off(key: u8) -> MidiEvent {
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0)
+    }
+
+    /// A list full of note-ons takes a note-off over the note-on of its own
+    /// key, and a note-on is refused. 256 note-ons keys 0..=127 twice over:
+    /// a note-off of key 5 displaces the later note-on of 5, one is lost; a
+    /// further note-on is refused, one lost.
+    ///
+    /// Mutation: drop the `is_note_off` test in `push_displacing` → the
+    /// note-on displaces too, and the list loses a note-on it kept → fails.
+    /// Mutation: take the first note-on rather than the key's → the wrong
+    /// note-on goes → fails.
+    #[test]
+    fn a_note_off_displaces_a_note_on_of_its_key_in_a_full_list() {
+        let mut intake = MidiIntake::default();
+        let mut list = MidiEventVec::new();
+        for i in 0..MIDI_STACK_CAPACITY {
+            assert_eq!(intake.push_displacing(&mut list, on((i % 128) as u8)), 0);
+        }
+        assert_eq!(intake.push_displacing(&mut list, on(9)), 1);
+        assert_eq!(list.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(
+            list.last(),
+            Some(&on(127)),
+            "a refused note-on displaces nothing"
+        );
+        assert!(list.iter().all(MidiEvent::is_note_on));
+        assert_eq!(intake.push_displacing(&mut list, off(5)), 1);
+        assert_eq!(list.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(list.last(), Some(&off(5)));
+        // The later note-on of key 5 (index 133) is the one that went.
+        let ons_of_5 = list
+            .iter()
+            .filter(|e| e.is_note_on() && e.note() == Some(5))
+            .count();
+        assert_eq!(ons_of_5, 1);
+        assert_eq!(list[5], on(5));
     }
 }

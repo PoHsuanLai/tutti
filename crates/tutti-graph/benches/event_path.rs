@@ -104,6 +104,29 @@ fn bench(c: &mut Criterion) {
             });
         }
     }
+    // The per-call cost of an event-output node: `k` sources of 16 events
+    // each into a port of 64 (nothing refused), no consumer.
+    for k in [1u64, 8, 32] {
+        let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+        for i in 0..k {
+            ed.insert(
+                NodeKey(i + 1),
+                "source",
+                Unforkable(Source {
+                    cap: 64,
+                    ons: 16,
+                    offs: 0,
+                }),
+            );
+        }
+        ed.commit().expect("commits");
+        exec.apply_pending();
+        ed.collect();
+        g.throughput(Throughput::Elements(k));
+        g.bench_with_input(BenchmarkId::new("nodes", k), &k, |b, _| {
+            b.iter(|| exec.process(BLOCK, &transport, &[], &mut []));
+        });
+    }
     g.finish();
 }
 

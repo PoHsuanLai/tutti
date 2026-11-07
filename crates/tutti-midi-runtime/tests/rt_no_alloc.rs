@@ -298,8 +298,9 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
 /// note-offs withheld), then 200 notes ended and 200 started at once (104
 /// note-offs refused, owed, retried on the next block).
 ///
-/// Mutation (run): a `Vec` collected per refusal in `HeldNotes::play` or a
-/// `push` past the log's capacity in `Dropped::note` → the gate panics.
+/// Mutation (run): a `Vec` allocated in `HeldNotes::play`'s withhold branch →
+/// the gate panics. (The loss log's own full path is gated in tutti-graph's
+/// `rt_no_alloc`, `losses_past_the_log_and_the_ring_do_not_allocate`.)
 #[test]
 fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     const RATE: f64 = 48_000.0;

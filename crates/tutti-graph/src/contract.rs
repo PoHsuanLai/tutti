@@ -1616,7 +1616,7 @@ pub fn drive_input(
     let mut out_events: Vec<Vec<Event>> = (0..usize::from(shape.event_out))
         .map(|_| Vec::with_capacity(HAND_EVENT_CAPACITY))
         .collect();
-    let dropped = std::cell::Cell::new(0);
+    let dropped = crate::event::PortCount::default();
     let mut writers: Vec<EventWriter<'_>> = out_events
         .iter_mut()
         .map(|b| EventWriter::new(b, HAND_EVENT_CAPACITY, frames as u32, &dropped))
@@ -2025,7 +2025,7 @@ impl<N: Node> Direct<N> {
         for (slot, list) in sorted.iter_mut().zip(&self.events_in) {
             *slot = SortedEvents::new(list, len).expect("sorted events inside the block");
         }
-        let dropped = std::cell::Cell::new(0);
+        let dropped = crate::event::PortCount::default();
         let n_ev_out = self.events_out.len();
         let mut bufs = self.events_out.iter_mut();
         let mut writers: [EventWriter<'_>; crate::node::MAX_PORTS] = core::array::from_fn(|_| {

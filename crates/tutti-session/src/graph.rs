@@ -1657,6 +1657,11 @@ impl Graph {
         self.editor.take_event_losses()
     }
 
+    /// Refusals no loss entry named (`Editor::take_unreported_event_losses`).
+    pub(crate) fn take_unreported_event_losses(&mut self) -> u64 {
+        self.editor.take_unreported_event_losses()
+    }
+
     /// `Editor::commit`. `Sent` clears the edit flag; `Retry` keeps it.
     pub(crate) fn commit(&mut self) -> Committed {
         match self.editor.commit() {

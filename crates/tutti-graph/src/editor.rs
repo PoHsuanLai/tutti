@@ -541,6 +541,15 @@ impl Editor {
         std::iter::from_fn(|| self.channels.losses.try_pop())
     }
 
+    /// Refusals since the last call that [`take_event_losses`](Self::take_event_losses)
+    /// did not name: a merge's, and those the per-block log (64 places) or the
+    /// ring (256 entries) had no room for. Control thread.
+    pub fn take_unreported_event_losses(&mut self) -> u64 {
+        self.channels
+            .unreported
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The graph value.
     pub fn spec(&self) -> &GraphSpec {
         &self.spec

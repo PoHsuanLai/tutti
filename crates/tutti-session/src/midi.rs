@@ -355,7 +355,9 @@ pub(crate) struct MidiState {
     reported_at: Option<Instant>,
     /// The hardware input's drop total the last `Poll` phase reported, and
     /// when.
+    #[cfg(feature = "midi-hardware")]
     input_drops_seen: u64,
+    #[cfg(feature = "midi-hardware")]
     input_reported_at: Option<Instant>,
 }
 
@@ -373,7 +375,6 @@ impl std::fmt::Debug for MidiState {
             .field("drops", &self.drops)
             .field("drops_seen", &self.drops_seen)
             .field("reported_at", &self.reported_at)
-            .field("input_drops_seen", &self.input_drops_seen)
             .finish_non_exhaustive()
     }
 }
@@ -385,7 +386,7 @@ pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 /// How often a rising count of events the hardware input's rings dropped is
 /// reported at most
-/// ([`SessionEvent::MidiInputDropped`](crate::SessionEvent::MidiInputDropped)):
+/// (`SessionEvent::MidiInputDropped`, feature `midi-hardware`):
 /// a stalled audio callback with a busy controller drops on every update.
 pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
 

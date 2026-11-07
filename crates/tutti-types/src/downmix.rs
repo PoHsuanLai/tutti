@@ -490,6 +490,41 @@ mod tests {
         }
     }
 
+    /// A rear-only 7.1 frame, which a front-pair truncation would fold to
+    /// silence, survives the mono fold.
+    ///
+    /// Mutation (run): folding only `src[..2]` to mono fails.
+    #[test]
+    fn fold_frame_to_mono_keeps_the_surround_rears() {
+        let rears_only = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+        let mut mono = [0.0; 1];
+        fold_frame(&rears_only, &mut mono);
+        assert!((mono[0] - 2.0 * M3DB * M3DB).abs() < 1e-6, "{}", mono[0]);
+    }
+
+    /// A stereo frame into four channels keeps the pair and zero-fills the
+    /// rest over stale data, so a caller emitting `dst` as a frame never
+    /// emits a short or stale one. (`matrix` pins the planar fold only.)
+    ///
+    /// Mutation (run): the wide branch skipping its copy fails.
+    #[test]
+    fn fold_frame_zero_fills_a_wider_destination_exactly() {
+        let mut dst = [9.9f32; 4];
+        fold_frame(&[0.25, -0.25], &mut dst);
+        assert_eq!(dst, [0.25, -0.25, 0.0, 0.0]);
+    }
+
+    /// Stereo into mono averages: an asymmetric pair tells the average from a
+    /// dropped right channel.
+    ///
+    /// Mutation (run): `fold_frame` mono arm taking `src[0]` fails.
+    #[test]
+    fn fold_frame_stereo_to_mono_averages_asymmetric_input() {
+        let mut mono = [0.0f32; 1];
+        fold_frame(&[0.5, 0.9], &mut mono);
+        assert!((mono[0] - 0.7).abs() < 1e-6, "{}", mono[0]);
+    }
+
     #[test]
     fn fold_frame_equal_width_is_a_straight_copy() {
         let src = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];

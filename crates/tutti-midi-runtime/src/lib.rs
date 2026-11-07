@@ -9,6 +9,7 @@
 // down (`tutti_midi_types::ClipFileError`, `MidiParseError`).
 
 mod gather;
+mod ledger;
 mod live;
 mod negotiate;
 mod outbound;
@@ -17,6 +18,7 @@ mod split;
 mod sysex;
 
 pub use gather::gather_midi;
+pub use ledger::{NoteKey, NoteLedger, Sending};
 pub use live::{
     CHANNELLESS_PORT, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
     MIDI_INPUT_PORTS, MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY, MidiInputControls, MidiInputNode,
@@ -32,8 +34,8 @@ pub use outbound::{
     JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest, Translated,
 };
 pub use schedule::{
-    CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,
-    MidiClipNode, TimedHarmony, TimedMidiEvent,
+    CLIP_EVENT_DENSITY, Drained, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode,
+    MidiClipControls, MidiClipNode, Releasing, TimedHarmony, TimedMidiEvent,
 };
 pub use split::{BlockSplitter, Overrun, Step};
 // The two capacity ceilings come along: a caller sizing its own SysEx buffer, or

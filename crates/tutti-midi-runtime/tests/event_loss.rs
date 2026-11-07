@@ -181,7 +181,7 @@ fn a_chord_ends_in_a_long_block() {
 /// never counted.
 ///
 /// Mutation: drop `out.withhold()` for the off of a refused note-on in
-/// `HeldNotes::play` → the count is 44 → fails. Mutation: write the note-off
+/// `Sending::off` → the count is 44 → fails. Mutation: write the note-off
 /// of a refused note-on anyway → 300 note-offs reach the sink → fails.
 #[test]
 fn a_loss_is_counted_exactly_and_leaves_no_orphan() {
@@ -215,7 +215,7 @@ fn a_loss_is_counted_exactly_and_leaves_no_orphan() {
 /// Before, a refused note-off was never retried while the transport
 /// rolled: 104 notes stayed on until it stopped.
 ///
-/// Mutation: skip `held.retry` in `process` → the 104 are never sent →
+/// Mutation: skip `pay` in `NoteLedger::block` → the 104 are never sent →
 /// fails. Mutation: skip `owe` on a refused note-off → the same.
 #[test]
 fn a_refused_note_off_goes_out_in_a_following_block() {
@@ -350,7 +350,7 @@ fn the_harmony_port_follows_the_block() {
 /// attempt); the repeat and the 360 sent are taken back, so 44 are lost, the
 /// note-ons. All 400 note-offs arrive.
 ///
-/// Mutation: drop `out.recovered()` in the failed branch of `retry` → lost is
+/// Mutation: drop `out.recovered()` in the failed branch of `Sending::pay` → lost is
 /// 45 → fails. Mutation: drop it after a sent note-off → lost is 404 → fails.
 #[test]
 fn a_note_off_refused_twice_and_sent_is_not_lost() {
@@ -378,7 +378,7 @@ fn a_note_off_refused_twice_and_sent_is_not_lost() {
 /// on frame 100, B on frame 200. Lost: A's note-on and A's note-off, 2.
 ///
 /// Mutation: clear the refused mark when a note-on takes the key (the old
-/// line in `HeldNotes::play`) → the count is 1 → fails.
+/// line in `Sending::on`) → the count is 1 → fails.
 #[test]
 fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
     let filler = (1..257).map(|i| at(10, on(i)));
@@ -396,8 +396,13 @@ fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
 /// from beat 0 with the note-on refused, then seeking past it, its note-off
 /// is not a loss of this pass.
 ///
-/// Mutation: skip the `refused.fill(0)` in `HeldNotes::release` → the
-/// note-off after the seek is counted → fails.
+/// Mutations (run): `Visit::jump` not calling `release_all` → fails (with
+/// seven `clip_node` tests). `release_all` keeping the rows that hold only a
+/// mark and not clearing it → the note-off after the seek is counted → fails.
+/// Either half alone (keeping the rows but clearing the mark; clearing nothing
+/// but dropping the rows as now) passes: the held-and-marked row the clear is
+/// for is covered by `a_release_clears_the_mark_of_a_row_that_stays_owed` in
+/// `note_ledger.rs`.
 #[test]
 fn a_seek_forgets_what_the_port_refused() {
     let filler = (1..257).map(|i| at(10, on(i)));

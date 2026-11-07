@@ -8,12 +8,13 @@
 //! The queue is unbounded: an app that never polls keeps one small event per
 //! hot-plug.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, OsChange, OsDevice,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
+    OsDevice,
 };
 use tutti_midi_types::MidiOut;
 
@@ -79,34 +80,46 @@ impl core::fmt::Debug for ChangeSink {
 }
 
 /// What a backend's thread keeps between looks at the OS: the handles it has
-/// reported, so a handle that has dropped out of a fresh enumeration is
-/// reported gone.
+/// reported and what each was, so a handle that has dropped out of a fresh
+/// enumeration is reported gone.
+///
+/// An OS reuses a handle: ALSA hands a new client the number of one that just
+/// exited, and two looks that straddle both see one handle. A handle that now
+/// names another identity is a different device, so it is reported gone first.
 #[derive(Debug)]
 pub(crate) struct Reporter {
     sink: ChangeSink,
-    known: BTreeSet<EndpointId>,
+    known: BTreeMap<EndpointId, Identity>,
 }
 
 impl Reporter {
     pub(crate) fn new(sink: ChangeSink) -> Self {
         Self {
             sink,
-            known: BTreeSet::new(),
+            known: BTreeMap::new(),
         }
     }
 
     /// Lists `present` as the devices there already were.
     pub(crate) fn seed(&mut self, present: Vec<OsDevice>) {
-        self.known = present.iter().map(|d| d.handle).collect();
+        self.known = present
+            .iter()
+            .map(|d| (d.handle, d.identity.clone()))
+            .collect();
         self.sink.seed(present);
     }
 
     /// Reports `present` as the whole device list: every device in it, and the
     /// departure of each known one that is not. The table drops what repeats.
     pub(crate) fn report(&mut self, present: Vec<OsDevice>) {
-        let now: BTreeSet<EndpointId> = present.iter().map(|d| d.handle).collect();
-        for gone in self.known.difference(&now) {
-            self.sink.send(OsChange::Gone(*gone));
+        let now: BTreeMap<EndpointId, Identity> = present
+            .iter()
+            .map(|d| (d.handle, d.identity.clone()))
+            .collect();
+        for (handle, identity) in &self.known {
+            if now.get(handle) != Some(identity) {
+                self.sink.send(OsChange::Gone(*handle));
+            }
         }
         for device in present {
             self.sink.send(OsChange::Present(device));

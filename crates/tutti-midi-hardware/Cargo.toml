@@ -26,6 +26,11 @@ categories = ["multimedia::audio", "hardware-support"]
 # session into the ECS and could otherwise test that wiring only against "no
 # device found".
 test-support = []
+# The suites that need a real ALSA sequencer (`/dev/snd/seq`, kernel module
+# `snd-seq`) and run Linux only: user-space clients stand in for devices, so
+# `Devices` watches the real announce port. Off by default, because a machine
+# without the module has none; a missing sequencer fails these, never skips.
+sequencer-tests = []
 
 [lints]
 workspace = true

@@ -191,6 +191,31 @@ fn os_devices_merges_an_endpoint_listed_both_ways_into_a_duplex() {
     assert_eq!(directions, [Direction::Duplex, Direction::Output]);
 }
 
+/// Mutation: `report` comparing handles only (dropping the identity test) makes
+/// the new device a `Changed` of the old one, and this fails.
+#[test]
+fn the_reporter_tells_a_reused_handle_from_the_device_it_replaced() {
+    let shared = Arc::new(Shared::default());
+    let mut reporter = Reporter::new(ChangeSink {
+        shared: Arc::clone(&shared),
+    });
+    reporter.report(os_devices(&[endpoint(7, "Old")], &[]));
+    reporter.report(os_devices(&[endpoint(7, "New")], &[]));
+    let events: Vec<_> = shared.state().pending.iter().cloned().collect();
+    let shape: Vec<_> = events
+        .iter()
+        .map(|e| match e {
+            DeviceEvent::Added(i) => ("added", i.name.as_str()),
+            DeviceEvent::Removed(i) => ("removed", i.name.as_str()),
+            DeviceEvent::Changed(i) => ("changed", i.name.as_str()),
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [("added", "Old"), ("removed", "Old"), ("added", "New")]
+    );
+}
+
 #[test]
 fn the_reporter_reports_a_departure_a_re_enumeration_omits() {
     let shared = Arc::new(Shared::default());

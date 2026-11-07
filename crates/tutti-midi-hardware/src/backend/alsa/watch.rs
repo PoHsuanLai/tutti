@@ -21,7 +21,8 @@ use tutti_alsa_ump_sys as sys;
 use tutti_midi_device::OsDevice;
 
 const EAGAIN: i32 = -11;
-const THREAD_NAME: &str = "tutti-midi-watch";
+/// Linux truncates a thread name to 15 bytes.
+const THREAD_NAME: &str = "tutti-devwatch";
 
 /// A subscription to the announce port, and the descriptors to wait on.
 struct Announce {

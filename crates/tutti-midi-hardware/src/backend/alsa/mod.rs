@@ -110,3 +110,6 @@ impl MidiEndpoints for AlsaEndpoints {
         output::open(id)
     }
 }
+
+#[cfg(all(test, feature = "sequencer-tests"))]
+mod tests;

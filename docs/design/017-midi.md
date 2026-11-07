@@ -127,7 +127,7 @@ pub struct Midi1Bytes;                       // padded() for a fixed 3-byte fiel
 pub fn frame<B: Copy + Into<u8>>(payload: &[B]) -> Framed<'_, B>;      // F0 .. F7, ExactSizeIterator
 impl Sysex7Packet { pub fn framed(&self) -> Option<Framed<'_, U7>> }    // Complete only
 
-pub struct Midi1Parser;                      // 16 bytes of state, no allocation
+pub struct Midi1Parser;                      // 9 bytes of state, no allocation
 impl Midi1Parser {
     pub const fn new(group: MidiGroup) -> Self;   // MIDI 1.0 has no group: the port's
     pub fn feed(&mut self, byte: u8) -> Option<Message>;

@@ -1,6 +1,6 @@
 //! [`Fold`] — the one way a signal of one channel topology becomes another's.
 
-use crate::{ChannelLayout, ChannelTopology, Interleaved, InterleavedMut, M3DB, Speaker};
+use crate::{ChannelLayout, ChannelTopology, InterleavedMut, M3DB, Speaker};
 
 /// Which end of a fold a [`FoldError`] is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,13 @@ pub enum FoldError {
     },
     /// [`Fold::assuming_smpte`] was given a width the engine has no order for.
     NoSmpteOrder(ChannelLayout),
+    /// [`Fold::select`] named a channel the source does not have.
+    NoSuchChannel {
+        /// The selected channel.
+        channel: usize,
+        /// The source width.
+        width: ChannelLayout,
+    },
 }
 
 impl core::fmt::Display for FoldError {
@@ -70,6 +77,9 @@ impl core::fmt::Display for FoldError {
                 "cannot fold {src:?} into {dst:?}: discrete channels only relabel at equal width"
             ),
             Self::NoSmpteOrder(layout) => write!(f, "{layout:?} has no SMPTE order"),
+            Self::NoSuchChannel { channel, width } => {
+                write!(f, "channel {channel} is not in a {width:?} source")
+            }
         }
     }
 }
@@ -175,49 +185,50 @@ impl Expr {
     }
 }
 
-/// Channel `ch` of an interleaved buffer of `width`-wide frames.
-fn lane(samples: &[f32], ch: usize, width: usize) -> impl Iterator<Item = &f32> {
-    samples.iter().skip(ch).step_by(width)
-}
-
 fn lane_mut(samples: &mut [f32], ch: usize, width: usize) -> impl Iterator<Item = &mut f32> {
     samples.iter_mut().skip(ch).step_by(width)
 }
 
-impl Expr {
-    /// Output lane `ch` of `dst` over a block of interleaved frames, term by
-    /// term like [`planar`](Self::planar): the same bits as [`at`](Self::at)
-    /// per frame without dispatching on the expression for every frame.
-    fn interleaved(&self, src: &[f32], sw: usize, dst: &mut [f32], dw: usize, ch: usize) {
-        match self {
-            Self::Zero => lane_mut(dst, ch, dw).for_each(|o| *o = 0.0),
-            Self::Copy(c) => lane_mut(dst, ch, dw)
-                .zip(lane(src, usize::from(*c), sw))
-                .for_each(|(o, &x)| *o = x),
-            Self::Sum(terms) => {
-                for (k, t) in terms.iter().enumerate() {
-                    let frames = src.chunks_exact(sw);
-                    match &*t.srcs {
-                        [c] if k == 0 => lane_mut(dst, ch, dw)
-                            .zip(lane(src, usize::from(*c), sw))
-                            .for_each(|(o, &x)| *o = t.gain * x),
-                        [c] => lane_mut(dst, ch, dw)
-                            .zip(lane(src, usize::from(*c), sw))
-                            .for_each(|(o, &x)| *o += t.gain * x),
-                        group => lane_mut(dst, ch, dw).zip(frames).for_each(|(o, fr)| {
-                            let v = t.gain
-                                * group
-                                    .iter()
-                                    .map(|&c| fr[usize::from(c)])
-                                    .reduce(|a, b| a + b)
-                                    .unwrap_or(0.0);
-                            *o = if k == 0 { v } else { *o + v };
-                        }),
-                    }
-                }
-            }
+/// An expression of exactly `N` terms that each read one source, as
+/// `(gain, source)`: the shape of a stereo fold up to 7.1.
+fn lone_terms<const N: usize>(e: &Expr) -> Option<[(f32, u16); N]> {
+    match e {
+        Expr::Sum(terms) if terms.len() == N && terms.iter().all(|t| t.srcs.len() == 1) => {
+            Some(std::array::from_fn(|k| (terms[k].gain, terms[k].srcs[0])))
         }
+        _ => None,
     }
+}
+
+/// The hot kernel of a mono mix: `(Σ a + Σ b) · scale` over a block, both
+/// sums of `N` single-source terms, with the sums in registers so each source
+/// is read once, as the old per-width mono kernel did. A plain index loop
+/// because the term count is a const generic: the loop over terms unrolls and
+/// the loop over frames vectorises, which an iterator chain over the stored
+/// terms does not. Returns whether the row had this shape.
+fn mix_fused<'a, const N: usize>(
+    a: &Expr,
+    b: &Expr,
+    src: &impl Fn(usize) -> &'a [f32],
+    scale: f32,
+    out: &mut [f32],
+) -> bool {
+    let (Some(ta), Some(tb)) = (lone_terms::<N>(a), lone_terms::<N>(b)) else {
+        return false;
+    };
+    let n = out.len();
+    let plane = |(g, c): (f32, u16)| (g, &src(usize::from(c))[..n]);
+    let (ta, tb) = (ta.map(plane), tb.map(plane));
+    for (i, o) in out.iter_mut().enumerate() {
+        let sum = |t: &[(f32, &[f32]); N]| {
+            t.iter()
+                .map(|&(g, x)| g * x[i])
+                .reduce(|p, q| p + q)
+                .unwrap_or(0.0)
+        };
+        *o = (sum(&ta) + sum(&tb)) * scale;
+    }
+    true
 }
 
 impl Row {
@@ -228,29 +239,18 @@ impl Row {
             Self::Mix { a, b, scale } => (a.at(get) + b.at(get)) * scale,
         }
     }
-
-    fn interleaved(&self, src: &[f32], sw: usize, dst: &mut [f32], dw: usize, ch: usize) {
-        match self {
-            Self::One(e) => e.interleaved(src, sw, dst, dw, ch),
-            Self::Mix { .. } => lane_mut(dst, ch, dw)
-                .zip(src.chunks_exact(sw))
-                .for_each(|(o, fr)| *o = self.at(&|c| fr[c])),
-        }
-    }
 }
 
 /// How a signal of one [`ChannelTopology`] becomes another's.
 ///
-/// Built on the control side by [`between`](Self::between) (it allocates) and
-/// applied by [`frame`](Self::frame), [`interleaved`](Self::interleaved),
-/// [`planar_channel`](Self::planar_channel) and
-/// [`planar_to_interleaved`](Self::planar_to_interleaved), none of which
-/// allocate, so they are safe on the audio thread.
-///
 /// An edge (a file, a device, a plugin bus) states the [`ChannelTopology`] it
-/// has; the engine's graph keeps its own order. [`Fold::between`] is built once
-/// on the control side from two topologies and then applied to blocks without
-/// allocating. It places channels by *speaker*, never by width: a width alone
+/// has; the engine's graph keeps its own order. [`Fold::between`] is built
+/// once, on the control side (it allocates), from two topologies, and applied
+/// by [`frame`](Self::frame) (one frame: the mic, the sampler),
+/// [`planar_channel`](Self::planar_channel) (a graph node) and
+/// [`planar_to_interleaved`](Self::planar_to_interleaved) (the engine and
+/// export, graph to device or file), none of which allocate, so all are safe on
+/// the audio thread. It places channels by *speaker*, never by width: a width alone
 /// is not a placement (see [`ChannelTopology`]).
 ///
 /// # The rules
@@ -260,14 +260,18 @@ impl Row {
 /// - **A speaker in both:** it goes straight across at gain 1.0.
 /// - **A speaker the destination lacks** folds into the nearest ones the
 ///   destination has, at −3 dB ([`M3DB`]), by the table in `fallbacks`:
-///   the centre into front left and right, a side or rear speaker into its
+///   the centre into front left and right; a side or rear speaker into its
 ///   counterpart (side for rear and back) or else the front speaker on its
-///   side, an overhead speaker into the front speaker on its side. The
+///   side; a top-back speaker into the back, else the side surround, else the
+///   front speaker on its side; the top-front centre and the left/right of
+///   centre pair into the centre if the destination has one, else the front
+///   pair; any other overhead speaker into the front speaker on its side. The
 ///   LFE is omitted unless the destination has one. This is the ITU-R BS.775 /
 ///   Dolby consumer downmix for a stereo destination, the coefficients
 ///   [`fold_frame`](crate::fold_frame) always used. For any other destination
 ///   (5.1 to quad, 7.1.4 to 7.1) the same −3 dB table applies and the
-///   coefficients are this crate's own: no standard fixes them.
+///   coefficients and the choice of nearest speaker are this crate's own: no
+///   standard fixes them.
 ///   A side or rear speaker whose counterpart the *source* lacks and the
 ///   destination has is moved there at gain 1.0 (a pure reposition, so 5.1 to
 ///   quad keeps its surrounds at full level).
@@ -280,12 +284,15 @@ impl Row {
 ///   `0.212`), as before.
 /// - **Upmix zero-fills.** A destination speaker nothing feeds is silent;
 ///   nothing is invented.
-/// - **Discrete channels** map one to one by index and never pass through a
-///   matrix. Discrete to discrete is a copy (zero-filled when wider). Discrete
-///   against named is a relabelling, allowed only when the widths are equal;
-///   different widths is [`FoldError::Discrete`]. B-format is not speaker feeds
-///   and has no [`Speaker`]: an edge that has it declares it discrete, never
-///   quad.
+/// - **A discrete destination** (a device with more outputs than the graph, a
+///   file of any width) takes the source's channels by index, whatever the
+///   source is, and zero-fills the rest. A source wider than it is
+///   [`FoldError::Unplaced`]; [`Fold::select`] chooses channels instead.
+/// - **Discrete channels** never pass through a surround matrix. A discrete
+///   source against a named destination is a relabelling, allowed only when
+///   the widths are equal; different widths is [`FoldError::Discrete`].
+///   B-format is not speaker feeds and has no [`Speaker`]: an edge that has it
+///   declares it discrete, never quad.
 /// - **Not silent.** A source channel the destination has no place for is
 ///   [`FoldError::Unplaced`]; an [`Unknown`](Speaker::Unknown) speaker is
 ///   [`FoldError::Unnamed`] (unless the two topologies are identical, which is
@@ -301,8 +308,9 @@ impl Row {
 /// [`fold_frame`](crate::fold_frame) to the bit, in their
 /// order of operations: the direct channel, then each folded channel in source
 /// order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
-/// channels of a side are summed first and scaled once, as the 12-wide fold
-/// always did. Rounding differs between the two forms, which is why both exist.
+/// channels of a side are summed first and then scaled once, as the 12-wide
+/// fold always did; summing then scaling rounds differently from scaling each
+/// channel, so the grouping is kept for exactly the sources that had it.
 ///
 /// # Examples
 ///
@@ -340,9 +348,22 @@ struct Hit {
 const fn fallbacks(missing: Speaker) -> &'static [&'static [Speaker]] {
     use Speaker::*;
     match missing {
-        FrontCenter | TopCenter | TopFrontCenter | TopBackCenter => &[&[FrontLeft, FrontRight]],
-        FrontLeftOfCenter | TopFrontLeft | TopBackLeft | TopSideLeft => &[&[FrontLeft]],
-        FrontRightOfCenter | TopFrontRight | TopBackRight | TopSideRight => &[&[FrontRight]],
+        FrontCenter | TopCenter => &[&[FrontLeft, FrontRight]],
+        TopFrontCenter => &[&[FrontCenter], &[FrontLeft, FrontRight]],
+        FrontLeftOfCenter => &[&[FrontCenter], &[FrontLeft]],
+        FrontRightOfCenter => &[&[FrontCenter], &[FrontRight]],
+        TopFrontLeft => &[&[FrontLeft]],
+        TopFrontRight => &[&[FrontRight]],
+        TopSideLeft => &[&[SideLeft], &[FrontLeft]],
+        TopSideRight => &[&[SideRight], &[FrontRight]],
+        TopBackLeft => &[&[BackLeft], &[SideLeft], &[FrontLeft]],
+        TopBackRight => &[&[BackRight], &[SideRight], &[FrontRight]],
+        TopBackCenter => &[
+            &[BackCenter],
+            &[BackLeft, BackRight],
+            &[SideLeft, SideRight],
+            &[FrontLeft, FrontRight],
+        ],
         SideLeft => &[&[BackLeft], &[FrontLeft]],
         SideRight => &[&[BackRight], &[FrontRight]],
         BackLeft => &[&[SideLeft], &[FrontLeft]],
@@ -515,7 +536,7 @@ impl Fold {
             (0..s.len())
                 .map(|i| Row::One(Expr::Copy(narrow(i))))
                 .collect()
-        } else if s.iter().chain(d).any(|p| p.is_discrete()) {
+        } else if dst.is_discrete() || s.iter().any(|p| p.is_discrete()) {
             Self::discrete(src, dst)?
         } else {
             for (end, side) in [(FoldEnd::Source, s), (FoldEnd::Destination, d)] {
@@ -554,20 +575,54 @@ impl Fold {
         Self::between(&order(src)?, &order(dst)?)
     }
 
+    /// Chooses source channels for a discrete destination: destination channel
+    /// `i` is source channel `channels[i]`, gain 1.0, bit-exact. A channel may
+    /// be chosen twice (one input to both sides); the rest are not read.
+    ///
+    /// For the edges that take part of a wider bus: the mic picks its inputs
+    /// out of an interface's, and the cpal meter reads two of a device's
+    /// channels (their ports, in the next PRs). A named source is chosen by
+    /// index too; use [`between`](Self::between) when speakers matter.
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError::Empty`] for no channels or an empty source,
+    /// [`FoldError::NoSuchChannel`] for a channel at or past `src`'s width.
+    pub fn select(src: ChannelLayout, channels: &[usize]) -> Result<Self, FoldError> {
+        if src == ChannelLayout::EMPTY {
+            return Err(FoldError::Empty(FoldEnd::Source));
+        }
+        if channels.is_empty() {
+            return Err(FoldError::Empty(FoldEnd::Destination));
+        }
+        let rows = channels
+            .iter()
+            .map(|&channel| {
+                u16::try_from(channel)
+                    .ok()
+                    .filter(|&c| c < src.count())
+                    .map(|c| Row::One(Expr::Copy(c)))
+                    .ok_or(FoldError::NoSuchChannel {
+                        channel,
+                        width: src,
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            src: src.count(),
+            rows,
+        })
+    }
+
+    /// A discrete destination takes the source by index, zero-filling; a
+    /// discrete source against a named destination only relabels at equal width.
     fn discrete(src: &ChannelTopology, dst: &ChannelTopology) -> Result<Box<[Row]>, FoldError> {
         let (s, d) = (src.positions().len(), dst.positions().len());
-        let copy = |i: usize| {
-            Row::One(if i < s {
-                Expr::Copy(narrow(i))
-            } else {
-                Expr::Zero
-            })
-        };
-        if src.is_discrete() && dst.is_discrete() {
+        if dst.is_discrete() {
             if s > d {
                 return Err(FoldError::Unplaced {
                     channel: d,
-                    speaker: Speaker::Discrete,
+                    speaker: src.positions()[d],
                 });
             }
         } else if s != d {
@@ -576,7 +631,15 @@ impl Fold {
                 dst: dst.layout(),
             });
         }
-        Ok((0..d).map(copy).collect())
+        Ok((0..d)
+            .map(|i| {
+                Row::One(if i < s {
+                    Expr::Copy(narrow(i))
+                } else {
+                    Expr::Zero
+                })
+            })
+            .collect())
     }
 
     fn placed(s: &[Speaker], d: &[Speaker]) -> Result<Box<[Row]>, FoldError> {
@@ -621,36 +684,21 @@ impl Fold {
     /// Folds one frame: `src` has [`src_layout`](Self::src_layout) samples and
     /// `dst` [`dst_layout`](Self::dst_layout), and every `dst` sample is written.
     ///
-    /// Allocation-free. Panics if a slice is the wrong length (checked in debug
-    /// builds; a short `src` panics on the read in release).
+    /// Allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// If either slice is not the fold's width: a short `dst` would leave
+    /// samples unwritten, so the lengths are checked in release builds too.
     #[inline]
     pub fn frame(&self, src: &[f32], dst: &mut [f32]) {
-        debug_assert_eq!(src.len(), usize::from(self.src));
-        debug_assert_eq!(dst.len(), self.rows.len());
+        assert_eq!(src.len(), usize::from(self.src), "source width");
+        assert_eq!(dst.len(), self.rows.len(), "destination width");
         // The one hot kernel: a flat zip, no per-channel arithmetic on indices.
         self.rows
             .iter()
             .zip(dst)
             .for_each(|(row, o)| *o = row.at(&|c| src[c]));
-    }
-
-    /// Folds a block of interleaved frames, one frame in `src` to one in `dst`.
-    ///
-    /// Allocation-free.
-    ///
-    /// # Panics
-    ///
-    /// If either buffer's width is not this fold's, or the frame counts differ.
-    pub fn interleaved(&self, src: Interleaved<'_>, mut dst: InterleavedMut<'_>) {
-        assert_eq!(src.layout(), self.src_layout(), "source width");
-        assert_eq!(dst.layout(), self.dst_layout(), "destination width");
-        assert_eq!(src.len(), dst.len(), "frame count");
-        let (sw, dw) = (src.stride(), dst.stride());
-        let (src, dst) = (src.samples(), dst.samples_mut());
-        self.rows
-            .iter()
-            .enumerate()
-            .for_each(|(ch, row)| row.interleaved(src, sw, dst, dw, ch));
     }
 
     /// Folds planar channels into an interleaved block: `src(c)` is source
@@ -705,10 +753,23 @@ impl Fold {
     ) {
         match &self.rows[dst_c] {
             Row::One(e) => e.planar(&src, out),
+            Row::Mix { a, b, scale }
+                if mix_fused::<2>(a, b, &src, *scale, out)
+                    || mix_fused::<3>(a, b, &src, *scale, out)
+                    || mix_fused::<4>(a, b, &src, *scale, out) => {}
             Row::Mix { a, b, scale } => {
-                for (i, o) in out.iter_mut().enumerate() {
-                    let get = |c: usize| src(c)[i];
-                    *o = (a.at(&get) + b.at(&get)) * scale;
+                // Both halves a chunk at a time, `b` in a stack scratch, so
+                // every loop runs over whole slices like the other rows.
+                let mut half = [0.0f32; CHUNK];
+                for (n, o) in out.chunks_mut(CHUNK).enumerate() {
+                    let at = n * CHUNK..n * CHUNK + o.len();
+                    let chunk = |c: usize| &src(c)[at.clone()];
+                    let half = &mut half[..o.len()];
+                    a.planar(&chunk, o);
+                    b.planar(&chunk, half);
+                    o.iter_mut()
+                        .zip(&*half)
+                        .for_each(|(o, &b)| *o = (*o + b) * scale);
                 }
             }
         }

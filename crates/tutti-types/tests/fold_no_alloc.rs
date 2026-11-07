@@ -1,10 +1,10 @@
-//! Applying a `Fold` allocates nothing: the frame, interleaved and planar
+//! Applying a `Fold` allocates nothing: the frame, planar and planar-to-interleaved
 //! entry points, over every shape of row (copy, zero, sum, summed group, mono
 //! mix), 1 000 blocks under `assert_no_alloc`. Building the fold allocates and
 //! happens outside the gate.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, Interleaved, InterleavedMut, Speaker};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, InterleavedMut, Speaker};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -55,10 +55,6 @@ fn applying_a_fold_is_allocation_free() {
         assert_no_alloc(|| {
             for _ in 0..1_000 {
                 fold.frame(&data[..sw], &mut frame);
-                fold.interleaved(
-                    Interleaved::new(&data, src.layout()),
-                    InterleavedMut::new(&mut block, dst.layout()),
-                );
                 for c in 0..dw {
                     fold.planar_channel(|k| &planes[k][..], c, &mut out);
                 }

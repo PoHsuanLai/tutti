@@ -1,17 +1,18 @@
 //! **What does `Fold` cost against `fold_frame`?**
 //!
-//! Each case is one block of 64 or 512 frames: interleaved to interleaved,
-//! planar to interleaved (the engine's shape: `fold_frame` per gathered frame
-//! against `Fold::planar_to_interleaved`), and `Fold` planar
-//! alone. Widths are 2->2, 1->2, 6->2, 8->2 and 12->2, and a 6-channel
-//! permutation, which `fold_frame` cannot do (its baseline is the 6->6 copy).
+//! Each case is one block of 64 or 512 frames: `frame` (interleaved to
+//! interleaved, one `Fold::frame` against one `fold_frame` per frame: the mic
+//! and the sampler), `engine` (planar to interleaved, the engine's shape:
+//! `fold_frame` per gathered frame against `Fold::planar_to_interleaved`) and
+//! `planar` (`Fold::planar_channel` per output channel, a graph node). Widths
+//! are 2->2, 1->2, 6->2, 8->2 and 12->2, the mono mixes 6->1, 8->1 and 12->1,
+//! and a 6-channel permutation, which `fold_frame` cannot do (its baseline is
+//! the 6->6 copy).
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_types::{
-    ChannelLayout, ChannelTopology, Fold, Interleaved, InterleavedMut, Speaker, fold_frame,
-};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, InterleavedMut, Speaker, fold_frame};
 
 fn noise(n: usize) -> Vec<f32> {
     let mut x = 0x2545_f491_u32;
@@ -27,7 +28,7 @@ fn smpte(n: u16) -> ChannelTopology {
     ChannelTopology::smpte(ChannelLayout::from(n)).unwrap()
 }
 
-fn cases() -> Vec<(&'static str, ChannelTopology, ChannelTopology, bool)> {
+fn cases() -> Vec<(&'static str, ChannelTopology, ChannelTopology)> {
     use Speaker::*;
     let dts = ChannelTopology::new([
         FrontLeft,
@@ -38,19 +39,22 @@ fn cases() -> Vec<(&'static str, ChannelTopology, ChannelTopology, bool)> {
         LowFrequency,
     ]);
     vec![
-        ("2to2", smpte(2), smpte(2), false),
-        ("1to2", smpte(1), smpte(2), false),
-        ("6to2", smpte(6), smpte(2), false),
-        ("8to2", smpte(8), smpte(2), false),
-        ("12to2", smpte(12), smpte(2), false),
-        ("perm6", smpte(6), dts, true),
+        ("2to2", smpte(2), smpte(2)),
+        ("1to2", smpte(1), smpte(2)),
+        ("6to2", smpte(6), smpte(2)),
+        ("8to2", smpte(8), smpte(2)),
+        ("12to2", smpte(12), smpte(2)),
+        ("6to1", smpte(6), smpte(1)),
+        ("8to1", smpte(8), smpte(1)),
+        ("12to1", smpte(12), smpte(1)),
+        ("perm6", smpte(6), dts),
     ]
 }
 
 fn bench(c: &mut Criterion) {
     for block in [64usize, 512] {
-        let mut g = c.benchmark_group(format!("interleaved_{block}"));
-        for (name, s, d, perm) in cases() {
+        let mut g = c.benchmark_group(format!("frame_{block}"));
+        for (name, s, d) in cases() {
             let (sw, dw) = (s.positions().len(), d.positions().len());
             g.throughput(Throughput::Elements(block as u64));
             let src = noise(sw * block);
@@ -58,10 +62,12 @@ fn bench(c: &mut Criterion) {
             let fold = Fold::between(&s, &d).unwrap();
             g.bench_function(BenchmarkId::new("fold", name), |b| {
                 b.iter(|| {
-                    fold.interleaved(
-                        Interleaved::new(black_box(&src), s.layout()),
-                        InterleavedMut::new(&mut dst, d.layout()),
-                    );
+                    for (a, o) in black_box(&src)
+                        .chunks_exact(sw)
+                        .zip(dst.chunks_exact_mut(dw))
+                    {
+                        fold.frame(a, o);
+                    }
                     black_box(&dst);
                 })
             });
@@ -71,21 +77,16 @@ fn bench(c: &mut Criterion) {
                         .chunks_exact(sw)
                         .zip(dst.chunks_exact_mut(dw))
                     {
-                        // The width folds cannot permute: copy 6->6 instead.
                         fold_frame(a, o);
                     }
                     black_box(&dst);
                 })
             });
-            let _ = perm;
         }
         g.finish();
 
-        // The engine's shape: planar graph outputs to an interleaved device
-        // block. The width fold gathers each frame and folds it; `Fold` folds
-        // each output channel over whole slices, then interleaves.
         let mut g = c.benchmark_group(format!("engine_{block}"));
-        for (name, s, d, _) in cases() {
+        for (name, s, d) in cases() {
             let (sw, dw) = (s.positions().len(), d.positions().len());
             g.throughput(Throughput::Elements(block as u64));
             let planes: Vec<Vec<f32>> = (0..sw).map(|_| noise(block)).collect();
@@ -116,7 +117,7 @@ fn bench(c: &mut Criterion) {
         g.finish();
 
         let mut g = c.benchmark_group(format!("planar_{block}"));
-        for (name, s, d, _) in cases() {
+        for (name, s, d) in cases() {
             let (sw, dw) = (s.positions().len(), d.positions().len());
             g.throughput(Throughput::Elements((block * dw) as u64));
             let planes: Vec<Vec<f32>> = (0..sw).map(|_| noise(block)).collect();

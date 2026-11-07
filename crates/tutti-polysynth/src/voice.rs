@@ -436,6 +436,11 @@ impl VoiceAllocator {
         released
     }
 
+    /// The active slot a key sounds in, if it does.
+    pub(crate) fn slot_of(&self, id: NoteId) -> Option<usize> {
+        self.id_to_slot.get(id).copied()
+    }
+
     /// Call when envelope reaches zero to free the slot for reuse.
     pub fn voice_finished(&mut self, voice_id: VoiceId) {
         for i in 0..self.slots.len() {
@@ -521,18 +526,21 @@ impl VoiceAllocator {
         self.legato_last_note = None;
     }
 
+    /// Lets go of every key on `channel`. A note the sustain pedal is down
+    /// for, or the sostenuto pedal holds, keeps sounding until the pedal
+    /// lifts, as after a note-off.
     pub fn all_notes_off(&mut self, channel: MidiChannel) {
-        for i in 0..self.slots.len() {
-            let slot = &mut self.slots[i];
-            if slot.channel() == channel && slot.is_active() {
-                slot.release();
-                let id = slot.id();
-                self.id_to_slot.remove(id);
+        let sustain = self.sustain_pedal[usize::from(channel.get())];
+        for slot in &mut self.slots {
+            if slot.channel() != channel || !slot.is_active() {
+                continue;
             }
-            let slot = &mut self.slots[i];
-            if slot.channel() == channel {
-                slot.set_sustained(false);
-                slot.set_sostenuto_held(false);
+            slot.set_key_held(false);
+            if sustain {
+                slot.set_sustained(true);
+            } else if !slot.is_sostenuto_held() {
+                slot.release();
+                self.id_to_slot.remove(slot.id());
             }
         }
     }

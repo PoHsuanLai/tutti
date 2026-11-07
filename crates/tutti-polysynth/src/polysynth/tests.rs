@@ -2654,7 +2654,11 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
     ] {
         let mut synth = poly_synth();
         synth.apply_midi(ump(message));
-        assert_eq!(synth.pitch_bend, expected, "{message:?}");
+        assert_eq!(
+            synth.bends.position(MidiChannel::FIRST),
+            expected,
+            "{message:?}"
+        );
     }
 
     let sustain = |message: Message| {

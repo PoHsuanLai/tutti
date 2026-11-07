@@ -1486,7 +1486,6 @@ impl Reference {
     }
 }
 
-/// Apply a node's status to the outputs it was handed.
 /// `(MIDI 2.0, group, channel, note)`.
 type RefNote = (bool, u8, u8, u8);
 
@@ -1626,6 +1625,7 @@ fn edges_of(g: &ValidGraph) -> BTreeSet<(EventOut, EventIn)> {
         .collect()
 }
 
+/// Apply a node's status to the outputs it was handed.
 fn settle(status: Status, ins: &[Vec<f32>], outs: &mut [Vec<f32>]) {
     match status {
         Status::Modified | Status::Masked { .. } => {}

@@ -87,22 +87,47 @@ impl Held {
             .any(|e| matches!(e.kind, EventKind::Midi(u) if u.key_event().is_some()))
     }
 
+    /// Write the close of everything held ahead of `events` (at offset 0, so
+    /// the block stays sorted) as far as `events`' capacity allows, and
+    /// forget it all. Returns how many closes did not fit. Allocates nothing.
+    pub(crate) fn close_ahead(&mut self, events: &mut Vec<Event>) -> usize {
+        let start = events.len();
+        let mut lost = 0;
+        self.for_each_close(|e| {
+            if events.len() < events.capacity() {
+                events.push(e);
+            } else {
+                lost += 1;
+            }
+        });
+        let added = events.len() - start;
+        events.rotate_right(added);
+        self.keys.fill(0);
+        self.live = 0;
+        self.pedals = [0; PEDALS / 64];
+        lost
+    }
+
     /// The messages that close everything held: pedals up, then every note
     /// off, at offset 0 (ties keep this order).
     pub(crate) fn close_into(&self, out: &mut Vec<Event>) {
+        self.for_each_close(|e| out.push(e));
+    }
+
+    fn for_each_close(&self, mut f: impl FnMut(Event)) {
         let event = |ump| Event {
             offset: Offset::ZERO,
             kind: EventKind::Midi(ump),
         };
         for i in (0..PEDALS).filter(|&i| self.pedals[i >> 6] & (1u64 << (i & 63)) != 0) {
-            out.push(event(Ump::sustain_up(i >= 256, (i & 255) as u8)));
+            f(event(Ump::sustain_up(i >= 256, (i & 255) as u8)));
         }
         for (w, &word) in self.keys.iter().enumerate() {
             let mut bits = word;
             while bits != 0 {
                 let b = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                out.push(event(Ump::note_off(Key::from_index((w * 64 + b) as u16))));
+                f(event(Ump::note_off(Key::from_index((w * 64 + b) as u16))));
             }
         }
     }

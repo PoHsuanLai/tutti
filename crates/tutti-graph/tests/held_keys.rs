@@ -150,6 +150,8 @@ struct Rig {
     /// Sinks take an audio input from a latent node, so every event edge
     /// into them runs through a PDC delay.
     lag: bool,
+    /// Every edge `wire` sets is a feedback edge of this delay.
+    feedback: Option<Samples>,
 }
 
 impl Rig {
@@ -183,6 +185,7 @@ impl Rig {
             frame: 0,
             mode,
             lag,
+            feedback: None,
         };
         if let Some(ed) = &mut r.ed {
             ed.insert(
@@ -247,6 +250,13 @@ impl Rig {
         m
     }
 
+    fn edge(&self, from: u64) -> EventEdge {
+        match self.feedback {
+            Some(delay) => EventEdge::feedback(out(from), delay),
+            None => EventEdge::Direct(out(from)),
+        }
+    }
+
     /// Set the edge list and commit.
     fn wire(&mut self, edges: &[(u64, u64)]) {
         self.edges = edges.to_vec();
@@ -300,7 +310,7 @@ impl Rig {
                 }
                 let mut g = tutti_graph::GraphSpec::new(t);
                 for &(f, to) in edges {
-                    g.connect_events(at(to), EventEdge::Direct(out(f)));
+                    g.connect_events(at(to), self.edge(f));
                 }
                 g.generations.insert(NodeKey(1), self.src_gen);
                 let valid = g.validate().expect("valid");
@@ -313,11 +323,16 @@ impl Rig {
                 let _ = &shapes;
             }
             _ => {
+                let feedback = self.feedback;
+                let edge = |f| match feedback {
+                    Some(delay) => EventEdge::feedback(out(f), delay),
+                    None => EventEdge::Direct(out(f)),
+                };
                 let ed = self.ed.as_mut().unwrap();
                 let spec = ed.spec_mut();
                 spec.events.clear();
                 for &(f, to) in edges {
-                    spec.connect_events(at(to), EventEdge::Direct(out(f)));
+                    spec.connect_events(at(to), edge(f));
                 }
                 ed.commit().expect("commits");
                 let exec = self.exec.as_mut().unwrap();
@@ -890,32 +905,264 @@ fn a_key_held_across_a_reprepare_is_closed() {
     assert_eq!(r.words(2), vec![ON60, OFF60]);
 }
 
-/// A feedback edge that is cut: the event in flight is delivered, and the close
-/// follows it. Serial executor only.
+/// A feedback edge that is cut: the event in flight is delivered, and the
+/// close follows it.
 ///
 /// Mutation (run): skip the feedback FIFO's `flushed()` -> the sink hears
 /// `OFF60` with no `ON60` before it -> fails.
 #[test]
 fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
-    let mut r = Rig::new(Mode::Serial, &[2]);
-    let feedback = |r: &mut Rig, on: bool| {
-        let ed = r.ed.as_mut().unwrap();
-        ed.spec_mut().events.clear();
-        if on {
-            ed.spec_mut()
-                .connect_events(at(2), EventEdge::feedback(out(1), Samples(MAX * 4)));
+    let logs: Vec<_> = MODES
+        .iter()
+        .map(|&m| {
+            let mut r = Rig::new(m, &[2]);
+            r.feedback = Some(Samples(MAX * 4));
+            r.wire(&[(1, 2)]);
+            r.send(ON60);
+            r.block();
+            assert!(r.words(2).is_empty(), "the note is still in the FIFO");
+            r.wire(&[]);
+            r.block();
+            let words = r.words(2);
+            assert_eq!(words, vec![ON60, OFF60], "{m:?}");
+            r.log.lock().unwrap().clone()
+        })
+        .collect();
+    same(&logs);
+}
+
+/// A replace with a fade while another fade runs: the first replacement
+/// keeps writing until the second takes over, and its keys are closed then,
+/// at once for none of them. The reference interpreter does not model a
+/// crossfade, so this runs on the serial and the parallel executor.
+///
+/// Mutation (run): taking the table of a unit that keeps running when a
+/// second fade is queued (`waits` in `Executor::apply` always false) -> ON61
+/// is never closed -> fails. Not swapping the tables when the queued fade
+/// takes over (`end_fades`) -> neither is.
+#[test]
+fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
+    for mode in [Mode::Serial, Mode::Parallel] {
+        let mut r = Rig::new(mode, &[2, 3]);
+        r.wire(&[(1, 2), (1, 3)]);
+        r.block();
+        let fade = Fade::new(Samples(MAX * 3), Default::default());
+        let swap = |r: &mut Rig, mail: &Mail| {
+            let ed = r.ed.as_mut().unwrap();
+            ed.replace(
+                NodeKey(1),
+                Unforkable(Src { mail: mail.clone() }),
+                fade.clone(),
+            )
+            .expect("replaces");
+            ed.commit().unwrap();
+            r.exec.as_mut().unwrap().apply_pending();
+            ed.collect();
+        };
+        let (m2, m3): (Mail, Mail) = Default::default();
+        swap(&mut r, &m2);
+        m2.lock().unwrap().push((0, ON60));
+        r.block();
+        swap(&mut r, &m3);
+        m2.lock().unwrap().push((0, ON61));
+        r.block();
+        for sink in [2, 3] {
+            assert_eq!(r.words(sink), vec![ON60, ON61], "{mode:?}: still sounding");
         }
+        for _ in 0..8 {
+            r.block();
+        }
+        for sink in [2, 3] {
+            assert_eq!(
+                r.words(sink),
+                vec![ON60, ON61, OFF60, OFF61],
+                "{mode:?}: closed once the second fade took over"
+            );
+        }
+        // The new unit's own notes are its own.
+        m3.lock().unwrap().push((0, [0x2090_3e64, 0, 0, 0]));
+        r.block();
+        r.wire(&[]);
+        r.block();
+        assert_eq!(
+            r.words(2).last(),
+            Some(&[0x2080_3e00, 0, 0, 0]),
+            "{mode:?}: and closed at its edge"
+        );
+    }
+}
+
+/// A third replace while one waits: the waiting unit never runs, and the
+/// running one's keys are closed when the last takes over.
+///
+/// Mutation (run): as above.
+#[test]
+fn a_third_fade_supersedes_the_waiting_one() {
+    for mode in [Mode::Serial, Mode::Parallel] {
+        let mut r = Rig::new(mode, &[2, 3]);
+        r.wire(&[(1, 2), (1, 3)]);
+        r.block();
+        let fade = Fade::new(Samples(MAX * 3), Default::default());
+        let swap = |r: &mut Rig, mail: &Mail| {
+            let ed = r.ed.as_mut().unwrap();
+            ed.replace(
+                NodeKey(1),
+                Unforkable(Src { mail: mail.clone() }),
+                fade.clone(),
+            )
+            .expect("replaces");
+            ed.commit().unwrap();
+            r.exec.as_mut().unwrap().apply_pending();
+            ed.collect();
+        };
+        let (m2, m3, m4): (Mail, Mail, Mail) = Default::default();
+        swap(&mut r, &m2);
+        m2.lock().unwrap().push((0, ON60));
+        r.block();
+        swap(&mut r, &m3);
+        r.block();
+        swap(&mut r, &m4);
+        m2.lock().unwrap().push((0, ON61));
+        m3.lock().unwrap().push((0, [0x2090_4064, 0, 0, 0]));
+        for _ in 0..10 {
+            r.block();
+        }
+        for sink in [2, 3] {
+            assert_eq!(
+                r.words(sink),
+                vec![ON60, ON61, OFF60, OFF61],
+                "{mode:?}: the waiting unit never ran"
+            );
+        }
+        assert_eq!(m3.lock().unwrap().len(), 1, "{mode:?}: and was not called");
+    }
+}
+
+/// A replace with a fade whose old unit holds a key, then a hard replace of
+/// the same key: the running unit's keys are closed at the hard replace.
+#[test]
+fn a_hard_replace_during_a_fade_closes_the_running_units_keys() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.block();
+    let (m2, m3): (Mail, Mail) = Default::default();
+    {
+        let ed = r.ed.as_mut().unwrap();
+        ed.replace(
+            NodeKey(1),
+            Unforkable(Src { mail: m2.clone() }),
+            Fade::new(Samples(MAX * 6), Default::default()),
+        )
+        .unwrap();
         ed.commit().unwrap();
         r.exec.as_mut().unwrap().apply_pending();
         ed.collect();
-    };
-    feedback(&mut r, true);
-    r.send(ON60);
+    }
+    m2.lock().unwrap().push((0, ON60));
     r.block();
-    assert!(r.words(2).is_empty(), "the note is still in the FIFO");
-    feedback(&mut r, false);
+    {
+        let ed = r.ed.as_mut().unwrap();
+        ed.replace(
+            NodeKey(1),
+            Unforkable(Src { mail: m3.clone() }),
+            Fade::new(Samples(0), Default::default()),
+        )
+        .unwrap();
+        ed.commit().unwrap();
+        r.exec.as_mut().unwrap().apply_pending();
+        ed.collect();
+    }
     r.block();
     assert_eq!(r.words(2), vec![ON60, OFF60]);
+}
+
+/// The resume commit of a re-prepare replaces the held source: the old
+/// unit's tables are closed, not handed to the new one.
+///
+/// Mutation (run): `same(old_plan) == same(Some(plan))` replaced with `true`
+/// in the parked-tables restore -> the new unit inherits the table and the
+/// sink is never closed -> fails.
+#[test]
+fn a_source_replaced_by_the_resume_commit_is_closed() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.send(ON60);
+    r.block();
+    let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
+    ed.replace(
+        NodeKey(1),
+        Unforkable(Src {
+            mail: Arc::default(),
+        }),
+        Fade::new(Samples(0), Default::default()),
+    )
+    .unwrap();
+    ed.reprepare(common::prepare(MAX * 2)).expect("reprepares");
+    exec.apply_pending();
+    ed.collect();
+    exec.apply_pending();
+    ed.collect();
+    r.block();
+    assert_eq!(r.words(2), vec![ON60, OFF60]);
+}
+
+/// The source and its sink are both replaced as the edge is cut: the new
+/// sink never heard the note, so it is sent no close.
+///
+/// Mutation (run): drop the `departed.replaced.contains(&at.node)` skip in
+/// `Executor::rebuild` -> the new sink hears `OFF60` -> fails.
+#[test]
+fn a_replaced_sink_is_not_sent_a_close() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.send(ON60);
+    r.block();
+    {
+        let log = r.log.clone();
+        let ed = r.ed.as_mut().unwrap();
+        ed.replace(
+            NodeKey(2),
+            Unforkable(Sink {
+                id: 22,
+                log,
+                audio: false,
+            }),
+            Fade::new(Samples(0), Default::default()),
+        )
+        .unwrap();
+        ed.spec_mut().events.clear();
+        ed.commit().unwrap();
+        r.exec.as_mut().unwrap().apply_pending();
+        ed.collect();
+    }
+    r.block();
+    assert_eq!(r.words(2), vec![ON60]);
+    assert!(r.words(22).is_empty(), "the new sink hears nothing");
+}
+
+/// The closes owed on a delayed edge past what its FIFO holds are counted as
+/// lost, not dropped silently.
+///
+/// Mutation (run): ignore the return of `EventFifo::push` in the close path
+/// -> the loss count stays 0 -> fails.
+#[test]
+fn closes_the_delay_cannot_hold_are_counted() {
+    let mut r = Rig::with_lag(Mode::Serial, &[2], true);
+    r.wire(&[(1, 2)]);
+    // More distinct held keys than the 64-event capacity of a FIFO can queue.
+    for note in 0..64u32 {
+        for ch in 0..8u32 {
+            r.send([0x2090_0000 | (ch << 16) | (note << 8) | 100, 0, 0, 0]);
+        }
+    }
+    r.block();
+    r.block();
+    r.replace_source();
+    r.block();
+    r.block();
+    r.block();
+    let lost = r.exec.as_ref().unwrap().lost_event_count();
+    assert!(lost > 0, "the loss is visible: {lost}");
 }
 
 /// A source that declares no note events keeps no table and closes nothing.

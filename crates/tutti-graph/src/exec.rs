@@ -485,11 +485,22 @@ fn retire_fade(fade_back: &mut HeapProd<Box<Crossfade>>, x: Box<Crossfade>) {
 /// Cut `u`'s crossfades: the newest unit at the key (a waiting one, if
 /// any — the one the plan's generation names) becomes `u`'s unit, and the
 /// others go back on the fade-return ring with their crossfades.
-fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) {
+///
+/// Returns the held keys of the unit that stopped writing, if the cut
+/// displaced one that was.
+fn cut_fades(
+    u: &mut Unit,
+    fade_back: &mut HeapProd<Box<Crossfade>>,
+) -> Option<Vec<Option<Held>>> {
+    let mut stale = None;
     if let Some(mut q) = u.queued.take() {
         let newest = q.waiting.take().expect("a queued fade holds its unit");
         q.out = Some(std::mem::replace(&mut u.node, newest));
         retire_fade(fade_back, q);
+        stale = Some(std::mem::replace(
+            &mut u.held,
+            std::mem::take(&mut u.next_held),
+        ));
     }
     if let Some(f) = u.fade.take() {
         retire_fade(fade_back, f);
@@ -498,6 +509,7 @@ fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) {
         u.last_quiet = false;
         u.last_idle = false;
     }
+    stale
 }
 
 /// The queue pair between an editor and its executor.
@@ -571,6 +583,10 @@ pub(crate) struct Unit {
     /// Per event output port, the keys it started and has not ended
     /// (`held.rs`); `None` for a port that carries no notes.
     held: Vec<Option<Held>>,
+    /// While a replace waits in `queued`: the tables for its unit (empty).
+    /// When it takes over, they swap with `held`, and this holds the keys
+    /// of the unit that stopped writing, to close ahead of the next block.
+    next_held: Vec<Option<Held>>,
 }
 
 impl Unit {
@@ -585,6 +601,7 @@ impl Unit {
             queued: None,
             params,
             held: Vec::new(),
+            next_held: Vec::new(),
         }
     }
 }
@@ -974,7 +991,9 @@ impl Executor {
                     else {
                         continue;
                     };
-                    cut_fades(&mut unit, &mut self.fade_back);
+                    c.spare_held
+                        .extend(cut_fades(&mut unit, &mut self.fade_back));
+                    c.spare_held.push(std::mem::take(&mut unit.next_held));
                     c.retired.push((u.key, unit.node));
                     c.spare_params.push(unit.params);
                     self.parked.push((u.key, unit.held));
@@ -1015,20 +1034,35 @@ impl Executor {
         );
 
         // A key retired or replaced leaves its held keys behind: the rebuild
-        // below closes them on the edges they were held on.
+        // below closes them on the edges they were held on. Not so a key
+        // replaced with a fade while one runs: its unit keeps writing, and
+        // the replacement waits (`end_fades` closes its keys then).
         let mut departed = Gone::default();
-        for p in c
+        let n_retire = c.delta.retire.len();
+        for (i, p) in c
             .delta
             .retire
             .iter()
             .chain(c.delta.replace.iter().map(|(old, _)| old))
+            .enumerate()
         {
+            let waits = i >= n_retire
+                && c.fades_in(c.delta.replace[i - n_retire].1.key)
+                && self
+                    .store
+                    .get(p.idx.0 as usize)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|u| u.fade.is_some());
+            if waits {
+                continue;
+            }
             if let Some(u) = self
                 .store
                 .get_mut(p.idx.0 as usize)
                 .and_then(Option::as_mut)
             {
                 departed.held.push((p.key, std::mem::take(&mut u.held)));
+                c.spare_held.push(std::mem::take(&mut u.next_held));
             }
         }
         departed.replaced = c.delta.replace.iter().map(|(_, new)| new.key).collect();
@@ -1069,7 +1103,9 @@ impl Executor {
                     u.generation, p.generation,
                     "cutting the unit the delta named"
                 );
-                cut_fades(u, &mut self.fade_back);
+                if let Some(stale) = cut_fades(u, &mut self.fade_back) {
+                    departed.held.push((p.key, stale));
+                }
             }
         }
         if self.store.len() < c.delta.store_len as usize {
@@ -1326,7 +1362,8 @@ impl Executor {
                 if in_plan && let Some(Some(Ring::Event(f))) = delay.map(|i| &mut rings[i]) {
                     let mut offs = Vec::new();
                     h.close_into(&mut offs);
-                    f.push(&offs);
+                    let lost = f.push(&offs);
+                    self.dropped.charge_source(from, lost);
                 } else {
                     h.close_into(closing.entry((u, at.port)).or_default());
                 }
@@ -1350,6 +1387,14 @@ impl Executor {
                 if pu.shape.note_events {
                     for h in &mut u.held {
                         h.get_or_insert_with(Held::new);
+                    }
+                }
+                if u.queued.is_some() {
+                    u.next_held.resize_with(pu.shape.event_out as usize, || None);
+                    if pu.shape.note_events {
+                        for h in &mut u.next_held {
+                            h.get_or_insert_with(Held::new);
+                        }
                     }
                 }
             }
@@ -1844,6 +1889,7 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
         if let Some(mut next) = u.queued.take() {
             let incoming = next.waiting.take().expect("a queued fade holds its unit");
             next.out = Some(std::mem::replace(&mut u.node, incoming));
+            std::mem::swap(&mut u.held, &mut u.next_held);
             u.fade = Some(next);
             u.quiet = 0;
             u.last_quiet = false;
@@ -2454,6 +2500,19 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u.last_quiet = !(aout.is_empty() && eout.is_empty())
         && aout.iter().all(|&s| st.flags.get(s) & SILENT != 0)
         && eout.iter().all(|&s| st.events.ev(s).is_empty());
+    if !u.next_held.is_empty() {
+        // A replace took over from a unit that held keys: close them ahead
+        // of this block's events.
+        let mut lost = 0;
+        for (stale, &s) in u.next_held.iter_mut().zip(eout) {
+            if let Some(h) = stale.as_mut().filter(|h| !h.is_empty()) {
+                lost += h.close_ahead(st.events.ev_mut(s));
+            }
+        }
+        if lost > 0 {
+            st.dropped.at_node(rec.unit, lost as u32);
+        }
+    }
     for (held, &s) in u.held.iter_mut().zip(eout) {
         let events = st.events.ev(s);
         match held {

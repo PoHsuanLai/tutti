@@ -374,8 +374,8 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
 /// The ledger on every path, with a full table: 2,100 notes sound at once
 /// across two groups against 2,048 keys (the last 52 are withheld), all end
 /// on one frame into a port that takes 584 of them (the rest are owed and
-/// paid over the next blocks), a release request asked while they are owed, a seek (every held
-/// note ended again) and a stop. None allocates.
+/// paid over the next blocks), a seek (every held note ended again) and a
+/// stop. None allocates.
 ///
 /// Mutation (run): a `Vec` collected in `NoteLedger::pay` → the gate panics.
 /// A `Vec` in `Sending::on`'s full-table branch → the gate panics.
@@ -412,10 +412,20 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     ed.commit().unwrap();
     let mut drain = [MidiEvent::noop(); 1024];
     let mut f = 0u64;
+    // Note-ons less note-offs the sink was sent.
+    let mut sounding = 0i64;
     let mut block = |exec: &mut tutti_graph::Executor, rolling: bool, frame: u64| {
         let t = Transport::new(rolling, Bpm(120.0), beat(frame), None);
         exec.process(512, &t, &[], &mut []);
-        out.poll_into(&mut drain)
+        let n = out.poll_into(&mut drain);
+        for e in &drain[..n] {
+            match tutti_ump::Ump(e.data).key_event() {
+                Some(tutti_ump::KeyEvent::On(_)) => sounding += 1,
+                Some(tutti_ump::KeyEvent::Off(_)) => sounding -= 1,
+                _ => {}
+            }
+        }
+        n
     };
     let mut polled = block(&mut exec, true, f);
     assert_no_alloc::assert_no_alloc(|| {
@@ -440,6 +450,8 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         polled += block(&mut exec, false, 0);
     });
     assert!(polled > 0);
+    assert_eq!(out.dropped(), 0, "the sink's ring took every event");
+    assert_eq!(sounding, 0, "every note the sink heard begin has ended");
     // The table filled, offs were refused, and some were paid late.
     assert!(exec.dropped_event_count() > 52 + 1_400);
     assert!(exec.lost_event_count() < exec.dropped_event_count());

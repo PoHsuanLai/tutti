@@ -384,11 +384,12 @@ list (normal and build edges; dev-dependencies may go anywhere).
   What differs between instruments is a value of `Rules` or a `Patch`, never a
   branch in the core; a difference only one instrument has and the spec does not
   require is a reason to look again. `step` allocates nothing: its tables are
-  sized in `new` and a `Clone` keeps their capacity. Its tests are the
-  specification: a rule gets a test and a mutation. `PolySynth`'s decisions are
-  pinned against the code before the core by `tutti-polysynth`'s
-  `tests/decisions.rs` (a stream of messages, a hash of the voice table after
-  each, from a fixture the old code wrote).
+  sized in `new` and a `Clone` keeps their capacity; the instrument passes
+  `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
+  The spec is the only oracle: a rule gets a test from the spec and a mutation,
+  and nothing is pinned against another implementation. Mono and legato follow
+  tutti's named rule (last-note priority over a per-channel stack of held keys),
+  which MIDI 1.0 does not specify.
 - `tutti-midi-device` depends on no workspace crate, keeps every module private
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend

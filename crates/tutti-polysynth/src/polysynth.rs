@@ -16,7 +16,7 @@ use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::voice::Gate;
-use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
+use crate::{Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_midi_protocol::narrow_value;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
@@ -32,7 +32,7 @@ use tutti_ump::{
     CCNumber, Message, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Unknown,
     Voice1, Voice2, decode,
 };
-use tutti_voicing::{Controller, Effect, Sounding, Stop};
+use tutti_voicing::{Controller, Effect, Stop, Zones};
 
 use std::sync::Arc;
 
@@ -128,7 +128,7 @@ impl PolySynth {
             bend_range: config.pitch_bend_range,
         };
         let mut allocator = VoiceAllocator::new(allocator_config);
-        allocator.set_zone_masters(config.mpe_enabled);
+        allocator.set_zones(mpe_zones(config.mpe_enabled));
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
         // The engine's clamped count: voices and bank must match its params.
@@ -197,7 +197,7 @@ impl PolySynth {
     /// received while off snaps into effect when it is re-enabled.
     pub fn set_mpe_enabled(&mut self, enabled: bool) {
         self.config.mpe_enabled = enabled;
-        self.allocator.set_zone_masters(enabled);
+        self.allocator.set_zones(mpe_zones(enabled));
         for voice in &mut self.voices {
             voice.set_mpe_enabled(enabled);
         }
@@ -257,29 +257,6 @@ impl PolySynth {
     /// why this can exceed the number of keys held.
     pub fn active_voice_count(&self) -> usize {
         self.voices.iter().filter(|v| v.is_active()).count()
-    }
-
-    /// Every sounding voice's gate, for comparing decisions rather than audio.
-    /// Diagnostic: allocates.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn sounding(&self) -> Vec<Sounding> {
-        use tutti_voicing::Phase;
-        self.allocator
-            .slots()
-            .iter()
-            .filter(|s| !s.is_idle())
-            .map(|s| Sounding {
-                seq: s.voice_id().0,
-                channel: s.channel(),
-                key: s.note(),
-                phase: match s.holds() {
-                    Some(h) if h.key() => Phase::Key,
-                    Some(_) => Phase::Pedal,
-                    None => Phase::Releasing,
-                },
-            })
-            .collect()
     }
 
     /// Returns this synth's unison settings, or `None` when it was built
@@ -548,42 +525,8 @@ impl PolySynth {
         // releases the old one at once whatever holds it, and the new one takes
         // the holds; the MIDI 1.0 spec is silent. With `NoSteal` and a full
         // pool the new note finds no slot, so the key goes silent.
-        let result = self.allocator.allocate(id, note, channel, vel_norm);
+        self.allocator.allocate(id, note, channel, vel_norm);
         self.carry_out_gates();
-
-        let slot_index = result.slot_index();
-        let is_legato = matches!(result, AllocationResult::LegatoRetrigger { .. });
-
-        if let Some(slot_index) = slot_index {
-            let base_freq = self
-                .config
-                .tuning
-                .fractional_note_to_freq(f32::from(note.get()));
-            let bend_multiplier = self.bend_ratio(channel);
-
-            let target_freq = if let Some(ref mut porta) = self.portamento {
-                porta.set_target(base_freq, is_legato);
-                porta.current() * bend_multiplier
-            } else {
-                base_freq * bend_multiplier
-            };
-
-            let voice = &mut self.voices[slot_index];
-            if !is_legato && voice.is_fresh() {
-                // A fresh draw for this voice alone, held by the voice: the
-                // notes of a chord each get their own stack of phases.
-                if let Some(unison) = &mut self.unison {
-                    voice.set_start_phases(unison.randomize_phases());
-                }
-            }
-            voice.set_velocity_mod(vel_norm);
-            if is_legato {
-                voice.set_pitch(target_freq);
-                voice.update_legato(note, channel);
-            } else {
-                voice.note_on(note, channel, vel_norm, target_freq);
-            }
-        }
     }
 
     fn handle_note_off(&mut self, note: NoteNumber, channel: MidiChannel) {
@@ -743,7 +686,8 @@ impl PolySynth {
     /// Does to the voices what the note logic's commands asked of their slots.
     fn carry_out_gates(&mut self) {
         let mut retuned = false;
-        for gate in self.allocator.take_gates() {
+        let mut gates = self.allocator.take_gates();
+        for gate in gates.drain(..) {
             match gate {
                 Gate::Off(i) => self.voices[i].note_off(),
                 Gate::Cut(i) => {
@@ -754,10 +698,55 @@ impl PolySynth {
                     self.bends[usize::from(channel.get())] = bend;
                     retuned = true;
                 }
+                Gate::Start {
+                    slot,
+                    key,
+                    channel,
+                    velocity,
+                    legato,
+                } => self.start_voice(slot, key, channel, velocity, legato),
             }
         }
+        self.allocator.return_gates(gates);
         if retuned {
             self.apply_pitch_bend();
+        }
+    }
+
+    /// Starts the voice in `slot` on `note` (or, `legato`, moves it there).
+    fn start_voice(
+        &mut self,
+        slot_index: usize,
+        note: NoteNumber,
+        channel: MidiChannel,
+        vel_norm: f32,
+        is_legato: bool,
+    ) {
+        let base_freq = self
+            .config
+            .tuning
+            .fractional_note_to_freq(f32::from(note.get()));
+        let bend_multiplier = self.bend_ratio(channel);
+        let target_freq = if let Some(ref mut porta) = self.portamento {
+            porta.set_target(base_freq, is_legato);
+            porta.current() * bend_multiplier
+        } else {
+            base_freq * bend_multiplier
+        };
+        let voice = &mut self.voices[slot_index];
+        if !is_legato && voice.is_fresh() {
+            // A fresh draw for this voice alone, held by the voice: the notes of
+            // a chord each get their own stack of phases.
+            if let Some(unison) = &mut self.unison {
+                voice.set_start_phases(unison.randomize_phases());
+            }
+        }
+        voice.set_velocity_mod(vel_norm);
+        if is_legato {
+            voice.set_pitch(target_freq);
+            voice.update_legato(note, channel);
+        } else {
+            voice.note_on(note, channel, vel_norm, target_freq);
         }
     }
 
@@ -826,7 +815,6 @@ impl PolySynth {
             done += n;
         }
         self.retire_finished_voices();
-        self.allocator.advance_time(frames as u64);
     }
 
     /// Report each sounding voice's level to the allocator and free the ones
@@ -960,3 +948,16 @@ impl PolySynth {
 
 mod node;
 pub use node::SYNTH_PARAMS;
+
+/// The channels MPE makes zones when it is on: the lower zone, master 0 and
+/// every other channel its member (RP-053 allows 15 with no upper zone).
+fn mpe_zones(enabled: bool) -> Zones {
+    if enabled {
+        Zones {
+            lower: 15,
+            upper: 0,
+        }
+    } else {
+        Zones::default()
+    }
+}

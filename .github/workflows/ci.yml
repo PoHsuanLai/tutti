@@ -118,7 +118,7 @@ jobs:
       # And `tutti-tempo`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-voicing`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_voicing controller holds sounding voicing
+      - run: scripts/check-canonical-paths.sh tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as

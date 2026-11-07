@@ -16,19 +16,19 @@
 //! - [`Holds`]: the note gate (key, sustain, sostenuto) as a state machine.
 //! - [`Controller`]: which channel-mode controllers mean the same to every
 //!   instrument.
-//! - [`Sounding`]: a snapshot of one voice's gate, to compare decisions
-//!   without comparing audio.
+//! - [`Phase`]: what holds a voice open.
 
 #![forbid(unsafe_code)]
 
 mod controller;
 mod holds;
-mod sounding;
+mod phase;
 mod voicing;
 
 pub use controller::{Controller, Effect, Stop};
 pub use holds::Holds;
-pub use sounding::{Phase, Sounding};
+pub use phase::Phase;
 pub use voicing::{
     Command, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceId, VoiceSpec, VoiceView, Voicing,
+    Zones,
 };

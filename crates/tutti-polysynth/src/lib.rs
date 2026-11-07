@@ -17,7 +17,7 @@ mod error;
 pub use error::{Error, Result};
 
 mod voice;
-pub(crate) use voice::{AllocationResult, VoiceAllocator, VoiceAllocatorConfig};
+pub(crate) use voice::{VoiceAllocator, VoiceAllocatorConfig};
 
 mod mpe;
 pub(crate) use mpe::MpeVoiceState;

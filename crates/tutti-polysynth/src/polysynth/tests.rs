@@ -2524,11 +2524,8 @@ fn u7(v: u8) -> U7 {
 
 /// Voices whose key is still held.
 fn sounding(synth: &PolySynth) -> usize {
-    synth
-        .allocator
-        .slots()
-        .iter()
-        .filter(|s| s.is_key_held())
+    (0..synth.allocator.slots().len())
+        .filter(|&i| synth.allocator.holds_of(i).is_some_and(|h| h.key()))
         .count()
 }
 
@@ -2679,7 +2676,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
                 velocity: u7(0),
             },
         )));
-        synth.allocator.slots()[0].is_sustained()
+        synth.allocator.holds_of(0).is_some_and(|h| h.sustained())
     };
     let pedal = cc::SUSTAIN;
     assert!(sustain(Message::Midi1(
@@ -2939,5 +2936,56 @@ fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
     assert_ne!(
         synth.bends[5].0, synth.bends[0].0,
         "channel 5 keeps the bend it had"
+    );
+}
+
+/// Letting go of the sounding key in a mono synth returns to the most recent
+/// key still held (tutti's rule), and the voice then plays that key: the
+/// return starts from the note-off, so the synth must carry it out.
+///
+/// Mutation (run): `carry_out_gates` ignoring `Gate::Start` leaves the voice
+/// on 64, or silent, and fails the pitch assertions.
+#[test]
+fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
+    let on = |k, v| {
+        ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOn {
+                note: note_number(k),
+                velocity: u7(v),
+            },
+        ))
+    };
+    let off = |k| {
+        ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOff {
+                note: note_number(k),
+                velocity: u7(0),
+            },
+        ))
+    };
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Mono,
+        ..Default::default()
+    })
+    .expect("synth builds");
+    synth.apply_midi(on(60, 100));
+    synth.apply_midi(on(64, 90));
+    assert_eq!(synth.voices[0].note(), note_number(64));
+    synth.apply_midi(off(64));
+    assert_eq!(synth.active_voice_count(), 1);
+    assert_eq!(
+        synth.voices[0].note(),
+        note_number(60),
+        "back to the held key"
+    );
+    assert_eq!(synth.allocator.slots()[0].note(), note_number(60));
+    synth.apply_midi(off(60));
+    assert!(
+        synth.allocator.slots()[0].is_releasing(),
+        "the last key released it"
     );
 }

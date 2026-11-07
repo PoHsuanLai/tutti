@@ -16,7 +16,8 @@ pub enum Effect {
     Sustain(bool),
     /// The sostenuto pedal (CC 66) went down or up.
     Sostenuto(bool),
-    /// All Sound Off (CC 120), All Notes Off (CC 123): stop the channel's voices.
+    /// All Sound Off (CC 120), All Notes Off (CC 123, and the mode messages 124
+    /// to 127): stop the channel's voices.
     Stop(Stop),
     /// Reset All Controllers (CC 121).
     ResetControllers,
@@ -44,7 +45,10 @@ impl Controller {
             CCNumber::SUSTAIN => Effect::Sustain(Self::pedal(value)),
             CCNumber::SOSTENUTO => Effect::Sostenuto(Self::pedal(value)),
             CCNumber::ALL_SOUND_OFF => Effect::Stop(Stop::Cut),
+            // All Notes Off, and the four mode messages (124 to 127), which also
+            // do All Notes Off. The mode they name is the instrument's `Rules`.
             CCNumber::ALL_NOTES_OFF => Effect::Stop(Stop::Release),
+            c if (124..=127).contains(&c.get()) => Effect::Stop(Stop::Release),
             CCNumber::RESET_ALL => Effect::ResetControllers,
             _ => return None,
         })
@@ -60,6 +64,21 @@ mod tests {
     }
     fn v(n: u8) -> U7 {
         U7::new(n).unwrap()
+    }
+
+    /// The mode messages (124 to 127) also do All Notes Off (MIDI 1.0 Detailed
+    /// Specification, Channel Mode Messages; Est, the text is not in the repo).
+    ///
+    /// Mutation (run): removing the 124..=127 arm fails every row.
+    #[test]
+    fn the_mode_messages_release_like_all_notes_off() {
+        for n in 123..=127 {
+            assert_eq!(
+                Controller::effect(cc(n), v(0)),
+                Some(Effect::Stop(Stop::Release)),
+                "CC {n}"
+            );
+        }
     }
 
     /// Mutation (run): `>= 64` to `> 64` fails the 64 row.

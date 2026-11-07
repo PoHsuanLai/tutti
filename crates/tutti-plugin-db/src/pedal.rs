@@ -71,6 +71,7 @@ impl Pedal {
     /// user has taken the file off the blacklist, and a kept entry would put it
     /// back at the next recovery.
     pub(super) fn forget(&self, file: &Path) {
+        let file = canonical_path(file);
         let mut entries = self.entries();
         let before = entries.len();
         entries.retain(|p| canonical_path(p) != file);
@@ -98,7 +99,9 @@ impl Pedal {
         db: &mut PluginDb,
         save: impl FnOnce(&PluginDb) -> std::io::Result<()>,
     ) -> Vec<PathBuf> {
-        let crashed = self.entries();
+        // Keyed like a scan keys a file, whatever name the entry was written
+        // under, so lookups by any alias find the row.
+        let crashed: Vec<PathBuf> = self.entries().iter().map(|p| canonical_path(p)).collect();
         for p in &crashed {
             warn!(
                 "dead-man's pedal found: blacklisting {:?} (crashed during previous scan)",
@@ -359,5 +362,33 @@ mod tests {
         assert_eq!(pedal.entries(), std::slice::from_ref(&b));
         pedal.forget(&b);
         assert!(!pedal.path.exists());
+    }
+
+    /// Entries written under an alias of the file (a link to its directory) are
+    /// blacklisted under the canonical key a scan uses, and `forget` takes any
+    /// name for the file. This is what a symlinked temp root (macOS `/var`)
+    /// exercises. Mutation: drop the `canonical_path` map in `recover`; or the
+    /// one in `forget`.
+    #[cfg(unix)]
+    #[test]
+    fn entries_under_an_alias_are_keyed_canonically() {
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let canonical = real.canonicalize().unwrap().join("a.vst3");
+        let pedal = Pedal::new(dir.path().join(".scanning"));
+        pedal.arm(alias.join("a.vst3")).unwrap();
+
+        pedal.forget(&alias.join("a.vst3"));
+        assert!(!pedal.path.exists(), "forget took the alias");
+
+        pedal.arm(alias.join("a.vst3")).unwrap();
+        let mut db = PluginDb::new();
+        let crashed = pedal.recover(&mut db, |_| Ok(()));
+        assert_eq!(crashed, [canonical.clone()]);
+        assert!(db.is_blacklisted(&canonical));
+        assert_eq!(db.len(), 1);
     }
 }

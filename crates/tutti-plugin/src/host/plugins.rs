@@ -620,7 +620,8 @@ mod tests {
 
     fn catalog_with(path: &Path, row: FileRow) -> Plugins {
         let mut db = PluginDb::new();
-        db.apply(Delta::put(path, row));
+        // Rows are keyed by canonical path, as a scan keys them.
+        db.apply(Delta::put(key(path), row));
         Plugins::with_db(
             db,
             CatalogConfig::new("/nonexistent/db.json", crate::catalog::NO_SCAN_DIRS),
@@ -806,7 +807,7 @@ mod tests {
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
         let mut plugins = Plugins::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(vec![crashy.clone()]));
+        assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
 
         assert!(!config.pedal_path().exists());
         let restarted = Plugins::load(config);
@@ -826,7 +827,7 @@ mod tests {
         let pedal = config.pedal_path();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = Arc::clone(&seen);
-        let key_path = crashy.clone();
+        let key_path = key(&crashy);
 
         let mut plugins = Plugins::empty(config).with_saver(move |db| {
             log.lock()
@@ -834,7 +835,7 @@ mod tests {
                 .push((db.is_blacklisted(&key_path), pedal.exists()));
             Ok(())
         });
-        assert_eq!(plugins.recover_crash(), Ok(vec![crashy]));
+        assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
 
         assert_eq!(*seen.lock().unwrap(), vec![(true, true)]);
         assert!(!plugins.config.pedal_path().exists());
@@ -853,7 +854,7 @@ mod tests {
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
         let mut plugins = Plugins::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(vec![crashy.clone()]));
+        assert_eq!(plugins.recover_crash(), Ok(vec![key(&crashy)]));
         // A rescan recovers first; it must not delete what it could not save.
         plugins.rescan().unwrap();
 
@@ -981,5 +982,39 @@ mod tests {
         plugins.rescan().unwrap();
         assert!(plugins.db().row(&b).is_none(), "the removal held");
         assert!(!config.pedal_path().exists());
+    }
+
+    /// The whole catalog works through a root that is a link, as macOS's temp
+    /// dir is: a sentinel entry, a blacklist, a lookup and an unblacklist all
+    /// name the file by the link path and meet at the canonical key. Linux has
+    /// no such temp dir, so the link is made here.
+    /// Mutation: key `Plugins::blacklist` by the raw path; or drop the
+    /// `canonical_path` map in `Pedal::recover`.
+    #[cfg(unix)]
+    #[test]
+    fn a_catalog_under_a_symlinked_root_agrees_with_itself() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("A.vst3"), b"x").unwrap();
+        std::fs::write(real.join("B.vst3"), b"x").unwrap();
+        let root = dir.path().join("root");
+        std::os::unix::fs::symlink(&real, &root).unwrap();
+        let config = CatalogConfig::new(root.join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        std::fs::write(config.pedal_path(), root.join("A.vst3").to_str().unwrap()).unwrap();
+        let mut plugins = Plugins::empty(config).with_saver(|_| Ok(()));
+
+        let crashed = plugins.recover_crash().unwrap();
+        plugins.blacklist(root.join("B.vst3"), "boom");
+
+        let real_a = real.canonicalize().unwrap().join("A.vst3");
+        assert_eq!(crashed, vec![real_a.clone()]);
+        for name in ["A.vst3", "B.vst3"] {
+            assert!(plugins.is_blacklisted(root.join(name)), "{name} by link");
+            assert!(plugins.is_blacklisted(real.join(name)), "{name} by path");
+        }
+        assert!(plugins.unblacklist(root.join("A.vst3")));
+        assert!(!plugins.is_blacklisted(real_a));
+        assert_eq!(plugins.db().len(), 1);
     }
 }

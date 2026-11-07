@@ -319,6 +319,8 @@ impl SoundFontUnit {
                 self.synthesizer
                     .note_on(ch, i32::from(note.get()), i32::from(velocity));
             }
+            // Release velocity is not used: RustySynth's `note_off` has no such
+            // argument.
             Voice2::NoteOff { note, .. } => self.synthesizer.note_off(ch, i32::from(note.get())),
             Voice2::ControlChange { controller, value } => {
                 self.synthesizer.process_midi_message(

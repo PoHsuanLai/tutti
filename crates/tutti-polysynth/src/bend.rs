@@ -17,17 +17,28 @@ struct ChannelBend {
 
 /// The bend of every channel.
 #[derive(Debug, Clone)]
-pub(crate) struct ChannelBends([ChannelBend; CHANNELS]);
+pub(crate) struct ChannelBends {
+    channels: [ChannelBend; CHANNELS],
+    /// What `reset` returns every sensitivity to.
+    default_range: Semitones,
+}
 
 impl ChannelBends {
     /// Every channel centred, with `range` as its sensitivity.
     pub(crate) fn new(range: Semitones) -> Self {
-        Self(
-            [ChannelBend {
+        Self {
+            channels: [ChannelBend {
                 position: 0.0,
                 range,
             }; CHANNELS],
-        )
+            default_range: range,
+        }
+    }
+
+    /// Every wheel centred and every sensitivity back to its default: a
+    /// freshly built set.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::new(self.default_range);
     }
 
     /// The channels a message on `channel` reaches: its own, or all of them
@@ -43,13 +54,13 @@ impl ChannelBends {
     }
 
     pub(crate) fn set_position(&mut self, channel: MidiChannel, all: bool, position: f32) {
-        for bend in &mut self.0[Self::reach(channel, all)] {
+        for bend in &mut self.channels[Self::reach(channel, all)] {
             bend.position = position;
         }
     }
 
     pub(crate) fn set_range(&mut self, channel: MidiChannel, all: bool, range: Semitones) {
-        for bend in &mut self.0[Self::reach(channel, all)] {
+        for bend in &mut self.channels[Self::reach(channel, all)] {
             bend.range = range;
         }
     }
@@ -62,12 +73,12 @@ impl ChannelBends {
 
     /// The frequency ratio the channel's bend applies.
     pub(crate) fn ratio(&self, channel: MidiChannel) -> f32 {
-        let bend = self.0[usize::from(channel.get())];
+        let bend = self.channels[usize::from(channel.get())];
         (bend.range * bend.position).to_pitch_ratio()
     }
 
     #[cfg(test)]
     pub(crate) fn position(&self, channel: MidiChannel) -> f32 {
-        self.0[usize::from(channel.get())].position
+        self.channels[usize::from(channel.get())].position
     }
 }

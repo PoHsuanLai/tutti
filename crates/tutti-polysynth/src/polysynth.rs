@@ -86,6 +86,8 @@ pub struct PolySynth {
     unison: Option<UnisonEngine>,
     /// Each channel's wheel and sensitivity.
     bends: ChannelBends,
+    /// The per-note sensitivity a reset returns to: the construction value.
+    mpe_range_default: tutti_types::Semitones,
     master_volume: Param<Amplitude>,
     /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
@@ -139,6 +141,7 @@ impl PolySynth {
 
         let master_volume = Param::new(Amplitude::UNITY);
         let bends = ChannelBends::new(config.pitch_bend_range);
+        let mpe_range_default = config.mpe_pitch_bend_range;
 
         Ok(Self {
             config,
@@ -148,6 +151,7 @@ impl PolySynth {
             portamento,
             unison,
             bends,
+            mpe_range_default,
             master_volume,
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(max_voices),
@@ -496,20 +500,29 @@ impl PolySynth {
     ///
     /// Under MPE a member-channel bend is rewritten to a Per-Note Pitch Bend
     /// at the input edge (see `MpeIngest`), so one that reaches here is the
-    /// master channel's, which bends every note of the zone: with MPE on it
-    /// reaches every channel. A voice's per-note bend then multiplies its
+    /// master channel's, which bends every note of the zone: it reaches every
+    /// channel (`zone_wide`). A voice's per-note bend then multiplies its
     /// channel's, so the two add in semitones.
     fn set_pitch_bend(&mut self, channel: MidiChannel, bend: f32) {
-        let all = self.config.mpe_enabled;
+        let all = self.zone_wide(channel);
         self.bends.set_position(channel, all, bend);
         self.apply_pitch_bend();
+    }
+
+    /// Whether a channel message reaches every channel: under MPE the master
+    /// channels' do (the lower zone's is channel 0, the upper zone's 15),
+    /// being the zone's. The synth does not know the zone layout, so a master
+    /// message reaches the other zone's channels too. A member's touches
+    /// itself.
+    fn zone_wide(&self, channel: MidiChannel) -> bool {
+        self.config.mpe_enabled && matches!(channel.get(), 0 | 15)
     }
 
     /// Pitch Bend Sensitivity (RPN 0, MIDI 1.0 Registered Parameter Numbers)
     /// sets the channel's range; the config's is the default. Reaches every
     /// channel under MPE, as the bend does.
     fn set_bend_range(&mut self, channel: MidiChannel, range: tutti_types::Semitones) {
-        let all = self.config.mpe_enabled;
+        let all = self.zone_wide(channel);
         self.bends.set_range(channel, all, range);
         self.apply_pitch_bend();
     }
@@ -518,7 +531,11 @@ impl PolySynth {
         let id = NoteId::from_channel_note(channel, note.get());
         // A key struck again while it sounds replaces its voice: the
         // allocator releases the old slot, and the voice behind it is gated
-        // off here or it would sound until the end of time.
+        // off here or it would sound until the end of time. The old note
+        // releases at once whatever holds it (a pedal does not keep it) and
+        // the new one takes the holds; the MIDI 1.0 spec is silent. With
+        // `NoSteal` and a full pool the new note finds no slot, so the key
+        // goes silent.
         let replaced = self.allocator.slot_of(id);
         let result = self.allocator.allocate(id, note, channel, vel_norm);
 
@@ -660,25 +677,25 @@ impl PolySynth {
                     self.sync_voice_gates();
                 }
             }
-            // Reset All Controllers (M2-104 Appendix B.2): reset the *channel*
-            // controllers (mod wheel, cutoff, resonance) and the global pitch bend
-            // to their defaults — but explicitly NOT the per-note controllers,
-            // which the spec says RAC must leave alone (they belong to individual
-            // notes, not the channel).
+            // Reset All Controllers (RP-015, M2-104 Appendix B.2): the channel's
+            // controllers return to their defaults, but not the per-note
+            // controllers, which belong to individual notes.
             cc::RESET_ALL => {
                 // Pedals up and the channel's wheel centred (RP-015, Reset
                 // All Controllers); the notes the pedals held are released.
                 self.allocator.sustain_pedal(channel, false);
                 self.allocator.sostenuto_pedal(channel, false);
                 self.sync_voice_gates();
+                // The modulation wheel returns to 0, but it is the synth's
+                // one global wheel here, not a channel's: every voice's is
+                // reset whichever channel asks. Per-channel controllers wait
+                // for the shared voicing work. The sound controllers
+                // (CC 70-79: resonance, brightness) are not reset by RP-015,
+                // so CC 71 and CC 74 stay where they were.
                 for v in &mut self.voices {
                     v.set_mod_wheel(0.0);
-                    // Centre, not zero: CC74 maps to a `4^(v - 0.5)` cutoff
-                    // factor, so 0.0 would halve every voice's cutoff.
-                    v.set_cc_cutoff(0.5);
-                    v.set_filter_resonance(0.0);
                 }
-                self.bends.centre(channel, self.config.mpe_enabled);
+                self.bends.centre(channel, self.zone_wide(channel));
                 self.apply_pitch_bend();
             }
             cc::ALL_SOUND_OFF => {
@@ -858,6 +875,8 @@ impl PolySynth {
         }
         self.bank.reset();
         self.allocator.reset();
+        self.bends.reset();
+        self.set_mpe_pitch_bend_range(self.mpe_range_default);
         if let Some(ref mut porta) = self.portamento {
             porta.reset(440.0);
         }
@@ -894,6 +913,7 @@ impl Clone for PolySynth {
             portamento: self.portamento.clone(),
             unison: self.unison.clone(),
             bends: self.bends.clone(),
+            mpe_range_default: self.mpe_range_default,
             master_volume: self.master_volume.clone(),
             midi_buffer: vec![MidiEvent::noop(); node::MIDI_BUFFER],
             finished_indices: Vec::with_capacity(self.config.max_voices),

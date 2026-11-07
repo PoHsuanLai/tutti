@@ -9,10 +9,13 @@
 mod support;
 
 use support::{BLOCK, Hand};
+use tutti_graph::Node;
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::translation::scaling::{midi1_cc_to_midi2, midi1_velocity_to_midi2};
 use tutti_midi_types::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY};
-use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
+use tutti_polysynth::{
+    Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
+};
 use tutti_types::{Amplitude, SampleRate, Seconds, Semitones};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -337,4 +340,154 @@ fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
     let per_note = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), bend_up(0), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(14.0));
+}
+
+/// Under MPE only the master channel's Reset All Controllers reaches the
+/// zone; a member's touches that member (RP-015 per channel).
+///
+/// Mutation (run): `zone_wide` true for every channel under MPE makes the
+/// member's reset centre channel 1 too, and the first assertion fails.
+#[test]
+fn under_mpe_a_members_reset_touches_only_the_member() {
+    let mut h = hand(SynthConfig {
+        mpe_enabled: true,
+        ..config()
+    });
+    play(&mut h, &[bend_up(0), on(1, 69)], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(2.0));
+
+    // Another member's reset leaves channel 1 bent.
+    play(&mut h, &[cc(2, CCNumber::RESET_ALL, 0)], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(2.0));
+
+    // The master's centres the zone.
+    play(&mut h, &[cc(0, CCNumber::RESET_ALL, 0)], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4);
+}
+
+/// `Node::reset` is a freshly prepared synth's state: a raised wheel and a
+/// bend range set by RPN 0 do not survive it.
+///
+/// Mutation (run): without `self.bends.reset()` in `reset_voices` the first
+/// assertion fails (the wheel is still up); resetting only the positions
+/// fails the second (the range is still 7).
+#[test]
+fn reset_returns_the_wheel_and_the_range_to_their_defaults() {
+    let mut h = hand(config());
+    play(&mut h, &[sensitivity(0, 7), bend_up(0)], 0.01);
+    Node::reset(&mut *h);
+    play(&mut h, &[on(0, 69)], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4);
+
+    play(&mut h, &[bend_up(0)], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(2.0));
+}
+
+/// `Node::reset` also returns the per-note sensitivity (RPN 7) to the
+/// configured one.
+///
+/// Mutation (run): without the `set_mpe_pitch_bend_range` in `reset_voices` a
+/// quarter-travel bend sounds 3 semitones (range 12), not 12 (range 48).
+#[test]
+fn reset_returns_the_per_note_range_to_its_default() {
+    let mut h = hand(SynthConfig {
+        mpe_enabled: true,
+        mpe_pitch_bend_range: Semitones(48.0),
+        ..config()
+    });
+    let rpn7 = MidiEvent::registered_controller(
+        MidiGroup::FIRST,
+        ch(1),
+        RPN_BANK_MPE,
+        tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+        PitchBendSensitivity::of(12).to_rpn_bits(),
+    );
+    play(&mut h, &[rpn7], 0.01);
+    Node::reset(&mut *h);
+    // A quarter of the travel: 12 of 48 semitones.
+    let per_note = MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, ch(1), 69, 0xA000_0000);
+    play(&mut h, &[on(1, 69), per_note], 0.2);
+    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(12.0));
+}
+
+fn config_with(mode: VoiceMode, strategy: AllocationStrategy, voices: usize) -> SynthConfig {
+    SynthConfig {
+        voice_mode: mode,
+        allocation_strategy: strategy,
+        max_voices: voices,
+        ..config()
+    }
+}
+
+/// A key struck again under the sustain pedal: the old note releases at once
+/// (the pedal does not keep it) and the new note takes the pedal's hold. The
+/// MIDI 1.0 spec is silent; this is the synth's choice.
+///
+/// Mutation (run): not gating the replaced voice off leaves two voices
+/// (count 2) after the first wait.
+#[test]
+fn a_retrigger_under_the_pedal_releases_the_old_note_and_the_new_one_is_held() {
+    let mut h = hand(config());
+    play(
+        &mut h,
+        &[cc(0, CCNumber::SUSTAIN, 127), on(0, 60), on(0, 60)],
+        RELEASE + 0.1,
+    );
+    assert_eq!(h.active_voice_count(), 1, "the old note released at once");
+
+    play(&mut h, &[off(0, 60)], RELEASE + 0.1);
+    assert!(
+        peak(&play(&mut h, &[], 0.05)) > 0.1,
+        "the pedal holds the new"
+    );
+    play(&mut h, &[cc(0, CCNumber::SUSTAIN, 0)], RELEASE + 0.1);
+    assert_eq!(h.active_voice_count(), 0);
+}
+
+/// A key the sostenuto pedal captured, struck again: the captured note is
+/// cut (released), and the new note, struck after the pedal went down, is not
+/// captured, so its note-off releases it.
+///
+/// Mutation (run): not gating the replaced voice off leaves two voices.
+#[test]
+fn a_retrigger_of_a_sostenuto_key_cuts_the_captured_note() {
+    let mut h = hand(config());
+    play(&mut h, &[on(0, 60), cc(0, CCNumber::SOSTENUTO, 127)], 0.05);
+    play(&mut h, &[on(0, 60)], RELEASE + 0.1);
+    assert_eq!(h.active_voice_count(), 1, "the captured note is cut");
+    play(&mut h, &[off(0, 60)], RELEASE + 0.1);
+    assert_eq!(h.active_voice_count(), 0, "the new note was not captured");
+}
+
+/// Mono and legato reuse the one voice for a retriggered key: its note-off
+/// ends the note.
+///
+/// Mutation (run): gating the replaced voice off even when the new note
+/// reuses its slot leaves the retriggered mono note silent (the first
+/// assertion fails).
+#[test]
+fn a_mono_or_legato_retrigger_sounds_and_ends_with_its_note_off() {
+    for mode in [VoiceMode::Mono, VoiceMode::Legato] {
+        let mut h = hand(config_with(mode, AllocationStrategy::Oldest, 4));
+        play(&mut h, &[on(0, 60)], 0.1);
+        play(&mut h, &[on(0, 60)], 0.1);
+        assert!(peak(&play(&mut h, &[], 0.05)) > 0.1, "{mode:?} sounds");
+        play(&mut h, &[off(0, 60)], RELEASE + 0.1);
+        assert_eq!(peak(&play(&mut h, &[], 0.05)), 0.0, "{mode:?} ends");
+        assert_eq!(h.active_voice_count(), 0);
+    }
+}
+
+/// With every voice in use and `NoSteal`, a key struck again is released and
+/// finds no slot, so it goes silent while the other note sounds on.
+///
+/// Mutation (run): not gating the replaced voice off keeps the key sounding
+/// (two voices).
+#[test]
+fn a_retrigger_in_a_full_nosteal_pool_silences_the_key() {
+    let mut h = hand(config_with(VoiceMode::Poly, AllocationStrategy::NoSteal, 2));
+    play(&mut h, &[on(0, 60), on(0, 67)], 0.1);
+    play(&mut h, &[on(0, 60)], RELEASE + 0.1);
+    assert_eq!(h.active_voice_count(), 1);
+    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(-2.0));
 }

@@ -2375,8 +2375,7 @@ fn a_steal_at_a_different_velocity_does_not_click() {
     );
 }
 
-/// Reset All Controllers returns CC74 to its centre, leaving the cutoff
-/// where the patch put it.
+/// Reset All Controllers leaves the cutoff where the patch put it.
 ///
 /// Setting the CC74 position to 0.0 instead would read, through the
 /// `4^(v - 0.5)` map, as half the cutoff.
@@ -2878,4 +2877,38 @@ fn midi1_values_scale_to_exact_figures() {
             "pressure = {value}"
         );
     }
+}
+
+/// Reset All Controllers (RP-015) returns the modulation wheel to 0 and does
+/// not reset the sound controllers (CC 70-79), so CC 71 and CC 74 keep their
+/// positions. The wheel is the synth's global one, so every voice's resets.
+///
+/// *Mutation (run):* `set_cc_cutoff(0.5)` and `set_filter_resonance(0.0)` back
+/// in the `RESET_ALL` arm fail the sound-controller assertions;
+/// dropping `set_mod_wheel(0.0)` fails the wheel one.
+#[test]
+fn reset_all_controllers_keeps_the_sound_controllers() {
+    let mut s = synth(SynthConfig {
+        max_voices: 2,
+        ..Default::default()
+    });
+    queue_midi(
+        &mut s,
+        &[
+            ev_note_on(0, 60, 100),
+            ev_cc(0, cc::MOD_WHEEL, 100),
+            ev_cc(0, cc::BRIGHTNESS, 0),
+            ev_cc(0, cc::RESONANCE, 127),
+        ],
+    );
+    let mut out = [0.0f32; 2];
+    s.tick(&[], &mut out);
+    let (cutoff, resonance) = s.voices[0].sound_controllers();
+    assert_eq!((cutoff, resonance), (0.0, 1.0), "the controllers were set");
+    assert!(s.voices[0].mod_wheel() > 0.5);
+
+    queue_midi(&mut s, &[ev_cc(0, cc::RESET_ALL, 0)]);
+    s.tick(&[], &mut out);
+    assert_eq!(s.voices[0].sound_controllers(), (cutoff, resonance));
+    assert_eq!(s.voices[0].mod_wheel(), 0.0);
 }

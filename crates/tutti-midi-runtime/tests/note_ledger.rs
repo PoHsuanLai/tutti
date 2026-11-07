@@ -9,19 +9,22 @@
 //! 48 kHz, so a beat is 24,000 frames.
 //!
 //! Mutations (each run, then restored):
-//! - `NoteLedger::block` without `pay`: the refused offs are never sent.
-//!   `a_refused_off_is_paid_at_the_first_frame_of_the_next_block`,
-//!   `a_ledger_relay_strands_no_note_under_random_refusal` and
-//!   `a_clip_leaves_nothing_sounding_after_a_stop` fail.
-//! - `Sending::off` leaving an off the port refused unowed (no `owe`): the
-//!   same three fail.
-//! - `Sending::on` pushing the on of a full table anyway (no `withhold`
-//!   return): `a_full_table_withholds_what_it_cannot_keep` and
+//! - `NoteLedger::block` without `pay`: the refused offs are not sent at the
+//!   next block's first frame. `a_refused_off_is_paid_at_the_first_frame_of_the_next_block`
+//!   and `a_ledger_relay_strands_no_note_under_random_refusal` fail. The clip
+//!   property does not: a stopped clip ends what is held on every block, which
+//!   pays as well.
+//! - `Sending::finish` leaving a refused off un-owed: the same two fail.
+//! - `Sending::on` without `withhold` when the table is full, or writing the
+//!   on anyway: `a_full_table_withholds_what_it_cannot_keep` and
 //!   `a_small_table_withholds_the_on_it_cannot_keep` fail.
-//! - `MidiClipNode::process` not answering a request (no `answered` store):
-//!   the handshake tests fail. Not calling `release_all` for a request: the
-//!   rewire after the drain leaves the note on A.
-//! - `ClipFork` sharing the live `asked` and `answered` counters:
+//! - `Sending::on` not ending a sounding note that a new note takes the key
+//!   from, or `Sending::off` writing the off of a note whose on the port
+//!   refused: `a_clip_leaves_nothing_sounding_after_a_stop` fails.
+//! - `MidiClipNode::process` not storing `answered`: the three drain tests
+//!   fail. Not releasing for a request: the rewire after the drain strands
+//!   the note on A.
+//! - `ClipFork` building its node over the live `Shared`:
 //!   `a_fork_does_not_answer_the_lives_ticket` fails.
 //! - `MidiClipNode::reset` without `forget`:
 //!   `a_reset_node_forgets_the_notes_it_held` fails.

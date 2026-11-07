@@ -4,8 +4,7 @@ use tutti_midi_types::MidiEvent;
 /// **The off the ledger writes is the MIDI 2.0 Note Off at velocity 0 that
 /// `MidiEvent::note_off` builds**, on the key's group, channel and note.
 ///
-/// Mutation (run): `NoteKey::off` on channel 0 → the second key differs,
-/// fails. Velocity 1 → fails.
+/// Mutation (run): `NoteKey::off` on channel 0 → fails.
 #[test]
 fn an_owed_off_is_the_note_off_the_wire_types_build() {
     let key = NoteKey {

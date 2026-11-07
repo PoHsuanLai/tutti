@@ -165,22 +165,77 @@ fn the_pure_render_feeds_the_meter() {
     assert!((engine.master_meter().get().peak_left.get() - 0.25).abs() < 1e-6);
 }
 
-/// A wide block longer than the fold's scratch is folded and measured piece
-/// by piece, not dropped or overrun: the meter reads the last piece, which
-/// here carries the same centre figure. The scratch holds the block capacity
-/// (the larger of 512, the prepared block, and what is asked for), so the
-/// block is longer than that.
+/// A source that is loud for its first `loud` frames and quiet after.
+struct Step {
+    loud: usize,
+    at: usize,
+}
+
+impl tutti_graph::Node for Step {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for (k, s) in io.output(0).iter_mut().enumerate() {
+            *s = if self.at + k < self.loud { 1.0 } else { 0.1 };
+        }
+        self.at += io.output(0).len();
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// A wide block longer than the fold's scratch is folded in pieces but read as
+/// one block: the peak and RMS cover the whole output, a loud start in the
+/// first piece included. The scratch holds the block capacity (the larger of
+/// 512, the prepared block, and what is asked for), so the block is longer
+/// than that. 100 frames at 1.0 then 1400 at 0.1 on the centre, each side
+/// `M3DB` of it: the peak is `M3DB`, the RMS `M3DB * sqrt((100 + 1400 * 0.01) / 1500)`.
 ///
-/// Mutation (run, recorded here): `output.chunks(piece * channels)` ->
-/// `output.chunks(output.len())` -> the fold slice indexes past the scratch and the
-/// test panics.
+/// Mutation (run, recorded here): publish each piece (`measure` per piece
+/// instead of `begin`/`add`/`publish`) -> the reading is the last piece's, a
+/// peak of `0.1 * M3DB`, and this fails. `output.chunks(piece * channels)` ->
+/// `output.chunks(output.len())` -> the fold slice indexes past the scratch
+/// and the test panics.
 #[test]
-fn a_block_longer_than_the_fold_scratch_is_measured_in_pieces() {
-    let engine = engine(1.0, Some(2), 6, Samples(64));
+fn a_block_longer_than_the_fold_scratch_is_measured_whole() {
+    let transport = Transport::new(RATE);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(RATE), Samples(512)));
+    ed.insert(
+        NodeKey(1),
+        "step",
+        tutti_graph::Unforkable(Step { loud: 100, at: 0 }),
+    );
+    ed.spec_mut().topology.outputs = (0..6)
+        .map(|c| {
+            if c == 2 {
+                Source::Node(OutPort {
+                    node: NodeKey(1),
+                    port: 0,
+                })
+            } else {
+                Source::Zero
+            }
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine =
+        Engine::with_capacity(&transport, &mut ed, exec, Samples(64)).expect("within limits");
     engine.master_meter().enable();
     render(&engine, 1500, 6);
     let r = engine.master_meter().get();
-    assert!((r.peak_left.get() - M3DB).abs() < 1e-6, "{r:?}");
+    let rms = M3DB * ((100.0 + 1400.0 * 0.01) / 1500.0f32).sqrt();
+    assert!((r.peak_left.get() - M3DB).abs() < 1e-5, "{r:?}");
+    assert!(
+        (r.rms_left.get() - rms).abs() < 1e-4,
+        "{r:?} want rms {rms}"
+    );
+    assert!((r.rms_right.get() - rms).abs() < 1e-4, "{r:?}");
 }
 
 /// **The stereo measuring shortcut agrees with the fold.**

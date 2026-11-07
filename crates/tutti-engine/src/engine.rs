@@ -182,8 +182,8 @@ struct Heard {
 impl Heard {
     /// Measures `output`, an interleaved block `channels` wide, as stereo.
     /// A device wider or narrower than stereo is folded first
-    /// ([`tutti_types::fold_frame`]), `fold.len() / 2` frames at a time: a
-    /// block longer than that reads as its last piece.
+    /// ([`tutti_types::fold_frame`]), `fold.len() / 2` frames at a time, and
+    /// the pieces are one pass: the reading covers the whole block.
     #[inline]
     fn measure(&mut self, output: &[f32], channels: usize) {
         if !self.writer.is_enabled() {
@@ -193,6 +193,7 @@ impl Heard {
             self.writer.measure(output);
             return;
         }
+        self.writer.begin();
         let piece = self.fold.len() / 2;
         for block in output.chunks(piece * channels) {
             let stereo = &mut self.fold[..block.len() / channels * 2];
@@ -202,8 +203,9 @@ impl Heard {
             {
                 tutti_types::fold_frame(frame, out);
             }
-            self.writer.measure(stereo);
+            self.writer.add(stereo);
         }
+        self.writer.publish();
     }
 }
 

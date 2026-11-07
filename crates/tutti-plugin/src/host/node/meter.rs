@@ -122,7 +122,7 @@ mod tests {
     fn meter_of(n: u32) -> ProjectMeter {
         ProjectMeter::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::from_numbers(n, 4),
+            TimeSignature::from_numbers(n, 4).unwrap(),
         )]))
     }
 
@@ -195,7 +195,7 @@ mod tests {
             // landed meanwhile: `block`/4 (the first meter, or the previous
             // block's install), or none after the previous block's clear.
             let cleared_before = block > 1 && (block - 1) % 3 == 0;
-            let want = (!cleared_before).then(|| TimeSignature::from_numbers(block, 4));
+            let want = (!cleared_before).then(|| TimeSignature::from_numbers(block, 4).unwrap());
             assert_eq!(
                 seen, want,
                 "block {block} reads the meter installed before it"
@@ -217,7 +217,7 @@ mod tests {
         let mut reader = slot.reader();
         slot.set_meter(project.clone());
         assert!(slot.installed().unwrap().ptr_eq(&project));
-        let seven_eight = TimeSignature::from_numbers(7, 8);
+        let seven_eight = TimeSignature::from_numbers(7, 8).unwrap();
         project.set_meter(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             seven_eight,

@@ -64,7 +64,6 @@ tutti-io = { path = "../tutti-io" }
 # `tutti-types`.
 tutti-graph = { path = "../tutti-graph" }
 
-# The shared cubic Hermite kernel (`tutti_types::cubic_hermite`).
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 

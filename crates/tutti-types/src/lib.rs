@@ -22,7 +22,6 @@ pub mod value;
 mod channels;
 mod downmix;
 mod interleaved;
-mod interp;
 mod topology;
 
 // Public: consumers spell `tutti_types::AudioIn` and the like through
@@ -119,6 +118,3 @@ pub mod prelude {
 
 // PCM quantization.
 pub use pcm::{f32_to_i16, f32_to_i24};
-
-// Interpolation.
-pub use interp::cubic_hermite;

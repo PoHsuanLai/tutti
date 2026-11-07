@@ -574,7 +574,7 @@ mod tests {
     /// wrapping → `value` 20, 21 in the taps at 19.5 → fails.
     #[test]
     fn a_loops_taps_wrap_through_its_seam() {
-        use tutti_types::cubic_hermite;
+        use tutti_dsp::cubic_hermite;
         let dir = tempfile::tempdir().expect("a temp dir");
         let mut read = OfflineRead::new(
             StreamFile {

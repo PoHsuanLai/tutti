@@ -695,7 +695,7 @@ jobs:
       - run: cargo +nightly miri test --locked -p tutti-rt --lib
       # The thread hand-over of `edit_ring` under 16 schedules: one seed
       # explores one interleaving.
-      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits::
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.

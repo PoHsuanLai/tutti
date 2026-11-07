@@ -164,7 +164,7 @@ test-features:
 # and miri has no x86 SSE intrinsics.
 miri:
     cargo +nightly miri test --locked -p tutti-rt --lib
-    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-rt --lib edits::
+    MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p tutti-rt --lib edits
     cargo +nightly miri test --locked -p arc-lend
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib
 

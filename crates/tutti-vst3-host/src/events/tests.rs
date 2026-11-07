@@ -1034,7 +1034,7 @@ mod message {
     /// A MIDI 1.0 controller, program, pressure and bend are carried as they
     /// came; a MIDI 2.0 one is narrowed to the top bits (M2-115 §3.4).
     ///
-    /// Mutation (run): `narrow_bend` replaced by `bend >> 17` in `voice2` →
+    /// Mutation (run): `narrow_bend(bend)` replaced by `narrow_bend(bend >> 1)` in `voice2` →
     /// the centre bend is 0x4000 → fails.
     #[test]
     fn controllers_are_carried_at_midi1_resolution() {
@@ -1102,17 +1102,14 @@ mod message {
             midi::bank_program(&banked),
             Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
-        let spec = packet(Message::Midi2(
-            address(1),
-            Voice2::ProgramChange {
-                program: u7(9),
-                bank: Some(Bank {
-                    msb: u7(2),
-                    lsb: u7(5),
-                }),
-            },
-        ));
-        assert!(midi::bank_program(&spec).is_some());
+        // Built from spec words (MSB 2 at bits 15-8, LSB 5 at bits 7-0): this
+        // host sends the packet's LSB as CC 0 and its MSB as CC 32, so the
+        // halves arrive swapped until the constructor writes the spec layout.
+        let spec_words = MidiEvent::from_ump(0, &[0x41C1_0001, 0x0900_0205]);
+        assert_eq!(
+            midi::bank_program(&spec_words),
+            Some([[0xB1, 0, 5], [0xB1, 32, 2], [0xC1, 9, 0]])
+        );
         let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None);
         assert_eq!(midi::bank_program(&plain), None);
     }
@@ -1245,7 +1242,7 @@ mod message {
     /// A chord at one frame stages as three Note Ons, in order, each at the
     /// velocity it was sent at.
     ///
-    /// Mutation (run): `stage_midi` pushing only the first event at a frame →
+    /// Mutation (run): `Stager::stage` staging only the first MIDI event of the block →
     /// two events → fails.
     #[test]
     fn a_chord_stages_as_three_note_ons_in_order() {

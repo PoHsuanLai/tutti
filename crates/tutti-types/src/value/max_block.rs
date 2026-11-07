@@ -89,8 +89,8 @@ mod tests {
 
     /// **A block holds at least one frame**; `of` panics on zero.
     ///
-    /// Mutation: `frames.get() == 0` to `false` in `new` accepts zero and
-    /// fails the `None` and the `TryFrom` assertions.
+    /// Mutation (run): `new` accepting zero fails the `None` assertion; `of` not
+    /// panicking on zero fails the last one.
     #[test]
     fn a_block_holds_at_least_one_frame() {
         assert_eq!(MaxBlock::new(Samples(1)).map(MaxBlock::get), Some(1));

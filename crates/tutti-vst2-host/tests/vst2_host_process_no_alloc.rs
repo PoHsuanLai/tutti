@@ -374,15 +374,14 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     assert!(inst.is_active());
 }
 
-/// A rate or block that is no rate or block cannot be built into a `Prepare`,
-/// so nothing crosses the FFI seam for it: the plugin stays loaded and
-/// untouched, and a valid activation after it is the first resume. (The host
-/// used to refuse these at `activate`; the `Prepare` type now holds that line.)
+/// A rate or block that is none cannot be built into a `Prepare`, and a valid
+/// activation after the refused ones is the first resume. (The refusal reaching
+/// the plugin is tested through the server loaders, which take a bare rate.)
 ///
 /// Mutation (run): the finite and positive check removed from `Prepare::new` ->
 /// the zero and NaN rates build a `Prepare` -> the `is_none` fails.
 #[test]
-fn a_prepare_that_is_no_rate_dispatches_nothing() {
+fn a_prepare_that_is_no_rate_cannot_be_built() {
     let _guard = lock_probe();
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
@@ -399,11 +398,6 @@ fn a_prepare_that_is_no_rate_dispatches_nothing() {
         assert!(
             prepare.is_none(),
             "{rate} Hz in {block} frames must be refused"
-        );
-        assert_eq!(
-            read_capture(&path).resume_count,
-            0,
-            "a refused activation never resumes"
         );
     }
 

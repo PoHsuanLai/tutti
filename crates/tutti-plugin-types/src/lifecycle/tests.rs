@@ -1629,10 +1629,9 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
 /// **A `Prepare` has a real rate and a block of at least one frame**: no other
 /// one can be built, so a host is never asked to activate at one.
 ///
-/// Mutation: dropping `is_finite` from `valid_rate` -> infinity builds ->
+/// Mutation (run): dropping `is_finite` from `valid_rate` -> infinity builds ->
 /// fails; dropping `> 0.0` -> zero and a negative rate build -> fails;
-/// `with_rate` skipping `valid_rate` -> the `with_rate` assertions fail; a
-/// `MaxBlock::new` that accepts zero -> the last assertion fails.
+/// `with_rate` not calling `valid_rate` -> the `with_rate` assertions fail.
 #[test]
 fn a_prepare_has_a_real_rate_and_a_block() {
     let block = MaxBlock::of(Samples(64));
@@ -1667,9 +1666,9 @@ fn a_prepare_has_a_real_rate_and_a_block() {
 /// `MaxBlock` keeps the range contract. It is tested here, not in
 /// `tutti-types`, which dev-depends on no workspace crate.
 ///
-/// Mutation: `MaxBlock::new` accepting zero -> "new accepted Samples(0)"; the
-/// `try_from` attribute removed from its serde derive -> "deserialize accepted
-/// Samples(0)"; `of` not panicking on zero -> "of accepted Samples(0)".
+/// Mutation (run): `MaxBlock::new` accepting zero -> "new accepted Samples(0)";
+/// the `serde(try_from)` attribute removed -> "deserialize accepted"; `of` not
+/// panicking on zero -> "of accepted".
 #[cfg(feature = "serde")]
 #[test]
 fn a_max_block_keeps_the_range_contract() {

@@ -20,7 +20,7 @@ use tutti_plugin_types::{
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
-use crate::loaders::common::Meta;
+use crate::loaders::common::{Meta, standing};
 use crate::plugin::AsyncEvent;
 
 pub use tutti_vst3_host;
@@ -390,8 +390,8 @@ impl PluginAudio for Vst3Instance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
-                previous.rate().0
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
             )));
         };
         self.reconfigure(previous, wanted)
@@ -876,6 +876,73 @@ mod tests {
             .set_sample_rate(44_100.0)
             .expect("a rate it takes is taken");
         assert!(instance.is_active());
+    }
+
+    /// **A rate that is no rate is refused before the plugin is touched**: the
+    /// instance runs on at the configuration it has, the plugin sees no second
+    /// activation, the host is told nothing, and the error says where the plugin
+    /// runs.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
+    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
+    /// activation count moves).
+    #[test]
+    fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert!(instance.poll().is_empty());
+        let layout = instance.meta.loaded.clone();
+        let prepare = instance.state.prepare();
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = instance
+                .set_sample_rate(rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(error.to_string().contains("running at 48000"), "{error}");
+            assert!(instance.is_active(), "{rate}");
+        }
+        assert_eq!(instance.state.prepare(), prepare);
+        assert!(instance.poll().is_empty(), "the host is told nothing");
+        assert_eq!(instance.meta.loaded.inputs, layout.inputs);
+        assert_eq!(instance.meta.loaded.outputs, layout.outputs);
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            1,
+            "the plugin was never activated again"
+        );
+        instance.set_sample_rate(44_100.0).expect("a real rate");
+    }
+
+    /// **A load at no rate or no block is refused** at the activation stage:
+    /// zero, negative and non-finite rates, and a block of no frames. A real load
+    /// afterwards activates once.
+    ///
+    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
+    /// accepting zero, each -> the matching case loads -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        for (rate, block) in [
+            (0.0, 128),
+            (-48_000.0, 128),
+            (f64::NAN, 128),
+            (f64::INFINITY, 128),
+            (f64::NEG_INFINITY, 128),
+            (48_000.0, 0),
+        ] {
+            match Vst3Instance::load(Path::new(vst3_plugin()), rate, block, false) {
+                Err(BridgeError::LoadFailed {
+                    stage: LoadStage::Activation,
+                    reason,
+                    ..
+                }) => assert!(reason.contains("cannot run at"), "{reason}"),
+                Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("a real load");
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
     }
 
     /// **A render mode is the activation's: changing it activates the plugin

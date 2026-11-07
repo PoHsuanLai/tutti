@@ -257,18 +257,19 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     drop(rejoin(processor, controller));
 }
 
-/// **A rate or block that is no rate or block never reaches the host**: no
-/// `Prepare` can be built from it, so the plugin stays loaded and untouched and
-/// activates afterwards. (The host used to refuse these at `activate`, handing
-/// the plugin back; the `Prepare` type now holds that line.)
+/// **No `Prepare` holds a rate or block that is none**: zero, negative and
+/// non-finite rates, and a block of no frames, are refused where the `Prepare`
+/// is built, so the host is never asked to activate at one. A real one then
+/// activates and is the first resume. (The server loaders' tests drive the
+/// refusal through the load and `set_sample_rate` entry points.)
 ///
-/// Mutation (run): the finite and positive check removed from `Prepare::new` and
-/// `with_rate` -> a rate of zero builds a `Prepare` -> the `is_none` fails.
+/// Mutation (run): the finite and positive check removed from `Prepare::new`
+/// and `with_rate` -> a rate of zero builds a `Prepare` -> the `is_none` fails.
 #[test]
-fn a_prepare_without_a_real_rate_or_block_cannot_be_built() {
+fn no_prepare_holds_a_rate_or_block_that_is_none() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY] {
+    for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(
             Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))).is_none(),
             "{rate} Hz"
@@ -276,10 +277,8 @@ fn a_prepare_without_a_real_rate_or_block_cannot_be_built() {
         assert!(prepare().with_rate(SampleRate(rate)).is_none(), "{rate} Hz");
     }
     assert!(MaxBlock::new(Samples(0)).is_none());
-    assert!(!loaded.is_active());
-    assert_eq!(capture().resume_count, 0, "nothing reached the plugin");
-    assert!(!Control::parameters(&loaded).is_empty(), "still usable");
     let (processor, controller) = loaded.activate(prepare()).expect("a valid rate");
+    assert_eq!(capture().resume_count, 1, "the first resume");
     drop(rejoin(processor, controller));
 }
 

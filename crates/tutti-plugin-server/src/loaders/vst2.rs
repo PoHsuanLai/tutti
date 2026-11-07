@@ -20,7 +20,7 @@ use tutti_plugin_types::{
 };
 use tutti_vst2_host::{Vst2Error, Vst2Loaded, Vst2Processor};
 
-use crate::loaders::common::Meta;
+use crate::loaders::common::{Meta, standing};
 use crate::plugin::AsyncEvent;
 
 /// A VST2 plugin as the server sees it.
@@ -291,31 +291,6 @@ impl Vst2Instance {
     fn is_active(&self) -> bool {
         matches!(self.lifecycle, Lifecycle::Active { .. })
     }
-
-    /// Deactivates and activates at `wanted`, as a rate change does. A refusal
-    /// is rolled back: the plugin is activated again at the configuration it
-    /// already accepted. Returns the refusal and whether the rollback took, or
-    /// `Ok` when `wanted` did.
-    fn reconfigure(
-        &mut self,
-        previous: Prepare,
-        wanted: Prepare,
-    ) -> std::result::Result<(), (PluginError, bool)> {
-        let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
-            None => Ok(()),
-            Some(reason) => {
-                // Put back what the plugin accepted once.
-                let rolled_back =
-                    self.drive(Event::Op(HostOp::Activate(previous))).is_none() && self.is_active();
-                if rolled_back {
-                    self.refresh_meta();
-                }
-                Err((reason, rolled_back))
-            }
-        };
-        self.finish_refusals();
-        result
-    }
 }
 
 impl PluginMeta for Vst2Instance {
@@ -354,12 +329,10 @@ impl PluginAudio for Vst2Instance {
     /// The rate the plugin already runs at is a no-op, so a per-frame caller
     /// does not tear it down sixty times a second.
     ///
-    /// A refusal is rolled back: the plugin is activated again at the
-    /// configuration it already accepted, and the error says it is running there.
-    /// (The session still renders nothing after an error, because its clock
-    /// follows the rate the host asked for.) When the rollback is refused too the
-    /// plugin is left loaded and silent, and the host is told through
-    /// [`AsyncEvent::IoChanged`]; the next rate revives it.
+    /// A rate that is no rate is refused before the plugin is touched. The
+    /// host has no other way to refuse one (`effSetSampleRate` cannot be
+    /// declined), so a reconfigure that is asked for takes. The error says where
+    /// the plugin stands.
     ///
     /// The plugin may also change its pins and its latency across the
     /// re-activation; the metadata follows them and the host is told.
@@ -374,21 +347,17 @@ impl PluginAudio for Vst2Instance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
-                previous.rate().0
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
             )));
         };
-        self.reconfigure(previous, wanted)
-            .map_err(|(reason, rolled_back)| {
-                PluginError::Other(format!(
-                    "VST2 plugin refused sample rate {rate} ({}): {reason}",
-                    if rolled_back {
-                        format!("running at {}", previous.rate().0)
-                    } else {
-                        "deactivated".to_string()
-                    }
-                ))
-            })
+        let refusal = self.drive(Event::Op(HostOp::Reconfigure(wanted)));
+        self.finish_refusals();
+        refusal.map_or(Ok(()), |reason| {
+            Err(PluginError::Other(format!(
+                "VST2 plugin refused sample rate {rate}: {reason}"
+            )))
+        })
     }
 
     /// Store the level the host reports through
@@ -898,41 +867,74 @@ mod tests {
         }
     }
 
-    /// **A rate the plugin refuses is rolled back**: the instance runs on at the
-    /// configuration it already accepted, still renders, and the error says so.
-    /// The core tells the host to read a revived plugin again (`IoChanged`), and
-    /// what it reads is the layout the plugin had.
+    /// **A rate that is no rate is refused before the plugin is touched**: the
+    /// instance runs on at the configuration it has, nothing crosses the FFI
+    /// seam (no suspend, no resume), the host is told nothing, and the error
+    /// says where the plugin runs. A good rate afterwards takes. (The VST2 host
+    /// cannot refuse a rate any other way, so there is no rollback to drive.)
     ///
-    /// A plugin cannot decline `effSetSampleRate`; a rate that is no rate is
-    /// refused before the plugin is touched (`Prepare::with_rate`), so the
-    /// rollback itself is not driven here.
-    ///
-    /// Mutation (run): the `Activate(previous)` rollback removed from
-    /// `reconfigure` -> the plugin stays refused and renders silence (the
-    /// channel keeps the 9.0 the test filled it with) -> fails.
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
+    /// -> the zero rate reaches `effSetSampleRate` and the plugin is suspended
+    /// and resumed -> the `set_sample_rate` `expect_err` fails.
     #[test]
-    fn a_refused_rate_is_rolled_back_to_the_previous_configuration() {
+    fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         let (mut p, _lock) = load_probe(&[]);
         reset_probe();
         let layout = p.meta.loaded.clone();
-        let error = p
-            .set_sample_rate(0.0)
-            .expect_err("a rate of zero is refused");
-        assert!(error.to_string().contains("running at 48000"), "{error}");
-        assert!(p.is_active(), "the rollback took");
+        let prepare = p.state.prepare();
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = p
+                .set_sample_rate(rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(error.to_string().contains("running at 48000"), "{error}");
+            assert!(p.is_active(), "{rate}");
+            let cap = probe_capture();
+            assert_eq!((cap.suspend_count, cap.resume_count), (0, 0), "{rate}");
+        }
+        assert_eq!(p.state.prepare(), prepare, "the configuration is untouched");
         let (left, right) = render(&mut p, 64).expect("the plugin still renders");
         assert!(left.iter().all(|&v| v == 1.0), "{:?}", &left[..4]);
         assert!(right.iter().all(|&v| v == 101.0));
-        let told = p.poll();
-        assert!(
-            told.iter().all(|e| matches!(e, AsyncEvent::IoChanged)),
-            "{told:?}"
-        );
+        assert!(p.poll().is_empty(), "the host is told nothing");
         assert_eq!(p.meta.loaded.inputs, layout.inputs);
         assert_eq!(p.meta.loaded.outputs, layout.outputs);
-        // And a good rate afterwards is accepted.
         p.set_sample_rate(96_000.0).expect("a real rate");
         assert_eq!(probe_capture().sample_rate, 96_000.0);
+    }
+
+    /// **A load at no rate or no block is refused, and the plugin is never
+    /// resumed**: zero, negative and non-finite rates, and a block of no frames.
+    ///
+    /// Mutation (run): `valid_rate` accepting every rate -> the rate cases load
+    /// -> the `Err` match fails. Mutation (run): `MaxBlock::new` accepting zero
+    /// -> the block case loads -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        clear_probe_env();
+        reset_probe();
+        let path = crate::test_utils::vst2_probe_path();
+        for (rate, block) in [
+            (0.0, 512),
+            (-48_000.0, 512),
+            (f64::NAN, 512),
+            (f64::INFINITY, 512),
+            (f64::NEG_INFINITY, 512),
+            (48_000.0, 0),
+        ] {
+            match Vst2Instance::load(Path::new(path), rate, block, false) {
+                Err(BridgeError::LoadFailed {
+                    stage: LoadStage::Activation,
+                    reason,
+                    ..
+                }) => assert!(reason.contains("cannot run at"), "{reason}"),
+                Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+        assert_eq!(probe_capture().resume_count, 0, "never resumed");
+        let p = Vst2Instance::load(Path::new(path), 48_000.0, 512, false).expect("a real load");
+        assert!(p.is_active());
     }
 
     /// **The rate the plugin already runs at is a no-op**: nothing crosses the

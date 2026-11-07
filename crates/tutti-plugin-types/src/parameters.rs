@@ -757,12 +757,11 @@ mod tests {
     /// The range contract (`new`, `of`, `TryFrom`, `Into`, serde), checked by
     /// the shared helper.
     ///
-    /// Mutation: `new` accepting `v <= 1.0000000000000002` -> "new accepted
-    /// 1.0000000000000002"; dropping the `v >= 0.0` clause -> "new accepted
-    /// -2.2250738585072014e-308"; `new` as `clamp_unit` -> "new accepted NaN";
-    /// the `try_from` attribute removed from the serde derive (derive plain) ->
-    /// "deserialize accepted" on the first invalid raw; `of` as `clamped` ->
-    /// "of accepted".
+    /// Mutation (run): the upper bound loosened to `1.0000000000000002` ->
+    /// "new accepted"; the `v >= 0.0` clause dropped -> "new accepted"; `new`
+    /// accepting NaN (`!(v < 0.0 || v > 1.0)`) -> "new accepted NaN"; the
+    /// `serde(try_from)` attribute removed -> "deserialize accepted". `of` is
+    /// const and panics through `new`, so it cannot be mutated apart from it.
     #[cfg(feature = "serde")]
     #[test]
     fn a_normalized_keeps_the_range_contract() {
@@ -786,7 +785,7 @@ mod tests {
 
     /// `clamped` pins to the nearest bound and maps NaN to zero.
     ///
-    /// Mutation: `clamp_unit` without the NaN arm -> NaN comes back.
+    /// Mutation (run): `clamp_unit` without the NaN arm -> NaN comes back.
     #[test]
     fn clamped_saturates_and_maps_nan_to_zero() {
         assert_eq!(Normalized::clamped(-3.0).get(), 0.0);

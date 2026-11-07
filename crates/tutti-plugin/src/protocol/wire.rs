@@ -94,6 +94,46 @@ pub mod normalized_opt {
     }
 }
 
+/// A [`Normalized`](tutti_plugin_types::Normalized) carried as the `f64` it is,
+/// as `#[serde(with = "wire::normalized_f64")]`, clamped onto `0..=1` on decode.
+///
+/// Every `Normalized` on this wire clamps on decode, whatever its width: a
+/// corrupt peer's value is pinned rather than failing the message, which would
+/// end the session (a frame that does not decode ends the server's phase).
+/// `Normalized`'s own serde, used outside the wire, refuses instead.
+pub mod normalized_f64 {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tutti_plugin_types::Normalized;
+
+    /// Encodes the value as an `f64`.
+    pub fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
+        value.get().serialize(s)
+    }
+
+    /// Decodes an `f64` and clamps it onto `0..=1` ([`Normalized::clamped`]).
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
+        Ok(Normalized::clamped(f64::deserialize(d)?))
+    }
+}
+
+/// An optional [`Normalized`](tutti_plugin_types::Normalized) carried as an
+/// optional `f64`, as `#[serde(with = "wire::normalized_f64_opt")]`; see
+/// [`normalized_f64`].
+pub mod normalized_f64_opt {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tutti_plugin_types::Normalized;
+
+    /// Encodes `Some(v)` as `Some(v)` in `f64`.
+    pub fn serialize<S: Serializer>(value: &Option<Normalized>, s: S) -> Result<S::Ok, S::Error> {
+        value.map(Normalized::get).serialize(s)
+    }
+
+    /// Decodes an optional `f64`, clamping a present one onto `0..=1`.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Normalized>, D::Error> {
+        Ok(Option::<f64>::deserialize(d)?.map(Normalized::clamped))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
@@ -220,6 +260,46 @@ mod tests {
                 HostMessage::SetParameter { param_id, value } => {
                     assert_eq!(param_id, ParamId::new(1));
                     assert_eq!(value, Normalized::clamped(want));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    /// The `f64` `Normalized` fields (`GetParameterText`, `ParameterValueFromText`)
+    /// clamp on decode too, with the wire width unchanged: a peer's out-of-range
+    /// or NaN value is pinned, and the message still decodes.
+    ///
+    /// Mutation (run): `normalized_f64::deserialize` returning
+    /// `Normalized::of(0.5)` for every value -> the 7.5 case fails;
+    /// `normalized_f64_opt::deserialize` the same -> the second assertion fails.
+    #[test]
+    fn a_decoded_f64_normalized_is_clamped() {
+        use crate::protocol::{BridgeMessage, HostMessage, Normalized, ParamId};
+        for (raw, want) in [(7.5f64, 1.0), (-3.0, 0.0), (f64::NAN, 0.0), (0.25, 0.25)] {
+            let mut bytes = bincode::serialize(&HostMessage::GetParameterText {
+                param_id: ParamId::new(1),
+                value: Normalized::of(0.5),
+            })
+            .unwrap();
+            let end = bytes.len();
+            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
+            match bincode::deserialize::<HostMessage>(&bytes).unwrap() {
+                HostMessage::GetParameterText { value, .. } => {
+                    assert_eq!(value, Normalized::clamped(want), "{raw}");
+                }
+                other => panic!("{other:?}"),
+            }
+
+            let mut bytes = bincode::serialize(&BridgeMessage::ParameterValueFromText {
+                value: Some(Normalized::of(0.5)),
+            })
+            .unwrap();
+            let end = bytes.len();
+            bytes[end - 8..].copy_from_slice(&raw.to_le_bytes());
+            match bincode::deserialize::<BridgeMessage>(&bytes).unwrap() {
+                BridgeMessage::ParameterValueFromText { value } => {
+                    assert_eq!(value, Some(Normalized::clamped(want)), "{raw}");
                 }
                 other => panic!("{other:?}"),
             }

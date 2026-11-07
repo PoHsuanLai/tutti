@@ -20,7 +20,7 @@ use tutti_plugin_types::{
     SampleRate, Samples, Seat, Stage, State,
 };
 
-use crate::loaders::common::Meta;
+use crate::loaders::common::{Meta, standing};
 use crate::plugin::AsyncEvent;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
@@ -525,8 +525,8 @@ impl PluginAudio for ClapInstance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
-                previous.rate().0
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
             )));
         };
         let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
@@ -2038,6 +2038,64 @@ mod tests {
         assert!(flush_out_of_band(true, false), "before the first block");
         assert!(flush_out_of_band(false, true));
         assert!(flush_out_of_band(false, false));
+    }
+
+    /// **A rate that is no rate is refused before the plugin is touched**: the
+    /// instance runs on at the configuration it has, the plugin is not activated
+    /// again, and the error says where it runs.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
+    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
+    /// activation count moves).
+    #[test]
+    fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance =
+            ClapInstance::load(Path::new(clap_plugin()), 44100.0, 512, false).expect("load");
+        crate::test_utils::clap_probe_reset_activation_count();
+        let prepare = instance.state.prepare();
+        for rate in [0.0, -44_100.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = instance
+                .set_sample_rate(rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(err.to_string().contains("running at 44100"), "{err}");
+            assert!(instance.is_active(), "{rate}");
+        }
+        assert_eq!(instance.state.prepare(), prepare);
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
+        instance.set_sample_rate(48_000.0).expect("a real rate");
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 1);
+    }
+
+    /// **A load at no rate or no block is refused** at the activation stage:
+    /// zero, negative and non-finite rates, and a block of no frames. The plugin
+    /// is never activated.
+    ///
+    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
+    /// accepting zero, each -> the matching case loads -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        crate::test_utils::clap_probe_reset_activation_count();
+        for (rate, block) in [
+            (0.0, 512),
+            (-44_100.0, 512),
+            (f64::NAN, 512),
+            (f64::INFINITY, 512),
+            (f64::NEG_INFINITY, 512),
+            (44_100.0, 0),
+        ] {
+            match ClapInstance::load(Path::new(clap_plugin()), rate, block, false) {
+                Err(BridgeError::LoadFailed {
+                    stage: LoadStage::Activation,
+                    reason,
+                    ..
+                }) => assert!(reason.contains("cannot run at"), "{reason}"),
+                Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+        assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
     }
 
     /// **A refused rate is rolled back**: the plugin is activated again at the

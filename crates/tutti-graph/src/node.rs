@@ -437,9 +437,11 @@ impl Prepare {
 
 /// Planar per-channel scratch a node sizes in [`Node::prepare`].
 ///
-/// Built from a [`MaxBlock`], so every block the executor can hand the node
-/// fits by construction: [`channel`](Self::channel) takes the block's own
-/// length and never needs to be clamped.
+/// Built from the [`MaxBlock`] the node was prepared with
+/// ([`Prepare::max_block`]), so every block the executor can hand the node fits:
+/// [`channel`](Self::channel) takes the block's own length and never needs to be
+/// clamped. A `MaxBlock` is a plain value anyone can build, so a scratch built
+/// from another one is only as long as that, and a longer block panics.
 #[derive(Clone, Debug, Default)]
 pub struct Scratch {
     data: Vec<f32>,

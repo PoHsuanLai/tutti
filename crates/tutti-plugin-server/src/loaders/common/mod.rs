@@ -1,6 +1,7 @@
 //! Shared helpers used by format-specific loaders.
 
 use tutti_plugin::server::{BusChannels, ChannelLayout, LoadedPlugin, PluginDescriptor};
+use tutti_plugin_types::SampleRate;
 
 /// The two metadata snapshots every loaded plugin carries: the catalog
 /// [`PluginDescriptor`] (identity + native class) and the runtime
@@ -32,4 +33,14 @@ pub(crate) struct Meta {
 #[cfg_attr(not(all(feature = "au", target_os = "macos")), allow(dead_code))]
 pub(crate) fn single_bus(layout: impl Into<ChannelLayout>) -> BusChannels {
     vec![layout.into()]
+}
+
+/// Where a plugin stands after a refused rate, for the error: the rate it runs
+/// at, or that it is deactivated.
+pub(crate) fn standing(active: bool, rate: SampleRate) -> String {
+    if active {
+        format!("running at {}", rate.0)
+    } else {
+        "deactivated".to_string()
+    }
 }

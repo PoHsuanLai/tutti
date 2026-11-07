@@ -300,6 +300,53 @@ mod tests {
     use super::probe_path;
     use super::*;
 
+    /// **A load at no rate or no block is refused** at the activation stage:
+    /// zero, negative and non-finite rates, and a block of no frames.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
+    /// rate, and `MaxBlock::new` accepting zero, each -> the matching case loads
+    /// -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        for (rate, block) in [
+            (0.0, 64),
+            (-48_000.0, 64),
+            (f64::NAN, 64),
+            (f64::INFINITY, 64),
+            (f64::NEG_INFINITY, 64),
+            (48_000.0, 0),
+        ] {
+            match Instance::load(probe_path::probe_path(), rate, block) {
+                Err((LoadStage::Activation, reason)) => {
+                    assert!(reason.contains("cannot run at"), "{reason}");
+                }
+                Err((stage, reason)) => panic!("{rate} Hz, {block}: {stage:?} {reason}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+    }
+
+    /// **A rate that is no rate leaves the instance as it was**: the plugin is
+    /// not taken apart (its halves stay, it is not lost) and the configuration is
+    /// the one it had.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every
+    /// rate -> the zero rate is activated and kept as the configuration ->
+    /// `prepare` changes -> fails.
+    #[test]
+    fn a_rate_that_is_no_rate_leaves_the_instance_alone() {
+        let mut instance = Instance::load(probe_path::probe_path(), 48_000.0, 64).expect("loads");
+        let before = instance.prepare;
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            instance.set_sample_rate(rate);
+            assert_eq!(instance.prepare, before, "{rate}");
+            assert!(instance.halves.is_some(), "{rate}");
+            assert!(!instance.is_lost(), "{rate}");
+        }
+        instance.set_sample_rate(96_000.0);
+        assert_eq!(instance.prepare.rate().0, 96_000.0);
+    }
+
     /// **A plugin that is lost renders silence, and the audio thread does not
     /// panic**: the block's outputs are zeroed, no event comes out, and the
     /// automation is refused without a plugin to take it.

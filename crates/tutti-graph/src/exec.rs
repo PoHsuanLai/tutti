@@ -1403,297 +1403,290 @@ impl Executor {
         outputs: &mut [&mut [f32]],
     ) {
         let _rt = RtScope::enter();
-        with_no_denormals(|| self.render_block(frames, transport, changes, inputs, outputs));
-    }
-
-    /// The body of [`render_applied`](Self::render_applied), run inside its
-    /// flush-to-zero scope.
-    fn render_block(
-        &mut self,
-        frames: usize,
-        transport: &Transport,
-        changes: &TransportChanges,
-        inputs: &[&[f32]],
-        outputs: &mut [&mut [f32]],
-    ) {
-        if self.suspended {
-            // Between a re-prepare's two commits the units are on the control
-            // thread: render silence, for whatever block arrives — the device
-            // may be on either side of the change, so no bound applies here.
-            // The graph's own state (rings, FIFOs) stands still, but its
-            // clock tracks device time: the frame counter advances, and the
-            // playhead sees the transport move. A command whose time passes
-            // meanwhile lands late when the units are back.
-            for o in outputs.iter_mut() {
-                o[..frames].fill(0.0);
+        with_no_denormals(|| {
+            if self.suspended {
+                // Between a re-prepare's two commits the units are on the control
+                // thread: render silence, for whatever block arrives — the device
+                // may be on either side of the change, so no bound applies here.
+                // The graph's own state (rings, FIFOs) stands still, but its
+                // clock tracks device time: the frame counter advances, and the
+                // playhead sees the transport move. A command whose time passes
+                // meanwhile lands late when the units are back.
+                for o in outputs.iter_mut() {
+                    o[..frames].fill(0.0);
+                }
+                let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
+                let mut env = Env {
+                    frame: self.frame,
+                    sample_rate: rate,
+                    block_len: Samples(frames),
+                    transport: *transport,
+                    changes: *changes,
+                    play: PlayClock::ZERO,
+                };
+                env.play = self.play.begin(transport.playing, env.play_starts());
+                self.commands.observe(&env);
+                self.history.observe(&env);
+                self.play.end(&env);
+                self.frame += Samples(frames);
+                return;
             }
-            let rate = self.next_prepare.unwrap_or(self.prepare).sample_rate();
+            let max = self.prepare.max_block();
+            assert!(
+                frames > 0 && frames <= max.get(),
+                "block of {frames} frames against a max of {}",
+                max.get()
+            );
+            assert!(
+                changes.as_slice().iter().all(|c| c.at.index() < frames),
+                "a transport change past the end of a {frames}-frame block"
+            );
+            let Self {
+                prepare,
+                event_cap,
+                queue: _,
+                back: _,
+                fade_back,
+                plan,
+                store,
+                state,
+                frame,
+                dropped,
+                losses,
+                unreported,
+                commands,
+                applied,
+                suspended: _,
+                next_prepare: _,
+                reset_time: _,
+                history,
+                play,
+                pool,
+            } = self;
             let mut env = Env {
-                frame: self.frame,
-                sample_rate: rate,
+                frame: *frame,
+                sample_rate: prepare.sample_rate(),
                 block_len: Samples(frames),
                 transport: *transport,
                 changes: *changes,
                 play: PlayClock::ZERO,
             };
-            env.play = self.play.begin(transport.playing, env.play_starts());
-            self.commands.observe(&env);
-            self.history.observe(&env);
-            self.play.end(&env);
-            self.frame += Samples(frames);
-            return;
-        }
-        let max = self.prepare.max_block();
-        assert!(
-            frames > 0 && frames <= max.get(),
-            "block of {frames} frames against a max of {}",
-            max.get()
-        );
-        assert!(
-            changes.as_slice().iter().all(|c| c.at.index() < frames),
-            "a transport change past the end of a {frames}-frame block"
-        );
-        let Self {
-            prepare,
-            event_cap,
-            queue: _,
-            back: _,
-            fade_back,
-            plan,
-            store,
-            state,
-            frame,
-            dropped,
-            losses,
-            unreported,
-            commands,
-            applied,
-            suspended: _,
-            next_prepare: _,
-            reset_time: _,
-            history,
-            play,
-            pool,
-        } = self;
-        let mut env = Env {
-            frame: *frame,
-            sample_rate: prepare.sample_rate(),
-            block_len: Samples(frames),
-            transport: *transport,
-            changes: *changes,
-            play: PlayClock::ZERO,
-        };
-        env.play = play.begin(transport.playing, env.play_starts());
-        // Before any node reads it, and also when there is nothing to render:
-        // the transport moved all the same, and so did the play clock.
-        history.observe(&env);
-        play.end(&env);
-        let history: &TransportHistory = history;
-        let Some(plan) = plan.as_ref() else {
-            for o in outputs.iter_mut() {
-                o[..frames].fill(0.0);
+            env.play = play.begin(transport.playing, env.play_starts());
+            // Before any node reads it, and also when there is nothing to render:
+            // the transport moved all the same, and so did the play clock.
+            history.observe(&env);
+            play.end(&env);
+            let history: &TransportHistory = history;
+            let Some(plan) = plan.as_ref() else {
+                for o in outputs.iter_mut() {
+                    o[..frames].fill(0.0);
+                }
+                *frame += Samples(frames);
+                return;
+            };
+            if outputs.len() < plan.global_outputs()
+                || inputs.len() < usize::from(plan.global_inputs())
+            {
+                debug_assert!(
+                    false,
+                    "{} input and {} output slices for a plan with {} global inputs and {} outputs",
+                    inputs.len(),
+                    outputs.len(),
+                    plan.global_inputs(),
+                    plan.global_outputs()
+                );
+                for o in outputs.iter_mut() {
+                    o[..frames].fill(0.0);
+                }
+                commands.observe(&env);
+                *frame += Samples(frames);
+                return;
             }
-            *frame += Samples(frames);
-            return;
-        };
-        if outputs.len() < plan.global_outputs() || inputs.len() < usize::from(plan.global_inputs())
-        {
-            debug_assert!(
-                false,
-                "{} input and {} output slices for a plan with {} global inputs and {} outputs",
-                inputs.len(),
-                outputs.len(),
-                plan.global_inputs(),
-                plan.global_outputs()
-            );
-            for o in outputs.iter_mut() {
-                o[..frames].fill(0.0);
-            }
-            commands.observe(&env);
-            *frame += Samples(frames);
-            return;
-        }
-        let State {
-            arena,
-            flags,
-            events,
-            rings,
-            audio_fb,
-            event_fb,
-            inject,
-            has_inject,
-            has_due,
-            overlay,
-            par,
-        } = state;
-        // Slices, not `&mut Vec`s: a slice's pointer and length are locals
-        // the op loop can keep in registers across the opaque node calls,
-        // where a `Vec` behind a reference is reloaded after every one.
-        let (flags, events, inject, has_inject, has_due) = (
-            &mut flags[..],
-            &mut events[..],
-            &mut inject[..],
-            &mut has_inject[..],
-            &mut has_due[..],
-        );
-        let plan: &Plan = plan;
-        let cap = *event_cap;
-        commands.gather(&env, plan, *applied, has_due);
-        let mut fade_ended = false;
-
-        // Feedback reads happen before any op: the delay is a whole
-        // `MaxBlock`, so nothing this block's captures queue is due yet.
-        for (f, spec) in audio_fb.iter().zip(&plan.audio_feedback) {
-            let ring = f.as_ref().expect("built by apply");
-            let is_silent = ring.peek_oldest(arena.slot_mut(spec.slot, frames));
-            flags.set(spec.slot, flag(is_silent, is_silent));
-        }
-        for (f, spec) in event_fb.iter_mut().zip(&plan.event_feedback) {
-            let fifo = f.as_mut().expect("built by apply");
-            let out = &mut events[spec.slot as usize];
-            out.clear();
-            fifo.pop_due(out, frames);
-        }
-
-        let due = commands.deliveries();
-        // The cost model's verdict for this plan on this pool, and for a
-        // block this long (`Plan::schedule`); either way the same samples.
-        let spread = par.as_ref().is_some_and(|p| p.spreads(frames));
-        if let (true, Some(par), Some(pool)) = (spread, par.as_mut(), pool.as_ref()) {
-            let ended = crate::par::run_block(
-                par,
-                pool,
-                Block {
-                    dropped: &mut *dropped,
-                    plan,
-                    env: &env,
-                    history,
-                    frames,
-                    max,
-                    cap,
-                    inputs,
-                    // The claim table is sized for the plan's width; slices
-                    // past it are ignored here as on the serial path.
-                    outputs: &mut outputs[..plan.global_outputs()],
-                    arena,
-                    flags,
-                    events,
-                    store,
-                    rings,
-                    audio_fb,
-                    event_fb,
-                    inject,
-                    has_inject,
-                    has_due,
-                    due,
-                },
-            );
-            fade_ended |= ended;
-        } else {
-            // Built once per block, not per op: rebuilt per node call it was
-            // ~20 stack moves a node (measured on `graph_render`'s
-            // `overhead` chains). A node op sets `at`.
-            let mut st = OpState {
+            let State {
                 arena,
                 flags,
                 events,
+                rings,
+                audio_fb,
+                event_fb,
                 inject,
                 has_inject,
                 has_due,
-                at: 0,
                 overlay,
-                due,
-                dropped: &mut *dropped,
-            };
-            for op in &plan.ops {
-                match *op {
-                    Op::GlobalIn { channel, dst } => {
-                        global_in(&mut *st.arena, &mut *st.flags, inputs, channel, dst, frames);
-                    }
-                    Op::Delay { delay, src, dst } => {
-                        delay_op(
-                            audio_ring(&mut rings[delay as usize]),
-                            &mut *st.arena,
-                            &mut *st.flags,
+                par,
+            } = state;
+            // Slices, not `&mut Vec`s: a slice's pointer and length are locals
+            // the op loop can keep in registers across the opaque node calls,
+            // where a `Vec` behind a reference is reloaded after every one.
+            let (flags, events, inject, has_inject, has_due) = (
+                &mut flags[..],
+                &mut events[..],
+                &mut inject[..],
+                &mut has_inject[..],
+                &mut has_due[..],
+            );
+            let plan: &Plan = plan;
+            let cap = *event_cap;
+            commands.gather(&env, plan, *applied, has_due);
+            let mut fade_ended = false;
+
+            // Feedback reads happen before any op: the delay is a whole
+            // `MaxBlock`, so nothing this block's captures queue is due yet.
+            for (f, spec) in audio_fb.iter().zip(&plan.audio_feedback) {
+                let ring = f.as_ref().expect("built by apply");
+                let is_silent = ring.peek_oldest(arena.slot_mut(spec.slot, frames));
+                flags.set(spec.slot, flag(is_silent, is_silent));
+            }
+            for (f, spec) in event_fb.iter_mut().zip(&plan.event_feedback) {
+                let fifo = f.as_mut().expect("built by apply");
+                let out = &mut events[spec.slot as usize];
+                out.clear();
+                fifo.pop_due(out, frames);
+            }
+
+            let due = commands.deliveries();
+            // The cost model's verdict for this plan on this pool, and for a
+            // block this long (`Plan::schedule`); either way the same samples.
+            let spread = par.as_ref().is_some_and(|p| p.spreads(frames));
+            if let (true, Some(par), Some(pool)) = (spread, par.as_mut(), pool.as_ref()) {
+                let ended = crate::par::run_block(
+                    par,
+                    pool,
+                    Block {
+                        dropped: &mut *dropped,
+                        plan,
+                        env: &env,
+                        history,
+                        frames,
+                        max,
+                        cap,
+                        inputs,
+                        // The claim table is sized for the plan's width; slices
+                        // past it are ignored here as on the serial path.
+                        outputs: &mut outputs[..plan.global_outputs()],
+                        arena,
+                        flags,
+                        events,
+                        store,
+                        rings,
+                        audio_fb,
+                        event_fb,
+                        inject,
+                        has_inject,
+                        has_due,
+                        due,
+                    },
+                );
+                fade_ended |= ended;
+            } else {
+                // Built once per block, not per op: rebuilt per node call it was
+                // ~20 stack moves a node (measured on `graph_render`'s
+                // `overhead` chains). A node op sets `at`.
+                let mut st = OpState {
+                    arena,
+                    flags,
+                    events,
+                    inject,
+                    has_inject,
+                    has_due,
+                    at: 0,
+                    overlay,
+                    due,
+                    dropped: &mut *dropped,
+                };
+                for op in &plan.ops {
+                    match *op {
+                        Op::GlobalIn { channel, dst } => {
+                            global_in(&mut *st.arena, &mut *st.flags, inputs, channel, dst, frames);
+                        }
+                        Op::Delay { delay, src, dst } => {
+                            delay_op(
+                                audio_ring(&mut rings[delay as usize]),
+                                &mut *st.arena,
+                                &mut *st.flags,
+                                src,
+                                dst,
+                                frames,
+                            );
+                        }
+                        Op::EventDelay { delay, src, dst } => {
+                            let lost = event_delay_op(
+                                event_ring(&mut rings[delay as usize]),
+                                &mut *st.events,
+                                src,
+                                dst,
+                                frames,
+                            );
+                            st.dropped.charge_delay(plan, delay, lost);
+                        }
+                        Op::EventMerge { srcs, dst } => {
+                            let lost = event_merge_op(
+                                &plan.event_list[srcs.range()],
+                                dst,
+                                &mut *st.events,
+                            );
+                            st.dropped.count(lost);
+                        }
+                        Op::Node { unit, .. } => {
+                            // One record per node op, lowered at compile time and
+                            // checked by the verifier: store index, generation,
+                            // arrival, tail, port slots and presorted borrows.
+                            let rec = &plan.nodes.recs[unit as usize];
+                            let u = store[rec.store as usize]
+                                .as_mut()
+                                .expect("the delta placed every unit the plan runs");
+                            let head = Head {
+                                rec,
+                                plan,
+                                frames,
+                                max,
+                                cap,
+                                env: &env,
+                                history,
+                            };
+                            st.at = unit as usize;
+                            fade_ended |= node_dispatch(u, &head, &mut st);
+                        }
+                        Op::Output {
+                            channel,
                             src,
-                            dst,
-                            frames,
-                        );
-                    }
-                    Op::EventDelay { delay, src, dst } => {
-                        let lost = event_delay_op(
-                            event_ring(&mut rings[delay as usize]),
-                            &mut *st.events,
-                            src,
-                            dst,
-                            frames,
-                        );
-                        st.dropped.charge_delay(plan, delay, lost);
-                    }
-                    Op::EventMerge { srcs, dst } => {
-                        let lost =
-                            event_merge_op(&plan.event_list[srcs.range()], dst, &mut *st.events);
-                        st.dropped.count(lost);
-                    }
-                    Op::Node { unit, .. } => {
-                        // One record per node op, lowered at compile time and
-                        // checked by the verifier: store index, generation,
-                        // arrival, tail, port slots and presorted borrows.
-                        let rec = &plan.nodes.recs[unit as usize];
-                        let u = store[rec.store as usize]
-                            .as_mut()
-                            .expect("the delta placed every unit the plan runs");
-                        let head = Head {
-                            rec,
-                            plan,
-                            frames,
-                            max,
-                            cap,
-                            env: &env,
-                            history,
-                        };
-                        st.at = unit as usize;
-                        fade_ended |= node_dispatch(u, &head, &mut st);
-                    }
-                    Op::Output {
-                        channel,
-                        src,
-                        delay,
-                    } => {
-                        let ring = delay.map(|d| audio_ring(&mut rings[d as usize]));
-                        output_op(
-                            ring,
-                            &mut outputs[channel as usize][..frames],
-                            &*st.arena,
-                            &*st.flags,
-                            src,
-                        );
-                    }
-                    Op::Capture { feedback, src } => {
-                        let ring = audio_fb[feedback as usize]
-                            .as_mut()
-                            .expect("built by apply");
-                        capture_op(ring, &*st.arena, &*st.flags, src, frames);
-                    }
-                    Op::EventCapture { feedback, src } => {
-                        let fifo = event_fb[feedback as usize]
-                            .as_mut()
-                            .expect("built by apply");
-                        let lost = fifo.push(st.events.ev(src));
-                        st.dropped.charge_feedback(plan, feedback, u64::from(lost));
+                            delay,
+                        } => {
+                            let ring = delay.map(|d| audio_ring(&mut rings[d as usize]));
+                            output_op(
+                                ring,
+                                &mut outputs[channel as usize][..frames],
+                                &*st.arena,
+                                &*st.flags,
+                                src,
+                            );
+                        }
+                        Op::Capture { feedback, src } => {
+                            let ring = audio_fb[feedback as usize]
+                                .as_mut()
+                                .expect("built by apply");
+                            capture_op(ring, &*st.arena, &*st.flags, src, frames);
+                        }
+                        Op::EventCapture { feedback, src } => {
+                            let fifo = event_fb[feedback as usize]
+                                .as_mut()
+                                .expect("built by apply");
+                            let lost = fifo.push(st.events.ev(src));
+                            st.dropped.charge_feedback(plan, feedback, u64::from(lost));
+                        }
                     }
                 }
             }
-        }
 
-        dropped.flush(plan, losses, unreported);
-        for f in event_fb.iter_mut().flatten() {
-            f.advance(frames);
-        }
-        if fade_ended {
-            end_fades(plan, store, fade_back);
-        }
-        *frame += Samples(frames);
+            dropped.flush(plan, losses, unreported);
+            for f in event_fb.iter_mut().flatten() {
+                f.advance(frames);
+            }
+            if fade_ended {
+                end_fades(plan, store, fade_back);
+            }
+            *frame += Samples(frames);
+        });
     }
 }
 

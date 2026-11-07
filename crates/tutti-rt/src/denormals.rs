@@ -188,7 +188,6 @@ impl Drop for Restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::hint::black_box;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     /// The flush bits of the thread's control register, whole register for
@@ -321,6 +320,7 @@ mod tests {
     fn a_subnormal_result_flushes_only_inside() {
         // The product of the smallest normal and a half is subnormal, so
         // IEEE gives a nonzero value and FTZ gives zero.
+        use std::hint::black_box;
         let product = || black_box(f32::MIN_POSITIVE) * black_box(0.5_f32);
         assert!(product() > 0.0, "subnormal results survive by default");
         assert_eq!(with_no_denormals(product), 0.0);

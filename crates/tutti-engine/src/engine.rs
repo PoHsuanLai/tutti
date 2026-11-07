@@ -78,9 +78,8 @@ use tutti_graph::{
     TransportChanges,
 };
 
-use std::sync::Arc;
 use std::time::Instant;
-use tutti_metering::LoadMeter;
+use tutti_metering::{LoadMeter, LoadRecorder};
 use tutti_rt::AudioThreadCell;
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
@@ -175,9 +174,10 @@ pub struct Engine {
     fader: AudioThreadCell<Fader>,
     /// The block capacity (the editor's `MaxBlock` limit).
     capacity: Samples,
-    /// Each block's render time against its budget. Built here, on the
-    /// control side; the audio thread only stores into its atomics.
-    load: Arc<LoadMeter>,
+    /// Records each block's render time against its budget.
+    load: AudioThreadCell<LoadRecorder>,
+    /// The reading half of `load`.
+    meter: LoadMeter,
 }
 
 impl std::fmt::Debug for Engine {
@@ -187,7 +187,7 @@ impl std::fmt::Debug for Engine {
             .field("graph", &self.graph)
             .field("fader", &self.fader)
             .field("capacity", &self.capacity)
-            .field("load", &self.load)
+            .field("meter", &self.meter)
             .finish_non_exhaustive()
     }
 }
@@ -317,6 +317,7 @@ impl Engine {
         // Seeded from the executor; no test here can cover it, since the
         // executor is always fresh at `Engine::new`.
         let dropped_seen = executor.dropped_event_count();
+        let (recorder, meter) = LoadMeter::pair();
         Ok(Self {
             settings: transport.settings.clone(),
             timed: transport.motion.timed().clone(),
@@ -331,7 +332,8 @@ impl Engine {
             }),
             fader: AudioThreadCell::new(Fader::new(fade_frames(rate))),
             capacity: Samples(stride),
-            load: Arc::new(LoadMeter::new()),
+            load: AudioThreadCell::new(recorder),
+            meter,
         })
     }
 
@@ -343,8 +345,8 @@ impl Engine {
 
     /// The DSP-load meter every [`process`](Self::process) and
     /// [`process_segment`](Self::process_segment) call feeds: the call's
-    /// wall time against its block's real-time budget. Clone the `Arc` to
-    /// read it from another thread.
+    /// wall time against its block's real-time budget. Clone it to read from
+    /// another thread.
     ///
     /// What it times is the whole call, which is what a device deadline
     /// counts; a driver's own work around it (tutti-cpal's master meter and
@@ -356,8 +358,8 @@ impl Engine {
     /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced). Events the
     /// graph dropped (an event port past its capacity) are counted in
     /// [`LoadReading::dropped_events`](tutti_metering::LoadReading::dropped_events).
-    pub fn load_meter(&self) -> &Arc<LoadMeter> {
-        &self.load
+    pub fn load_meter(&self) -> &LoadMeter {
+        &self.meter
     }
 
     /// Renders the whole of `output` with no transport motion and no declick.
@@ -399,7 +401,9 @@ impl Engine {
         // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.load.record_silenced();
+            if let Some(mut load) = self.load.try_borrow_mut() {
+                load.record_silenced();
+            }
             return;
         };
         let g = &mut *graph;
@@ -425,9 +429,9 @@ impl Engine {
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
             done += len;
         }
-        self.load.record_dropped_events(g.take_dropped_events());
-        self.load
-            .record(Seconds(start.elapsed().as_secs_f32()), budget);
+        let mut load = self.load.borrow_mut();
+        load.record_dropped_events(g.take_dropped_events());
+        load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
 
     /// Renders one block into `output`, an interleaved device buffer.
@@ -457,7 +461,9 @@ impl Engine {
         // reached only under the graph borrow (here, or `apply_pending`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.load.record_silenced();
+            if let Some(mut load) = self.load.try_borrow_mut() {
+                load.record_silenced();
+            }
             return;
         };
         let g = &mut *graph;
@@ -494,9 +500,9 @@ impl Engine {
             fader.apply(&walk.gain, frame0, output, out_ch, done, len);
             done += len;
         }
-        self.load.record_dropped_events(g.take_dropped_events());
-        self.load
-            .record(Seconds(start.elapsed().as_secs_f32()), budget);
+        let mut load = self.load.borrow_mut();
+        load.record_dropped_events(g.take_dropped_events());
+        load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
 
     /// Walks one block's scheduled transport commands in time order, running

@@ -319,7 +319,7 @@ fn a_voice_plays_in_time_at_512_frame_blocks() {
 #[test]
 fn an_offline_render_feeds_the_load_meter() {
     let s = offline();
-    let meter = Arc::clone(s.load_meter().expect("an offline engine"));
+    let meter = s.load_meter().expect("an offline engine").clone();
     let mut block = vec![0.0f32; 128 * 2];
     for _ in 0..4 {
         s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));

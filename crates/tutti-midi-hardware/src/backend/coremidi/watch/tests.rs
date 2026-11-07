@@ -8,9 +8,43 @@ use crate::Devices;
 use crate::backend::coremidi::UmpVirtualDestination;
 use tutti_midi_device::DeviceEvent;
 
+/// `Devices` with one subscription, and the blocking batch `wait` these tests
+/// are written around.
+struct Watched {
+    devices: Devices,
+    events: crate::DeviceEvents,
+}
+
+impl Watched {
+    fn open() -> Self {
+        Self::of(Devices::open().unwrap())
+    }
+
+    fn of(devices: Devices) -> Self {
+        let events = devices.subscribe();
+        Self { devices, events }
+    }
+
+    /// The change that comes within `timeout` and any queued behind it.
+    fn wait(&self, timeout: Duration) -> Vec<DeviceEvent> {
+        self.events
+            .recv_timeout(timeout)
+            .into_iter()
+            .chain(self.events.try_iter())
+            .collect()
+    }
+}
+
+impl std::ops::Deref for Watched {
+    type Target = Devices;
+    fn deref(&self) -> &Devices {
+        &self.devices
+    }
+}
+
 const PATIENCE: Duration = Duration::from_secs(20);
 
-fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent {
+fn until(devices: &Watched, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent {
     let deadline = Instant::now() + PATIENCE;
     while let Some(left) = deadline.checked_duration_since(Instant::now()) {
         if let Some(event) = devices.wait(left).into_iter().find(&want) {
@@ -31,7 +65,7 @@ fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
 #[test]
 fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let name = format!("tutti-test-{}", std::process::id());
-    let devices = Devices::open().unwrap();
+    let devices = Watched::open();
     assert_eq!(registered(), 1);
 
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");

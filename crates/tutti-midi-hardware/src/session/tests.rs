@@ -2,7 +2,7 @@ use super::*;
 use crate::InputProducerHandle;
 use crate::capability::EndpointInfo;
 use crate::devices::{ChangeSink, os_devices};
-use crate::endpoints::{NoWatch, Watch};
+use crate::endpoints::{InputConnection, NoWatch, Watch};
 use crate::test_support::FakeBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_midi_device::EndpointId;
@@ -17,9 +17,9 @@ use tutti_midi_device::EndpointId;
 /// this one is about opens.
 fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (backend, counters) = FakeBackend::build();
-    let ports = Arc::new(HardwareMidiInputs::new(64));
+    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
     (
-        MidiSession::with_backend(backend, ports).unwrap(),
+        MidiSession::open_over(backend, ports).unwrap(),
         counters.sent,
         counters.opens,
     )
@@ -78,15 +78,17 @@ fn by_name_matching_is_case_insensitive_substring() {
 #[test]
 fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
     let (backend, counters) = FakeBackend::build();
-    let s = MidiSession::with_backend(backend, Arc::new(HardwareMidiInputs::new(64))).unwrap();
+    let s =
+        MidiSession::open_over(backend, Arc::new(HardwareMidiInputs::new(64, 44_100.0))).unwrap();
     assert!(s.connect_input_by_name("nonexistent").is_err());
     // An id that was listed and is gone: the shape of a stale id.
     let gone = input(&s, "IAC Bus 1");
+    let events = s.devices().subscribe();
     counters.unplug(EndpointId::from_raw(2));
     assert!(
-        !s.devices()
-            .wait(std::time::Duration::from_secs(10))
-            .is_empty()
+        events
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_ok()
     );
     assert!(s.connect_input(&gone).is_err());
     assert!(!s.is_any_input_connected());
@@ -139,8 +141,8 @@ fn sending_reaches_a_connected_output() {
 fn a_refusing_output_reports_zero_accepted() {
     let (backend, counters) = FakeBackend::build_accepting(0);
     let sent = counters.sent;
-    let ports = Arc::new(HardwareMidiInputs::new(64));
-    let s = MidiSession::with_backend(backend, ports).unwrap();
+    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+    let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
     assert!(s.is_output_connected(), "the output is open");
@@ -156,8 +158,8 @@ fn a_refusing_output_reports_zero_accepted() {
 #[test]
 fn a_partial_accept_reports_what_landed() {
     let (backend, _counters) = FakeBackend::build_accepting(1);
-    let ports = Arc::new(HardwareMidiInputs::new(64));
-    let s = MidiSession::with_backend(backend, ports).unwrap();
+    let ports = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+    let s = MidiSession::open_over(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
     assert_eq!(s.send(&[note(), note(), note()]), 1);
@@ -294,9 +296,9 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
         log: Arc::clone(&log),
         refuse,
     };
-    let ports = Arc::new(HardwareMidiInputs::new(16));
+    let ports = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     (
-        MidiSession::with_backend(Box::new(backend), ports).unwrap(),
+        MidiSession::open_over(Box::new(backend), ports).unwrap(),
         log,
     )
 }
@@ -304,11 +306,9 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
 /// Dropping the session closes its inputs before the backend they were
 /// opened on, and retires their ports from a manager that outlives it.
 ///
-/// Mutations: deleting `impl Drop for Inner` and declaring `backend`
-/// before `open` (the old field order) → the log reads
-/// `["backend", "connection"]`; deleting only the `Drop` impl → the
-/// order holds by field order, but the shared manager still lists the
-/// session's port.
+/// Mutations: declaring `devices` before `open` in `Inner` → the log reads
+/// `["backend", "connection"]`; `OpenInput::drop` not retiring its port → the
+/// shared manager still lists the session's port.
 #[test]
 fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
     let (s, log) = logging_session(false);
@@ -326,8 +326,9 @@ fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
 
 /// An open the backend refuses leaves no port behind.
 ///
-/// Mutation: dropping the `remove_input_port` in `connect_input`'s error
-/// arm → the manager lists one dead port per failed attempt.
+/// Mutation: `Devices::open_input` opening the backend connection before it
+/// builds the `OpenInput` that owns the port (an error then returns with the
+/// port still listed) → the manager lists one dead port per failed attempt.
 #[test]
 fn a_refused_open_leaves_no_port() {
     let (s, _log) = logging_session(true);

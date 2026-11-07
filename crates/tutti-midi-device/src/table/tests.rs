@@ -290,3 +290,237 @@ proptest! {
         prop_assert_eq!(table.list(), before);
     }
 }
+
+// resolve: a saved device against the devices present now. Every case below
+// is derived from the rule in `resolve`'s doc, not from a recorded run.
+//
+// Mutation record, each planted, seen to fail, restored:
+// - the `saved.id.ordinal() == 0` guard dropped from the ALSA arm:
+//   `a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present`
+//   fails;
+// - the ALSA arm answering `Exact` in place of `SameName`:
+//   `a_lone_device_with_the_saved_name_is_only_the_same_name` fails;
+// - `take_while` removed: `a_neighbouring_identity_is_not_a_candidate` fails
+//   (the next identity's devices are listed);
+// - the ALSA arm without its `serves` check: `a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous`
+//   fails;
+// - `serves` comparing directions with `==`: `a_duplex_device_still_serves_a_saved_input` fails;
+// - the `(_, [])` arm resolving `Ambiguous`: `nothing_alike_is_missing` fails;
+// - the Product arm ignoring direction:
+//   `a_unit_port_is_told_by_name_and_direction` fails;
+// - the Product arm ignoring the name: the same test fails;
+// - the Product arm answering `Exact` for the first of several matching
+//   ports: `a_unit_with_two_identical_ports_is_ambiguous` fails.
+
+fn keys_info(table: &mut DeviceTable, n: u64) -> DeviceInfo {
+    added(table.apply(OsChange::Present(keys(n))))
+}
+
+fn ordinals(candidates: &[DeviceInfo]) -> Vec<u32> {
+    candidates.iter().map(|d| d.id.ordinal()).collect()
+}
+
+fn port(n: u64, unit: &str, name: &str, direction: Direction) -> OsDevice {
+    OsDevice {
+        handle: handle(n),
+        identity: Identity::Product(unit.into()),
+        name: name.into(),
+        direction,
+    }
+}
+
+fn coremidi(n: u64, unique: i32, name: &str) -> OsDevice {
+    OsDevice {
+        handle: handle(n),
+        identity: Identity::CoreMidi(unique),
+        name: name.into(),
+        direction: Direction::Input,
+    }
+}
+
+#[test]
+fn a_lone_device_with_the_saved_name_is_only_the_same_name() {
+    let mut table = DeviceTable::default();
+    let info = keys_info(&mut table, 1);
+    assert_eq!(table.resolve(&info), Resolved::SameName(info));
+}
+
+#[test]
+fn a_saved_zero_with_two_alike_present_is_ambiguous() {
+    let mut table = DeviceTable::default();
+    let first = keys_info(&mut table, 1);
+    keys_info(&mut table, 2);
+    let Resolved::Ambiguous(candidates) = table.resolve(&first) else {
+        panic!("two alike devices are ambiguous");
+    };
+    assert_eq!(ordinals(&candidates), [0, 1]);
+}
+
+#[test]
+fn a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present() {
+    let mut table = DeviceTable::default();
+    let first = keys_info(&mut table, 1);
+    let second = keys_info(&mut table, 2);
+    table.apply(OsChange::Gone(handle(2)));
+    assert_eq!(second.id.ordinal(), 1);
+    assert_eq!(
+        table.resolve(&second),
+        Resolved::Ambiguous(vec![first]),
+        "the lone #0 may be another unit than the saved #1"
+    );
+}
+
+#[test]
+fn nothing_alike_is_missing() {
+    let mut table = DeviceTable::default();
+    let info = DeviceInfo {
+        id: DeviceId::new(Identity::alsa("Keystep", "MIDI 1"), 0),
+        name: "Keystep: MIDI 1".into(),
+        direction: Direction::Input,
+    };
+    assert_eq!(table.resolve(&info), Resolved::Missing);
+    let listed = keys_info(&mut table, 1);
+    table.apply(OsChange::Gone(handle(1)));
+    assert_eq!(table.resolve(&listed), Resolved::Missing);
+}
+
+/// `Keystep`/`MIDI 10` sorts right after `Keystep`/`MIDI 1`, and `Keysteo` just
+/// before: only the devices with the saved identity are candidates.
+#[test]
+fn a_neighbouring_identity_is_not_a_candidate() {
+    let mut table = DeviceTable::default();
+    let first = keys_info(&mut table, 1);
+    keys_info(&mut table, 2);
+    table.apply(OsChange::Present(dev(
+        3,
+        "Keystep",
+        "MIDI 10",
+        Direction::Input,
+    )));
+    table.apply(OsChange::Present(dev(
+        4,
+        "Keysteo",
+        "MIDI 1",
+        Direction::Input,
+    )));
+    let Resolved::Ambiguous(candidates) = table.resolve(&first) else {
+        panic!("two alike");
+    };
+    assert_eq!(ordinals(&candidates), [0, 1]);
+    assert!(candidates.iter().all(|d| d.name == "Keystep: MIDI 1"));
+}
+
+/// A saved `#0` whose twin `#0` has left resolves to the survivor, now `#1`,
+/// as a same-name match: the id cannot say it was once one of two.
+#[test]
+fn a_saved_zero_resolves_to_the_lone_survivor_of_a_pair_by_name_only() {
+    let mut table = DeviceTable::default();
+    let first = keys_info(&mut table, 1);
+    let second = keys_info(&mut table, 2);
+    table.apply(OsChange::Gone(handle(1)));
+    assert_eq!(table.resolve(&first), Resolved::SameName(second));
+}
+
+/// One unit, three ports: a Product Instance Id is shared, the ordinals are
+/// 0, 1, 2 by arrival, and the saved port is the one with its name and
+/// direction, whatever its ordinal is now.
+#[test]
+fn a_unit_port_is_told_by_name_and_direction() {
+    let mut table = DeviceTable::default();
+    let in1 = added(table.apply(OsChange::Present(port(1, "u1", "Pad In", Direction::Input))));
+    let out1 = added(table.apply(OsChange::Present(port(
+        2,
+        "u1",
+        "Pad Out",
+        Direction::Output,
+    ))));
+    let in2 = added(table.apply(OsChange::Present(port(
+        3,
+        "u1",
+        "Pad Out",
+        Direction::Input,
+    ))));
+    assert_eq!(
+        [in1.id.ordinal(), out1.id.ordinal(), in2.id.ordinal()],
+        [0, 1, 2]
+    );
+    assert_eq!(table.resolve(&in1), Resolved::Exact(in1.clone()));
+    assert_eq!(table.resolve(&out1), Resolved::Exact(out1.clone()));
+    assert_eq!(table.resolve(&in2), Resolved::Exact(in2.clone()));
+
+    // After a restart the ports arrive in another order: the saved ports are
+    // still found by name and direction, not by ordinal.
+    let mut after = DeviceTable::default();
+    let pad_out_in = added(after.apply(OsChange::Present(port(
+        9,
+        "u1",
+        "Pad Out",
+        Direction::Input,
+    ))));
+    let pad_in = added(after.apply(OsChange::Present(port(8, "u1", "Pad In", Direction::Input))));
+    assert_eq!(after.resolve(&in1), Resolved::Exact(pad_in));
+    assert_eq!(after.resolve(&in2), Resolved::Exact(pad_out_in));
+}
+
+#[test]
+fn a_unit_without_the_saved_port_is_ambiguous_over_its_ports() {
+    let mut table = DeviceTable::default();
+    let saved = added(table.apply(OsChange::Present(port(1, "u1", "Pad In", Direction::Input))));
+    table.apply(OsChange::Gone(handle(1)));
+    let other = added(table.apply(OsChange::Present(port(
+        2,
+        "u1",
+        "Pad Out",
+        Direction::Output,
+    ))));
+    assert_eq!(table.resolve(&saved), Resolved::Ambiguous(vec![other]));
+}
+
+/// A CoreMIDI unique id names one endpoint, so it is exact when present
+/// whatever it is called now.
+#[test]
+fn a_coremidi_endpoint_is_exact_by_its_unique_id() {
+    let mut table = DeviceTable::default();
+    let saved = added(table.apply(OsChange::Present(coremidi(1, 7, "Keys"))));
+    table.apply(OsChange::Gone(handle(1)));
+    let back = added(table.apply(OsChange::Present(coremidi(5, 7, "Keys (renamed)"))));
+    assert_eq!(table.resolve(&saved), Resolved::Exact(back));
+}
+
+#[test]
+fn a_unit_with_two_identical_ports_is_ambiguous() {
+    let mut table = DeviceTable::default();
+    let a = added(table.apply(OsChange::Present(port(1, "u1", "Pad", Direction::Input))));
+    let b = added(table.apply(OsChange::Present(port(2, "u1", "Pad", Direction::Input))));
+    assert_eq!(table.resolve(&a), Resolved::Ambiguous(vec![a, b]));
+}
+
+/// A saved input whose name now belongs to an output-only device would fail to
+/// open, so it is not a same-name match. Duplex still serves either way.
+#[test]
+fn a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous() {
+    let mut table = DeviceTable::default();
+    let saved = keys_info(&mut table, 1);
+    table.apply(OsChange::Present(dev(
+        1,
+        "Keystep",
+        "MIDI 1",
+        Direction::Output,
+    )));
+    let now = table.list().remove(0);
+    assert_eq!(table.resolve(&saved), Resolved::Ambiguous(vec![now]));
+}
+
+#[test]
+fn a_duplex_device_still_serves_a_saved_input() {
+    let mut table = DeviceTable::default();
+    let saved = keys_info(&mut table, 1);
+    table.apply(OsChange::Present(dev(
+        1,
+        "Keystep",
+        "MIDI 1",
+        Direction::Duplex,
+    )));
+    let now = table.list().remove(0);
+    assert_eq!(table.resolve(&saved), Resolved::SameName(now));
+}

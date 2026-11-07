@@ -302,6 +302,9 @@ proptest! {
 //   `a_lone_device_with_the_saved_name_is_only_the_same_name` fails;
 // - `take_while` removed: `a_neighbouring_identity_is_not_a_candidate` fails
 //   (the next identity's devices are listed);
+// - the ALSA arm without its `serves` check: `a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous`
+//   fails;
+// - `serves` comparing directions with `==`: `a_duplex_device_still_serves_a_saved_input` fails;
 // - the `(_, [])` arm resolving `Ambiguous`: `nothing_alike_is_missing` fails;
 // - the Product arm ignoring direction:
 //   `a_unit_port_is_told_by_name_and_direction` fails;
@@ -490,4 +493,34 @@ fn a_unit_with_two_identical_ports_is_ambiguous() {
     let a = added(table.apply(OsChange::Present(port(1, "u1", "Pad", Direction::Input))));
     let b = added(table.apply(OsChange::Present(port(2, "u1", "Pad", Direction::Input))));
     assert_eq!(table.resolve(&a), Resolved::Ambiguous(vec![a, b]));
+}
+
+/// A saved input whose name now belongs to an output-only device would fail to
+/// open, so it is not a same-name match. Duplex still serves either way.
+#[test]
+fn a_lone_device_that_no_longer_goes_the_saved_way_is_ambiguous() {
+    let mut table = DeviceTable::default();
+    let saved = keys_info(&mut table, 1);
+    table.apply(OsChange::Present(dev(
+        1,
+        "Keystep",
+        "MIDI 1",
+        Direction::Output,
+    )));
+    let now = table.list().remove(0);
+    assert_eq!(table.resolve(&saved), Resolved::Ambiguous(vec![now]));
+}
+
+#[test]
+fn a_duplex_device_still_serves_a_saved_input() {
+    let mut table = DeviceTable::default();
+    let saved = keys_info(&mut table, 1);
+    table.apply(OsChange::Present(dev(
+        1,
+        "Keystep",
+        "MIDI 1",
+        Direction::Duplex,
+    )));
+    let now = table.list().remove(0);
+    assert_eq!(table.resolve(&saved), Resolved::SameName(now));
 }

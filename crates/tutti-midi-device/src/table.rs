@@ -72,6 +72,11 @@ pub enum Resolved {
     Missing,
 }
 
+/// Whether a device that goes `now` still carries what `saved` used it for.
+fn serves(now: Direction, saved: Direction) -> bool {
+    (now.is_input() || !saved.is_input()) && (now.is_output() || !saved.is_output())
+}
+
 #[derive(Debug)]
 struct Entry {
     handle: EndpointId,
@@ -165,9 +170,10 @@ impl DeviceTable {
     ///   port with both, `Ambiguous` (the unit's ports) when none or several
     ///   have.
     /// - An ALSA identity is the client and port name: `SameName` for the lone
-    ///   present device when the saved ordinal is 0 (it cannot be told from
-    ///   another unit of the same name), `Ambiguous` for a saved ordinal above
-    ///   0 or several present devices.
+    ///   present device when the saved ordinal is 0 and it still goes the
+    ///   saved way (it cannot be told from another unit of the same name),
+    ///   `Ambiguous` for a saved ordinal above 0, several present devices, or
+    ///   one that no longer goes the saved way.
     /// - No present device with the identity is `Missing`.
     #[must_use]
     pub fn resolve(&self, saved: &DeviceInfo) -> Resolved {
@@ -193,7 +199,9 @@ impl DeviceTable {
                     _ => Resolved::Ambiguous(owned(if port.is_empty() { &alike } else { &port })),
                 }
             }
-            (Identity::Alsa { .. }, [only]) if saved.id.ordinal() == 0 => {
+            (Identity::Alsa { .. }, [only])
+                if saved.id.ordinal() == 0 && serves(only.direction, saved.direction) =>
+            {
                 Resolved::SameName((*only).clone())
             }
             _ => Resolved::Ambiguous(owned(&alike)),

@@ -146,7 +146,8 @@ impl Direction {
 /// One device as the table lists it. An app that remembers a device keeps
 /// this whole (with the `serde` feature) and restores it with
 /// [`DeviceTable::resolve`](crate::DeviceTable::resolve): the name and direction
-/// tell the ports of one unit apart.
+/// tell the ports of one unit apart. A field added later takes
+/// `#[serde(default)]`, so files saved before it still load.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceInfo {

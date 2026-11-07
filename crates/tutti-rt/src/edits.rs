@@ -215,7 +215,7 @@ impl<T: NoUninit + AnyBitPattern> EditWriter<T> {
             unsafe { word.write(u64::from_ne_bytes(padded)) };
         }
         self.head += 1;
-        self.shared.head.store(self.head, Ordering::Release);
+        self.shared.head.store(self.head, Ordering::Relaxed);
         Ok(())
     }
 

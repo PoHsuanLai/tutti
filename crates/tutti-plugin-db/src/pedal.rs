@@ -356,7 +356,7 @@ mod tests {
 
         pedal.forget(&a);
 
-        assert_eq!(pedal.entries(), [b.clone()]);
+        assert_eq!(pedal.entries(), std::slice::from_ref(&b));
         pedal.forget(&b);
         assert!(!pedal.path.exists());
     }

@@ -353,14 +353,9 @@ mod tests {
 
         release_tx.send(()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match parked.poll(&mut other_db) {
-                ScanPoll::Running => {
-                    assert!(std::time::Instant::now() < deadline);
-                    std::thread::yield_now();
-                }
-                _ => break,
-            }
+        while let ScanPoll::Running = parked.poll(&mut other_db) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
         }
         start_scan(&mut world);
 

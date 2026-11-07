@@ -59,7 +59,7 @@ fn utility(u: Utility) -> u32 {
         Utility::Noop => 0,
         Utility::JrClock(t) => (0x1 << 20) | u32::from(t),
         Utility::JrTimestamp(t) => (0x2 << 20) | u32::from(t),
-        Utility::TicksPerQuarterNote(n) => (0x3 << 20) | u32::from(n.get()),
+        Utility::TicksPerQuarterNote(n) => (0x3 << 20) | u32::from(n),
         Utility::DeltaClockstamp(t) => (0x4 << 20) | t.get(),
     }
 }
@@ -180,6 +180,7 @@ fn attribute(a: Attribute) -> (u32, u32) {
         Attribute::Manufacturer(d) => (0x01, u32::from(d)),
         Attribute::Profile(d) => (0x02, u32::from(d)),
         Attribute::Pitch(d) => (0x03, u32::from(d)),
+        Attribute::Reserved { kind, data } => (u32::from(kind), u32::from(data)),
     }
 }
 
@@ -262,12 +263,23 @@ fn flex_head(g: MidiGroup, f: Form, address: FlexAddress, bank: u32, status: u32
     let (addr, channel) = match address {
         FlexAddress::Channel(c) => (0, u32::from(c.get())),
         FlexAddress::Group => (1, 0),
+        FlexAddress::Reserved(a) => (u32::from(a) & 0x3, 0),
     };
     head(0xD, g) | (form(f) << 22) | (addr << 20) | (channel << 16) | (bank << 8) | status
 }
 
 fn letter(l: Option<Letter>) -> u32 {
-    l.map_or(0, |l| l as u32)
+    match l {
+        None => 0,
+        Some(Letter::A) => 1,
+        Some(Letter::B) => 2,
+        Some(Letter::C) => 3,
+        Some(Letter::D) => 4,
+        Some(Letter::E) => 5,
+        Some(Letter::F) => 6,
+        Some(Letter::G) => 7,
+        Some(Letter::Reserved(n)) => u32::from(n) & 0xf,
+    }
 }
 
 fn accidental(a: Accidental) -> u32 {
@@ -277,6 +289,7 @@ fn accidental(a: Accidental) -> u32 {
         Accidental::DoubleSharp => 0x2,
         Accidental::Flat => 0xF,
         Accidental::DoubleFlat => 0xE,
+        Accidental::Reserved(n) => u32::from(n) & 0xf,
     }
 }
 
@@ -287,6 +300,7 @@ fn alteration(a: Alteration) -> u32 {
         AlterationKind::Subtract => 2,
         AlterationKind::Raise => 3,
         AlterationKind::Lower => 4,
+        AlterationKind::Reserved(n) => u32::from(n) & 0xf,
     };
     (kind << 4) | u32::from(a.degree.get())
 }
@@ -302,7 +316,7 @@ fn chord_name(c: ChordName) -> [u32; 4] {
         Some(ChordPitch {
             accidental: a,
             letter: l,
-        }) => (accidental(a), l as u32),
+        }) => (accidental(a), letter(Some(l))),
     };
     [
         0,
@@ -393,6 +407,7 @@ fn stream_config(c: StreamConfig) -> u32 {
     let protocol = match c.protocol {
         Protocol::Midi1 => 0x01,
         Protocol::Midi2 => 0x02,
+        Protocol::Reserved(n) => u32::from(n),
     };
     (protocol << 8) | (u32::from(c.rx_jr) << 1) | u32::from(c.tx_jr)
 }
@@ -472,6 +487,7 @@ fn stream(s: Stream) -> [u32; 4] {
                 Direction::Input => 0b01,
                 Direction::Output => 0b10,
                 Direction::Bidirectional => 0b11,
+                Direction::Reserved(n) => u32::from(n) & 0x3,
             };
             let ui_hint = match i.ui_hint {
                 UiHint::Unknown => 0,
@@ -483,6 +499,7 @@ fn stream(s: Stream) -> [u32; 4] {
                 Midi1Port::No => 0,
                 Midi1Port::Unrestricted => 1,
                 Midi1Port::Restricted => 2,
+                Midi1Port::Reserved(n) => u32::from(n) & 0x3,
             };
             [
                 stream_head(done, 0x11)

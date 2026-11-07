@@ -223,8 +223,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  no dependencies, `publish = false`, re-exported by tutti-types.
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
-                 the only code that knows a bit position; no dependencies but
-                 `bytemuck` (and optional `serde`)
+                 which hold every message's bit positions (`Ump::words` and
+                 `is_note_off` read the type, status and velocity bits a queue
+                 needs); no dependencies but `bytemuck` (and optional `serde`)
   tutti-types    vocabulary only: units, channel layouts, io edge traits, rt
                  primitives, Topology; no FFT and no new algorithms. Downmix, interp
                  and sample conversion stay until a follow-up moves them
@@ -280,8 +281,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-ump` depends on no workspace crate, keeps every module private
   (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
-  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`; the
-  umbrella preludes and `tutti-session` export them.
+  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
+  `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
+  exports `MidiChannel` behind `midi`. A consumer that persists one with serde
+  depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
 - `tutti-types` names no other tutti crate. Its one workspace-member
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.

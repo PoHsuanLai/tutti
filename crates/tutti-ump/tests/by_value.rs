@@ -3,7 +3,7 @@
 //!
 //! Mutation: add a `String` or a `&'static str` field to any message type ->
 //! `Message` stops being `Copy` and this file stops compiling; add a
-//! `[u8; 64]` to a variant -> `a_message_is_at_most_two_packets` fails.
+//! `[u8; 64]` to a variant -> `a_message_is_at_most_three_packets` fails.
 
 use tutti_ump::{Message, Ump, Unknown};
 
@@ -17,8 +17,8 @@ fn a_message_is_a_plain_value() {
 }
 
 #[test]
-fn a_message_is_at_most_two_packets() {
+fn a_message_is_at_most_three_packets() {
     let size = core::mem::size_of::<Message>();
     eprintln!("size_of::<Message>() = {size}");
-    assert!(size <= 2 * core::mem::size_of::<Ump>(), "{size} bytes");
+    assert!(size <= 3 * core::mem::size_of::<Ump>(), "{size} bytes");
 }

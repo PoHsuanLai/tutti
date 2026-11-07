@@ -38,9 +38,9 @@
 #   crates/" (a nested directory under crates/ is refused);
 # - `tutti-mod` moved to `crates/modx`: "must be crates/tutti-mod";
 # - `mkdir crates/stray`: "crates/stray is not a workspace member";
-# - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS".
+# - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS";
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
-#   (normal) points up" and "tutti-ump may depend on no workspace crate only";
+#   (normal) points up" and "tutti-ump may depend on no workspace crate";
 # - `tutti-core` as a `[dependencies]` entry of `tutti-graph`: "tutti-graph may
 #   depend on ['tutti-types', 'tutti-ump'] only".
 #
@@ -160,8 +160,8 @@ def deps_of(name, kinds=("normal", "build", "dev")):
 def only(name, allowed, kinds=("normal", "build")):
     extra = deps_of(name, kinds) - set(allowed)
     if extra:
-        what = sorted(allowed) if allowed else "no workspace crate"
-        fail(f"{name} may depend on {what} only; it depends on {sorted(extra)}")
+        what = f"{sorted(allowed)} only" if allowed else "no workspace crate"
+        fail(f"{name} may depend on {what}; it depends on {sorted(extra)}")
 
 for n in ("arc-lend", "tutti-ump"):
     if n in pkgs:

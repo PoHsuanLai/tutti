@@ -12,16 +12,14 @@
 //! - a Flex status bank test dropped in `flex` -> `flex_text`;
 //! - the Endpoint Info `m2` bit moved to bit 8 -> `stream_endpoint_info`.
 
-use core::num::NonZeroU16;
-
 use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     CCNumber, ChordBass, ChordName, ChordPitch, ChordType, Data128, DeltaTicks, DeviceIdentity,
-    Direction, DiscoveryFilter, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form,
-    FunctionBlockCount, FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter,
-    Message, Metronome, Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol,
-    SharpsFlats, Stream, StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System,
-    TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1, Voice2, decode,
+    Direction, DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
+    FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter, Message, Metronome,
+    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol, SharpsFlats, Stream,
+    StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, U4, U7, U14,
+    UiHint, Ump, UmpVersion, Utility, Voice1, Voice2, decode,
 };
 
 fn g(n: u8) -> MidiGroup {
@@ -75,7 +73,7 @@ fn utility() {
     // Delta Clockstamp Ticks Per Quarter Note: status 3, 480 = 0x01E0.
     pin(
         [0x0030_01E0, 0, 0, 0],
-        Message::Utility(Utility::TicksPerQuarterNote(NonZeroU16::new(480).unwrap())),
+        Message::Utility(Utility::TicksPerQuarterNote(480)),
     );
     // Delta Clockstamp: status 4, 20 bits in 19-0.
     pin(
@@ -661,7 +659,7 @@ fn stream_endpoint_info() {
         Message::Stream(Stream::EndpointInfo(EndpointInfo {
             version: UmpVersion { major: 1, minor: 1 },
             static_function_blocks: true,
-            function_blocks: FunctionBlockCount::new(3).unwrap(),
+            function_blocks: u7(3),
             midi2: true,
             midi1: true,
             rx_jr: true,
@@ -674,7 +672,7 @@ fn stream_endpoint_info() {
         Message::Stream(Stream::EndpointInfo(EndpointInfo {
             version: UmpVersion { major: 1, minor: 1 },
             static_function_blocks: false,
-            function_blocks: FunctionBlockCount::new(32).unwrap(),
+            function_blocks: u7(32),
             midi2: true,
             midi1: false,
             rx_jr: false,
@@ -787,7 +785,7 @@ fn stream_function_blocks() {
             direction: Direction::Bidirectional,
             ui_hint: UiHint::Both,
             midi1: Midi1Port::Restricted,
-            first_group: g(4),
+            first_group: FirstGroup::new(4).unwrap(),
             groups_spanned: GroupSpan::new(2).unwrap(),
             midi_ci_version: 1,
             max_sysex8_streams: 16,
@@ -801,7 +799,7 @@ fn stream_function_blocks() {
             direction: Direction::Input,
             ui_hint: UiHint::Unknown,
             midi1: Midi1Port::Unrestricted,
-            first_group: g(15),
+            first_group: FirstGroup::new(15).unwrap(),
             groups_spanned: GroupSpan::new(16).unwrap(),
             midi_ci_version: 0,
             max_sysex8_streams: 0,

@@ -33,6 +33,58 @@ pub fn corpus() -> Vec<Ump> {
     v
 }
 
+/// 64 packets drawn from a seeded generator with varied notes, velocities,
+/// channels and controllers across every family a stream carries, then
+/// shuffled: no repeating pattern for the branch predictor to learn.
+pub fn corpus_shuffled() -> Vec<Ump> {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut v = Vec::new();
+    for _ in 0..64 {
+        let r = next();
+        let (g, ch, note) = (
+            (r & 3) as u32,
+            ((r >> 2) & 15) as u32,
+            ((r >> 6) & 127) as u32,
+        );
+        let (a, b) = (next() as u32, next() as u32);
+        let w = match (r >> 16) % 20 {
+            0..=5 => [0x4090_0000 | g << 24 | ch << 16 | note << 8, a, 0, 0],
+            6..=8 => [0x4080_0000 | g << 24 | ch << 16 | note << 8, a, 0, 0],
+            9..=10 => [0x40B0_0000 | g << 24 | ch << 16 | (a & 0x7F) << 8, b, 0, 0],
+            11 => [0x40E0_0000 | g << 24 | ch << 16, b, 0, 0],
+            12 => [0x40A0_0000 | g << 24 | ch << 16 | note << 8, b, 0, 0],
+            13..=14 => [
+                0x2090_0000 | g << 24 | ch << 16 | note << 8 | (a & 0x7F),
+                0,
+                0,
+                0,
+            ],
+            15 => [
+                0x3020_0000 | g << 24 | 6 << 16 | (a & 0x7F7F),
+                b & 0x7F7F_7F7F,
+                0,
+                0,
+            ],
+            16 => [0xD610_0000, a, 0, 0],
+            17 => [0xF003_0000 | (a & 0x7F7F), b, a, b],
+            18 => [0x0010_0000 | (a & 0xFFFF), 0, 0, 0],
+            _ => [0x1000_0000 | g << 24 | 0xF8 << 16, 0, 0, 0],
+        };
+        v.push(Ump(w));
+    }
+    // A seeded Fisher-Yates.
+    for i in (1..v.len()).rev() {
+        v.swap(i, (next() % (i as u64 + 1)) as usize);
+    }
+    v
+}
+
 fn codec(c: &mut Criterion) {
     let packets = corpus();
     let messages: Vec<Message> = packets
@@ -51,6 +103,22 @@ fn codec(c: &mut Criterion) {
     g.bench_function("encode_block_of_64", |b| {
         b.iter(|| {
             for &m in black_box(&messages) {
+                black_box(Ump::from(m));
+            }
+        });
+    });
+    let shuffled = corpus_shuffled();
+    let shuffled_messages: Vec<Message> = shuffled.iter().filter_map(|&p| decode(p).ok()).collect();
+    g.bench_function("decode_shuffled_block_of_64", |b| {
+        b.iter(|| {
+            for &p in black_box(&shuffled) {
+                black_box(decode(p).ok());
+            }
+        });
+    });
+    g.bench_function("encode_shuffled_messages", |b| {
+        b.iter(|| {
+            for &m in black_box(&shuffled_messages) {
                 black_box(Ump::from(m));
             }
         });

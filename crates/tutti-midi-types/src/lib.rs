@@ -7,10 +7,11 @@
 pub use midi2;
 pub use midly;
 
-// The tutti-types vocabulary this crate's own API is spelled in: every UMP
-// constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
-// `Beat`/`BeatDuration` and declares its tempo in `Bpm`, a CC message needs
-// `CCNumber`, and state reaches the audio thread through `ArcLend`.
+// The tutti-types vocabulary this crate's own API is spelled in: the clip API
+// positions in `Beat`/`BeatDuration` and declares its tempo in `Bpm`, and state
+// reaches the audio thread through `ArcLend`. The UMP constructors take
+// `tutti_ump`'s `MidiGroup`, `MidiChannel` and `CCNumber`, which callers import
+// from there.
 pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header

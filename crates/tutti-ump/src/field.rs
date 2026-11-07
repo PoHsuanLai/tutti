@@ -55,6 +55,13 @@ macro_rules! bounded {
             pub const fn get(self) -> $repr {
                 self.0
             }
+
+            // The value as the wire sent it, in range or not: a reserved value
+            // is kept so the message re-encodes exactly.
+            #[allow(dead_code)] // `SharpsFlats` has no reserved value to keep.
+            pub(crate) const fn wire(raw: $repr) -> Self {
+                Self(raw)
+            }
         }
     };
 }
@@ -83,15 +90,18 @@ bits!(
 );
 
 bounded!(
-    /// A Function Block number (`0..=31`).
+    /// A Function Block number (`0..=31`). A reserved number read from the wire
+    /// is kept, so such a message re-encodes exactly.
     FunctionBlockId, u8, 0, 31
 );
 bounded!(
-    /// A count of Function Blocks (`0..=32`).
-    FunctionBlockCount, u8, 0, 32
+    /// A Group number as a Function Block declares its first Group (`0..=15`).
+    /// A reserved number read from the wire is kept.
+    FirstGroup, u8, 0, 15
 );
 bounded!(
-    /// How many Groups a Function Block spans (`1..=16`).
+    /// How many Groups a Function Block spans (`1..=16`). A reserved count read
+    /// from the wire is kept.
     GroupSpan, u8, 1, 16
 );
 bounded!(

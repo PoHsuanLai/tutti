@@ -385,6 +385,8 @@ jobs:
           cargo bench --locked -p tutti-cpal      --bench audio_callback -- --test
           cargo bench --locked -p tutti-export    --bench offline_render -- --test
           cargo bench --locked -p tutti-polysynth --bench polysynth      -- --test
+          cargo bench --locked -p tutti-ump       --bench codec          -- --test
+          cargo bench --locked -p tutti-midi-types --bench message_baseline -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
           cargo bench --locked -p arc-lend --bench lend -- --test

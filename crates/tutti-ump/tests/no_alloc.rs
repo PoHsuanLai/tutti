@@ -55,8 +55,8 @@ fn decoding_allocates_nothing() {
         }
     });
     assert_eq!(
-        decoded, 20,
-        "the corpus has 20 defined messages and 4 refused packets"
+        decoded, 21,
+        "the corpus has 21 defined messages and 3 refused packets"
     );
 }
 
@@ -66,7 +66,7 @@ fn encoding_allocates_nothing() {
         .into_iter()
         .filter_map(|p| decode(p).ok())
         .collect();
-    assert_eq!(messages.len(), 20);
+    assert_eq!(messages.len(), 21);
     let mut words = 0u32;
     assert_no_alloc(|| {
         for &m in &messages {

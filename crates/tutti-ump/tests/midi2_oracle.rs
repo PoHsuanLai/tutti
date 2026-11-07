@@ -13,8 +13,13 @@
 //! M2-104, and a disagreement it does not explain fails the test, which prints
 //! every distinct one with a witness (`--no-capture`).
 //!
-//! Mutation record (seen to fail with `UNEXPLAINED`, restored): the MIDI 2.0
-//! Note On velocity read from bit 15 in `decode` -> `cv2NoteOn: fields differ`.
+//! Mutation record (each planted in `decode`, seen to fail with `UNEXPLAINED`,
+//! restored): the MIDI 2.0 Note On velocity read from bit 15 -> `cv2NoteOn:
+//! fields differ`; the Per-Note Management note read from byte 4 instead of
+//! byte 3 -> `PerNoteManagement: fields differ`; the Program Change bank read
+//! with only the MSB swapped for a constant -> `cv2ProgramChange: fields
+//! differ`. Exchanging D and S in `decode` instead makes the oracle agree with
+//! `midi2` and `spec_words.rs` fail.
 
 mod common;
 
@@ -62,7 +67,7 @@ fn ours(m: &Message) -> Fact {
             Utility::Noop => fact("NoOp", &[]),
             Utility::JrClock(t) => fact("Clock", &[i64::from(t)]),
             Utility::JrTimestamp(t) => fact("Timestamp", &[i64::from(t)]),
-            Utility::TicksPerQuarterNote(n) => fact("DeltaClockstampTpq", &[i64::from(n.get())]),
+            Utility::TicksPerQuarterNote(n) => fact("DeltaClockstampTpq", &[i64::from(n)]),
             Utility::DeltaClockstamp(t) => fact("DeltaClockstamp", &[i64::from(t.get())]),
         },
         Message::System(g, s) => {
@@ -115,6 +120,7 @@ fn ours(m: &Message) -> Fact {
                 Attribute::Manufacturer(d) => [1, i64::from(d)],
                 Attribute::Profile(d) => [2, i64::from(d)],
                 Attribute::Pitch(d) => [3, i64::from(d)],
+                Attribute::Reserved { kind, data } => [i64::from(kind), i64::from(data)],
             };
             match v {
                 Voice2::RegisteredPerNote {
@@ -615,11 +621,22 @@ fn cause(w: [u32; 4], a: Option<&Fact>, b: Option<&Fact>) -> Option<&'static str
     let count = ((w0 >> 16) & 0xf) as usize;
     match (a, b) {
         (Some(a), Some(b)) if a.kind == b.kind => match a.kind.as_str() {
-            // Figure 51: D is bit 1 and S bit 0. `midi2` has them the other way.
-            "PerNoteManagement" => Some("midi2 swaps the Per-Note Management D and S flags"),
+            // Figure 51: D is bit 1 and S bit 0. `midi2` has them the other way:
+            // the whole relation, not any disagreement of the kind.
+            "PerNoteManagement"
+                if a.fields[..3] == b.fields[..3]
+                    && a.fields[3] == b.fields[4]
+                    && a.fields[4] == b.fields[3] =>
+            {
+                Some("midi2 swaps the Per-Note Management D and S flags")
+            }
             // Figure 64 and Table 30: bank MSB is the high byte. `midi2` reads
-            // them swapped.
-            "cv2ProgramChange" if w0 & 1 == 1 => {
+            // them swapped, so its 14-bit bank is ours with the bytes exchanged.
+            "cv2ProgramChange"
+                if a.fields[3] >= 0
+                    && a.fields[..3] == b.fields[..3]
+                    && b.fields[3] == ((a.fields[3] & 0x7f) << 7 | a.fields[3] >> 7) =>
+            {
                 Some("midi2 swaps the Program Change bank MSB and LSB")
             }
             _ => None,
@@ -646,29 +663,6 @@ fn cause(w: [u32; 4], a: Option<&Fact>, b: Option<&Fact>) -> Option<&'static str
             {
                 Some("midi2 accepts a SysEx 7 data byte with bit 7 set (drawn 0)")
             }
-            "EndpointInfo" if (w[1] >> 24) & 0x7f > 32 => {
-                Some("midi2 accepts 33 to 127 Function Blocks (reserved)")
-            }
-            "FunctionBlockDiscovery" if byte(w0, 1) != 0xFF && byte(w0, 1) > 31 => {
-                Some("midi2 accepts a Function Block number above 31 other than 0xFF")
-            }
-            "FunctionBlockInfo"
-                if (byte(w0, 1) & 0x7f) > 31
-                    || w0 & 3 == 0
-                    || (w0 >> 2) & 3 == 3
-                    || byte(w[1], 3) > 15
-                    || !(1..=16).contains(&byte(w[1], 2)) =>
-            {
-                Some("midi2 accepts a reserved Function Block Info value")
-            }
-            "FunctionBlockName" if byte(w0, 1) > 31 => {
-                Some("midi2 accepts a Function Block number above 31")
-            }
-            "StreamConfigurationRequest" | "StreamConfigurationNotification"
-                if !matches!(byte(w0, 1), 1 | 2) =>
-            {
-                Some("midi2 accepts a reserved protocol value")
-            }
             _ => None,
         },
         // `midi2` refuses what the specification allows.
@@ -678,6 +672,24 @@ fn cause(w: [u32; 4], a: Option<&Fact>, b: Option<&Fact>) -> Option<&'static str
                 Some("midi2 takes whole messages: it refuses a lone Start, Continue or End")
             }
             "MixedDataSet" => Some("midi2 has no Mixed Data Set"),
+            // Reserved values the codec keeps (so that a later revision's
+            // message stays readable) and `midi2` refuses.
+            "cv2NoteOn" | "cv2NoteOff" if byte(w0, 0) > 3 => {
+                Some("midi2 refuses a reserved attribute type (Table 8); the codec keeps it")
+            }
+            "RegisteredPerNoteController" if !matches!(byte(w0, 0), 1 | 2 | 3 | 7 | 8 | 10 | 11 | 70..=79 | 91..=95) => {
+                Some("midi2 refuses a Registered Per-Note Controller number Appendix A reserves")
+            }
+            "FunctionBlockInfo"
+                if (byte(w0, 1) & 0x7f) > 31
+                    || w0 & 3 == 0
+                    || (w0 >> 2) & 3 == 3
+                    || byte(w[1], 3) > 15
+                    || !(1..=16).contains(&byte(w[1], 2)) =>
+            {
+                Some("midi2 refuses a reserved Function Block Info value; the codec keeps it")
+            }
+
             // Table 15 allows -8 for the bass, "same as the tonic".
             // Table 14 defines 0x1B, 7 Suspended 4th. `midi2` stops at 0x1A.
             "SetChordName" if byte(w[1], 2) == 0x1B || byte(w[3], 2) == 0x1B => {

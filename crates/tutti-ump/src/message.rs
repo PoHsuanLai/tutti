@@ -1,11 +1,8 @@
 //! The message catalogue: one value per defined M2-104 message, `Copy`, with
 //! no lifetime.
 
-use core::num::NonZeroU16;
-
 use crate::field::{
-    DeltaTicks, FunctionBlockCount, FunctionBlockId, GroupSpan, NoteNumber, SharpsFlats, U4, U7,
-    U14,
+    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, SharpsFlats, U4, U7, U14,
 };
 use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
 
@@ -61,8 +58,8 @@ pub enum Utility {
     JrClock(u16),
     /// The time of the following messages, in ticks of 1/31250 s.
     JrTimestamp(u16),
-    /// Delta Clockstamp ticks per quarter note; `0` is reserved.
-    TicksPerQuarterNote(NonZeroU16),
+    /// Delta Clockstamp ticks per quarter note; `0` is reserved and kept.
+    TicksPerQuarterNote(u16),
     /// Ticks since the last event.
     DeltaClockstamp(DeltaTicks),
 }
@@ -242,6 +239,8 @@ pub enum Data128 {
     Sysex8(Sysex8Packet),
     /// An End packet with `# of bytes` `0xF`: the sender ran out of data and
     /// the earlier data of this stream is incomplete (§7.8.1).
+    /// The stream id is read from byte 3; §7.8.1 does not say it is kept, so a
+    /// sender that zeroes it aborts stream 0.
     Sysex8Abort {
         /// The stream being aborted.
         stream_id: u8,
@@ -292,6 +291,13 @@ pub enum Attribute {
     Profile(u16),
     /// Type `0x03`: Q7.9 pitch in half-tone units.
     Pitch(u16),
+    /// A reserved type (`0x04` to `0xFF`), kept with its data.
+    Reserved {
+        /// The attribute type.
+        kind: u8,
+        /// The attribute data.
+        data: u16,
+    },
 }
 
 /// A Program Change's bank (§7.4.9), present when the Bank Valid bit is set.
@@ -431,6 +437,8 @@ pub enum FlexAddress {
     Channel(MidiChannel),
     /// The Group.
     Group,
+    /// A reserved address (2 or 3), kept.
+    Reserved(u8),
 }
 
 /// A note letter: `A` is 1 to `G` is 7. The field's `0` is `None` where a
@@ -438,19 +446,21 @@ pub enum FlexAddress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Letter {
     /// A.
-    A = 1,
+    A,
     /// B.
-    B = 2,
+    B,
     /// C.
-    C = 3,
+    C,
     /// D.
-    D = 4,
+    D,
     /// E.
-    E = 5,
+    E,
     /// F.
-    F = 6,
+    F,
     /// G.
-    G = 7,
+    G,
+    /// A reserved value (8 to 15), kept.
+    Reserved(u8),
 }
 
 /// Flex Data messages (M2-104 §7.5). Set Tempo, Set Time Signature and Set
@@ -530,6 +540,8 @@ pub enum Accidental {
     Sharp,
     /// Two sharps.
     DoubleSharp,
+    /// A value the tables reserve, kept as the raw nibble.
+    Reserved(u8),
 }
 
 /// What an alteration does to a chord degree.
@@ -545,6 +557,8 @@ pub enum AlterationKind {
     Raise,
     /// Lower the degree, adding it if needed.
     Lower,
+    /// A reserved type (5 to 15), kept.
+    Reserved(u8),
 }
 
 /// A chord alteration: a kind and the degree it acts on.
@@ -556,7 +570,8 @@ pub struct Alteration {
     pub degree: U4,
 }
 
-/// A chord type, `0x00..=0x1B` (Table 14).
+/// A chord type, `0x00..=0x1B` (Table 14). A reserved type read from the wire
+/// is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChordType(u8);
 
@@ -571,6 +586,10 @@ impl ChordType {
     #[must_use]
     pub const fn get(self) -> u8 {
         self.0
+    }
+
+    pub(crate) const fn wire(raw: u8) -> Self {
+        Self(raw)
     }
 }
 
@@ -698,7 +717,9 @@ pub struct EndpointInfo {
     /// The Function Blocks never change.
     pub static_function_blocks: bool,
     /// How many Function Blocks.
-    pub function_blocks: FunctionBlockCount,
+    /// How many Function Blocks: `0..=32` is defined, `33..=127` reserved and
+    /// kept.
+    pub function_blocks: U7,
     /// Supports the MIDI 2.0 Protocol.
     pub midi2: bool,
     /// Supports the MIDI 1.0 Protocol.
@@ -729,6 +750,8 @@ pub enum Protocol {
     Midi1,
     /// MIDI 2.0 (`0x02`).
     Midi2,
+    /// A reserved value, kept.
+    Reserved(u8),
 }
 
 /// The payload of Stream Configuration Request and Notification.
@@ -745,7 +768,7 @@ pub struct StreamConfig {
 /// Which Function Block a Discovery asks about (§7.1.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockSelect {
-    /// One block.
+    /// One block. A number above 31 is reserved and kept.
     One(FunctionBlockId),
     /// All of them (`0xFF`).
     All,
@@ -769,6 +792,8 @@ pub enum Direction {
     Output,
     /// Both.
     Bidirectional,
+    /// The reserved `0b00`, kept.
+    Reserved(u8),
 }
 
 /// The primary role a Function Block declares.
@@ -793,6 +818,8 @@ pub enum Midi1Port {
     Unrestricted,
     /// A MIDI 1.0 port restricted to 31.25 kbps.
     Restricted,
+    /// The reserved `0x03`, kept.
+    Reserved(u8),
 }
 
 /// A Function Block Info Notification (§7.1.8).
@@ -809,7 +836,7 @@ pub struct FunctionBlockInfo {
     /// MIDI 1.0 port status.
     pub midi1: Midi1Port,
     /// The first Group it spans.
-    pub first_group: MidiGroup,
+    pub first_group: FirstGroup,
     /// How many Groups it spans.
     pub groups_spanned: GroupSpan,
     /// The MIDI-CI message version, `0` for none.

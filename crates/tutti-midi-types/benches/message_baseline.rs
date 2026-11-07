@@ -26,6 +26,39 @@ fn block() -> Vec<MidiEvent> {
         .collect()
 }
 
+/// 64 events across the channel voice constructors with seeded random group,
+/// channel, note and value, shuffled: no repeating pattern to learn.
+fn block_shuffled() -> Vec<MidiEvent> {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut v = Vec::new();
+    for _ in 0..64 {
+        let r = next();
+        let (g, c) = (
+            MidiGroup::new((r & 3) as u8),
+            MidiChannel::new(((r >> 2) & 15) as u8),
+        );
+        let note = ((r >> 6) & 127) as u8;
+        let (a, b) = (next() as u32, next() as u16);
+        v.push(match (r >> 16) % 8 {
+            0..=2 => MidiEvent::note_on(g, c, note, b),
+            3 | 4 => MidiEvent::note_off(g, c, note, b),
+            5 => MidiEvent::cc(g, c, CCNumber::new(a as u8), a),
+            6 => MidiEvent::pitch_bend(g, c, a),
+            _ => MidiEvent::poly_pressure(g, c, note, a),
+        });
+    }
+    for i in (1..v.len()).rev() {
+        v.swap(i, (next() % (i as u64 + 1)) as usize);
+    }
+    v
+}
+
 fn baseline(c: &mut Criterion) {
     let events = block();
     let packets: Vec<Ump> = events.iter().map(|e| Ump(e.data)).collect();
@@ -41,6 +74,22 @@ fn baseline(c: &mut Criterion) {
     g.bench_function("tutti_ump::decode", |b| {
         b.iter(|| {
             for &p in black_box(&packets) {
+                black_box(decode(p).ok());
+            }
+        });
+    });
+    let shuffled = block_shuffled();
+    let shuffled_packets: Vec<Ump> = shuffled.iter().map(|e| Ump(e.data)).collect();
+    g.bench_function("MidiEvent::message_shuffled", |b| {
+        b.iter(|| {
+            for e in black_box(&shuffled) {
+                black_box(e.message());
+            }
+        });
+    });
+    g.bench_function("tutti_ump::decode_shuffled", |b| {
+        b.iter(|| {
+            for &p in black_box(&shuffled_packets) {
                 black_box(decode(p).ok());
             }
         });

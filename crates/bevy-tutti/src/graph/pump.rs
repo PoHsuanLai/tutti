@@ -309,8 +309,9 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
         if !pump.is_finished() && pump.is_running() {
             continue;
         }
-        let lost = pump.lost();
         let Some(result) = pump.join() else { continue };
+        // After the join: the thread's last passes are in the count.
+        let lost = pump.lost();
 
         if let Err(error) = &result {
             bevy_log::error!("audio pump ended with error: {error}");

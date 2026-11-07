@@ -1,6 +1,9 @@
 //! Programs and units, the compatibility JSON, and the state container.
 
+use std::collections::HashSet;
+
 use super::*;
+use crate::host::controller::latest_per_parameter;
 
 impl Vst3Loaded {
     /// The plugin's program lists — the named preset sets its units select
@@ -156,10 +159,12 @@ impl Vst3Loaded {
     ///
     /// The component's stream holds only what a process call has delivered. A
     /// write made while the plugin is not active waits in `carried` for the
-    /// next activation's first block, so the blob stores it beside the streams
-    /// (container version 2) and `load_state` puts it back. A write queued on
-    /// an active plugin that no block has taken yet is not in the component's
-    /// stream and not in the blob.
+    /// next activation's first block, and one handed to a Processor waits for a
+    /// block to take it (`undrained`, from the Controller), so the blob stores
+    /// both beside the streams (container version 2) and `load_state` puts them
+    /// back. A write a plugin makes itself (`performEdit`) while no block runs
+    /// is the plugin's to carry; the host sees it only if the app relays it
+    /// through `set_parameter`.
     ///
     /// # Errors
     ///
@@ -180,15 +185,21 @@ impl Vst3Loaded {
     ///
     /// In debug builds, panics if called off the thread registered with
     /// [`tutti_plugin_types::mark_main_thread`].
-    pub(in crate::host) fn read_state(&self) -> Result<Vec<u8>> {
+    pub(in crate::host) fn read_state(
+        &self,
+        undrained: &[(ParamId, Normalized)],
+    ) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let component = self.read_component_state()?;
         let controller = self.read_controller_state();
-        Ok(pack_state_with_pending(
-            &component,
-            &controller,
-            &self.carried,
-        ))
+        let pending = latest_per_parameter(
+            self.carried
+                .iter()
+                .chain(undrained)
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        Ok(pack_state_with_pending(&component, &controller, &pending))
     }
 
     /// Reads the controller's own `getState` stream, or `None` when there is no
@@ -268,30 +279,36 @@ impl Vst3Loaded {
             controller,
             pending,
         } = unpack_full(data);
-        if component.is_empty() {
-            return Ok(Vec::new());
+
+        // A plugin with no component state still gets the controller's stream
+        // and the pending writes: the writes are for its separate controller's
+        // parameters, which the component's stream cannot hold.
+        if !component.is_empty() {
+            self.plugin
+                .set_component_state(component)
+                .map_err(|e| Vst3Error::PluginError {
+                    stage: LoadStage::Initialization,
+                    code: e.code(),
+                })?;
+
+            self.push_controller_state(component);
         }
-
-        self.plugin
-            .set_component_state(component)
-            .map_err(|e| Vst3Error::PluginError {
-                stage: LoadStage::Initialization,
-                code: e.code(),
-            })?;
-
-        self.push_controller_state(component);
 
         if let Some(controller) = controller {
             self.push_controller_own_state(controller);
         }
 
         // The writes the component's stream did not yet hold are newer than it:
-        // back to the controller. An id this plugin does not list is dropped.
-        Ok(pending
+        // back to the controller. Bounded by the plugin's parameter list, not
+        // by the blob: an id this plugin does not list is dropped, and each
+        // parameter is kept once.
+        let listed: HashSet<u32> = (0..self.parameter_count())
+            .filter_map(|i| self.parameter_info_at(i))
+            .map(|info| info.id)
+            .collect();
+        Ok(latest_listed(pending, &listed)
             .into_iter()
-            .filter(|&(id, value)| {
-                self.parameter_info(id).is_some() && self.write_normalized(id, value)
-            })
+            .filter(|&(id, value)| self.write_normalized(id, value))
             .collect())
     }
 
@@ -393,6 +410,30 @@ pub(super) fn pack_state_with_pending(
     out
 }
 
+/// `pending` with each listed parameter once, at its latest value, in the order
+/// each was first written. One pass: a crafted blob of a million duplicates
+/// costs a million steps, not a million times the parameter count.
+fn latest_listed(
+    pending: Vec<(ParamId, Normalized)>,
+    listed: &HashSet<u32>,
+) -> Vec<(ParamId, Normalized)> {
+    let mut at: HashMap<ParamId, usize> = HashMap::new();
+    let mut out: Vec<(ParamId, Normalized)> = Vec::new();
+    for (id, value) in pending
+        .into_iter()
+        .filter(|(id, _)| listed.contains(&id.get()))
+    {
+        match at.entry(id) {
+            std::collections::hash_map::Entry::Occupied(slot) => out[*slot.get()].1 = value,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(out.len());
+                out.push((id, value));
+            }
+        }
+    }
+    out
+}
+
 /// What [`unpack_full`] found in a blob.
 #[derive(Debug, PartialEq)]
 pub(super) struct Unpacked<'a> {
@@ -475,7 +516,7 @@ fn split_body(body: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
 mod state_container_tests {
     use super::{
         Normalized, ParamId, STATE_MAGIC, STATE_VERSION, STATE_VERSION_PENDING, Unpacked,
-        pack_state, pack_state_with_pending, unpack_full, unpack_state,
+        latest_listed, pack_state, pack_state_with_pending, unpack_full, unpack_state,
     };
 
     /// Both halves survive the round trip, split back at the right byte.
@@ -673,5 +714,30 @@ mod state_container_tests {
             assert!(got.controller.is_none() && got.pending.is_empty());
         }
         assert_eq!(good[header - 1], STATE_VERSION_PENDING);
+    }
+
+    /// A million duplicates, and ids the plugin does not list, come out as one
+    /// write per listed parameter at its latest value: what a first block has
+    /// to prepend is bounded by the parameter list, whatever the blob holds.
+    /// Counted, not timed.
+    ///
+    /// Mutation (run): returning the listed entries without merging duplicates
+    /// fails the length.
+    #[test]
+    fn duplicate_and_unlisted_writes_load_as_one_per_listed_parameter() {
+        let listed: std::collections::HashSet<u32> = [7, 1].into();
+        let pending: Vec<_> = (0..1_000_000u32)
+            .map(|i| {
+                let id = [7, 1, 1000 + i][(i % 3) as usize];
+                (
+                    ParamId::new(id),
+                    Normalized::new(f64::from(i % 100) / 100.0),
+                )
+            })
+            .collect();
+        let last_of = |id: u32| pending.iter().rev().find(|(p, _)| p.get() == id).unwrap().1;
+        let (last_7, last_1) = (last_of(7), last_of(1));
+        let got = latest_listed(pending, &listed);
+        assert_eq!(got, [(ParamId::new(7), last_7), (ParamId::new(1), last_1)]);
     }
 }

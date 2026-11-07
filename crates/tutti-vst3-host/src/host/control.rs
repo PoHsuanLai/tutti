@@ -65,6 +65,15 @@ fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
 }
 
 impl Vst3Loaded {
+    /// [`Control::save_state`], with `undrained` stored beside the carried
+    /// writes: the Controller's, which no block has taken.
+    pub(super) fn save_state_with(
+        &mut self,
+        undrained: &[(ParamId, Normalized)],
+    ) -> PluginResult<Vec<u8>> {
+        self.read_state(undrained).map_err(plugin_error)
+    }
+
     /// [`Control::load_state`], keeping the writes the blob carried: applied to
     /// the controller already, and owed to the component's next block.
     pub(super) fn restore_state(
@@ -273,7 +282,7 @@ impl Control for Vst3Loaded {
     }
 
     fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        self.read_state().map_err(plugin_error)
+        self.save_state_with(&[])
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and

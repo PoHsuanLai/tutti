@@ -348,6 +348,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // The Controller's writes since the last block, put ahead of this
         // block's automation below, so where both set one parameter the
         // automation has the last word.
+        self.shell().begin_drain();
         self.drain_ring();
 
         // MIDI learn (IMidiLearn): when armed, capture each incoming controller

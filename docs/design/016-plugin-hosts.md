@@ -807,10 +807,34 @@ one; what differs is VST3's.
   instead. A malformed version 2 blob is read as a bare component stream, as a
   malformed version 1 is. A build that predates version 2 reads the whole blob as
   a component stream, so a blob with writes pending does not restore there; only
-  tutti reads the container. A save made while active, before a queued write has
-  reached a block, holds the component's value from before it.
+  tutti reads the container. A blob stores a pending write once per parameter,
+  and only for a parameter the plugin lists, so a blob cannot make the next
+  activation's first block do more than one point per listed parameter. A v2
+  blob whose component stream is empty still restores its writes (and the
+  controller's stream) to a plugin whose component has no state.
+- A save made while active also stores the writes no block has taken yet. The
+  Controller keeps a record of what it handed the Processor (the carried writes
+  at activation and every queued edit, latest per parameter, with the ring's
+  refusals), and the Shell counts the drains the Processor begins (one atomic
+  add and a fence per block, before the drain). A write is dropped from the record
+  once two drains have begun after it entered the ring: the first may have missed
+  it, the second began after the first block ended. The Controller reads the count
+  behind a fence after sending, which pairs with the Processor's, so a write is
+  either seen by a drain or counted before it. A save in that window is version 2
+  with the record's writes; a save later is the component's stream alone. This is
+  a counter and two fences, not a new queue, so there is no loom model for it.
+- Two cases stay open. A plugin's own `performEdit` while no block runs reaches
+  the host's component handler, and the host records it only if the app relays it
+  through `set_parameter`. After a `restartComponent` that changes the parameter
+  list, an id left in `carried` is delivered in the first block and the plugin
+  ignores it.
 - `Control::parameter` answers `None` for an id the plugin does not list
-  (`getParamNormalized` answers 0 for it), as CLAP and VST2 do.
+  (`getParamNormalized` answers 0 for it), as CLAP and VST2 do. It finds out by
+  walking the parameter list, one COM call per parameter until the match, so a
+  caller polling every parameter each frame pays the square of the count. The
+  next step is an id set built at load and rebuilt on `kParamTitlesChanged` and
+  `kReloadComponent`; it needs interior mutability on `Vst3Loaded` (a `&self`
+  read refreshing a cache), which is why it is not in this change.
 - `Edit::Reset` (new in the core) says every write queued before it is stale. A
   Controller's `load_state` and `load_preset` send one (CLAP's too), the ring's
   order makes it exact, and a drain applies none of the writes ahead of it. A

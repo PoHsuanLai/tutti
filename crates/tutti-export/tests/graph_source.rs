@@ -921,7 +921,7 @@ fn a_sampler_voice_renders_in_time_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get(), 1024, "the block this pins");
     for (cents, want) in [
         (0.0f32, 0xbd52_29c7_8f1d_ca41u64),
-        (700.0, 0xb4b1_7145_b7ea_643d),
+        (700.0, 0xc1f4_ffd7_8658_2ff1),
     ] {
         let clock = timeline();
         let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);

@@ -252,6 +252,14 @@ pub enum StateRestore {
     /// No snapshot had been captured yet: the replacement loads at its
     /// defaults.
     NoSnapshot,
+    /// The snapshot was left out: the plugin died within
+    /// [`RecoveryPolicy::state_probation`] of loading it last time (or while
+    /// loading it), so it is taken for the cause. The replacement loads at
+    /// its defaults, and the snapshot is gone from the record.
+    Withheld {
+        /// How old the snapshot was.
+        age: Duration,
+    },
 }
 
 /// A finished [`PluginLoad`]: the plugin, or why it did not load. `Send`;
@@ -328,6 +336,9 @@ pub struct HostedPlugin {
     snapshot: Option<Vec<u8>>,
     /// When the snapshot's capture was asked for.
     snapshot_from: Option<Instant>,
+    /// Until when a plugin that has just restored a state is suspected of
+    /// dying of it.
+    probation_until: Option<Instant>,
     /// How this plugin was loaded, for a reload; `None`: not recoverable.
     origin: Option<Origin>,
     recovery: Option<Recovery>,
@@ -369,6 +380,9 @@ struct Reload {
     in_flight: bool,
     /// The node's latency before the failure.
     latency_before: Samples,
+    /// The age of a snapshot left out of the reload (see
+    /// [`StateRestore::Withheld`]).
+    withheld_age: Option<Duration>,
     /// A loaded replacement waiting for the graph to stop re-preparing.
     ready: Option<Ready>,
 }
@@ -412,6 +426,7 @@ impl HostedPlugin {
             told: false,
             snapshot: None,
             snapshot_from: None,
+            probation_until: None,
             origin: None,
             recovery: None,
             reload: Reload::default(),
@@ -469,10 +484,24 @@ impl HostedPlugin {
         self.told = false;
         self.snapshot = None;
         self.snapshot_from = None;
+        self.probation_until = None;
         self.recovery = self.recovery.as_ref().map(|r| Recovery::new(r.policy()));
         self.reload = Reload::default();
         self.snapshot_token = Arc::new(());
         self.snapshot_at = None;
+    }
+
+    /// Takes the snapshot for the cause of a failure: the next load goes
+    /// without it, and it is not offered again.
+    fn withhold_snapshot(&mut self, now: Instant) {
+        if self.snapshot.take().is_some() {
+            self.reload.withheld_age = Some(
+                self.snapshot_from
+                    .map_or(Duration::ZERO, |t| now.saturating_duration_since(t)),
+            );
+        }
+        self.snapshot_from = None;
+        self.probation_until = None;
     }
 
     /// Records a scheduled reload and tells the host. The node stays.
@@ -919,7 +948,10 @@ impl Session {
     }
 
     /// What a hosted plugin's death or hang does from now on
-    /// ([`SessionBuilder::plugin_recovery`](crate::SessionBuilder::plugin_recovery)).
+    /// ([`SessionBuilder::plugin_recovery`](crate::SessionBuilder::plugin_recovery),
+    /// which says which plugins it covers: out-of-process ones loaded through
+    /// [`add_plugin`](Self::add_plugin), not in-process VST2 or
+    /// `insert_plugin`/`host_plugin`).
     /// Plugins already hosted start over with the new policy (their failure
     /// history is dropped); a plugin already being replaced finishes that
     /// first. `None` removes a dead plugin's node.
@@ -936,8 +968,7 @@ impl Session {
 
     /// Lands a finished reload at `now`: the replacement takes the dead
     /// plugin's node, with its wiring (`Graph::replace_plugin`), its snapshot
-    /// and failure history, and (`modulation`) the parameter values the old
-    /// one's GUI had reported since. Returns what happened, as the events
+    /// and failure history. Returns what happened, as the events
     /// `Phase::Plugins` would have reported.
     ///
     /// A reload of a node no longer being recovered (removed, replaced by
@@ -1026,8 +1057,62 @@ impl Session {
             #[cfg(feature = "modulation")]
             mirror,
         } = ready;
+        // Dead already (a state that kills it, say): not recovered.
+        if client.is_crashed() {
+            if !matches!(
+                restore,
+                StateRestore::NoSnapshot | StateRestore::Withheld { .. }
+            ) && let Some(hosted) = self.graph.plugins.get_mut(&node)
+            {
+                hosted.withhold_snapshot(now);
+            }
+            let reason = PluginHandle::from_client(&client)
+                .status()
+                .cause()
+                .map_or_else(
+                    || "the replacement died before it was installed".to_string(),
+                    str::to_string,
+                );
+            let mut gave_up = Vec::new();
+            self.fail_reload(node, reason, now, out, &mut gave_up);
+            self.finish_gave_up(gave_up, out);
+            return;
+        }
         let meter = self.click_settings.project_meter();
         client.controls().set_meter(meter);
+        // The node's edges stay as they are, so a replacement with other
+        // ports would leave the topology invalid and refuse every later
+        // commit: it is a failed attempt instead, and dropping it ends its
+        // server.
+        let got = client.declared_shape();
+        if let Some(was) = self.graph.shape(node) {
+            let ports = |s: &tutti_graph::Shape| {
+                (
+                    s.audio_in.count(),
+                    s.audio_out.count(),
+                    s.event_in,
+                    s.event_out,
+                )
+            };
+            if ports(&was) != ports(&got) {
+                let reason = format!(
+                    "the replacement's ports differ from the node's: {} audio in, {} out, {} \
+                     event in, {} out, where the node has {}, {}, {}, {}",
+                    got.audio_in.count(),
+                    got.audio_out.count(),
+                    got.event_in,
+                    got.event_out,
+                    was.audio_in.count(),
+                    was.audio_out.count(),
+                    was.event_in,
+                    was.event_out,
+                );
+                let mut gave_up = Vec::new();
+                self.fail_reload(node, reason, now, out, &mut gave_up);
+                self.finish_gave_up(gave_up, out);
+                return;
+            }
+        }
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return;
         };
@@ -1037,6 +1122,7 @@ impl Session {
         let snapshot_from = hosted.snapshot_from;
         let recovery = hosted.recovery.take();
         let latency_before = hosted.reload.latency_before;
+        let withheld = hosted.reload.withheld_age;
         #[cfg(feature = "modulation")]
         let old_mirror = hosted.mirror.take();
         let attempts = recovery.as_ref().map_or(1, Recovery::failures);
@@ -1095,18 +1181,22 @@ impl Session {
         {
             hosted.param_read = None;
             hosted.mirror = mirror;
-            if let (Some(old), Some(new)) = (old_mirror.as_ref(), hosted.mirror.as_mut()) {
-                // The GUI edits the old plugin reported since its last
-                // snapshot are not in the snapshot: set them again.
-                let params = hosted.handle.params();
-                let mut values: std::collections::HashMap<_, _> = new.values().collect();
-                for (id, value) in old.values() {
-                    params.set_parameter_value(id, value);
-                    values.insert(id, value);
-                }
-                new.land(values);
-            }
+            // The old mirror is dropped, and its values with it: it holds
+            // the values read at load, which the restored state has
+            // replaced, and (except for in-process VST2) only the edits the
+            // plugin reports. Writing them back would undo the restore and
+            // bypass the lanes that own those parameters. The new plugin's
+            // own read, after the restore, is the mirror.
+            drop(old_mirror);
         }
+        let restore = match (restore, withheld) {
+            (StateRestore::NoSnapshot, Some(age)) => StateRestore::Withheld { age },
+            (restore, _) => restore,
+        };
+        hosted.probation_until = match (&restore, hosted.recovery.as_ref()) {
+            (StateRestore::Restored { .. }, Some(r)) => Some(now + r.policy().state_probation),
+            _ => None,
+        };
         hosted.status = PluginLiveness::Healthy;
         hosted.reload = Reload::default();
         out.push(SessionEvent::PluginRecovered {
@@ -1281,6 +1371,13 @@ impl Session {
                         .plugins
                         .get_mut(&node)
                         .expect("looked up above, and nothing between removes it");
+                    if hosted.probation_until.is_some_and(|t| now < t) {
+                        tracing::warn!(
+                            "plugin {node:?} died soon after restoring its snapshot; the next \
+                             load goes without it"
+                        );
+                        hosted.withhold_snapshot(now);
+                    }
                     let action = hosted.recovery.as_mut().map(|r| {
                         r.step(
                             RecoveryEvent::Died {

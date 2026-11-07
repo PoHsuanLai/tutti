@@ -106,6 +106,9 @@ static BLOCKS_SEEN: AtomicU64 = AtomicU64::new(0);
 /// [`tutti_test_plugin_parked_blocks`].
 static PARKED_BLOCKS: AtomicU64 = AtomicU64::new(0);
 
+/// Abort when a state is loaded: `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD`.
+static CRASH_ON_STATE_LOAD: AtomicBool = AtomicBool::new(false);
+
 /// Frames a replacement server (see `configure`) adds to its latency.
 static RESTART_LATENCY: AtomicU32 = AtomicU32::new(0);
 
@@ -134,8 +137,9 @@ pub(crate) fn configure() {
 
     // `TUTTI_CLAP_PROBE_ONCE_FILE=<path>`: the crash and park switches fire in
     // the first server to start only. It creates the file exclusively; a server
-    // that finds it there is a replacement, with those two switches off and
-    // `TUTTI_CLAP_PROBE_RESTART_LATENCY` frames added to its latency. A host
+    // that finds it there is a replacement, with those two switches off,
+    // `TUTTI_CLAP_PROBE_RESTART_LATENCY` frames added to its latency and
+    // `TUTTI_CLAP_PROBE_RESTART_PORT_LAYOUT` selecting its port layout. A host
     // that reloads a failed plugin spawns it with the same environment, which
     // would otherwise fail it again.
     let replacement = std::env::var_os("TUTTI_CLAP_PROBE_ONCE_FILE").is_some_and(|path| {
@@ -147,6 +151,12 @@ pub(crate) fn configure() {
     });
     if replacement && let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_LATENCY") {
         RESTART_LATENCY.store(n, Ordering::SeqCst);
+    }
+    // A replacement with another port layout (`PortLayoutMode` as a number):
+    // an updated binary whose buses changed.
+    if replacement && let Some(n) = u32_var("TUTTI_CLAP_PROBE_RESTART_PORT_LAYOUT") {
+        // SAFETY: a plain atomic store; `unsafe` is on the signature only.
+        unsafe { crate::tutti_test_plugin_set_port_layout(n) };
     }
 
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK").filter(|_| !replacement) {
@@ -175,6 +185,9 @@ pub(crate) fn configure() {
     }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_SAVE") {
         REFUSE_STATE_SAVE.store(n != 0, Ordering::SeqCst);
+    }
+    if let Some(n) = u32_var("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD") {
+        CRASH_ON_STATE_LOAD.store(n != 0, Ordering::SeqCst);
     }
     if let Some(n) = u32_var("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD") {
         REFUSE_STATE_LOAD.store(n != 0, Ordering::SeqCst);
@@ -236,7 +249,18 @@ pub(crate) fn refuse_state_save() -> bool {
 
 /// Whether the plain `clap.state` load should refuse.
 pub(crate) fn refuse_state_load() -> bool {
+    // `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD`: a state this plugin cannot
+    // survive. It dies when one is loaded, as a plugin with a bug in its
+    // loader does.
+    die_if_state_load_crashes();
     REFUSE_STATE_LOAD.load(Ordering::SeqCst)
+}
+
+/// Aborts the process if `TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD` is set.
+pub(crate) fn die_if_state_load_crashes() {
+    if CRASH_ON_STATE_LOAD.load(Ordering::SeqCst) {
+        die();
+    }
 }
 
 /// Kill this process the way a crashing plugin does: abruptly, mid-`process()`,

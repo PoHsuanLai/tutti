@@ -145,6 +145,13 @@ impl SessionBuilder {
     /// its last snapshot. `None`: its node is removed
     /// ([`SessionEvent::PluginDied`](crate::SessionEvent::PluginDied)) and the
     /// host decides, a prompt to the user for instance.
+    ///
+    /// It covers out-of-process plugins loaded through the session's load
+    /// path ([`Session::add_plugin`](crate::Session::add_plugin)). It does not
+    /// cover an in-process VST2 plugin (its crash takes the process, and a
+    /// hang in it is not observed), nor one a host inserted itself with
+    /// `Graph::insert_plugin` or `Graph::host_plugin` (the session does not
+    /// know its path): those are removed or left as before.
     #[cfg(feature = "plugin")]
     #[must_use]
     pub fn plugin_recovery(mut self, policy: Option<crate::RecoveryPolicy>) -> Self {

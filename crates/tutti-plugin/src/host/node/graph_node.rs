@@ -30,6 +30,21 @@ use crate::protocol::{
 
 /// A bound plugin, processed through the pipelined IPC path. See
 /// [`PluginClient`].
+impl<S> PluginClient<S> {
+    /// The shape the plugin's node declares: its buses as audio ports, one
+    /// MIDI event input, one MIDI event output if it has MIDI-out, and its
+    /// latency and tail now (see [`Node::shape`] on the bound node). Read
+    /// before binding, so a host can tell a replacement's ports from the
+    /// running node's.
+    pub fn declared_shape(&self) -> Shape {
+        let midi_out = u16::from(self.loaded.features.contains(Features::MIDI_OUT));
+        Shape::audio(width(self.inputs), width(self.outputs))
+            .with_events(1, midi_out)
+            .with_latency(self.controls.declared_latency())
+            .with_tail(self.controls.tail())
+    }
+}
+
 impl Node for PluginClient<Bound> {
     /// The plugin's buses as audio ports, and its latency: the plugin's own
     /// figure **plus** the chunk the pipeline holds
@@ -71,12 +86,7 @@ impl Node for PluginClient<Bound> {
     /// The cost: a transport command scheduled inside a block reaches those
     /// polled inputs from the block's first frame, up to a block early.
     fn shape(&self) -> Shape {
-        let c = self;
-        let midi_out = u16::from(c.loaded.features.contains(Features::MIDI_OUT));
-        Shape::audio(width(c.inputs), width(c.outputs))
-            .with_events(1, midi_out)
-            .with_latency(c.controls.declared_latency())
-            .with_tail(c.controls.tail())
+        self.declared_shape()
     }
 
     /// Settle the pipeline's chunk for `p`'s `MaxBlock`, and tell the plugin

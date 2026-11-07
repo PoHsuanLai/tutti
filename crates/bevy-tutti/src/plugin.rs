@@ -120,7 +120,9 @@ pub struct TuttiPlugin {
     /// [`PluginRecovered`](crate::plugin_host::PluginRecovered),
     /// [`PluginGaveUp`](crate::plugin_host::PluginGaveUp)). `None`: the entity
     /// loses its `AudioNode` and `PluginHealth` reads `Dead`, for a host that
-    /// asks the user first.
+    /// asks the user first. It covers out-of-process plugins loaded through
+    /// `PluginRequest`, not in-process VST2 plugins or ones inserted with
+    /// `insert_plugin`/`host_plugin`.
     #[cfg(feature = "plugin")]
     pub plugin_recovery: Option<tutti_session::RecoveryPolicy>,
 }

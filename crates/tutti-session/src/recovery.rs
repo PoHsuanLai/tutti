@@ -50,6 +50,10 @@ pub struct RecoveryPolicy {
     /// abandon: the suspicion starts over. Longer than the bridge's longest
     /// wait for one block.
     pub stall_gap: Duration,
+    /// How long after a plugin restores a snapshot a death is taken to be
+    /// the snapshot's doing: the next load goes without it
+    /// ([`StateRestore::Withheld`](crate::StateRestore::Withheld)).
+    pub state_probation: Duration,
     /// How long a reload may run before it counts as failed.
     pub load_timeout: Duration,
 }
@@ -71,6 +75,7 @@ impl Default for RecoveryPolicy {
             hang_blocks: 16,
             hang_window: Duration::from_secs(5),
             stall_gap: Duration::from_secs(1),
+            state_probation: Duration::from_secs(10),
             load_timeout: Duration::from_secs(60),
         }
     }
@@ -364,6 +369,7 @@ mod tests {
             hang_blocks: 16,
             hang_window: 5 * S,
             stall_gap: S,
+            state_probation: 10 * S,
             load_timeout: 30 * S,
         }
     }

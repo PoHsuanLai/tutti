@@ -1525,7 +1525,7 @@ impl Graph {
         self.editor.spec().topology.outputs.len()
     }
 
-    fn shape(&self, node: AudioNode) -> Option<tutti_graph::Shape> {
+    pub(crate) fn shape(&self, node: AudioNode) -> Option<tutti_graph::Shape> {
         self.editor.shapes().get(&key(node)).copied()
     }
 

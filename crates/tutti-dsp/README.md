@@ -163,10 +163,10 @@ use tutti_types::StereoPlanes;
 let tap = AudioTap::new();
 let _consumer = tap.open().expect("a fresh tap has no consumer");
 
-// The audio-callback side. `frames` is a FRAME count, so an interleaved
-// stereo block of 2 frames is 4 samples.
+// The audio-callback side: an interleaved stereo block of 2 frames is 4
+// samples.
 let block = [0.5f32, -0.5, 0.5, -0.5];
-tap.push(&block, 2);
+tap.push(&block);
 
 // The analysis side, once the drained frames are deinterleaved. Draining the
 // ring itself needs `ringbuf`'s `Consumer` trait, which is the consumer's

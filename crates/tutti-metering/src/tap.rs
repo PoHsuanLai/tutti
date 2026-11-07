@@ -126,7 +126,7 @@ pub struct TapBusy;
 /// assert!(tap.open().is_err(), "one consumer at a time");
 ///
 /// // The audio callback pushes interleaved stereo frames.
-/// tap.push(&[0.25, -0.25, 0.5, -0.5], 2);
+/// tap.push(&[0.25, -0.25, 0.5, -0.5]);
 /// assert_eq!(cons.try_pop(), Some((0.25, -0.25)));
 /// assert_eq!(cons.occupied_len(), 1);
 ///
@@ -219,16 +219,14 @@ impl AudioTap {
         self.on.load(Ordering::Acquire)
     }
 
-    /// Pushes interleaved stereo samples into the ring.
-    ///
-    /// `frames` is a **frame** count, so `output` must hold at least
-    /// `frames * 2` samples.
+    /// Pushes interleaved stereo samples into the ring; a trailing odd sample
+    /// is ignored.
     ///
     /// Called from the audio callback. RT-safe and never blocking: it
     /// `try_lock`s, and drops frames if the ring is full or the producer is
     /// mid-swap. No-op while the tap is closed.
     #[inline]
-    pub fn push(&self, output: &[f32], frames: usize) {
+    pub fn push(&self, output: &[f32]) {
         if !self.on.load(Ordering::Acquire) {
             return;
         }
@@ -238,8 +236,7 @@ impl AudioTap {
         {
             // One copy and one write-index update for the block; what
             // does not fit is dropped, as a full ring always has been.
-            let pairs = output.as_chunks::<2>().0;
-            let _ = prod.push_slice(&pairs[..frames.min(pairs.len())]);
+            let _ = prod.push_slice(output.as_chunks::<2>().0);
         }
     }
 }
@@ -276,7 +273,7 @@ mod tests {
             "a second open must be refused"
         );
 
-        tap.push(&[0.5, -0.5], 1);
+        tap.push(&[0.5, -0.5]);
         assert_eq!(
             first.try_pop(),
             Some((0.5, -0.5)),
@@ -297,7 +294,7 @@ mod tests {
         drop(first);
 
         let mut second = tap.open().expect("a closed tap reopens");
-        tap.push(&[0.25, 0.75], 1);
+        tap.push(&[0.25, 0.75]);
         assert_eq!(second.try_pop(), Some((0.25, 0.75)));
     }
 
@@ -319,7 +316,7 @@ mod tests {
         let mut cons = tap.open().expect("open");
         tap.close();
 
-        tap.push(&[1.0, 1.0], 1);
+        tap.push(&[1.0, 1.0]);
         assert_eq!(
             cons.try_pop(),
             None,

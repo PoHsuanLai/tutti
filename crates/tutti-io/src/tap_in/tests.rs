@@ -12,7 +12,7 @@ fn tap_with(frames: &[(f32, f32)]) -> TapIn {
     let tap = AudioTap::new();
     let cons = tap.open().expect("a fresh tap opens");
     let flat: Vec<f32> = frames.iter().flat_map(|&(l, r)| [l, r]).collect();
-    tap.push(&flat, frames.len());
+    tap.push(&flat);
     TapIn::new(cons)
 }
 

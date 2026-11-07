@@ -303,7 +303,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// let (driver, pump) = ManualDriver::new();
 /// let rec = Recorder::start_with(src, wav, driver)?;
 ///
-/// tap.push(&[0.5, -0.5, 0.25, -0.25], 2);
+/// tap.push(&[0.5, -0.5, 0.25, -0.25]);
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(2))));
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Starved));
 ///

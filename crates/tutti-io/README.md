@@ -85,10 +85,9 @@ use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
 let tap = AudioTap::new();
 let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
 
-// The callback's push is denominated in FRAMES; the slice it reads from is
-// interleaved, so it must hold `frames * 2` samples.
+// The callback pushes an interleaved stereo block.
 let block = [0.25f32, -0.25, 0.5, -0.5, 0.75, -0.75];
-tap.push(&block, 3);
+tap.push(&block);
 
 let dir = tempfile::tempdir().expect("temp dir");
 let path = dir.path().join("take.wav");

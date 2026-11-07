@@ -160,8 +160,8 @@ fn a_wide_device_meters_a_fold_not_the_first_two_channels() {
 #[test]
 fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
     for width in [2usize, 6] {
-        let meter = tutti_metering::MasterMeter::new();
-        let state = support::dc_state_metered(0.5, width, meter.clone());
+        let (writer, meter) = tutti_metering::MasterMeter::pair();
+        let state = support::dc_state_metered(0.5, width, writer);
         let mut block = OutputBlock::new(state, ChannelLayout::from(width));
         let mut out = vec![0.0f32; 64 * width];
 
@@ -176,6 +176,33 @@ fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
         block.render(&mut out);
         let peak = meter.get().peak_left.get();
         assert!(peak > 0.0, "width {width}: the enabled meter read {peak}");
+    }
+}
+
+/// **A stereo callback at the `MAX_FRAMES` ceiling reads its analytic
+/// level**: a constant 0.5 reads 0.5 as both peak and RMS. (A wide device's
+/// fold is not a passthrough, so its figure is the fold's, pinned by
+/// `a_wide_device_meters_a_fold_not_the_first_two_channels`.)
+///
+/// Mutation (run): doubling the buffer handed to `meter_output` in
+/// `block.rs` → the peak reads 1.0 → fails. The metered length is pinned by
+/// `tutti-metering`'s `a_block_past_8192_frames_is_metered_whole`.
+#[test]
+fn a_full_block_reads_its_analytic_level() {
+    let (writer, meter) = tutti_metering::MasterMeter::pair();
+    meter.enable();
+    let state = support::dc_state_metered(0.5, 2, writer);
+    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; MAX_FRAMES * 2];
+    block.render(&mut out);
+    let r = meter.get();
+    for (what, got) in [
+        ("peak left", r.peak_left),
+        ("peak right", r.peak_right),
+        ("rms left", r.rms_left),
+        ("rms right", r.rms_right),
+    ] {
+        assert!((got.get() - 0.5).abs() < 1e-6, "{what} read {}", got.get());
     }
 }
 
@@ -226,4 +253,24 @@ fn an_empty_callback_renders_nothing_and_does_not_panic() {
     let mut out: [f32; 0] = [];
     block.render(&mut out);
     assert_eq!(block.last_rendered_frames(), 0);
+}
+
+/// **The callback hands the tap every frame it rendered**, not a prefix: a
+/// 64-frame block leaves 64 frames in the ring, the last still the DC level.
+///
+/// Mutation (run): `tap.push(&output[..output.len() / 2])` in
+/// `tutti-metering`'s `meter_output` → 32 frames → fails.
+#[test]
+fn the_callback_taps_the_whole_block() {
+    let (state, mut cons) = support::dc_on_channel(0.5, 0, 2);
+    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; 64 * 2];
+    block.render(&mut out);
+
+    assert_eq!(cons.occupied_len(), 64);
+    let mut last = None;
+    while let Some(f) = cons.try_pop() {
+        last = Some(f);
+    }
+    assert_eq!(last, Some((0.5, 0.0)));
 }

@@ -7,8 +7,8 @@
 use cpal::traits::DeviceTrait;
 use std::sync::Arc;
 use tutti_engine::Engine;
-use tutti_metering::{AudioTap, MasterMeter};
-use tutti_rt::with_no_denormals;
+use tutti_metering::{AudioTap, MeterWriter};
+use tutti_rt::{AudioThreadCell, with_no_denormals};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
 use crate::block::OutputBlock;
@@ -35,14 +35,19 @@ pub const MAX_FRAMES: usize = 8192;
 #[derive(Debug)]
 pub struct AudioCallbackState {
     pub(crate) engine: Engine,
-    pub(crate) meter: MasterMeter,
+    /// The audio thread's half; the callback borrows it once per block.
+    pub(crate) meter: AudioThreadCell<MeterWriter>,
     pub(crate) tap: AudioTap,
 }
 
 impl AudioCallbackState {
     /// Creates the state a stream's callback reads, on the control thread.
-    pub fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
-        Self { engine, meter, tap }
+    pub fn new(engine: Engine, meter: MeterWriter, tap: AudioTap) -> Self {
+        Self {
+            engine,
+            meter: AudioThreadCell::new(meter),
+            tap,
+        }
     }
 }
 

@@ -301,7 +301,7 @@ impl CpalDriver {
 /// let transport = Transport::new(rate);
 /// let (mut editor, executor) = Editor::new(Prepare::new(rate, Samples(512)));
 /// let engine = Engine::new(&transport, &mut editor, executor)?;
-/// let state = Arc::new(AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new()));
+/// let state = Arc::new(AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new()));
 ///
 /// let spec = OutputSpec::new(rate, ChannelLayout::STEREO, tutti_cpal::cpal::SampleFormat::F32);
 /// let mut audio = AudioEngine::from_spec(spec);

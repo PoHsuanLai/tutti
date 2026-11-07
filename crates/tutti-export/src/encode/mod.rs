@@ -96,20 +96,15 @@ pub(crate) trait Encoder {
 
 /// Render `src` to `path` in the format `config` names.
 ///
-/// A render `control` stops removes `path`: the encoder has dropped its
-/// writer by then, and a half-written file must not pass for a finished
-/// one. A file that was at `path` before is gone too, since every encoder
-/// truncates it on create.
+/// The render is written to a temporary file beside `path` and renamed over
+/// it when it finishes, so `path` holds either the previous file or a
+/// complete new one, never a partial render. A render that errors or that
+/// `control` stops leaves `path` untouched and removes the temporary.
 ///
-/// The one dispatch. A format whose cargo feature is off is a clean
-/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
-/// silently degrades, and no arm rejects a format this build can actually
-/// write.
-// With no codec feature on, every arm of the match below is an early
-// `UnsupportedFormat` return — so the parameters go unread and the trailing
-// `Written` construction is unreachable. That is the intended behaviour of a
-// build that can write no formats, not dead code to prune.
-#[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
+/// The rename replaces an existing file (on Windows too: `std::fs::rename`
+/// is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`), and replaces a symlink
+/// at `path` rather than writing through it. The new file has the default
+/// permissions, not the old file's.
 pub(crate) fn encode_to_file(
     src: &mut dyn FrameSource,
     source_rate: tutti_types::SampleRate,
@@ -118,6 +113,88 @@ pub(crate) fn encode_to_file(
     path: &Path,
     control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
+    let staged = Staged::beside(path);
+    let outcome = encode_into(src, source_rate, plan, config, staged.path(), control)?;
+    if outcome == Outcome::Cancelled {
+        return Ok(Outcome::Cancelled);
+    }
+    staged.commit(path)?;
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    Ok(Outcome::Finished(Written {
+        path: path.to_path_buf(),
+        bytes,
+    }))
+}
+
+/// A file being written beside its destination: removed when dropped unless
+/// [`commit`](Self::commit)ted. A leftover that cannot be removed is logged,
+/// not an error: the render's outcome is already decided.
+struct Staged {
+    temp: std::path::PathBuf,
+    kept: bool,
+}
+
+impl Staged {
+    fn beside(target: &Path) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let name = target
+            .file_name()
+            .map_or_else(|| "export".to_owned(), |n| n.to_string_lossy().into_owned());
+        let temp = target.with_file_name(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self { temp, kept: false }
+    }
+
+    fn path(&self) -> &Path {
+        &self.temp
+    }
+
+    /// Renames the temporary over `target`.
+    fn commit(mut self, target: &Path) -> std::io::Result<()> {
+        std::fs::rename(&self.temp, target)?;
+        self.kept = true;
+        Ok(())
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        match std::fs::remove_file(&self.temp) {
+            Ok(()) => {}
+            // Never created: the encoder failed before it opened the file.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                "export: could not remove the unfinished file {}: {e}",
+                self.temp.display()
+            ),
+        }
+    }
+}
+
+/// Writes `src` to `path` in the format `config` names: the one dispatch. A format whose cargo feature is off is a clean
+/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
+/// silently degrades, and no arm rejects a format this build can actually
+/// write.
+// With no codec feature on, every arm of the match below is an early
+// `UnsupportedFormat` return — so the parameters go unread and the trailing
+// `Written` construction is unreachable. That is the intended behaviour of a
+// build that can write no formats, not dead code to prune.
+#[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
+fn encode_into(
+    src: &mut dyn FrameSource,
+    source_rate: tutti_types::SampleRate,
+    plan: &RenderPlan,
+    config: &ExportConfig,
+    path: &Path,
+    control: &mut Control<'_>,
+) -> Result<Outcome<()>> {
     use crate::options::AudioFormat;
     #[allow(
         unused_imports,
@@ -191,15 +268,7 @@ pub(crate) fn encode_to_file(
         }
     };
 
-    if outcome == Outcome::Cancelled {
-        std::fs::remove_file(path)?;
-        return Ok(Outcome::Cancelled);
-    }
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    Ok(Outcome::Finished(Written {
-        path: path.to_path_buf(),
-        bytes,
-    }))
+    Ok(outcome)
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.
@@ -333,3 +402,6 @@ pub(crate) fn encode_planes(
     // have been rendered under a different config entirely.
     encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)
 }
+
+#[cfg(test)]
+mod tests;

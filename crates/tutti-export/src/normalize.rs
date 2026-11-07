@@ -183,7 +183,7 @@ pub fn render_normalized_to_file(
 /// [`render_normalized_to_file`], reporting to `tick` after each block of
 /// both passes: pass 0 renders the graph, pass 1 writes the gained audio
 /// ([`Progress::pass`]). Stopping either returns [`Outcome::Cancelled`] with
-/// no file at `path`, as [`render_to_file_with`] does; the measurement and
+/// `path` untouched, as [`render_to_file_with`] does; the measurement and
 /// the resample between the passes do not tick.
 ///
 /// # Errors

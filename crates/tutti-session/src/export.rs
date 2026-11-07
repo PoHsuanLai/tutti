@@ -25,7 +25,7 @@
 //! [`progress`](ExportHandle::progress) reads how far it is. A cancelled job
 //! returns [`Outcome::Cancelled`] from [`Session::finish_export`] like any
 //! other job returns, drops its token when the render has stopped, and
-//! leaves no file at a [`File`](ExportTarget::File) target's path.
+//! leaves a [`File`](ExportTarget::File) target's path as it was.
 //!
 //! **A token that never drops** (a job `mem::forget`ed, or kept unrun
 //! forever) keeps the export in flight: the plugins stay Offline and every
@@ -42,15 +42,15 @@
 //! thread. Something sent once the session is gone drops where it is.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tutti_core::AudioNode;
 use tutti_core::transport::OfflineTransport;
 use tutti_export::{
-    ConfigError, ExportConfig, Flow, Normalize, Outcome, Pass, Progress, RenderClock, RenderGraph,
+    ConfigError, ExportConfig, Flow, Normalize, Outcome, Progress, RenderClock, RenderGraph,
     Rendered, Written,
 };
 use tutti_types::{NodeKey, Samples};
@@ -94,8 +94,9 @@ pub enum ExportTarget {
     /// graph a block at a time); `Some(..)` is a two-pass render that holds
     /// the whole signal to measure a gain from it.
     File {
-        /// Where to write. A cancelled render removes the file, including
-        /// one that was there before (the encoder truncates it on create).
+        /// Where to write. The render is written beside the path and renamed
+        /// over it when it finishes: a cancelled or failed render leaves
+        /// what was at the path as it was.
         path: PathBuf,
         /// `None` streams; `Some` measures a gain over the whole signal.
         normalize: Option<Normalize>,
@@ -502,32 +503,14 @@ impl<T: Send + 'static> Drop for ToMain<T> {
     }
 }
 
-/// Frames in a packed reading: the low 48 bits of a word.
-const FRAMES_MASK: u64 = (1 << 48) - 1;
-
 /// What a job and its handles share: a stop request and the latest
-/// [`Progress`], as two words so a reader on any thread loads them without
-/// a lock.
-///
-/// A word is the pass (`index << 56 | count << 48`) over the frames.
-/// `count` is at least 1, so a word of 0 is "no reading yet". The total is
-/// stored before the produced count, and a reader that finds the two words
-/// at different passes reads again, so a reading is always one pass's.
+/// [`Progress`]. The render writes the reading once per block on its own
+/// thread and a host reads it on its own; neither is an audio thread, so a
+/// lock is enough.
 #[derive(Debug, Default)]
 struct Shared {
     stop: AtomicBool,
-    total: AtomicU64,
-    produced: AtomicU64,
-}
-
-fn pack(pass: Pass, frames: Samples) -> u64 {
-    let frames = (frames.get() as u64).min(FRAMES_MASK);
-    (u64::from(pass.index()) << 56) | (u64::from(pass.count()) << 48) | frames
-}
-
-fn unpack(word: u64) -> (Option<Pass>, Samples) {
-    let pass = Pass::new((word >> 56) as u8, (word >> 48) as u8);
-    (pass, Samples((word & FRAMES_MASK) as usize))
+    progress: Mutex<Option<Progress>>,
 }
 
 /// A handle on a running export: stops it, and reads how far it is. Cheap
@@ -540,7 +523,8 @@ impl ExportHandle {
     /// Asks the render to stop. It does at the end of its current block
     /// (before the first, for a job that has not rendered one), reports
     /// [`Outcome::Cancelled`] and drops the export's token; the file it
-    /// was writing is removed. A render that has finished is unaffected.
+    /// was writing is removed and the target path is untouched. A cancel
+    /// after the last block's tick is too late and the render is `Finished`.
     pub fn cancel(&self) {
         self.0.stop.store(true, Ordering::Release);
     }
@@ -550,23 +534,11 @@ impl ExportHandle {
     /// order ([`Progress::pass`]).
     #[must_use]
     pub fn progress(&self) -> Option<Progress> {
-        loop {
-            let produced = self.0.produced.load(Ordering::Acquire);
-            let total = self.0.total.load(Ordering::Acquire);
-            if produced == 0 {
-                return None;
-            }
-            if produced >> 48 != total >> 48 {
-                // The render moved to its next pass between the loads.
-                continue;
-            }
-            let (pass, produced) = unpack(produced);
-            return Some(Progress {
-                pass: pass?,
-                produced,
-                total: unpack(total).1,
-            });
-        }
+        *self
+            .0
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn stop_requested(&self) -> bool {
@@ -575,10 +547,11 @@ impl ExportHandle {
 
     /// The render's tick: records the block and answers whether to go on.
     fn tick(&self, p: Progress) -> Flow {
-        self.0.total.store(pack(p.pass, p.total), Ordering::Release);
-        self.0
-            .produced
-            .store(pack(p.pass, p.produced), Ordering::Release);
+        *self
+            .0
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(p);
         if self.stop_requested() {
             Flow::Stop
         } else {
@@ -1014,13 +987,21 @@ mod tests {
         };
         let job = session.export(request()).unwrap();
         assert_eq!(session.render_mode(), RenderMode::Offline);
-        session.finish_export_unannounced(job.run()).unwrap();
+        session
+            .finish_export_unannounced(job.run())
+            .unwrap()
+            .finished()
+            .expect("not cancelled");
         assert!(!session.export_in_flight(), "the token is released");
         assert_eq!(session.render_mode(), RenderMode::Offline, "not announced");
         // The next export starts with no Realtime in between.
         let job = session.export(request()).unwrap();
         assert_eq!(session.render_mode(), RenderMode::Offline);
-        session.finish_export_unannounced(job.run()).unwrap();
+        session
+            .finish_export_unannounced(job.run())
+            .unwrap()
+            .finished()
+            .expect("not cancelled");
         session.run_phase(
             Phase::RenderMode,
             PhaseCx::at(Instant::now()),
@@ -1032,7 +1013,11 @@ mod tests {
             "the phase announces"
         );
 
-        session.export_blocking(request()).unwrap();
+        session
+            .export_blocking(request())
+            .unwrap()
+            .finished()
+            .expect("not cancelled");
         assert_eq!(
             session.render_mode(),
             RenderMode::Realtime,
@@ -1128,7 +1113,9 @@ mod tests {
                     *into.lock().unwrap() = Some((prepared.ctx.is_rolling(), prepared.ctx.beat()));
                 })),
             )
-            .expect("the export renders");
+            .expect("the export renders")
+            .finished()
+            .expect("not cancelled");
         let (rolling, beat) = seen.lock().unwrap().expect("the edit ran");
         assert!(!rolling, "a frozen export's timeline must not roll");
         assert_eq!(beat, tutti_types::Beat(0.0));
@@ -1217,7 +1204,11 @@ mod tests {
         let first = start(&mut session);
         assert_eq!(collect(&mut session, t2), 2);
         assert_eq!(collect(&mut session, t2 + 50 * minute), 2);
-        session.finish_export_unannounced(first.run()).unwrap();
+        session
+            .finish_export_unannounced(first.run())
+            .unwrap()
+            .finished()
+            .expect("not cancelled");
         let second = start(&mut session);
         assert_eq!(
             collect(&mut session, t2 + 70 * minute),
@@ -1225,6 +1216,10 @@ mod tests {
             "the second export has been in flight for 20 minutes, not 70"
         );
         assert_eq!(collect(&mut session, t2 + 129 * minute), 2, "59 minutes");
-        session.finish_export_unannounced(second.run()).unwrap();
+        session
+            .finish_export_unannounced(second.run())
+            .unwrap()
+            .finished()
+            .expect("not cancelled");
     }
 }

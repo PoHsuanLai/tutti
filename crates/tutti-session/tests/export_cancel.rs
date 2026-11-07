@@ -195,8 +195,8 @@ fn a_buffer_export_cancels() {
 /// A render nobody cancels reports each block and ends on its total; a
 /// normalized one ends on the second pass of two.
 ///
-/// Mutation (run): the handle storing `produced` without the pass bits ->
-/// the pass assertion fails.
+/// Mutation (run): `ExportHandle::tick` recording every reading as `Pass::ONLY`
+/// -> the pass assertion fails.
 #[test]
 fn progress_ends_on_the_total_of_the_last_pass() {
     let dir = tempfile::tempdir().unwrap();

@@ -23,6 +23,8 @@ ogg = ["vorbis_rs"]
 
 [dependencies]
 thiserror.workspace = true
+# An unfinished file that cannot be removed is logged.
+tracing = "0.1"
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
 # The graph: `RenderGraph` is a forked or built

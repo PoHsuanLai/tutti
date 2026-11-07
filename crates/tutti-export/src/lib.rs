@@ -225,9 +225,9 @@ pub fn render_to_file(
 ///
 /// `tick` sees the [`Progress`] of the pass (one frame count rising to its
 /// total) and answers [`Flow::Stop`] to end the render, which returns
-/// [`Outcome::Cancelled`] with no file left at `path`: the one this render
-/// wrote is removed, and so is one that was there before, which the encoder
-/// truncated on create.
+/// [`Outcome::Cancelled`]. The render is written to a temporary file beside
+/// `path` and renamed over it when it finishes, so a cancelled or failed
+/// render leaves what was at `path` as it was.
 ///
 /// # Errors
 ///

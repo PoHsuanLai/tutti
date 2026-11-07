@@ -273,9 +273,9 @@ impl ExportInFlight {
     /// Stops the render at the end of its current block (or before its
     /// first). The frame that sees it stopped triggers [`ExportCancelled`]
     /// on the request entity instead of [`ExportDone`], releases the
-    /// session's export token, and a [`File`](ExportTarget::File) target
-    /// is removed, including a file that was at its path before (the
-    /// encoder truncates it on create).
+    /// session's export token. A [`File`](ExportTarget::File) target is left
+    /// as it was: the render is written beside the path and renamed over it
+    /// only when it finishes.
     ///
     /// Despawning the entity does the same without the event: dropping the
     /// component cancels, and drops the task.

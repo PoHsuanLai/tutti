@@ -124,23 +124,31 @@
 #   `pub(crate) use tutti_mod;`, and `pub use tutti_mod;` in a comment or
 #   a string. Every earlier (4) mutation above still fails.
 #
-# - (5), each appended to `src/graph/commit.rs` and removed. These fail:
-#   `fn zz() { let _t = std::time::Instant::now(); }`,
-#   `let now = Instant::now(); g.run_phase(Phase::Poll, now);` (the clock must
-#   be the argument itself), `const LIMIT: usize = 4;` and
-#   `pub(crate) const EVERY: std::time::Duration = ..;`. These pass:
-#   `g.run_phase(Phase::Poll, Instant::now())`, `PhaseCx::at(Instant::now())`,
-#   a multi-line `run_phase_with_mods(.., Instant::now(), ..)`,
-#   `impl<const N: usize> W<N>` and `fn k<A, const M: usize>()`,
-#   `const KIND: u32` and `const NAME: &str`, the same text in a comment or a
-#   string, and `#[cfg(test)]` items holding either. Deleting the
-#   `midi_device_poll_system` exception fails at `device.rs`, and an
-#   exception for a fn or const that does not exist fails as stale.
-#   Its limits: an exception is keyed by file and enclosing fn (the last `fn`
-#   before the site), so a second `Instant::now` in the same excepted fn is
-#   not reported separately; `static` items, other integer types
-#   (`const N: u32`) and a limit written as a literal in an expression are not
-#   read.
+# - (5), each appended to `src/graph/commit.rs` (or `midi/hardware/device.rs`)
+#   and removed. These fail: `Instant::now()` in a fn that is no phase
+#   argument, `let now = Instant::now(); g.run_phase(.., now)` (the clock must
+#   be the argument itself), `use std::time::Instant as I; I::now()`,
+#   `type Clk = Instant; Clk::now()`, `SystemTime::now()`,
+#   `run_phase(.., Instant::now().checked_add(d))` and `a + Instant::now()`
+#   in an argument, `const LIMIT: usize`, `static CAP: usize`, a `Duration`
+#   const or static (also through `type Span = Duration`), and a
+#   `LazyLock::new(|| Instant::now())` static after the excepted
+#   `midi_device_poll_system` (reported in `<item>`, not hidden by that fn's
+#   exception). These pass: `g.run_phase(Phase::Poll, Instant::now())`,
+#   `PhaseCx::at(Instant::now())`, a multi-line `run_phase_with_mods(..)`,
+#   `impl<const N: usize> W<N>`, `fn k<A, const M: usize>()`, `const KIND: u32`,
+#   `&'static str`, a trait `fn now(&self)`, the same text in a comment or a
+#   string, a closure inside the excepted fn, and `#[cfg(test)]` items.
+#   Deleting the `midi_device_poll_system` exception fails at `device.rs`, and
+#   an exception for a fn or const that does not exist fails as stale.
+#   Holes that remain, deliberately: an exception is keyed by file and
+#   enclosing fn, so a second clock read in the same excepted fn is not
+#   reported separately; a limit that is not a `const`/`static` item of type
+#   `usize` or a duration (`const N: u32`, `Duration::from_secs(2)` in an
+#   expression, a `2` in a comparison) is not read; a clock or alias reached
+#   through a macro, a glob import renamed in another crate, or a generic
+#   alias with parameters is not seen; the fn that holds a site is found by
+#   braces, not by parsing, so a `fn` in a macro body can mis-name it.
 #
 # Usage:
 #   scripts/check-adapter.sh
@@ -429,41 +437,95 @@ for (split /\n/, $ENV{EXCEPTIONS} // "") {
   $exc{"$kind|$file|$name"} = $why;
 }
 my ($files, $code, $skip_file, $skip_dir) = adapter_code($root);
-my %found;   # key => [line, text]
-for my $f (@$files) {
-  next if $skip_file->{$f};
-  next if grep { index($f, $_) == 0 } @$skip_dir;
+my @live = grep { my $f = $_; !$skip_file->{$f} && !(grep { index($f, $_) == 0 } @$skip_dir) } @$files;
+
+# Names that stand for a clock or a duration: the types, and every alias of
+# them in any file (`use .. Instant as I`, `type T = Duration;`).
+my (%clock, %span) = ();
+%clock = map { $_ => 1 } qw(Instant SystemTime);
+%span = map { $_ => 1 } qw(Duration);
+for my $f (@live) {
+  my $c = $code->{$f};
+  while ($c =~ /\b(Instant|SystemTime|Duration)\s+as\s+(\w+)/g) { ($1 eq "Duration" ? \%span : \%clock)->{$2} = 1 }
+  while ($c =~ /\btype\s+(\w+)\s*(?:<[^>]*>)?\s*=\s*(?:\w+\s*::\s*)*(Instant|SystemTime|Duration)\b/g) {
+    ($2 eq "Duration" ? \%span : \%clock)->{$1} = 1;
+  }
+}
+my $clock_re = join "|", map { quotemeta } sort keys %clock;
+my $span_re  = join "|", map { quotemeta } sort keys %span;
+
+# Each fn body as [start, end, name], to name the fn that holds a site. A
+# site in no fn body (a static initialiser) is `<item>`, which no exception
+# names.
+sub fn_bodies {
+  my ($c) = @_;
+  my (@stack, @out);
+  my ($pending, $pend_depth, $paren) = (undef, 0, 0);
+  while ($c =~ /(\bfn\s+(\w+)|[{}()\[\];])/g) {
+    my ($tok, $name, $at) = ($1, $2, $-[0]);
+    if (defined $name) { $pending = $name; $pend_depth = $paren; next }
+    if ($tok eq "(" || $tok eq "[") { $paren++ }
+    elsif ($tok eq ")" || $tok eq "]") { $paren-- }
+    elsif ($tok eq ";") { $pending = undef if defined $pending && $paren == $pend_depth }
+    elsif ($tok eq "{") {
+      if (defined $pending && $paren == $pend_depth) { push @stack, [$at, $pending]; $pending = undef }
+      else { push @stack, [$at, undef] }
+    }
+    elsif ($tok eq "}") {
+      my $top = pop @stack or next;
+      push @out, [$top->[0], $at, $top->[1]] if defined $top->[1];
+    }
+  }
+  return \@out;
+}
+
+my %found;   # key => [line, text, why]
+for my $f (@live) {
   my $c = $code->{$f};
   open my $fh, "<", $f or die; my @orig = <$fh>; close $fh;
   my $line_of = sub { 1 + (substr($c, 0, $_[0]) =~ tr/\n//) };
   my $text_of = sub { (my $t = $orig[$_[0] - 1]) =~ s/^\s+|\s+$//g; $t };
-
-  # Every Instant::now is the direct argument of a session phase.
-  while ($c =~ /\bInstant\s*::\s*now\b/g) {
-    my $at = $-[0];
-    my $call = "";
-    my $depth = 0;
-    for (my $i = $at - 1; $i >= 0; $i--) {
-      my $ch = substr($c, $i, 1);
-      if ($ch eq ")") { $depth++ }
-      elsif ($ch eq "(") {
-        if ($depth == 0) {
-          $call = substr($c, 0, $i) =~ /([\w:]+)\s*\z/ ? $1 : "";
-          last;
-        }
-        $depth--;
-      }
-      elsif ($depth == 0 && ($ch eq ";" || $ch eq "{" || $ch eq "}")) { last }
+  my $bodies = fn_bodies($c);
+  my $fn_at = sub {
+    my ($best, $size) = ("<item>", undef);
+    for my $b (@$bodies) {
+      next unless $b->[0] < $_[0] && $_[0] < $b->[1];
+      my $w = $b->[1] - $b->[0];
+      ($best, $size) = ($b->[2], $w) if !defined $size || $w < $size;
     }
-    next if $call =~ /(?:\A|::)(?:run_phase|run_phase_with_mods)\z/ || $call =~ /(?:\A|::)PhaseCx::at\z/;
-    my ($fn) = substr($c, 0, $at) =~ /.*\bfn\s+(\w+)/s;
+    return $best;
+  };
+
+  # A clock read is `Clock::now()` standing alone as an argument of a session
+  # phase: `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
+  # `PhaseCx::at(..)`, with nothing chained on it.
+  while ($c =~ /((?:\w+\s*::\s*)*)\b($clock_re)\s*::\s*now\b/g) {
+    my ($at, $end) = ($-[0], $+[0]);
+    my $ok = 0;
+    my $before = substr($c, 0, $at);
+    my $after = substr($c, $end);
+    if ($before =~ /[(,]\s*\z/ && $after =~ /\A\s*\(\s*\)\s*[,)]/) {
+      my $call = "";
+      my $depth = 0;
+      for (my $i = $at - 1; $i >= 0; $i--) {
+        my $ch = substr($c, $i, 1);
+        if ($ch eq ")") { $depth++ }
+        elsif ($ch eq "(") {
+          if ($depth == 0) { $call = substr($c, 0, $i) =~ /([\w:]+)\s*\z/ ? $1 : ""; last }
+          $depth--;
+        }
+        elsif ($depth == 0 && ($ch eq ";" || $ch eq "{" || $ch eq "}")) { last }
+      }
+      $ok = $call =~ /(?:\A|::)(?:run_phase|run_phase_with_mods)\z/ || $call =~ /(?:\A|::)PhaseCx::at\z/;
+    }
+    next if $ok;
     my $line = $line_of->($at);
-    $found{"instant|$f|" . ($fn // "?")} //= [$line, $text_of->($line), "reads the clock for itself"];
+    $found{"instant|$f|" . $fn_at->($at)} //= [$line, $text_of->($line), "reads the clock for itself"];
   }
 
-  # No `const NAME: usize` or `Duration` item. A const generic parameter
-  # (`<const N: usize>`, `, const N: usize`) is not an item.
-  while ($c =~ /(?<![\w])const\s+([A-Za-z_]\w*)\s*:\s*(?:\w+::)*(?:usize|Duration)\s*=/g) {
+  # No `const`/`static` item of type `usize` or a duration. A const generic
+  # parameter (`<const N: usize>`, `, const N: usize`) is not an item.
+  while ($c =~ /(?<![\w\x27])(?:const|static(?:\s+mut)?)\s+([A-Za-z_]\w*)\s*:\s*(?:\w+\s*::\s*)*(?:usize|$span_re)\s*=/g) {
     my ($name, $at) = ($1, $-[0]);
     next if substr($c, 0, $at) =~ /[<,]\s*\z/;
     my $line = $line_of->($at);

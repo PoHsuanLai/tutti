@@ -43,7 +43,9 @@ fn render(
             },
         )
     })
-    .unwrap();
+    .unwrap()
+    .finished()
+    .expect("not cancelled");
     out
 }
 

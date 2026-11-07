@@ -69,8 +69,8 @@ fn stop_after(n: usize, pass: u8, seen: &mut Vec<Progress>) -> impl FnMut(Progre
 /// file), has rendered exactly N blocks, and leaves nothing at its path, in
 /// every format.
 ///
-/// Mutation (run): `encode_to_file` not removing the file on `Cancelled`
-/// -> the `exists` assertion fails.
+/// Mutation (run): `encode_to_file` writing to `path` itself -> the partial
+/// file stays and the `exists` assertion fails.
 /// Mutation (run): `drive` ignoring the tick's answer -> the outcome
 /// assertion fails.
 #[test]
@@ -93,27 +93,122 @@ fn a_stopped_file_render_is_cancelled_and_leaves_no_file() {
     }
 }
 
-/// A file already at the path is replaced by the render's, so a cancelled
-/// export removes it too: the encoder truncated it on create.
+/// Every name in `dir`.
+fn names(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+/// A cancel never touches a file already at the path, whichever pass it
+/// lands in, and leaves no temporary beside it: the render is written aside
+/// and renamed over the target only when it finishes.
 ///
-/// Mutation (run): `encode_to_file` not removing the file on `Cancelled` ->
-/// the truncated file remains and `exists` fails.
+/// Mutation (run): `encode_to_file` writing to `path` itself (no `Staged`) ->
+/// the old bytes are truncated and the comparison fails in every case.
+/// Mutation (run): `Staged::drop` not removing the temporary -> the
+/// directory listing holds a `.tmp` and fails.
 #[test]
-fn a_cancelled_export_does_not_leave_the_file_it_overwrote() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("old.wav");
-    std::fs::write(&path, b"an earlier export").unwrap();
-    let mut seen = Vec::new();
-    let outcome = render_to_file_with(
-        graph(),
-        &config(AudioFormat::Wav),
-        &FrozenClock,
-        &path,
-        &mut stop_after(1, 0, &mut seen),
-    )
-    .unwrap();
-    assert_eq!(outcome, Outcome::Cancelled);
-    assert!(!path.exists());
+fn a_cancel_leaves_the_file_it_would_have_replaced() {
+    for (format, ext) in formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("old.{ext}");
+        let path = dir.path().join(&name);
+        let old = b"an earlier export, byte for byte".to_vec();
+        for (normalize, pass) in [
+            (None, 0u8),
+            (Some(Normalize::peak(Db(-6.0))), 0),
+            (Some(Normalize::peak(Db(-6.0))), 1),
+        ] {
+            std::fs::write(&path, &old).unwrap();
+            let mut seen = Vec::new();
+            let outcome = match normalize {
+                None => render_to_file_with(
+                    graph(),
+                    &config(format),
+                    &FrozenClock,
+                    &path,
+                    &mut stop_after(2, pass, &mut seen),
+                ),
+                Some(n) => render_normalized_to_file_with(
+                    graph(),
+                    &config(format),
+                    &FrozenClock,
+                    n,
+                    &path,
+                    &mut stop_after(2, pass, &mut seen),
+                ),
+            }
+            .unwrap();
+            assert_eq!(outcome, Outcome::Cancelled, "{ext} pass {pass}");
+            assert_eq!(std::fs::read(&path).unwrap(), old, "{ext} pass {pass}");
+            assert_eq!(
+                names(dir.path()),
+                std::slice::from_ref(&name),
+                "{ext} pass {pass}"
+            );
+        }
+    }
+}
+
+/// A render that finishes replaces the old file with the complete new one,
+/// and nothing else is left in the directory.
+#[test]
+fn a_finished_render_replaces_the_old_file() {
+    for (format, ext) in formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("r.{ext}");
+        let path = dir.path().join(&name);
+        std::fs::write(&path, b"old").unwrap();
+        let out = render_to_file_with(graph(), &config(format), &FrozenClock, &path, &mut |_| {
+            Flow::Continue
+        })
+        .unwrap();
+        let Outcome::Finished(written) = out else {
+            panic!("{ext} cancelled")
+        };
+        assert_eq!(written.path, path);
+        assert!(written.bytes > 3 && std::fs::metadata(&path).unwrap().len() == written.bytes);
+        assert_eq!(names(dir.path()), [name], "{ext}");
+    }
+}
+
+/// A render that fails after its temporary exists (here the rename: the
+/// target is a directory) is an error, the target is untouched and the
+/// temporary is gone. A target in a directory that cannot hold the file
+/// still errors.
+///
+/// Mutation (run): `Staged::commit` marking the file kept before the rename
+/// -> the temporary stays behind; fails.
+#[test]
+fn a_failed_write_leaves_the_target_and_no_temporary() {
+    for (format, ext) in formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(format!("d.{ext}"));
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), b"x").unwrap();
+        let err = render_to_file_with(graph(), &config(format), &FrozenClock, &target, &mut |_| {
+            Flow::Continue
+        })
+        .expect_err("a directory cannot be replaced by a file");
+        assert!(matches!(err, tutti_export::Error::Io(_)), "{ext}: {err}");
+        assert!(target.join("keep").exists(), "{ext}");
+        assert_eq!(names(dir.path()), [format!("d.{ext}")], "{ext}");
+
+        let missing = dir.path().join("no-such-dir").join(format!("m.{ext}"));
+        let err = render_to_file_with(
+            graph(),
+            &config(format),
+            &FrozenClock,
+            &missing,
+            &mut |_| Flow::Continue,
+        )
+        .expect_err("the directory does not exist");
+        assert!(matches!(err, tutti_export::Error::Io(_)), "{ext}: {err}");
+    }
 }
 
 /// Rendering to memory stops the same way, with nothing returned.
@@ -238,4 +333,31 @@ fn progress_is_monotonic_per_pass_and_reaches_the_total() {
     // The passes come in order.
     let order: Vec<u8> = two.iter().map(|p| p.pass.index()).collect();
     assert!(order.windows(2).all(|w| w[0] <= w[1]));
+}
+
+/// `Stop` on the final block's tick is `Cancelled` (the tick runs before the
+/// render is known to be complete), and the file is not delivered.
+///
+/// Mutation (run): `drive` skipping the tick after the last block -> the
+/// outcome is `Finished`; fails.
+#[test]
+fn a_stop_on_the_final_tick_is_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("last.wav");
+    let outcome = render_to_file_with(
+        graph(),
+        &config(AudioFormat::Wav),
+        &FrozenClock,
+        &path,
+        &mut |p| {
+            if p.produced == p.total {
+                Flow::Stop
+            } else {
+                Flow::Continue
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert!(!path.exists());
 }

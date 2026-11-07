@@ -74,11 +74,13 @@ pub struct Progress {
 }
 
 /// How a render that was not an error ended.
+#[must_use = "a cancelled render produced nothing"]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome<T> {
     /// It ran to the end; `T` is what it produced.
     Finished(T),
-    /// A tick stopped it. A file target holds nothing: the file is removed.
+    /// A tick stopped it, including on the last block's tick. A file target
+    /// is untouched: the render was written to a temporary, which is removed.
     Cancelled,
 }
 

@@ -1,8 +1,5 @@
-#![allow(dead_code)]
-
 use std::f32::consts;
 
-#[allow(unused)]
 #[non_exhaustive]
 pub(crate) struct SoundFontMath {}
 

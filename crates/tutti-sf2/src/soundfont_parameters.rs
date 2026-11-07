@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
 use crate::generator::Generator;
@@ -24,15 +22,15 @@ pub(crate) struct SoundFontParameters {
 
 impl SoundFontParameters {
     pub(crate) fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let chunk_id = BinaryReader::read_four_cc(reader)?;
+        let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"LIST" {
             return Err(SoundFontError::ListChunkNotFound);
         }
 
-        let end = BinaryReader::read_u32(reader)? as usize;
+        let end = reader.read_u32()? as usize;
         let reader = &mut ReadCounter::new(reader);
 
-        let list_type = BinaryReader::read_four_cc(reader)?;
+        let list_type = reader.read_four_cc()?;
         if list_type != b"pdta" {
             return Err(SoundFontError::InvalidListChunkType {
                 expected: FourCC::from_bytes(*b"pdta"),
@@ -49,17 +47,17 @@ impl SoundFontParameters {
         let mut sample_headers: Option<Vec<SampleHeader>> = None;
 
         while reader.bytes_read() < end {
-            let id = BinaryReader::read_four_cc(reader)?;
-            let size = BinaryReader::read_u32(reader)? as usize;
+            let id = reader.read_four_cc()?;
+            let size = reader.read_u32()? as usize;
 
             match id.as_bytes() {
                 b"phdr" => preset_infos = Some(PresetInfo::read_from_chunk(reader, size)?),
                 b"pbag" => preset_bag = Some(ZoneInfo::read_from_chunk(reader, size)?),
-                b"pmod" => BinaryReader::discard_data(reader, size)?,
+                b"pmod" => reader.discard_data(size)?,
                 b"pgen" => preset_generators = Some(Generator::read_from_chunk(reader, size)?),
                 b"inst" => instrument_infos = Some(InstrumentInfo::read_from_chunk(reader, size)?),
                 b"ibag" => instrument_bag = Some(ZoneInfo::read_from_chunk(reader, size)?),
-                b"imod" => BinaryReader::discard_data(reader, size)?,
+                b"imod" => reader.discard_data(size)?,
                 b"igen" => instrument_generators = Some(Generator::read_from_chunk(reader, size)?),
                 b"shdr" => sample_headers = Some(SampleHeader::read_from_chunk(reader, size)?),
                 _ => return Err(SoundFontError::ListContainsUnknownId(id)),

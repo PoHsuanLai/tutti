@@ -31,7 +31,10 @@ use crate::endpoints::{NoWatch, Watch};
 use crate::error::Result;
 use tutti_midi_device::OsDevice;
 
-/// A run loop that returns sooner than this had nothing to wait for.
+/// A run loop that returns sooner than this had nothing to wait for. A loop that
+/// has a source but was stopped (`CFRunLoopStop`, which nothing here sends)
+/// would look the same; the cost is a rest and one extra look, which is
+/// harmless because a look reports only a difference.
 const IDLE_RETURN: Duration = Duration::from_millis(50);
 /// How long the hub thread rests before it runs the loop again after such a
 /// return, so a loop with no source is four wakes a second and not a spin.
@@ -51,6 +54,8 @@ struct Watcher {
     /// False once its `Devices` has dropped.
     live: bool,
 }
+
+pub(super) static DIAG_FIRES: AtomicU64 = AtomicU64::new(0); // DIAG
 
 type Shared = Arc<Mutex<Watcher>>;
 
@@ -122,6 +127,8 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
             .spawn(move || {
                 let client =
                     Client::new_with_notifications("tutti-midi-watch", move |n: &Notification| {
+                        DIAG_FIRES.fetch_add(1, Ordering::SeqCst); // DIAG
+                        eprintln!("DIAG fired on {:?}: {n:?}", std::thread::current().id()); // DIAG
                         if matches!(
                             n,
                             Notification::SetupChanged
@@ -162,7 +169,9 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
 }
 
 /// A registration with the hub. Dropping it removes the registration, and
-/// returns once a look in progress has finished: nothing is reported after.
+/// returns once a look in progress has finished (it takes the watch's own lock,
+/// which an enumeration holds): nothing is reported after, and a drop can wait
+/// for one enumeration.
 struct CoreMidiWatch {
     hub: &'static Hub,
     key: u64,

@@ -31,7 +31,7 @@ use tutti_midi_device::{EndpointId, OsDevice};
 pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 const EAGAIN: i32 = -11;
-/// Read errors a drain puts up with before it stops.
+/// Read errors in a row a drain puts up with before it stops.
 const MAX_DRAIN_ERRORS: usize = 8;
 /// Linux truncates a thread name to 15 bytes.
 const THREAD_NAME: &str = "tutti-devwatch";
@@ -43,6 +43,25 @@ struct Announce {
     polls: Vec<libc::pollfd>,
     /// The read end of the stop pair; the owner drops the write end to wake us.
     _stop: UnixStream,
+}
+
+/// Read errors in a row, which end a drain at [`MAX_DRAIN_ERRORS`]. A read that
+/// succeeds starts the count again, so scattered overruns in a long burst do
+/// not end the drain with events unread.
+#[derive(Debug, Default)]
+struct ErrorRun(usize);
+
+impl ErrorRun {
+    /// Counts an error; true when the run has reached the limit.
+    fn failed(&mut self) -> bool {
+        self.0 += 1;
+        self.0 >= MAX_DRAIN_ERRORS
+    }
+
+    /// A read succeeded.
+    fn read(&mut self) {
+        self.0 = 0;
+    }
 }
 
 /// Something that left the sequencer, from an announcement.
@@ -168,7 +187,7 @@ impl Announce {
     /// non-blocking.
     fn drain(&self) -> Vec<Departed> {
         let mut departed = Vec::new();
-        let mut failures = 0;
+        let mut errors = ErrorRun::default();
         loop {
             let mut event: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
             // SAFETY: `seq` is open; the event is alsa-lib's, read before the
@@ -183,12 +202,12 @@ impl Announce {
                 // (a reused number whose exit was dropped is the one thing it
                 // cannot). A descriptor that keeps failing ends the drain.
                 tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
-                failures += 1;
-                if failures >= MAX_DRAIN_ERRORS {
+                if errors.failed() {
                     return departed;
                 }
                 continue;
             }
+            errors.read();
             if event.is_null() {
                 continue;
             }

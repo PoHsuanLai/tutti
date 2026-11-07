@@ -28,7 +28,6 @@ features instead. Name the feature:
 
 ```bash
 cargo check -p tutti-core
-cargo check -p tutti-core --features bevy
 ```
 
 ## The import-path gate

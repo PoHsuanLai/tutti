@@ -261,7 +261,7 @@ the interpreter.
   and `PARKED_LOAN_LIMIT` are gone: a node cannot park a `Loan` across
   blocks, and a `mem::forget` pins one value per reader. The per-channel
   compensation table is not a cell: no audio thread reads it (the butler
-  and the host do), so it is a `tutti_graph::PrerollTable`, a plain lock
+  and the host do), so it is a `tutti_graph::PrerollTable`, a plain lock around a copy of `Plan::compensation()` (nothing in `tutti-graph` uses it; the crate is the shared home for the session that writes it and the butler that reads it)
   (`Session::compensation`, `ChannelCompensation`).
   `crates/arc-lend/BENCHMARKS.md` compares the cell with `arc-swap`,
   `basedrop`, `left-right` and the locks, and with the shared-slot design

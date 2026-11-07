@@ -1,5 +1,7 @@
-//! [`PrerollTable`]: the per-channel pre-roll a source outside the graph
-//! reads (a disk stream seeks by it).
+//! [`PrerollTable`]: a shared copy of `Plan::compensation()` for a source
+//! outside the graph (a disk stream seeks by it). Nothing in this crate uses
+//! it; it lives here because the session that writes it and the sampler that
+//! reads it both depend on this crate.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

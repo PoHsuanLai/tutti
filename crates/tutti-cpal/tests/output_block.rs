@@ -160,8 +160,8 @@ fn a_wide_device_meters_a_fold_not_the_first_two_channels() {
 #[test]
 fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
     for width in [2usize, 6] {
-        let meter = tutti_metering::MasterMeter::new();
-        let state = support::dc_state_metered(0.5, width, meter.clone());
+        let (writer, meter) = tutti_metering::MasterMeter::pair();
+        let state = support::dc_state_metered(0.5, width, writer);
         let mut block = OutputBlock::new(state, ChannelLayout::from(width));
         let mut out = vec![0.0f32; 64 * width];
 

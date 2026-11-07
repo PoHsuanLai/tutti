@@ -3,7 +3,7 @@
 //! — both the peak/RMS measure and the analysis-tap push.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_metering::{AudioTap, MasterMeter, MeterReading, MeteringContext, meter_output};
+use tutti_metering::{AudioTap, MasterMeter, MeterReading, meter_output};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -20,18 +20,17 @@ fn interleaved_stereo(frames: usize) -> Vec<f32> {
 
 #[test]
 fn meter_output_is_allocation_free_with_meter_enabled() {
-    let meter = MasterMeter::new();
+    let (mut writer, meter) = MasterMeter::pair();
     meter.enable();
     let tap = AudioTap::new();
 
     let buffer = interleaved_stereo(512);
-    let mut ctx = MeteringContext::new();
 
-    meter_output(&buffer, 512, &meter, &tap, &mut ctx);
+    meter_output(&buffer, &mut writer, &tap);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            meter_output(&buffer, 512, &meter, &tap, &mut ctx);
+            meter_output(&buffer, &mut writer, &tap);
         }
     });
 
@@ -41,7 +40,7 @@ fn meter_output_is_allocation_free_with_meter_enabled() {
 
 #[test]
 fn meter_output_is_allocation_free_with_tap_open() {
-    let meter = MasterMeter::new();
+    let (mut writer, meter) = MasterMeter::pair();
     meter.enable();
     let tap = AudioTap::new();
     // The ring holds ~3 s; draining is the consumer's job, so this also
@@ -52,31 +51,29 @@ fn meter_output_is_allocation_free_with_tap_open() {
     let _consumer = tap.open().expect("a fresh tap opens");
 
     let buffer = interleaved_stereo(512);
-    let mut ctx = MeteringContext::new();
 
-    meter_output(&buffer, 512, &meter, &tap, &mut ctx);
+    meter_output(&buffer, &mut writer, &tap);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            meter_output(&buffer, 512, &meter, &tap, &mut ctx);
+            meter_output(&buffer, &mut writer, &tap);
         }
     });
 }
 
 #[test]
 fn meter_output_is_allocation_free_with_nothing_enabled() {
-    // Meter disabled, tap closed — the deinterleave must be skipped entirely.
-    let meter = MasterMeter::new();
+    // Meter disabled, tap closed — the pass over the buffer must be skipped entirely.
+    let (mut writer, meter) = MasterMeter::pair();
     let tap = AudioTap::new();
 
     let buffer = interleaved_stereo(256);
-    let mut ctx = MeteringContext::new();
 
-    meter_output(&buffer, 256, &meter, &tap, &mut ctx);
+    meter_output(&buffer, &mut writer, &tap);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            meter_output(&buffer, 256, &meter, &tap, &mut ctx);
+            meter_output(&buffer, &mut writer, &tap);
         }
     });
 

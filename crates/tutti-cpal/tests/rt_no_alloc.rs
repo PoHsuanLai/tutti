@@ -79,7 +79,7 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
     // Every commit is sent; the editor only has to outlive the engine's
     // setup. Leaked like the fixtures in `support`, for the same reason.
     Box::leak(Box::new(ed));
-    let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
+    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new());
 
     transport.settings.set_tempo(120.0);
     let _ = transport.motion.try_send(MotionEvent::Play);

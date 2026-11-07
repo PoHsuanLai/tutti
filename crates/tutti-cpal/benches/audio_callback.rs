@@ -53,7 +53,7 @@ fn state(
     let tap = AudioTap::new();
     let cons = tap_open.then(|| tap.open().expect("a fresh tap opens"));
     (
-        Arc::new(AudioCallbackState::new(engine, MasterMeter::new(), tap)),
+        Arc::new(AudioCallbackState::new(engine, MasterMeter::pair().0, tap)),
         cons,
     )
 }

@@ -131,7 +131,7 @@ impl LevelWriter {
             let i = s.active.load(Ordering::Acquire);
             s.busy.store(1 + i, Ordering::Relaxed);
             fence(Ordering::SeqCst);
-            if s.active.load(Ordering::Relaxed) == i {
+            if s.active.load(Ordering::Acquire) == i {
                 break i;
             }
         };

@@ -153,7 +153,7 @@ test-features:
 # is out of its reach by construction, and out-of-process hosting is the
 # structural answer there instead.
 #
-# `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d: they read MXCSR,
+# `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d: they read MXCSR,
 # and miri has no x86 SSE intrinsics.
 miri:
     cargo +nightly miri test --locked -p tutti-rt --lib

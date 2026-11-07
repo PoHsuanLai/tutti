@@ -298,17 +298,19 @@ of 4 in CI and 5 under `just loom-full`) fails with either removed, and so does 
 concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 
-### `ScopedNoDenormals`, and why not `no_denormals`
+### `with_no_denormals`, and why not `no_denormals`
 
 Setting FTZ/DAZ (x86 MXCSR) or FZ (aarch64 FPCR) and running Rust under it
 is undefined behavior by the letter: LLVM assumes "subnormals are assumed to
 be preserved" (LangRef, *Floating-Point Environment*), and `_mm_setcsr`'s
 docs call changing the DAZ, rounding or mask bits "immediate Undefined
 Behavior". Every audio host does it anyway, and the cost is confined to
-float values; the type's `# Soundness` docs give the quotes and the audit
-of what runs under it.
+float values; the function's `# Soundness` docs give the quotes and the audit
+of what runs inside it. It takes a closure, not a guard: a guard that safe code
+could `mem::forget` or drop out of order left the mode set on the thread for
+good. The closure removes that leak; it does not remove the LLVM deviation.
 
-We kept our own guard rather than adopt `no_denormals` 0.3.0:
+We kept our own function rather than adopt `no_denormals` 0.3.0:
 
 - Its only API is `pub unsafe fn no_denormals(f)`. Three of the five
   callers are in `tutti-graph`, which is `#![forbid(unsafe_code)]`, so
@@ -316,14 +318,14 @@ We kept our own guard rather than adopt `no_denormals` 0.3.0:
   meant to delete.
 - On aarch64 with `fp16` it also sets FZ16, which ours does not.
 - On any architecture but x86, x86_64 and aarch64 it is a
-  `compile_error!`; ours compiles to an empty struct.
+  `compile_error!`; ours just calls the closure.
 
-There is no crate of its own either. A crate offered for the guard alone, with a
+There is no crate of its own either. A crate offered for this alone, with a
 safe constructor, would publish a guarantee Rust does not give; the honest API
 for that crate is an `unsafe fn`, which is `no_denormals`. Ours is safe because
 the engine owns every caller and the audit above, and it stays a module in
-`tutti-rt`. That crate holds the engine's runtime primitives, not this guard
-alone, and is `publish = false`: the guard is reachable only by workspace
+`tutti-rt`. That crate holds the engine's runtime primitives, not this function
+alone, and is `publish = false`: it is reachable only by workspace
 crates and consumers that take the repository as a git dependency, no more
 than when it sat in `tutti-types` (which depended on unpublished `arc-lend`,
 so could not be published either). Publishing

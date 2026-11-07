@@ -54,8 +54,8 @@
 //! (The parallel one, which runs the same op code on a pool's threads, is
 //! `par.rs`; [`Executor::set_pool`] turns it on.)
 //!
-//! Walks [`Plan::ops`] in order, under a flush-to-zero guard
-//! ([`ScopedNoDenormals`]). Per block it never allocates when no commit is
+//! Walks [`Plan::ops`] in order, inside a flush-to-zero scope
+//! ([`with_no_denormals`]). Per block it never allocates when no commit is
 //! pending (see `tests/rt_no_alloc.rs`) and hands every node the **whole
 //! block** and its sorted events.
 //!
@@ -154,7 +154,7 @@ use std::sync::atomic::AtomicU64;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_rt::{RtScope, ScopedNoDenormals};
+use tutti_rt::{RtScope, with_no_denormals};
 use tutti_types::{Frame, NodeKey, Samples, Tail};
 
 use crate::arena::{Arena, Role};
@@ -1366,9 +1366,10 @@ impl Executor {
         inputs: &[&[f32]],
         outputs: &mut [&mut [f32]],
     ) {
-        let _ftz = ScopedNoDenormals::new();
-        self.apply_pending();
-        self.render_applied(frames, transport, changes, inputs, outputs);
+        with_no_denormals(|| {
+            self.apply_pending();
+            self.render_applied(frames, transport, changes, inputs, outputs);
+        });
     }
 
     /// As [`process_with_changes`](Self::process_with_changes), without
@@ -1402,7 +1403,19 @@ impl Executor {
         outputs: &mut [&mut [f32]],
     ) {
         let _rt = RtScope::enter();
-        let _ftz = ScopedNoDenormals::new();
+        with_no_denormals(|| self.render_block(frames, transport, changes, inputs, outputs));
+    }
+
+    /// The body of [`render_applied`](Self::render_applied), run inside its
+    /// flush-to-zero scope.
+    fn render_block(
+        &mut self,
+        frames: usize,
+        transport: &Transport,
+        changes: &TransportChanges,
+        inputs: &[&[f32]],
+        outputs: &mut [&mut [f32]],
+    ) {
         if self.suspended {
             // Between a re-prepare's two commits the units are on the control
             // thread: render silence, for whatever block arrives — the device

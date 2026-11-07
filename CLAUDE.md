@@ -66,7 +66,7 @@ serial one.
   `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
   models fences exactly; see `tutti-rt/src/job_gate.rs`).
-- **Nodes run under `ScopedNoDenormals`**: never make memory safety depend
+- **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
   (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
@@ -228,7 +228,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  no dependencies, `publish = false`, re-exported by tutti-rt.
   tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
-                 the parallel executor's claims and job gate, `ScopedNoDenormals`,
+                 the parallel executor's claims and job gate, `with_no_denormals`,
                  and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
                  and `unsafe` runtime structure, with every loom model; depends
                  on `arc-lend` alone, `publish = false`

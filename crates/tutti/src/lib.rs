@@ -41,7 +41,7 @@ pub use tutti_types as types;
 
 /// Real-time-safe shared-memory primitives for the audio thread (`tutti-rt`):
 /// the publish cell (`ArcLend`), the capped `RtVec`, the sequence lock and the
-/// denormals guard.
+/// denormals flush.
 pub use tutti_rt as rt;
 
 /// The audio graph (`tutti-graph`): `GraphBuilder`, `Editor`, `Executor`,

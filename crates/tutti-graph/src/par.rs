@@ -72,8 +72,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
 use tutti_rt::{
-    BlockWaits, ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw,
-    TaskGraph,
+    BlockWaits, ClaimTable, Held, Participant, RtScope, SplitMut, SplitRw, TaskGraph,
+    with_no_denormals,
 };
 
 use crate::arena::{Arena, Line};
@@ -405,26 +405,27 @@ impl Shared<'_, '_> {
         let _rt = RtScope::enter();
         // Per participant, per block: a plugin on this thread may have
         // cleared it since the last one (doc 013's pitfalls).
-        let _ftz = ScopedNoDenormals::new();
-        let Ok(mut ws) = self.workers.try_claim(w) else {
-            return;
-        };
-        let who = if w == 0 {
-            Participant::Caller
-        } else {
-            Participant::Helper(w)
-        };
-        let r = catch_unwind(AssertUnwindSafe(|| {
-            self.graph.work(who, self.waits, |t| {
-                let span = self.plan.tasks[t as usize];
-                for &op in &self.plan.task_ops[span.range()] {
-                    self.run_op(&self.plan.ops[op as usize], &mut ws);
-                }
-            });
-        }));
-        if r.is_err() {
-            self.graph.abort();
-        }
+        with_no_denormals(|| {
+            let Ok(mut ws) = self.workers.try_claim(w) else {
+                return;
+            };
+            let who = if w == 0 {
+                Participant::Caller
+            } else {
+                Participant::Helper(w)
+            };
+            let r = catch_unwind(AssertUnwindSafe(|| {
+                self.graph.work(who, self.waits, |t| {
+                    let span = self.plan.tasks[t as usize];
+                    for &op in &self.plan.task_ops[span.range()] {
+                        self.run_op(&self.plan.ops[op as usize], &mut ws);
+                    }
+                });
+            }));
+            if r.is_err() {
+                self.graph.abort();
+            }
+        });
     }
 
     /// One op, on claimed state.

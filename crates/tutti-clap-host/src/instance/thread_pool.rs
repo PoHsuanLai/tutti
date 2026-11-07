@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tutti_clap_ffi::{PoolHandle, TaskPool};
 use tutti_graph::Pool;
-use tutti_rt::ScopedNoDenormals;
+use tutti_rt::with_no_denormals;
 
 use super::ClapLoaded;
 
@@ -20,10 +20,7 @@ impl TaskPool for GraphPool {
     }
 
     fn try_run(&self, wake: usize, job: &(dyn Fn(usize) + Sync)) -> bool {
-        self.0.try_run(wake, &|i| {
-            let _ftz = ScopedNoDenormals::new();
-            job(i);
-        })
+        self.0.try_run(wake, &|i| with_no_denormals(|| job(i)))
     }
 }
 

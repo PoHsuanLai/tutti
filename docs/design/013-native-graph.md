@@ -4629,7 +4629,7 @@ request and a plugin that parallelises its own voices ran them serially.
   runs the tasks itself.
 - **Running them.** One job on the pool; each participant claims indices
   from a shared counter until none is left, so every index runs once with
-  any number of participants, under `ScopedNoDenormals` on every one. The
+  any number of participants, inside `with_no_denormals` on every one. The
   request lives on the caller's stack: nothing allocates, locks or frees
   (`tests/clap_thread_pool.rs` gates the caller and every helper).
 - **A busy pool refuses.** The caller may itself be a participant of a
@@ -4645,7 +4645,7 @@ request and a plugin that parallelises its own voices ran them serially.
 - **Served tasks follow the audio thread's rules.** The audio thread waits
   for every task, so a task is held to its rules on whichever thread runs
   it: a thread-local flag set around each participant's share, beside
-  `ScopedNoDenormals`, makes `clap.log` count the line as dropped rather
+  `with_no_denormals`, makes `clap.log` count the line as dropped rather
   than format, print and keep it, as it does on the audio thread
   (`is_audio_thread` still answers only for the audio thread).
 - **No pool, or a pool of one participant:** refused. The header's fallback
@@ -4676,21 +4676,23 @@ request and a plugin that parallelises its own voices ran them serially.
   `check_outside`; the guard is `RtScopeGuard`): it marks a scope, not a
   thread. The executor enters it at the top of a block and each hand-off
   type checks it in its `Drop`, as before.
-- **`ScopedNoDenormals` is not replaced with `no_denormals` 0.3.0.**
-  The crate restores the register on drop and neither allocates nor makes a
-  syscall, but:
+- **`with_no_denormals` (once the `ScopedNoDenormals` guard) is not replaced
+  with `no_denormals` 0.3.0.** The crate restores the register on drop and
+  neither allocates nor makes a syscall, but:
   - its only API is `unsafe fn no_denormals(f)`, and three of the five
-    files that construct the guard (`exec.rs`, `par.rs`, `reference.rs`;
+    files that call it (`exec.rs`, `par.rs`, `reference.rs`;
     the others are tutti-cpal's `output.rs` and the plugin server's
     `audio_pipeline.rs`, besides re-exports) are in this crate, which is
     `#![forbid(unsafe_code)]`. Adopting it needs a safe wrapper in
     `tutti-types`, which is the module it was meant to delete;
   - on aarch64 with `fp16` (every Apple-silicon target) it also sets FZ16;
   - on any architecture but x86, x86_64 and aarch64 it is a
-    `compile_error!`, where `ScopedNoDenormals` compiles to nothing.
+    `compile_error!`, where `with_no_denormals` just calls its closure.
 
-  The guard's soundness argument (the FP-environment rule it departs from,
-  and the audit of what runs under it) is its `# Soundness` docs.
+  The function replaced a guard type that safe code could `mem::forget` or
+  drop out of order, leaving FTZ/DAZ set on the thread for good; a closure
+  cannot be misused that way. Its soundness argument (the FP-environment rule it departs from,
+  and the audit of what runs inside it) is its `# Soundness` docs.
 
 ## Per-node rewrite plan
 

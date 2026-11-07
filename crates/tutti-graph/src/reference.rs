@@ -76,7 +76,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use tutti_rt::ScopedNoDenormals;
+use tutti_rt::with_no_denormals;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
 use tutti_types::{At, Frame, Latency, NodeKey, Samples};
@@ -894,151 +894,151 @@ impl Reference {
             return;
         };
         let t = graph.topology();
-        let _ftz = ScopedNoDenormals::new();
+        with_no_denormals(|| {
+            // Scheduled commands: which land this block, and where. Kept in
+            // scheduling order per port; the gather below appends them after the
+            // port's own events.
+            self.landing.clear();
+            for &(_, len, t) in &pieces {
+                self.playhead
+                    .observe(&t, self.prepare.sample_rate().get(), len);
+            }
+            let mut waiting = Vec::new();
+            for mut cmd in std::mem::take(&mut self.scheduled) {
+                // PDC: timeline frame F reaches this sink at F + its arrival.
+                let arrival = self.arrival.get(&cmd.to.node).copied().unwrap_or_default();
+                let offset = match self.land(&mut cmd, arrival, &pieces, frames) {
+                    None => {
+                        waiting.push(cmd);
+                        continue;
+                    }
+                    Some(Some(o)) => o,
+                    Some(None) => {
+                        self.late += 1;
+                        Offset::ZERO
+                    }
+                };
+                let (to, kind, pos) = (cmd.to, cmd.kind, cmd.pos);
+                let has_port = self
+                    .units
+                    .get(&to.node)
+                    .is_some_and(|(_, u)| to.port < u.shape().event_in);
+                if has_port {
+                    self.landing
+                        .entry(to)
+                        .or_default()
+                        .push((pos, Event { offset, kind }));
+                } else {
+                    self.unrouted += 1;
+                }
+            }
+            self.scheduled = waiting;
 
-        // Scheduled commands: which land this block, and where. Kept in
-        // scheduling order per port; the gather below appends them after the
-        // port's own events.
-        self.landing.clear();
-        for &(_, len, t) in &pieces {
-            self.playhead
-                .observe(&t, self.prepare.sample_rate().get(), len);
-        }
-        let mut waiting = Vec::new();
-        for mut cmd in std::mem::take(&mut self.scheduled) {
-            // PDC: timeline frame F reaches this sink at F + its arrival.
-            let arrival = self.arrival.get(&cmd.to.node).copied().unwrap_or_default();
-            let offset = match self.land(&mut cmd, arrival, &pieces, frames) {
-                None => {
-                    waiting.push(cmd);
-                    continue;
+            let mut audio: BTreeMap<OutPort, Vec<f32>> = BTreeMap::new();
+            let mut events: BTreeMap<EventOut, Vec<Event>> = BTreeMap::new();
+            let mut done: BTreeSet<NodeKey> = BTreeSet::new();
+
+            let direct_preds = |k: NodeKey| -> Vec<NodeKey> {
+                let mut v: Vec<NodeKey> = t
+                    .edges
+                    .iter()
+                    .filter(|(at, _)| at.node == k)
+                    .filter_map(|(_, e)| match e {
+                        Edge::Direct(Source::Node(p)) => Some(p.node),
+                        _ => None,
+                    })
+                    .collect();
+                for (at, sources) in graph.events() {
+                    if at.node == k {
+                        v.extend(sources.iter().filter_map(|e| match e {
+                            EventEdge::Direct(f) => Some(f.node),
+                            EventEdge::Feedback { .. } => None,
+                        }));
+                    }
                 }
-                Some(Some(o)) => o,
-                Some(None) => {
-                    self.late += 1;
-                    Offset::ZERO
+                for (at, m) in graph.params() {
+                    if at.node == k {
+                        v.extend(m.source.map(|s| s.node));
+                    }
                 }
+                v
             };
-            let (to, kind, pos) = (cmd.to, cmd.kind, cmd.pos);
-            let has_port = self
-                .units
-                .get(&to.node)
-                .is_some_and(|(_, u)| to.port < u.shape().event_in);
-            if has_port {
-                self.landing
-                    .entry(to)
-                    .or_default()
-                    .push((pos, Event { offset, kind }));
-            } else {
-                self.unrouted += 1;
-            }
-        }
-        self.scheduled = waiting;
 
-        let mut audio: BTreeMap<OutPort, Vec<f32>> = BTreeMap::new();
-        let mut events: BTreeMap<EventOut, Vec<Event>> = BTreeMap::new();
-        let mut done: BTreeSet<NodeKey> = BTreeSet::new();
-
-        let direct_preds = |k: NodeKey| -> Vec<NodeKey> {
-            let mut v: Vec<NodeKey> = t
-                .edges
-                .iter()
-                .filter(|(at, _)| at.node == k)
-                .filter_map(|(_, e)| match e {
-                    Edge::Direct(Source::Node(p)) => Some(p.node),
-                    _ => None,
-                })
-                .collect();
-            for (at, sources) in graph.events() {
-                if at.node == k {
-                    v.extend(sources.iter().filter_map(|e| match e {
-                        EventEdge::Direct(f) => Some(f.node),
-                        EventEdge::Feedback { .. } => None,
-                    }));
+            while done.len() < t.nodes.len() {
+                let before = done.len();
+                for &key in t.nodes.keys() {
+                    if done.contains(&key) || !direct_preds(key).iter().all(|p| done.contains(p)) {
+                        continue;
+                    }
+                    self.run_node(key, &graph, frames, &env, inputs, &mut audio, &mut events);
+                    done.insert(key);
                 }
-            }
-            for (at, m) in graph.params() {
-                if at.node == k {
-                    v.extend(m.source.map(|s| s.node));
-                }
-            }
-            v
-        };
-
-        while done.len() < t.nodes.len() {
-            let before = done.len();
-            for &key in t.nodes.keys() {
-                if done.contains(&key) || !direct_preds(key).iter().all(|p| done.contains(p)) {
-                    continue;
-                }
-                self.run_node(key, &graph, frames, &env, inputs, &mut audio, &mut events);
-                done.insert(key);
-            }
-            assert!(
-                done.len() > before,
-                "reference interpreter: graph has a cycle"
-            );
-        }
-
-        // Crossfades that reached their end this block: the outgoing unit
-        // goes, and one waiting starts — from the next block.
-        let ended: Vec<NodeKey> = self
-            .fading
-            .iter()
-            .filter(|(_, f)| f.done >= f.len)
-            .map(|(&k, _)| k)
-            .collect();
-        for key in ended {
-            let f = self.fading.remove(&key).expect("listed");
-            if let Some((unit, fade)) = f.next {
-                let slot = self.units.get_mut(&key).expect("a fading node has a unit");
-                let old = std::mem::replace(&mut slot.1, unit);
-                self.fading.insert(
-                    key,
-                    RefFade {
-                        old,
-                        done: 0,
-                        len: fade.duration.get(),
-                        curve: fade.curve,
-                        next: None,
-                    },
+                assert!(
+                    done.len() > before,
+                    "reference interpreter: graph has a cycle"
                 );
             }
-        }
 
-        for (ch, source) in t.outputs.iter().enumerate() {
-            let mut buf = match source {
-                Source::Node(p) => audio[p].clone(),
-                Source::Global(g) => inputs[*g as usize][..frames].to_vec(),
-                Source::Zero => vec![0.0; frames],
-            };
-            let key = DelayKey::Output {
-                channel: ch as u16,
-                from: *source,
-            };
-            if let Some(line) = self.audio_lines.get_mut(&key) {
-                delay_line(line, &mut buf);
+            // Crossfades that reached their end this block: the outgoing unit
+            // goes, and one waiting starts — from the next block.
+            let ended: Vec<NodeKey> = self
+                .fading
+                .iter()
+                .filter(|(_, f)| f.done >= f.len)
+                .map(|(&k, _)| k)
+                .collect();
+            for key in ended {
+                let f = self.fading.remove(&key).expect("listed");
+                if let Some((unit, fade)) = f.next {
+                    let slot = self.units.get_mut(&key).expect("a fading node has a unit");
+                    let old = std::mem::replace(&mut slot.1, unit);
+                    self.fading.insert(
+                        key,
+                        RefFade {
+                            old,
+                            done: 0,
+                            len: fade.duration.get(),
+                            curve: fade.curve,
+                            next: None,
+                        },
+                    );
+                }
             }
-            outputs[ch][..frames].copy_from_slice(&buf);
-        }
 
-        // Feed the feedback delays with this block, after every read of them.
-        for ((from, _, _), line) in self.fb_audio.iter_mut() {
-            for &x in &audio[from] {
-                line.push_back(x);
-                line.pop_front();
+            for (ch, source) in t.outputs.iter().enumerate() {
+                let mut buf = match source {
+                    Source::Node(p) => audio[p].clone(),
+                    Source::Global(g) => inputs[*g as usize][..frames].to_vec(),
+                    Source::Zero => vec![0.0; frames],
+                };
+                let key = DelayKey::Output {
+                    channel: ch as u16,
+                    from: *source,
+                };
+                if let Some(line) = self.audio_lines.get_mut(&key) {
+                    delay_line(line, &mut buf);
+                }
+                outputs[ch][..frames].copy_from_slice(&buf);
             }
-        }
-        for ((_, from, _, _), f) in self.fb_event.iter_mut() {
-            let start = f.clock;
-            f.pending.extend(
-                events[from]
-                    .iter()
-                    .map(|e| (start + u64::from(e.offset.get()), *e)),
-            );
-            f.clock += frames as u64;
-        }
-        self.frame += Samples(frames);
+
+            // Feed the feedback delays with this block, after every read of them.
+            for ((from, _, _), line) in self.fb_audio.iter_mut() {
+                for &x in &audio[from] {
+                    line.push_back(x);
+                    line.pop_front();
+                }
+            }
+            for ((_, from, _, _), f) in self.fb_event.iter_mut() {
+                let start = f.clock;
+                f.pending.extend(
+                    events[from]
+                        .iter()
+                        .map(|e| (start + u64::from(e.offset.get()), *e)),
+                );
+                f.clock += frames as u64;
+            }
+            self.frame += Samples(frames);
+        });
     }
 
     #[allow(clippy::too_many_arguments)]

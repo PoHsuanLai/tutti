@@ -4776,6 +4776,7 @@ dependencies = [
  "midi2",
  "proptest",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

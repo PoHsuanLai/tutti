@@ -91,6 +91,8 @@ the control thread.
   `tutti-sampler`.
 - **No effects.** Filters live per voice inside the synth; a send, a delay or
   a reverb is a `tutti-nodes` node after it.
+- **No release velocity.** A note-off starts the envelope's release whatever
+  its velocity.
 - **No MIDI I/O and no file parsing.** The message types are
   `tutti-midi-types`, the MIDI nodes are `tutti-midi-runtime`, device ports
   are `tutti-midi-hardware`.

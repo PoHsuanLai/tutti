@@ -83,6 +83,8 @@ keeps the top bits (a plain right shift, M2-115 section 3.4).
 - Applied: note-on, note-off, control change, channel pitch bend, program
   change (the program only). A note-on of velocity 0 is a note-off, and a
   nonzero velocity that narrows to 0 sounds at 1.
+- Not used: a note-off's release velocity. RustySynth's `note_off` takes only
+  a channel and a key.
 - Dropped: anything MIDI 1.0 cannot express (per-note pitch bend, per-note
   controllers, per-note management), channel and key pressure, which RustySynth
   has no setter for, native RPN and NRPN messages, and a program change's bank.

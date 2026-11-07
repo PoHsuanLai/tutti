@@ -382,6 +382,7 @@ impl PolySynth {
                     self.set_voice_tuning(id, pitch.note_number());
                 }
             }
+            // Release velocity is not used: the release is the envelope's.
             Voice2::NoteOff { note, .. } => self.handle_note_off(note, channel),
             Voice2::ControlChange { controller, value } => {
                 self.handle_cc(controller, u32_to_unit_f32(value), channel);

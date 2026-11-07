@@ -194,6 +194,14 @@ impl Default for MemorySourceConfig {
 /// fork of it ([`fork_fresh`](ParamNode::fork_fresh)) shares nothing — its own
 /// gain cell at the authored value — and plays on its render's `Env`.
 ///
+/// A placed source reads through the block read a pool's slot and a
+/// [`VoiceNode`](super::VoiceNode) use, so a transport loop wrap sounds the
+/// same on all three: the tail it was playing past the loop's end fades out
+/// under the loop's start for 5 ms (equal power for a voice mid-sound, unity
+/// for one that begins on the loop's start). `prepare` sizes the tail's
+/// lanes; a source driven without a `prepare` reads a frame at a time and
+/// cuts at the wrap. A free-running source has no transport to wrap on.
+///
 /// # Real-time
 ///
 /// Every playback path is allocation-free and lock-free, including the loop

@@ -13,6 +13,17 @@ use crate::core::{self, Core, Dsp, Ev, MAX_CHANNELS, Sample};
 
 const CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0001);
 
+/// An SDK enum constant as the field it fills: the bindings type these as
+/// `u32` on Unix and `i32` on Windows, so a bare `as` is a no-op on one and
+/// needed on the other.
+fn sdk<T, U>(value: T) -> U
+where
+    U: TryFrom<T>,
+    U::Error: std::fmt::Debug,
+{
+    U::try_from(value).expect("an SDK constant fits the field it fills")
+}
+
 fn put_wstring(src: &str, dst: &mut [TChar]) {
     let mut n = 0;
     for (s, d) in src.encode_utf16().zip(dst.iter_mut()) {
@@ -116,7 +127,7 @@ impl IComponentTrait for Plugin {
                     &mut bus.name,
                 );
                 bus.busType = BusTypes_::kMain as BusType;
-                bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
+                bus.flags = sdk(BusInfo_::BusFlags_::kDefaultActive);
                 kResultOk
             }
             (MediaTypes_::kEvent, BusDirections_::kInput, 0) => {
@@ -125,7 +136,7 @@ impl IComponentTrait for Plugin {
                 bus.channelCount = 1;
                 put_wstring("Notes", &mut bus.name);
                 bus.busType = BusTypes_::kMain as BusType;
-                bus.flags = BusInfo_::BusFlags_::kDefaultActive as u32;
+                bus.flags = sdk(BusInfo_::BusFlags_::kDefaultActive);
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -364,7 +375,7 @@ impl IEditControllerTrait for Plugin {
         };
         info.defaultNormalizedValue = default;
         info.unitId = 0;
-        info.flags = ParameterInfo_::ParameterFlags_::kCanAutomate as i32;
+        info.flags = sdk(ParameterInfo_::ParameterFlags_::kCanAutomate);
         kResultOk
     }
     unsafe fn getParamStringByValue(&self, id: u32, v: f64, s: *mut String128) -> tresult {
@@ -381,7 +392,7 @@ impl IEditControllerTrait for Plugin {
         let mut units = Vec::new();
         let mut p = s;
         while unsafe { *p } != 0 {
-            units.push(unsafe { *p } as u16);
+            units.push(unsafe { *p });
             p = unsafe { p.add(1) };
         }
         match String::from_utf16(&units)
@@ -481,12 +492,12 @@ extern "system" fn ModuleExit() -> bool {
 }
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
-extern "system" fn BundleEntry(_h: *mut c_void) -> bool {
+extern "system" fn bundleEntry(_h: *mut c_void) -> bool {
     true
 }
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
-extern "system" fn BundleExit() -> bool {
+extern "system" fn bundleExit() -> bool {
     true
 }
 #[cfg(target_os = "windows")]

@@ -114,6 +114,7 @@ check-features:
     cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
     cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
@@ -151,6 +152,7 @@ test-features:
     # if that edge goes away.
     cargo nextest run --locked -p tutti-ump --features serde
     cargo nextest run --locked -p tutti-midi-device --features serde
+    cargo nextest run --locked -p tutti-tempo --features serde
     # Local only: CI's runner has no `snd-seq` (see ci.yml). Needs `/dev/snd/seq`
     # and fails without it.
     cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests

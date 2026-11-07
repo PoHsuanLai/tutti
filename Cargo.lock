@@ -4842,6 +4842,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-tempo"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "libm",
+ "serde",
+ "serde_json",
+ "tutti-fixtures",
+ "tutti-types",
+]
+
+[[package]]
 name = "tutti-transport"
 version = "0.0.1"
 dependencies = [

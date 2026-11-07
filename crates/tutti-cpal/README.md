@@ -21,7 +21,7 @@ use tutti_cpal::AudioEngine;
 
 # fn main() -> tutti_cpal::Result<()> {
 for device in AudioEngine::output_devices()? {
-    println!("{}: {}", device.index, device.name);
+    println!("{}: {}", device.id, device.name());
 }
 # Ok(())
 # }
@@ -78,7 +78,7 @@ assert!(driver.engine().is_running());
 - [`AudioCallbackState`] and [`process_audio`] — what the output callback reads
   and runs each block.
 - [`DeviceHost`], [`AudioHost`], [`DeviceSelector`] — choose a platform host
-  (default or JACK) and a device on it, by index or by name.
+  (default or JACK) and a device on it, by name (and order among same-named devices).
 - [`StreamFaults`] — backend errors (such as an unplugged device), which CPAL's
   error callback cannot return anywhere else.
 - [`ManualStreamDriver`] — runs the same lifecycle with no device, the caller

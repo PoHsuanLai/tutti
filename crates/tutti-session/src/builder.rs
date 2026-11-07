@@ -281,6 +281,10 @@ impl SessionBuilder {
             disk_streamer,
             #[cfg(feature = "device")]
             faults: None,
+            #[cfg(feature = "device")]
+            device_watch: None,
+            #[cfg(feature = "device")]
+            device_events: Vec::new(),
             #[cfg(feature = "plugin")]
             snapshot_interval: self.snapshot_interval,
             #[cfg(feature = "plugin")]

@@ -62,15 +62,17 @@ mod plugin;
 #[cfg(feature = "plugin")]
 mod recovery;
 mod session;
+#[cfg(feature = "device")]
+mod watch;
 
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
-pub use device::{Device, DeviceRestart};
+pub use device::{Device, DeviceRestart, DeviceRestarted};
 pub use error::{Error, Result};
 #[cfg(feature = "export")]
 pub use export::{
-    EXPORT_STALL_WARNING, ExportClock, ExportJob, ExportOutput, ExportRendered, ExportRequest,
-    ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
+    EXPORT_STALL_WARNING, ExportClock, ExportHandle, ExportJob, ExportOutput, ExportRendered,
+    ExportRequest, ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
 };
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
@@ -102,3 +104,5 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, Session, SessionEvent};
+#[cfg(feature = "device")]
+pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent};

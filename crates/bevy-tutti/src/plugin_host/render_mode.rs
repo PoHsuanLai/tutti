@@ -13,7 +13,7 @@
 //! and starts the next keeps its plugins Offline throughout.
 //!
 //! What neither of those sees is an export that never finishes: an
-//! [`ExportInFlight`](crate::export::ExportInFlight) cancelled or despawned
+//! [`ExportInFlight`](crate::export::ExportInFlight) despawned
 //! drops its task, and with it the token, but fires no `ExportDone` and no
 //! `finish_export`. The mode is a level, so [`plugin_render_mode`] runs the
 //! phase every frame: the frame after the token goes, every plugin is told
@@ -185,9 +185,10 @@ mod tests {
                 ExportClock::frozen(),
             ))
             .expect("the export starts");
+        let handle = job.handle();
         let task = bevy_tasks::AsyncComputeTaskPool::get_or_init(bevy_tasks::TaskPool::new)
             .spawn(async move { job.run() });
-        ExportInFlight::for_test(task)
+        ExportInFlight::for_test(task, handle)
     }
 
     /// No export: `Realtime`.
@@ -215,17 +216,17 @@ mod tests {
         );
     }
 
-    /// A **cancelled** export restores `Realtime`.
+    /// A **despawned** export restores `Realtime`.
     ///
-    /// `cancel` fires no `ExportDone` and `poll_exports` never sees the
-    /// entity; despawning is the harsher shape, since it destroys any
-    /// component a guard might have lived on. The token went with the task.
+    /// No `ExportDone` fires and `poll_exports` never sees the entity;
+    /// despawning is the harsher shape, since it destroys any component a
+    /// guard might have lived on. The token went with the task.
     ///
     /// Mutation (run, failed): the system not running the phase → the mode
     /// stays `Offline`. Checking once, right after the despawn, failed 50 of
     /// 60 runs with `bevy_tasks/multi_threaded`: the job was still running.
     #[test]
-    fn a_cancelled_export_restores_realtime() {
+    fn a_despawned_export_restores_realtime() {
         let mut app = test_app();
         let export = in_flight(&mut app);
         let entity = app.world_mut().spawn(export).id();

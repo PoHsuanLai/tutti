@@ -513,7 +513,7 @@ let mut s = Session::builder()
 let (mut s, mut device) = Session::builder()
     .midi_hardware(true)                               // `midi-hardware`
     .build_device(DeviceSelector::Default)?;           // build_on + assemble
-s.restart(&mut device, DeviceSelector::Name("USB Audio".into()))?;  // rerate, §2.1
+s.restart(&mut device, DeviceSelector::named("USB Audio"))?;  // rerate, §2.1
 device.stop(); device.start()?;
 ```
 
@@ -633,8 +633,15 @@ observable. The session keeps that rule:
 - `s.export` runs that phase itself before it returns. Offline is
   announced on the control thread before the job can render a block.
 - `finish_export` drops the token and runs the phase again. A job or `Done`
-  dropped without `finish_export` (a cancelled task, a panic on the
-  worker) drops its token, and the next `update()` restores Realtime.
+  dropped without `finish_export` (a despawned request's task, a panic on
+  the worker) drops its token, and the next `update()` restores Realtime.
+- A cancel is not a drop. `ExportJob::handle()` gives an `ExportHandle`
+  (`cancel()`, `progress()`); the render ticks `Progress` after each block
+  and stops at the next one, returns `Outcome::Cancelled` (not an error)
+  through `ExportRendered`, and `finish_export` releases the token as for any
+  render. A file target writes beside its path and renames when it finishes,
+  so a cancelled or failed render leaves the path as it was. A `Stop` on the
+  final tick is `Cancelled`; a cancel after the last tick is `Finished`.
 - `finish_export_unannounced` drops the leftovers and the token and leaves
   the announcement to the next `Phase::RenderMode`. A host that hands one
   export's slot to the next in the same frame uses it, so the plugins see

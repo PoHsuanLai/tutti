@@ -20,6 +20,7 @@
 //! rather than allowed outright, so real dead code is still caught elsewhere.
 #![cfg_attr(not(codec), allow(dead_code))]
 
+use crate::control::{Control, Flow, Outcome};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
 use tutti_core::transport::RenderClock;
@@ -298,12 +299,16 @@ impl FrameSource for PlaneSource<'_> {
 /// The gate (latency trim + output-length cap) lives here rather than on a sink
 /// because it needs counters that span blocks. `consume` is called only with
 /// frames that survive it.
+///
+/// After each block `control` is told how far the render is; if it answers
+/// [`Flow::Stop`] the render ends there as [`Outcome::Cancelled`].
 pub(crate) fn drive<F>(
     src: &mut dyn FrameSource,
     layout: ChannelLayout,
     plan: &crate::render::RenderPlan,
+    control: &mut Control<'_>,
     mut consume: F,
-) -> crate::Result<()>
+) -> crate::Result<Outcome<()>>
 where
     F: FnMut(Interleaved<'_>) -> crate::Result<()>,
 {
@@ -346,9 +351,12 @@ where
             consume(filled.window(window.clone()))?;
             kept = Samples(kept.get() + window.len());
         }
+        if control.report(src.produced(), plan.total) == Flow::Stop {
+            return Ok(Outcome::Cancelled);
+        }
     }
 
-    Ok(())
+    Ok(Outcome::Finished(()))
 }
 
 #[cfg(test)]

@@ -145,11 +145,11 @@ fn write_through(saver: Option<&Saver>, db: &PluginDb) -> std::io::Result<()> {
     }
 }
 
-/// The key a path has in the database: its canonical path, or the path itself
-/// when it cannot be resolved (a file that is gone). A scan keys files the same
-/// way, so an alias and the real path are one row.
+/// The key a path has in the database: what a scan keys the file by, so an
+/// alias and the real path are one row, also when the file is gone (its parent
+/// is resolved and its name kept).
 fn key(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    tutti_plugin_db::canonical_path(path)
 }
 
 impl Plugins {
@@ -330,23 +330,34 @@ impl Plugins {
             tracing::warn!("a rescan finished but this catalog has no store to save to");
             return;
         };
-        let copy = self.db.clone();
+        let copy = Arc::new(self.db.clone());
+        let for_thread = (Arc::clone(&copy), Arc::clone(&saver));
         let spawned = std::thread::Builder::new()
             .name("plugin-db-save".into())
             .spawn(move || {
+                let (copy, saver) = for_thread;
                 if let Err(e) = saver(&copy) {
                     tracing::warn!("failed to save the plugin database after a scan: {e}");
                 }
             });
         match spawned {
             Ok(handle) => self.pending_save = Some(handle),
-            Err(e) => tracing::warn!("could not start the plugin database save: {e}"),
+            Err(e) => {
+                tracing::warn!(
+                    "could not start a thread for the database save, saving inline: {e}"
+                );
+                if let Err(e) = saver(&copy) {
+                    tracing::warn!("failed to save the plugin database after a scan: {e}");
+                }
+            }
         }
     }
 
     fn finish_pending_save(&mut self) {
-        if let Some(handle) = self.pending_save.take() {
-            let _ = handle.join();
+        if let Some(handle) = self.pending_save.take()
+            && handle.join().is_err()
+        {
+            tracing::warn!("the plugin database save panicked; the file may be out of date");
         }
     }
 
@@ -544,8 +555,8 @@ impl Plugins {
     ///
     /// Every scan already calls this. Call it directly to report "a plugin
     /// brought your last session down" at startup without a full rescan.
-    /// Idempotent, and a no-op when no sentinel is present. Returns the file
-    /// that was blacklisted.
+    /// Idempotent, and a no-op when no sentinel is present. Returns the files
+    /// that were blacklisted.
     ///
     /// The sentinel is removed only after the blacklist is saved. A catalog with
     /// no store (no `json`, no [`with_saver`](Self::with_saver)) cannot save, so
@@ -557,7 +568,7 @@ impl Plugins {
     ///
     /// [`ScanBusy`] while a rescan is in flight: its armed sentinel names a live
     /// probe, not a crash.
-    pub fn recover_crash(&mut self) -> std::result::Result<Option<PathBuf>, ScanBusy> {
+    pub fn recover_crash(&mut self) -> std::result::Result<Vec<PathBuf>, ScanBusy> {
         self.finish_pending_save();
         let saver = self.saver.as_ref();
         self.scanner
@@ -780,7 +791,7 @@ mod tests {
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
         let mut plugins = Plugins::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(Some(crashy.clone())));
+        assert_eq!(plugins.recover_crash(), Ok(vec![crashy.clone()]));
 
         assert!(!config.pedal_path().exists());
         let restarted = Plugins::load(config);
@@ -808,7 +819,7 @@ mod tests {
                 .push((db.is_blacklisted(&key_path), pedal.exists()));
             Ok(())
         });
-        assert_eq!(plugins.recover_crash(), Ok(Some(crashy)));
+        assert_eq!(plugins.recover_crash(), Ok(vec![crashy]));
 
         assert_eq!(*seen.lock().unwrap(), vec![(true, true)]);
         assert!(!plugins.config.pedal_path().exists());
@@ -827,7 +838,9 @@ mod tests {
         std::fs::write(config.pedal_path(), crashy.to_str().unwrap()).unwrap();
 
         let mut plugins = Plugins::empty(config.clone());
-        assert_eq!(plugins.recover_crash(), Ok(Some(crashy.clone())));
+        assert_eq!(plugins.recover_crash(), Ok(vec![crashy.clone()]));
+        // A rescan recovers first; it must not delete what it could not save.
+        plugins.rescan().unwrap();
 
         assert!(plugins.db().is_blacklisted(&crashy));
         assert!(config.pedal_path().exists());
@@ -897,5 +910,32 @@ mod tests {
         drop(scan);
         drop(plugins); // joins the save
         assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// `remove` and `unblacklist` through an alias reach the row of a file that
+    /// is gone: the key resolves the parent and keeps the name.
+    /// Mutation: make `key` return the path as given.
+    #[cfg(unix)]
+    #[test]
+    fn remove_through_an_alias_reaches_a_deleted_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        let file = real_dir.join("Gone.vst3");
+        std::fs::write(&file, b"x").unwrap();
+        let alias_dir = dir.path().join("alias");
+        std::os::unix::fs::symlink(&real_dir, &alias_dir).unwrap();
+        let mut plugins = Plugins::empty(CatalogConfig::new(
+            dir.path().join("db.json"),
+            crate::catalog::NO_SCAN_DIRS,
+        ));
+        plugins.blacklist(&file, "boom");
+        plugins.blacklist(real_dir.join("Also.vst3"), "boom");
+        std::fs::remove_file(&file).unwrap();
+
+        plugins.remove(alias_dir.join("Gone.vst3"));
+        assert!(plugins.unblacklist(alias_dir.join("Also.vst3")));
+
+        assert_eq!(plugins.db().len(), 0);
     }
 }

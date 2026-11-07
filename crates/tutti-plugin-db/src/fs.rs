@@ -96,6 +96,25 @@ fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathB
     native_module_in_bundle(bundle, kind).or_else(|| any_module_in_bundle(bundle, kind))
 }
 
+/// The key a path has in the database: its canonical path, or, for a file that
+/// does not exist (a pedal not yet armed, a plugin since deleted), its
+/// canonical parent joined to its name, or at least an absolute path. A link,
+/// a relative path and an absolute one to the same file give one key.
+#[must_use]
+pub fn canonical_path(path: &Path) -> PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    match (parent.canonicalize(), path.file_name()) {
+        (Ok(parent), Some(name)) => parent.join(name),
+        _ => std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()),
+    }
+}
+
 /// Recursively discovers plugin files across `dirs`, with the format each
 /// extension names.
 ///

@@ -8,7 +8,7 @@
 
 use super::facts::{self, FileFacts, ScanDecision};
 use super::format::{PluginClass, PluginDescriptor, PluginFormat};
-use super::fs::discover;
+use super::fs::{canonical_path, discover};
 use super::pedal::Pedal;
 use super::table::{Delta, FileRow, PluginDb};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -93,7 +93,8 @@ impl Scanner {
 
     /// Blacklists the plugin a previous, crashed scan was probing, in `db`, and
     /// hands `db` to `save` before the sentinel is removed. Returns the file
-    /// that was blacklisted. If `save` fails the sentinel stays.
+    /// that were blacklisted. If `save` fails the sentinel stays, and a scan
+    /// that follows keeps its entries beside its own.
     ///
     /// Safe to call multiple times; a no-op when no sentinel is present. Every
     /// scan calls it first.
@@ -106,7 +107,7 @@ impl Scanner {
         &self,
         db: &mut PluginDb,
         save: impl FnOnce(&PluginDb) -> std::io::Result<()>,
-    ) -> Result<Option<PathBuf>, ScanBusy> {
+    ) -> Result<Vec<PathBuf>, ScanBusy> {
         let _claim = Claim::take(&self.pedal)?;
         Ok(self.pedal.recover(db, save))
     }
@@ -213,9 +214,10 @@ impl Scanner {
     }
 }
 
-/// The pedal paths a scan or a recovery is using right now. One pedal serves
-/// one probe at a time: a second user would delete the sentinel of a probe in
-/// flight, or blacklist a plugin that did not crash.
+/// The pedal files a scan or a recovery is using right now, by canonical path
+/// (a link or a relative path to the same file is the same pedal). One pedal
+/// serves one probe at a time: a second user would delete the sentinel of a
+/// probe in flight, or blacklist a plugin that did not crash.
 static IN_USE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Exclusive use of a pedal, released on drop (so also when a worker panics).
@@ -224,12 +226,13 @@ struct Claim(PathBuf);
 
 impl Claim {
     fn take(pedal: &Pedal) -> Result<Self, ScanBusy> {
+        let file = canonical_path(pedal.path());
         let mut in_use = IN_USE.lock().unwrap_or_else(PoisonError::into_inner);
-        if in_use.iter().any(|p| p == pedal.path()) {
+        if in_use.contains(&file) {
             return Err(ScanBusy);
         }
-        in_use.push(pedal.path().to_path_buf());
-        Ok(Self(pedal.path().to_path_buf()))
+        in_use.push(file.clone());
+        Ok(Self(file))
     }
 }
 
@@ -431,7 +434,7 @@ impl Job {
             warn!("failed to arm dead-man's pedal: {e}");
         }
         let probed = (self.probe)(path, format);
-        self.pedal.disarm();
+        self.pedal.disarm(path);
         match probed {
             Ok(descriptor) => (
                 ScanOutcome::New,
@@ -1410,5 +1413,94 @@ mod tests {
         let row = db.row(&target).expect("keyed by the target");
         assert_eq!(row.format, PluginFormat::Clap);
         assert!(row.blacklist_reason().is_some());
+    }
+
+    /// A pedal reached by another name is the same pedal: through a link to its
+    /// directory, or through a `..` path. Compared as raw strings, the second
+    /// user got in, blacklisted a plugin that had not crashed and deleted the
+    /// live sentinel.
+    /// Mutation: key the claim by `pedal.path()` instead of `canonical_path`.
+    #[cfg(unix)]
+    #[test]
+    fn a_pedal_reached_by_another_name_is_still_claimed() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        let a = create_fake_plugin(&plugins_dir, "a.clap");
+        let (scanner, parked, release, _) = gated_scanner(dir.path(), named);
+        let mut db = PluginDb::new();
+        let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
+        parked.recv_timeout(Duration::from_secs(30)).unwrap();
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path(), &link).unwrap();
+        let detour = dir.path().join("plugins").join("..").join(".scanning");
+        for name in [link.join(".scanning"), detour] {
+            let other = Scanner::new(name.clone(), filename_probe);
+            assert_eq!(
+                other.recover_crash(&mut db, no_save),
+                Err(ScanBusy),
+                "{name:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(dir.path().join(".scanning")).unwrap(),
+            a.as_os_str().as_encoded_bytes()
+        );
+        assert!(!db.is_blacklisted(&a));
+
+        release.send(()).unwrap();
+        assert!(scan.wait(&mut db).is_some());
+    }
+
+    fn failing_save(_: &PluginDb) -> std::io::Result<()> {
+        Err(std::io::Error::other("no store"))
+    }
+
+    /// A sentinel whose blacklist could not be saved survives the scan that
+    /// follows: the scan arms and disarms its own entry beside it. Overwritten,
+    /// the crash record was lost.
+    /// Mutation: start `Pedal::arm` from an empty entry list.
+    #[test]
+    fn a_scan_after_a_failed_recovery_save_keeps_the_retained_sentinel() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        create_fake_plugin(&plugins_dir, "fine.clap");
+        let pedal_file = dir.path().join(".scanning");
+        std::fs::write(&pedal_file, "/plugins/crashy.vst3").unwrap();
+        let (scanner, calls) = counting_scanner(dir.path(), named);
+        let mut db = PluginDb::new();
+
+        let result = scanner.scan(&mut db, [&plugins_dir], failing_save).unwrap();
+
+        assert_eq!(result.new, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(&pedal_file).unwrap(), b"/plugins/crashy.vst3");
+        assert!(db.is_blacklisted(Path::new("/plugins/crashy.vst3")));
+    }
+
+    /// The retained entry and the crash that follows are both blacklisted by
+    /// the next start.
+    /// Mutation: as above.
+    #[test]
+    fn a_crash_after_a_failed_recovery_save_blacklists_both_files_next_start() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        let fatal = create_fake_plugin(&plugins_dir, "fatal.clap");
+        let pedal_file = dir.path().join(".scanning");
+        std::fs::write(&pedal_file, "/plugins/crashy.vst3").unwrap();
+        let dying = Scanner::new(pedal_file.clone(), |_, _| panic!("host down"));
+        let mut db = PluginDb::new();
+        let scan = dying.spawn(&mut db, [&plugins_dir], failing_save).unwrap();
+        assert!(scan.wait(&mut db).is_none());
+
+        let mut next = PluginDb::new();
+        let crashed = scanner_for(dir.path())
+            .recover_crash(&mut next, no_save)
+            .unwrap();
+
+        assert_eq!(crashed.len(), 2, "{crashed:?}");
+        assert!(next.is_blacklisted(Path::new("/plugins/crashy.vst3")));
+        assert!(next.is_blacklisted(&fatal));
+        assert!(!pedal_file.exists());
     }
 }

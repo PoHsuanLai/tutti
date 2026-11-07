@@ -31,7 +31,7 @@
 
 use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
-use bevy_log::{info, warn};
+use bevy_log::{debug, info, warn};
 
 use tutti_plugin_db::{Scan, ScanPhase, ScanPoll, ScanProgress, ScanResult};
 
@@ -126,7 +126,11 @@ pub fn start_scan(world: &mut World) {
     let scan = match plugins.0.spawn_rescan() {
         Ok(scan) => scan,
         Err(busy) => {
-            warn!("plugin rescan not started: {busy}");
+            // A worker from an earlier scan is still winding down (or another
+            // catalog shares the pedal). Ask again next frame rather than drop
+            // the request.
+            debug!("plugin rescan deferred: {busy}");
+            world.write_message(RescanPlugins);
             return;
         }
     };

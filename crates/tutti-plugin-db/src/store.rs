@@ -5,8 +5,10 @@
 //! rescan rebuilds it. There is no migration. Quarantined files are never
 //! overwritten.
 //!
-//! A path that is not valid UTF-8 cannot be written to JSON; [`save`] leaves
-//! such a row out and logs it, and the rest of the table is saved.
+//! A path that is not valid UTF-8 is stored as its bytes (unix), so a plugin
+//! with such a name keeps its row, and its blacklist, across restarts. Where
+//! that is not possible, [`save`] leaves the row out, logs it, saves the rest,
+//! and returns an error if the row was a blacklisted one.
 
 use super::table::{Delta, FileRow, PluginDb};
 use serde::{Deserialize, Serialize};
@@ -24,12 +26,60 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Serialize)]
 struct Out<'a> {
     version: u64,
-    files: Vec<(&'a Path, &'a FileRow)>,
+    files: Vec<(StoredPath<'a>, &'a FileRow)>,
 }
 
 #[derive(Deserialize)]
 struct In {
-    files: Vec<(PathBuf, FileRow)>,
+    files: Vec<(StoredPathOwned, FileRow)>,
+}
+
+/// A path as the file holds it: text, or the raw bytes of a name that is not
+/// UTF-8.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum StoredPath<'a> {
+    Text(&'a str),
+    Bytes { bytes: &'a [u8] },
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredPathOwned {
+    Text(String),
+    Bytes { bytes: Vec<u8> },
+}
+
+impl<'a> StoredPath<'a> {
+    fn of(path: &'a Path) -> Option<Self> {
+        if let Some(text) = path.to_str() {
+            return Some(Self::Text(text));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            Some(Self::Bytes {
+                bytes: path.as_os_str().as_bytes(),
+            })
+        }
+        #[cfg(not(unix))]
+        None
+    }
+}
+
+impl StoredPathOwned {
+    fn into_path(self) -> PathBuf {
+        match self {
+            Self::Text(text) => PathBuf::from(text),
+            #[cfg(unix)]
+            Self::Bytes { bytes } => {
+                use std::os::unix::ffi::OsStrExt;
+                PathBuf::from(std::ffi::OsStr::from_bytes(&bytes))
+            }
+            #[cfg(not(unix))]
+            Self::Bytes { bytes } => PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()),
+        }
+    }
 }
 
 /// Why a file is not a database this version can read.
@@ -73,7 +123,7 @@ fn parse(text: &str) -> Result<PluginDb, Unreadable> {
     let file: In = serde_json::from_value(value).map_err(Unreadable::Corrupt)?;
     let mut db = PluginDb::new();
     for (path, row) in file.files {
-        db.apply(Delta::put(path, row));
+        db.apply(Delta::put(path.into_path(), row));
     }
     Ok(db)
 }
@@ -145,9 +195,16 @@ pub fn load(path: impl AsRef<Path>) -> PluginDb {
 /// fails; the previous file is then intact.
 pub fn save(db: &PluginDb, path: impl AsRef<Path>) -> std::io::Result<()> {
     let path = path.as_ref();
-    let (files, skipped): (Vec<_>, Vec<_>) = db.rows().partition(|(p, _)| p.to_str().is_some());
-    for (skipped, _) in skipped {
-        warn!("plugin database: not saving {skipped:?}, the path is not valid UTF-8");
+    let mut files = Vec::new();
+    let mut lost_blacklist = false;
+    for (path, row) in db.rows() {
+        match StoredPath::of(path) {
+            Some(stored) => files.push((stored, row)),
+            None => {
+                warn!("plugin database: not saving {path:?}, the path cannot be stored");
+                lost_blacklist |= row.blacklist_reason().is_some();
+            }
+        }
     }
     let out = Out {
         version: VERSION,
@@ -156,6 +213,13 @@ pub fn save(db: &PluginDb, path: impl AsRef<Path>) -> std::io::Result<()> {
     let json = serde_json::to_string_pretty(&out).map_err(std::io::Error::other)?;
     replace_file(path, |f| f.write_all(json.as_bytes()))?;
     debug!("saved {} plugin files to {:?}", db.len(), path);
+    if lost_blacklist {
+        // The rest is saved; the error keeps a recovery's pedal armed, since the
+        // pedal is the only record of that blacklist.
+        return Err(std::io::Error::other(
+            "a blacklisted file's path cannot be stored in the database file",
+        ));
+    }
     Ok(())
 }
 
@@ -232,7 +296,10 @@ mod tests {
         let db = db_of(&["reverb"]);
         serde_json::to_string(&Out {
             version: VERSION,
-            files: db.rows().collect(),
+            files: db
+                .rows()
+                .map(|(p, r)| (StoredPath::of(p).unwrap(), r))
+                .collect(),
         })
         .unwrap()
     }
@@ -388,8 +455,8 @@ mod tests {
         let text = serde_json::to_string(&Out {
             version: VERSION,
             files: vec![
-                (Path::new("/plugins/a.vst3"), &first),
-                (Path::new("/plugins/a.vst3"), &second),
+                (StoredPath::Text("/plugins/a.vst3"), &first),
+                (StoredPath::Text("/plugins/a.vst3"), &second),
             ],
         })
         .unwrap();
@@ -531,11 +598,13 @@ mod tests {
         .unwrap();
     }
 
-    /// A row whose path is not UTF-8 is left out with a log line, and the rest
-    /// of the table is saved. Mutation: save every row (the whole save fails).
+    /// A name that is not UTF-8 keeps its row, blacklist included, through a
+    /// save and a load: a crashing plugin with such a name must not be probed
+    /// again after a restart. Mutation: skip rows whose path has no `to_str`
+    /// in `StoredPath::of` (return `None`).
     #[cfg(unix)]
     #[test]
-    fn a_non_utf8_path_is_left_out_and_the_rest_is_saved() {
+    fn a_non_utf8_path_round_trips_through_the_file() {
         use std::os::unix::ffi::OsStrExt;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("db.json");
@@ -545,8 +614,6 @@ mod tests {
 
         save(&db, &path).unwrap();
 
-        let loaded = load(&path);
-        assert_eq!(loaded.len(), 1);
-        assert!(loaded.row(Path::new("/plugins/kept.vst3")).is_some());
+        assert_eq!(load(&path), db);
     }
 }

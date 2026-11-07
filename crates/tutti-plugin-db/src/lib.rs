@@ -40,7 +40,7 @@ pub use format::{
     AuComponentType, ClapFeature, PluginClass, PluginDescriptor, PluginFormat, PluginRole,
     Vst2Category, Vst3PlugType, Vst3SubCategories,
 };
-pub use fs::{discover, format_from_path};
+pub use fs::{canonical_path, discover, format_from_path};
 pub use scanner::{
     ProbeFailure, Scan, ScanBusy, ScanPhase, ScanPoll, ScanProgress, ScanResult, Scanner,
     probe_plugin_fallback,

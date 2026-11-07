@@ -211,8 +211,8 @@ mod tests {
     /// the wrong output moves it. 7.1 to stereo: `Lo` takes FL and, at
     /// −3 dB, C, SL and BL; `Ro` the mirror; LFE neither.
     ///
-    /// Mutation (run): pass the output index as the source width in
-    /// `process` → fails; slice each input from frame 1 → fails.
+    /// Mutation (run): fold output channel 0 for every output in `process`
+    /// → fails.
     #[test]
     fn a_block_of_unit_pulses_reads_out_the_matrix() {
         let m = M3DB;

@@ -422,6 +422,9 @@ mod tests {
 
     /// 7.1.4 is the 7.1 bed with the four heights after it, so the order
     /// extends 7.1 as 7.1 extends 5.1.
+    ///
+    /// Mutation (run): `TopFrontRight` written `TopFrontLeft` in the 12 arm
+    /// fails.
     #[test]
     fn the_smpte_714_order_extends_71() {
         let seven_one = ChannelTopology::smpte(ChannelLayout::from(8u16)).expect("8 has an order");
@@ -440,6 +443,9 @@ mod tests {
 
     /// Discrete channels are explicit: the right count, named, and not any
     /// placed speaker.
+    ///
+    /// Mutation (run): `is_discrete` testing `any` instead of `all` fails the
+    /// mixed topology.
     #[test]
     fn discrete_channels_are_counted_named_and_unplaced() {
         let d = ChannelTopology::discrete(ChannelLayout::from(6u16));

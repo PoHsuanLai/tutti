@@ -33,6 +33,14 @@ pub enum Error {
         sink: ChannelLayout,
     },
 
+    /// The source broke mid-take ([`AudioIn::is_failed`](crate::AudioIn::is_failed)),
+    /// for a microphone because its device went away.
+    ///
+    /// The frames delivered before the failure are in the sink, which was
+    /// finalized: the file is valid and short.
+    #[error("the recording source failed; the take holds only what it delivered before")]
+    SourceFailed,
+
     /// File I/O failed — opening the sink, writing frames, or the header
     /// back-patch in [`finalize`](crate::AudioOut::finalize).
     #[error(transparent)]
@@ -56,9 +64,21 @@ impl From<Error> for std::io::Error {
     fn from(error: Error) -> Self {
         match error {
             Error::Io(io) => io,
+            Error::SourceFailed => std::io::Error::other(Error::SourceFailed),
             mismatch @ Error::ChannelWidthMismatch { .. } => {
                 std::io::Error::new(std::io::ErrorKind::InvalidInput, mismatch)
             }
+        }
+    }
+}
+
+impl Error {
+    /// The error a take's `io::Error` result stands for: [`SourceFailed`](Self::SourceFailed)
+    /// if that is what it carries, [`Io`](Self::Io) otherwise.
+    pub(crate) fn from_take(error: std::io::Error) -> Self {
+        match error.get_ref().and_then(|e| e.downcast_ref::<Self>()) {
+            Some(Self::SourceFailed) => Self::SourceFailed,
+            _ => Self::Io(error),
         }
     }
 }

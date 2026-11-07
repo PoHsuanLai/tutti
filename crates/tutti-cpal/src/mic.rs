@@ -358,6 +358,7 @@ where
     // Derived ONCE, outside the callback — never inside the per-frame loop.
     let stride = channels.max(1);
     let fold_width = stride.min(MAX_ROOT_CHANNELS);
+    let delivering = Arc::clone(&faults);
 
     let stream = device.build_input_stream(
         config,
@@ -365,6 +366,7 @@ where
             // Stack scratch, reused every frame. Sized at the fixed ceiling and
             // sliced to the device width — no allocation on the RT thread.
             let mut src = [0.0f32; MAX_ROOT_CHANNELS];
+            delivering.delivered();
             for frame in data.chunks_exact(stride) {
                 for (slot, s) in src[..fold_width].iter_mut().zip(frame) {
                     *slot = s.to_sample();

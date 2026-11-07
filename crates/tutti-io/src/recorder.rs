@@ -238,10 +238,15 @@ impl Recorder {
     ///
     /// # Errors
     ///
+    /// [`Error::SourceFailed`] if the source broke mid-take; the sink was
+    /// finalized, so the file is valid and holds what was delivered.
     /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
     /// unpatched and the file is unreadable) or the pump thread panicked.
     pub fn finish(mut self) -> Result<()> {
-        Ok(self.finish_in_place().unwrap_or(Ok(()))?)
+        Ok(self
+            .finish_in_place()
+            .unwrap_or(Ok(()))
+            .map_err(Error::from_take)?)
     }
 
     /// Waits for a **finite** take to reach its own end, then finalizes.
@@ -261,10 +266,14 @@ impl Recorder {
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] if finalizing failed or the pump thread panicked.
+    /// [`Error::SourceFailed`] as for [`finish`](Self::finish); [`Error::Io`] if
+    /// finalizing failed or the pump thread panicked.
     pub fn wait(mut self) -> Result<()> {
         // Not `finish_in_place`: that clears the stop flag and truncates the take.
-        Ok(self.join_pump().unwrap_or(Ok(()))?)
+        Ok(self
+            .join_pump()
+            .unwrap_or(Ok(()))
+            .map_err(Error::from_take)?)
     }
 
     /// Signals the pump to stop, without waiting for it. Idempotent.
@@ -318,7 +327,8 @@ impl Recorder {
     /// [`finish`](Self::finish) for a host that stores the take where it cannot be
     /// moved out (a component, a field). `None` once the result was already collected,
     /// which is what makes a second finalize unrepresentable rather than a
-    /// panic. Blocks for at most one pass (or one park); after
+    /// panic. A failed source comes back as [`Error::SourceFailed`] inside the
+    /// `io::Error` (see [`PumpLoop::finalize`]). Blocks for at most one pass (or one park); after
     /// [`is_finished`](Self::is_finished) it does not block at all.
     ///
     /// Clearing the stop flag is the half that matters for a **live** source.

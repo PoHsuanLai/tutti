@@ -661,9 +661,14 @@ fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
     assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
     assert!(rec.failed());
 
-    rec.finish_in_place()
+    let err = rec
+        .finish_in_place()
         .expect("first collect")
-        .expect("finalize is clean");
+        .expect_err("a failed source is not a clean take");
+    assert!(
+        matches!(Error::from_take(err), Error::SourceFailed),
+        "typed, not a bare io error"
+    );
     let reader = hound::WavReader::open(&path).expect("the prefix is a readable file");
     assert_eq!(reader.len(), 20, "the ten delivered frames are kept");
 }
@@ -689,7 +694,7 @@ fn frames_buffered_at_the_fault_are_written_first() {
     .unwrap();
     assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(5))));
     assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
-    rec.finish_in_place().unwrap().unwrap();
+    assert!(rec.finish_in_place().unwrap().is_err());
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 10);
 }
 
@@ -724,4 +729,89 @@ fn a_failed_sink_fails_the_take() {
         .expect_err("the sink's error");
     assert!(err.get_ref().is_some());
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
+}
+
+/// A source that pushes its last frame and disconnects between a poll that came
+/// back empty and the failure check: poll 1 is empty, then the late frame lands
+/// and the flag flips.
+struct RacingMic {
+    polls: usize,
+    failed: AtomicBool,
+}
+
+impl AudioIn for RacingMic {
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
+    fn layout(&self) -> ChannelLayout {
+        ChannelLayout::STEREO
+    }
+
+    fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+        self.polls += 1;
+        match self.polls {
+            // Empty; the producer's last push and the disconnect follow.
+            1 => {
+                self.failed.store(true, Ordering::Release);
+                Samples::ZERO
+            }
+            2 => {
+                out[..2].copy_from_slice(&[0.5, -0.5]);
+                Samples(1)
+            }
+            _ => Samples::ZERO,
+        }
+    }
+
+    fn is_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+}
+
+/// The frame pushed just before the disconnect is recorded, not lost.
+///
+/// Mutation: failing on the first empty poll that sees `is_failed` (removing
+/// the second `pump` in `pump_once`) returns `Failed` first and fails this.
+#[test]
+fn a_frame_pushed_just_before_the_fault_is_not_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("race.wav");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let (driver, pump) = ManualDriver::new();
+    let mut rec = Recorder::start_with(
+        RacingMic {
+            polls: 0,
+            failed: AtomicBool::new(false),
+        },
+        wav,
+        driver,
+    )
+    .unwrap();
+    assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(1))));
+    assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
+    let _ = rec.finish_in_place();
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 2);
+}
+
+/// `Failed` outranks `Ended`: a finite source that failed and drained is a
+/// failure.
+#[test]
+fn a_failed_finite_source_is_failed_not_ended() {
+    struct DeadFile;
+    impl AudioIn for DeadFile {
+        const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+        fn layout(&self) -> ChannelLayout {
+            ChannelLayout::STEREO
+        }
+        fn poll_into(&mut self, _: &mut [f32]) -> Samples {
+            Samples::ZERO
+        }
+        fn is_failed(&self) -> bool {
+            true
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let wav = WavOut::create(dir.path().join("f.wav"), 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let (driver, pump) = ManualDriver::new();
+    let _rec = Recorder::start_with(DeadFile, wav, driver).unwrap();
+    assert_eq!(pump.pump_once(), Some(PumpPass::Failed));
 }

@@ -554,8 +554,28 @@ fn a_dead_source_ends_its_own_take() {
 
     wait_until("the pump to stop on its own", || rec.is_finished());
     assert!(rec.failed());
-    rec.finish_in_place()
-        .unwrap()
-        .expect("the prefix finalizes cleanly");
+    assert!(rec.finish_in_place().unwrap().is_err());
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 14);
+}
+
+/// `wait` on a source that dies reports it instead of `Ok(())`, with the
+/// delivered frames in a valid file. `finish` does the same.
+///
+/// Mutation: dropping the `source_failed` check in `PumpLoop::finalize` makes
+/// both return `Ok`.
+#[test]
+fn wait_and_finish_report_a_failed_source() {
+    for use_wait in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dead.wav");
+        let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+        let rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
+        wait_until("the pump to stop on its own", || rec.is_finished());
+        let result = if use_wait { rec.wait() } else { rec.finish() };
+        assert!(
+            matches!(result, Err(tutti_io::Error::SourceFailed)),
+            "got {result:?}"
+        );
+        assert_eq!(hound::WavReader::open(&path).unwrap().len(), 14);
+    }
 }

@@ -252,6 +252,7 @@ impl CpalDriver {
         T: cpal::SizedSample + cpal::FromSample<f32>,
     {
         let channels = block.channels();
+        let delivering = Arc::clone(&faults);
         Ok(self.device.build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
@@ -266,6 +267,7 @@ impl CpalDriver {
                     data.len() / channels
                 );
                 block.render(data);
+                delivering.delivered();
             },
             move |err| faults.record(&err),
             None,
@@ -369,6 +371,14 @@ impl ManualStream {
         let channels = self.with_block(|b| b.channels())?;
         let mut out = vec![0.0f32; frames * channels];
         self.with_block(|b| b.render(&mut out))?;
+        if let Some(faults) = self
+            .faults
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            faults.delivered();
+        }
         Some(out)
     }
 

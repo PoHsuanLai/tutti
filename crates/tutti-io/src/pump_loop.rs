@@ -38,6 +38,9 @@ pub enum PumpPass {
     /// The source broke ([`AudioIn::is_failed`]) after its buffered frames were
     /// drained, or the sink failed ([`AudioOut::is_failed`]). Stop and
     /// finalize what was written.
+    ///
+    /// Outranks [`Ended`](Self::Ended): a finite source that failed and is
+    /// drained is a failure, not a clean end.
     Failed,
 }
 
@@ -97,8 +100,19 @@ where
     /// [`ON_EMPTY`](AudioIn::ON_EMPTY), unless the sink has failed or the
     /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
     pub fn pump_once(&mut self) -> PumpPass {
-        let n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
-        if self.sink.is_failed() || (n.is_zero() && self.src.is_failed()) {
+        let mut n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        // A source can push its last frames and then fail between the poll that
+        // came back empty and this check. The failure flag is read after the
+        // empty poll, so every frame pushed before it is visible to a second
+        // poll; only an empty second poll is a drained, failed source.
+        if n.is_zero() && self.src.is_failed() {
+            n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+            if n.is_zero() {
+                self.failed.store(true, Ordering::Release);
+                return PumpPass::Failed;
+            }
+        }
+        if self.sink.is_failed() {
             self.failed.store(true, Ordering::Release);
             return PumpPass::Failed;
         }
@@ -120,9 +134,16 @@ where
     /// # Errors
     ///
     /// The sink's [`finalize`](AudioOut::finalize) error; for a WAV, the file
-    /// is then unreadable.
+    /// is then unreadable. If the sink closed cleanly but the source had failed,
+    /// [`Error::SourceFailed`](crate::Error::SourceFailed) as an `io::Error`:
+    /// the file is valid and holds the frames delivered before the failure.
     pub fn finalize(self) -> std::io::Result<()> {
-        self.sink.finalize()
+        let source_failed = self.src.is_failed();
+        self.sink.finalize()?;
+        if source_failed {
+            return Err(crate::Error::SourceFailed.into());
+        }
+        Ok(())
     }
 }
 

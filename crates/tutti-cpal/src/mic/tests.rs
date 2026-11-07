@@ -175,6 +175,30 @@ fn a_recorder_on_a_disconnected_mic_fails_the_take() {
     );
     assert_eq!(pump.pump_once(), Some(tutti_io::PumpPass::Failed));
     assert!(rec.failed());
-    rec.finish_in_place().unwrap().expect("clean finalize");
+    assert!(
+        matches!(rec.finish_in_place(), Some(Err(_))),
+        "the take reports the failed source"
+    );
     let _ = std::fs::remove_file(&path);
+}
+
+/// The ALSA shape of an unplugged mic, a backend error repeated with no audio,
+/// fails the source.
+///
+/// Mutation: dropping `delivering.delivered()` is not covered here (it needs the
+/// callback); dropping the promotion in `record_at` fails this.
+#[test]
+fn a_mic_whose_backend_keeps_failing_without_audio_is_failed() {
+    let mic = mic_without_a_device();
+    let faults = mic.faults();
+    let t0 = faults.epoch;
+    let err = cpal::StreamError::BackendSpecific {
+        err: cpal::BackendSpecificError {
+            description: "`alsa::poll()` returned POLLERR".into(),
+        },
+    };
+    faults.record_at(&err, t0);
+    assert!(!AudioIn::is_failed(&mic));
+    faults.record_at(&err, t0 + crate::faults::STALL_GRACE);
+    assert!(AudioIn::is_failed(&mic));
 }

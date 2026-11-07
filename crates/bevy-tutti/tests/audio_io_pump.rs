@@ -367,6 +367,63 @@ mod audio_pump {
         );
     }
 
+    /// A source that dies mid-take ends the pump and `PumpFinished` reports it,
+    /// where a clean `Ok(())` used to stand for a short file. The frames it
+    /// delivered are kept in a valid WAV.
+    ///
+    /// *Mutation:* drop the `source_failed` check in `tutti_io::PumpLoop::finalize`:
+    /// the result is `Ok(())` and the `expect_err` fails.
+    #[test]
+    fn a_dead_source_is_reported_by_the_drain() {
+        struct Dead {
+            left: usize,
+        }
+        impl AudioIn for Dead {
+            const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+            fn layout(&self) -> ChannelLayout {
+                ChannelLayout::STEREO
+            }
+            fn poll_into(&mut self, out: &mut [f32]) -> Samples {
+                let n = self.left.min(out.len() / 2);
+                out[..n * 2].fill(0.25);
+                self.left -= n;
+                Samples(n)
+            }
+            fn is_failed(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dead.wav");
+        let mut app = app();
+        let entity = app
+            .world_mut()
+            .spawn(AudioPump::start(
+                Dead { left: 9 },
+                sink(&path),
+                Samples(256),
+            ))
+            .id();
+
+        assert!(
+            run_until_drained(&mut app, 400),
+            "a dead source ends its own pump"
+        );
+
+        let messages = app.world().resource::<Messages<PumpFinished>>();
+        let mut cursor = messages.get_cursor();
+        let reported: Vec<&PumpFinished> = cursor.read(messages).collect();
+        assert_eq!(reported.len(), 1);
+        assert_eq!(reported[0].entity, entity);
+        let error = reported[0]
+            .result
+            .as_ref()
+            .expect_err("a dead source must not read as a clean take");
+        assert_eq!(error.to_string(), tutti_io::Error::SourceFailed.to_string());
+        assert_eq!(read_back(&path).len(), 18);
+    }
+
     /// Registering the same frame type twice drains once.
     ///
     /// `add_systems` does not deduplicate, so a host and a library plugin both

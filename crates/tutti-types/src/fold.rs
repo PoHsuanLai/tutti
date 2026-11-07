@@ -56,6 +56,8 @@ pub enum FoldError {
         /// The source width.
         width: ChannelLayout,
     },
+    /// [`Fold::select`] was given more channels than a width can count.
+    TooWide(usize),
 }
 
 impl core::fmt::Display for FoldError {
@@ -80,6 +82,7 @@ impl core::fmt::Display for FoldError {
             Self::NoSuchChannel { channel, width } => {
                 write!(f, "channel {channel} is not in a {width:?} source")
             }
+            Self::TooWide(n) => write!(f, "{n} channels is more than a width can count"),
         }
     }
 }
@@ -587,13 +590,18 @@ impl Fold {
     /// # Errors
     ///
     /// [`FoldError::Empty`] for no channels or an empty source,
-    /// [`FoldError::NoSuchChannel`] for a channel at or past `src`'s width.
+    /// [`FoldError::NoSuchChannel`] for a channel at or past `src`'s width,
+    /// [`FoldError::TooWide`] for more than `u16::MAX` channels.
     pub fn select(src: ChannelLayout, channels: &[usize]) -> Result<Self, FoldError> {
         if src == ChannelLayout::EMPTY {
             return Err(FoldError::Empty(FoldEnd::Source));
         }
         if channels.is_empty() {
             return Err(FoldError::Empty(FoldEnd::Destination));
+        }
+        // A list is a destination width, which `narrow` later assumes fits.
+        if u16::try_from(channels.len()).is_err() {
+            return Err(FoldError::TooWide(channels.len()));
         }
         let rows = channels
             .iter()

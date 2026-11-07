@@ -1350,9 +1350,11 @@ impl MemorySource {
     }
 
     /// The gain this block renders at: the driven port's, else the cell's.
+    /// A NaN or infinite one renders silence.
     #[inline]
     fn block_gain(&self) -> f32 {
-        self.driven_gain.unwrap_or_else(|| self.gain.load()).get()
+        let gain = self.driven_gain.unwrap_or_else(|| self.gain.load()).get();
+        if gain.is_finite() { gain } else { 0.0 }
     }
 
     /// Scale a frame by this unit's gain.

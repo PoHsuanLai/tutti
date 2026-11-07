@@ -484,6 +484,30 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     }
 }
 
+/// A bare node with a NaN or infinite gain renders silence, never NaN, in
+/// frames inside and outside its window (it starts 100 frames into the block
+/// and the block crosses a wrap).
+///
+/// Mutation (run): `block_gain` returning the gain unguarded -> the frames
+/// outside the window are inf * 0.0 = NaN, and those inside are NaN -> fails.
+#[test]
+fn a_node_with_a_non_finite_gain_renders_silence() {
+    for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let w = wave(1, 4 * FPB, tone);
+        let mut rig = Rig::new(Host::Node, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        // Two thirds of a block after the start of the run.
+        rig.place(1, &w, 100.0 / FPB as f64, None);
+        let Hosted::Node(node) = &rig.host else {
+            unreachable!()
+        };
+        node.set_gain(tutti_types::Amplitude(gain));
+        let out = rig.run(WRAP + 2 * FADE, 480);
+        for lane in &out {
+            assert!(lane.iter().all(|&s| s == 0.0), "gain {gain}");
+        }
+    }
+}
+
 /// A mono wave of a constant that steps at the wrap: `before` below `WRAP`,
 /// `after` from it, per channel `c` offset by `0.1 * c`. Every read is exact.
 fn steps(channels: usize, before: f32, after: f32) -> Arc<Wave> {

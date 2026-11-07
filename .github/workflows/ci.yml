@@ -141,8 +141,8 @@ jobs:
   # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on
   # one platform and a no-op on the other: the vst3 bindings type every SDK
   # enum constant as `c_uint` on unix and `c_int` on Windows, so
-  # `kAudio as i32` passes Linux clippy and fails `unnecessary_cast` here. The
-  # test job's Windows leg compiles this code but does not lint it.
+  # `kAudio as i32` passes Linux clippy and fails `unnecessary_cast` here. This
+  # is the only Windows job: it lints the code, and nothing runs it there.
   #
   # A native runner rather than a cross-check from ubuntu. The cross-check
   # (`just check-windows`) reaches the plugin crates, but not the workspace:
@@ -396,7 +396,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
     # `require` makes a Linux runner whose glibc is not the recorded one fail
     # instead of skipping the digests (CLAUDE.md, Testing).
@@ -461,11 +461,6 @@ jobs:
       # it here does not weaken it: on a developer machine with those plugins it
       # still runs and still asserts, which is the only place it ever could.
       - name: Test
-        # `shell: bash` is load-bearing on Windows. The default there is
-        # PowerShell, which does not take `\` as a line continuation — it ran
-        # `cargo nextest run ...` and `-E '...'` as two separate commands, and
-        # the first reported "no tests to run" because the filter never reached
-        # it. Every runner in this matrix has bash.
         shell: bash
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \

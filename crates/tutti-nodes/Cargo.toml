@@ -53,10 +53,11 @@ tutti-graph = { path = "../tutti-graph" }
 # `tutti_nodes::automation`.
 audio-automation = { workspace = true }
 
-[dev-dependencies]
-# The engine and worker pool the tests and benches render with.
+# `ClickNode` reads the count-in flag off a `Transport` and follows a
+# `ProjectMeter`. `tutti-core` has a dev edge back to this crate.
 tutti-core = { path = "../tutti-core", default-features = false }
 
+[dev-dependencies]
 # The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
 # `libm`'s pure-Rust routines, as `tutti-dsp`'s filters do, so they do not
 # depend on the platform's C math library.

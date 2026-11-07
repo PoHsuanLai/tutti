@@ -43,6 +43,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, GraphReconcileSystems, MasterSources, MetronomeRes,
     TransportRes,
@@ -50,10 +51,10 @@ use bevy_tutti::graph::{
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
-use tutti_core::AudioNode;
-use tutti_core::transport::{ClickState, Transport};
+use tutti_core::transport::Transport;
+use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
-use tutti_types::{SampleRate, Samples};
+use tutti_types::{NodeKey, SampleRate, Samples};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 /// The plugin's pipeline chunk here: one device callback when the graph knows
@@ -123,7 +124,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
             .world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_event_inputs(AudioNode(node)),
+            .node_event_inputs(node),
         shadow_node: world.get::<PluginShadow>(entity).map(PluginShadow::node),
         meter_bound: world.get::<PluginMeterBound>(entity).is_some(),
     };
@@ -147,7 +148,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_latency(AudioNode(node)),
+            .node_latency(node),
         Samples(tutti_clap_test_plugin::REPORTED_LATENCY_SAMPLES as usize + CHUNK),
         "the graph plans PDC against the node's latency"
     );
@@ -196,7 +197,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_latency(AudioNode(node)),
+            .node_latency(node),
         Samples(300 + CHUNK),
         "a changed plugin latency reaches the graph"
     );
@@ -217,7 +218,7 @@ fn a_loaded_plugin_is_bound_through_its_shadow_and_its_latency_is_the_sessions()
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_latency(AudioNode(node)),
+            .node_latency(node),
         tutti_types::latency::MAX_NODE_LATENCY,
         "clamped to what PDC compensates"
     );
@@ -331,7 +332,7 @@ fn a_crossfaded_plugin_is_bound_again() {
         controls.has_meter(),
         "the incoming plugin must get the meter installed"
     );
-    let node = *app.world().get::<AudioNode>(entity).expect("still bound");
+    let node = app.world().get::<AudioNode>(entity).expect("still bound").0;
     // The incoming plugin's parameter mirror is read by a job on the task
     // pool (`SessionEvent::PluginParamsDue`) and landed by a later frame's
     // `plugin_health_poll`, not on the frame thread. Mutation (run): that
@@ -343,7 +344,9 @@ fn a_crossfaded_plugin_is_bound_again() {
         while app
             .world()
             .resource::<AudioGraphRes>()
-            .with_plugin(node, |p| p.param_values().is_some_and(|m| m.is_ready()))
+            .with_plugin(AudioNode(node), |p| {
+                p.param_values().is_some_and(|m| m.is_ready())
+            })
             != Some(true)
         {
             assert!(
@@ -429,7 +432,7 @@ fn a_crossfaded_plugin_is_bound_again() {
 /// The node of `target`'s lane, waiting for it while the plugin's values
 /// are read.
 #[cfg(feature = "modulation")]
-fn lane_of(app: &mut App, target: bevy_tutti::modulation::ParamRef) -> AudioNode {
+fn lane_of(app: &mut App, target: bevy_tutti::modulation::ParamRef) -> NodeKey {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         if let Some((key, _)) = app
@@ -438,7 +441,7 @@ fn lane_of(app: &mut App, target: bevy_tutti::modulation::ParamRef) -> AudioNode
             .modulation()
             .lane(target)
         {
-            return AudioNode(key);
+            return key;
         }
         assert!(
             std::time::Instant::now() < deadline,

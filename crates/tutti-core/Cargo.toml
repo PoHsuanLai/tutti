@@ -15,15 +15,7 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-# The graph engine, transport and metering are framework-free.
-# `bevy` adds only the `Component` derive on `AudioNode`, so that an entity can
-# *be* a node in the graph; the systems that reconcile against it live in the
-# host adapter.
 default = []
-bevy = ["dep:bevy_ecs", "dep:bevy_reflect"]
-
-# Alias for `bevy`: some sibling crates enable it as `features = ["bevy_ecs"]`.
-bevy_ecs = ["bevy"]
 
 # No codec features: decoding (`Wave`, `FileIn`, and the Bevy `WaveAsset`) is
 # `tutti-io`'s. Name `tutti-io/wav` etc. instead.
@@ -36,7 +28,6 @@ serde = ["tutti-types/serde"]
 
 [dependencies]
 thiserror.workspace = true
-serde = { version = "1", default-features = false, features = ["derive"] }
 
 # The graph runtime: `Engine` renders a `tutti_graph::Executor`. No cycle:
 # tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
@@ -50,14 +41,7 @@ tutti-rt = { path = "../tutti-rt" }
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
-hashbrown = { version = "0.16", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
-
-# Bevy — optional, gated by the `bevy` feature, which adds only the `Component`
-# derive on `AudioNode`; the reconcile systems live in `bevy-tutti`. Pinned to
-# the same Bevy minor as the rest of the workspace.
-bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"], optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 # The same crate as the dependency above, with the sample-accuracy contract
@@ -72,6 +56,9 @@ approx = "0.5"
 tempfile = "3.8"
 rand = "0.8"
 tutti-ump = { path = "../tutti-ump", default-features = false }
+# The metronome node (`ClickNode`) the engine-level tests render. A dev edge
+# only: `tutti-nodes` depends on this crate.
+tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

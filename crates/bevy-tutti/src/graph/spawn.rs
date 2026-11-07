@@ -14,7 +14,7 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::EntityCommands;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 
 use std::any::Any;
 
@@ -77,7 +77,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, NodeControls};
 /// let graph = app.world().resource::<AudioGraphRes>();
 /// // Port 0 of the filter is fed by the oscillator — the declaration reached
 /// // the engine. Without the `PortSources`, this would still read `Silence`.
-/// assert!(matches!(graph.graph_ref().source(filt, 0), GraphSource::Node(_, 0)));
+/// assert!(matches!(graph.graph_ref().source(filt.0, 0), GraphSource::Node(_, 0)));
 /// ```
 ///
 /// The entity is bound to the node via [`AudioNode`] only. A host that needs to
@@ -163,7 +163,7 @@ where
     let (id, controls) = graph.graph().add(node);
     if let Ok(mut e) = world.get_entity_mut(entity) {
         e.insert(NodeControls(controls));
-        CapturedControls::default().bind(&mut e, id);
+        CapturedControls::default().bind(&mut e, AudioNode(id));
     }
 }
 
@@ -212,7 +212,7 @@ where
         };
         // `graph` borrows `world`; its last use ends the borrow (a `Mut` has
         // no `Drop`), so `land` can take `world` back.
-        let landed = graph.graph().crossfade(node_key, node, FADE, CURVE);
+        let landed = graph.graph().crossfade(node_key.0, node, FADE, CURVE);
         land(
             world,
             entity,
@@ -247,7 +247,7 @@ pub fn crossfade_plugin_node(
         };
         let landed = graph
             .graph()
-            .crossfade_plugin(node_key, Box::new(client), FADE, CURVE);
+            .crossfade_plugin(node_key.0, Box::new(client), FADE, CURVE);
         land(world, entity, node_key, captured, landed, |_, ()| {});
     });
 }
@@ -377,8 +377,12 @@ impl PendingCrossfades {
     pub(crate) fn resolve(&mut self, events: Vec<SessionEvent>, commands: &mut Commands) {
         for event in events {
             let (node, id, landed) = match event {
-                SessionEvent::CrossfadeLanded { node, id, controls } => (node, id, Ok(controls)),
-                SessionEvent::CrossfadeFailed { node, id, refused } => (node, id, Err(refused)),
+                SessionEvent::CrossfadeLanded { node, id, controls } => {
+                    (AudioNode(node), id, Ok(controls))
+                }
+                SessionEvent::CrossfadeFailed { node, id, refused } => {
+                    (AudioNode(node), id, Err(refused))
+                }
                 _ => continue,
             };
             let Some(at) = self.0.iter().position(|w| w.id == id) else {

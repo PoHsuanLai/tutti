@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::WorkerPool;
+use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, Transport, Unforkable,
 };

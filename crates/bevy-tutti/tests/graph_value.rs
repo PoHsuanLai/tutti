@@ -20,15 +20,15 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::topology::{LiveGraph, key_of};
 use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, GraphSource, MasterSources, PortSource, PortSources,
 };
-use tutti_core::AudioNode;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{ChannelSumNode, LimiterNode};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Db, Hz};
+use tutti_types::{ChannelLayout, Db, Hz, NodeKey};
 
 /// An app wired the way `build_into` leaves one, minus the audio device.
 fn app() -> App {
@@ -45,11 +45,11 @@ fn spawn_node<N: tutti_graph::IntoNode>(app: &mut App, node: N) -> Entity {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.graph().insert(node)
     };
-    app.world_mut().spawn(id).id()
+    app.world_mut().spawn(AudioNode(id)).id()
 }
 
-fn node_id(app: &App, entity: Entity) -> AudioNode {
-    *app.world().get::<AudioNode>(entity).expect("AudioNode")
+fn node_id(app: &App, entity: Entity) -> NodeKey {
+    app.world().get::<AudioNode>(entity).expect("AudioNode").0
 }
 
 fn live(app: &App) -> &tutti_types::Topology {
@@ -491,7 +491,7 @@ fn an_entity_whose_node_has_not_arrived_is_absent_rather_than_a_placeholder() {
         .resource_mut::<AudioGraphRes>()
         .graph()
         .insert(Osc::sine(Hz(440.0)));
-    app.world_mut().entity_mut(pending).insert(id);
+    app.world_mut().entity_mut(pending).insert(AudioNode(id.0));
     app.update();
 
     assert!(
@@ -577,7 +577,7 @@ fn a_rebind_moves_the_wire_though_the_value_is_unchanged() {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.graph().insert(Osc::sine(Hz(880.0)))
     };
-    app.world_mut().entity_mut(osc).insert(second);
+    app.world_mut().entity_mut(osc).insert(AudioNode(second));
     app.update();
 
     assert_eq!(

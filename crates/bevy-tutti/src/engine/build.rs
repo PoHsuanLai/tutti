@@ -17,7 +17,8 @@ use tutti_session::{Device, Session, SessionBuilder};
 
 use crate::engine::Result;
 use crate::graph::{
-    AudioConfig, AudioGraphRes, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
+    AudioConfig, AudioGraphRes, AudioNode, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes,
+    TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
@@ -174,7 +175,7 @@ pub(crate) fn build_with(
     // `Entity`, so an unnameable node is an unwirable one. The click's output
     // is left unwired so that the host declares where it lands.
     if let Some(click) = click {
-        let click_entity = world.spawn(click).id();
+        let click_entity = world.spawn(AudioNode(click)).id();
         world.insert_resource(EngineNodes {
             click: click_entity,
         });
@@ -193,12 +194,12 @@ pub(crate) fn build_with(
         // (and from) them by entity: the route rules feed from the input's
         // ports, and anything declared on the hardware out reaches the wire
         // beside the clock (the session's `"clock"` feed).
-        let input_entity = world.spawn(nodes.input).id();
-        let clock_entity = world.spawn(nodes.clock).id();
-        let out_entity = world.spawn(nodes.hardware_out).id();
+        let input_entity = world.spawn(AudioNode(nodes.input)).id();
+        let clock_entity = world.spawn(AudioNode(nodes.clock)).id();
+        let out_entity = world.spawn(AudioNode(nodes.hardware_out)).id();
         world.insert_resource(MidiEngineNodes {
             input: input_entity,
-            input_node: nodes.input,
+            input_node: AudioNode(nodes.input),
             clock: clock_entity,
             hardware_out: out_entity,
         });

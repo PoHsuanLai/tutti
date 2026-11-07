@@ -11,8 +11,8 @@
 //! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
 //! live-session facts (record, loop).
 
+#[cfg(test)]
 mod beat_walk;
-mod click;
 mod clock;
 pub(crate) mod fsm;
 mod handle;
@@ -25,7 +25,6 @@ mod state;
 mod timed;
 mod timeline;
 
-pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub(crate) use clock::Control;
 pub use clock::TransportClock;
 pub use handle::Transport;

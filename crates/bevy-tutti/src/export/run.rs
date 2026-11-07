@@ -158,13 +158,13 @@ fn start(
 }
 
 /// Every entity bound to a graph node, by entity and by node key — what
-/// resolves an [`ExportSource::Node`] to its node, and what names a node an
+/// resolves an [`ExportSource::Node`](crate::export::ExportSource) to its node, and what names a node an
 /// export failed on. Taken on the main thread when the render starts, and
 /// kept with the render ([`ExportInFlight`]): a fork can fail mid-render,
 /// long after the world was last readable.
 #[derive(Default, Debug)]
 pub(crate) struct NodeNames {
-    nodes: HashMap<Entity, tutti_core::AudioNode>,
+    nodes: HashMap<Entity, NodeKey>,
     by_key: HashMap<NodeKey, (Entity, Option<String>)>,
 }
 
@@ -173,16 +173,16 @@ impl NodeNames {
         let mut nodes = HashMap::new();
         let mut by_key = HashMap::new();
         for (entity, node, name) in world
-            .query::<(Entity, &tutti_core::AudioNode, Option<&Name>)>()
+            .query::<(Entity, &crate::graph::AudioNode, Option<&Name>)>()
             .iter(world)
         {
-            nodes.insert(entity, *node);
-            by_key.insert(node.key(), (entity, name.map(|n| n.as_str().to_owned())));
+            nodes.insert(entity, node.0);
+            by_key.insert(node.0, (entity, name.map(|n| n.as_str().to_owned())));
         }
         Self { nodes, by_key }
     }
 
-    fn node(&self, entity: Entity) -> Option<tutti_core::AudioNode> {
+    fn node(&self, entity: Entity) -> Option<NodeKey> {
         self.nodes.get(&entity).copied()
     }
 
@@ -314,9 +314,10 @@ mod tests {
     use bevy_app::App;
     use std::sync::{Arc, Mutex};
     use tutti_core::MotionEvent;
-    use tutti_core::transport::{MetronomeMode, OfflineTimeline, OfflineTimelineConfig};
+    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_cpal::{ManualStreamDriver, OutputSpec};
     use tutti_export::{ExportConfig, RenderConfig};
+    use tutti_nodes::MetronomeMode;
     use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate};
 
     const RATE: f64 = 48_000.0;

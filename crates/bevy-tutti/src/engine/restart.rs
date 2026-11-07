@@ -250,12 +250,12 @@ mod tests {
     fn latency_of(app: &App, entity: Entity) -> Samples {
         let node = *app
             .world()
-            .get::<tutti_core::AudioNode>(entity)
+            .get::<crate::graph::AudioNode>(entity)
             .expect("a node");
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_latency(node)
+            .node_latency(node.0)
     }
 
     /// **A restart onto a 48 kHz device re-rates everything.** One second at
@@ -727,10 +727,11 @@ mod tests {
     #[test]
     fn a_restart_after_a_failed_hook_recovers_on_the_old_device() {
         let (mut app, old, _, lim) = engine_app();
-        let lim = *app
+        let lim = app
             .world()
-            .get::<tutti_core::AudioNode>(lim)
-            .expect("a node");
+            .get::<crate::graph::AudioNode>(lim)
+            .expect("a node")
+            .0;
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             let (loop_back, ()) = graph.graph().insert(tutti_nodes::testing::Through::mono());

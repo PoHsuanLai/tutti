@@ -29,14 +29,15 @@ use std::time::{Duration, Instant};
 use bevy_app::prelude::*;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::{
     AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
 };
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
-use tutti_core::AudioNode;
-use tutti_core::transport::{ClickState, Transport};
+use tutti_core::transport::Transport;
+use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, TimeSignature,

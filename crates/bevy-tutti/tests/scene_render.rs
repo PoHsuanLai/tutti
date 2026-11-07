@@ -423,11 +423,12 @@ fn a_crossfade_follows_its_law_to_the_new_filter() {
 #[test]
 fn pdc_is_the_compilers() {
     let s = scene(true);
-    let drive = *s
+    let drive = s
         .app
         .world()
-        .get::<tutti_core::AudioNode>(s.drive)
-        .expect("bound");
+        .get::<bevy_tutti::graph::AudioNode>(s.drive)
+        .expect("bound")
+        .0;
     let graph = s.app.world().resource::<AudioGraphRes>();
     assert_eq!(
         graph.graph_ref().output_source(0),

@@ -74,7 +74,7 @@ use loom::{hint::spin_loop, thread::yield_now};
 
 /// How long a participant of a parallel block waits before it gives way:
 /// the audio thread by yielding its core once, a helper by leaving the
-/// block. A pool sets them (`tutti_core::WorkerPoolBuilder`), and the
+/// block. A pool sets them (`tutti_graph::WorkerPoolBuilder`), and the
 /// executor hands its pool's to [`TaskGraph::work`](super::TaskGraph::work);
 /// a [`JobGate`](super::JobGate) holds its own for its close. See the
 /// module docs (`src/spin.rs`).

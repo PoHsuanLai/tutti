@@ -30,11 +30,9 @@
 //! keeps meter a layer *over* the engine: `TransportSettings`, `Timeline`, and
 //! the graph know nothing about bars.
 
-use super::Transport;
-use super::beat_walk::piece_beats;
-use super::project_meter::ProjectMeter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use tutti_core::{ProjectMeter, Transport};
 use tutti_graph::{
     Cx, Env, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
@@ -532,7 +530,7 @@ impl ClickNode {
                 latched_until,
                 ..
             } = self;
-            piece_beats(start, &piece, |i, beat| {
+            piece.for_each_piece_beat(start, |i, beat| {
                 Self::advance_to(
                     last_click_onset,
                     latched_until,
@@ -991,7 +989,7 @@ mod tests {
     /// that read the beat once per block would start the click on frame 0 and
     /// diverge from the one-frame blocks there.
     ///
-    /// Mutation (run): `piece_beats` emitting the piece's first beat on every
+    /// Mutation (run): `Env::for_each_piece_beat` emitting the piece's first beat on every
     /// frame (`emit(i, t.beat())`) → the whole block holds beat 2 − 20/22 050,
     /// no onset in the block → the not-silence assert fails.
     #[test]

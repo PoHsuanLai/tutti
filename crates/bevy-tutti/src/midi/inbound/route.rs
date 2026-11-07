@@ -65,7 +65,7 @@ use bevy_ecs::prelude::*;
 
 use tutti_ump::MidiChannel;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 
 use crate::graph::{AudioGraphRes, EventWiring, GraphReconcileSystems, engine_ready};
 use crate::midi::MidiEngineNodes;
@@ -176,8 +176,8 @@ pub fn rebuild(
     // Bevy app does not (its routes are these rules).
     if let Err(e) = graph
         .midi()
-        .set_routes(nodes.input_node, &rules, fallback.0, |target| {
-            bound.get(target).ok().copied()
+        .set_routes(nodes.input_node.0, &rules, fallback.0, |target| {
+            bound.get(target).ok().map(|n| n.0)
         })
     {
         tracing::error!("MIDI routes not compiled: {e}");

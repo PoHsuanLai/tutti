@@ -36,7 +36,7 @@ use tutti_plugin::handles::{PluginClient, PluginHandle};
 use tutti_session::{PluginLoadRequest, PluginLoaded};
 use tutti_types::SampleRate;
 
-use crate::graph::{AudioGraphRes, CapturedControls};
+use crate::graph::{AudioGraphRes, AudioNode, CapturedControls};
 use crate::plugin_host::PluginsRes;
 use crate::plugin_host::editor::PluginEmitter;
 use crate::plugin_host::health::PluginHealth;
@@ -217,7 +217,7 @@ pub struct PluginLoadDone {
 type LoadNotStarted = (
     Without<PendingPlugin>,
     Without<PluginLoadTerminated>,
-    Without<tutti_core::AudioNode>,
+    Without<crate::graph::AudioNode>,
 );
 
 /// Starts loads for requests that have not been attempted yet.
@@ -346,7 +346,7 @@ pub fn plugin_load_promote(
                 // landed yet.
                 commands
                     .entity(entity)
-                    .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, node));
+                    .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, AudioNode(node)));
                 info!("plugin '{name}' loaded (entity {entity:?})");
                 Ok(())
             }

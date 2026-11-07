@@ -151,16 +151,16 @@ fn report(
         println!(
             "  {:<7} inputs={}",
             label.0,
-            graph.graph_ref().node_inputs(*node)
+            graph.graph_ref().node_inputs(node.0)
         );
     }
 
     println!("\nedges, read back from the engine:");
     for (node, label) in &nodes {
-        for port in 0..graph.graph_ref().node_inputs(*node) {
+        for port in 0..graph.graph_ref().node_inputs(node.0) {
             // `Graph::source` is why this layer keeps no shadow state:
             // the engine can always be asked what a port currently holds.
-            let src = match graph.graph_ref().source(*node, port) {
+            let src = match graph.graph_ref().source(node.0, port) {
                 GraphSource::Node(id, p) => format!("node {id:?} port {p}"),
                 GraphSource::Input(p) => format!("graph input {p}"),
                 GraphSource::Silence => "silence".to_string(),

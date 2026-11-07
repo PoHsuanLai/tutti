@@ -143,8 +143,9 @@ mod tests {
     /// exits under nextest with the worker parked on a channel nobody will
     /// send on).
     ///
-    /// Mutation: joining the worker in a `Drop` impl for `DeviceListing`
-    /// hangs this test (the nextest timeout ends it).
+    /// Mutation, done: joining the worker in a `Drop` impl for
+    /// `DeviceListing` hangs this test (killed by a 100 s `timeout`; the
+    /// unmutated test takes milliseconds).
     #[test]
     fn dropping_a_listing_does_not_wait_for_a_stuck_worker() {
         let (stuck, held) = mpsc::channel::<()>();

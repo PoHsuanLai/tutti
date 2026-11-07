@@ -43,6 +43,8 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   `an_identical_replug_is_removed_then_added_each_time`;
 // - `owe` recording a client debt for every gone handle:
 //   `a_closed_port_does_not_swallow_its_clients_exit`;
+// - `owe` without the `!named && !replaced` skip:
+//   `a_handle_missing_from_one_look_owes_no_exit`;
 // - `Drained::failed` not setting `any`:
 //   `a_failed_read_is_not_quiet_and_enospc_is_an_overrun`;
 // - the one-look `settle` together with no `owe`:
@@ -383,6 +385,25 @@ fn a_closed_port_does_not_swallow_its_clients_exit() {
         [false, true, false],
         "Extra removed, Keeper removed, added"
     );
+}
+
+/// A handle that is missing from one look with no exit read for it (a port
+/// listed before its capabilities are set) owes nothing, and the real replug
+/// after it is reported.
+///
+/// Mutation: `owe` without the `!named && !replaced` skip leaves a debt that
+/// swallows the replug's exits, and the last pair is missing.
+#[test]
+fn a_handle_missing_from_one_look_owes_no_exit() {
+    let mut world = World::with("One");
+    world.wake(read(&[]), |w| w.present.borrow_mut().clear());
+    world.wake(read(&[]), |w| {
+        *w.present.borrow_mut() = World::device("One")
+    });
+    world.wake(read(&World::exits()), |_| {});
+    let mut want = vec![("removed", "One".to_string()), ("added", "One".to_string())];
+    want.extend(pair("One", "One"));
+    assert_eq!(world.shape(), want);
 }
 
 /// A failed read is not a quiet one, and `-ENOSPC` is an overrun. Mutation:

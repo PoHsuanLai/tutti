@@ -208,11 +208,18 @@ impl Owed {
         let mut clients = BTreeSet::new();
         for &handle in gone {
             let (client, port) = unpack_id(handle);
-            if !kept.iter().any(|d| d.names(handle)) {
+            let named = kept.iter().any(|d| d.names(handle));
+            let replaced = present.contains(&handle);
+            // A handle missing from a look with no exit read for it may only
+            // have been listed before its capabilities were set: nothing is
+            // owed for it, or the debt would swallow a later real exit.
+            if !named && !replaced {
+                continue;
+            }
+            if !named {
                 *self.ports.entry((client, port)).or_default() += 1;
             }
             // A port that closed on a client that lives owes no client exit.
-            let replaced = present.contains(&handle);
             let client_gone = !present.iter().any(|&h| unpack_id(h).0 == client);
             if (replaced || client_gone) && !kept.contains(&Departed::Client(client)) {
                 clients.insert(client);

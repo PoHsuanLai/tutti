@@ -1217,7 +1217,7 @@ fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
         }
         let ticket = controls.release_held();
         exec.process(64, &stopped(0), &[], &mut []);
-        ticket.drained().expect("nothing is held, nothing owed");
+        let _proof = ticket.drained().expect("nothing is held, nothing owed");
         let t = tally.lock().unwrap();
         assert!(t.held.is_empty(), "seed {seed}");
         assert_eq!(t.ons, t.offs, "seed {seed}");

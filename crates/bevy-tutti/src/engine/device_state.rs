@@ -375,15 +375,38 @@ impl Plugin for DeviceStatePlugin {
 /// test counts, or blocks, the enumeration instead of opening the machine's
 /// devices.
 #[derive(Resource)]
-pub(crate) struct OutputsLister(
-    pub(crate) Box<dyn Fn() -> tutti_cpal::Result<tutti_cpal::DeviceListing> + Send + Sync>,
-);
+pub(crate) struct OutputsLister {
+    list: Box<dyn Fn() -> tutti_cpal::Result<tutti_cpal::DeviceListing> + Send + Sync>,
+    /// The name of the device the engine runs on, `None` when it names none.
+    name: Box<dyn Fn(&Device) -> Option<String> + Send + Sync>,
+}
+
+impl OutputsLister {
+    /// Lists through `list`; the device is named by the driver.
+    #[cfg(test)]
+    pub(crate) fn listing(
+        list: impl Fn() -> tutti_cpal::Result<tutti_cpal::DeviceListing> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            list: Box::new(list),
+            ..Self::default()
+        }
+    }
+
+    /// Names every device `name`, as a driver on a real card would.
+    #[cfg(test)]
+    pub(crate) fn naming(mut self, name: &'static str) -> Self {
+        self.name = Box::new(move |_| Some(name.to_owned()));
+        self
+    }
+}
 
 impl Default for OutputsLister {
     fn default() -> Self {
-        Self(Box::new(|| {
-            tutti_cpal::DeviceListing::outputs(tutti_cpal::AudioHost::Default)
-        }))
+        Self {
+            list: Box::new(|| tutti_cpal::DeviceListing::outputs(tutti_cpal::AudioHost::Default)),
+            name: Box::new(|device| device.device_name().ok()),
+        }
     }
 }
 
@@ -391,7 +414,7 @@ impl Default for OutputsLister {
 /// session takes the answer without blocking in a later frame
 /// ([`SessionEvent::OutputsListed`]).
 fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
-    match (lister.0)() {
+    match (lister.list)() {
         Ok(listing) => graph.session().list_outputs(listing),
         Err(e) => bevy_log::warn!("the output devices could not be listed: {e}"),
     }
@@ -418,7 +441,7 @@ pub(crate) fn device_state_init_system(
 ) {
     let Some(driver) = driver else { return };
 
-    let Ok(name) = driver.device_name() else {
+    let Some(name) = (lister.name)(&driver) else {
         return;
     };
     state.current_device = name;
@@ -527,7 +550,17 @@ mod tests {
             .collect()
     }
 
+    /// The counter a test reads back from the world.
+    #[derive(Resource)]
+    struct Calls(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
     fn running_app() -> App {
+        running_app_with(|_| {})
+    }
+
+    /// `running_app`, with `before` run on the app ahead of the device-state
+    /// plugin (a resource the plugin would otherwise default).
+    fn running_app_with(before: impl FnOnce(&mut App)) -> App {
         let mut app = App::new();
         let (driver, _stream) = ManualStreamDriver::new();
         build_on(&TuttiPlugin::default(), &mut app, |b| {
@@ -535,6 +568,7 @@ mod tests {
         })
         .expect("builds with no device");
         app.insert_resource(AudioEngineState::Running);
+        before(&mut app);
         app.add_plugins((GraphReconcilePlugin, DeviceStatePlugin));
         app
     }
@@ -546,7 +580,7 @@ mod tests {
         names: &'static [&'static str],
     ) -> OutputsLister {
         let calls = std::sync::Arc::clone(calls);
-        OutputsLister(Box::new(move || {
+        OutputsLister::listing(move || {
             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tutti_cpal::DeviceListing::spawn_with(move || {
                 Ok(names
@@ -556,7 +590,7 @@ mod tests {
                     })
                     .collect())
             })
-        }))
+        })
     }
 
     /// An engine over a driver of the host's own names no device, and
@@ -607,7 +641,7 @@ mod tests {
         let (release, held) = std::sync::mpsc::channel::<()>();
         let held = std::sync::Mutex::new(Some(held));
         let mut app = running_app();
-        app.insert_resource(OutputsLister(Box::new(move || {
+        app.insert_resource(OutputsLister::listing(move || {
             let held = held.lock().unwrap().take().expect("listed once");
             tutti_cpal::DeviceListing::spawn_with(move || {
                 held.recv().ok();
@@ -618,7 +652,7 @@ mod tests {
                     })
                     .collect())
             })
-        })));
+        }));
         app.add_systems(
             Startup,
             |mut graph: ResMut<AudioGraphRes>, lister: Res<OutputsLister>| {
@@ -644,6 +678,55 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(names(&app), ["Card", "USB"]);
+    }
+
+    /// The production `Startup` path: with a driver that names a device and
+    /// no watch, the init system starts exactly one listing, and its answer
+    /// reaches `output_devices` in a later frame. With devices watched it
+    /// starts none.
+    ///
+    /// Mutation, done: `list_outputs(&mut graph, &lister)` in
+    /// `device_state_init_system` replaced by `let _ = (&mut graph, &lister);`
+    /// leaves the call count 0 and the list empty, so the unwatched half fails (after its 20 s wait); making the condition `true` instead of
+    /// `watched.is_none()` makes the watched half's count 1 and fails it
+    /// at once.
+    #[test]
+    fn the_init_system_starts_one_listing_unless_devices_are_watched() {
+        let run = |watched: bool| -> (usize, Vec<String>) {
+            let mut app = running_app_with(|app| {
+                let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                app.insert_resource(counting(&calls, &["Card", "USB"]).naming("Card"));
+                app.insert_resource(Calls(calls));
+                if watched {
+                    app.insert_resource(DevicesWatched);
+                }
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            for _ in 0..3 {
+                app.update();
+            }
+            // Let a started listing answer before reading the list.
+            let calls = app.world().resource::<Calls>().0.clone();
+            while !watched
+                && app
+                    .world()
+                    .resource::<AudioDeviceState>()
+                    .output_devices
+                    .is_empty()
+                && std::time::Instant::now() < deadline
+            {
+                app.update();
+                std::thread::yield_now();
+            }
+            let listed = app
+                .world()
+                .resource::<AudioDeviceState>()
+                .output_devices
+                .clone();
+            (calls.load(std::sync::atomic::Ordering::SeqCst), listed)
+        };
+        assert_eq!(run(false), (1, vec!["Card".to_string(), "USB".to_string()]));
+        assert_eq!(run(true), (0, Vec::new()));
     }
 
     /// The device list follows the session's events instead of being

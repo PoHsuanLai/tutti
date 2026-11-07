@@ -928,32 +928,36 @@ mod tests {
     }
 
     /// A NaN Q at construction is read as the Butterworth Q, not as 0, which
-    /// is below the type's floor: the output stays finite, and a later finite
-    /// Q takes effect.
+    /// is below the type's floor. A low-pass at 800 Hz on an 800 Hz sine has a
+    /// steady-state gain of Q at the cutoff, so RMS is `0.7071 · 0.7071 = 0.5` (0.457 measured: the bilinear warp costs a few percent);
+    /// a later finite Q takes effect, and `reset` keeps the output finite.
     ///
-    /// Not covered: the Q `LastGood` fallback `Q::BUTTERWORTH` → `0.0` still
-    /// passes, because the filter solve floors Q itself. The fallback keeps the
-    /// node's own state inside the type's range regardless.
+    /// Mutation (run): the Q `LastGood` fallback `Q::BUTTERWORTH` → `0.0` → RMS
+    /// settles near 0.007 → fails.
     #[test]
-    fn a_nan_q_at_construction_is_finite_and_recovers() {
-        use crate::test_support::noise;
-        let x = noise(7, 64);
+    fn a_nan_q_at_construction_is_butterworth_and_recovers() {
+        let x = generate_sine(800.0, 44_100.0, 8 * 1024);
         let mut f = prepared(SvfFilterNode::<f64>::new(
             SvfType::LowPass,
             800.0,
             Q(f32::NAN),
         ));
-        for _ in 0..4 {
-            let out = drive_block(&mut f, &[&x]);
-            assert!(out[0].iter().all(|s| s.is_finite()), "NaN Q");
+        let mut last = Vec::new();
+        for block in x.chunks(1024) {
+            last = drive_block(&mut f, &[block]).remove(0);
+            assert!(last.iter().all(|s| s.is_finite()), "NaN Q");
         }
-        f.set_q(3.0);
-        for _ in 0..4 {
-            let out = drive_block(&mut f, &[&x]);
-            assert!(out[0].iter().all(|s| s.is_finite()), "after set_q");
+        let level = rms(&last);
+        assert!((level - 0.5).abs() < 0.05, "RMS {level}");
+        f.set_q(2.0);
+        for block in x.chunks(1024) {
+            last = drive_block(&mut f, &[block]).remove(0);
+            assert!(last.iter().all(|s| s.is_finite()), "after set_q");
         }
+        let raised = rms(&last);
+        assert!(raised > 0.9, "Q 2 takes effect: {raised}");
         Node::reset(&mut f);
-        let out = drive_block(&mut f, &[&x]);
+        let out = drive_block(&mut f, &[&x[..1024]]);
         assert!(out[0].iter().all(|s| s.is_finite()), "after reset");
     }
 

@@ -2180,7 +2180,9 @@ impl BeatDuration {
     }
 
     /// The remainder in `[0, |rhs|)`, for a finite `self` and a finite non-zero
-    /// `rhs`. A zero `rhs` or a NaN gives NaN.
+    /// `rhs`. A zero `rhs` or a NaN gives NaN. An infinite `rhs` is outside
+    /// that contract: a negative `self` gives `f64::MAX` there, and a non-negative
+    /// one is returned unchanged, as before.
     ///
     /// `%` on floats keeps the sign of the dividend, so a negative overshoot
     /// would wrap *outside* the span. This is the wrapping-safe form. A

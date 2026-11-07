@@ -398,3 +398,44 @@ fn a_held_policy_asks_for_nothing() {
 // fails the failed-restart test; the strike reset after `settle` removed
 // fails the settle test; `follow_default`/`reconnect` defaulting on fails the
 // off-by-default test.
+
+/// A listing that has not answered is silent until `LISTING_WARNING` of the
+/// phase's clock, then reports slow once, and goes on waiting; the answer
+/// ends it.
+///
+/// Mutation: `>=` to `>` fails the exact-boundary assertion; dropping
+/// `self.warned |= slow` makes the warning repeat and fails the "once"
+/// assertion; reporting `Pending` as finished fails the "still waiting" ones.
+#[test]
+fn a_listing_that_does_not_answer_is_reported_slow_once() {
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let mut listing = OutputListing::new(
+        DeviceListing::spawn_with(move || {
+            held.recv().ok();
+            Ok(Vec::new())
+        })
+        .unwrap(),
+    );
+    let base = t0();
+    assert_eq!(listing.poll(base).1, false);
+    assert!(listing.poll(base).0.is_none());
+    let (early, over) = listing.poll(base + LISTING_WARNING - Duration::from_millis(1));
+    assert!(early.is_none() && !over);
+    let (slow, over) = listing.poll(base + LISTING_WARNING);
+    assert!(matches!(slow, Some(SessionEvent::OutputsListSlow(w)) if w == LISTING_WARNING));
+    assert!(!over, "still waiting");
+    let (again, over) = listing.poll(base + LISTING_WARNING * 2);
+    assert!(again.is_none() && !over, "reported once");
+
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let (event, over) = listing.poll(base + LISTING_WARNING * 3);
+        if over {
+            assert!(matches!(event, Some(SessionEvent::OutputsListed(d)) if d.is_empty()));
+            break;
+        }
+        assert!(Instant::now() < deadline, "no answer");
+        std::thread::yield_now();
+    }
+}

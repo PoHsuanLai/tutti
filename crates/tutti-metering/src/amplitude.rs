@@ -194,6 +194,26 @@ impl MeterWriter {
 mod tests {
     use super::*;
 
+    /// A block measured in pieces reads as the block measured whole, whatever
+    /// the cut: the pass accumulates, it does not publish each piece.
+    ///
+    /// Mutation (run, recorded here): `begin` not resetting `frames` -> a
+    /// second pass divides by the first's frames too and the RMS is wrong.
+    #[test]
+    fn a_block_in_pieces_reads_as_the_whole_block() {
+        let block = sine(0.8, 300);
+        let whole = read(&block);
+        let (mut writer, meter) = MasterMeter::pair();
+        for _ in 0..2 {
+            writer.begin();
+            for piece in block.chunks(2 * 77) {
+                writer.add(piece);
+            }
+            writer.publish();
+            assert_eq!(meter.get(), whole);
+        }
+    }
+
     fn read(samples: &[f32]) -> MeterReading {
         let (mut writer, meter) = MasterMeter::pair();
         writer.measure(samples);

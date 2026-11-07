@@ -393,7 +393,14 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
 - It is removed from the workspace at stage 5, with the old types. Until then, while
   the old types still depend on it anyway, it serves as a test-only oracle: random
   words go through both decoders, and each disagreement is settled by reading the
-  specification and pinned as an analytic test, so its removal loses no coverage.
+  specification and pinned as an analytic test. Removal loses no coverage that a
+  swap of two adjacent numbers in a number-to-name table can reach: every such
+  swap in `decode.rs` and `encode.rs`, applied to both or to one side, fails a test
+  with `tests/midi2_oracle.rs` deleted (`tests/spec_words.rs`, `spec_tables.rs`
+  and `properties.rs`). What the oracle alone still compared was the Flex and
+  Stream message family by name and the random agreement of two decoders on
+  words no table or figure pins; the properties and the fuzz target stand in
+  for the second.
 
 `midly` stays in `tutti-midi-file`. `tutti-midi-types` uses it only for about 12
 lines of live MIDI 1.0 parsing, which `tutti-midi-protocol` does itself.

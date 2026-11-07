@@ -80,6 +80,8 @@ test-all: test test-features test-editor test-doc test-release
 #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
 #                         components) and its tests
 #   tutti-io/bevy       — WaveAsset's Asset derive
+#   tutti-ump/serde    — tests/serde.rs (the address types refuse an
+#                         out-of-range number when read back)
 #   bevy-tutti/plugin   — plugin_host binding against a live plugin
 #                         (tests/plugin_capture.rs); `full,plugin` so the
 #                         modulation-gated plugin parameter lanes compile
@@ -104,6 +106,7 @@ check-features:
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
@@ -124,6 +127,7 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
+    cargo nextest run --locked -p tutti-ump --features serde
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support
     cargo nextest run --locked -p tutti-plugin --features clap,vst2,json

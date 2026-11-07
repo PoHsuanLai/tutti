@@ -11,22 +11,20 @@
 //! `spec_words.rs`), the MIDI 1.0 controller roster (`cc_number.rs`).
 //! Every other number-to-name table is held by `spec_words.rs`.
 //!
-//! Mutation record (each applied consistently to `decode.rs` and `encode.rs`,
-//! with `midi2_oracle` excluded from the run, seen to fail at the named test,
-//! restored):
-//! - Flex text statuses Composer (0x05) and Lyricist (0x06) swapped
-//!   -> `flex_text_statuses_are_table_16`; likewise 0x06/0x07, 0x07/0x08,
-//!   0x08/0x09, 0x09/0x0A and 0x0A/0x0B (`AccompanyingPerformer` and
-//!   `RecordingDate`);
-//! - the same swap of 0x0A and 0x0B in `decode` alone
-//!   -> `flex_text_statuses_are_table_16` (decode half);
-//! - `Accidental::Sharp` and `DoubleSharp` swapped (0x1, 0x2)
-//!   -> `accidentals_are_tables_13_and_15`; `DoubleSharp` and `DoubleFlat`
-//!   (0x2, 0xE) -> the same test;
-//! - `UiHint::Receiver` and `Sender` swapped (1, 2) -> `function_block_fields`;
-//! - `Direction::Input` and `Output` swapped, `Midi1Port::Unrestricted` and
-//!   `Restricted` swapped, `Protocol::Midi1` and `Midi2` swapped
-//!   -> `function_block_fields` and `protocols_are_figures_18_and_19`.
+//! Mutation record. Each swap of two neighbouring numbers was applied to
+//! `decode.rs` and `encode.rs` together (a symmetric mistake), and to each
+//! alone, in a copy with `tests/midi2_oracle.rs` and the `midi2` dev-dependency
+//! deleted; each failed a test, and was restored:
+//! - Flex text statuses 0x05/0x06 (Composer, Lyricist), 0x06/0x07, 0x07/0x08,
+//!   0x08/0x09, 0x09/0x0A, 0x0A/0x0B -> `flex_text_statuses_are_table_16` when
+//!   symmetric; alone, that test and the round-trip properties
+//!   (`properties`, which reach every kind through the widened generator);
+//! - `Accidental` 0x1/0x2 (Sharp, DoubleSharp) and 0x2/0xE (DoubleSharp,
+//!   DoubleFlat) -> `accidentals_are_tables_13_and_15`;
+//! - `UiHint` 1/2 (Receiver, Sender) -> `function_block_fields`;
+//! - `Direction` 0b01/0b10 and 0b10/0b11, `Midi1Port` 1/2 and 0/1 ->
+//!   `function_block_fields`; `Protocol` 0x01/0x02 ->
+//!   `protocols_are_figures_18_and_19`.
 
 use tutti_ump::{
     Accidental, Alteration, AlterationKind, ChordBass, ChordName, ChordPitch, ChordType, Direction,

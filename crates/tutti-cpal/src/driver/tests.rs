@@ -2,7 +2,6 @@ use super::*;
 use crate::{AudioEngine, ManualStreamDriver, OutputSpec};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
-use tutti_metering::{AudioTap, MasterMeter};
 use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
@@ -31,11 +30,7 @@ fn a_plain_restart_refuses_a_new_rate_and_stays_stopped() {
     let transport = Transport::new(44_100.0);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(44_100.0), Samples(512)));
     let engine = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
-    let state = Arc::new(AudioCallbackState::new(
-        engine,
-        MasterMeter::pair().0,
-        AudioTap::new(),
-    ));
+    let state = Arc::new(AudioCallbackState::new(engine));
     let mut driver = TuttiDriver::new(AudioEngine::from_spec(spec_at(44_100.0)), state);
     let graph = SampleRate(44_100.0);
 

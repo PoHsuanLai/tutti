@@ -289,7 +289,6 @@ impl CpalDriver {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use tutti_metering::{AudioTap, MasterMeter};
 /// use tutti_engine::Engine;
 /// use tutti_transport::Transport;
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
@@ -301,7 +300,7 @@ impl CpalDriver {
 /// let transport = Transport::new(rate);
 /// let (mut editor, executor) = Editor::new(Prepare::new(rate, Samples(512)));
 /// let engine = Engine::new(&transport, &mut editor, executor)?;
-/// let state = Arc::new(AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new()));
+/// let state = Arc::new(AudioCallbackState::new(engine));
 ///
 /// let spec = OutputSpec::new(rate, ChannelLayout::STEREO, tutti_cpal::cpal::SampleFormat::F32);
 /// let mut audio = AudioEngine::from_spec(spec);

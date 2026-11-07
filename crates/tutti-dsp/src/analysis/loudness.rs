@@ -428,7 +428,7 @@ fn windowed_db(frames: u64, needed: u64, lufs: Option<f64>) -> Db {
 /// `tests/windowed_loudness_alloc.rs` for the locked `ebur128`), but it is not a realtime-safe call: each
 /// reads both windows over their whole length, three seconds of every channel
 /// for the short-term one, so its cost does not shrink with the chunk. Run it on
-/// a consumer thread that drains an `AudioTap`, once per display tick, not in
+/// a consumer thread that drains a graph tap's `TapReader`, once per display tick, not in
 /// an audio callback.
 ///
 /// # Errors

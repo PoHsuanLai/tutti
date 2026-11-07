@@ -42,7 +42,6 @@ cpal = "0.15"
 thiserror.workspace = true
 
 tutti-transport = { path = "../tutti-transport" }
-tutti-metering = { path = "../tutti-metering" }
 tutti-engine = { path = "../tutti-engine" }
 # `MAX_ROOT_CHANNELS`, the width the mic fold is sized for.
 tutti-graph = { path = "../tutti-graph" }
@@ -64,6 +63,8 @@ criterion.workspace = true
 # Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
 # graphs. `tutti-nodes` does not depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
+# The master meter type the RT gate reads back.
+tutti-metering = { path = "../tutti-metering" }
 
 [[bench]]
 name = "audio_callback"

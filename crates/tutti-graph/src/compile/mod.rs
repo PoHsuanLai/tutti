@@ -334,6 +334,10 @@ enum Pre {
         src: ARef,
         delay: Option<u32>,
     },
+    Tap {
+        tap: u32,
+        srcs: Vec<ARef>,
+    },
     Capture {
         feedback: u32,
         src: u32,
@@ -925,6 +929,60 @@ pub fn compile(
         em.read_aref(src, op);
     }
 
+    // Taps: one lane per source, any ports. An aligned lane is delayed to the
+    // graph's output time (the compensation an output of the same source
+    // gets); a raw one reads the source as it leaves its node. A closed tap
+    // is not in the topology, so nothing here is emitted for it.
+    let mut tap_ids: Vec<tutti_types::TapId> = Vec::new();
+    for (&tap, spec) in &topology.taps {
+        let mut srcs = Vec::with_capacity(spec.sources.len());
+        for (lane, source) in spec.sources.iter().enumerate() {
+            let (mut src, dep) = match *source {
+                Source::Node(p) => (ARef::Val(audio_out_val[&p]), departure(dense[&p.node])),
+                Source::Global(ch) => (ARef::Val(global_val[&ch]), Latency::ZERO),
+                Source::Zero => (ARef::Zero, Latency::ZERO),
+            };
+            if spec.align == tutti_types::TapAlign::ToOutput && src != ARef::Zero {
+                let d = dep.gap_to(total);
+                if !d.is_zero() {
+                    let ARef::Val(v) = src else {
+                        unreachable!("not zero")
+                    };
+                    let delay = em.delays.len() as u32;
+                    em.delays.push(DelaySpec {
+                        key: DelayKey::Tap {
+                            tap,
+                            lane,
+                            from: *source,
+                        },
+                        len: d,
+                    });
+                    let op = em.push(Pre::Delay {
+                        delay,
+                        src: v,
+                        dst: 0,
+                    });
+                    em.read_audio(v, op);
+                    let dv = em.audio_value(op);
+                    if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+                        *dst = dv;
+                    }
+                    src = ARef::Val(dv);
+                }
+            }
+            srcs.push(src);
+        }
+        // One op a tap, after every lane's delay: it writes the lanes together.
+        let op = em.push(Pre::Tap {
+            tap: tap_ids.len() as u32,
+            srcs: srcs.clone(),
+        });
+        for src in srcs {
+            em.read_aref(src, op);
+        }
+        tap_ids.push(tap);
+    }
+
     // Captures run last. They feed the feedback delays, which the executor
     // reads from *before* the block (into the feedback slots), so a capture
     // needs no ordering against the feedback's readers: with a delay of a
@@ -1141,6 +1199,10 @@ pub fn compile(
                 src: aref_slot(*src),
                 delay: *delay,
             },
+            Pre::Tap { tap, srcs } => Op::Tap {
+                tap: *tap,
+                srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
+            },
             Pre::Capture { feedback, src } => Op::Capture {
                 feedback: *feedback,
                 src: aslot(*src),
@@ -1288,6 +1350,7 @@ pub fn compile(
             })
             .collect(),
         delays: em.delays,
+        taps: tap_ids,
         event_edges: {
             let mut v: Vec<(EventOut, EventIn)> = graph
                 .events()

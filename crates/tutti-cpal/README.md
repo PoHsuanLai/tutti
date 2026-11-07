@@ -33,7 +33,6 @@ both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 ```rust,no_run
 use std::sync::Arc;
 use tutti_types::graph::{OutPort, Source};
-use tutti_metering::{AudioTap, MasterMeter};
 use tutti_engine::Engine;
 use tutti_transport::Transport;
 use tutti_types::{Hz, NodeKey, Samples};
@@ -58,11 +57,7 @@ editor.commit()?;
 // The engine owns the executor and the transport's clock; the editor stays
 // with the host.
 let engine = Engine::new(&transport, &mut editor, executor)?;
-let state = Arc::new(AudioCallbackState::new(
-    engine,
-    MasterMeter::pair().0,
-    AudioTap::new(),
-));
+let state = Arc::new(AudioCallbackState::new(engine));
 
 audio_engine.start(Arc::clone(&state))?;
 let driver = TuttiDriver::new(audio_engine, state);

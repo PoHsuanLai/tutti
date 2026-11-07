@@ -2,6 +2,23 @@
 
 use thiserror::Error;
 
+/// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum HeardTapError {
+    /// The session has no engine, so nothing renders to tap (a detached
+    /// session; a plan tap, [`Graph::open_tap`](crate::Graph::open_tap), is
+    /// fed by its `render_frame`).
+    #[error("this session has no engine to tap")]
+    Detached,
+    /// A reader of the output tap is alive; close it first.
+    #[error("the output tap already has a reader; close it before opening again")]
+    Busy,
+    /// The audio thread has not yet taken the last installs.
+    #[error("the audio thread has not yet taken the last tap installs")]
+    Backpressure,
+}
+
 /// Every subsystem's error, so `?` propagates across crate boundaries.
 ///
 /// Each variant wraps a subsystem error via `#[from]`. Device failures arrive

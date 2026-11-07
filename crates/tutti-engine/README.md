@@ -24,7 +24,10 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
   the engine writes both once per block (the master meter on a stereo fold of
   the output buffer, after the declick).
 - **Taps.** Copying audio out of the graph is `tutti-graph`'s (`Editor::open_tap`,
-  `TapReader`), an op in the compiled plan.
+  `TapReader`), an op in the compiled plan, before the declick fader. The engine
+  writes the other kind itself: `Engine::heard_taps()` opens a tap on its
+  device-width output after the fader (what is heard), read through the same
+  `TapReader`.
 - **MIDI.** `Engine` is MIDI-free; MIDI travels on the graph's event ports
   (`tutti-graph`), and the MIDI nodes are `tutti-midi-runtime`'s.
 - **The device.** Opening a stream and driving the real-time callback is

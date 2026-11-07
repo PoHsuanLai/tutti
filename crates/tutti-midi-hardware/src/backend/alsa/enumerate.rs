@@ -54,7 +54,20 @@ pub(super) fn unpack_id(id: EndpointId) -> (c_int, c_int) {
 /// Names are `"Client: Port"`, matching how `aconnect -l` presents them, unless
 /// the port name already starts with the client's.
 pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointInfo> {
-    let mut out = Vec::new();
+    walk(seq, [direction]).into_iter().flatten().collect()
+}
+
+/// The inputs and the outputs from **one** walk, so a port is read once. Two
+/// walks can see a port being created (the kernel lists it before it sets its
+/// capabilities) in different states and report a duplex as an output.
+pub(super) fn both(seq: &SeqClient) -> (Vec<EndpointInfo>, Vec<EndpointInfo>) {
+    let [inputs, outputs] = walk(seq, [Direction::Input, Direction::Output]);
+    (inputs, outputs)
+}
+
+/// One list per entry of `directions`, in order.
+fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> [Vec<EndpointInfo>; N] {
+    let mut out: [Vec<EndpointInfo>; N] = std::array::from_fn(|_| Vec::new());
     let own_id = seq.id().unwrap_or(-1);
 
     let mut cinfo: *mut sys::snd_seq_client_info_t = std::ptr::null_mut();
@@ -86,15 +99,15 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
             sys::snd_seq_port_info_set_port(pinfo, -1);
             while sys::snd_seq_query_next_port(seq.raw(), pinfo) >= 0 {
                 let caps = sys::snd_seq_port_info_get_capability(pinfo);
-                let needed = direction.required_caps();
-                if caps & needed != needed {
+                let listed = |d: Direction| caps & d.required_caps() == d.required_caps();
+                if !directions.iter().any(|&d| listed(d)) {
                     continue;
                 }
                 let port = sys::snd_seq_port_info_get_port(pinfo);
                 let port_name = cstr(sys::snd_seq_port_info_get_name(pinfo))
                     .unwrap_or_else(|| format!("Port {port}"));
 
-                out.push(EndpointInfo {
+                let endpoint = EndpointInfo {
                     id: pack_id(client, port),
                     identity: Identity::alsa(client_name.as_str(), port_name.as_str()),
                     // "Client: Port" is how `aconnect -l` presents them, and a
@@ -105,7 +118,12 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
                         format!("{client_name}: {port_name}")
                     },
                     capability: capability_of(seq, client),
-                });
+                };
+                for (list, &d) in out.iter_mut().zip(&directions) {
+                    if listed(d) {
+                        list.push(endpoint.clone());
+                    }
+                }
             }
         }
 

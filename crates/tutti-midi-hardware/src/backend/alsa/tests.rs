@@ -256,6 +256,33 @@ fn a_saved_alsa_device_resolves_by_name_only() {
     assert_eq!(devices.resolve(&saved), crate::Resolved::SameName(again));
 }
 
+/// A port is listed once it has capabilities, in both directions it has: a
+/// duplex port with none yet is not listed, and when it gains them it is added
+/// once, as a duplex (one walk reads its capabilities once).
+///
+/// Mutations, done: `both` returning no outputs fails the direction
+/// assertion (Input, not Duplex). Two separate `endpoints` walks, as before
+/// the fix, pass alone and fail under load (11 of 120 runs of the suite, four
+/// at a time); with one walk, 0 of 120.
+#[test]
+fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
+    let devices = Watched::open();
+    let name = unique("caps");
+    let seq = SeqClient::open(&name, true).expect("a sequencer to open (modprobe snd-seq)");
+    let kind = sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION;
+    let port = seq.open_port("port", 0, kind).expect("a port");
+    let want = format!("{name}: port");
+    assert!(devices.list().iter().all(|d| d.name != want));
+
+    let caps = sys::SND_SEQ_PORT_CAP_READ
+        | sys::SND_SEQ_PORT_CAP_SUBS_READ
+        | sys::SND_SEQ_PORT_CAP_WRITE
+        | sys::SND_SEQ_PORT_CAP_SUBS_WRITE;
+    seq.set_port_caps(port, caps).expect("capabilities");
+    let added = info(until(&devices, added(&name)));
+    assert_eq!(added.direction, tutti_midi_device::Direction::Duplex);
+}
+
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();

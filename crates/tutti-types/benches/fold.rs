@@ -2,7 +2,7 @@
 //!
 //! Each case is one block of 64 or 512 frames: interleaved to interleaved,
 //! planar to interleaved (the engine's shape: `fold_frame` per gathered frame
-//! against `Fold` per output channel plus an interleave), and `Fold` planar
+//! against `Fold::planar_to_interleaved`), and `Fold` planar
 //! alone. Widths are 2->2, 1->2, 6->2, 8->2 and 12->2, and a 6-channel
 //! permutation, which `fold_frame` cannot do (its baseline is the 6->6 copy).
 
@@ -89,15 +89,14 @@ fn bench(c: &mut Criterion) {
             let (sw, dw) = (s.positions().len(), d.positions().len());
             g.throughput(Throughput::Elements(block as u64));
             let planes: Vec<Vec<f32>> = (0..sw).map(|_| noise(block)).collect();
-            let mut scratch = vec![vec![0.0f32; block]; dw];
             let mut dst = vec![0.0f32; dw * block];
             let fold = Fold::between(&s, &d).unwrap();
             g.bench_function(BenchmarkId::new("fold", name), |b| {
                 b.iter(|| {
-                    for (ch, out) in scratch.iter_mut().enumerate() {
-                        fold.planar_channel(|k| &planes[k][..], ch, out);
-                    }
-                    InterleavedMut::new(&mut dst, d.layout()).interleave_from(&scratch, 0);
+                    fold.planar_to_interleaved(
+                        |k| &planes[k][..],
+                        InterleavedMut::new(&mut dst, d.layout()),
+                    );
                     black_box(&dst);
                 })
             });

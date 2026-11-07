@@ -495,7 +495,8 @@ fn no_source_channel_is_silently_dropped() {
 /// Planar and block-interleaved output are the frame output, bit for bit, for
 /// every built pair, so a node and an edge cannot disagree.
 ///
-/// Mutation (run): the planar lone-term and group-term `+=` written `=`, the
+/// Mutation (run): `planar_to_interleaved` writing every chunk at frame 0, or
+/// adding 1.0 to each sample, fails; the planar lone-term and group-term `+=` written `=`, the
 /// interleaved lone-term `+=` written `=`, and the mono mix reordered each fail.
 #[test]
 fn planar_is_the_frame_fold() {
@@ -511,7 +512,7 @@ fn planar_is_the_frame_fold() {
         for d in &all {
             let Ok(f) = Fold::between(s, d) else { continue };
             let (sw, dw) = (s.positions().len(), d.positions().len());
-            let frames = 37;
+            let frames = 137;
             let data = noise(sw * frames, 11);
             let planes: Vec<Vec<f32>> = (0..sw)
                 .map(|c| data.chunks_exact(sw).map(|fr| fr[c]).collect())
@@ -524,6 +525,20 @@ fn planar_is_the_frame_fold() {
                     f.frame(fr, &mut out);
                     assert_eq!(plane[i].to_bits(), out[c].to_bits(), "{sw}->{dw} c{c} f{i}");
                 }
+            }
+            let mut device = vec![f32::NAN; dw * frames];
+            f.planar_to_interleaved(
+                |k| &planes[k][..],
+                InterleavedMut::new(&mut device, d.layout()),
+            );
+            for (i, fr) in data.chunks_exact(sw).enumerate() {
+                f.frame(fr, &mut out);
+                let got = &device[i * dw..(i + 1) * dw];
+                assert_eq!(
+                    got.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    out.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+                    "{sw}->{dw} device frame {i}"
+                );
             }
             let mut block = vec![f32::NAN; dw * frames];
             f.interleaved(

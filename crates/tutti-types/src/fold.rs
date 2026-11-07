@@ -652,6 +652,40 @@ impl Fold {
             .for_each(|(ch, row)| row.interleaved(src, sw, dst, dw, ch));
     }
 
+    /// Folds planar channels into an interleaved block: `src(c)` is source
+    /// channel `c`, at least `dst.len()` frames long, and every sample of `dst`
+    /// is written. The graph-to-device shape; a chunk of frames at a time
+    /// through a stack scratch, so each channel runs over whole slices.
+    ///
+    /// Allocation-free.
+    ///
+    /// # Panics
+    ///
+    /// If `dst`'s width is not this fold's, or a source channel is shorter than
+    /// `dst`.
+    pub fn planar_to_interleaved<'a>(
+        &self,
+        src: impl Fn(usize) -> &'a [f32],
+        mut dst: InterleavedMut<'_>,
+    ) {
+        assert_eq!(dst.layout(), self.dst_layout(), "destination width");
+        let dw = dst.stride();
+        let frames = dst.len();
+        let samples = dst.samples_mut();
+        let mut scratch = [0.0f32; CHUNK];
+        for start in (0..frames).step_by(CHUNK) {
+            let n = CHUNK.min(frames - start);
+            let block = &mut samples[start * dw..(start + n) * dw];
+            for ch in 0..dw {
+                let out = &mut scratch[..n];
+                self.planar_channel(|c| &src(c)[start..start + n], ch, out);
+                lane_mut(block, ch, dw)
+                    .zip(&*out)
+                    .for_each(|(o, &x)| *o = x);
+            }
+        }
+    }
+
     /// Folds planar channels into destination channel `dst_c`, `out.len()`
     /// frames long: `src(c)` is source channel `c`, at least that long. Every
     /// sample is the bit-identical value [`frame`](Self::frame) writes.

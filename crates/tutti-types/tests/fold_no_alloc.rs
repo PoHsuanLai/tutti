@@ -18,7 +18,8 @@ fn smpte(n: u16) -> ChannelTopology {
 /// planar group's 64-frame chunk.
 ///
 /// Mutation (run): the planar group scratch `[0.0f32; CHUNK]` made
-/// `vec![0.0f32; CHUNK]` -> the 12 -> 2 gate fails; `Vec` collected in
+/// `vec![0.0f32; CHUNK]` -> the 12 -> 2 gate fails; the same in
+/// `planar_to_interleaved` -> every gate fails; `Vec` collected in
 /// `Fold::frame` -> every gate fails.
 #[test]
 fn applying_a_fold_is_allocation_free() {
@@ -61,6 +62,10 @@ fn applying_a_fold_is_allocation_free() {
                 for c in 0..dw {
                     fold.planar_channel(|k| &planes[k][..], c, &mut out);
                 }
+                fold.planar_to_interleaved(
+                    |k| &planes[k][..],
+                    InterleavedMut::new(&mut block, dst.layout()),
+                );
             }
         });
         assert!(

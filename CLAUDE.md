@@ -613,7 +613,13 @@ Scalars use `Param<U>`.
   allocating. A width is not a placement: an edge reports a topology (a channel
   with no speaker is `Speaker::Discrete`), and `Fold::assuming_smpte` is the
   named assumption for the edge that cannot. A new caller of `fold_frame` is a
-  bug; the edges still on it move in their own PRs.
+  bug; the edges still on it (the engine's and export's output, the sampler's
+  non-mono mismatches, the nodes' mono helpers) move in their own PRs. The
+  input edges report a topology: a decoded file (`Wave::topology`,
+  `FileIn::topology`, from what the container states), a capture device (its
+  inputs are `Discrete`; `MicIn::open_inputs` chooses them with
+  `Fold::select`). The quad spelling is WAVE's (`FL FR BL BR`); `Fold` treats
+  the side-surround spelling the plugin hosts decode as the same four feeds.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.

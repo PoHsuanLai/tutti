@@ -6,8 +6,28 @@
 //! swapped by accident. The [`Unit`] marker trait carries the raw type as an
 //! associated type so [`Param`](super::Param) can be generic over the unit.
 //!
-//! [`SampleRate`] is defined here too, the one type every engine crate names
-//! for a rate (`tutti_graph::Prepare` carries it).
+//! [`SampleRate`] is defined here too, the one type a rate is spelled with.
+//!
+//! # Units are labels
+//!
+//! A unit is a name on a float, not a validated value: `Pan(5.0)` and
+//! `Mix(-3.0)` build through the public field, `new` and `From`. The range a
+//! type documents is what its named constructors and methods produce
+//! (`new_clamped`, `wrapped`, `wrap`), not what a hand-built value holds.
+//!
+//! # Non-finite input
+//!
+//! One rule for every `new_clamped`: a NaN comes out as NaN, and an infinity
+//! saturates at the bound on its side (an unbounded side stays infinite). A
+//! constructor never invents a finite value for a NaN, so a caller that guards
+//! non-finite values downstream, by holding the last good one, still sees the
+//! NaN and can do so. Where no finite value must reach a cell, the caller
+//! guards before the constructor.
+//!
+//! The wraps ([`Phase::wrapped`], [`Azimuth::wrap`], [`Radians::wrapped_signed`],
+//! [`Beat::fract`], [`SamplePosition::fract`], [`BeatDuration::rem_euclid`]) give
+//! their half-open range for every finite input, and NaN for NaN or an infinite
+//! input, where the range cannot hold.
 //!
 //! # Operators are opt-in, and every omission is deliberate
 //!
@@ -353,9 +373,14 @@ impl Seconds {
     /// the name puts the choice in the signature instead of making a reader
     /// chase what a call site passed.
     ///
-    /// Computed in `f64`: `Seconds` is `f32`, which cannot represent frame
-    /// counts past 2^24 (about 6 minutes at 48 kHz), and the export planner
-    /// already works in `f64`.
+    /// Computed in `f64`, but a `Seconds` is `f32`: it has 24 bits of mantissa,
+    /// so past 256 s its spacing exceeds one frame at 48 kHz (128 s at 96 kHz,
+    /// 64 s at 192 kHz) and a span built from a long frame count no longer
+    /// names that frame. Keep long durations as a [`Samples`] count or an
+    /// `f64`.
+    ///
+    /// A NaN, a negative span or a non-finite product gives zero frames, and
+    /// a span too large for `usize` saturates.
     #[inline]
     pub fn to_samples(self, sample_rate: impl Into<SampleRate>) -> Samples {
         Self::frames(self.0 as f64 * sample_rate.into().get(), f64::round)
@@ -499,14 +524,8 @@ impl Db {
 }
 // ── Dimensionless amounts ───────────────────────────────────────────────────
 //
-// Five types where there was one (`Linear`), whose own doc named four roles in
-// two lines — "mix (0..1), feedback (0..~0.99), depth, LFO amplitude" — and
-// then described itself as "a position on a normalized scale, not a magnitude",
-// which is false of the one role it actually played in production (amplitude,
-// which *is* a magnitude and routinely exceeds 1.0).
-//
-// The roles differ in both range and algebra, which is the module's own test
-// for whether two quantities are the same type:
+// Five types, because the roles differ in both range and algebra, which is
+// this module's own test for whether two quantities are the same type:
 //
 //   Amplitude  [0, inf)   scalable      a gain multiplier
 //   Mix        [0, 1]     NOT scalable  a blend position between two signals
@@ -540,7 +559,8 @@ impl Amplitude {
     /// Unity gain — the signal passes unchanged.
     pub const UNITY: Amplitude = Amplitude(1.0);
 
-    /// This amplitude in decibels, with silence pinned to [`Db::FLOOR`].
+    /// This amplitude in decibels. Silence is `-inf`; see
+    /// [`Db::from_amplitude`], which this is.
     #[inline]
     #[must_use]
     pub fn to_db(self) -> Db {
@@ -624,16 +644,40 @@ impl Feedback {
     /// recirculation (`in_l + fb_l·fb + fb_r·cross`), so clamping each to
     /// [`Feedback::MAX_STABLE`] independently still permits a combined 1.98 and a
     /// runaway. This scales the pair down together when their sum would
-    /// exceed the bound, preserving their ratio.
+    /// exceed the bound, preserving their ratio, so the pair sums to
+    /// [`MAX_STABLE`](Self::MAX_STABLE) at most.
+    ///
+    /// Negative coefficients are raised to zero. A NaN stays NaN in its own
+    /// coefficient and the other is clamped on its own, as [`new_clamped`]
+    /// does. An infinite coefficient takes the whole bound (two infinite ones
+    /// share it) and every finite one goes to zero.
+    ///
+    /// [`new_clamped`]: Self::new_clamped
     #[inline]
+    #[must_use]
     pub fn stable_pair(direct: f32, cross: f32) -> (Feedback, Feedback) {
+        if direct.is_nan() || cross.is_nan() {
+            return (Self::new_clamped(direct), Self::new_clamped(cross));
+        }
         let d = direct.max(0.0);
         let c = cross.max(0.0);
         let total = d + c;
         if total <= Self::MAX_STABLE.0 {
             return (Feedback(d), Feedback(c));
         }
-        let scale = Self::MAX_STABLE.0 / total;
+        if total.is_finite() {
+            let scale = Self::MAX_STABLE.0 / total;
+            return (Feedback(d * scale), Feedback(c * scale));
+        }
+        // The sum overflowed, or an input is infinite.
+        if d.is_infinite() || c.is_infinite() {
+            let (wd, wc) = (f32::from(d.is_infinite()), f32::from(c.is_infinite()));
+            let share = Self::MAX_STABLE.0 / (wd + wc);
+            return (Feedback(wd * share), Feedback(wc * share));
+        }
+        // Halving is exact, and keeps the sum finite.
+        let (d, c) = (d * 0.5, c * 0.5);
+        let scale = Self::MAX_STABLE.0 / (d + c);
         (Feedback(d * scale), Feedback(c * scale))
     }
 }
@@ -735,19 +779,18 @@ impl StereoWidth {
     pub const NATURAL: StereoWidth = StereoWidth(1.0);
 
     /// Constrain to non-negative. Deliberately no upper bound — widening past
-    /// the source is a legitimate effect.
+    /// the source is a legitimate effect. NaN stays NaN.
     #[inline]
     #[must_use]
     pub fn new_clamped(v: f32) -> StereoWidth {
-        StereoWidth(v.max(0.0))
+        StereoWidth(if v < 0.0 { 0.0 } else { v })
     }
 }
 
 // ── Dimensionless ratios ────────────────────────────────────────────────────
 //
-// Three types where there was one (`Ratio`, "used for compressor ratio and
-// filter Q"). They share only the property of being bare numbers; their ranges
-// do not overlap and one cannot be substituted for another:
+// Three types. They share only the property of being bare numbers; their
+// ranges do not overlap and one cannot be substituted for another:
 //
 //   CompressionRatio  [1, inf)  1:1 is no compression; below 1 would EXPAND
 //   Q                 (0, inf)  filter sharpness; 0.707 is flat, high is a
@@ -762,7 +805,7 @@ unit_newtype!(
     /// Compressor ratio: input dB over threshold per 1 dB of output.
     ///
     /// `1.0` is no compression. Below 1.0 would be an *expander*, which this
-    /// type deliberately does not represent — the compressor's setter clamps
+    /// type deliberately does not represent — a compressor clamps
     /// up to 1.0 rather than silently inverting its own behaviour.
     CompressionRatio
 );
@@ -776,11 +819,11 @@ impl CompressionRatio {
     /// No compression.
     pub const UNITY: CompressionRatio = CompressionRatio(1.0);
 
-    /// Constrain to a real compression ratio.
+    /// Constrain to a real compression ratio, at least 1. NaN stays NaN.
     #[inline]
     #[must_use]
     pub fn new_clamped(v: f32) -> CompressionRatio {
-        CompressionRatio(v.max(1.0))
+        CompressionRatio(if v < 1.0 { 1.0 } else { v })
     }
 }
 
@@ -801,11 +844,16 @@ impl Q {
     /// Butterworth — the maximally flat response, `1/sqrt(2)`.
     pub const BUTTERWORTH: Q = Q(core::f32::consts::FRAC_1_SQRT_2);
 
-    /// Constrain above zero, since `Q` divides into the damping term.
+    /// Constrain above zero, since `Q` divides into the damping term. NaN
+    /// stays NaN.
     #[inline]
     #[must_use]
     pub fn new_clamped(v: f32) -> Q {
-        Q(v.max(f32::MIN_POSITIVE))
+        Q(if v < f32::MIN_POSITIVE {
+            f32::MIN_POSITIVE
+        } else {
+            v
+        })
     }
 }
 
@@ -997,8 +1045,7 @@ unit_newtype!(
     ///
     /// Normalized rather than a 7-bit code because MIDI 2.0's field is 16-bit:
     /// storing `u8` would quantize to 128 steps permanently, and the widening
-    /// back out is not a multiply (`tutti_midi_types` owns the wire codec). Note-on and
-    /// note-off velocity are the same quantity, which is why one type serves
+    /// back out is not a multiply. Note-on and note-off velocity are the same quantity, which is why one type serves
     /// both.
     ///
     /// **Not an [`Amplitude`]**, despite `0..1` and the temptation. A velocity
@@ -1022,8 +1069,7 @@ unit_bounded!(Velocity, f32);
 // NOT `unit_additive!`: two velocities do not sum into a third.
 
 impl Velocity {
-    /// Silence — a note-on at zero velocity is a note-off by MIDI convention,
-    /// which `tutti_midi_types::normalize` folds at the wire edge.
+    /// Silence — a note-on at zero velocity is a note-off by MIDI convention.
     pub const SILENT: Velocity = Velocity(0.0);
     /// The hardest strike.
     pub const MAX: Velocity = Velocity(1.0);
@@ -1055,9 +1101,9 @@ impl Velocity {
 //
 // Three types, because a circle and a segment are not the same space and one
 // type cannot tell them apart. `Azimuth` wraps and `Elevation` saturates, so
-// the correct clamp for one is a bug in the other — under a single `Degrees`
-// those two call sites are textually identical, and here the wrong one does
-// not compile.
+// the correct clamp for one is a bug in the other — under one shared angle
+// type those two call sites would be textually identical, and here the wrong
+// one does not compile.
 //
 // "An omission must ship with its replacement" matters most here: with `Ord`
 // and `Add` gone and no substitute, call sites escape to raw `f32` and write a
@@ -1085,16 +1131,20 @@ impl Azimuth {
     /// Directly ahead.
     pub const FRONT: Azimuth = Azimuth(0.0);
 
-    /// The equivalent bearing in the canonical `-180..180` range.
+    /// The equivalent bearing in the canonical `-180..180` range, half-open at
+    /// 180, for every finite input. NaN and the infinities give NaN.
     ///
     /// This is the operation a saturating `clamp` gets wrong: 190 degrees is
     /// 170 degrees to the *right* (`-170`), not the extreme left (`180`).
     /// Uses `rem_euclid`, not `%` — plain `%` preserves the dividend's sign, so
     /// it leaves negative inputs outside the range it is supposed to enforce.
+    /// A bearing a hair under `-180` makes `rem_euclid` round up to 360; it
+    /// lands on the largest bearing under 180 instead.
     #[inline]
     #[must_use]
     pub fn wrap(self) -> Azimuth {
-        Azimuth((self.0 + 180.0).rem_euclid(360.0) - 180.0)
+        let r = (self.0 + 180.0).rem_euclid(360.0);
+        Azimuth((if r >= 360.0 { 360.0_f32.next_down() } else { r }) - 180.0)
     }
 
     /// The shortest signed rotation from `self` to `to`, in `-180..=180`.
@@ -1239,12 +1289,17 @@ impl Phase {
     /// The start of a cycle.
     pub const START: Phase = Phase(0.0);
 
-    /// Wraps any value into `[0, 1)`.
+    /// Wraps any finite value into `[0, 1)`. NaN and the infinities give NaN,
+    /// which no later `advance` recovers from.
     ///
     /// `rem_euclid`, not `%` and not `.fract()`: both of those keep the sign of
     /// the input, so `-0.25` stays `-0.25` instead of becoming `0.75`. That is
     /// the whole bug class — a negative phase indexes off the front of a shape
     /// table, and no consumer checks for it.
+    ///
+    /// A tiny negative input (`-1e-9`) is within half an ulp of a whole cycle
+    /// below zero, and `rem_euclid` rounds it up to `1.0`; it gives the largest
+    /// value under 1 instead.
     ///
     /// The two ranges an advance by less than one cycle lands in — already in
     /// `[0, 1)`, or one cycle past it — are taken without the `fmodf` call
@@ -1252,13 +1307,15 @@ impl Phase {
     /// every LFO. Both shortcuts are bit-identical to `rem_euclid`: in
     /// `[1, 2)` the subtraction `v - 1` is exact (Sterbenz).
     #[inline]
+    #[must_use]
     pub fn wrapped(v: f32) -> Phase {
         if (0.0..1.0).contains(&v) {
             Phase(v)
         } else if (1.0..2.0).contains(&v) {
             Phase(v - 1.0)
         } else {
-            Phase(v.rem_euclid(1.0))
+            let r = v.rem_euclid(1.0);
+            Phase(if r >= 1.0 { 1.0_f32.next_down() } else { r })
         }
     }
 
@@ -1337,11 +1394,6 @@ unit_scalable!(Radians, f32);
 // are a tenth of a turn apart, and `clamp` saturates a coordinate that should
 // have wrapped. `wrapped_signed` is the replacement — wrap first, then the
 // comparison is against a magnitude and `.get()` is honest.
-//
-// `Radians` was the one angular type the file exempted from its own rule, and
-// the predicted escape happened: the phase vocoder hand-rolled the missing wrap
-// in raw `f32`. That is the `Degrees` failure verbatim, which is why the
-// omission ships with the method rather than after it.
 
 impl Radians {
     /// Full circle, `2·pi`.
@@ -1377,19 +1429,30 @@ impl Radians {
     ///
     /// The counterpart to [`Azimuth::wrap`] for the radian coordinate, and the
     /// answer to "how far apart are these two angles" once the difference has
-    /// been taken: a phase-vocoder deviation of `+3pi/2` is really `-pi/2`, and
-    /// keeping the larger number makes a partial jump the wrong way.
+    /// been taken: a deviation of `+3pi/2` is really `-pi/2`, and keeping the
+    /// larger number makes a partial jump the wrong way.
     ///
-    /// Arithmetic rather than a `while` loop, which is what the phase vocoder
-    /// needed: the loop costs one iteration per turn of input, so a phase
-    /// accumulated over minutes of audio stalls the audio thread for an
-    /// unbounded time. Wrapping *before* comparing is also why [`Ord`] on this
-    /// type is a trap — see the omission note below.
+    /// Arithmetic rather than a `while` loop, which costs one iteration per
+    /// turn of input: a phase accumulated over minutes of audio would stall the
+    /// audio thread for an unbounded time. Wrapping *before* comparing is also
+    /// why [`Ord`] on this type is a trap — see the omission note below.
+    ///
+    /// Holds for every finite input; NaN and the infinities give NaN. Within a
+    /// few turns of zero the arithmetic above is the answer; where it would
+    /// leave the range (rounding at the seam, or a turn count too large for
+    /// `f32` to subtract exactly) the wrap is redone in `f64`.
     #[inline]
     #[must_use]
     pub fn wrapped_signed(self) -> Radians {
-        let tau = core::f32::consts::TAU;
-        Radians(self.0 - tau * ((self.0 + core::f32::consts::PI) / tau).floor())
+        use core::f32::consts::{PI, TAU};
+        let w = self.0 - TAU * ((self.0 + PI) / TAU).floor();
+        if (-PI..PI).contains(&w) || !self.0.is_finite() {
+            return Radians(w);
+        }
+        let r = (f64::from(self.0) + core::f64::consts::PI).rem_euclid(core::f64::consts::TAU)
+            - core::f64::consts::PI;
+        let w = r as f32;
+        Radians(if w >= PI { PI.next_down() } else { w.max(-PI) })
     }
 }
 
@@ -1465,11 +1528,16 @@ impl Beat {
     }
 
     /// How far into the current beat this position is — a *displacement* from
-    /// [`floor`](Self::floor), not a position.
+    /// [`floor`](Self::floor), not a position. In `[0, 1)` for every finite
+    /// position; NaN and the infinities give NaN.
+    ///
+    /// A position a hair under a whole beat (`-1e-20`) is within rounding of
+    /// the next beat; it gives the largest value under 1 rather than 1.
     #[inline]
     #[must_use]
     pub fn fract(self) -> BeatDuration {
-        BeatDuration(self.0 - self.0.floor())
+        let f = self.0 - self.0.floor();
+        BeatDuration(if f >= 1.0 { 1.0_f64.next_down() } else { f })
     }
 
     /// Un-wrapped cycle position of a beat-synced periodic source — the one
@@ -1577,11 +1645,6 @@ impl Semitones {
     /// [`Semitones(0.0)`](Semitones) — a unison — rather than a NaN that
     /// reaches a note table before anyone notices.
     ///
-    /// This existed only in the `Cents` form, so the one caller that wanted
-    /// semitones (`Note::nearest_to`) hand-rolled `12.0 * ratio.log2()` in raw
-    /// `f32` — with its own positivity check several lines away from the
-    /// logarithm. That is the omission rule's own failure mode: the inverse
-    /// was added for one unit and not its twin.
     #[inline]
     #[must_use]
     pub fn from_pitch_ratio(ratio: f32) -> Semitones {
@@ -1606,13 +1669,10 @@ impl Semitones {
 //     a policy knob. If two call sites would want different results, a `From`
 //     impl has to pick one and apply it silently at every `.into()`.
 //
-//     The fix is to move the policy to the consumers that hold opinions about
-//     it, not to pick a default and bury it. `Amplitude` → `Db` is the worked
-//     example: the silence floor lives at the three boundaries that care
-//     (`tutti-nodes`' dynamics detectors, `ms_ratio` in `tutti-dsp`, and
-//     its true-peak reading), which leaves one answer here and makes the
-//     `From` impl honest. Collapsing such a set of names *without* relocating
-//     the policy is the failure this clause is about.
+//     The policy belongs to the consumer that holds an opinion about it, not
+//     to a default buried in the impl. `Amplitude` → `Db` is the worked
+//     example: the silence floor is each caller's to pin, which leaves one
+//     answer here (`-inf`) and makes the `From` impl honest.
 //   - The target is a bare scalar. `Cents::to_pitch_ratio` and
 //     `Semitones::to_pitch_ratio` both land on `f32`; as `From` impls they
 //     would be two different meanings of one target type.
@@ -1675,8 +1735,7 @@ unit_newtype!(
     /// carries ~6e-8 of relative error, and a phase accumulator integrating
     /// that over a long render drifts audibly).
     ///
-    /// Defined once, here, so every engine crate names the same type (a
-    /// node gets it in `tutti_graph::Prepare`).
+    /// Defined once, here, so every crate names the same type.
     ///
     /// Builds from `f64` and from `u32` (file headers, device configs) — both
     /// widen exactly. Deliberately **not** from `f32`: that widening is
@@ -1712,13 +1771,12 @@ impl SampleRate {
     /// 48 kHz — the typical pro-audio default.
     pub const SR_48K: Self = Self(48_000.0);
 
-    /// The placeholder rate a node is born at, before its `prepare` hands it
-    /// the device's.
+    /// The placeholder rate for anything built before the device's is known.
     ///
-    /// The engine's **one** such constant. Every node that has not been given
-    /// a rate must start from the *same* one, or a graph built before the
-    /// device opens is inconsistent with itself, so the value has one owner
-    /// and it is the unit's.
+    /// The **one** such constant. Everything that has not been given a rate
+    /// must start from the *same* one, or a graph built before the device
+    /// opens is inconsistent with itself, so the value has one owner and it is
+    /// the unit's.
     ///
     /// 44.1 kHz. The placeholder is replaced before the first real block, so
     /// its value only affects rate-dependent defaults computed before
@@ -1857,17 +1915,12 @@ impl PlaybackRate {
 
     /// Creates a rate, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
     ///
-    /// Non-finite input yields [`UNITY`](Self::UNITY): a NaN rate would make the
-    /// read position NaN and silence the clip permanently, which is far worse
-    /// than ignoring the request.
+    /// NaN stays NaN, which makes a read position NaN: a caller that takes
+    /// user input guards it first.
     #[inline]
     #[must_use]
     pub fn new_clamped(v: f32) -> Self {
-        if !v.is_finite() {
-            Self::UNITY
-        } else {
-            Self(v.clamp(Self::MIN.0, Self::MAX.0))
-        }
+        Self(v.clamp(Self::MIN.0, Self::MAX.0))
     }
 
     /// Source samples consumed per output sample: varispeed × conversion.
@@ -1945,8 +1998,8 @@ impl ReadRate {
 unit_newtype!(
     /// Time-stretch factor: how much longer a clip plays, pitch unchanged.
     ///
-    /// 2.0 plays twice as long at unchanged pitch — the phase-vocoder
-    /// operation, not resampling. For the kind that couples pitch to duration,
+    /// 2.0 plays twice as long at unchanged pitch — time-stretching, not
+    /// resampling. For the kind that couples pitch to duration,
     /// see [`PlaybackRate`].
     StretchFactor
 );
@@ -1967,17 +2020,13 @@ impl StretchFactor {
 
     /// Creates a factor, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
     ///
-    /// Non-finite input yields [`UNITY`](Self::UNITY), for the same reason as
-    /// [`PlaybackRate::new_clamped`]. As there, the raw `new` is unchecked —
-    /// use this on any path carrying user input.
+    /// NaN stays NaN, as in [`PlaybackRate::new_clamped`]; the raw `new` is
+    /// unchecked. Use this on any path carrying user input, and guard a NaN
+    /// first.
     #[inline]
     #[must_use]
     pub fn new_clamped(v: f32) -> Self {
-        if !v.is_finite() {
-            Self::UNITY
-        } else {
-            Self(v.clamp(Self::MIN.0, Self::MAX.0))
-        }
+        Self(v.clamp(Self::MIN.0, Self::MAX.0))
     }
 }
 
@@ -2015,11 +2064,16 @@ impl SamplePosition {
         SamplePosition(self.0.floor())
     }
 
-    /// The interpolation fraction between this index and the next.
+    /// The interpolation fraction between this index and the next, in `[0, 1)`
+    /// for every finite position; NaN and the infinities give NaN.
+    ///
+    /// A position a hair under a whole index (`-1e-20`) gives the largest value
+    /// under 1 rather than 1, as [`Beat::fract`] does.
     #[inline]
     #[must_use]
     pub fn fract(self) -> f64 {
-        self.0 - self.0.floor()
+        let f = self.0 - self.0.floor();
+        if f >= 1.0 { 1.0_f64.next_down() } else { f }
     }
 
     /// This position advanced by a frame count.
@@ -2032,9 +2086,9 @@ impl SamplePosition {
     /// converts back, with [`to_samples_floor`](Self::to_samples_floor) or
     /// [`to_samples_ceil`](Self::to_samples_ceil).
     ///
-    /// For example, a sampler preload window: "keep `window` frames resident
-    /// starting from `entry`" is `entry.advanced_by(window)`, keeping the
-    /// fraction that rounding each side first would lose.
+    /// For example, a preload window: "keep `window` frames resident starting
+    /// from `entry`" is `entry.advanced_by(window)`, keeping the fraction that
+    /// rounding each side first would lose.
     #[inline]
     #[must_use]
     pub fn advanced_by(self, frames: Samples) -> SamplePosition {
@@ -2126,14 +2180,19 @@ impl BeatDuration {
         self.0 > 0.0
     }
 
-    /// Always-non-negative remainder.
+    /// The remainder in `[0, |rhs|)`, for a finite `self` and a finite non-zero
+    /// `rhs`. A zero `rhs` or a NaN gives NaN.
     ///
     /// `%` on floats keeps the sign of the dividend, so a negative overshoot
-    /// would wrap *outside* the span. This is the wrapping-safe form.
+    /// would wrap *outside* the span. This is the wrapping-safe form. A
+    /// negative `self` a hair under a whole span rounds up to the span itself
+    /// in `f64::rem_euclid`; it gives the largest value under the span instead.
     #[inline]
     #[must_use]
     pub fn rem_euclid(self, rhs: BeatDuration) -> BeatDuration {
-        BeatDuration(self.0.rem_euclid(rhs.0))
+        let r = self.0.rem_euclid(rhs.0);
+        let span = rhs.0.abs();
+        BeatDuration(if r >= span { span.next_down() } else { r })
     }
 }
 
@@ -2168,7 +2227,7 @@ mod tests {
     /// - `Beat % BeatDuration` — hides the loop-start origin.
     /// - `Db * f32` — squares the amplitude rather than doubling the gain.
     /// - `Db / Db` — a quotient of logarithms is not a quantity.
-    /// - `Mix + Mix`, `Mix * f32`, `Ratio + Ratio` — a blend *position* does
+    /// - `Mix + Mix`, `Mix * f32` — a blend *position* does
     ///   not compose or scale; half of a crossfade point is not a crossfade
     ///   point. (`Depth` *is* additive and scalable — that is the difference
     ///   between a position and a signed magnitude.)
@@ -2181,9 +2240,7 @@ mod tests {
     /// - `Azimuth < Azimuth`, `Azimuth.clamp(..)` — a wrapping coordinate has
     ///   no ordering and no saturating clamp. `wrap` is the constraint.
     /// - `Radians < Radians`, `Radians.clamp(..)` — the same, for the radian
-    ///   coordinate; `wrapped_signed` is the constraint. This type carried both
-    ///   until the phase vocoder hand-rolled the missing wrap in raw `f32`,
-    ///   which is the `Degrees` escape reproduced exactly.
+    ///   coordinate; `wrapped_signed` is the constraint.
     /// - `Azimuth + ArcDegrees` — `rotate_by`, which wraps; the operator would
     ///   not. Same for `Elevation + ArcDegrees` vs `tilt_by`, which clamps.
     /// - `Azimuth - Azimuth` — `shortest_arc_to`; a plain subtraction takes the
@@ -2209,8 +2266,7 @@ mod tests {
     ///   operand as a sample count and returns a `SamplePosition`. This type
     ///   exists to be multiplied by exactly one thing, so a bare `*` would let
     ///   it be multiplied by anything — including the `PlaybackRate` and
-    ///   `SrcRatio` it is already the product of, which is the double-apply bug
-    ///   the disk tier's gate comment records.
+    ///   `SrcRatio` it is already the product of, which would apply a ratio twice.
     ///
     /// - `Velocity * f32` — `scaled`, which clamps. The bare operator reads as
     ///   "half as loud", and velocity→loudness is the instrument's mapping, not
@@ -2226,8 +2282,8 @@ mod tests {
     /// `sample * velocity` is not just meaningless but *plausible*: it
     /// compiles as a volume dip and sounds like a quiet note.
     ///
-    /// The fourth is the sharpest, because the two are *inverse*: a beat-synced
-    /// rate is a [`BeatDuration`] (beats per cycle), never an [`Hz`]. Doubling
+    /// And a beat-synced rate is a [`BeatDuration`] (beats per cycle), never an
+    /// [`Hz`]: the two are *inverse*. Doubling
     /// the span halves the rate, so the substitution is a silent reciprocal.
     /// [`Beat::cycles_of`] is the only interpreter.
     ///
@@ -2352,8 +2408,8 @@ mod tests {
 
     #[test]
     fn elevation_saturates_where_azimuth_wraps() {
-        // Same numbers, opposite correct answers — which is why one `Degrees`
-        // could not serve both. Past the pole, elevation stops.
+        // Same numbers, opposite correct answers — which is why one angle
+        // type could not serve both. Past the pole, elevation stops.
         assert_eq!(Elevation::new_clamped(120.0), Elevation::UP);
         assert_eq!(Elevation::new_clamped(-120.0), Elevation::DOWN);
         // Where the identical azimuth input wraps to the far side instead.
@@ -2467,8 +2523,7 @@ mod tests {
         );
     }
 
-    /// The wrap `Radians` was missing, which the phase vocoder hand-rolled in
-    /// raw `f32` — the `Degrees` escape, repeated.
+    /// `Radians` wraps through `wrapped_signed`, never a saturating clamp.
     #[test]
     fn radians_wrap_signed_rather_than_saturating() {
         let pi = core::f32::consts::PI;
@@ -3105,17 +3160,15 @@ mod tests {
         assert_eq!(PlaybackRate::new_clamped(1.5), PlaybackRate::new(1.5));
     }
 
+    /// The module's one non-finite rule: NaN stays NaN, an infinity saturates
+    /// at its bound. (Both used to read as `UNITY`.)
     #[test]
-    fn playback_rate_rejects_non_finite() {
-        // A NaN rate makes the read position NaN, silencing the clip forever.
-        assert_eq!(PlaybackRate::new_clamped(f32::NAN), PlaybackRate::UNITY);
-        assert_eq!(
-            PlaybackRate::new_clamped(f32::INFINITY),
-            PlaybackRate::UNITY
-        );
+    fn playback_rate_follows_the_non_finite_rule() {
+        assert!(PlaybackRate::new_clamped(f32::NAN).get().is_nan());
+        assert_eq!(PlaybackRate::new_clamped(f32::INFINITY), PlaybackRate::MAX);
         assert_eq!(
             PlaybackRate::new_clamped(f32::NEG_INFINITY),
-            PlaybackRate::UNITY
+            PlaybackRate::MIN
         );
     }
 
@@ -3188,9 +3241,251 @@ mod tests {
     }
 
     #[test]
-    fn stretch_factor_clamps_and_rejects_non_finite() {
+    fn stretch_factor_clamps_and_follows_the_non_finite_rule() {
         assert_eq!(StretchFactor::new_clamped(8.0), StretchFactor::MAX);
         assert_eq!(StretchFactor::new_clamped(0.1), StretchFactor::MIN);
-        assert_eq!(StretchFactor::new_clamped(f32::NAN), StretchFactor::UNITY);
+        assert!(StretchFactor::new_clamped(f32::NAN).get().is_nan());
+        assert_eq!(
+            StretchFactor::new_clamped(f32::INFINITY),
+            StretchFactor::MAX
+        );
+        assert_eq!(
+            StretchFactor::new_clamped(f32::NEG_INFINITY),
+            StretchFactor::MIN
+        );
+    }
+
+    /// The module's one non-finite rule, for every `new_clamped`: NaN stays
+    /// NaN, an infinity lands on the bound on its side, and an unbounded side
+    /// stays infinite.
+    ///
+    /// Mutation (run): write `StereoWidth::new_clamped` as `v.max(0.0)` again
+    /// → NaN reads as `0.0` → fails; give `Mix::new_clamped` a
+    /// `if v.is_nan() { 0.0 }` arm → fails.
+    #[test]
+    fn every_new_clamped_passes_nan_and_saturates_infinity() {
+        let nan = f32::NAN;
+        let (inf, ninf) = (f32::INFINITY, f32::NEG_INFINITY);
+        macro_rules! check {
+            ($t:ident, $lo:expr, $hi:expr) => {
+                assert!($t::new_clamped(nan).get().is_nan(), stringify!($t));
+                assert_eq!($t::new_clamped(inf).get(), $hi, stringify!($t));
+                assert_eq!($t::new_clamped(ninf).get(), $lo, stringify!($t));
+            };
+        }
+        check!(Mix, 0.0, 1.0);
+        check!(Feedback, 0.0, 0.99);
+        check!(Depth, -1.0, 1.0);
+        check!(Spread, 0.0, 1.0);
+        check!(Resonance, 0.0, 1.0);
+        check!(Confidence, 0.0, 1.0);
+        check!(Correlation, -1.0, 1.0);
+        check!(Pan, -1.0, 1.0);
+        check!(Velocity, 0.0, 1.0);
+        check!(Elevation, -90.0, 90.0);
+        check!(PlaybackRate, 0.25, 4.0);
+        check!(StretchFactor, 0.25, 4.0);
+        // The unbounded side stays infinite.
+        check!(StereoWidth, 0.0, f32::INFINITY);
+        check!(CompressionRatio, 1.0, f32::INFINITY);
+        check!(Q, f32::MIN_POSITIVE, f32::INFINITY);
+        // In-range values pass untouched, and -0.0 keeps its sign bit.
+        assert_eq!(StereoWidth::new_clamped(1.5), StereoWidth(1.5));
+        assert_eq!(CompressionRatio::new_clamped(4.0), CompressionRatio(4.0));
+        assert_eq!(Q::new_clamped(0.7), Q(0.7));
+        assert_eq!(
+            StereoWidth::new_clamped(-0.0).get().to_bits(),
+            (-0.0f32).to_bits()
+        );
+    }
+
+    /// `stable_pair` scales a too-large pair down together, keeping its ratio:
+    /// `0.99 · x / (d + c)` per coefficient, so the sum is the bound.
+    ///
+    /// Mutation (run): the scale `MAX_STABLE / total` → `MAX_STABLE / (total +
+    /// 1.0)` → `(1.5, 0.5)` gives `(0.495, 0.165)` → fails. Mutation (run):
+    /// drop the `is_infinite` arm → `(INFINITY, 0.0)` gives NaN → fails.
+    #[test]
+    fn stable_pair_keeps_the_ratio_and_survives_infinity() {
+        let near = |got: (Feedback, Feedback), want: (f32, f32)| {
+            assert!(
+                (got.0.get() - want.0).abs() < 1e-6 && (got.1.get() - want.1).abs() < 1e-6,
+                "got {got:?}, want {want:?}"
+            );
+        };
+        // Under the bound: untouched, and exactly so.
+        assert_eq!(
+            Feedback::stable_pair(0.5, 0.25),
+            (Feedback(0.5), Feedback(0.25))
+        );
+        // Over it: 0.99 · 1.5 / 2 and 0.99 · 0.5 / 2.
+        near(Feedback::stable_pair(1.5, 0.5), (0.7425, 0.2475));
+        // The ratio is kept: 0.99 · 0.9 / 1.8 each.
+        near(Feedback::stable_pair(0.9, 0.9), (0.495, 0.495));
+        // Negative raises to zero, so the other takes the bound alone.
+        near(Feedback::stable_pair(-1.0, 2.0), (0.0, 0.99));
+        // An infinity takes the whole bound; two share it.
+        near(Feedback::stable_pair(f32::INFINITY, 0.0), (0.99, 0.0));
+        near(Feedback::stable_pair(0.3, f32::INFINITY), (0.0, 0.99));
+        near(
+            Feedback::stable_pair(f32::INFINITY, f32::INFINITY),
+            (0.495, 0.495),
+        );
+        near(Feedback::stable_pair(f32::NEG_INFINITY, 0.5), (0.0, 0.5));
+        // A sum that overflows `f32` keeps its ratio too.
+        near(Feedback::stable_pair(f32::MAX, f32::MAX), (0.495, 0.495));
+        // NaN stays NaN in its own coefficient; the other clamps alone.
+        let (d, c) = Feedback::stable_pair(f32::NAN, 2.0);
+        assert!(d.get().is_nan());
+        assert_eq!(c, Feedback::MAX_STABLE);
+    }
+
+    /// Silence is `-inf`, as `Db::from_amplitude` says, and the figures are the
+    /// decibel definition: `20 · log10(2) = 6.0206`.
+    ///
+    /// Mutation (run): make `to_db` pin silence to `Db::FLOOR` → `-inf` becomes
+    /// `-144` → fails.
+    #[test]
+    fn amplitude_to_db_leaves_silence_at_minus_infinity() {
+        assert_eq!(Amplitude::SILENT.to_db().get(), f32::NEG_INFINITY);
+        assert_eq!(Amplitude::UNITY.to_db(), Db::UNITY);
+        assert!((Amplitude(2.0).to_db().get() - 6.0206).abs() < 1e-4);
+        assert!((Amplitude(0.5).to_db().get() + 6.0206).abs() < 1e-4);
+        assert!((Amplitude(0.1).to_db().get() + 20.0).abs() < 1e-5);
+        // The floor is the caller's: it is a different, finite number.
+        assert_ne!(Amplitude::SILENT.to_db(), Db::FLOOR);
+    }
+
+    /// The metering floor is 144 dB below full scale, about one 24-bit step
+    /// (`6.02 dB` a bit, 24 bits).
+    ///
+    /// Mutation (run): `Db::FLOOR` `-144.0` → `-120.0` → fails both.
+    #[test]
+    fn the_metering_floor_is_144_db_down() {
+        assert_eq!(Db::FLOOR.get(), -144.0);
+        let amp = Db::FLOOR.to_amplitude().get();
+        assert!((amp - 6.31e-8).abs() < 1e-9, "{amp:e}");
+    }
+
+    /// Tiny negatives are within rounding of a whole cycle below zero, and the
+    /// documented half-open range holds for them.
+    ///
+    /// Mutation (run): drop the `r >= 1.0` guard in `Phase::wrapped` →
+    /// `-1e-9` gives `1.0` → fails. Drop the `r >= 360.0` guard in
+    /// `Azimuth::wrap` → `-180.00002` gives `180.0` → fails.
+    #[test]
+    fn the_wraps_hold_their_half_open_range_at_the_seam() {
+        let below_one = 1.0_f32.next_down();
+        for v in [-1e-9_f32, -1e-30, -f32::MIN_POSITIVE, -2.9e-8, -5.9e-8] {
+            let p = Phase::wrapped(v);
+            assert!((0.0..1.0).contains(&p.get()), "wrapped({v:e}) = {p}");
+            assert_eq!(p, Phase(below_one), "{v:e}");
+        }
+        // Ordinary inputs keep their exact figures.
+        assert_eq!(Phase::wrapped(-0.25), Phase(0.75));
+        assert_eq!(Phase::wrapped(0.0), Phase(0.0));
+        assert_eq!(Phase::wrapped(1.0), Phase(0.0));
+        assert_eq!(Phase::wrapped(2.0), Phase(0.0));
+        assert_eq!(Phase::wrapped(-1.0), Phase(0.0));
+        // NaN and the infinities give NaN.
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(Phase::wrapped(v).get().is_nan());
+        }
+
+        let top = 360.0_f32.next_down() - 180.0;
+        for v in [-180.00002_f32, -180.000_01, -180.000_000_1] {
+            let a = Azimuth(v).wrap().get();
+            assert!((-180.0..180.0).contains(&a), "{v} wrapped to {a}");
+        }
+        assert_eq!(Azimuth(-180.00002).wrap(), Azimuth(top));
+        assert_eq!(Azimuth(190.0).wrap(), Azimuth(-170.0));
+        assert_eq!(Azimuth(-190.0).wrap(), Azimuth(170.0));
+        assert_eq!(Azimuth(180.0).wrap(), Azimuth(-180.0));
+        assert_eq!(Azimuth(-180.0).wrap(), Azimuth(-180.0));
+        assert!(Azimuth(f32::NAN).wrap().get().is_nan());
+        assert!(Azimuth(f32::INFINITY).wrap().get().is_nan());
+
+        let pi = core::f32::consts::PI;
+        for v in [
+            -pi - 1e-6,
+            -pi - 1e-7,
+            pi,
+            pi + 1e-6,
+            1e10,
+            -1e10,
+            f32::MAX,
+            f32::MIN,
+        ] {
+            let w = Radians(v).wrapped_signed().get();
+            assert!((-pi..pi).contains(&w), "{v:e} wrapped to {w}");
+        }
+        assert_eq!(
+            Radians(3.0 * pi / 2.0).wrapped_signed().get().signum(),
+            -1.0
+        );
+        assert!(Radians(f32::NAN).wrapped_signed().get().is_nan());
+        assert!(Radians(f32::INFINITY).wrapped_signed().get().is_nan());
+
+        let below_one = 1.0_f64.next_down();
+        assert_eq!(Beat(-1e-20).fract(), BeatDuration(below_one));
+        assert_eq!(SamplePosition(-1e-20).fract(), below_one);
+        assert_eq!(Beat(2.25).fract(), BeatDuration(0.25));
+        assert_eq!(Beat(-0.75).fract(), BeatDuration(0.25));
+        assert_eq!(Beat(3.0).fract(), BeatDuration(0.0));
+        assert!(Beat(f64::NAN).fract().get().is_nan());
+        assert!(Beat(f64::INFINITY).fract().get().is_nan());
+
+        let four = BeatDuration(4.0);
+        assert_eq!(
+            BeatDuration(-1e-20).rem_euclid(four),
+            BeatDuration(4.0_f64.next_down())
+        );
+        assert_eq!(BeatDuration(-1.0).rem_euclid(four), BeatDuration(3.0));
+        assert_eq!(BeatDuration(9.0).rem_euclid(four), BeatDuration(1.0));
+        assert_eq!(
+            BeatDuration(-1e-20).rem_euclid(BeatDuration(-4.0)),
+            BeatDuration(4.0_f64.next_down())
+        );
+        assert!(
+            BeatDuration(1.0)
+                .rem_euclid(BeatDuration(0.0))
+                .get()
+                .is_nan()
+        );
+    }
+
+    /// Mutation (run): drop the `f64` fallback in `wrapped_signed` → `1e10`
+    /// leaves the range → fails.
+    #[test]
+    fn wrapped_signed_stays_in_range_far_from_zero() {
+        let pi = core::f32::consts::PI;
+        let mut v = 1.0f32;
+        while v.is_finite() {
+            for x in [v, -v] {
+                let w = Radians(x).wrapped_signed().get();
+                assert!((-pi..pi).contains(&w), "{x:e} wrapped to {w}");
+            }
+            v *= 1.7;
+        }
+    }
+
+    /// An `f32` second count stops naming a frame past 256 s at 48 kHz, where
+    /// its spacing (2^-15 s) first exceeds one frame — well before the 2^24
+    /// frames (350 s) a mantissa count would suggest.
+    ///
+    /// Mutation (run): round-trip through `f64` seconds in `Samples::to_seconds`
+    /// → the second assertion fails.
+    #[test]
+    fn a_seconds_round_trip_is_exact_to_256_s_at_48_khz() {
+        let rate = SampleRate::SR_48K;
+        let round_trips = |n: usize| Samples(n).to_seconds(rate).to_samples(rate) == Samples(n);
+        for n in (0..=12_288_000usize).step_by(7) {
+            assert!(round_trips(n), "{n} frames");
+        }
+        assert!(round_trips(12_288_000), "256 s exactly");
+        assert!(
+            (12_288_001..12_288_400).any(|n| !round_trips(n)),
+            "past 256 s a frame is no longer addressable"
+        );
     }
 }

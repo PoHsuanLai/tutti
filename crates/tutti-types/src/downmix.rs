@@ -21,6 +21,20 @@
 //! reproduction on small speakers is undefined). 7.1 folds the rear pair into
 //! the side surrounds first. Mono sums the stereo downmix with a further −3 dB.
 //!
+//! # Limits
+//!
+//! - **Not normalised.** Each side adds its coefficients without scaling the
+//!   sum back, so a 5.1 frame at full scale on every channel folds to
+//!   `1 + 2·0.7071 = 2.414` per side, which clips. Headroom is the caller's.
+//! - **Only some widths fold.** Widths 1, 2, 4, 6, 8 and 12 have a matrix. Any
+//!   other width (3, 5, 7, 9 to 11, 13 and up, which include LCR, 5.0 and 7.0)
+//!   passes the front pair through and drops the centre, surrounds and heights
+//!   without warning. A width names a count, not a layout, so 6.0 and 5.1 are
+//!   the same width, read as 5.1.
+//! - **Mono is not continuous across widths.** Two channels average, three or
+//!   more take the stereo fold times −3 dB: `[0.1, 0.2]` gives `0.15` and
+//!   `[0.1, 0.2, 0.0]` gives `0.212`.
+//!
 //! # Channel order and RT safety
 //!
 //! Channel order is the file/SMPTE order these signals speak:
@@ -59,7 +73,12 @@ fn ch(frame: &[f32], i: usize) -> f32 {
 /// - **8 ch (7.1)**: the 5.1 fold plus the rear pair (BL/BR) into its side.
 /// - **12 ch (7.1.4)**: every left-side channel, heights included, into `Lo`
 ///   and every right-side one into `Ro`, all at −3 dB.
-/// - **any other width**: the front pair passes through.
+/// - **any other width** (3, 5, 7, 9 to 11, 13 and up): the front pair passes
+///   through, and the centre, surrounds and heights are **dropped silently**.
+///
+/// The matrix is **not normalised**: a 5.1 frame at full scale on every channel
+/// gives `1 + 2·`[`M3DB`]` = 2.414` per side, which clips. Leave headroom or
+/// scale before folding.
 ///
 /// Allocation-free, so safe on the audio thread.
 ///
@@ -116,6 +135,11 @@ fn stereo_side(width: usize, s: usize, get: impl Fn(usize) -> f32) -> f32 {
 /// fold in with correct relative levels (and the LFE is dropped) rather than
 /// every channel being averaged with equal weight.
 ///
+/// The two rules do not meet: `[0.1, 0.2]` gives `0.15` and a three-wide
+/// `[0.1, 0.2, 0.0]` gives `0.212`, so a signal that changes width changes
+/// level. The unnormalised stereo matrix and the dropped channels of the
+/// unfolded widths carry over from [`fold_frame_to_stereo`].
+///
 /// Allocation-free, so safe on the audio thread.
 #[inline]
 pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
@@ -144,6 +168,10 @@ pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
 ///   leaves C/LFE/surrounds silent).
 /// - narrowing to some other width (`2 < dst < src`) → front-`dst` passthrough
 ///   (there is no standard matrix for an arbitrary intermediate width).
+///
+/// The mono and stereo targets inherit the limits in the module docs: the
+/// matrix is not normalised, and a source width with no matrix loses its
+/// centre and surrounds.
 ///
 /// Allocation-free (only indexed reads and writes over the two slices), so
 /// safe on the audio thread.
@@ -306,6 +334,56 @@ pub fn fold_planar_to_mono(channels: &[&[f32]]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The −3 dB coefficient is `1/√2`: `0.70710678`, and its square is a half
+    /// (−3.0103 dB).
+    ///
+    /// Mutation (run): `M3DB` → `0.9 · FRAC_1_SQRT_2`, then → `0.5` → fails.
+    #[test]
+    fn the_minus_3_db_coefficient_is_the_itu_figure() {
+        assert!((M3DB - 0.707_106_78).abs() < 1e-7, "{M3DB}");
+        assert!((M3DB * M3DB - 0.5).abs() < 1e-7);
+        assert!((20.0 * M3DB.log10() + 3.0103).abs() < 1e-3);
+        // And the fold applies it as written, not through the constant alone.
+        let (lo, ro) = fold_frame_to_stereo(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert!((lo - 0.707_106_78).abs() < 1e-6 && lo == ro);
+    }
+
+    /// The matrix is not normalised: full scale on every 5.1 channel folds to
+    /// `1 + 2 · 0.7071 = 2.4142` per side (the LFE is dropped).
+    ///
+    /// Mutation (run): normalise by dividing the 5.1 sum by `1 + 2·M3DB` →
+    /// `1.0` → fails.
+    #[test]
+    fn full_scale_five_one_folds_above_full_scale() {
+        let (lo, ro) = fold_frame_to_stereo(&[1.0; 6]);
+        assert!((lo - 2.414_213_6).abs() < 1e-6, "{lo}");
+        assert_eq!(lo, ro);
+    }
+
+    /// Widths with no matrix pass the front pair through and drop the rest.
+    #[test]
+    fn widths_without_a_matrix_drop_the_centre_and_surrounds() {
+        // LCR, 5.0 and 7.0: the centre and surrounds vanish.
+        assert_eq!(fold_frame_to_stereo(&[0.1, 0.2, 1.0]), (0.1, 0.2));
+        assert_eq!(fold_frame_to_stereo(&[0.1, 0.2, 1.0, 1.0, 1.0]), (0.1, 0.2));
+        assert_eq!(
+            fold_frame_to_stereo(&[0.1, 0.2, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            (0.1, 0.2)
+        );
+        assert_eq!(
+            fold_frame_to_stereo(&[0.1, 0.2, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),
+            (0.1, 0.2)
+        );
+    }
+
+    /// Mono is the average at two channels and the stereo fold times −3 dB from
+    /// three up, so the level steps when the width does.
+    #[test]
+    fn mono_level_steps_between_two_and_three_channels() {
+        assert!((fold_frame_to_mono(&[0.1, 0.2]) - 0.15).abs() < 1e-7);
+        assert!((fold_frame_to_mono(&[0.1, 0.2, 0.0]) - 0.212_132).abs() < 1e-6);
+    }
 
     #[test]
     fn stereo_and_below_pass_through() {

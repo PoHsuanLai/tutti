@@ -93,6 +93,8 @@ mod process_pipeline_tests;
 // and an always-compiled accessor with no caller reads as API someone may
 // depend on. `clap` because it needs a `plugin-server` built with that loader.
 #[cfg(all(test, feature = "clap"))]
+mod fork_late_rate_tests;
+#[cfg(all(test, feature = "clap"))]
 mod real_stall_tests;
 #[cfg(test)]
 mod tests;

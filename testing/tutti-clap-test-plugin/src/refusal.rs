@@ -79,6 +79,16 @@ pub unsafe extern "C" fn tutti_test_plugin_inactive_deactivations() -> u32 {
 static LAST_RATE: AtomicU64 = AtomicU64::new(0);
 static LAST_FRAMES: AtomicU32 = AtomicU32::new(0);
 
+/// Sample rate (bits) whose `activate` is slow, and by how many milliseconds.
+static SLOW_RATE: AtomicU64 = AtomicU64::new(ACTIVATE_REFUSE_NONE);
+static SLOW_MS: AtomicU32 = AtomicU32::new(0);
+
+/// Make `activate` at this rate take `ms` longer (it still accepts).
+pub(crate) fn set_slow_activate(rate_bits: u64, ms: u32) {
+    SLOW_RATE.store(rate_bits, Ordering::SeqCst);
+    SLOW_MS.store(ms, Ordering::SeqCst);
+}
+
 /// The `activate` hook. Returns what the plugin should report, recording the
 /// call either way. Called from `plugin_activate` in `lib.rs`.
 ///
@@ -87,6 +97,12 @@ static LAST_FRAMES: AtomicU32 = AtomicU32::new(0);
 pub(crate) fn on_activate(active: &AtomicBool, sample_rate: f64, max_frames: u32) -> bool {
     let refuse_rate = REFUSE_RATE.load(Ordering::SeqCst);
     let refuse_frames = REFUSE_FRAMES.load(Ordering::SeqCst);
+
+    if sample_rate.to_bits() == SLOW_RATE.load(Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(
+            SLOW_MS.load(Ordering::SeqCst),
+        )));
+    }
 
     // Either criterion matches on its own, so a test can target `set_sample_rate`
     // or `set_max_block_size` without having to predict the argument it does not

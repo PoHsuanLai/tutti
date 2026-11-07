@@ -417,7 +417,7 @@ fn a_listing_that_does_not_answer_is_reported_slow_once() {
         .unwrap(),
     );
     let base = t0();
-    assert_eq!(listing.poll(base).1, false);
+    assert!(!listing.poll(base).1);
     assert!(listing.poll(base).0.is_none());
     let (early, over) = listing.poll(base + LISTING_WARNING - Duration::from_millis(1));
     assert!(early.is_none() && !over);

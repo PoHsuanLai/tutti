@@ -8,8 +8,9 @@ Level metering for the Tutti audio engine.
   thread.
 - `AudioTap`: hands the callback's output to an analysis consumer through a
   lock-free ring (`AudioTap::open`, `TapCons`).
-- `LoadMeter` / `LoadReading`: how much of each block's time budget the render
-  used, and the blocks over budget.
+- `LoadRecorder` / `LoadMeter` / `LoadReading`: how much of each block's time budget the render
+  used, and the blocks over budget. The audio thread holds the recorder; any
+  thread reads through `LoadMeter`.
 - `meter_output` and `MeteringContext`: what the audio callback runs on one
   block to feed the three.
 

@@ -61,7 +61,7 @@ fn the_session_reads_the_load_its_callback_measures() {
     let (session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
-    let meter = std::sync::Arc::clone(session.load_meter().expect("a device's engine"));
+    let meter = session.load_meter().expect("a device's engine").clone();
     for _ in 0..3 {
         stream.render_block(64).expect("the stream is open");
     }
@@ -664,4 +664,36 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     let events = poll(&mut session, base, 700);
     assert!(events.iter().any(|e| matches!(e, SessionEvent::DeviceFault(f) if f.kind == tutti_cpal::StreamFaultKind::Disconnected)), "{events:?}");
     assert_eq!(wants(&events), [DeviceSelector::Default]);
+}
+
+/// **`render_worker_start` reaches the live pool**: with four participants
+/// the hook runs once for each of the three helpers, with indices 1..=3.
+///
+/// Mutation (run): `Graph::engine` passing `None` to `render_pool` instead of
+/// its `render_worker_start`, or `parts` not handing the builder's hook to
+/// the graph: no index is seen, so it fails.
+#[test]
+fn the_render_worker_start_hook_runs_once_per_live_helper() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let hook = Arc::clone(&seen);
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (_session, _device) = Session::builder()
+        .render_workers(4)
+        .render_worker_start(move |i| hook.lock().unwrap().push(i))
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device");
+    assert_eq!(indices_after(&seen, 3), [1, 2, 3]);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(seen.lock().unwrap().len(), 3, "once per helper");
+}
+
+/// Wait (bounded) until `seen` holds `n` indices, then return them sorted.
+fn indices_after(seen: &Mutex<Vec<usize>>, n: usize) -> Vec<usize> {
+    let t = Instant::now();
+    while seen.lock().unwrap().len() < n && t.elapsed() < Duration::from_secs(5) {
+        std::thread::yield_now();
+    }
+    let mut v = seen.lock().unwrap().clone();
+    v.sort_unstable();
+    v
 }

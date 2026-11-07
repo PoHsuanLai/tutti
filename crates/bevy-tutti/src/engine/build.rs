@@ -117,6 +117,9 @@ pub(crate) fn build_with(
         .inputs(plugin.inputs)
         .outputs_floor(plugin.outputs)
         .render_workers(plugin.render_workers);
+    if let Some(start) = plugin.render_worker_start.clone() {
+        builder = builder.render_worker_start(move |i| start.call(i));
+    }
     #[cfg(feature = "plugin")]
     {
         builder = builder.plugin_recovery(plugin.plugin_recovery);
@@ -297,5 +300,48 @@ mod tests {
         stream.render_block(64).expect("the stream is open");
         stream.render_block(64).expect("the stream is open");
         assert_eq!(meter.take().blocks, 2);
+    }
+
+    /// **The plugin's `render_worker_start` reaches the session's pool**: the
+    /// hook runs once for each of three helpers, indices 1..=3.
+    ///
+    /// Mutation (run): `build_with` not passing the field to the builder: no
+    /// index is seen, so it fails.
+    #[test]
+    fn the_plugins_render_worker_start_reaches_the_helpers() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        use tutti_cpal::{ManualStreamDriver, OutputSpec};
+        use tutti_types::SampleRate;
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let hook = Arc::clone(&seen);
+        let plugin = crate::TuttiPlugin {
+            render_workers: 4,
+            render_worker_start: Some(tutti_session::RenderWorkerStart::new(move |i| {
+                hook.lock().unwrap().push(i);
+            })),
+            ..Default::default()
+        };
+        let mut app = bevy_app::App::new();
+        let (driver, _stream) = ManualStreamDriver::new();
+        super::build_on(&plugin, &mut app, |builder| {
+            builder.build_device_on(
+                OutputSpec::new(
+                    SampleRate(48_000.0),
+                    ChannelLayout::STEREO,
+                    tutti_cpal::cpal::SampleFormat::F32,
+                ),
+                driver,
+            )
+        })
+        .expect("builds with no device");
+        let t = Instant::now();
+        while seen.lock().unwrap().len() < 3 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::yield_now();
+        }
+        let mut v = seen.lock().unwrap().clone();
+        v.sort_unstable();
+        assert_eq!(v, [1, 2, 3]);
     }
 }

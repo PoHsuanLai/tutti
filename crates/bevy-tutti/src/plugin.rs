@@ -134,6 +134,11 @@ pub struct TuttiPlugin {
     /// one per core. The render is the same sample for sample whatever the
     /// count.
     pub render_workers: usize,
+    /// Run by each render helper on its own thread before it takes work
+    /// ([`SessionBuilder::render_worker_start`](tutti_session::SessionBuilder::render_worker_start)):
+    /// where a host that promotes its audio callback promotes the helpers to
+    /// match. `None` by default.
+    pub render_worker_start: Option<tutti_session::RenderWorkerStart>,
     /// What a hosted plugin's death or hang does
     /// ([`tutti_session::RecoveryPolicy`]). `Some` by default: the plugin is
     /// reloaded at its entity with its last snapshot, and the entity is told
@@ -157,6 +162,7 @@ impl Default for TuttiPlugin {
             outputs: 2,
             disabled: false,
             render_workers: 1,
+            render_worker_start: None,
             #[cfg(feature = "plugin")]
             plugin_recovery: Some(tutti_session::RecoveryPolicy::default()),
         }

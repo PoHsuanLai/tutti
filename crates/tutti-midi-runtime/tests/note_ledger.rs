@@ -987,6 +987,33 @@ fn an_untagged_off_settles_the_row_of_a_refused_on() {
     assert_eq!(exec.lost_event_count(), 46);
 }
 
+/// An untagged note-on takes a key whose note-off the port refuses (the key is
+/// held, owed and marked refused), and the sender's off for it arrives in the
+/// same full block: it is refused too, and ends the sender's note on the key,
+/// so the mark goes. Paid in the next block, the row is gone, and a table of
+/// one key has room for another note.
+///
+/// Mutation (run): the untagged off of a held key leaving the mark → the row
+/// outlives its owed off, note 61 is withheld → fails.
+#[test]
+fn an_untagged_off_of_a_held_key_settles_a_refused_on_too() {
+    let script = vec![
+        vec![ump_on(60)],
+        (0..8)
+            .map(ump_cc)
+            .chain((100..109).map(ump_off))
+            .chain([ump_on(60), ump_off(60)])
+            .collect(),
+        vec![ump_on(61)],
+    ];
+    let relay = Relay {
+        ledger: Some(NoteLedger::new(1)),
+        capacity: 8,
+    };
+    let (tally, _) = through(script, relay, 5);
+    assert_eq!(tally.lock().unwrap().ons, 2, "notes 60 and 61");
+}
+
 // ---------------------------------------------------------------------------
 // The release ticket.
 // ---------------------------------------------------------------------------
@@ -1081,10 +1108,15 @@ fn spread_clip(r: &mut Rng) -> (Vec<TimedMidiEvent>, usize, usize) {
     let mut events = Vec::new();
     let notes = 200 + r.below(500);
     for _ in 0..notes {
-        let key = (r.below(3) as u8, r.below(4) as u8, r.below(24) as u8);
+        let key = (r.below(4) as u8, r.below(4) as u8, r.below(24) as u8);
         let next = free.entry(key).or_insert(0u64);
         let start = (*next).max(bunches[r.below(4) as usize]);
-        let end = start + 1 + r.below(300);
+        let end = if r.below(2) == 0 {
+            // Many notes end on one frame, past the port's room for offs.
+            start.max([100u64, 110, 600][r.below(3) as usize]) + 1
+        } else {
+            start + 1 + r.below(300)
+        };
         *next = end + 1;
         let (g, c, n) = (MidiGroup::of(key.0), MidiChannel::of(key.1), key.2);
         events.push(at(start, MidiEvent::note_on(g, c, n, 0xFFFF)));
@@ -1143,7 +1175,7 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
 /// mutations of the two tests above → the totals differ → fails.
 #[test]
 fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
-    let mut refused = 0;
+    let (mut refused, mut recovered) = (0, 0);
     for seed in 1..=300u64 {
         let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let (first, ons1, ccs1) = spread_clip(&mut r);
@@ -1179,6 +1211,8 @@ fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
             "seed {seed}"
         );
         refused += exec.dropped_event_count();
+        recovered += exec.dropped_event_count() - exec.lost_event_count();
     }
     assert!(refused > 0, "no event was ever refused");
+    assert!(recovered > 0, "no refused off was ever given back");
 }

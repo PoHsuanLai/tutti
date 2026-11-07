@@ -849,7 +849,7 @@ fn play_layout(from: f64, region: (f64, f64), mtc: bool, lens: &[usize]) -> Vec<
 /// Block lengths covering `total` frames in blocks of `size`, the last short.
 fn fixed(total: usize, size: usize) -> Vec<usize> {
     let mut lens = vec![size; total / size];
-    if total % size != 0 {
+    if !total.is_multiple_of(size) {
         lens.push(total % size);
     }
     lens

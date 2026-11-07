@@ -200,7 +200,8 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
 with every format feature. It excludes the five members that cannot
 cross-compile: `ogg_next_sys` (via `tutti-export`) and `tutti-vst3-host`'s
 `conformance` probe need real Windows C headers. CI's `clippy (windows)` job
-runs everything natively on a `windows-latest` runner.
+runs everything natively on a `windows-latest` runner. It only lints: no CI job
+runs the tests on Windows.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
 type those constants as `c_uint` on unix and `c_int` on Windows, so
 `kFoo as i32` passes Linux clippy and fails `unnecessary_cast` on Windows.

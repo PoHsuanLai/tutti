@@ -589,8 +589,10 @@ impl ClapEvent {
         let ch = channel.get();
         let clap_channel = i16::from(ch);
         match voice {
-            // CLAP note events carry no attribute, and a reserved attribute type
-            // is ignored (M2-104 section 7.1.1): the note still plays.
+            // CLAP note events carry no attribute, so the note plays whatever its
+            // attribute type. M2-104 Table 8 (section 7.4.14) marks types 0x04 to
+            // 0xFF reserved and tells senders not to use them (section 2.1.3); it
+            // gives a receiver no rule for them.
             Voice2::NoteOn {
                 note,
                 velocity: 0,
@@ -2121,8 +2123,9 @@ mod tests {
         assert_eq!(e.velocity, 0.0);
     }
 
-    /// **A reserved attribute type is ignored and the note still plays**
-    /// (M2-104 section 7.1.1), at its velocity.
+    /// **A reserved attribute type does not stop the note** (M2-104 Table 8,
+    /// section 7.4.14: reserved for senders, no receiver rule), which plays at
+    /// its velocity.
     ///
     /// Mutation (run): the `Voice2::NoteOn` arms returning `None` when the
     /// attribute is `Attribute::Reserved` → the note is lost → fails.

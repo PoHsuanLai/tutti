@@ -2773,9 +2773,9 @@ fn per_note_management_flags_are_read_from_the_spec_bits() {
     );
 }
 
-/// A note with a reserved attribute type (4 and up) sounds and ends: a
-/// receiver ignores a reserved value (M2-104 §7.1.1). `midi2` refused the
-/// packet, so the note was dropped and an off for it left the voice stuck.
+/// A note with a reserved attribute type (4 and up) sounds and ends: Table 8
+/// (M2-104 §7.4.14) reserves the types for senders and gives a receiver no rule
+/// for them, so the attribute is not read. `midi2` refused the packet, so the note was dropped and an off for it left the voice stuck.
 /// Mutation: ignoring `Attribute::Reserved` on the Note On, then on the Note
 /// Off, each failed here.
 #[test]

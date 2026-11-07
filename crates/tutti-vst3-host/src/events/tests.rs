@@ -933,8 +933,8 @@ mod message {
         assert_eq!((off.channel, off.pitch, off.velocity), (2, 60, 0.0));
     }
 
-    /// A reserved attribute type is ignored (M2-104 §7.1.1) and the note still
-    /// plays; a Pitch attribute is read but not applied, so the Note On's
+    /// A reserved attribute type (M2-104 Table 8, §7.4.14: reserved for senders,
+    /// no receiver rule) does not stop the note, which plays; a Pitch attribute is read but not applied, so the Note On's
     /// `tuning` stays 0.
     ///
     /// Mutation (run): `voice2` returning `None` when the attribute is
@@ -1419,13 +1419,11 @@ mod message {
     /// **A plugin's malformed MIDI bytes are dropped without allocating.** A
     /// stray `0xF7`, a truncated Note On, an undefined status, a data byte with
     /// its top bit set each read as nothing, inside
-    /// `assert_no_alloc`; a good message beside them still reads. With the
-    /// `midly` parse behind `from_midi1_bytes`, `[0xF7, 1, 2]` and `[0x90, 60]`
-    /// aborted a debug build here.
+    /// `assert_no_alloc`; a good message beside them still reads.
     ///
-    /// Mutation (run): `Midi1Parser::message` replaced by `midly`'s
-    /// `LiveEvent::parse(..).ok()` in `decode` → the process aborts on
-    /// `[0xF7, 1, 2]`.
+    /// Mutation (run): `Midi1Parser::message` in `decode` replaced by
+    /// `from_midi1_bytes` over `midly`'s `LiveEvent::parse` → the process
+    /// aborts on `[0xF7, 1, 2]`.
     #[test]
     fn a_stray_status_from_a_plugin_allocates_nothing() {
         let hostile: Vec<Event> = [

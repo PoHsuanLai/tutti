@@ -116,6 +116,11 @@ impl MidiEvent {
     #[must_use]
     pub fn to_midi1_messages(&self) -> Midi1Messages {
         let mut out = Midi1Messages::default();
+        // Only System (1), MIDI 1.0 (2) and MIDI 2.0 (4) channel voice packets
+        // have a MIDI 1.0 form; the others never reach the `midi2` decoder.
+        if !matches!(self.data[0] >> 28, 0x1 | 0x2 | 0x4) {
+            return out;
+        }
         if let Some((channel, bank, program)) = self.program_change_bank() {
             out.push([0xB0 | channel, 0, ((bank >> 7) & 0x7F) as u8], 3);
             out.push([0xB0 | channel, 32, (bank & 0x7F) as u8], 3);

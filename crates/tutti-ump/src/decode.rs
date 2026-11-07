@@ -6,8 +6,8 @@
 //! need, and a test ties them to this decoder.)
 //!
 //! Reserved bits (the `r` bits and fields marked reserved) are ignored, so a
-//! sender that sets them is read as if it had not (§7.1.1: a receiver ignores
-//! reserved values and bits it does not know). A reserved *value* in an
+//! sender that sets them is read as if it had not (§2.1.3: a receiver does not
+//! depend on reserved bits being zero). A reserved *value* in an
 //! enumerated or bounded field (a direction of `0b00`, a protocol of `0x03`, a
 //! count past its maximum, an attribute type of 4 and up) is kept raw in the
 //! field, so the message stays readable and re-encodes exactly. [`Unknown`] is

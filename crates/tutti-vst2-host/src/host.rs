@@ -846,11 +846,10 @@ mod tests {
     /// VST2 MIDI event is a fixed three-byte field, so a stray `0xF7`, an
     /// undefined status and a data byte with its top bit set are what a plugin
     /// can get wrong; none reaches the queue or counts as a drop, a valid
-    /// message beside them does, and nothing allocates. With the `midly` parse
-    /// behind `from_midi1_bytes`, `[0xF7, 1, 2]` aborted a debug build here.
+    /// message beside them does, and nothing allocates.
     ///
-    /// Mutation (run): `from_midi1_bytes` replaced by `midly`'s
-    /// `LiveEvent::parse` → the process aborts on the first message.
+    /// Mutation (run): `from_midi1_bytes` parsing with `midly`'s
+    /// `LiveEvent::parse` → the process aborts on `[0xF7, 1, 2]`.
     #[test]
     fn a_stray_status_from_a_plugin_allocates_nothing() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);

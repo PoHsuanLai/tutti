@@ -69,6 +69,13 @@ impl Midi1Bytes {
 }
 
 impl U14 {
+    /// The value whose upper seven bits are `msb` and lower seven `lsb`: the
+    /// inverse of [`msb`](Self::msb) and [`lsb`](Self::lsb).
+    #[must_use]
+    pub const fn from_halves(msb: U7, lsb: U7) -> Self {
+        Self::wire((msb.get() as u16) << 7 | lsb.get() as u16)
+    }
+
     /// The upper seven bits: the second data byte of a pitch bend or a song
     /// position.
     #[must_use]
@@ -428,7 +435,7 @@ const fn data_bytes(status: u8) -> u8 {
 /// one-byte message.
 fn short(group: MidiGroup, status: u8, d1: u8, d2: u8) -> Option<Message> {
     let u7 = U7::new;
-    let u14 = || U14::new(u16::from(d1) | u16::from(d2) << 7);
+    let u14 = || Some(U14::from_halves(u7(d2)?, u7(d1)?));
     if status >= 0xF0 {
         let system = match status {
             0xF1 => System::TimeCode(u7(d1)?),

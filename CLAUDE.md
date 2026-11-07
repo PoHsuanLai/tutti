@@ -237,8 +237,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
-                 `frame` and `Midi1Parser`, which hold every status byte; no
-                 dependencies but `bytemuck` (and optional `serde`)
+                 `frame` and `Midi1Parser`, the status bytes the hosts use
+                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
+                 until VST2 and AU move); no dependencies but `bytemuck` (and
+                 optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone

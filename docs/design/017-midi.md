@@ -568,9 +568,10 @@ a behaviour change.
    MIDI 1.0 bytes writes them with `Voice1::bytes`, `System::bytes` and
    `tutti_midi_protocol::midi1(Message)` (a Program Change with a bank is three
    messages), and reads a fixed field with `Midi1Parser::message`; the CLAP and
-   VST3 hosts do. Behaviour change: a Note On or Note Off with a reserved attribute
-   type reaches a MIDI 1.0 consumer as bytes, where `to_midi1_messages` dropped it
-   (MIDI 1.0 has no attribute).
+   VST3 hosts do. `midi1` sends bytes for a Note On or Note Off with a reserved
+   attribute type (MIDI 1.0 has no attribute; Table 8 gives a receiver no rule for
+   it), where `to_midi1_messages` drops it. Its only caller, the VST2 host, still
+   does until it moves to `Message`; no shipped path changes.
 3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.

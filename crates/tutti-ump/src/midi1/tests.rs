@@ -148,6 +148,18 @@ fn u14_halves() {
     assert_eq!((U14::MAX.msb().get(), U14::MAX.lsb().get()), (0x7F, 0x7F));
 }
 
+/// `from_halves` is the inverse of `msb` and `lsb` for every 14-bit value.
+///
+/// Mutation (run): the halves swapped in `from_halves` -> fails.
+#[test]
+fn u14_from_halves_inverts_msb_and_lsb() {
+    for raw in 0..=U14::MAX.get() {
+        let v = U14::new(raw).unwrap();
+        assert_eq!(U14::from_halves(v.msb(), v.lsb()), v);
+    }
+    assert_eq!(U14::from_halves(u7(1), u7(2)).get(), 0x82);
+}
+
 // ---- running status and real-time bytes ----------------------------------------
 
 /// Mutation (run): a channel message closing the state once complete -> the
@@ -220,11 +232,38 @@ fn note_on_with_velocity_zero_stays_a_note_on() {
     assert_eq!(parse(&[0x90, 60, 0]), [on(0, 60, 0)]);
 }
 
+/// Every kind of message the parser makes carries the parser's group, not the
+/// first group: a channel message, each system common and real-time message,
+/// and each SysEx packet status; so does `message`.
+///
+/// Mutation (run): the group of a Tune Request, of a SysEx packet, of a real-time
+/// message and of a short message each replaced by `MidiGroup::FIRST` -> fails.
 #[test]
 fn the_group_is_the_parsers() {
     let g = MidiGroup::of(5);
-    let m = Midi1Parser::new(g).feed_all(&[0xFA]).next().unwrap();
-    assert_eq!(m, Message::System(g, System::Start));
+    let mut wire = vec![0x93, 60, 100, 0xF1, 0x20, 0xF2, 1, 2, 0xF3, 4, 0xF6];
+    wire.extend([0xF8, 0xFA, 0xFB, 0xFC, 0xFE, 0xFF]);
+    wire.extend([0xF0, 1, 0xF7]);
+    wire.extend((0xF0..=0xF0).chain(1..=13).chain([0xF7]));
+    let messages: Vec<Message> = Midi1Parser::new(g).feed_all(&wire).collect();
+    let groups: Vec<MidiGroup> = messages
+        .iter()
+        .map(|m| match *m {
+            Message::Midi1(a, _) => a.group,
+            Message::System(group, _) | Message::Sysex7(group, _) => group,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    // 1 channel, 3 common with data, tune request, 6 real-time, 1 + 3 SysEx.
+    assert_eq!(groups.len(), 1 + 3 + 1 + 6 + 1 + 3);
+    assert!(groups.iter().all(|&group| group == g), "{groups:?}");
+    for bytes in [&[0x90u8, 60, 100][..], &[0xF3, 4], &[0xF6], &[0xFA]] {
+        let message = Midi1Parser::message(g, bytes).expect("a message");
+        let (Message::Midi1(Address { group, .. }, _) | Message::System(group, _)) = message else {
+            panic!("{message:?}");
+        };
+        assert_eq!(group, g, "{bytes:02X?}");
+    }
 }
 
 // ---- SysEx -----------------------------------------------------------------------
@@ -413,6 +452,27 @@ fn message_reads_one_message_and_ignores_the_padding() {
     assert_eq!(read(&[0x90, 60, 100, 7]), Some(on(0, 60, 100)));
     assert_eq!(read(&[0xF8, 1, 2]), Some(system(System::TimingClock)));
     assert_eq!(read(&[0xF6, 0x90, 0]), Some(system(System::TuneRequest)));
+}
+
+/// A system common message is as long as its status says: `0xF1` and `0xF3`
+/// take one data byte, `0xF2` two.
+///
+/// Mutation (run): `0xF3` counted as three bytes in `message` -> fails.
+#[test]
+fn message_takes_the_length_the_status_gives() {
+    let read = |bytes: &[u8]| Midi1Parser::message(MidiGroup::FIRST, bytes);
+    assert_eq!(read(&[0xF3, 4]), Some(system(System::SongSelect(u7(4)))));
+    assert_eq!(read(&[0xF3, 4, 9]), Some(system(System::SongSelect(u7(4)))));
+    assert_eq!(
+        read(&[0xF1, 0x35]),
+        Some(system(System::TimeCode(u7(0x35))))
+    );
+    assert_eq!(
+        read(&[0xF2, 1, 2]),
+        Some(system(System::SongPosition(U14::new(0x101).unwrap())))
+    );
+    assert_eq!(read(&[0xF2, 1]), None);
+    assert_eq!(read(&[0xF3]), None);
 }
 
 #[test]

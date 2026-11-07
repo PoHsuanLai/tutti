@@ -146,6 +146,12 @@ just test-all                      # both
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
   `dark features` job and `just test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
+  **`tutti-midi-hardware --features sequencer-tests` is the exception:** it runs
+  `Devices` against the real ALSA sequencer, which needs the kernel's `snd-seq`
+  module and a readable `/dev/snd/seq`. CI's runner kernel (Azure) ships
+  neither the module nor a package for it, so CI only lints the feature and the
+  suite runs locally (`just test-features`). It fails, never skips, where the
+  sequencer is missing. Run it before changing `backend/alsa`.
 - **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
   on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
   skipped with a printed note on any other libm or architecture (nextest shows
@@ -247,6 +253,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone
+  tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
+                 the pure `DeviceTable`; no dependencies, no OS, no thread
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
@@ -283,7 +291,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
@@ -321,6 +329,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
   calls it at the input edge and consumers drop theirs.
+- `tutti-midi-device` depends on no workspace crate, keeps every module private
+  (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
+  is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
+  feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
+  threads and the OS.
 - `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
   private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
   CI runs the per-module path gate on each), are `publish = false`,

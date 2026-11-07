@@ -21,20 +21,16 @@ fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
     // The audio side's drain: what a `MidiInputNode` would own.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
-    let io = MidiSession::new(pm.clone());
+    let io = MidiSession::new(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
     let Some(iac_input) = inputs.iter().find(|d| d.name.contains("IAC")) else {
         eprintln!("ERROR: IAC Driver not found. Enable it in Audio MIDI Setup.");
         std::process::exit(1);
     };
-    println!(
-        "Found IAC input: [{}] {}",
-        iac_input.id.raw(),
-        iac_input.name
-    );
+    println!("Found IAC input: [{}] {}", iac_input.id, iac_input.name);
 
-    io.connect_input(iac_input.id).unwrap();
+    io.connect_input(&iac_input.id).unwrap();
     thread::sleep(Duration::from_millis(200));
     assert!(
         io.is_any_input_connected(),
@@ -152,7 +148,7 @@ fn main() {
         },
     );
 
-    io.disconnect_input(iac_input.id);
+    io.disconnect_input(&iac_input.id);
     io.disconnect_output();
 
     println!("\nAll tests complete!");

@@ -10,6 +10,7 @@ use tutti_plugin_types::{
     AudioBufferMut, Edit, EditDrain, Normalized, ParamId, PluginError, PluginIo, PluginResult,
     Processor, RtMidiEvents,
 };
+use tutti_rt::DrainBeat;
 use tutti_types::ChannelLayout;
 
 use crate::events::{InputEvents, Stager, drain_midi};
@@ -180,6 +181,8 @@ pub struct Vst3Processor<T: Vst3Sample> {
     /// the plugin does not implement the interface.
     context_requirements: Option<u32>,
     drain: EditDrain,
+    /// Counts the drains, for the Controller's record of what a block has taken.
+    beat: DrainBeat,
     /// The writes taken for the block in hand, latest per parameter, and what
     /// a rejoin carried over from the last activation before the first block.
     /// Reserved for the ring's room, so no block grows it.
@@ -209,6 +212,7 @@ pub(super) struct ProcessorParts {
     pub audio_side: AudioSide,
     pub context_requirements: Option<u32>,
     pub drain: EditDrain,
+    pub beat: DrainBeat,
     pub carried: Vec<(u32, Normalized)>,
 }
 
@@ -220,6 +224,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             audio_side,
             context_requirements,
             drain,
+            beat,
             mut carried,
         } = parts;
         carried.reserve(EDIT_CAPACITY);
@@ -230,6 +235,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
             audio_side,
             context_requirements,
             drain,
+            beat,
             pending: carried,
             edits_dropped: 0,
             processing: true,
@@ -348,6 +354,7 @@ impl<T: Vst3Sample> Vst3Processor<T> {
         // The Controller's writes since the last block, put ahead of this
         // block's automation below, so where both set one parameter the
         // automation has the last word.
+        self.beat.begin();
         self.drain_ring();
 
         // MIDI learn (IMidiLearn): when armed, capture each incoming controller

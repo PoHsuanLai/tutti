@@ -7,10 +7,10 @@ use std::time::Instant;
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
 use crate::InputProducerHandle;
-use crate::capability::EndpointId;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
 use tutti_alsa_ump_sys as sys;
+use tutti_midi_device::EndpointId;
 use tutti_midi_types::ump::split_ump_stream;
 
 /// How long the pump sleeps when the queue is empty.
@@ -64,7 +64,10 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let seq = SeqClient::open("tutti-in", true)?;
     let port = seq.open_port(
         "tutti-in",
-        sys::SND_SEQ_PORT_CAP_WRITE | sys::SND_SEQ_PORT_CAP_SUBS_WRITE,
+        // Not subscribable by others: the engine's pump is not a device, and a
+        // port nobody else can connect to is never listed as one. This client
+        // makes its own subscription below, which needs no such capability.
+        sys::SND_SEQ_PORT_CAP_WRITE,
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
     )?;
 

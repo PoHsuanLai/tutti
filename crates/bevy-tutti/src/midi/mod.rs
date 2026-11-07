@@ -91,9 +91,11 @@ pub use inbound::route::{
 
 pub use hardware::clock_out::{ClockMasterRes, ClockOutPlugin, pump_clock_out_system};
 #[cfg(feature = "midi-hardware")]
+pub(crate) use hardware::device::translate as translate_midi_device;
+#[cfg(feature = "midi-hardware")]
 pub use hardware::device::{
     ConnectMidiDevice, ConnectMidiOutput, DisconnectMidiDevice, DisconnectMidiOutput,
-    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiDirection, MidiIoRes,
+    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiDirection, MidiHotplug, MidiIoRes,
     midi_device_connect_system, midi_device_poll_system,
 };
 pub use hardware::hardware_out::JrStamperRes;

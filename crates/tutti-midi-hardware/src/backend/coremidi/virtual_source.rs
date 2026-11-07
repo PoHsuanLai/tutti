@@ -30,12 +30,14 @@ use crate::error::{Error, Result};
 /// The process-wide raw client every source's endpoint belongs to.
 ///
 /// The safe wrapper hides its `MIDIClientRef`, and `MIDISourceCreateWithProtocol`
-/// needs the raw one, so this module keeps a client of its own (the second and
-/// last one in the process, beside [`shared_client`](super::shared_client)).
+/// needs the raw one, so this module keeps a client of its own (one of the two this
+/// backend creates, beside [`shared_client`](super::shared_client); both start the
+/// device watch's client first, see [`hub_first`](super::hub_first)).
 /// It is never disposed: Apple warns that disposing the last client may make the
 /// MIDI server exit and fail every later client creation, and coremidi 0.9 stopped
 /// disposing its own for the same reason. A failed creation is not cached.
 fn shared_raw_client() -> std::result::Result<MIDIClientRef, i32> {
+    super::hub_first();
     static CLIENT: Mutex<Option<MIDIClientRef>> = Mutex::new(None);
     let mut slot = CLIENT
         .lock()

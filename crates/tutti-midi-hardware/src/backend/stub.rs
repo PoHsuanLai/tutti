@@ -20,9 +20,11 @@
 //! needs logic, that is a signal to reconsider rather than to grow it.**
 
 use crate::InputProducerHandle;
-use crate::capability::{EndpointId, EndpointInfo};
-use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::capability::EndpointInfo;
+use crate::devices::ChangeSink;
+use crate::endpoints::{InputConnection, MidiEndpoints, NoWatch, Watch};
 use crate::error::{Error, Result};
+use tutti_midi_device::EndpointId;
 use tutti_midi_types::MidiOut;
 
 /// Why every call here fails, in the error a caller will surface.
@@ -41,6 +43,10 @@ impl StubEndpoints {
 }
 
 impl MidiEndpoints for StubEndpoints {
+    fn watch(&self, _sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        Ok(Box::new(NoWatch))
+    }
+
     fn inputs(&self) -> Vec<EndpointInfo> {
         Vec::new()
     }

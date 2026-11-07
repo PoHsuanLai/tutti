@@ -99,6 +99,8 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
+      # And `tutti-midi-device`, which keeps its modules private.
+      - run: scripts/check-canonical-paths.sh tutti_midi_device id table
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
@@ -109,7 +111,7 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -264,6 +266,13 @@ jobs:
       #                         `export,modulation` so the render mode and the
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
+      #                         and its hot-plug tests
+      #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
+      #                         only locally (`just test-features`): the suite
+      #                         needs the kernel's `snd-seq` module, which the
+      #                         runner's Azure kernel does not ship (no
+      #                         `linux-modules-extra` package either). It fails,
+      #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
@@ -294,6 +303,7 @@ jobs:
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
@@ -798,3 +808,6 @@ jobs:
       # slot), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test request_word_loom
       - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom
+      # `drain_clock` (a write leaves the record only after a drain that must
+      # have seen it has begun), against the shipped code.
+      - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture

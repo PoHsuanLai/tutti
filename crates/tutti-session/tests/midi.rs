@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use std::time::{Duration, Instant};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
+#[cfg(feature = "midi-hardware")]
+use tutti_midi_hardware::{Direction, EndpointId};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_transport::MotionEvent;
@@ -532,6 +534,172 @@ fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
 
     s.update();
     assert_eq!(ports.retired_sets(), 0, "the update freed it");
+}
+
+/// A session over a fake OS with no devices, and the handle that plugs some.
+#[cfg(feature = "midi-hardware")]
+fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounters) {
+    let (backend, fake) =
+        tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
+    let s = Session::builder()
+        .midi_hardware_over(backend)
+        .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
+        .expect("builds");
+    (s, fake)
+}
+
+/// The `MidiDevice` events of an update, as `(kind, device name)`.
+#[cfg(feature = "midi-hardware")]
+fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
+    use tutti_midi_hardware::DeviceEvent;
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::MidiDevice(DeviceEvent::Added(d)) => Some(("added", d.name.clone())),
+            SessionEvent::MidiDevice(DeviceEvent::Removed(d)) => Some(("removed", d.name.clone())),
+            SessionEvent::MidiDevice(DeviceEvent::Changed(d)) => Some(("changed", d.name.clone())),
+            SessionEvent::MidiInputLost(d) => Some(("input lost", d.name.clone())),
+            SessionEvent::MidiOutputLost(d) => Some(("output lost", d.name.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "midi-hardware")]
+fn plug(
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: u64,
+    name: &str,
+    d: Direction,
+) {
+    fake.plug(tutti_midi_hardware::test_support::endpoint(raw, name), d);
+}
+
+// Mutation record for the hot-plug tests, each seen to fail, then restored:
+// - `midi_input_phase` not polling the devices: all four fail;
+// - `midi_input_phase` not closing a held input on `Removed`: the held-input
+//   test fails (the port and the connection stay, the audit's defect);
+// - `midi_input_phase` closing the output on any `Removed`:
+//   `another_devices_removal_leaves_a_held_input_open` fails;
+// - `midi_input_phase` leaving the output open: the output test fails.
+
+/// **A device that comes and goes reaches `Session::update` as an event**,
+/// in the order the OS reported, on a session with no hardware and a fake OS.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_device_that_comes_and_goes_is_a_session_event() {
+    let (mut s, fake) = hot_plug_session();
+    assert!(device_events(&s.update()).is_empty(), "nothing yet");
+
+    plug(&fake, 1, "Keys", Direction::Input);
+    assert_eq!(device_events(&s.update()), [("added", "Keys".to_string())]);
+    assert!(device_events(&s.update()).is_empty(), "reported once");
+
+    fake.unplug(EndpointId::from_raw(1));
+    assert_eq!(
+        device_events(&s.update()),
+        [("removed", "Keys".to_string())],
+        "unheld, so nothing is retired"
+    );
+}
+
+/// **A held input whose device vanishes is retired** (audit #4): before this
+/// the device stayed listed as connected and nothing fired. Now the update
+/// reports the removal and then the lost input, the connection is closed and
+/// its port is gone.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_held_input_that_vanishes_is_retired_and_reported() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", Direction::Input);
+    s.update();
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input_by_name("keys").expect("connects");
+    assert_eq!(io.connected_input_names(), ["Keys"]);
+    assert_eq!(io.ports().list_input_ports().len(), 1);
+
+    fake.unplug(EndpointId::from_raw(1));
+    assert_eq!(
+        device_events(&s.update()),
+        [
+            ("removed", "Keys".to_string()),
+            ("input lost", "Keys".to_string())
+        ]
+    );
+    assert!(
+        !io.is_any_input_connected(),
+        "no longer listed as connected"
+    );
+    assert!(io.connected_input_names().is_empty());
+    assert!(io.ports().list_input_ports().is_empty(), "the port is gone");
+}
+
+/// **A held output whose device vanishes is closed and reported.**
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_held_output_that_vanishes_is_closed_and_reported() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 10, "Synth", Direction::Output);
+    s.update();
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    io.connect_output_by_name("synth").expect("connects");
+    assert!(io.is_output_connected());
+
+    fake.unplug(EndpointId::from_raw(10));
+    assert_eq!(
+        device_events(&s.update()),
+        [
+            ("removed", "Synth".to_string()),
+            ("output lost", "Synth".to_string())
+        ]
+    );
+    assert!(!io.is_output_connected());
+}
+
+/// **A watch that dies is reported once**, with its reason: the list is frozen
+/// and the host is told so instead of seeing a quiet table. Mutation:
+/// `midi_input_phase` not asking `watch_failure` → no event; not remembering
+/// that it reported → the event repeats every update.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_dead_device_watch_is_reported_once() {
+    let (mut s, fake) = hot_plug_session();
+    let failed = |events: &[SessionEvent]| {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::MidiWatchFailed(why) => Some(why.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(failed(&s.update()).is_empty());
+    fake.fail_watch("the sequencer went away");
+    assert_eq!(failed(&s.update()), ["the sequencer went away"]);
+    assert!(failed(&s.update()).is_empty(), "once");
+}
+
+/// **Another device's removal leaves a held input and output alone.**
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn another_devices_removal_leaves_a_held_input_open() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", Direction::Input);
+    plug(&fake, 2, "Pads", Direction::Input);
+    plug(&fake, 10, "Synth", Direction::Output);
+    s.update();
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    io.connect_input_by_name("keys").expect("connects");
+    io.connect_output_by_name("synth").expect("connects");
+
+    fake.unplug(EndpointId::from_raw(2));
+    assert_eq!(
+        device_events(&s.update()),
+        [("removed", "Pads".to_string())]
+    );
+    assert_eq!(io.connected_input_names(), ["Keys"]);
+    assert_eq!(io.ports().list_input_ports().len(), 1);
+    assert!(io.is_output_connected());
 }
 
 /// **The feeds are partial, as audio's declarations are: an edge a host

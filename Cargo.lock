@@ -4420,6 +4420,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-midi-device"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "tutti-midi-file"
 version = "0.0.1"
 dependencies = [
@@ -4440,11 +4447,13 @@ dependencies = [
  "core-foundation 0.10.1",
  "coremidi",
  "coremidi-sys",
+ "libc",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
  "tutti-alsa-ump-sys",
  "tutti-graph",
+ "tutti-midi-device",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",

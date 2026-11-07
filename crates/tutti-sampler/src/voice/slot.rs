@@ -15,6 +15,7 @@ use crate::stretch;
 
 use super::clock::BlockClock;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
+use tutti_graph::CrossfadeCurve;
 use tutti_types::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, StretchFactor};
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
@@ -502,16 +503,48 @@ impl PlaybackSlot {
                 // `MemorySource::placed_positions`. Stepping by the gate's
                 // rate read a 24 kHz file on a 48 kHz clock one file frame per
                 // output frame, then jumped back at every block.
-                let sounds = sampler.placed_positions(clock, range, ReadRate::UNITY, positions);
+                let sounds =
+                    sampler.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
+                // A loop wrap's crossfade in the piece: the voice's tail past
+                // the loop's end sounds under the loop's start (below).
+                let fades = clock.fades();
                 // With no position, every frame reads +0.0, gained to ±0.0
                 // by a finite gain (an infinite or NaN one makes NaNs, which
                 // are read).
-                if !sounds && gain.is_finite() {
+                if !sounds && gain.is_finite() && !fades {
                     return Piece::Silent;
                 }
                 sampler.read_placed_lanes(positions, direction, out.lanes_mut(), n, gather);
                 for lane in out.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
+                }
+                if fades && let Some(span) = sampler.placed_tail(clock, range.clone(), positions) {
+                    // Only the frames the tail sounds over are read.
+                    let mut tail = raw
+                        .lanes_mut()
+                        .each_mut()
+                        .map(|lane| lane.get_mut(span.clone()).unwrap_or_default());
+                    sampler.read_placed_lanes(
+                        &positions[span.clone()],
+                        direction,
+                        &mut tail,
+                        n,
+                        gather,
+                    );
+                    for lane in tail.iter_mut().take(n) {
+                        scale(lane, gain);
+                    }
+                    crossfade_wraps(
+                        clock,
+                        range,
+                        span.start,
+                        &*positions,
+                        &tail,
+                        out.lanes_mut(),
+                        n,
+                    );
+                } else if !sounds && gain.is_finite() {
+                    return Piece::Silent;
                 }
                 Piece::Ready
             }
@@ -532,6 +565,41 @@ impl PlaybackSlot {
                     // is as the zeros left it.
                     Piece::Silent
                 }
+            }
+        }
+    }
+}
+
+/// Blend a wrap crossfade's tail into the loop's start: frame `i` of each
+/// crossfade is `head * g_in + tail * g_out` at the equal-power gains, where
+/// the tail sounds (`positions`), so a voice with no tail there is untouched.
+/// `tail` holds the frames from `first`; `range` is the piece, whose first
+/// frame is lane frame 0.
+///
+/// Equal power, [`CrossfadeCurve`]'s: the tail and the loop's start are
+/// different stretches of the source, which add in power.
+fn crossfade_wraps(
+    clock: &BlockClock<'_>,
+    range: Range<usize>,
+    first: usize,
+    positions: &[Option<SamplePosition>],
+    tail: &[&mut [f32]],
+    head: &mut [Vec<f32>],
+    n: usize,
+) {
+    let base = range.start;
+    for run in clock.runs_in(range) {
+        let Some(wrap) = run.wrap else { continue };
+        let end = run.end.min(run.start + wrap.left());
+        for at in run.start..end {
+            let i = at - base;
+            if positions[i].is_none() {
+                continue;
+            }
+            let (g_in, g_out) =
+                CrossfadeCurve::EqualPower.gains(wrap.ago + at - run.start, wrap.len);
+            for (h, t) in head.iter_mut().zip(tail).take(n) {
+                h[i] = h[i] * g_in + t[i - first] * g_out;
             }
         }
     }

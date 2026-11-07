@@ -39,7 +39,13 @@
 use std::ops::Range;
 
 use tutti_graph::{Env, Transport};
-use tutti_types::{Beat, Bpm, FrameClock, LoopRange, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, Bpm, FrameClock, LoopRange, SampleRate, Samples, Seconds};
+
+/// How long a placed memory voice crossfades across a loop wrap: the tail it
+/// was playing past the loop's end fades out as the loop's start fades in.
+/// A time, so it is the same 5 ms at every sample rate; short enough that a
+/// hit on the loop's first frame keeps its attack.
+pub(crate) const WRAP_FADE: Seconds = Seconds(0.005);
 
 /// How far from where the playhead would have been, in frames, a run may
 /// start and still continue it. Far below anything audible (a thousandth of
@@ -53,6 +59,48 @@ struct Next {
     beat: Beat,
     /// Whether it got there across a loop wrap (a jump, whatever comes next).
     wrapped: bool,
+    /// The wrap crossfade still running at that frame.
+    wrap: Option<Wrap>,
+}
+
+/// A loop wrap whose crossfade is still running: the playhead jumped back by
+/// the loop's length, and for [`len`](Self::len) frames the voice sounds
+/// both where the playhead is and where it would have been.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Wrap {
+    /// Frames since the wrap, at the run's first frame.
+    pub(crate) ago: usize,
+    /// The crossfade's length in frames: [`WRAP_FADE`], at most half a pass
+    /// so a short loop still has a pass of its own.
+    pub(crate) len: usize,
+    /// How far back the playhead jumped: the loop's length.
+    pub(crate) back: BeatDuration,
+}
+
+impl Wrap {
+    /// The crossfade of a wrap of `region` at `tempo`, `None` when it has no
+    /// frame to run over.
+    fn new(region: LoopRange, tempo: Bpm, rate: SampleRate) -> Option<Self> {
+        let pass = region.len().get() * rate.get() * 60.0 / tempo.get();
+        let len = WRAP_FADE.to_samples(rate).0.min((pass / 2.0) as usize);
+        (len > 0).then_some(Self {
+            ago: 0,
+            len,
+            back: region.len(),
+        })
+    }
+
+    /// Frames of the crossfade still to run.
+    #[inline]
+    pub(crate) fn left(&self) -> usize {
+        self.len - self.ago
+    }
+
+    /// The crossfade `frames` on, `None` once it is done.
+    fn after(self, frames: usize) -> Option<Self> {
+        let ago = self.ago + frames;
+        (ago < self.len).then_some(Self { ago, ..self })
+    }
 }
 
 /// A stretch of a block over which the playhead moves linearly (or stands):
@@ -74,6 +122,8 @@ pub(crate) struct Run {
     /// Whether the playhead jumped onto this run's first frame. See the
     /// module docs.
     pub(crate) jump: bool,
+    /// The wrap crossfade running at `start`, if one is.
+    pub(crate) wrap: Option<Wrap>,
 }
 
 impl Run {
@@ -128,6 +178,7 @@ impl Run {
                 self.clock.advance(Samples(start - self.start), None);
             }
             self.jump = false;
+            self.wrap = self.wrap.and_then(|w| w.after(start - self.start));
         }
         self.start = start;
         self.end = end;
@@ -219,19 +270,30 @@ impl Clock {
         let jump = self
             .next
             .is_some_and(|n| breaks(n, &env.transport, env.sample_rate));
+        // A crossfade goes on across a block edge, unless a seek broke it;
+        // a wrap on the edge starts one.
+        let wrap = self
+            .next
+            .filter(|n| !jump || n.wrapped)
+            .and_then(|n| n.wrap);
         let mut block = BlockClock {
             env,
             generation: self.generation + u64::from(jump),
             jump,
             jumps: false,
+            wrap,
+            fades: false,
         };
         let mut last = None;
         let mut jumps = false;
+        let mut fades = false;
         for run in block.runs() {
             jumps |= run.jump;
+            fades |= run.wrap.is_some();
             last = Some(run);
         }
         block.jumps = jumps;
+        block.fades = fades;
         if let Some(last) = last {
             self.generation = last.generation;
             self.next = Some(continuation(&last, &env_transport_of(env, last.start)));
@@ -257,13 +319,21 @@ fn continuation(run: &Run, t: &Transport) -> Next {
         return Next {
             beat: run.clock.beat(),
             wrapped: false,
+            wrap: None,
         };
     }
     let mut c = run.clock;
     c.advance(Samples(run.end - run.start), region(t));
+    let wrapped = c.generation() != run.clock.generation();
+    let wrap = if wrapped {
+        region(t).and_then(|r| Wrap::new(r, t.tempo, run.sample_rate()))
+    } else {
+        run.wrap.and_then(|w| w.after(run.end - run.start))
+    };
     Next {
         beat: c.beat(),
-        wrapped: c.generation() != run.clock.generation(),
+        wrapped,
+        wrap,
     }
 }
 
@@ -277,6 +347,10 @@ pub(crate) struct BlockClock<'e> {
     jump: bool,
     /// Whether any run of the block starts with a jump.
     jumps: bool,
+    /// The wrap crossfade running at the block's first frame.
+    wrap: Option<Wrap>,
+    /// Whether a wrap crossfade runs over any frame of the block.
+    fades: bool,
 }
 
 impl<'e> BlockClock<'e> {
@@ -286,6 +360,13 @@ impl<'e> BlockClock<'e> {
     #[inline]
     pub(crate) fn jumps(&self) -> bool {
         self.jumps
+    }
+
+    /// Whether a wrap crossfade runs over any frame of the block: when not,
+    /// a reader has no tail to read.
+    #[inline]
+    pub(crate) fn fades(&self) -> bool {
+        self.fades
     }
 
     /// The block's runs, in order, covering it.
@@ -299,6 +380,7 @@ impl<'e> BlockClock<'e> {
             transport: t,
             generation: self.generation,
             jump: self.jump,
+            wrap: self.wrap.filter(|_| rolls(&t)),
         }
     }
 
@@ -325,6 +407,8 @@ pub(crate) struct Runs<'e> {
     generation: u64,
     /// Whether the next run starts with a jump.
     jump: bool,
+    /// The wrap crossfade running at `cur`.
+    wrap: Option<Wrap>,
 }
 
 impl Runs<'_> {
@@ -353,12 +437,18 @@ impl Iterator for Runs<'_> {
                 let prev = Next {
                     beat: self.clock.beat(),
                     wrapped: false,
+                    wrap: None,
                 };
                 self.transport = change.to;
                 self.clock = change.to.clock(self.env.sample_rate);
-                if breaks(prev, &change.to, self.env.sample_rate) {
+                let broke = breaks(prev, &change.to, self.env.sample_rate);
+                if broke {
                     self.jump = true;
                     self.generation += 1;
+                }
+                // A seek or a stop ends the crossfade on its frame.
+                if broke || !rolls(&change.to) {
+                    self.wrap = None;
                 }
                 if self.cur >= self.env.block_len.get() {
                     return None;
@@ -378,10 +468,15 @@ impl Iterator for Runs<'_> {
                 rolling,
                 generation: self.generation,
                 jump: self.jump,
+                wrap: self.wrap,
             };
             if rolling {
                 self.clock.advance(Samples(stop - self.cur), region);
             }
+            self.wrap = match region.filter(|_| wrap.is_some()) {
+                Some(r) => Wrap::new(r, self.transport.tempo, self.env.sample_rate),
+                None => self.wrap.and_then(|w| w.after(stop - self.cur)),
+            };
             self.cur = stop;
             self.jump = wrap.is_some();
             if wrap.is_some() {
@@ -580,5 +675,94 @@ mod tests {
         assert_eq!(later, [(16, false)]);
         let r = block.runs_in(16..32).next().expect("a run");
         assert_eq!(r.beat_at(20), Beat(5_020.0 / FPB));
+    }
+
+    /// 120 BPM: a loop of one beat is 24 000 frames, and the fade 240.
+    fn looping(from: f64) -> Transport {
+        let looping = Some(tutti_graph::LoopRange {
+            start: Beat(0.0),
+            end: Beat(1.0),
+        });
+        Transport::new(true, Bpm(120.0), Beat(from / FPB), looping)
+    }
+
+    /// `(ago, len)` of the wrap crossfade at each run of the block.
+    fn fades(block: &BlockClock<'_>) -> Vec<Option<(usize, usize)>> {
+        block
+            .runs()
+            .map(|r| r.wrap.map(|w| (w.ago, w.len)))
+            .collect()
+    }
+
+    /// A wrap starts a crossfade on its frame, and it goes on across the
+    /// blocks that follow until it is done.
+    ///
+    /// Mutation (run): `continuation` not carrying the run's crossfade
+    /// (`wrap: None` for a run without a wrap) → the second block has none →
+    /// fails. `Wrap::after` not adding the frames → the `ago` stops at 0 →
+    /// fails.
+    #[test]
+    fn a_wrap_starts_a_crossfade_that_outlasts_the_block() {
+        let mut clock = Clock::new();
+        let e = env(looping(24_000.0 - 10.0), &[]);
+        let block = clock.observe(&e);
+        assert_eq!(fades(&block), [None, Some((0, 240))]);
+        assert!(block.fades());
+        let mut from = 54.0;
+        for ago in [54, 118, 182] {
+            let e = env(looping(from), &[]);
+            let block = clock.observe(&e);
+            assert_eq!(fades(&block), [Some((ago, 240))], "ago {ago}");
+            from += 64.0;
+        }
+        let e = env(looping(from), &[]);
+        let block = clock.observe(&e);
+        assert_eq!(fades(&block), [None], "done after 240 frames");
+        assert!(!block.fades());
+    }
+
+    /// A wrap on a block's last frame starts its crossfade on the next
+    /// block's first.
+    ///
+    /// Mutation (run): `observe` taking the carried crossfade only when
+    /// `!jump` (the `|| n.wrapped` removed) → none → fails.
+    #[test]
+    fn a_wrap_on_the_block_edge_starts_the_crossfade_on_the_next_block() {
+        let mut clock = Clock::new();
+        clock.observe(&env(looping(24_000.0 - 64.0), &[]));
+        let e = env(looping(0.0), &[]);
+        let block = clock.observe(&e);
+        assert_eq!(fades(&block), [Some((0, 240))]);
+    }
+
+    /// A seek between blocks ends the crossfade.
+    ///
+    /// Mutation (run): `observe` taking the carried crossfade across a jump
+    /// → the seek's block has one → fails.
+    #[test]
+    fn a_seek_between_blocks_ends_the_crossfade() {
+        let mut clock = Clock::new();
+        clock.observe(&env(looping(24_000.0 - 10.0), &[]));
+        let e = env(looping(5_000.0), &[]);
+        assert_eq!(fades(&clock.observe(&e)), [None]);
+    }
+
+    /// The crossfade is [`WRAP_FADE`] at the rate, at most half a pass.
+    ///
+    /// Mutation (run): `Wrap::new` without the `min` → a 120 frame pass
+    /// fades over 240 → fails.
+    #[test]
+    fn the_crossfade_is_the_fade_or_half_a_pass() {
+        let rate = SampleRate(48_000.0);
+        let loop_of = |beats: f64| LoopRange::new(0.0, beats).expect("a loop");
+        let len = |beats| Wrap::new(loop_of(beats), Bpm(120.0), rate).map(|w| w.len);
+        assert_eq!(len(1.0), Some(240));
+        assert_eq!(len(0.005), Some(60), "a pass of 120 frames");
+        assert_eq!(len(0.00005), None, "a pass of 1.2 frames");
+        let fast = SampleRate(96_000.0);
+        assert_eq!(
+            Wrap::new(loop_of(1.0), Bpm(120.0), fast).map(|w| w.len),
+            Some(480)
+        );
     }
 }

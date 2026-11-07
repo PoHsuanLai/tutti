@@ -252,6 +252,57 @@ pub(crate) fn place(
     sounds
 }
 
+/// The positions a placed read would play over the wrap crossfades of
+/// `range` had the playhead run on past the loop's end, one per frame into
+/// `out` (`out.len() == range.len()`): the tail the voice fades out as the
+/// loop's start fades in. `None` outside a crossfade and where the tail is
+/// outside the window, so a voice that was not sounding there has none.
+///
+/// Seated and stepped as [`place`] does, a loop's length ahead of the
+/// playhead. Returns the frames (relative to `range`) the tail sounds over,
+/// `None` when it sounds nowhere.
+pub(crate) fn place_tail(
+    clock: &BlockClock<'_>,
+    range: Range<usize>,
+    gate: Gate,
+    step: ReadRate,
+    out: &mut [Option<SamplePosition>],
+) -> Option<Range<usize>> {
+    debug_assert_eq!(out.len(), range.len(), "one position per frame");
+    out.fill(None);
+    let base = range.start;
+    let mut span: Option<Range<usize>> = None;
+    for run in clock.runs_in(range) {
+        let Some(wrap) = run.wrap else { continue };
+        let (a, b) = (run.start, run.end.min(run.start + wrap.left()));
+        let (window, tempo) = (gate.window, run.tempo());
+        let Some(fpb) = run.frames_per_beat() else {
+            continue;
+        };
+        // Only a voice that was sounding on the loop's last frame has a tail:
+        // one that would begin at or after the loop's end never played in
+        // the loop.
+        let ended = run.beat_at(a) + wrap.back - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
+        if !gate.reached(ended, tempo, window.start) {
+            continue;
+        }
+        let x = match window.duration {
+            Some(d) => gate.first_reaching(&run, a, b, window.start + d - wrap.back),
+            None => b,
+        };
+        if a < x {
+            let origin = gate.origin(run.beat_at(a) + wrap.back, tempo);
+            for (k, p) in out[a - base..x - base].iter_mut().enumerate() {
+                *p = Some(origin + step.advance(Samples(k)));
+            }
+            let seen = span.get_or_insert(a - base..x - base);
+            seen.start = seen.start.min(a - base);
+            seen.end = seen.end.max(x - base);
+        }
+    }
+    span
+}
+
 /// Whether the playhead has left `window` for good by the last frame of
 /// `range` (rolling, past its end): a reader holding a file for it may let
 /// it go.

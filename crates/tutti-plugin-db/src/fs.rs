@@ -91,9 +91,8 @@ fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathB
 /// extension names.
 ///
 /// The pure half of a scan: walks the filesystem and returns what it found,
-/// touching no catalog and spawning no subprocess. Pair with
-/// [`PluginRecord::probe`](super::record::PluginRecord::probe) to build records
-/// yourself when you own persistence and don't want a
+/// touching no catalog and spawning no subprocess. Pair with a probe to build
+/// records yourself when you own persistence and don't want a
 /// [`PluginCatalog`](super::catalog::PluginCatalog) at all.
 ///
 /// What you forfeit going this way is what the catalog buys: incremental

@@ -20,10 +20,9 @@ workspace = true
 # build pulls no `serde_json` and no format FFI.
 default = []
 
-# Opt-in JSON-file-backed `JsonCatalog` — one ready-made `PluginCatalog` impl,
-# not the shape of the API. Leave it off and bring your own impl, or skip the
-# trait entirely and use the pure `discover` / `PluginRecord::probe` pair.
-json = ["dep:serde_json"]
+# Opt-in JSON-file-backed `JsonCatalog` (in `tutti-plugin-db`) behind
+# `Plugins::with_json_catalog`. Leave it off and bring your own `PluginCatalog`.
+json = ["tutti-plugin-db/json"]
 
 # In-process GUI support (loads plugin library in host for editor only)
 vst3 = ["dep:tutti-vst3-host"]
@@ -59,6 +58,10 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime" }
 
 # Shared value vocabulary used across host crates + IPC protocol.
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+
+# Discovery: the scanner, the catalog and its records. This crate supplies the
+# subprocess probe.
+tutti-plugin-db = { path = "../tutti-plugin-db" }
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }
@@ -115,10 +118,6 @@ windows = { version = "0.52", features = [
     # `QueryPerformanceCounter`: the host clock (`transport_source::HostClock`).
     "Win32_System_Performance",
 ] }
-
-[dependencies.serde_json]
-version = "1"
-optional = true
 
 [dev-dependencies]
 # `contract::{drive_input, Direct}`: the in-process VST2 node driven by hand, as

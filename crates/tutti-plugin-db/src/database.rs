@@ -27,7 +27,7 @@ pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde
 /// Records are keyed by plugin path. [`PluginCatalog::flush`] writes the whole
 /// list atomically (a sibling temp file, fsynced, then renamed over the real
 /// path), so a crash mid-write leaves the previous file intact. This is the
-/// store behind [`Plugins::with_json_catalog`](crate::catalog::Plugins::with_json_catalog).
+/// store behind `tutti_plugin::catalog::Plugins::with_json_catalog`.
 #[derive(Debug)]
 pub struct JsonCatalog {
     records: HashMap<PathBuf, PluginRecord>,

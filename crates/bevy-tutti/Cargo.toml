@@ -90,6 +90,8 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-
 tutti-plugin = { path = "../tutti-plugin", optional = true, features = [
     "json",
 ] }
+# The scan's progress and record types; the scanner itself runs in `tutti-plugin`.
+tutti-plugin-db = { path = "../tutti-plugin-db", optional = true }
 tutti-plugin-server = { path = "../tutti-plugin-server", optional = true, default-features = false }
 
 # Plugin editor windows: native child-window parenting for hosted GUIs.
@@ -206,6 +208,7 @@ audio-io = ["tutti-cpal/capture", "tutti-session/audio-io"]
 # Plugin hosting: editor windows, catalog scan, crash detection.
 plugin = [
     "dep:tutti-plugin",
+    "dep:tutti-plugin-db",
     "dep:tutti-plugin-server",
     "dep:bevy_window",
     "dep:raw-window-handle",

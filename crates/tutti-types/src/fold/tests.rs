@@ -1,5 +1,5 @@
 use super::*;
-use crate::{fold_frame, fold_planar_channel};
+use crate::fold_frame;
 use Speaker::*;
 
 fn smpte(n: u16) -> ChannelTopology {
@@ -119,7 +119,8 @@ fn the_mono_fold_is_the_itu_table() {
 
 /// Invariant: for every width pair the width folds had a matrix or a copy for,
 /// `Fold` writes the same bits as `fold_frame`, on frames of every sign and
-/// magnitude, interleaved and planar.
+/// magnitude, interleaved and planar. (The planar width fold, deleted with the
+/// port of `DownmixNode`, was compared the same way before it went.)
 ///
 /// Mutation (run): 12-wide grouping disabled (`grouped` false) fails the
 /// 12 -> 2 and 12 -> 1 pairs on the last bit; the mono mix `(a + b) * scale`
@@ -168,10 +169,7 @@ fn it_is_bit_identical_to_the_width_folds() {
                 .collect();
             for c in 0..d {
                 let mut a = vec![f32::NAN; frames];
-                let mut b = vec![f32::NAN; frames];
                 f.planar_channel(|k| &planes[k][..], c, &mut a);
-                fold_planar_channel(|k| &planes[k][..], s, d, c, &mut b);
-                assert_eq!(bits(&a), bits(&b), "{sw} -> {dw} planar channel {c}");
                 let col: Vec<f32> = want.chunks_exact(d).map(|fr| fr[c]).collect();
                 assert_eq!(bits(&a), bits(&col), "{sw} -> {dw} planar vs frame {c}");
             }

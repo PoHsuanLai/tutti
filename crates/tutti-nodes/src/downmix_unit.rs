@@ -2,38 +2,29 @@
 //!
 //! When a signal meets a sink of a different width, the extra channels must be
 //! *folded in*, not dropped: taking channels 0/1 of a 5.1 bus discards the
-//! dialogue (centre) and the ambience (surrounds) entirely. The engine already
-//! knows how to do that — `tutti_types::downmix` holds the ITU-R BS.775 /
-//! Dolby matrices, and the graph root folds through them every block.
-//!
-//! What was missing was a way to do it *inside* the graph. A mismatched edge
-//! needs a node, and this is that node and nothing more.
+//! dialogue (centre) and the ambience (surrounds) entirely. `tutti_types::Fold`
+//! knows how to do that, by speaker, and this node is the graph's way to apply
+//! one: a mismatched edge needs a node, and this is that node and nothing more.
 //!
 //! **This module contains no matrix of its own and must never grow one.**
-//! Every coefficient comes from [`fold_planar_channel`], the planar entry
-//! point beside [`fold_frame`] in `tutti-types`, which shares its stereo
-//! kernel and gives the same bits as the per-frame fold. That module exists
-//! precisely so the live path and the offline export path cannot drift
-//! apart, and a second copy here would defeat it — the node below only
-//! hands it one output channel at a time.
+//! Every coefficient comes from [`Fold`], so the live path, the offline export
+//! path and this node cannot drift apart. The node only hands it one output
+//! channel at a time.
 //!
 //! # Upmix zero-fills
 //!
 //! Widening leaves the new channels **silent** rather than synthesising them.
-//! That is [`fold_frame`]'s policy and it is deliberate: deciding that a stereo
+//! That is [`Fold`]'s policy and it is deliberate: deciding that a stereo
 //! pair should become a 5.1 field is a creative choice about placement, which
 //! belongs to a panner the user put there on purpose — not to a width adapter
 //! quietly inserted by a reconciler. Silence is visible; an invented centre
 //! channel is not.
-//!
-//! [`fold_frame`]: tutti_types::fold_frame
 
 use tutti_graph::{Cx, ForkByClone, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::fold_planar_channel;
-use tutti_types::{ChannelLayout, Tail};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, FoldError, Tail};
 
-/// Folds an `src`-wide signal into a `dst`-wide one through the shared ITU /
-/// Dolby matrices.
+/// Folds a signal of one channel topology into another's through a
+/// [`Fold`].
 ///
 /// Arity is fixed for the instance's lifetime, like every other node: its
 /// shape's input is the source width, its output the target. Changing either
@@ -43,27 +34,38 @@ use tutti_types::{ChannelLayout, Tail};
 /// fork of it is a clone (it shares nothing).
 #[derive(Clone, Debug)]
 pub struct DownmixNode {
-    src: ChannelLayout,
-    dst: ChannelLayout,
+    fold: Fold,
 }
 
 impl DownmixNode {
-    /// A fold from `src` channels to `dst`. Both are clamped to at least mono —
-    /// a zero-wide node would declare 0 ports, which is not a node.
-    pub fn new(src: impl Into<ChannelLayout>, dst: impl Into<ChannelLayout>) -> Self {
-        let src = ChannelLayout::from(src.into().count().max(1));
-        let dst = ChannelLayout::from(dst.into().count().max(1));
-        Self { src, dst }
+    /// A fold from the `src` topology to `dst`.
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError`] when the two cannot be folded, including an empty one: a
+    /// zero-wide node would declare no ports, which is not a node.
+    pub fn between(src: &ChannelTopology, dst: &ChannelTopology) -> Result<Self, FoldError> {
+        Fold::between(src, dst).map(|fold| Self { fold })
+    }
+
+    /// As [`between`](Self::between) for two bare widths, **assuming** each is
+    /// the engine's SMPTE order ([`Fold::assuming_smpte`]).
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError`], including a width with no SMPTE order.
+    pub fn assuming_smpte(src: ChannelLayout, dst: ChannelLayout) -> Result<Self, FoldError> {
+        Fold::assuming_smpte(src, dst).map(|fold| Self { fold })
     }
 
     /// The width this unit folds *from*.
     pub fn source_layout(&self) -> ChannelLayout {
-        self.src
+        self.fold.src_layout()
     }
 
     /// The width this unit folds *to*.
     pub fn target_layout(&self) -> ChannelLayout {
-        self.dst
+        self.fold.dst_layout()
     }
 
     /// Whether this actually narrows — false for equal widths and for upmix.
@@ -73,7 +75,7 @@ impl DownmixNode {
     /// `count()` comparison at every site that asks, and a fold that only
     /// zero-fills is a node earning nothing.
     pub fn narrows(&self) -> bool {
-        self.dst.count() < self.src.count()
+        self.target_layout().count() < self.source_layout().count()
     }
 }
 
@@ -81,7 +83,7 @@ impl Node for DownmixNode {
     /// `src` in, `dst` out. A downmix is a per-frame matrix, so it has no
     /// latency and stops with its input.
     fn shape(&self) -> Shape {
-        Shape::audio(self.src, self.dst)
+        Shape::audio(self.source_layout(), self.target_layout())
             .with_cost(tutti_graph::Cost::Light)
             .with_tail(Tail::None)
     }
@@ -91,9 +93,9 @@ impl Node for DownmixNode {
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
         let (inputs, mut outputs) = io.split();
-        let (src, dst) = (self.src.count() as usize, self.dst.count() as usize);
         for (c, out) in outputs.iter_mut().enumerate() {
-            fold_planar_channel(|k| inputs.get(k), src, dst, c, &mut out[..size]);
+            self.fold
+                .planar_channel(|k| inputs.get(k), c, &mut out[..size]);
         }
         Status::Modified
     }
@@ -118,29 +120,35 @@ mod tests {
     use tutti_graph::contract::drive;
     use tutti_types::{M3DB, fold_frame_to_mono, fold_frame_to_stereo};
 
+    /// A node between two SMPTE widths.
+    fn node(src: ChannelLayout, dst: ChannelLayout) -> DownmixNode {
+        DownmixNode::assuming_smpte(src, dst).expect("SMPTE widths")
+    }
+
     #[test]
     fn arity_comes_from_the_two_layouts() {
-        let u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let u = node(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         assert_eq!(u.shape().audio_in.count(), 6);
         assert_eq!(u.shape().audio_out.count(), 2);
         assert_eq!(u.source_layout(), ChannelLayout::from(6u16));
         assert_eq!(u.target_layout(), ChannelLayout::STEREO);
     }
 
+    /// A zero-wide node would declare no ports, which is not a node.
+    ///
+    /// Mutation (run): letting `Fold::between` accept an empty topology builds
+    /// a zero-port node and fails this.
     #[test]
-    fn degenerate_widths_clamp_to_mono() {
-        let u = DownmixNode::new(ChannelLayout::EMPTY, ChannelLayout::EMPTY);
-        assert_eq!(
-            u.shape().audio_in.count(),
-            1,
-            "a zero-port unit is not a node"
-        );
-        assert_eq!(u.shape().audio_out.count(), 1);
+    fn an_empty_topology_is_refused() {
+        let empty = ChannelTopology::new([]);
+        let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();
+        assert!(DownmixNode::between(&empty, &stereo).is_err());
+        assert!(DownmixNode::between(&stereo, &empty).is_err());
     }
 
     #[test]
     fn a_frame_matches_the_shared_matrix() {
-        let mut u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let mut u = node(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 2];
         tick(&mut u, &frame, &mut out);
@@ -155,7 +163,7 @@ mod tests {
 
     #[test]
     fn a_frame_to_mono_matches_the_shared_matrix() {
-        let mut u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::MONO);
+        let mut u = node(ChannelLayout::from(6u16), ChannelLayout::MONO);
         let frame = [0.9, -0.4, 0.5, 0.7, 0.2, -0.3];
         let mut out = [0.0f32; 1];
         tick(&mut u, &frame, &mut out);
@@ -171,7 +179,7 @@ mod tests {
     #[test]
     fn a_block_agrees_with_the_matrix_per_frame() {
         const N: usize = 64;
-        let mut processed = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let mut processed = node(ChannelLayout::from(6u16), ChannelLayout::STEREO);
 
         // A distinct waveform per channel, so a transposed index is visible.
         let input: Vec<Vec<f32>> = (0..6)
@@ -212,7 +220,7 @@ mod tests {
             [1.0, 0.0, m, 0.0, m, 0.0, m, 0.0],
             [0.0, 1.0, m, 0.0, 0.0, m, 0.0, m],
         ];
-        let mut u = DownmixNode::new(ChannelLayout::from(8u16), ChannelLayout::STEREO);
+        let mut u = node(ChannelLayout::from(8u16), ChannelLayout::STEREO);
         let pulses: Vec<Vec<f32>> = (0..8)
             .map(|k| (0..8).map(|i| if i == k { 1.0 } else { 0.0 }).collect())
             .collect();
@@ -227,7 +235,7 @@ mod tests {
     /// is dialogue, and taking channels 0/1 would make it silent.
     #[test]
     fn a_centre_only_frame_survives_the_fold() {
-        let mut u = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let mut u = node(ChannelLayout::from(6u16), ChannelLayout::STEREO);
         // FL FR C LFE SL SR — energy only in C.
         let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
         let mut out = [0.0f32; 2];
@@ -241,7 +249,7 @@ mod tests {
 
     #[test]
     fn upmix_zero_fills_rather_than_inventing_channels() {
-        let mut u = DownmixNode::new(ChannelLayout::STEREO, ChannelLayout::from(6u16));
+        let mut u = node(ChannelLayout::STEREO, ChannelLayout::from(6u16));
         let mut out = [0.0f32; 6];
         tick(&mut u, &[0.8, -0.6], &mut out);
 
@@ -254,9 +262,9 @@ mod tests {
 
     #[test]
     fn narrows_is_false_for_equal_and_wider() {
-        let narrower = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
-        let equal = DownmixNode::new(ChannelLayout::STEREO, ChannelLayout::STEREO);
-        let wider = DownmixNode::new(ChannelLayout::STEREO, ChannelLayout::from(6u16));
+        let narrower = node(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+        let equal = node(ChannelLayout::STEREO, ChannelLayout::STEREO);
+        let wider = node(ChannelLayout::STEREO, ChannelLayout::from(6u16));
 
         assert!(narrower.narrows());
         assert!(!equal.narrows(), "an equal-width fold earns nothing");

@@ -185,7 +185,10 @@ fn downmix(c: &mut Criterion) {
             c,
             "downmix",
             &format!("{src}to{dst}"),
-            || DownmixNode::new(ChannelLayout::from(src), ChannelLayout::from(dst)),
+            || {
+                DownmixNode::assuming_smpte(ChannelLayout::from(src), ChannelLayout::from(dst))
+                    .unwrap()
+            },
             None,
         );
     }

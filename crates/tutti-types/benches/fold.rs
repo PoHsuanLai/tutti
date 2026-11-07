@@ -1,17 +1,16 @@
-//! **What does `Fold` cost against the width folds?**
+//! **What does `Fold` cost against `fold_frame`?**
 //!
-//! Each case is one block of 64 or 512 frames, interleaved (the device path:
-//! `fold_frame` per frame) and planar (a graph node: one `fold_planar_channel`
-//! per output channel). Widths are 2->2, 1->2, 6->2, 8->2 and 12->2, and a
-//! 6-channel permutation, which the width folds cannot do (their baseline is
-//! the 6->6 copy).
+//! Each case is one block of 64 or 512 frames: interleaved to interleaved,
+//! planar to interleaved (the engine's shape: `fold_frame` per gathered frame
+//! against `Fold` per output channel plus an interleave), and `Fold` planar
+//! alone. Widths are 2->2, 1->2, 6->2, 8->2 and 12->2, and a 6-channel
+//! permutation, which `fold_frame` cannot do (its baseline is the 6->6 copy).
 
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_types::{
     ChannelLayout, ChannelTopology, Fold, Interleaved, InterleavedMut, Speaker, fold_frame,
-    fold_planar_channel,
 };
 
 fn noise(n: usize) -> Vec<f32> {
@@ -128,14 +127,6 @@ fn bench(c: &mut Criterion) {
                 b.iter(|| {
                     for (ch, out) in outs.iter_mut().enumerate() {
                         fold.planar_channel(|k| &planes[k][..], ch, out);
-                    }
-                    black_box(&outs);
-                })
-            });
-            g.bench_function(BenchmarkId::new("width", name), |b| {
-                b.iter(|| {
-                    for (ch, out) in outs.iter_mut().enumerate() {
-                        fold_planar_channel(|k| &planes[k][..], sw, dw, ch, out);
                     }
                     black_box(&outs);
                 })

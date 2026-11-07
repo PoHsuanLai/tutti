@@ -51,8 +51,7 @@
 //!
 //! For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
 //! gives, a fold to one or two channels reproduces
-//! [`fold_frame`](crate::fold_frame) and
-//! [`fold_planar_channel`](crate::fold_planar_channel) to the bit, in their
+//! [`fold_frame`](crate::fold_frame) to the bit, in their
 //! order of operations: the direct channel, then each folded channel in source
 //! order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
 //! channels of a side are summed first and scaled once, as the 12-wide fold

@@ -36,7 +36,7 @@
 //! rather than doubling the gain; `Beat + Beat` adds two timeline positions and
 //! has no origin to add them about; [`Azimuth`] has no ordering because a circle
 //! has no ends. Each type's own docs name the omission and the method that
-//! replaces it, and the ledger is enumerated in this module's tests.
+//! replaces it, and the ledger is enumerated in each family's tests.
 //!
 //! **An omission must ship with its replacement.** Naming a substitute method
 //! and not writing it is worse than the operator: call sites escape to raw
@@ -113,7 +113,7 @@ pub trait Unit: Copy + Clone + core::fmt::Debug + PartialEq {
 //     `Semitones::to_pitch_ratio` both land on `f32`; as `From` impls they
 //     would be two different meanings of one target type.
 //
-// The impls below delegate to the inherent methods rather than repeating the
+// The impls beside the types delegate to the inherent methods rather than repeating the
 // arithmetic, so there is one implementation and two spellings.
 
 #[cfg(test)]

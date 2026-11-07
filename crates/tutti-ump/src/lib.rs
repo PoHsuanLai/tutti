@@ -7,7 +7,10 @@
 //! defined message as a `Copy` value with no lifetime. [`decode()`](fn@decode)
 //! and `From<Message> for Ump` hold the bit positions of every message; the one
 //! other reader is `Ump::is_note_off` (and `Ump::words`, which reads the type
-//! nibble), which a test ties to `decode`.
+//! nibble), which a test ties to `decode`. MIDI 1.0 on the wire is the other
+//! place that knows bit positions: [`Voice1::bytes`] and [`System::bytes`] write
+//! a message's bytes, [`frame`] adds a SysEx's delimiters, and [`Midi1Parser`]
+//! reads a byte stream into [`Message`]s.
 //!
 //! ```
 //! use tutti_ump::{Message, Ump, Voice2, decode};

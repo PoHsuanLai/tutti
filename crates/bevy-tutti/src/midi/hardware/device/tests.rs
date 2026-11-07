@@ -34,8 +34,8 @@ fn hotplugs(world: &World) -> Vec<MidiHotplug> {
 // - `translate` ignoring `MidiDevice`: `a_device_event_becomes_a_hotplug_message`
 //   fails;
 // - `translate` ignoring a lost port: `a_lost_port_clears_the_poll_timer` fails;
-// - `translate` writing a hotplug for every event: `other_events_write_nothing`
-//   fails.
+// - `translate` clearing the poll timer on any other event:
+//   `other_events_write_nothing` fails.
 
 #[test]
 fn a_device_event_becomes_a_hotplug_message() {

@@ -413,3 +413,6 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
         self.ledger.recount();
     }
 }
+
+#[cfg(test)]
+mod tests;

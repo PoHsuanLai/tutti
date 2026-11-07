@@ -281,7 +281,9 @@ crates/          everything shipped; directory name = package name; no nesting
   vst-tutti (our fork of the vst crate; its split is a later lane)
 testing/         never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
-  tutti-shm-model (loom), arc-lend-compare
+  tutti-shared-plugin (the test plugin: a format-free core, a shell per
+  format), tutti-plugin-contract (the cases every format's host runs against
+  it), tutti-shm-model (loom), arc-lend-compare
 vendor/          third-party code we never edit
   vst3-sdk/      the three Steinberg submodules
 ```
@@ -576,6 +578,28 @@ Scalars use `Param<U>`.
   restore it, and write the mutation in a comment. If a property cannot be
   covered here, say so in a comment rather than asserting something that
   always passes.
+
+## The plugin contract
+
+`testing/tutti-plugin-contract` runs the same cases against each format's host
+through `Loaded`, `Processor`, `Controller` and `Control`, with the one test
+plugin `testing/tutti-shared-plugin` (a format-free `core` and a shell per
+format). A format is a `Format` impl and `contract!(Fmt, gaps = N)`.
+
+- **The expected figures live in the contract's `spec`**, never imported from
+  the plugin: a case that asked the plugin could not fail when it is wrong.
+- **The core records what the host sent before it orders or repairs
+  anything.** A core that repairs first hides the host bug it should show.
+- **The plugin is configured and read through its state** (a mode word in the
+  blob, the transcript behind it): no environment variable, symbol or process
+  global, so the same calls work through the plugin-server.
+- **A case a format cannot pass is a `Gap { why, fails_with }`**: the case
+  runs and must fail with that text, so a stale gap fails. `gaps = N` in the
+  test file is the ratchet; raising it is a reviewed edit. Never `#[ignore]`.
+- **A new case is mutation-tested**: break the property in the host or the
+  plugin, watch it fail, restore, and write the mutation on the case.
+- A plugin that cannot share the core (a C++ VST3 plugin, an in-process AU
+  unit) follows the spec in `core`'s docs and runs the same cases.
 
 ## Check the constraint before designing around it
 

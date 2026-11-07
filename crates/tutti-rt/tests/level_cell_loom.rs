@@ -26,8 +26,8 @@
 //! - the taker without its `SeqCst` fence -> the same;
 //! - the taker not waiting on `busy` -> the same;
 //! - the writer not re-checking `active` after announcing -> the same;
-//! - `take` reading the slot (`load`) without clearing it -> a block is
-//!   returned twice;
+//! - `take` loading the frames without clearing them -> the energy and the
+//!   frames of a take disagree (a block counted in two takes);
 //! - `fold` storing the block's frames instead of adding -> blocks in one
 //!   take do not accumulate, the frames and energy disagree.
 

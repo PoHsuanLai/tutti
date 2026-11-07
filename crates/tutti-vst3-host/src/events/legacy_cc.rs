@@ -12,7 +12,7 @@ use super::{LegacyCcOut, MidiEvent};
 /// are pitch bend, channel pressure and poly-pressure, with `value2` supplying
 /// the second data byte for the first and last.
 pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
-    let channel = MidiChannel::new((e.channel as u8) & 0x0F);
+    let channel = MidiChannel::masked(e.channel as u8);
     let v1 = (e.value as u8) & 0x7F;
     let v2 = (e.value2 as u8) & 0x7F;
     let control = i32::from(e.controlNumber);
@@ -26,15 +26,13 @@ pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
     } else if control == sdk_enum_i32(kCtrlPolyPressure) {
         // value = note, value2 = pressure.
         MidiEvent::poly_pressure(MidiGroup::FIRST, channel, v1, midi1_cc_to_midi2(v2))
-    } else if (0..=127).contains(&control) {
+    } else {
         MidiEvent::cc(
             MidiGroup::FIRST,
             channel,
-            CCNumber::new(e.controlNumber),
+            CCNumber::new(e.controlNumber)?,
             midi1_cc_to_midi2(v1),
         )
-    } else {
-        return None;
     };
     Some(event.with_frame_offset(frame))
 }

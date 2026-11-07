@@ -17,18 +17,19 @@ use tutti_ump::{
     CCNumber, ChordBass, ChordName, ChordPitch, ChordType, Data128, DeltaTicks, DeviceIdentity,
     Direction, DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
     FunctionBlockId, FunctionBlockInfo, GroupSpan, KeySignature, Letter, Message, Metronome,
-    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol, SharpsFlats, Stream,
-    StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, U4, U7, U14,
-    UiHint, Ump, UmpVersion, Utility, Voice1, Voice2, decode,
+    Midi1Port, MidiChannel, MidiGroup, MixedDataHeader, NoteNumber, Protocol,
+    RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, Sysex7Packet, Sysex8Packet,
+    SysexStatus, System, TimeSignature, U4, U7, U14, UiHint, Ump, UmpVersion, Utility, Voice1,
+    Voice2, decode,
 };
 
 fn g(n: u8) -> MidiGroup {
-    MidiGroup::new(n)
+    MidiGroup::of(n)
 }
 fn addr(group: u8, channel: u8) -> Address {
     Address {
         group: g(group),
-        channel: MidiChannel::new(channel),
+        channel: MidiChannel::of(channel),
     }
 }
 fn note(n: u8) -> NoteNumber {
@@ -145,7 +146,7 @@ fn midi1_channel_voice() {
     pin(
         [0x23B5_4A20, 0, 0, 0],
         v(Voice1::ControlChange {
-            controller: CCNumber::new(74),
+            controller: CCNumber::of(74),
             value: u7(0x20),
         }),
     );
@@ -315,7 +316,7 @@ fn midi2_per_note_and_controllers() {
         [0x4102_3C03, 0x3C00_0000, 0, 0],
         v(Voice2::RegisteredPerNote {
             note: note(60),
-            controller: 3,
+            controller: RegisteredPerNoteController::Pitch,
             value: 0x3C00_0000,
         }),
     );
@@ -364,7 +365,7 @@ fn midi2_per_note_and_controllers() {
     pin(
         [0x41B2_0700, 0x1122_3344, 0, 0],
         v(Voice2::ControlChange {
-            controller: CCNumber::new(7),
+            controller: CCNumber::of(7),
             value: 0x1122_3344,
         }),
     );
@@ -480,7 +481,7 @@ fn flex_key_and_chord() {
     pin(
         [0xD603_0005, 0xC400_0000, 0, 0],
         f(Flex::SetKeySignature(
-            FlexAddress::Channel(MidiChannel::new(3)),
+            FlexAddress::Channel(MidiChannel::of(3)),
             key(-4, Some(Letter::D)),
         )),
     );
@@ -566,7 +567,7 @@ fn flex_text() {
     pin(
         [0xD642_0104, 0x436F_7079, 0x7269_6768, 0x7420_3230],
         t(
-            FlexAddress::Channel(MidiChannel::new(2)),
+            FlexAddress::Channel(MidiChannel::of(2)),
             FlexTextKind::Copyright,
             Form::Start,
             *b"Copyright 20",
@@ -877,4 +878,52 @@ fn what_the_oracle_found() {
     // A lone End, Start or Continue is a packet of its own, whole messages are
     // for the layer above: the same for SysEx 7 and SysEx 8 (above) and the
     // Stream and Flex text forms (above).
+}
+
+// Appendix A, Table 22: every defined Registered Per-Note Controller number,
+// as the literal low byte of the first word of a MIDI 2.0 message, group 1,
+// channel 2, note 60: 0x4102_3C00 | number.
+//
+// Mutation record: the `Brightness` arm of `From<u8>` moved to 73 -> this
+// test; `Pitch` encoded as 2 -> this test and `midi2_per_note_and_controllers`.
+#[test]
+fn registered_per_note_controllers_have_their_appendix_a_numbers() {
+    use RegisteredPerNoteController as C;
+    let table: [(u32, C); 22] = [
+        (1, C::Modulation),
+        (2, C::Breath),
+        (3, C::Pitch),
+        (7, C::Volume),
+        (8, C::Balance),
+        (10, C::Pan),
+        (11, C::Expression),
+        (70, C::SoundVariation),
+        (71, C::Timbre),
+        (72, C::ReleaseTime),
+        (73, C::AttackTime),
+        (74, C::Brightness),
+        (75, C::DecayTime),
+        (76, C::VibratoRate),
+        (77, C::VibratoDepth),
+        (78, C::VibratoDelay),
+        (79, C::SoundController10),
+        (91, C::ReverbSend),
+        (92, C::Effects2Depth),
+        (93, C::ChorusSend),
+        (94, C::Effects4Depth),
+        (95, C::Effects5Depth),
+    ];
+    for (number, controller) in table {
+        pin(
+            [0x4102_3C00 | number, 5, 0, 0],
+            Message::Midi2(
+                addr(1, 2),
+                Voice2::RegisteredPerNote {
+                    note: note(60),
+                    controller,
+                    value: 5,
+                },
+            ),
+        );
+    }
 }

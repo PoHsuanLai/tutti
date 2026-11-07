@@ -7,7 +7,7 @@ use tutti_midi_types::mpe::MpeZoneConfig;
 fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
     MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         note,
         midi1_velocity_to_midi2(vel_u7),
     )
@@ -15,14 +15,14 @@ fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
 fn pitch_bend14(channel: u8, bend14: u16) -> MidiEvent {
     MidiEvent::pitch_bend(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         midi1_pitch_bend_to_midi2(bend14),
     )
 }
 fn cc(channel: u8, cc_num: CCNumber, value_u7: u8) -> MidiEvent {
     MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         cc_num,
         midi1_cc_to_midi2(value_u7),
     )
@@ -95,7 +95,7 @@ fn member_channel_pressure_becomes_per_note_pressure() {
     let out = ingest
         .translate(&MidiEvent::channel_pressure(
             MidiGroup::FIRST,
-            MidiChannel::new(2),
+            MidiChannel::of(2),
             0xFFFF_FFFF,
         ))
         .next()
@@ -255,7 +255,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 
     let disable = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(15),
+        MidiChannel::of(15),
         RPN_BANK_MPE,
         tutti_midi_types::ump::RPN_INDEX_MCM,
         0,
@@ -286,7 +286,7 @@ fn an_mcm_resets_its_zones_bend_ranges() {
 fn bend_sensitivity(channel: u8, semitones: u8) -> MidiEvent {
     MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         tutti_midi_types::ump::RPN_BANK_MPE,
         RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
         tutti_midi_types::PitchBendSensitivity::from_semitones(semitones).to_rpn_bits(),

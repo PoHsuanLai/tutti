@@ -210,10 +210,7 @@ pub fn soundfont_playback_system(
         // The component keeps plain integers for reflection; the unit takes
         // checked MIDI values.
         let (Some(channel), Some(program)) = (
-            u8::try_from(play.channel)
-                .ok()
-                .filter(|&c| c < MidiChannel::COUNT)
-                .map(MidiChannel::new),
+            u8::try_from(play.channel).ok().and_then(MidiChannel::new),
             u8::try_from(play.preset)
                 .ok()
                 .and_then(|p| u7::try_from(p).ok()),

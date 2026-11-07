@@ -333,7 +333,7 @@ impl PolySynth {
         else {
             return;
         };
-        let channel = MidiChannel::new(u8::from(cv2.channel()));
+        let channel = MidiChannel::masked(u8::from(cv2.channel()));
         match cv2 {
             Cv2::NoteOn(m) => {
                 let note = m.note_number();
@@ -352,7 +352,7 @@ impl PolySynth {
             Cv2::ControlChange(m) => {
                 self.handle_cc(
                     // Wire boundary: midi2's `u7` is already in range.
-                    CCNumber::new(u8::from(m.control())),
+                    CCNumber::masked(u8::from(m.control())),
                     u32_to_unit_f32(m.control_change_data()),
                     channel,
                 );
@@ -389,7 +389,7 @@ impl PolySynth {
                 let data = u32_to_unit_f32(m.controller_data());
                 // `m.index()` is the raw per-note controller index off the
                 // wire (a `u8`, not a `u7`), so it is masked into range here.
-                match CCNumber::new(m.index()) {
+                match CCNumber::masked(m.index()) {
                     cc::BRIGHTNESS => self.set_voice_mpe(id, MpeControl::Slide(data)),
                     cc::VOLUME => self.set_voice_mpe(id, MpeControl::Gain(data)),
                     _ => {}

@@ -699,7 +699,7 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
 
     let events = (0..n).flat_map(|k| {
         // Notes 0..100 on channel 0, 100..200 on channel 1.
-        let (g, c, key) = (MidiGroup::FIRST, MidiChannel::new(k / 100), k % 100);
+        let (g, c, key) = (MidiGroup::FIRST, MidiChannel::of(k / 100), k % 100);
         [
             TimedMidiEvent::new(
                 Beat(on as f64 / 24_000.0),

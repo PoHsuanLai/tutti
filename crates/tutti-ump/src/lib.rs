@@ -48,15 +48,15 @@ mod ump;
 pub use cc_number::CCNumber;
 pub use decode::decode;
 pub use field::{
-    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, SharpsFlats, U4, U7, U14,
+    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
 pub use message::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,
     ChordBass, ChordName, ChordPitch, ChordType, Data128, DeviceIdentity, Direction,
     DiscoveryFilter, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form, FunctionBlockInfo,
-    KeySignature, Letter, Message, Metronome, Midi1Port, MixedDataHeader, Protocol, Stream,
-    StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus, System, TimeSignature, UiHint,
-    UmpVersion, Unknown, Utility, Voice1, Voice2,
+    KeySignature, Letter, Message, Metronome, Midi1Port, MixedDataHeader, Protocol,
+    RegisteredPerNoteController, Stream, StreamConfig, Sysex7Packet, Sysex8Packet, SysexStatus,
+    System, TimeSignature, UiHint, UmpVersion, Unknown, Utility, Voice1, Voice2,
 };
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;

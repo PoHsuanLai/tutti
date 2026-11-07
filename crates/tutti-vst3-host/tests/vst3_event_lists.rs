@@ -339,7 +339,7 @@ fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
 /// without the room check → a partial bank in the full list → fails.
 #[test]
 fn a_banked_program_change_reaches_the_plugin_as_three_messages() {
-    let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+    let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
         .with_frame_offset(5);
     let list = EventList::input();
     let mut stager = Stager::default();

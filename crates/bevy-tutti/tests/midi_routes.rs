@@ -108,9 +108,9 @@ mod routes {
         let mut app = app();
         let (lead, pad) = (synth(&mut app), synth(&mut app));
         app.world_mut()
-            .spawn(MidiRouteRule::for_channel(MidiChannel::new(2)).to(lead));
+            .spawn(MidiRouteRule::for_channel(MidiChannel::of(2)).to(lead));
         app.world_mut()
-            .spawn(MidiRouteRule::for_channel(MidiChannel::new(5)).to(lead));
+            .spawn(MidiRouteRule::for_channel(MidiChannel::of(5)).to(lead));
         app.world_mut().spawn(MidiRouteRule::any_channel().to(pad));
         app.update();
         assert_eq!(ports(&app, lead), BTreeSet::from([2, 5, channelless()]));

@@ -7,7 +7,7 @@ fn registered_controller_decodes_via_midi2() {
     use midi2::{Channeled, UmpMessage};
     let ev = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         0x00,
         0x06,
         0xDEAD_BEEF,
@@ -29,7 +29,7 @@ fn assignable_controller_decodes_via_midi2() {
     use midi2::{Channeled, UmpMessage};
     let ev = MidiEvent::assignable_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(9),
+        MidiChannel::of(9),
         0x12,
         0x34,
         0x0000_1000,
@@ -68,7 +68,7 @@ fn relative_controllers_carry_signed_deltas() {
     for delta in [1i32, -1, 127, -128, i32::MAX, i32::MIN, 0] {
         let rpn = MidiEvent::relative_registered_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(3),
+            MidiChannel::of(3),
             0x12,
             0x34,
             delta,
@@ -81,7 +81,7 @@ fn relative_controllers_carry_signed_deltas() {
 
         let nrpn = MidiEvent::relative_assignable_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(9),
+            MidiChannel::of(9),
             0x01,
             0x02,
             delta,
@@ -100,7 +100,7 @@ fn relative_and_absolute_controllers_are_distinct_messages() {
     // address space… and use the same controller Banks"), different status —
     // so an absolute set is never mistaken for a relative nudge.
     let absolute =
-        MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(3), 0x12, 0x34, 5);
+        MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::of(3), 0x12, 0x34, 5);
     assert!(
         !matches!(absolute.message(), MidiMessage::RelativeController { .. }),
         "an absolute RPN is not a relative one"
@@ -108,7 +108,7 @@ fn relative_and_absolute_controllers_are_distinct_messages() {
 
     let relative = MidiEvent::relative_registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         0x12,
         0x34,
         5,

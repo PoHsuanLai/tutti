@@ -37,7 +37,7 @@ fn test_matches() {
         1.0,
     );
     assert!(mapping.matches(MidiChannel::FIRST, CCNumber::MOD_WHEEL));
-    assert!(!mapping.matches(MidiChannel::new(1), CCNumber::MOD_WHEEL)); // Wrong channel
+    assert!(!mapping.matches(MidiChannel::of(1), CCNumber::MOD_WHEEL)); // Wrong channel
     assert!(!mapping.matches(MidiChannel::FIRST, CCNumber::BREATH)); // Wrong CC
 
     // Test any channel

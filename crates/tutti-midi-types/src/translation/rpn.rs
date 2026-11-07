@@ -67,7 +67,7 @@ struct ParamState {
 const RPN_NULL: u8 = 0x7F;
 
 /// Bank Select LSB (CC 32).
-const BANK_SELECT_LSB: CCNumber = CCNumber::new(32);
+const BANK_SELECT_LSB: CCNumber = CCNumber::of(32);
 
 /// Which half of the parameter number a select byte carries.
 #[derive(Clone, Copy)]
@@ -131,7 +131,7 @@ impl Midi1ToMidi2Translator {
         };
         let channel = u8::from(m.channel()) as usize;
         // Wire boundary: midi2's `u7` is already in range, so the mask is a no-op.
-        let control = CCNumber::new(u8::from(m.control()));
+        let control = CCNumber::masked(u8::from(m.control()));
         let value = u8::from(m.control_data());
         let state = &mut self.channels[channel & 0x0F];
 
@@ -181,7 +181,7 @@ impl Midi1ToMidi2Translator {
             .bank_set
             .then(|| (u16::from(state.bank_msb) << 7) | u16::from(state.bank_lsb));
         state.bank_set = false;
-        MidiEvent::program_change(event.group(), MidiChannel::new(channel), program, bank)
+        MidiEvent::program_change(event.group(), MidiChannel::masked(channel), program, bank)
             .with_frame_offset(event.frame_offset)
     }
 
@@ -242,7 +242,7 @@ impl Midi1ToMidi2Translator {
         // MIDI-2 equivalent would.
         let data14 = ((state.data_msb as u16) << 7) | (state.data_lsb as u16);
         let data32 = super::scaling::midi1_pitch_bend_to_midi2(data14);
-        let ch = MidiChannel::new(channel as u8);
+        let ch = MidiChannel::masked(channel as u8);
         let ev = if state.registered {
             let n = state.rpn;
             MidiEvent::registered_controller(MidiGroup::FIRST, ch, n.bank, n.index, data32)

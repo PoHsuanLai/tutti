@@ -36,14 +36,14 @@ static A: AllocDisabler = AllocDisabler;
 fn note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
     MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         note,
         midi1_velocity_to_midi2(vel),
     )
 }
 
 fn note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(channel), note, 0)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
 #[test]

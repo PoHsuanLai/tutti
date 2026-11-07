@@ -191,7 +191,12 @@ fn voice2(a: Address, v: Voice2) -> [u32; 4] {
             note,
             controller,
             value,
-        } => (0x0, u32::from(note.get()), u32::from(controller), value),
+        } => (
+            0x0,
+            u32::from(note.get()),
+            u32::from(controller.number()),
+            value,
+        ),
         Voice2::AssignablePerNote {
             note,
             controller,

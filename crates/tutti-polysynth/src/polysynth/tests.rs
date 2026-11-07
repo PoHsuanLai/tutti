@@ -160,20 +160,20 @@ fn queue_midi(synth: &mut Hand, events: &[MidiEvent]) {
 fn ev_note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
     MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         note,
         midi1_velocity_to_midi2(vel),
     )
 }
 
 fn ev_note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(channel), note, 0)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
 fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> MidiEvent {
     MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         cc_num,
         midi1_cc_to_midi2(value),
     )
@@ -182,7 +182,7 @@ fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> MidiEvent {
 fn ev_bend(channel: u8, bend14: u16) -> MidiEvent {
     MidiEvent::pitch_bend(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         midi1_pitch_bend_to_midi2(bend14),
     )
 }
@@ -190,7 +190,7 @@ fn ev_bend(channel: u8, bend14: u16) -> MidiEvent {
 fn ev_aftertouch(channel: u8, pressure: u8) -> MidiEvent {
     MidiEvent::channel_pressure(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         midi1_cc_to_midi2(pressure),
     )
 }
@@ -570,7 +570,7 @@ fn test_note_off_respects_channel() {
     });
 
     // Play same note (C4=60) on channel 0 and channel 1
-    // note_on(MidiGroup::new(frame_offset), MidiChannel::new(channel), note, velocity)
+    // note_on(MidiGroup::of(frame_offset), MidiChannel::of(channel), note, velocity)
     let note_on_ch0 = ev_note_on(0, 60, 100);
     let note_on_ch1 = ev_note_on(1, 60, 100);
     queue_midi(&mut synth, &[note_on_ch0, note_on_ch1]);
@@ -581,7 +581,7 @@ fn test_note_off_respects_channel() {
     assert_eq!(synth.active_voice_count(), 2, "Should have 2 active voices");
 
     // Note off on channel 0 only
-    // note_off(MidiGroup::new(frame_offset), MidiChannel::new(channel), note, velocity)
+    // note_off(MidiGroup::of(frame_offset), MidiChannel::of(channel), note, velocity)
     let note_off_ch0 = ev_note_off(0, 60);
     queue_midi(&mut synth, &[note_off_ch0]);
     synth.tick(&[], &mut output);
@@ -591,9 +591,7 @@ fn test_note_off_respects_channel() {
     // until envelope finishes
     let mut ch1_still_gated = false;
     for voice in &synth.voices {
-        if voice.is_active()
-            && voice.channel() == MidiChannel::new(1)
-            && voice.note() == u7::new(60)
+        if voice.is_active() && voice.channel() == MidiChannel::of(1) && voice.note() == u7::new(60)
         {
             assert!(
                 voice.gate_value() > 0.0,
@@ -834,7 +832,7 @@ fn test_cc123_respects_channel() {
     let ch1_voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1));
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1));
     assert!(
         ch1_voice.is_some(),
         "Channel 1 voice should still be active"
@@ -1152,19 +1150,19 @@ fn test_mpe_per_voice_pitch_bend() {
     // form at the input edge (`MpeIngest`); the synth is zone-agnostic and only
     // ever sees native per-note messages.
     let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
     let voice_ch1 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     let voice_ch2 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(2))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(2))
         .unwrap();
 
     assert!(
@@ -1212,7 +1210,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
 
     // Native per-note pitch bend addressed to note 60 only (full positive).
     let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
@@ -1272,8 +1270,8 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     queue_midi(
         &mut synth,
         &[
-            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF),
-            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 64, 0xFFFF_FFFF),
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF),
+            MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF_FFFF),
         ],
     );
     synth.tick(&[], &mut output);
@@ -1296,7 +1294,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
         &mut synth,
         &[MidiEvent::per_note_management(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             false,
             true,
@@ -1347,7 +1345,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
     // per-note controller index 3 (Pitch 7.25).
     let pitch = MidiEvent::per_note_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         3,
         69u32 << 25,
@@ -1407,7 +1405,7 @@ fn test_per_note_management_detach_freezes_the_note() {
         &mut synth,
         &[MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             0xFFFF_FFFF,
         )],
@@ -1431,7 +1429,7 @@ fn test_per_note_management_detach_freezes_the_note() {
         &mut synth,
         &[MidiEvent::per_note_management(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             true,
             false,
@@ -1444,7 +1442,7 @@ fn test_per_note_management_detach_freezes_the_note() {
         &mut synth,
         &[MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             0x8000_0000,
         )],
@@ -1482,7 +1480,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     let sens = tutti_midi_types::mpe::PitchBendSensitivity::from_semitones(12);
     let rpn = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         tutti_midi_types::ump::RPN_BANK_MPE,
         tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
         sens.to_rpn_bits(),
@@ -1496,7 +1494,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
         &mut synth,
         &[MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             0xFFFF_FFFF,
         )],
@@ -1544,7 +1542,7 @@ fn test_reset_all_controllers_spares_per_note() {
         &mut synth,
         &[MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             0xFFFF_FFFF,
         )],
@@ -1606,7 +1604,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
         &mut synth,
         &[MidiEvent::per_note_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             74,
             0xFFFF_FFFF,
@@ -1684,7 +1682,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
         &mut synth,
         &[MidiEvent::per_note_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             7,
             0x8000_0000,
@@ -1730,19 +1728,19 @@ fn test_mpe_per_voice_pressure() {
 
     // Native per-note pressure addressed to the ch1 note (60) only. Classic-MPE
     // channel pressure is rewritten to this form at the input edge.
-    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[pressure]);
     synth.tick(&[], &mut output);
 
     let voice_ch1 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     let voice_ch2 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(2))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(2))
         .unwrap();
 
     assert!(
@@ -1786,7 +1784,7 @@ fn test_mpe_per_voice_slide() {
     // channel CC74 is rewritten to this form at the input edge.
     let slide = MidiEvent::per_note_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         74,
         0xFFFF_FFFF,
@@ -1798,7 +1796,7 @@ fn test_mpe_per_voice_slide() {
     let voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     assert!(
         (voice.mpe_state().slide - 1.0).abs() < 0.01,
@@ -1875,7 +1873,7 @@ fn test_mpe_pressure_affects_amplitude() {
     }
 
     // Apply full pressure as a native per-note pressure on the note (60).
-    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+    let pressure = MidiEvent::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[pressure]);
 
     let mut max_with_pressure = 0.0f32;
@@ -1934,7 +1932,7 @@ fn test_mpe_note_on_resets_expression() {
     let voice = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.channel() == MidiChannel::new(1))
+        .find(|v| v.is_active() && v.channel() == MidiChannel::of(1))
         .unwrap();
     assert!(
         voice.mpe_state().pressure.abs() < 0.01,
@@ -2028,7 +2026,7 @@ fn disabling_mpe_clears_latent_per_note_state() {
 
     // Bend the sounding note well off centre.
     let bend =
-        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::new(1), 60, 0xFFFF_FFFF);
+        MidiEvent::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
     assert!(

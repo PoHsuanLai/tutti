@@ -25,7 +25,8 @@ use tutti_ump::{
     Accidental, Address, Alteration, AlterationKind, Attribute, BlockSelect, ChordBass, ChordName,
     ChordPitch, ChordType, Direction, EndpointInfo, Flex, FlexAddress, FlexTextKind, Form,
     KeySignature, Letter, Message, Midi1Port, MidiChannel, MidiGroup, NoteNumber, Protocol,
-    SharpsFlats, Stream, StreamConfig, U4, U7, Ump, UmpVersion, Unknown, Utility, Voice2, decode,
+    RegisteredPerNoteController, SharpsFlats, Stream, StreamConfig, U4, U7, Ump, UmpVersion,
+    Unknown, Utility, Voice2, decode,
 };
 
 /// `dirty` decodes to the message `clean` encodes, and re-encoding gives
@@ -219,8 +220,8 @@ fn kept(words: [u32; 4], message: Message) {
 
 #[test]
 fn reserved_values_are_kept() {
-    let g = MidiGroup::new;
-    let ch = MidiChannel::new;
+    let g = MidiGroup::of;
+    let ch = MidiChannel::of;
     let n = |v| NoteNumber::new(v).unwrap();
     let u7 = |v| U7::new(v).unwrap();
     let none = Alteration {
@@ -282,7 +283,7 @@ fn reserved_values_are_kept() {
                 },
                 Voice2::RegisteredPerNote {
                     note: n(60),
-                    controller: controller as u8,
+                    controller: RegisteredPerNoteController::Reserved(controller as u8),
                     value: 7,
                 },
             ),
@@ -546,5 +547,30 @@ fn a_defined_message_has_no_unknown_form() {
             decode(Ump(words)),
             Ok(Message::Utility(_) | Message::Midi1(..) | Message::Stream(_))
         ));
+    }
+}
+
+/// Every one of the 256 numbers round-trips through the controller type, and a
+/// number Appendix A defines is never held as `Reserved`, so equal numbers are
+/// equal values.
+///
+/// Mutation record: `From<u8>` mapping 74 to `Reserved(74)` -> this test;
+/// `number` returning the discriminant instead of the wire number for
+/// `Reserved` -> this test.
+#[test]
+fn a_registered_per_note_controller_number_round_trips() {
+    for n in 0..=255u8 {
+        let c = RegisteredPerNoteController::from(n);
+        assert_eq!(c.number(), n);
+        assert_eq!(u8::from(c), n);
+        if let RegisteredPerNoteController::Reserved(r) = c {
+            assert_eq!(r, n);
+            let defined = [
+                1, 2, 3, 7, 8, 10, 11, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
+            ]
+            .contains(&n)
+                || (91..=95).contains(&n);
+            assert!(!defined, "{n} is defined but held as Reserved");
+        }
     }
 }

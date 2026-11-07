@@ -126,7 +126,7 @@ impl MidiIn for Wire {
 }
 
 fn note(channel: u8, note: u8, offset: u32) -> MidiEvent {
-    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::new(channel), note, 100)
+    MidiEvent::note_on_7bit(MidiGroup::FIRST, MidiChannel::of(channel), note, 100)
         .with_frame_offset(offset)
 }
 
@@ -190,7 +190,7 @@ fn an_rpn_run_split_across_blocks_is_assembled() {
 /// (run): adopt without sending the ranges → none go out → fails.
 #[test]
 fn a_requested_mpe_mode_is_adopted_once() {
-    let member = MidiChannel::new(1);
+    let member = MidiChannel::of(1);
     let bend = MidiEvent::pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
     let wire = Wire::new(vec![
         vec![MidiEvent::note_on_7bit(MidiGroup::FIRST, member, 60, 100)],
@@ -230,7 +230,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
     use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
     let range = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(2),
+        MidiChannel::of(2),
         RPN_BANK_MPE,
         RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
@@ -353,7 +353,7 @@ fn a_note_off_has_room_past_the_capacity() {
         cc_ev(2, cc::DATA_ENTRY, 12),
     ]);
     batch.extend((0..4).map(|k| {
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 61 + k as u8, 0)
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 61 + k as u8, 0)
             .with_frame_offset(510 + k)
     }));
     assert_eq!(batch.len(), MIDI_INPUT_EVENT_CAPACITY);

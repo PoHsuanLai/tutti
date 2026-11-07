@@ -62,7 +62,7 @@ fn beat_of(frame: u64) -> Beat {
 
 /// Note `i` as a key: 128 notes on each of 16 channels.
 fn key(i: u32) -> (MidiChannel, u8) {
-    (MidiChannel::new(((i / 128) % 16) as u8), (i % 128) as u8)
+    (MidiChannel::of(((i / 128) % 16) as u8), (i % 128) as u8)
 }
 
 fn on(i: u32) -> MidiEvent {

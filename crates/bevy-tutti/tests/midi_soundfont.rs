@@ -627,7 +627,7 @@ mod midi_route {
 
         wire.0.lock().unwrap().push(MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             u16::MAX,
         ));
@@ -636,12 +636,12 @@ mod midi_route {
 
     #[test]
     fn a_routed_hardware_note_sounds() {
-        let level = routed_level(MidiChannel::new(1));
+        let level = routed_level(MidiChannel::of(1));
         assert!(
             level > 1e-4,
             "a note routed to the synth must sound, got RMS {level}"
         );
-        let other = routed_level(MidiChannel::new(5));
+        let other = routed_level(MidiChannel::of(5));
         assert!(
             other < 1e-6,
             "a note on an unrouted channel must not, got RMS {other}"

@@ -5,7 +5,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 fn rpn(channel: u8, index: u8, semitones: u8) -> MidiEvent {
     MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         RPN_BANK_MPE,
         index,
         PitchBendSensitivity::from_semitones(semitones).to_rpn_bits(),
@@ -23,7 +23,7 @@ fn rpn(channel: u8, index: u8, semitones: u8) -> MidiEvent {
 fn only_the_per_note_sensitivity_sets_a_channels_range() {
     let mut ranges = PerNoteBendRanges::default();
     let channel_wide = rpn(5, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY, 2);
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000);
+    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000);
     assert!(!ranges.observe(&channel_wide));
     assert!(!ranges.observe(&note));
     assert_eq!(ranges, PerNoteBendRanges::default());

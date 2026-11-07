@@ -108,3 +108,86 @@ bounded!(
     /// Sharps (positive) or flats (negative) in a key signature, `-7..=7`.
     SharpsFlats, i8, -7, 7
 );
+
+/// An unsigned fixed-point pitch: a MIDI note number with a fraction of a
+/// semitone, stored as Q7.25 (7 integer bits, 25 fractional bits). Note On
+/// Attribute #3 carries it as Q7.9 (§7.4.15.3) and Registered Per-Note
+/// Controller #3 as Q7.25 (§7.4.15.2). Q7.9 widens by zero extension, which is
+/// exact (M2-115 §4), so one type holds both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pitch(u32);
+
+impl Pitch {
+    /// The pitch of a Q7.9 word.
+    #[inline]
+    #[must_use]
+    pub const fn from_q7_9(bits: u16) -> Self {
+        Self((bits as u32) << 16)
+    }
+
+    /// The pitch of a Q7.25 word.
+    #[inline]
+    #[must_use]
+    pub const fn from_q7_25(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// The Q7.25 word.
+    #[inline]
+    #[must_use]
+    pub const fn q7_25(self) -> u32 {
+        self.0
+    }
+
+    /// The Q7.9 word: the fraction below 9 bits is dropped.
+    #[inline]
+    #[must_use]
+    pub const fn q7_9(self) -> u16 {
+        (self.0 >> 16) as u16
+    }
+
+    /// The fractional MIDI note number: 69.0 is A4, and 0.5 above is a
+    /// quarter tone up.
+    #[inline]
+    #[must_use]
+    pub fn note_number(self) -> f32 {
+        self.0 as f32 / (1u32 << 25) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Pitch;
+    use crate::Attribute;
+
+    // Mutation record: `from_q7_9` shifting by 15 -> `q7_9_is_widened_by_zero_extension`;
+    // `note_number` dividing by 1 << 24 -> `the_note_number_is_the_integer_part_plus_the_fraction`.
+    #[test]
+    fn q7_9_is_widened_by_zero_extension() {
+        for bits in [0u16, 1, 0x0200, 0x8C30, 0xFE00, 0xFFFF] {
+            let p = Pitch::from_q7_9(bits);
+            assert_eq!(p.q7_25(), u32::from(bits) << 16);
+            assert_eq!(p.q7_9(), bits);
+        }
+    }
+
+    #[test]
+    fn the_note_number_is_the_integer_part_plus_the_fraction() {
+        assert_eq!(Pitch::from_q7_9(60 << 9).note_number(), 60.0);
+        assert_eq!(Pitch::from_q7_9((60 << 9) | 256).note_number(), 60.5);
+        assert_eq!(Pitch::from_q7_25(69 << 25).note_number(), 69.0);
+        assert_eq!(Pitch::from_q7_25(1 << 24).note_number(), 0.5);
+        assert_eq!(Pitch::from_q7_25(127 << 25).note_number(), 127.0);
+    }
+
+    #[test]
+    fn only_the_pitch_attribute_has_a_pitch() {
+        assert_eq!(
+            Attribute::Pitch(61 << 9).pitch(),
+            Some(Pitch::from_q7_25(61 << 25))
+        );
+        assert_eq!(Attribute::None.pitch(), None);
+        assert_eq!(Attribute::Manufacturer(61 << 9).pitch(), None);
+        assert_eq!(Attribute::Reserved { kind: 4, data: 1 }.pitch(), None);
+    }
+}

@@ -20,7 +20,7 @@ fn block() -> Vec<MidiEvent> {
             match i % 4 {
                 0 | 1 => MidiEvent::note_on(g, c, note, 0x8000 + i as u16),
                 2 => MidiEvent::note_off(g, c, note, 0x4000),
-                _ => MidiEvent::cc(g, c, CCNumber::new(7), 0x8000_0000 + i),
+                _ => MidiEvent::cc(g, c, CCNumber::of(7), 0x8000_0000 + i),
             }
         })
         .collect()
@@ -40,15 +40,15 @@ fn block_shuffled() -> Vec<MidiEvent> {
     for _ in 0..64 {
         let r = next();
         let (g, c) = (
-            MidiGroup::new((r & 3) as u8),
-            MidiChannel::new(((r >> 2) & 15) as u8),
+            MidiGroup::of((r & 3) as u8),
+            MidiChannel::of(((r >> 2) & 15) as u8),
         );
         let note = ((r >> 6) & 127) as u8;
         let (a, b) = (next() as u32, next() as u16);
         v.push(match (r >> 16) % 8 {
             0..=2 => MidiEvent::note_on(g, c, note, b),
             3 | 4 => MidiEvent::note_off(g, c, note, b),
-            5 => MidiEvent::cc(g, c, CCNumber::new(a as u8), a),
+            5 => MidiEvent::cc(g, c, CCNumber::masked(a as u8), a),
             6 => MidiEvent::pitch_bend(g, c, a),
             _ => MidiEvent::poly_pressure(g, c, note, a),
         });

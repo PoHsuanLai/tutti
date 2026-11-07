@@ -22,7 +22,7 @@ fn events_round_trip_with_deltas() {
         },
         ClipEvent {
             delta_ticks: 240,
-            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0xFFFF),
+            event: MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
         },
     ];
     let bytes = write_clip_file(96, &events);
@@ -216,7 +216,7 @@ fn beats_round_trip_through_the_beat_facade() {
             ),
             (
                 Beat(2.5),
-                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0xFFFF),
+                MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF),
             ),
         ],
     );
@@ -228,7 +228,7 @@ fn beats_round_trip_through_the_beat_facade() {
     assert!((timed[2].0 - Beat(2.5)).abs() < BeatDuration(1e-9));
     assert_eq!(
         timed[2].1,
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0xFFFF)
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF)
     );
     assert!((clip.duration_beats() - BeatDuration(2.5)).abs() < BeatDuration(1e-9));
 }
@@ -459,19 +459,19 @@ fn a_note_off_only_closes_its_own_channel_and_group() {
         ),
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60, 0x2000),
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x2000),
         ),
         (
             Beat(0.0),
-            MidiEvent::note_on(MidiGroup::new(1), MidiChannel::FIRST, 60, 0x3000),
+            MidiEvent::note_on(MidiGroup::of(1), MidiChannel::FIRST, 60, 0x3000),
         ),
         (
             Beat(1.0),
-            MidiEvent::note_off(MidiGroup::new(1), MidiChannel::FIRST, 60, 0),
+            MidiEvent::note_off(MidiGroup::of(1), MidiChannel::FIRST, 60, 0),
         ),
         (
             Beat(2.0),
-            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60, 0),
+            MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
         ),
         (
             Beat(3.0),
@@ -487,9 +487,9 @@ fn a_note_off_only_closes_its_own_channel_and_group() {
             .map(|n| (n.group, n.channel))
             .collect::<Vec<_>>(),
         [
-            (MidiGroup::new(0), MidiChannel::new(0)),
-            (MidiGroup::new(0), MidiChannel::new(1)),
-            (MidiGroup::new(1), MidiChannel::new(0)),
+            (MidiGroup::of(0), MidiChannel::of(0)),
+            (MidiGroup::of(0), MidiChannel::of(1)),
+            (MidiGroup::of(1), MidiChannel::of(0)),
         ]
     );
     // Each closed against its own Note Off, not the nearest one.

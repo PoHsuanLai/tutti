@@ -87,7 +87,7 @@ fn select_nrpn(t: &mut Midi1ToMidi2Translator, channel: u8, bank: u8, index: u8)
 
 /// The MIDI 1.0 14-bit pair is CC *n* (MSB) with CC *n*+32 (LSB).
 ///
-/// Mutation: `DATA_ENTRY_LSB` re-export → `CCNumber::new(37)` (offset 31) →
+/// Mutation: `DATA_ENTRY_LSB` re-export → `CCNumber::of(37)` (offset 31) →
 /// fails, `left: 38, right: 37` (`DATA_ENTRY + 32 == DATA_ENTRY_LSB`).
 #[test]
 fn fourteen_bit_cc_pairs_are_thirty_two_apart() {
@@ -121,7 +121,7 @@ fn bank_select_is_latched_for_the_next_program_change_and_mod_wheel_promotes() {
     let mut t = Midi1ToMidi2Translator::new();
 
     assert!(t.translate(&cc_ev(0, cc::BANK_SELECT, 0x7F)).is_none());
-    assert!(t.translate(&cc_ev(0, CCNumber::new(32), 0x01)).is_none());
+    assert!(t.translate(&cc_ev(0, CCNumber::of(32), 0x01)).is_none());
     let pc = t
         .translate(&MidiEvent::from_midi1_bytes(0, &[0xC0, 9]).unwrap())
         .expect("program change promotes");
@@ -409,7 +409,7 @@ fn rpn_null_after_data_entry_drops_subsequent_cc6() {
 /// wrong knob — so this is the one place a constant-equals-literal test
 /// is warranted.
 ///
-/// Mutation: `SUSTAIN` re-export → `CCNumber::new(63)` → fails, `left: 63,
+/// Mutation: `SUSTAIN` re-export → `CCNumber::of(63)` → fails, `left: 63,
 /// right: 64`.
 #[test]
 fn named_controller_constants_match_the_midi_spec() {

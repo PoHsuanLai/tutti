@@ -61,7 +61,7 @@ fn interleaved_groups_do_not_corrupt() {
     let mut pa = Vec::new();
     let mut pb = Vec::new();
     ci_to_sysex7(MidiGroup::FIRST, &a, &mut pa);
-    ci_to_sysex7(MidiGroup::new(1), &b, &mut pb);
+    ci_to_sysex7(MidiGroup::of(1), &b, &mut pb);
 
     // Interleave the two multi-packet runs on groups 0 and 1.
     let mut r = Sysex7PacketReassembler::new();
@@ -137,7 +137,7 @@ fn real_time_and_groupless_and_other_groups_do_not_terminate() {
     assert!(r.push(&MidiEvent::jr_timestamp(0x1234)).is_none()); // MT 0x0
     assert!(
         r.push(&MidiEvent::note_on(
-            MidiGroup::new(3),
+            MidiGroup::of(3),
             MidiChannel::FIRST,
             60,
             0x8000

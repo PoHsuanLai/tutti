@@ -143,11 +143,11 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             let note = 60 + (b % 12) as u8;
             let on = MidiEvent::note_on(
                 MidiGroup::FIRST,
-                MidiChannel::new(1),
+                MidiChannel::of(1),
                 note,
                 midi1_velocity_to_midi2(100),
             );
-            let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), note, 0);
+            let off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), note, 0);
             sender.queue(&[on, off]);
         }
         let n = BLOCK;

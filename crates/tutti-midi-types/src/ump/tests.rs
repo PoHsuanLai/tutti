@@ -64,12 +64,12 @@ fn velocity_u16_upscales_a_midi1_note() {
 fn channel_reads_both_voice_versions() {
     // MIDI 2.0 channel voice (UMP type 0x4).
     assert_eq!(
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000).channel(),
-        Some(MidiChannel::new(5))
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000).channel(),
+        Some(MidiChannel::of(5))
     );
     // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
     let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
-    assert_eq!(cv1.channel(), Some(MidiChannel::new(3)));
+    assert_eq!(cv1.channel(), Some(MidiChannel::of(3)));
     // System messages carry no channel.
     assert_eq!(MidiEvent::timing_clock(MidiGroup::FIRST).channel(), None);
     assert_eq!(MidiEvent::noop().channel(), None);
@@ -80,7 +80,7 @@ fn split_ump_stream_walks_mixed_word_lengths() {
     // A native-UMP packet concatenates messages of different lengths with no
     // separators: 1-word JR Timestamp, 2-word CV2 note-on, 1-word clock.
     let jr = MidiEvent::jr_timestamp(0x1234);
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000);
+    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
     let clock = MidiEvent::timing_clock(MidiGroup::FIRST);
 
     let mut words = Vec::new();

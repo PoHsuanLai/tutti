@@ -31,7 +31,7 @@ use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputS
 fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
     let event =
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000).with_frame_offset(10);
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000).with_frame_offset(10);
     let clap =
         ClapEvent::from_midi(&event, &PerNoteBendRanges::default()).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
@@ -44,8 +44,8 @@ fn test_note_on_roundtrip() {
 /// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
 #[test]
 fn test_note_off_roundtrip() {
-    let event = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(5), 72, 0x4000)
-        .with_frame_offset(20);
+    let event =
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(5), 72, 0x4000).with_frame_offset(20);
     let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
         .expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
@@ -61,7 +61,7 @@ fn test_control_change_roundtrip() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(2),
+        MidiChannel::of(2),
         CCNumber::BRIGHTNESS,
         midi1_cc_to_midi2(100),
     )
@@ -106,7 +106,7 @@ fn test_pitch_bend_roundtrip() {
 /// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
 #[test]
 fn test_program_change_roundtrip() {
-    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(9), 42, None)
+    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None)
         .with_frame_offset(100);
     let clap = ClapEvent::from_midi(&event, &PerNoteBendRanges::default())
         .expect("ProgramChange should convert");
@@ -239,7 +239,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
     );
     assert_eq!(
         event.channel(),
-        Some(MidiChannel::new(CHANNEL)),
+        Some(MidiChannel::of(CHANNEL)),
         "a wildcard channel must resolve through note_id, not mask to 15"
     );
 }

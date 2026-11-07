@@ -21,7 +21,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 static A: AllocDisabler = AllocDisabler;
 
 fn note_on(ch: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(ch), note, 0x8000)
+    MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, 0x8000)
 }
 
 /// A wire with a fresh note on four channels every poll.
@@ -94,7 +94,7 @@ impl MidiIn for BendRange {
     fn poll_block(&mut self, _block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         buffer[0] = MidiEvent::registered_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(2),
+            MidiChannel::of(2),
             tutti_midi_types::ump::RPN_BANK_MPE,
             tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
             tutti_midi_types::PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
@@ -306,11 +306,11 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
 fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     const RATE: f64 = 48_000.0;
     let beat = |frame: f64| Beat(frame / 24_000.0);
-    let note = |i: u32| note_on((i / 128) as u8, (i % 128) as u8);
+    let note = |i: u32| note_on((i / 128 % 16) as u8, (i % 128) as u8);
     let off = |i: u32| {
         MidiEvent::note_off(
             MidiGroup::FIRST,
-            MidiChannel::new((i / 128) as u8),
+            MidiChannel::of((i / 128 % 16) as u8),
             (i % 128) as u8,
             0,
         )

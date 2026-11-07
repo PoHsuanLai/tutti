@@ -382,7 +382,7 @@ impl EndpointInquiry {
                 let block_number = u8::from(m.function_block_number());
                 let info = FunctionBlock {
                     block_number,
-                    first_group: MidiGroup::new(u8::from(m.first_group())),
+                    first_group: MidiGroup::masked(u8::from(m.first_group())),
                     num_groups: m.number_of_groups_spanned(),
                     direction: match m.direction() {
                         Direction::Input => FunctionBlockDirection::Input,

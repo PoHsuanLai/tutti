@@ -27,7 +27,7 @@ fn sysex8_multi_packet_fragments_and_reassembles() {
     // 30 bytes → 13 + 13 + 4 → Start + Continue + End.
     let data: Vec<u8> = (0u8..30).collect();
     let mut out = Vec::new();
-    MidiEvent::sysex8_fragments(MidiGroup::new(2), 0x55, &data, &mut out);
+    MidiEvent::sysex8_fragments(MidiGroup::of(2), 0x55, &data, &mut out);
     assert_eq!(out.len(), 3, "30 bytes over 13/packet is three packets");
     assert_eq!(out[0].sysex8_status(), Some((SYSEX8_STATUS_START, 0x55)));
     assert_eq!(out[1].sysex8_status(), Some((SYSEX8_STATUS_CONTINUE, 0x55)));

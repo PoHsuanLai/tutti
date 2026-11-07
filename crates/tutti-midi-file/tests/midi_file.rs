@@ -80,7 +80,7 @@ fn an_smf_and_a_clip_file_of_the_same_notes_yield_the_same_events() {
             RawEvent::note_off(BEAT, 3, 64, 0),
         ],
     ]);
-    let (g, c0, c3) = (MidiGroup::FIRST, MidiChannel::FIRST, MidiChannel::new(3));
+    let (g, c0, c3) = (MidiGroup::FIRST, MidiChannel::FIRST, MidiChannel::of(3));
     let clip = write_clip_file_from_beats(
         TPQ,
         [
@@ -392,7 +392,7 @@ fn an_smfs_controllers_bends_and_programs_reach_the_timed_stream() {
     assert_eq!(op(&cc), (0x4, 0xB));
     assert_eq!((cc.data_words()[0] >> 8) & 0x7F, 7, "the controller index");
     assert_eq!(cc.data_words()[1], 0xC924_9249);
-    assert_eq!(cc.channel(), Some(MidiChannel::new(2)));
+    assert_eq!(cc.channel(), Some(MidiChannel::of(2)));
 
     let (at, bend) = timed[1];
     assert_eq!(at, Beat(0.25));

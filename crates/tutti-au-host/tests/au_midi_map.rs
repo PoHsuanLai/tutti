@@ -784,7 +784,7 @@ fn a_mapped_cc_actually_moves_the_parameter() {
         // The mapping and the event must name the same controller, so bind it
         // once rather than repeating the number on both sides. 20 is one of the
         // undefined controllers, chosen so no AU reacts to it by default.
-        let mapped_cc = CCNumber::new(20);
+        let mapped_cc = CCNumber::of(20);
         au.add_parameter_midi_mapping(&[AuMidiMapping::control_change(*param, 0, mapped_cc.get())])
             .unwrap_or_else(|e| panic!("{}: add failed: {e:?}", unit.label));
         au.send_midi(&[MidiEvent::cc(
@@ -847,7 +847,7 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
         au.send_midi(&[MidiEvent::cc(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
-            CCNumber::new(20),
+            CCNumber::of(20),
             tutti_midi_types::convert::midi1_cc_to_midi2(127),
         )]);
         let mut output = vec![vec![0.0f32; BLOCK as usize]; au.num_outputs() as usize];

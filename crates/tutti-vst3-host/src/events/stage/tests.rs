@@ -91,7 +91,7 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
     let bend = |channel: u8| {
         MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(channel),
+            MidiChannel::of(channel),
             60,
             signed_f32_to_bend_u32(0.25),
         )
@@ -177,8 +177,8 @@ fn midi_staging_is_allocation_free_after_warmup() {
     let events = [
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(0),
         MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0).with_frame_offset(32),
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0x6000).with_frame_offset(64),
-        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 64, 0).with_frame_offset(96),
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0x6000).with_frame_offset(64),
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 64, 0).with_frame_offset(96),
     ];
 
     // Warm up — the first call may grow (the default Vec cap is 256,

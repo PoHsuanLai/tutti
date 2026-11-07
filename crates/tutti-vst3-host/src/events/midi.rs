@@ -212,19 +212,19 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
     let built = match &event.payload {
         Payload::NoteOn(e) => MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(midi_channel(e.channel)),
+            MidiChannel::masked(midi_channel(e.channel)),
             midi_note(e.pitch),
             unit_f32_to_u16(e.velocity),
         ),
         Payload::NoteOff(e) => MidiEvent::note_off(
             MidiGroup::FIRST,
-            MidiChannel::new(midi_channel(e.channel)),
+            MidiChannel::masked(midi_channel(e.channel)),
             midi_note(e.pitch),
             unit_f32_to_u16(e.velocity),
         ),
         Payload::PolyPressure(e) => MidiEvent::poly_pressure(
             MidiGroup::FIRST,
-            MidiChannel::new(midi_channel(e.channel)),
+            MidiChannel::masked(midi_channel(e.channel)),
             midi_note(e.pitch),
             unit_f32_to_u32(e.pressure),
         ),

@@ -40,6 +40,9 @@ members = [
     # it carries. Depends on no workspace crate, so `tutti-graph` can carry a
     # packet without a MIDI codec.
     "crates/tutti-ump",
+    # MIDI 1.0 to MIDI 2.0 widening and the M2-115 scaling (design 017 §6);
+    # depends on `tutti-ump` alone.
+    "crates/tutti-midi-protocol",
     "crates/tutti-graph",
     "crates/tutti-mod",
     "crates/tutti-export",

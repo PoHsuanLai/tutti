@@ -305,7 +305,7 @@ fn refused_note_offs_are_retried_until_none_is_held() {
     let note = |i: u16| {
         MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new((i / 128) as u8),
+            MidiChannel::of((i / 128) as u8),
             (i % 128) as u8,
             0xFFFF,
         )

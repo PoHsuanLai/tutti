@@ -49,10 +49,10 @@ pub fn normalize(event: &MidiEvent) -> MidiEvent {
 fn fold_note_off_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<MidiEvent> {
     match cv2 {
         ChannelVoice2::NoteOn(m) if m.velocity() == 0 => {
-            let g = MidiGroup::new(u8::from(m.group()));
+            let g = MidiGroup::masked(u8::from(m.group()));
             Some(MidiEvent::note_off(
                 g,
-                MidiChannel::new(u8::from(m.channel())),
+                MidiChannel::masked(u8::from(m.channel())),
                 u8::from(m.note_number()),
                 0,
             ))
@@ -66,8 +66,8 @@ fn fold_note_off_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<MidiEvent> {
 fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> MidiEvent {
     // Both come off the wire already 4-bit-masked by `midi2`'s `u4`, so the
     // re-mask in `new` is a no-op here — it is the type boundary, not a fix.
-    let g = MidiGroup::new(u8::from(cv1.group()));
-    let ch = MidiChannel::new(u8::from(cv1.channel()));
+    let g = MidiGroup::masked(u8::from(cv1.group()));
+    let ch = MidiChannel::masked(u8::from(cv1.channel()));
     match cv1 {
         ChannelVoice1::NoteOn(m) => {
             let note = u8::from(m.note_number());
@@ -88,8 +88,8 @@ fn promote_cv1(cv1: ChannelVoice1<&[u32]>) -> MidiEvent {
             g,
             ch,
             // `u8::from` is a wire boundary: midi2's `u7` is already in range,
-            // so `CCNumber::new`'s mask is a no-op here.
-            CCNumber::new(u8::from(m.control())),
+            // so `CCNumber::masked` masks nothing here.
+            CCNumber::masked(u8::from(m.control())),
             midi1_cc_to_midi2(u8::from(m.control_data())),
         ),
         ChannelVoice1::ChannelPressure(m) => {

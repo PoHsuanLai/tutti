@@ -375,7 +375,7 @@ fn a_block_does_not_allocate_and_a_short_channel_is_an_error() {
     changes.add_change(ParamId::new(1), 16, 0.75);
     let midi = [MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         100,
     )];

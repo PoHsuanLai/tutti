@@ -125,8 +125,7 @@ impl MidiEvent {
         m.set_group(u4::new(group.get()));
         m.set_channel(u4::new(channel.get()));
         // `.get()` is a wire boundary: `u7::new` wants the raw 7-bit byte. No
-        // assert or mask is needed — `CCNumber::new` already did the masking, so
-        // the value is in range by type.
+        // assert or mask is needed — a `CCNumber` is in range by type.
         m.set_control(u7::new(cc.get()));
         m.set_control_change_data(value);
         Self::from_ump(0, m.data())

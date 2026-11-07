@@ -371,8 +371,8 @@ names the owner. So does its vocabulary: one crate says port, endpoint, connecti
 and device for overlapping things, and `MidiSession` reads as if it were
 `tutti_session::Session`. It becomes `Endpoint` from `tutti-midi-device`, with `Port`
 only for an OS's handle to a connection, and `async_port` (an SPSC ring, not async)
-is named for what it is. `Sysex7ByteAssembler` consumes bytes no current backend
-produces, and moves to `tutti-midi-protocol` with the MIDI-CI path that wants it.
+is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser`;
+`Sysex7ByteAssembler` had no product caller and is deleted.
 
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
 `-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.

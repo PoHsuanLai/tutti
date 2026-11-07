@@ -57,8 +57,6 @@ assert_eq!(session.send(&[note]), 1);
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what enumeration returns.
 - [`MidiEndpoints`]: the backend trait; [`MidiSession::new`] picks this
   platform's implementation.
-- [`Sysex7ByteAssembler`]: reassembles SysEx7 runs from a byte stream
-  (`F0 … F7`, realtime bytes passed through). No backend here uses it.
 - [`Error`]: what opening, connecting and sending can fail with.
 - [`prelude`]: the common types in one import, including the graph's MIDI nodes
   and mailbox re-exported from `tutti-midi-runtime`.

@@ -11,7 +11,6 @@ pub mod endpoints;
 pub mod error;
 pub mod port;
 pub mod session;
-pub mod sysex;
 
 // A backend with no OS behind it, for testing the session layer. See the
 // module's own docs for why it is exported rather than `#[cfg(test)]`.
@@ -23,7 +22,6 @@ pub use endpoints::{InputConnection, MidiEndpoints};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;
-pub use sysex::Sysex7ByteAssembler;
 
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};

@@ -200,6 +200,10 @@ fn a_lone_eox_produces_nothing_and_cancels_running_status() {
 fn stray_data_and_undefined_statuses_produce_nothing() {
     assert!(parse(&[1, 2, 3, 0xF4, 4, 0xF5, 0xF9, 0xFD, 5]).is_empty());
     assert!(parse(&[0xF7]).is_empty());
+    // Data bytes with no SysEx in flight are not payload, and a late `0xF7`
+    // after a note ends nothing.
+    assert_eq!(parse(&[0x90, 0x3C, 0x40, 0xF7]), [on(0, 0x3C, 0x40)]);
+    assert!(parse(&[0xF7, 0x12, 0x34]).is_empty());
 }
 
 /// A status byte inside a message drops it and starts the next.
@@ -292,6 +296,15 @@ fn a_sysex_carries_across_calls_and_two_share_a_call() {
             sysex(SysexStatus::End, &[7, 8]),
             on(0, 60, 100)
         ]
+    );
+    // A real-time byte that is a call of its own does not end the run.
+    let mut p = Midi1Parser::new(MidiGroup::FIRST);
+    let mut out: Vec<Message> = p.feed_all(&[0xF0, 1]).collect();
+    out.extend(p.feed_all(&[0xFA]));
+    out.extend(p.feed_all(&[2, 0xF7]));
+    assert_eq!(
+        out,
+        [system(System::Start), sysex(SysexStatus::Complete, &[1, 2])]
     );
     assert_eq!(
         parse(&[0xF0, 1, 2, 0xF7, 0xF0, 3, 4, 0xF7]),

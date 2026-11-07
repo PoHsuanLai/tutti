@@ -886,7 +886,10 @@ mod tests {
                 api_ev.midi_data = hostile;
                 host.process_events(&events(&mut api_ev));
             }
-            assert!(host.midi_out_tx.is_empty(), "a malformed message was queued");
+            assert!(
+                host.midi_out_tx.is_empty(),
+                "a malformed message was queued"
+            );
             assert_eq!(host.dropped_midi_out(), 0);
 
             api_ev.midi_data = good;

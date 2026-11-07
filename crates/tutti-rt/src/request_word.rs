@@ -126,6 +126,7 @@ impl RequestWord {
     ///
     /// The one consuming thread's call: two takers would split the bits
     /// between them.
+    #[must_use = "the bits are cleared; dropping them drops the requests"]
     pub fn take(&self) -> RequestBits {
         RequestBits(self.0.swap(0, Ordering::Acquire))
     }

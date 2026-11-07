@@ -101,10 +101,17 @@ mod sync {
 const LEN_BITS: u32 = 24;
 
 /// The most frames a [`PosRing`] holds.
-///
-/// The window's length is packed in 24 bits. Its end takes the other 40, so a
-/// position must stay below `2^40` (about 290 days of frames at 44.1 kHz).
 pub const MAX_POS_RING_FRAMES: usize = (1 << LEN_BITS) - 1;
+
+/// The largest window end a [`PosRing`] holds.
+///
+/// The window's length is packed in 24 bits and its end takes the other 40,
+/// so a position must stay below `2^40` (about 290 days of frames at
+/// 44.1 kHz). The writer enforces it in every build: [`PosWriter::push`]
+/// stops short of it and [`PosWriter::reset`] saturates at it, so a window
+/// never passes it and no caller can make the writer panic with a position.
+/// The reader packs nothing, so the check costs the audio thread nothing.
+pub const MAX_POS_RING_POSITION: u64 = (1 << (64 - LEN_BITS)) - 1;
 
 /// A window of ring positions `[from, to)`: the positions a [`PosRing`]'s
 /// slots hold.
@@ -118,7 +125,10 @@ pub struct RingWindow {
 
 impl RingWindow {
     fn pack(self) -> u64 {
-        debug_assert!(self.to < 1 << (64 - LEN_BITS), "a position past 2^40");
+        assert!(
+            self.to <= MAX_POS_RING_POSITION,
+            "a window end past 2^40 - 1"
+        );
         debug_assert!(self.to - self.from <= MAX_POS_RING_FRAMES as u64);
         (self.to << LEN_BITS) | (self.to - self.from)
     }
@@ -420,7 +430,11 @@ impl PosWriter {
 
     /// Empties the window and restarts it at `start`, for a reader that moved
     /// outside the current one.
+    ///
+    /// A `start` past [`MAX_POS_RING_POSITION`] saturates there: the window
+    /// is empty at the limit and [`push`](Self::push) lands nothing.
     pub fn reset(&mut self, start: u64) {
+        let start = start.min(MAX_POS_RING_POSITION);
         let w = self.window();
         self.shrink(
             RingWindow {
@@ -438,6 +452,7 @@ impl PosWriter {
     /// block in flight may read, or where the ring is full ahead of where the
     /// reader plays; push the rest again later. A trailing partial frame is
     /// ignored.
+    #[must_use = "the count is how many frames landed; push the rest again"]
     pub fn push(&mut self, samples: &[f32]) -> usize {
         let ring = &*self.ring;
         let ch = ring.stride;
@@ -445,8 +460,12 @@ impl PosWriter {
         let frames = ring.frames as u64;
         let RingWindow { from, to } = self.window();
         // Never reuse the slot of a position the reader still stands on.
-        let room = (ring.play().saturating_sub(ring.keep_behind) + frames).saturating_sub(to);
-        let mut end = to + n.min(room);
+        let room = ring
+            .play()
+            .saturating_sub(ring.keep_behind)
+            .saturating_add(frames)
+            .saturating_sub(to);
+        let mut end = (to + n.min(room)).min(MAX_POS_RING_POSITION);
         // A first cap from the ranges as they stand, so the raise below is
         // not needlessly high. Not the check: that is after the fence.
         for (a, e) in ring.in_flight() {
@@ -533,6 +552,7 @@ impl PosReader {
     /// returned [`PosClaim`] holds the window taken now. It borrows the
     /// reader, so it ends before the next claim starts.
     #[inline]
+    #[must_use = "the claim is the only way to read the ring"]
     pub fn claim(&mut self, play: u64, reads: [(u64, u64); 2]) -> PosClaim<'_> {
         let ring = &*self.ring;
         ring.play.store(play, Ordering::Relaxed);

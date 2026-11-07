@@ -115,7 +115,7 @@ fn frames_land_at_the_windows_end_and_read_back_by_position() {
 #[test]
 fn a_write_never_goes_round_the_ring_onto_the_reader() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
-    writer.push(&indexed(1_000, 1));
+    let _ = writer.push(&indexed(1_000, 1));
     writer.set_play(1_000);
     assert_eq!(writer.push(&indexed(8_000, 1)), 4_096 - 4);
     assert_eq!(writer.window().to, 1_000 - 4 + 4_096);
@@ -137,7 +137,7 @@ fn a_write_never_goes_round_the_ring_onto_the_reader() {
 #[test]
 fn a_write_never_reuses_a_slot_the_block_in_flight_reads() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
-    writer.push(&indexed(4_000, 1));
+    let _ = writer.push(&indexed(4_000, 1));
     let claim = reader.claim(3_997, [(3_997, 4_069), (100, 200)]);
     assert_eq!(claim.window(), RingWindow { from: 0, to: 4_000 });
     assert_eq!(writer.push(&[-1.0; 300]), 196, "stops at 4 196");
@@ -172,7 +172,7 @@ fn a_capped_write_keeps_what_it_did_not_overwrite() {
         } else {
             writer.reset(2);
         }
-        writer.push(&[-9.0; 3]);
+        let _ = writer.push(&[-9.0; 3]);
         assert_eq!(claim.sample(3, 0), 3.0, "retract {retract}: rewritten");
     }
 }
@@ -194,7 +194,7 @@ fn a_capped_write_keeps_what_it_did_not_overwrite() {
 fn a_shrink_does_not_free_what_a_block_in_flight_holds() {
     for reset in [false, true] {
         let (mut writer, mut reader) = ring(4_096, 1, 4);
-        writer.push(&indexed(1_000, 1));
+        let _ = writer.push(&indexed(1_000, 1));
         {
             let claim = reader.claim(600, [(600, 680), (0, 0)]);
             assert!(claim.holds(650));
@@ -220,7 +220,7 @@ fn a_shrink_does_not_free_what_a_block_in_flight_holds() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
     writer.reset(5_000);
     writer.set_play(5_000);
-    writer.push(&indexed(1_000, 1));
+    let _ = writer.push(&indexed(1_000, 1));
     let _claim = reader.claim(1_000, [(997, 1_069), (0, 0)]);
     writer.reset(996);
     writer.set_play(1_000);
@@ -237,7 +237,7 @@ fn a_shrink_does_not_free_what_a_block_in_flight_holds() {
 #[test]
 fn raising_the_start_drops_what_lies_below() {
     let (mut writer, mut reader) = ring(4_096, 1, 4);
-    writer.push(&indexed(1_000, 1));
+    let _ = writer.push(&indexed(1_000, 1));
     writer.raise_from(400);
     assert_eq!(
         writer.window(),
@@ -270,7 +270,7 @@ fn raising_the_start_drops_what_lies_below() {
 #[test]
 fn an_idle_reader_holds_nothing_back() {
     let (mut writer, mut reader) = ring(1_024, 1, 4);
-    writer.push(&indexed(1_000, 1));
+    let _ = writer.push(&indexed(1_000, 1));
     let _ = reader.claim(100, [(97, 169), (0, 0)]);
     reader.idle();
     writer.reset(97 + 1_024);
@@ -439,7 +439,7 @@ fn a_writer_and_a_reader_thread_never_tear() {
                     buf.push(tag(to + i, generation, 0));
                     buf.push(tag(to + i, generation, 1));
                 }
-                writer.push(&buf);
+                let _ = writer.push(&buf);
             }
         }
     }
@@ -449,5 +449,41 @@ fn a_writer_and_a_reader_thread_never_tear() {
     assert!(
         checked >= CHECKS,
         "the reader checked only {checked} frames in 120 s"
+    );
+}
+
+/// **A window never passes 2^40**: `push` stops at the limit and lands the
+/// short count, and `reset` saturates there, whatever the start or the play
+/// position (an unbounded one included).
+///
+/// Mutation (run, debug and release): `pack`'s `assert!` back to
+/// `debug_assert!` and the `.min(MAX_POS_RING_POSITION)` cap dropped from
+/// `push` -> the first push of 100 lands 100 (release wraps the window; debug
+/// trips the assertion) -> fails. Mutation (run): `reset` without its `.min`
+/// -> the `u64::MAX` start panics -> fails.
+#[test]
+fn a_window_never_passes_the_position_limit() {
+    let near = MAX_POS_RING_POSITION - 10;
+    let (mut w, mut r) = ring(256, 1, 0);
+    w.reset(near);
+    drop(r.claim(near, [(0, 0), (0, 0)]));
+    assert_eq!(w.push(&[1.0; 100]), 10, "stops at the limit");
+    assert_eq!(w.window().to, MAX_POS_RING_POSITION);
+    assert_eq!(w.push(&[1.0; 100]), 0);
+    assert_eq!(w.window().to, MAX_POS_RING_POSITION);
+
+    w.reset(u64::MAX);
+    assert_eq!(
+        w.window(),
+        RingWindow {
+            from: MAX_POS_RING_POSITION,
+            to: MAX_POS_RING_POSITION
+        }
+    );
+    drop(r.claim(u64::MAX, [(u64::MAX - 5, u64::MAX), (0, 0)]));
+    assert_eq!(
+        w.push(&[1.0; 8]),
+        0,
+        "an unbounded play position lands nothing"
     );
 }

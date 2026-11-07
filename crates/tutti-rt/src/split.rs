@@ -27,7 +27,11 @@
 //! one, so whatever a thread wrote through a claim happens-before whatever
 //! the next claimer of that word reads. The `loom` model in
 //! `tests/split_loom.rs` checks this against the shipped code, and that a
-//! refused claim leaves the word as it found it.
+//! refused claim leaves the word as it found it once it returns. A shared
+//! claim adds one to the word before it looks for the exclusive bit and
+//! subtracts it again on refusal, so for that instant a concurrent exclusive
+//! claim on the same word is refused too; only a schedule that already
+//! conflicts can see it.
 //!
 //! # Cost
 //!
@@ -480,13 +484,19 @@ impl<'v, T> RwView<'v, T> {
             .position(|e| (e.get() & !HELD_WRITE) as usize == i)
     }
 
-    fn record(&self, entry: u32) {
-        let n = self.held.len.get();
+    /// Panic unless the view has room for one more claim. Called before a
+    /// claim is taken, so a full `Held` never leaves a claim with no entry.
+    fn ensure_room(&self) {
         assert!(
-            n < self.held.entries.len(),
+            self.held.len.get() < self.held.entries.len(),
             "a view holding more than its {} claims",
             self.held.entries.len()
         );
+    }
+
+    fn record(&self, entry: u32) {
+        let n = self.held.len.get();
+        self.ensure_room();
         self.held.entries[n].set(entry);
         self.held.len.set(n + 1);
     }
@@ -500,6 +510,7 @@ impl<'v, T> RwView<'v, T> {
     fn acquire_read(&self, i: usize) -> Result<(), ClaimConflict> {
         self.check(i);
         if self.find(i).is_none() {
+            self.ensure_room();
             claim_shared(&self.split.words[i], i)?;
             self.record(i as u32);
         }
@@ -518,6 +529,7 @@ impl<'v, T> RwView<'v, T> {
                 }
             }
             None => {
+                self.ensure_room();
                 claim_exclusive(&self.split.words[i], i)?;
                 self.record(i as u32 | HELD_WRITE);
             }
@@ -591,6 +603,10 @@ impl<'v, T> RwView<'v, T> {
     /// write when `is_write(tag)`, else as a read, and then handed to
     /// `write(tag, ..)` or `read(tag, ..)`.
     ///
+    /// `is_write` is called exactly once per request, in order, and that
+    /// answer alone decides the check, the claim and the reference, so a
+    /// closure that answers differently on each call cannot alias.
+    ///
     /// `reqs` must be **sorted by chunk**. Several reads of one chunk share
     /// it; a written chunk may appear once.
     ///
@@ -598,7 +614,9 @@ impl<'v, T> RwView<'v, T> {
     ///
     /// If `reqs` is unsorted, a written chunk appears twice or is also read
     /// (never an aliased reference), or on a [`ClaimConflict`], an
-    /// out-of-range chunk or a full [`Held`].
+    /// out-of-range chunk or a full [`Held`]. Requests are handled in order,
+    /// so `read` and `write` have already run for the requests before the one
+    /// that panics.
     #[track_caller]
     pub fn split<'s, R: Copy>(
         &'s mut self,
@@ -607,33 +625,40 @@ impl<'v, T> RwView<'v, T> {
         mut read: impl FnMut(R, &'s [T]),
         mut write: impl FnMut(R, &'s mut [T]),
     ) {
-        for w in reqs.windows(2) {
-            assert!(w[0].0 <= w[1].0, "split requests are not sorted");
-            assert!(
-                w[0].0 != w[1].0 || !(is_write(w[0].1) || is_write(w[1].1)),
-                "chunk {} is written and also borrowed elsewhere in one split",
-                w[0].0
-            );
-        }
+        let split = self.split;
+        // The previous request's chunk and mode: sorted order puts every
+        // request on one chunk next to each other, so adjacent pairs cover
+        // them all.
+        let mut prev: Option<(u32, bool)> = None;
         for &(i, tag) in reqs {
-            let r = if is_write(tag) {
+            let write_it = is_write(tag);
+            if let Some((pi, pw)) = prev {
+                assert!(pi <= i, "split requests are not sorted");
+                assert!(
+                    pi != i || !(pw || write_it),
+                    "chunk {i} is written and also borrowed elsewhere in one split"
+                );
+            }
+            prev = Some((i, write_it));
+            let claimed = if write_it {
                 self.acquire_write(i as usize)
             } else {
                 self.acquire_read(i as usize)
             };
-            if let Err(e) = r {
+            if let Err(e) = claimed {
                 panic!("{e}");
             }
-        }
-        let split = self.split;
-        for &(i, tag) in reqs {
-            // SAFETY: every chunk named is in range and claimed by this view
-            // in the mode used here (checked above); a written chunk appears
-            // once in `reqs` and is not also read (checked above), so the
-            // references made here are disjoint from each other; and `&'s mut
-            // self` keeps every other reference from this view dead for `'s`.
+            // SAFETY: chunk `i` is in range and this view holds a claim on it
+            // in the mode `write_it` (just taken). Requests before this one
+            // were checked pairwise in sorted order, and this one against its
+            // predecessor, so no reference already made in this call overlaps
+            // this one: a written chunk is named by no request before it, and
+            // a later duplicate is refused before it makes a second
+            // reference. `&'s mut self` keeps every other reference from this
+            // view dead for `'s`. `write_it` is the one answer from
+            // `is_write`, used for all three decisions.
             let p = unsafe { split.chunk_ptr(i as usize) };
-            if is_write(tag) {
+            if write_it {
                 write(tag, unsafe {
                     std::slice::from_raw_parts_mut(p, split.stride)
                 });
@@ -769,6 +794,85 @@ mod tests {
         let h = Held::new(4);
         let mut view = s.view(&h);
         view.split(&[(1, true), (1, false)], |w| w, |_, _| {}, |_, _| {});
+    }
+
+    /// `split` asks `is_write` once per request, so a closure whose answers
+    /// change cannot make the check and the hand-out disagree: whatever it
+    /// answers, no chunk is handed out as `&mut` twice, or as `&mut` and `&`.
+    ///
+    /// Mutation: restore the old shape (call `is_write` in a separate pair
+    /// check, claim loop and hand-out loop) -> the counter answers `false`
+    /// for the pair check, then `true` for the claims and the hand-out, and
+    /// the view hands `write` chunk 0 twice -> `writes` is 2 and the
+    /// assertion fails.
+    #[test]
+    fn a_stateful_is_write_never_aliases() {
+        let mut v = [0u8; 2];
+        let mut t = ClaimTable::new(2);
+        let s = SplitRw::new(&mut v, 1, &mut t);
+        let h = Held::new(2);
+        let mut view = s.view(&h);
+        let calls = Cell::new(0u32);
+        let (mut reads, mut writes) = (0, 0);
+        view.split(
+            &[(0, ()), (0, ())],
+            |()| {
+                calls.set(calls.get() + 1);
+                calls.get() > 2
+            },
+            |_, _| reads += 1,
+            |_, _| writes += 1,
+        );
+        assert!(
+            writes <= 1 && (writes == 0 || reads == 0),
+            "{writes} writes, {reads} reads of one chunk"
+        );
+        assert_eq!(calls.get(), 2, "one answer per request");
+    }
+
+    /// A full `Held` refuses a claim before taking it, so the panic leaves
+    /// no claim behind with no entry to release it.
+    ///
+    /// Mutation (run): drop the `ensure_room` call in `acquire_read` -> the
+    /// read of chunk 1 claims it, then `record` panics, and chunk 1 keeps a
+    /// shared count after the view drops -> the last `try_get_mut` conflicts
+    /// -> fails.
+    #[test]
+    fn a_full_held_leaves_no_claim_behind() {
+        let mut v = [0u8; 2];
+        let mut t = ClaimTable::new(2);
+        let s = SplitRw::new(&mut v, 1, &mut t);
+        let h = Held::new(1);
+        let mut view = s.view(&h);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.split(&[(0, ()), (1, ())], |()| false, |_, _| {}, |_, _| {});
+        }));
+        assert!(r.is_err(), "the second claim does not fit");
+        drop(view);
+        let mut view = s.view(&h);
+        assert_eq!(view.try_get_mut(1).map(|c| c.len()), Ok(1));
+    }
+
+    /// The same for a write: a full `Held` refuses an exclusive claim before
+    /// taking it.
+    ///
+    /// Mutation (run): drop the `ensure_room` call in `acquire_write`'s
+    /// `None` arm -> chunk 1 stays exclusively claimed after the view drops
+    /// -> the last `try_get_mut` conflicts -> fails.
+    #[test]
+    fn a_full_held_leaves_no_write_claim_behind() {
+        let mut v = [0u8; 2];
+        let mut t = ClaimTable::new(2);
+        let s = SplitRw::new(&mut v, 1, &mut t);
+        let h = Held::new(1);
+        let mut view = s.view(&h);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.split(&[(0, ()), (1, ())], |()| true, |_, _| {}, |_, _| {});
+        }));
+        assert!(r.is_err(), "the second claim does not fit");
+        drop(view);
+        let mut view = s.view(&h);
+        assert_eq!(view.try_get_mut(1).map(|c| c.len()), Ok(1));
     }
 
     /// `split`'s reads and writes land on the right chunks.

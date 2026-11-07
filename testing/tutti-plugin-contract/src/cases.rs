@@ -311,14 +311,15 @@ pub fn halves_of_two_activations_are_stuck<F: Format>() {
     drop((stuck, pb, ca));
 }
 
-/// 64-bit audio carries the same arithmetic.
-// Mutation (run): the host's 64-bit port table declares one channel -> fails.
+/// 64-bit audio carries the same arithmetic, at 64 bits: 0.1 is not exact in 32.
+// Mutation (run): the host declares one channel on its 64-bit port table -> fails;
+// the VST2 host narrowing the block through 32 bits -> fails.
 pub fn f64_carries_same_audio<F: Format>() {
     let mut a = active_with::<F>(Mode::Tag, BLOCK, SampleFormat::Float64);
-    let ins = [vec![0.25f64; BLOCK], vec![0.5f64; BLOCK]];
+    let ins = [vec![0.1f64; BLOCK], vec![0.2f64; BLOCK]];
     let out = a.render(&ins, BLOCK, &ProcessContext::new());
-    assert!(out[0].iter().all(|&v| v == 1.25));
-    assert!(out[1].iter().all(|&v| v == 2.5));
+    assert!(out[0].iter().all(|&v| v == 0.1 + 1.0), "ch0 {:?}", &out[0][..2]);
+    assert!(out[1].iter().all(|&v| v == 0.2 + 2.0), "ch1 {:?}", &out[1][..2]);
 }
 
 /// A plugin whose log overflowed fails the oracle instead of passing on the

@@ -524,7 +524,7 @@ mod transport_tests {
     }
 
     fn seven_eight() -> TimeSignature {
-        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
+        TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH)
     }
 
     fn seven_eight_meter() -> ProjectMeter {
@@ -556,7 +556,7 @@ mod transport_tests {
         assert_eq!(delivered.sample_rate, 48_000.0);
         assert_eq!(
             delivered.timing.signature,
-            TimeSignature::new(BeatsPerBar::new(4), NoteValue::QUARTER)
+            TimeSignature::new(BeatsPerBar::of(4), NoteValue::QUARTER)
         );
     }
 

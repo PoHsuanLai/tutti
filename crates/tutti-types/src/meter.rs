@@ -14,13 +14,13 @@
 //!
 //! // 4/4 for two bars, then 7/8.
 //! let map = MeterMap::new([
-//!     MeterChange::new(Beat(0.0), TimeSignature::from_numbers(4, 4)),
-//!     MeterChange::new(Beat(8.0), TimeSignature::from_numbers(7, 8)),
+//!     MeterChange::new(Beat(0.0), TimeSignature::of(4, 4)),
+//!     MeterChange::new(Beat(8.0), TimeSignature::of(7, 8)),
 //! ]);
 //!
 //! let pos = map.bar_at(Beat(9.0));
 //! assert_eq!(pos.bar, BarNumber(3));
-//! assert_eq!(pos.beat, BeatsPerBar::new(3)); // third eighth note of the bar
+//! assert_eq!(pos.beat, BeatsPerBar::of(3)); // third eighth note of the bar
 //! assert_eq!(map.at(Beat(9.0)).bar_length(), BeatDuration(3.5));
 //! assert_eq!(map.bar_start(BarNumber(4)), Beat(11.5));
 //! ```
@@ -52,29 +52,60 @@ use crate::value::{Beat, BeatDuration};
 /// Also serves as the 1-based ordinal of a beat *within* a bar
 /// ([`BarPosition::beat`]) — the same `1..=MAX` domain, so comparing a position's
 /// beat against its signature's count is type-checked.
+///
+/// The raw is the count itself: `new`, `of`, `clamped`, `TryFrom<u32>` and serde
+/// all take a `u32` in `1..=`[`MAX_BEATS_PER_BAR`].
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 pub struct BeatsPerBar(u32);
 
 /// Largest [`BeatsPerBar`] a signature may name.
 ///
 /// Bounded because the ruler and the metronome both loop over the beats in a bar;
-/// an absurd numerator from a malformed document should produce a strange meter,
-/// not a hang.
+/// an absurd numerator from a malformed document is refused, not looped over.
 pub const MAX_BEATS_PER_BAR: u32 = 64;
 
 impl BeatsPerBar {
-    /// Creates a numerator, clamping it to `1..=`[`MAX_BEATS_PER_BAR`].
+    /// A numerator, if it is in `1..=`[`MAX_BEATS_PER_BAR`].
     ///
-    /// Total rather than fallible: the writers are a UI number field and a CRDT
-    /// document, neither of which has a channel to report an error on. Zero would
-    /// make [`TimeSignature::bar_length`] zero and every downstream `bar_at`
-    /// divide by it.
+    /// Zero would make [`TimeSignature::bar_length`] zero and every downstream
+    /// `bar_at` divide by it.
     #[inline]
     #[must_use]
-    pub const fn new(beats: u32) -> Self {
+    pub const fn new(beats: u32) -> Option<Self> {
+        if beats == 0 || beats > MAX_BEATS_PER_BAR {
+            None
+        } else {
+            Some(Self(beats))
+        }
+    }
+
+    /// A numerator, for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If `beats` is outside `1..=`[`MAX_BEATS_PER_BAR`], at compile time in a
+    /// `const` context.
+    #[inline]
+    #[must_use]
+    pub const fn of(beats: u32) -> Self {
+        match Self::new(beats) {
+            Some(b) => b,
+            None => panic!("beats per bar must be in 1..=64"),
+        }
+    }
+
+    /// The nearest legal numerator: `0` becomes 1 and anything above
+    /// [`MAX_BEATS_PER_BAR`] becomes that.
+    ///
+    /// For a value computed to be in range (the beat index within a bar) where
+    /// a panic on the audio thread is worse than a wrong beat. A document or
+    /// ABI value that should be refused goes through [`new`](Self::new).
+    #[inline]
+    #[must_use]
+    pub const fn clamped(beats: u32) -> Self {
         Self(if beats == 0 {
             1
         } else if beats > MAX_BEATS_PER_BAR {
@@ -92,6 +123,31 @@ impl BeatsPerBar {
     }
 }
 
+impl TryFrom<u32> for BeatsPerBar {
+    type Error = InvalidBeatsPerBar;
+
+    #[inline]
+    fn try_from(beats: u32) -> Result<Self, InvalidBeatsPerBar> {
+        Self::new(beats).ok_or(InvalidBeatsPerBar(beats))
+    }
+}
+
+/// A numerator outside `1..=`[`MAX_BEATS_PER_BAR`] (see [`BeatsPerBar::new`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidBeatsPerBar(pub u32);
+
+impl core::fmt::Display for InvalidBeatsPerBar {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "beats per bar must be in 1..={MAX_BEATS_PER_BAR}, got {}",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for InvalidBeatsPerBar {}
+
 impl Default for BeatsPerBar {
     fn default() -> Self {
         Self(4)
@@ -108,13 +164,17 @@ impl core::fmt::Display for BeatsPerBar {
 /// Which note value gets the beat, named by its denominator — the lower number of
 /// a time signature. `NoteValue::EIGHTH` is 8.
 ///
-/// Always a power of two, enforced on construction: `x/5` is not a time
-/// signature, and a non-power-of-two here would break the
+/// Always a power of two from 1 to 64, enforced on construction: `x/5` is not a
+/// time signature, and a non-power-of-two here would break the
 /// [SMF exponent](Self::to_smf_exponent) round trip.
+///
+/// The raw is the denominator itself: `new`, `of`, `TryFrom<u32>` and
+/// serde all take a `u32`. Only the [SMF exponent](Self::to_smf_exponent) is a
+/// different raw, and it has its own constructor.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "u32", into = "u32"))]
 pub struct NoteValue(u32);
 
 /// The smallest denominator a signature may name: 1, a whole note.
@@ -134,25 +194,31 @@ impl NoteValue {
     /// A sixteenth note — `x/16`.
     pub const SIXTEENTH: Self = Self(16);
 
-    /// Creates a denominator, clamping it to
-    /// [`MIN_NOTE_VALUE`]`..=`[`MAX_NOTE_VALUE`] and rounding up to a power of
-    /// two.
-    ///
-    /// Rounding up rather than rejecting means a document and a UI number
-    /// field cannot disagree about what `x/5` means: it is `x/8`.
-    ///
-    /// The clamp comes **before** the rounding, not after: `next_power_of_two`
-    /// overflows above 2³¹, which panics in debug and returns 0 in release. A
-    /// `NoteValue(0)` would break this type's entire invariant — `bar_length`
-    /// becomes infinite and every downstream bar position `NaN`.
+    /// A denominator, if it is a power of two in
+    /// [`MIN_NOTE_VALUE`]`..=`[`MAX_NOTE_VALUE`].
     #[inline]
     #[must_use]
-    pub fn new(value: u32) -> Self {
-        Self(
-            value
-                .clamp(MIN_NOTE_VALUE, MAX_NOTE_VALUE)
-                .next_power_of_two(),
-        )
+    pub const fn new(value: u32) -> Option<Self> {
+        if value.is_power_of_two() && value <= MAX_NOTE_VALUE {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    /// A denominator, for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If `value` is not a power of two in `1..=`[`MAX_NOTE_VALUE`], at compile
+    /// time in a `const` context.
+    #[inline]
+    #[must_use]
+    pub const fn of(value: u32) -> Self {
+        match Self::new(value) {
+            Some(v) => v,
+            None => panic!("a note value is a power of two from 1 to 64"),
+        }
     }
 
     /// Returns the denominator as written — `8` for 7/8. Always a power of two.
@@ -170,20 +236,45 @@ impl NoteValue {
         self.0.trailing_zeros() as u8
     }
 
-    /// Converts a Standard MIDI File denominator exponent (`3` → an eighth).
-    ///
-    /// Saturates at [`MAX_NOTE_VALUE`], so a corrupt file cannot shift past the
-    /// width of the underlying integer.
+    /// Converts a Standard MIDI File denominator exponent (`3` is an eighth),
+    /// if it is at most `6`, a sixty-fourth. A corrupt file's `7` or `200` is
+    /// refused.
     #[inline]
     #[must_use]
-    pub fn from_smf_exponent(exponent: u8) -> Self {
-        if exponent >= MAX_NOTE_VALUE.trailing_zeros() as u8 {
-            Self(MAX_NOTE_VALUE)
+    pub const fn from_smf_exponent(exponent: u8) -> Option<Self> {
+        if exponent > MAX_NOTE_VALUE.trailing_zeros() as u8 {
+            None
         } else {
-            Self(1 << exponent)
+            Some(Self(1 << exponent))
         }
     }
 }
+
+impl TryFrom<u32> for NoteValue {
+    type Error = InvalidNoteValue;
+
+    #[inline]
+    fn try_from(value: u32) -> Result<Self, InvalidNoteValue> {
+        Self::new(value).ok_or(InvalidNoteValue(value))
+    }
+}
+
+/// A denominator that is not a power of two in `1..=`[`MAX_NOTE_VALUE`] (see
+/// [`NoteValue::new`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidNoteValue(pub u32);
+
+impl core::fmt::Display for InvalidNoteValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "a note value is a power of two from 1 to {MAX_NOTE_VALUE}, got {}",
+            self.0
+        )
+    }
+}
+
+impl core::error::Error for InvalidNoteValue {}
 
 impl Default for NoteValue {
     fn default() -> Self {
@@ -198,31 +289,19 @@ impl core::fmt::Display for NoteValue {
     }
 }
 
-/// Integer conversions for the two halves of a signature.
+/// Integer conversions out of the two halves.
 ///
-/// The plugin ABIs each want a different width — CLAP takes `u16`, VST2 and VST3
-/// take `i32` — so the conversion lives beside the type rather than being spelled
-/// (and mis-cast) at each boundary. Every `From` runs through the validating
-/// constructor, so a negative or absurd value from a foreign host lands on a
-/// legal meter instead of wrapping.
+/// The plugin ABIs each want a different width: CLAP takes `u16`, VST2 and VST3
+/// take `i32`. Every value is at most 64, so each width holds it, and the
+/// conversion lives beside the type rather than being spelled (and mis-cast) at
+/// each boundary. There is no conversion the other way: a foreign number is
+/// checked through `TryFrom<u32>`.
 macro_rules! signature_conversions {
     ($($t:ty),*) => {$(
-        impl From<$t> for BeatsPerBar {
-            #[inline]
-            fn from(n: $t) -> Self {
-                Self::new(n.clamp(0, MAX_BEATS_PER_BAR as $t) as u32)
-            }
-        }
         impl From<BeatsPerBar> for $t {
             #[inline]
             fn from(b: BeatsPerBar) -> Self {
                 b.0 as $t
-            }
-        }
-        impl From<$t> for NoteValue {
-            #[inline]
-            fn from(n: $t) -> Self {
-                Self::new(n.clamp(0, MAX_NOTE_VALUE as $t) as u32)
             }
         }
         impl From<NoteValue> for $t {
@@ -236,36 +315,6 @@ macro_rules! signature_conversions {
 
 signature_conversions!(u8, u16, u32, i32, i64, usize);
 
-/// Deserialize through the validating constructors.
-///
-/// **Hand-written rather than derived**, because a derived `Deserialize` writes
-/// the private field directly and skips `new()` entirely — so a document
-/// claiming `{"beats_per_bar": 0, "note_value": 0}` would produce a value this
-/// type's own docs say is impossible, `bar_length()` would be `NaN`, and the
-/// first `bar_at` would take that `NaN` into the metronome on the audio thread.
-/// Deserialization is precisely the untrusted edge the clamping exists for, so it
-/// is the last place that should bypass it.
-///
-/// `Serialize` stays derived: writing out a value that is already valid needs no
-/// checking, and `#[serde(transparent)]` keeps it a bare number on the wire.
-#[cfg(feature = "serde")]
-mod serde_impls {
-    use super::{BeatsPerBar, NoteValue};
-    use serde::{Deserialize, Deserializer};
-
-    impl<'de> Deserialize<'de> for BeatsPerBar {
-        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            Ok(Self::new(u32::deserialize(d)?))
-        }
-    }
-
-    impl<'de> Deserialize<'de> for NoteValue {
-        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            Ok(Self::new(u32::deserialize(d)?))
-        }
-    }
-}
-
 /// A musical time signature, e.g. 4/4 or 7/8.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -277,8 +326,7 @@ pub struct TimeSignature {
 impl TimeSignature {
     /// Creates a signature from its two halves.
     ///
-    /// Total: both components clamp in their own constructors, so there is no
-    /// invalid signature to reject.
+    /// Total: each half is already checked by its own type.
     #[inline]
     #[must_use]
     pub const fn new(beats_per_bar: BeatsPerBar, note_value: NoteValue) -> Self {
@@ -288,15 +336,29 @@ impl TimeSignature {
         }
     }
 
-    /// Creates a signature from raw numbers, coercing each to its legal range.
+    /// Creates a signature from raw numbers, if both are legal.
     ///
     /// For the document/ABI edges, where the numbers arrive untyped. Prefer
     /// [`new`](Self::new) in engine code, where the types make transposition a
     /// compile error.
     #[inline]
     #[must_use]
-    pub fn from_numbers(beats_per_bar: u32, note_value: u32) -> Self {
-        Self::new(BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value))
+    pub const fn from_numbers(beats_per_bar: u32, note_value: u32) -> Option<Self> {
+        match (BeatsPerBar::new(beats_per_bar), NoteValue::new(note_value)) {
+            (Some(b), Some(n)) => Some(Self::new(b, n)),
+            _ => None,
+        }
+    }
+
+    /// Creates a signature from raw numbers, for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// If either number is illegal, at compile time in a `const` context.
+    #[inline]
+    #[must_use]
+    pub const fn of(beats_per_bar: u32, note_value: u32) -> Self {
+        Self::new(BeatsPerBar::of(beats_per_bar), NoteValue::of(note_value))
     }
 
     /// Returns the numerator. **Not** a bar length — see
@@ -492,7 +554,7 @@ impl BarPosition {
     #[inline]
     #[must_use]
     pub fn is_downbeat(&self) -> bool {
-        self.beat == BeatsPerBar::new(1) && self.fraction.get().abs() < DOWNBEAT_EPSILON
+        self.beat == BeatsPerBar::of(1) && self.fraction.get().abs() < DOWNBEAT_EPSILON
     }
 }
 
@@ -590,7 +652,7 @@ fn bar_position_within(
 
     BarPosition {
         bar: origin_bar + BarCount(bars),
-        beat: BeatsPerBar::new(beat_index as u32 + 1),
+        beat: BeatsPerBar::clamped(beat_index as u32 + 1),
         bar_start,
         fraction,
         signature,
@@ -854,7 +916,7 @@ mod tests {
 
     /// 7/8 — the meter that exposes every "numerator is the bar length" bug.
     fn seven_eight() -> TimeSignature {
-        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
+        TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH)
     }
 
     /// A position a hair before a bar line is in the bar before it, at its
@@ -870,7 +932,7 @@ mod tests {
         for tiny in [1e-20, 1e-17, 1e-16] {
             let p = sig.bar_at(Beat(-tiny));
             assert_eq!(p.bar, BarNumber(0), "{tiny:e}");
-            assert_eq!(p.beat, BeatsPerBar::new(4), "{tiny:e}");
+            assert_eq!(p.beat, BeatsPerBar::of(4), "{tiny:e}");
             assert!(
                 p.fraction >= BeatDuration(0.0) && p.fraction < sig.beat_length(),
                 "{tiny:e}: {:?}",
@@ -879,7 +941,7 @@ mod tests {
         }
         // The same just before a later bar line, and in a compound meter.
         let p = seven_eight().bar_at(Beat(3.5 - 1e-15));
-        assert_eq!((p.bar, p.beat), (BarNumber(1), BeatsPerBar::new(7)));
+        assert_eq!((p.bar, p.beat), (BarNumber(1), BeatsPerBar::of(7)));
         assert!(p.fraction < seven_eight().beat_length());
         // A position a hair under a beat line (a quotient that rounds up).
         let p = sig.bar_at(Beat(3.0 - 1e-16));
@@ -896,18 +958,19 @@ mod tests {
         let sig = TimeSignature::default();
         let p = sig.bar_at(Beat(-5e-324));
         assert_eq!(p.bar, BarNumber(0));
-        assert_eq!(p.beat, BeatsPerBar::new(4));
+        assert_eq!(p.beat, BeatsPerBar::of(4));
         assert!(p.fraction >= BeatDuration(0.0) && p.fraction < sig.beat_length());
     }
 
-    /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and the clamp share.
+    /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and `clamped` share.
     ///
     /// Mutation (run): `MAX_BEATS_PER_BAR` 64 → 65 → fails.
     #[test]
     fn the_beats_per_bar_ceiling_is_64() {
         assert_eq!(MAX_BEATS_PER_BAR, 64);
-        assert_eq!(BeatsPerBar::new(64).get(), 64);
-        assert_eq!(BeatsPerBar::new(65).get(), 64);
+        assert_eq!(BeatsPerBar::of(64).get(), 64);
+        assert_eq!(BeatsPerBar::clamped(65).get(), 64);
+        assert_eq!(BeatsPerBar::new(65), None);
     }
 
     #[test]
@@ -915,7 +978,7 @@ mod tests {
         assert_eq!(TimeSignature::default().bar_length(), BeatDuration(4.0));
         assert_eq!(seven_eight().bar_length(), BeatDuration(3.5));
         assert_eq!(
-            TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER).bar_length(),
+            TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER).bar_length(),
             BeatDuration(3.0)
         );
     }
@@ -926,23 +989,34 @@ mod tests {
         assert_eq!(seven_eight().beat_length(), BeatDuration(0.5));
     }
 
+    /// `BeatsPerBar::clamped` saturates; `new` refuses the same raws.
+    ///
+    /// Mutation (run): `clamped` mapping 0 to 0 -> the `clamped(0)` assertion
+    /// fails; `new` accepting 0 -> the `BeatsPerBar::new(0)` assertion fails;
+    /// `new` accepting any non-zero value up to 64 -> the `NoteValue::new`
+    /// loop fails.
     #[test]
-    fn components_clamp_rather_than_reject() {
+    fn saturation_is_named_and_new_refuses() {
         // Zero beats per bar would make bar_length zero and every bar_at divide
         // by it.
-        assert_eq!(BeatsPerBar::new(0).get(), 1);
-        assert_eq!(BeatsPerBar::new(999).get(), MAX_BEATS_PER_BAR);
-        // x/5 is not a meter; round up to the next power of two.
-        assert_eq!(NoteValue::new(5).get(), 8);
-        assert_eq!(NoteValue::new(0).get(), 1);
-        assert_eq!(NoteValue::new(999).get(), MAX_NOTE_VALUE);
-        assert!(TimeSignature::from_numbers(0, 5).bar_length().get() > 0.0);
-        // Above 2^31 `next_power_of_two` overflows — panicking in debug, and
-        // returning 0 in release, which would make `bar_length` infinite. The
-        // clamp has to happen first.
-        assert_eq!(NoteValue::new(u32::MAX).get(), MAX_NOTE_VALUE);
-        assert_eq!(NoteValue::new(2_147_483_649).get(), MAX_NOTE_VALUE);
-        assert_eq!(BeatsPerBar::new(u32::MAX).get(), MAX_BEATS_PER_BAR);
+        assert_eq!(BeatsPerBar::clamped(0).get(), 1);
+        assert_eq!(BeatsPerBar::clamped(999).get(), MAX_BEATS_PER_BAR);
+        assert_eq!(BeatsPerBar::new(0), None);
+        assert_eq!(BeatsPerBar::new(999), None);
+        for refused in [0, 3, 5, 6, 7, 9, 63, 65, 128, 999] {
+            assert_eq!(NoteValue::new(refused), None, "{refused}");
+        }
+        assert!(TimeSignature::from_numbers(0, 5).is_none());
+        assert!(TimeSignature::from_numbers(4, 5).is_none());
+        assert!(TimeSignature::from_numbers(65, 4).is_none());
+        assert_eq!(TimeSignature::from_numbers(7, 8), Some(seven_eight()));
+        assert_eq!(BeatsPerBar::clamped(u32::MAX).get(), MAX_BEATS_PER_BAR);
+        assert!(
+            TimeSignature::new(BeatsPerBar::clamped(0), NoteValue::QUARTER)
+                .bar_length()
+                .get()
+                > 0.0
+        );
     }
 
     #[test]
@@ -953,10 +1027,10 @@ mod tests {
         //
         // Uses a legal power-of-two denominator on both sides, so this compares
         // 7/8 against 8/8 rather than 7/8 against a coerced 8/8 — the first
-        // version picked `NoteValue::new(7)`, which rounds to 8, making the
+        // version picked a rounded 7, which is 8, making the
         // assertion hold for a reason unrelated to its name.
-        let seven_eight = TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH);
-        let eight_eighths = TimeSignature::new(BeatsPerBar::new(8), NoteValue::EIGHTH);
+        let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
+        let eight_eighths = TimeSignature::new(BeatsPerBar::of(8), NoteValue::EIGHTH);
         assert_eq!(seven_eight.bar_length(), BeatDuration(3.5));
         assert_eq!(eight_eighths.bar_length(), BeatDuration(4.0));
         assert_ne!(seven_eight.bar_length(), eight_eighths.bar_length());
@@ -971,13 +1045,19 @@ mod tests {
             NoteValue::EIGHTH,
             NoteValue::SIXTEENTH,
         ] {
-            assert_eq!(NoteValue::from_smf_exponent(value.to_smf_exponent()), value);
+            assert_eq!(
+                NoteValue::from_smf_exponent(value.to_smf_exponent()),
+                Some(value)
+            );
         }
         // The conversion SMF actually specifies: 3 means an eighth note.
         assert_eq!(NoteValue::EIGHTH.to_smf_exponent(), 3);
-        assert_eq!(NoteValue::from_smf_exponent(3), NoteValue::EIGHTH);
-        // A corrupt file must not shift past the integer width.
-        assert_eq!(NoteValue::from_smf_exponent(200).get(), MAX_NOTE_VALUE);
+        assert_eq!(NoteValue::from_smf_exponent(3), Some(NoteValue::EIGHTH));
+        assert_eq!(NoteValue::from_smf_exponent(6), Some(NoteValue::of(64)));
+        // A corrupt file must not shift past the integer width, and is refused
+        // rather than read as a sixty-fourth.
+        assert_eq!(NoteValue::from_smf_exponent(7), None);
+        assert_eq!(NoteValue::from_smf_exponent(200), None);
     }
 
     #[test]
@@ -986,16 +1066,16 @@ mod tests {
         let at = |b: f64| m.bar_at(Beat(b));
 
         assert_eq!(at(0.0).bar, BarNumber(1));
-        assert_eq!(at(0.0).beat, BeatsPerBar::new(1));
+        assert_eq!(at(0.0).beat, BeatsPerBar::of(1));
         assert!(at(0.0).is_downbeat());
 
         assert_eq!(at(2.5).bar, BarNumber(1));
-        assert_eq!(at(2.5).beat, BeatsPerBar::new(3));
+        assert_eq!(at(2.5).beat, BeatsPerBar::of(3));
         assert_eq!(at(2.5).fraction, BeatDuration(0.5));
         assert!(!at(2.5).is_downbeat());
 
         assert_eq!(at(4.0).bar, BarNumber(2));
-        assert_eq!(at(4.0).beat, BeatsPerBar::new(1));
+        assert_eq!(at(4.0).beat, BeatsPerBar::of(1));
         assert!(at(4.0).is_downbeat());
     }
 
@@ -1005,7 +1085,7 @@ mod tests {
         let m = seven_eight();
         assert_eq!(m.bar_at(Beat(0.0)).bar, BarNumber(1));
         assert_eq!(m.bar_at(Beat(3.0)).bar, BarNumber(1));
-        assert_eq!(m.bar_at(Beat(3.0)).beat, BeatsPerBar::new(7));
+        assert_eq!(m.bar_at(Beat(3.0)).beat, BeatsPerBar::of(7));
         // The second bar starts at 3.5 quarters, not at 7.
         assert_eq!(m.bar_at(Beat(3.5)).bar, BarNumber(2));
         assert!(m.bar_at(Beat(3.5)).is_downbeat());
@@ -1017,9 +1097,9 @@ mod tests {
         // of bar 0 — NOT bar 0 beat -1, which is what truncating division gives.
         let m = TimeSignature::default();
         assert_eq!(m.bar_at(Beat(-1.0)).bar, BarNumber(0));
-        assert_eq!(m.bar_at(Beat(-1.0)).beat, BeatsPerBar::new(4));
+        assert_eq!(m.bar_at(Beat(-1.0)).beat, BeatsPerBar::of(4));
         assert_eq!(m.bar_at(Beat(-4.0)).bar, BarNumber(0));
-        assert_eq!(m.bar_at(Beat(-4.0)).beat, BeatsPerBar::new(1));
+        assert_eq!(m.bar_at(Beat(-4.0)).beat, BeatsPerBar::of(1));
         assert!(m.bar_at(Beat(-4.0)).is_downbeat());
         assert_eq!(m.bar_at(Beat(-5.0)).bar, BarNumber(-1));
     }
@@ -1068,7 +1148,7 @@ mod tests {
             MeterChange::new(Beat(0.0), TimeSignature::default()),
             MeterChange::new(
                 Beat(8.0),
-                TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
             ),
         ]);
 
@@ -1091,7 +1171,7 @@ mod tests {
             MeterChange::new(Beat(14.0), TimeSignature::default()),
             MeterChange::new(
                 Beat(30.0),
-                TimeSignature::new(BeatsPerBar::new(5), NoteValue::EIGHTH),
+                TimeSignature::new(BeatsPerBar::of(5), NoteValue::EIGHTH),
             ),
         ]);
 
@@ -1147,7 +1227,7 @@ mod tests {
                 MeterChange::new(Beat(0.0), TimeSignature::default()),
                 MeterChange::new(
                     Beat(offset),
-                    TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                    TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
                 ),
             ]);
             assert_eq!(
@@ -1183,7 +1263,7 @@ mod tests {
             // Exactly four 4/4 bars.
             MeterChange::new(
                 Beat(16.0),
-                TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
             ),
         ]);
         assert_eq!(map.bar_at(Beat(16.0)).bar, BarNumber(5));
@@ -1197,19 +1277,22 @@ mod tests {
     /// A derived `Deserialize` writes the private field directly, so a document
     /// claiming `0/0` would produce a value the type says is impossible and make
     /// `bar_length` `NaN` — on the audio thread, via the metronome.
+    ///
+    /// A hostile value is refused, not coerced: the document does not load.
+    ///
+    /// Mutation (run): `serde(try_from = "u32")` removed from `NoteValue` ->
+    /// the documents with a bad `note_value` load and `is_err` fails.
     #[cfg(feature = "serde")]
     #[test]
-    fn deserialization_clamps_hostile_values() {
-        let sig: TimeSignature =
-            serde_json::from_str(r#"{"beats_per_bar":0,"note_value":0}"#).unwrap();
-        assert_eq!(sig.beats_per_bar().get(), 1);
-        assert_eq!(sig.note_value().get(), 1);
-        assert!(sig.bar_length().get().is_finite());
-
-        let sig: TimeSignature =
-            serde_json::from_str(r#"{"beats_per_bar":9999,"note_value":9999}"#).unwrap();
-        assert_eq!(sig.beats_per_bar().get(), MAX_BEATS_PER_BAR);
-        assert_eq!(sig.note_value().get(), MAX_NOTE_VALUE);
+    fn deserialization_refuses_hostile_values() {
+        for doc in [
+            r#"{"beats_per_bar":0,"note_value":0}"#,
+            r#"{"beats_per_bar":9999,"note_value":9999}"#,
+            r#"{"beats_per_bar":4,"note_value":5}"#,
+            r#"{"beats_per_bar":0,"note_value":4}"#,
+        ] {
+            assert!(serde_json::from_str::<TimeSignature>(doc).is_err(), "{doc}");
+        }
 
         // And the round trip still holds for legal values.
         let seven_eight = seven_eight();
@@ -1277,15 +1360,25 @@ mod tests {
         assert_eq!(BarNumber::from_index(0), BarNumber::FIRST);
     }
 
+    /// A foreign number is checked, not coerced: `-1i32` cannot even become a
+    /// `u32`, and the error carries the refused raw.
+    ///
+    /// Mutation (run): `BeatsPerBar::new` accepting 0 -> the `try_from(0)`
+    /// assertion fails; `NoteValue::new` accepting any non-zero value up to 64
+    /// -> the `try_from(6)` assertion fails.
     #[test]
-    fn abi_conversions_coerce_hostile_input() {
+    fn abi_conversions_check_foreign_input() {
         // A bare `as u16` on an i32 at the CLAP boundary turns -1 into 65535.
-        assert_eq!(BeatsPerBar::from(-1i32).get(), 1);
-        assert_eq!(BeatsPerBar::from(i32::MAX).get(), MAX_BEATS_PER_BAR);
-        assert_eq!(NoteValue::from(-1i32).get(), 1);
-        assert_eq!(NoteValue::from(0i32).get(), 1);
+        assert!(u32::try_from(-1i32).is_err());
+        assert_eq!(BeatsPerBar::try_from(0u32), Err(InvalidBeatsPerBar(0)));
+        assert_eq!(
+            BeatsPerBar::try_from(i32::MAX as u32),
+            Err(InvalidBeatsPerBar(i32::MAX as u32))
+        );
+        assert_eq!(NoteValue::try_from(0u32), Err(InvalidNoteValue(0)));
+        assert_eq!(NoteValue::try_from(6u32), Err(InvalidNoteValue(6)));
         // And the widths the three plugin ABIs actually want.
-        assert_eq!(u16::from(BeatsPerBar::new(7)), 7u16);
+        assert_eq!(u16::from(BeatsPerBar::of(7)), 7u16);
         assert_eq!(i32::from(NoteValue::EIGHTH), 8i32);
         assert_eq!(i32::from(BarNumber(3)), 3i32);
     }
@@ -1308,7 +1401,7 @@ mod tests {
             MeterChange::new(Beat(8.0), seven_eight()),
             MeterChange::new(
                 Beat(22.0),
-                TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
             ),
         ]);
 
@@ -1352,7 +1445,7 @@ mod tests {
 
     /// Deserialization routes through `new()`, so a hostile file inherits every
     /// invariant instead of bypassing them — the same argument
-    /// [`deserialization_clamps_hostile_values`] makes one level down.
+    /// [`deserialization_refuses_hostile_values`] makes one level down.
     ///
     /// This one file is unsorted, duplicated at a beat, and missing an origin
     /// change. A derived `Deserialize` would accept all three verbatim.
@@ -1389,18 +1482,29 @@ mod tests {
         assert_eq!(map.bar_numbers().len(), map.changes().len());
     }
 
-    /// A signature the file states as `0/0` is clamped, not taken literally —
-    /// nested inside a map, so this covers the path a document actually uses.
+    /// A signature the file states as `0/0` is refused, not taken literally and
+    /// not repaired: nested inside a map, so this covers the path a document
+    /// actually uses. A legal one beside it still loads.
+    ///
+    /// Mutation (run): the `serde(try_from = "u32")` attribute removed from
+    /// `NoteValue` -> the bad-`note_value` documents load and `is_err` fails;
+    /// `NoteValue::new` accepting any non-zero value up to 64 -> the `4/5`
+    /// document loads.
     #[cfg(feature = "serde")]
     #[test]
-    fn map_deserialization_clamps_nested_signatures() {
-        let map: MeterMap = serde_json::from_str(
+    fn map_deserialization_refuses_nested_signatures() {
+        for doc in [
             r#"[{"beat": 0.0, "signature": {"beats_per_bar": 0, "note_value": 0}}]"#,
+            r#"[{"beat": 0.0, "signature": {"beats_per_bar": 4, "note_value": 5}}]"#,
+        ] {
+            assert!(serde_json::from_str::<MeterMap>(doc).is_err(), "{doc}");
+        }
+        let map: MeterMap = serde_json::from_str(
+            r#"[{"beat": 0.0, "signature": {"beats_per_bar": 7, "note_value": 8}}]"#,
         )
         .unwrap();
         let sig = map.at(Beat(0.0));
-        assert_eq!(sig.beats_per_bar().get(), 1);
-        assert_eq!(sig.note_value().get(), 1);
+        assert_eq!(sig, seven_eight());
         assert!(
             sig.bar_length().get().is_finite(),
             "a NaN bar length would reach the metronome on the audio thread"

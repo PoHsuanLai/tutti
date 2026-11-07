@@ -791,7 +791,7 @@ mod tests {
         // drift against the bar here.
         settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+            TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
         )])));
         assert!(accents_at(&mut node, 3.0));
         assert!(!accents_at(&mut node, 4.0));
@@ -806,7 +806,7 @@ mod tests {
         settings.set_mode(MetronomeMode::Always);
         settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+            TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
         )])));
 
         // Half a quarter note apart is a full notated beat in 7/8, so these are
@@ -843,7 +843,7 @@ mod tests {
         settings.set_meter(Arc::new(MeterMap::new([
             MeterChange::new(
                 Beat(0.0),
-                TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+                TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
             ),
             MeterChange::new(Beat(10.5), TimeSignature::default()),
         ])));
@@ -912,7 +912,7 @@ mod tests {
             MeterChange::new(Beat(0.0), TimeSignature::default()),
             MeterChange::new(
                 Beat(2.5),
-                TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+                TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
             ),
         ])));
 
@@ -954,7 +954,7 @@ mod tests {
         // falls in the sixteenth starting at 2.5 — inside the old span.
         settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
-            TimeSignature::new(BeatsPerBar::new(3), NoteValue::SIXTEENTH),
+            TimeSignature::new(BeatsPerBar::of(3), NoteValue::SIXTEENTH),
         )])));
         let _ = block(&mut node, &env(SR, 10, hundredths_from(2.64)));
         assert_eq!(
@@ -1317,7 +1317,7 @@ mod tests {
             ("meter", |_, s| {
                 s.set_meter(Arc::new(MeterMap::new([MeterChange::new(
                     Beat(0.0),
-                    TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+                    TimeSignature::new(BeatsPerBar::of(3), NoteValue::QUARTER),
                 )])))
             }),
             ("count-in", |t, _| t.settings.set_in_preroll(true)),

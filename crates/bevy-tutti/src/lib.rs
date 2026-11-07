@@ -271,7 +271,7 @@ pub mod prelude {
     // `midi-hardware`, not `midi`: gating these with their siblings above breaks
     // a build that takes the software bus without the hardware one.
     #[cfg(feature = "midi-hardware")]
-    pub use crate::midi::{MidiDeviceEvent, MidiIoRes};
+    pub use crate::midi::{MidiDeviceEvent, MidiHotplug, MidiIoRes};
     #[cfg(feature = "modulation")]
     pub use crate::modulation::{
         Automation, Lfo, ModRange, ModRoute, ModSource, Mods, ModulationRefused, ModulationState,

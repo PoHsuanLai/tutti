@@ -167,10 +167,10 @@ pub mod prelude {
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_transport::{
         FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
-        OfflineTimelineConfig, Then, Timeline, Transport, TransportState,
+        OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
-    pub use tutti_types::LoopRange;
     pub use tutti_types::prelude::*;
+    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and its enumeration record.

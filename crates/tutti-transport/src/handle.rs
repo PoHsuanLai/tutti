@@ -7,7 +7,6 @@ use super::settings::TransportSettings;
 use super::state::{ClockLinks, PlayheadClaim, PlayheadClaimed};
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tutti_types::LoopRange;
 use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
@@ -159,20 +158,6 @@ impl super::Timeline for Transport {
 
     fn segment_generation(&self) -> u64 {
         self.settings.segment_generation()
-    }
-}
-
-impl super::TransportState for Transport {
-    fn is_recording(&self) -> bool {
-        self.settings.is_recording()
-    }
-
-    fn loop_range(&self) -> Option<LoopRange> {
-        self.motion.loop_region().active()
-    }
-
-    fn steady_time(&self) -> i64 {
-        self.settings.steady_time()
     }
 }
 

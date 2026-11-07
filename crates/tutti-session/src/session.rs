@@ -920,7 +920,7 @@ impl Session {
     }
 
     /// The master meter the device callback feeds.
-    pub fn meter(&self) -> &MasterMeter {
+    pub fn master_meter(&self) -> &MasterMeter {
         &self.meter
     }
 

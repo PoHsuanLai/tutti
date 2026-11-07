@@ -591,6 +591,44 @@ fn a_timed_declicked_stop_fades_out_before_its_frame() {
     assert!(!t[1_000].1, "stopped on its frame");
 }
 
+/// A declick lasts 10 ms at the engine's rate, not a fixed frame count: a
+/// timed stop at frame 4 000 starts fading `fade` frames before it, is at
+/// zero on it, and is back at full level `fade` frames after.
+///
+/// Mutation (run): a fixed 480-frame fade (a `fade_frames` that ignores the
+/// rate) → fails at 44.1, 96 and 192 kHz.
+#[test]
+fn a_declick_lasts_ten_milliseconds_at_any_rate() {
+    for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        let fade = (rate * 0.01) as usize;
+        let transport = Transport::new(rate);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(rate), Samples(256)));
+        let log = Arc::new(Mutex::new(Vec::new()));
+        ed.insert(NodeKey(1), "node", Unforkable(DcLog(log)));
+        outputs(&mut ed, NodeKey(1), 1);
+        ed.commit().expect("commits");
+        let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+        transport.motion.try_send(MotionEvent::Play).expect("room");
+        transport
+            .motion
+            .schedule(At::Frame(Frame(4_000)), MotionEvent::stop())
+            .expect("room");
+        let out = render(&engine, ChannelLayout::MONO, &[256; 40]);
+        assert_eq!(out[4_000 - fade - 1], 1.0, "{rate}: full before the lead");
+        assert!(
+            out[4_000 - fade] < 1.0,
+            "{rate}: the fade-out starts {fade} ahead"
+        );
+        assert_eq!(out[4_000], 0.0, "{rate}: zero on the command frame");
+        assert!(out[4_000 + fade - 1] < 1.0, "{rate}: still rising");
+        // The ramp accumulates `1/fade` in `f32`, so "full" is within rounding.
+        assert!(
+            (1.0 - out[4_000 + fade]).abs() < 3e-5,
+            "{rate}: full {fade} frames after"
+        );
+    }
+}
+
 /// An untimed declicked seek (`At::NextBlock`) has no lead time: it lands on
 /// the next block's first frame with the gain at zero there (the old audio
 /// ends on that frame, the one accepted step), and the new

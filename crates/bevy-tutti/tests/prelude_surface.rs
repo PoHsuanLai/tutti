@@ -59,6 +59,19 @@ fn _surface_compiles() {
     let _: MotionState = MotionState::Stopped;
     let _: MotionState = MotionState::Rolling;
 
+    // A timed program: `schedule` takes an `At` and anything that becomes a
+    // `TransportCommand`, and `Meter` is the time-signature trait.
+    fn _timed(t: &TransportRes) -> Result<(), tutti_transport::ScheduleFull> {
+        t.motion.schedule(At::Frame(Frame(0)), MotionEvent::Play)?;
+        t.motion
+            .schedule(At::NextBlock, TransportCommand::Tempo(Bpm(90.0)))
+    }
+    fn _bar(m: &dyn Meter, bar: BarNumber) -> Beat {
+        m.bar_start(bar)
+    }
+    // Mutation (run): dropping `At`, `TransportCommand`, `Meter` or
+    // `BarNumber` from the prelude stops this file compiling.
+
     // --- The types the prelude's own signatures are spelled in. ---
     //
     // The incomplete-forward rule applied to itself. A previous pass added

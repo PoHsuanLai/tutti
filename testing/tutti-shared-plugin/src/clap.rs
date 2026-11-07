@@ -1,5 +1,5 @@
 //! The CLAP shell: `clap_entry` and what a CLAP host calls, decoded onto
-//! [`Core`](crate::core::Core). Quirks of CLAP only: ports, the `flush`
+//! [`Core`]. Quirks of CLAP only: ports, the `flush`
 //! parameter path, note dialects, streams.
 
 use std::ffi::{CStr, c_char, c_void};

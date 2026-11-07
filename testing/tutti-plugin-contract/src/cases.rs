@@ -1,5 +1,5 @@
 //! The cases. Each is a plain generic function over a [`Format`]; `contract!`
-//! makes a test of each. Expected figures come from [`spec`](crate::spec).
+//! makes a test of each. Expected figures come from [`spec`].
 
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{

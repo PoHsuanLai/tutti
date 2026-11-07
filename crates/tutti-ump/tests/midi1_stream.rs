@@ -6,17 +6,18 @@
 //! built, not from a second parser.
 //!
 //! Mutation record (each planted in `src/midi1.rs`, seen to fail, restored):
-//! - a `vec![0u8; 1]` at the top of `Midi1Parser::feed` -> the three
+//! - a `black_box(vec![0u8; 1])` at the top of `Midi1Parser::feed` -> the four
 //!   `assert_no_alloc` tests abort;
-//! - real-time bytes cutting the open message (`Midi1Parser::real_time` setting
-//!   the state to `Idle`) -> `generated_streams_read_back_to_their_messages`;
-//! - `0xF7` leaving a channel message open (`feed` keeping the state on a lone
-//!   `0xF7`) -> `generated_streams_read_back_to_their_messages` and
-//!   `midi1::tests::a_lone_eox_produces_nothing_and_cancels_running_status`;
-//! - the `Run` emitting its `Start` at the sixth byte instead of the seventh ->
+//! - a real-time byte setting the state to `Idle` ->
 //!   `generated_streams_read_back_to_their_messages`;
-//! - `feed` indexing `data` past two bytes (`have` not reset after a complete
-//!   message) -> `every_three_byte_stream_is_survived`, a panic.
+//! - the `Run` pushing a packet at five bytes instead of six ->
+//!   `generated_streams_read_back_to_their_messages` and
+//!   `a_sysex_that_never_ends_costs_no_memory_and_the_next_message_is_clean`;
+//! - a SysEx cut by a status byte ignoring it ->
+//!   `a_sysex_that_never_ends_costs_no_memory_and_the_next_message_is_clean`;
+//! - `have` not reset after a complete message ->
+//!   `generated_streams_read_back_to_their_messages` and
+//!   `seeded_random_bytes_are_survived`.
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_ump::{

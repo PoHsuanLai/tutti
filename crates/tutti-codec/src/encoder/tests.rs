@@ -192,8 +192,9 @@ fn a_spec_that_cannot_be_written_is_refused_without_a_file() {
 /// Widths past a container's header are refused as spec errors where the
 /// container counts them: AIFF in an `i16`, Ogg Vorbis in a `u8`.
 ///
-/// Mutation: casting with `as` in place of `try_from` wraps 65 535 and 256 into
-/// small counts and fails the match.
+/// Mutation (run): casting with `as` in place of `try_from` wraps 40 000 and 257
+/// into small counts and fails the match (257 wraps to 1; 256 would wrap to the
+/// zero that is refused anyway).
 #[test]
 fn a_width_past_the_containers_header_is_refused() {
     #[cfg(feature = "aiff")]
@@ -217,14 +218,14 @@ fn a_width_past_the_containers_header_is_refused() {
             Format::Vorbis {
                 quality: crate::Quality::default(),
             },
-            256,
+            257,
         );
         let err = Encoder::create(&s, Cursor::new(Vec::new())).expect_err("past u8");
         assert!(
             matches!(
                 err,
                 Error::Spec(SpecError::TooManyChannels {
-                    channels: 256,
+                    channels: 257,
                     max: 255
                 })
             ),
@@ -357,8 +358,9 @@ fn a_plain_sink_keeps_its_prefix_after_a_failed_write() {
 /// The device is the kernel's `/dev/full`, which refuses every write with
 /// `ENOSPC`; the take fits the buffer, so only the final flush meets it.
 ///
-/// Mutation (run): removing the `sink.flush()?` from `Encoder::finish` and from
-/// the Vorbis thread's `run` makes Ogg Vorbis finish `Ok` here.
+/// Mutation (run): removing the `sink.flush()?` from both `Encoder::finish` and
+/// the Vorbis thread's `run` makes Ogg Vorbis finish `Ok` here (each alone does
+/// not: the other still flushes, and WAV, AIFF and FLAC flush for themselves).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_buffered_full_device_fails_every_format() {
@@ -370,7 +372,7 @@ fn a_buffered_full_device_fails_every_format() {
             .unwrap();
         let mut encoder = Encoder::create(&s, std::io::BufWriter::new(device)).unwrap();
         let mut failed = encoder
-            .write(Interleaved::new(&saw(2, 1_000), s.layout))
+            .write(Interleaved::new(&saw(2, 100), s.layout))
             .is_err();
         failed |= encoder.finish().is_err();
         assert!(failed, "{ext}: the take reported success on a full device");

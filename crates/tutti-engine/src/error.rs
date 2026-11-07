@@ -24,15 +24,6 @@ pub enum Error {
     /// The LUFS meter is held by another reader, or was never initialized.
     #[error("LUFS measurement not available (already in use or not initialized)")]
     LufsNotReady,
-
-    /// [`AudioTap::open`](tutti_metering::AudioTap::open) was refused — the tap already
-    /// has a consumer.
-    ///
-    /// Transparent, so [`TapBusy`](tutti_metering::TapBusy) stays the precise type for a
-    /// caller that wants to match on it while `?` still composes into this
-    /// crate's `Result`.
-    #[error(transparent)]
-    TapBusy(#[from] tutti_metering::TapBusy),
 }
 
 /// `Result` with this crate's [`Error`](enum@Error) as the error type.

@@ -105,7 +105,7 @@ The ordered bootstrap in `build_on`, step by step:
 
 1. MIDI hardware ports, then their rate.
 2. The root width.
-3. The transport, `MasterMeter`, `AudioTap`, `ClickSettings`.
+3. The transport, the engine's `MasterMeter`, `ClickSettings`.
 4. One `ChannelCompensation` shared with the `DiskStreamer`'s PDC.
 5. The graph with its workers, and an unwired click.
 6. `Engine::new`.

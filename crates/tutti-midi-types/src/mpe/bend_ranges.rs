@@ -37,7 +37,7 @@ use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIV
 ///     MidiChannel::of(3),
 ///     RPN_BANK_MPE,
 ///     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-///     PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+///     PitchBendSensitivity::of(24).to_rpn_bits(),
 /// );
 /// assert!(ranges.observe(&rpn));
 /// assert_eq!(ranges.semitones(3), 24.0);

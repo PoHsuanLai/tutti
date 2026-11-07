@@ -8,7 +8,7 @@ fn rpn(channel: u8, index: u8, semitones: u8) -> MidiEvent {
         MidiChannel::of(channel),
         RPN_BANK_MPE,
         index,
-        PitchBendSensitivity::from_semitones(semitones).to_rpn_bits(),
+        PitchBendSensitivity::of(semitones).to_rpn_bits(),
     )
 }
 

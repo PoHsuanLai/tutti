@@ -543,7 +543,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
         MidiChannel::of(3),
         RPN_BANK_MPE,
         RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        PitchBendSensitivity::of(24).to_rpn_bits(),
     );
     assert!(
         encoder.encode(&sensitivity).is_none(),

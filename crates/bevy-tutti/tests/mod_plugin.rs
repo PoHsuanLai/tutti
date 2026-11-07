@@ -33,7 +33,7 @@ use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingP
 use tutti_core::transport::Transport;
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
-use tutti_types::SampleRate;
+use tutti_types::{NodeKey, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
@@ -410,15 +410,14 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
     let offset = world.spawn(ModSource::new(Macro(1.0))).id();
     world.spawn(ModRoute::new(offset, p0).with_depth(Depth(0.25)));
     knob_of(&mut app, p0);
-    let lane = AudioNode(
-        app.world()
-            .resource::<AudioGraphRes>()
-            .modulation()
-            .lane(p0)
-            .expect("a lane")
-            .0,
-    );
-    let node = *app.world().get::<AudioNode>(plugin).expect("bound");
+    let lane = app
+        .world()
+        .resource::<AudioGraphRes>()
+        .modulation()
+        .lane(p0)
+        .expect("a lane")
+        .0;
+    let node = app.world().get::<AudioNode>(plugin).expect("bound").0;
     let clip = app
         .world_mut()
         .commands()
@@ -426,7 +425,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         .id();
     app.world_mut().flush();
     app.update();
-    let clip_node = *app.world().get::<AudioNode>(clip).expect("bound");
+    let clip_node = app.world().get::<AudioNode>(clip).expect("bound").0;
     let mut side = app
         .world_mut()
         .resource_mut::<AudioGraphRes>()
@@ -442,8 +441,8 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .expect("a value")
     };
     let mut out = vec![Vec::new(), Vec::new()];
-    let mut check = |app: &mut App, want: &[AudioNode], what: &str| {
-        let mut want: Vec<_> = want.iter().map(|n| n.0).collect();
+    let mut check = |app: &mut App, want: &[NodeKey], what: &str| {
+        let mut want = want.to_vec();
         want.sort();
         for _ in 0..2 {
             app.update();
@@ -455,7 +454,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .graph_ref()
             .event_sources(node, 0)
             .into_iter()
-            .map(|s| s.node.0)
+            .map(|s| s.node)
             .collect();
         sources.sort();
         assert_eq!(sources, want, "{what}: the port's sources");

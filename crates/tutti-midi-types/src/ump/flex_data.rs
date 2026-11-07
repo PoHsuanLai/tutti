@@ -98,11 +98,12 @@ pub struct BarAccents {
 const TEN_NS_UNITS_PER_MINUTE: f64 = 6_000_000_000.0;
 
 /// Beats-per-minute → the Set Tempo wire field (10-ns units per quarter note).
-/// The field saturates at both ends: a tempo above 6e9 BPM maps to `0`, which
-/// the inverse reports as "no tempo".
+/// The field saturates at both ends, at 1 (a tempo above 6e9 BPM) and at
+/// `u32::MAX`; `0`, the wire's "no valid tempo", is never written for a tempo.
 #[inline]
 pub const fn bpm_to_ten_ns_per_quarter(bpm: Bpm) -> u32 {
-    (TEN_NS_UNITS_PER_MINUTE / bpm.get()) as u32
+    let units = (TEN_NS_UNITS_PER_MINUTE / bpm.get()) as u32;
+    if units == 0 { 1 } else { units }
 }
 
 /// The Set Tempo wire field (10-ns units per quarter note) → beats-per-minute.

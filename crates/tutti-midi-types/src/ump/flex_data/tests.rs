@@ -9,9 +9,17 @@ fn tempo_conversion_kernels_round_trip() {
         let back = ten_ns_per_quarter_to_bpm(field).expect("nonzero");
         assert!((back.get() - bpm).abs() < 0.05, "bpm {bpm} → {back}");
     }
-    // The "no tempo" sentinel, both directions: a `Bpm` is never zero, so the
-    // zero field is only a tempo above 6e9 BPM, which the field cannot hold.
-    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(1e10)), 0);
+    // The "no tempo" sentinel reads back as none, and no tempo writes it: one
+    // above what the field holds (6e9 BPM) writes the shortest quarter, 1.
+    // Mutation (run): drop the `units == 0` fallback → the field is 0 → fails.
+    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(1e10)), 1);
+    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(f64::MAX)), 1);
+    assert_eq!(
+        bpm_to_ten_ns_per_quarter(Bpm::of(f64::MIN_POSITIVE)),
+        u32::MAX
+    );
+    let fastest = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(1e10));
+    assert_eq!(flex_tempo_bpm(&fastest), Some(Bpm::of(6e9)));
     assert_eq!(ten_ns_per_quarter_to_bpm(0), None);
 }
 

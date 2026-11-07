@@ -113,6 +113,26 @@ pub fn beats_per_sample(tempo: Bpm, sample_rate: impl Into<SampleRate>) -> BeatD
     BeatDuration((tempo.get() / 60.0) / sample_rate.into().get())
 }
 
+/// Frames one beat spans at `tempo` and `rate`: the one rule for whether a
+/// tempo moves.
+///
+/// `None` when the rate is not finite and above zero, or when the count is not
+/// finite (a tempo too slow for an `f64` count of frames, such as the smallest
+/// `Bpm`): the clock does not move. The tempo itself needs no check, a `Bpm`
+/// being finite and above zero.
+///
+/// Raw `f64` on purpose: the frame counts it scales run past what an `f32`
+/// unit type holds exactly.
+#[inline]
+pub fn frames_per_beat(tempo: Bpm, rate: SampleRate) -> Option<f64> {
+    let rate = rate.get();
+    // `is_finite` and `> 0.0` together also refuse a NaN.
+    let usable = rate.is_finite() && rate > 0.0;
+    usable
+        .then(|| rate * 60.0 / tempo.get())
+        .filter(|frames| frames.is_finite())
+}
+
 /// Returns a fractional frame position landed on the whole frame it is within
 /// [`FRAME_TOLERANCE`] of, if any; otherwise returns it unchanged.
 ///
@@ -191,12 +211,7 @@ impl TimelineSegment {
     /// unit type holds exactly.
     #[inline]
     pub fn frames_per_beat(&self) -> Option<f64> {
-        let (tempo, rate) = (self.tempo.get(), self.sample_rate.get());
-        // `is_finite` and `> 0.0` together also refuse a NaN.
-        let usable = rate.is_finite() && rate > 0.0;
-        usable
-            .then(|| rate * 60.0 / tempo)
-            .filter(|frames| frames.is_finite())
+        frames_per_beat(self.tempo, self.sample_rate)
     }
 
     /// Returns the beat at `frame`, in closed form: `origin_beat + n × tempo /
@@ -372,6 +387,20 @@ mod tests {
                 // its frame zero) for an earlier beat: never counted twice.
             }
             assert_eq!(hits, 1, "beat at {frames} frames");
+        }
+    }
+
+    /// **One rule for whether a tempo moves**: a rate that is not finite and
+    /// above zero, or a non-finite frame count, is `None`.
+    ///
+    /// Mutation (run): drop the finite filter in `frames_per_beat` → the
+    /// smallest tempo gives `Some(inf)` → fails.
+    #[test]
+    fn frames_per_beat_is_none_when_nothing_moves() {
+        assert_eq!(frames_per_beat(Bpm::of(120.0), SR), Some(24_000.0));
+        assert_eq!(frames_per_beat(Bpm::of(f64::from_bits(1)), SR), None);
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(frames_per_beat(Bpm::of(120.0), SampleRate(rate)), None);
         }
     }
 

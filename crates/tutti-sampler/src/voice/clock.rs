@@ -188,8 +188,7 @@ impl Run {
     /// Frames per beat at the block's rate (`None` when it does not roll).
     #[inline]
     pub(crate) fn frames_per_beat(&self) -> Option<f64> {
-        let (tempo, rate) = (self.tempo().get(), self.sample_rate().get());
-        self.rolling.then(|| rate * 60.0 / tempo)
+        tutti_types::frames_per_beat(self.tempo(), self.sample_rate()).filter(|_| self.rolling)
     }
 
     /// This run cut to `range`: `None` when they do not meet. A run cut
@@ -542,6 +541,26 @@ mod tests {
 
     fn at(playing: bool, frame: f64) -> Transport {
         Transport::new(playing, Bpm::of(120.0), Beat(frame / FPB), None)
+    }
+
+    /// **A tempo too slow to count frames at has no frames per beat** (the
+    /// run was `Some(inf)` before the one rule).
+    ///
+    /// Mutation (run): `Run::frames_per_beat` computing `rate * 60 / tempo`
+    /// unfiltered → `Some(inf)` → fails.
+    #[test]
+    fn the_slowest_tempo_has_no_frames_per_beat() {
+        let slow = Transport::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None);
+        let mut clock = Clock::new();
+        let run = clock.observe(&env(slow, &[])).runs().next().expect("a run");
+        assert_eq!(run.frames_per_beat(), None);
+        let mut clock = Clock::new();
+        let run = clock
+            .observe(&env(at(true, 0.0), &[]))
+            .runs()
+            .next()
+            .expect("a run");
+        assert_eq!(run.frames_per_beat(), Some(FPB));
     }
 
     /// `(start, end, jump, generation)` of each run of the block.

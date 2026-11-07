@@ -211,9 +211,7 @@ fn emit<T: Beated>(
     }
 }
 
-/// Frames per beat in `seg`, when its rate and tempo are usable.
+/// Frames per beat in `seg`, when it moves.
 fn frames_per_beat(seg: &Env) -> Option<f64> {
-    let (rate, tempo) = (seg.sample_rate.get(), seg.transport.tempo.get());
-    let fpb = rate * 60.0 / tempo;
-    (rate > 0.0 && tempo > 0.0 && fpb.is_finite()).then_some(fpb)
+    tutti_types::frames_per_beat(seg.transport.tempo, seg.sample_rate)
 }

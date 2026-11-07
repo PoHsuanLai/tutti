@@ -61,8 +61,8 @@ pub enum BroadcastFlexMetadata {
     },
     /// Set Tempo (M2-104 §7.5.7), in beats per minute.
     ///
-    /// A tempo above 6e9 BPM encodes upstream as the "no valid tempo"
-    /// sentinel, the wire field being too small to hold it.
+    /// A tempo above 6e9 BPM encodes as 6e9, the fastest the wire field
+    /// holds; the wire's "no valid tempo" is never written.
     Tempo(Bpm),
     /// Set Time Signature (M2-104 §7.5.8).
     TimeSignature {

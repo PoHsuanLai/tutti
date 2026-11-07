@@ -30,7 +30,10 @@ impl AtomicBpm {
     #[inline]
     pub(crate) fn load(&self, order: Ordering) -> Bpm {
         // Only `new` and `store` write the cell, both from a `Bpm`.
-        Bpm::new(self.0.load(order)).unwrap_or_default()
+        let raw = self.0.load(order);
+        let tempo = Bpm::new(raw);
+        debug_assert!(tempo.is_some(), "AtomicBpm holds {raw}, which is no tempo");
+        tempo.unwrap_or_default()
     }
 
     #[inline]

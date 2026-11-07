@@ -29,6 +29,7 @@
 //! `Event::midi` an `impl Into<Offset>` parameter and adding
 //! `impl From<Frame> for Offset` makes it compile, and the doctest fails.
 
+use tutti_types::Bpm;
 use tutti_types::{
     At, FRAME_TOLERANCE, Frame, Latency, SampleRate, Samples, first_frame_at_or_after,
 };
@@ -194,7 +195,7 @@ impl Playhead {
             if p.transport.looping != env.transport.looping {
                 return None;
             }
-            p.arrives_at(now, env.transport.tempo.get())
+            p.arrives_at(now, env.transport.tempo)
         });
         match continues {
             Some(wrapped) => self.wrapped |= wrapped,
@@ -259,7 +260,7 @@ impl Transport {
             changes: TransportChanges::NONE,
             play: crate::play::PlayClock::ZERO,
         };
-        match span.arrives_at(next.beat().get(), next.tempo.get()) {
+        match span.arrives_at(next.beat().get(), next.tempo) {
             // Stopped, `arrives_at` reaches only the beat it holds (a loop
             // narrower than its slack "wraps" there too).
             Some(_) if !self.playing => Continuity::Held,
@@ -464,12 +465,12 @@ impl Env {
     /// if so, whether it wrapped its loop on the way. See [`Playhead`] for
     /// the rule. No allocation: the next block's start is unwrapped against
     /// the loop candidate by candidate.
-    fn arrives_at(&self, next: f64, next_tempo: f64) -> Option<bool> {
+    fn arrives_at(&self, next: f64, next_tempo: Bpm) -> Option<bool> {
         let t = &self.transport;
         let from = t.beat().get();
         let len = self.block_len.get() as f64;
-        let rolls = |tempo: f64| self.frames_per_beat_at(tempo).filter(|_| t.playing);
-        let (a, b) = (rolls(t.tempo.get()), rolls(next_tempo));
+        let rolls = |tempo: Bpm| self.frames_per_beat_at(tempo).filter(|_| t.playing);
+        let (a, b) = (rolls(t.tempo), rolls(next_tempo));
         // The distance range, in beats: nothing when stopped.
         let (lo, hi) = match (a, b) {
             (None, None) => (0.0, 0.0),
@@ -478,7 +479,7 @@ impl Env {
         };
         // One frame of slack, in beats, at the faster of the two tempos (a
         // frame is fewer beats at the slower), whether or not it rolls.
-        let slack = [t.tempo.get(), next_tempo]
+        let slack = [t.tempo, next_tempo]
             .into_iter()
             .filter_map(|tempo| self.frames_per_beat_at(tempo))
             .map(|fpb| 1.0 / fpb)
@@ -529,21 +530,17 @@ impl Env {
 
     /// Frames per beat while the transport rolls, `None` when it does not.
     fn frames_per_beat(&self) -> Option<f64> {
-        self.frames_per_beat_at(self.transport.tempo.get())
+        self.frames_per_beat_at(self.transport.tempo)
             .filter(|_| self.transport.playing)
     }
 
     /// Frames per beat at `tempo` and this block's rate, when both are
     /// usable, whether or not the transport rolls.
-    fn frames_per_beat_at(&self, tempo: f64) -> Option<f64> {
-        let rate = self.sample_rate.get();
-        // `is_finite` and `> 0.0` together also refuse a NaN, which no
-        // comparison would.
-        let usable = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
+    fn frames_per_beat_at(&self, tempo: Bpm) -> Option<f64> {
         // Raw `f64` beats and frames, on purpose: `BeatDuration::to_seconds`
         // lands in `Seconds`, which is `f32` and cannot resolve a frame an
         // hour into a session (CLAUDE.md, "where the types stop").
-        usable.then(|| rate * 60.0 / tempo)
+        tutti_types::frames_per_beat(tempo, self.sample_rate)
     }
 
     /// Where a scheduled command lands in the block of a sink whose inputs
@@ -705,6 +702,24 @@ mod tests {
             changes: crate::node::TransportChanges::NONE,
             play: crate::PlayClock::ZERO,
         }
+    }
+
+    /// **A tempo too slow to count frames at does not move the transport**: the
+    /// smallest `Bpm` has no frames per beat, rolling or not, as in
+    /// `tutti_types::frames_per_beat`.
+    ///
+    /// Mutation (run): `frames_per_beat_at` computing `rate * 60 / tempo`
+    /// unfiltered → `Some(inf)` → fails.
+    #[test]
+    fn the_slowest_tempo_has_no_frames_per_beat() {
+        let slow = env(
+            0,
+            64,
+            Transport::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None),
+        );
+        assert_eq!(slow.frames_per_beat(), None);
+        let normal = env(0, 64, Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
+        assert_eq!(normal.frames_per_beat(), Some(24_000.0));
     }
 
     /// An offset exists only inside its block.

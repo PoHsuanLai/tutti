@@ -237,6 +237,20 @@ pub enum SessionEvent {
     /// does not hold it.
     #[cfg(feature = "device")]
     DeviceRestarted(crate::DeviceRestarted),
+    /// The listing started with [`Session::list_outputs`] answered: the
+    /// host's output devices, in enumeration order. Reported once.
+    #[cfg(feature = "device")]
+    OutputsListed(Vec<tutti_cpal::DeviceId>),
+    /// The listing started with [`Session::list_outputs`] failed (the
+    /// message is the error's). Reported once.
+    #[cfg(feature = "device")]
+    OutputsListFailed(String),
+    /// The listing started with [`Session::list_outputs`] has not answered
+    /// after [`LISTING_WARNING`](crate::LISTING_WARNING) of
+    /// [`PhaseCx::now`]: the host's enumeration is stuck or slow. Reported
+    /// once; the listing goes on waiting.
+    #[cfg(feature = "device")]
+    OutputsListSlow(std::time::Duration),
     /// A restart was refused or failed (the message is the error's). See
     /// [`Session::restart`](crate::Session::restart) for the stream's state.
     #[cfg(feature = "device")]
@@ -451,6 +465,14 @@ impl std::fmt::Debug for SessionEvent {
                 .field("count", count)
                 .field("recovered", recovered)
                 .finish(),
+            #[cfg(feature = "device")]
+            Self::OutputsListed(ids) => f.debug_tuple("OutputsListed").field(ids).finish(),
+            #[cfg(feature = "device")]
+            Self::OutputsListFailed(why) => f.debug_tuple("OutputsListFailed").field(why).finish(),
+            #[cfg(feature = "device")]
+            Self::OutputsListSlow(waited) => {
+                f.debug_tuple("OutputsListSlow").field(waited).finish()
+            }
             Self::EventsDroppedElsewhere(count) => f
                 .debug_tuple("EventsDroppedElsewhere")
                 .field(count)
@@ -620,6 +642,9 @@ pub struct Session {
     pub(crate) device_watch: Option<crate::DeviceWatch>,
     #[cfg(feature = "device")]
     pub(crate) device_events: Vec<SessionEvent>,
+    /// The one-shot listing of the output devices, until it answers.
+    #[cfg(feature = "device")]
+    pub(crate) output_listing: Option<crate::watch::OutputListing>,
     /// How often a healthy plugin's state is captured.
     #[cfg(feature = "plugin")]
     pub(crate) snapshot_interval: std::time::Duration,

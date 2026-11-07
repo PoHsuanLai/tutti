@@ -28,11 +28,11 @@ use bevy_ecs::prelude::*;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_codec::Wave;
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,
 };
-use tutti_io::Wave;
 use tutti_types::{ChannelLayout, SampleRate, Tail};
 
 // ---------------------------------------------------------------------------

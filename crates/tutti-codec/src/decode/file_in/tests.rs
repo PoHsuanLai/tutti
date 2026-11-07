@@ -1,6 +1,6 @@
+use super::super::read::probe_path;
 use super::*;
 use crate::Wave;
-use crate::decode::probe_path;
 
 /// Write `wave` as a 16-bit WAV named `name` and return its path.
 ///
@@ -8,7 +8,7 @@ use crate::decode::probe_path;
 /// `hound` directly. The directory is per process, and nextest runs each
 /// test in its own, so no two tests share a file.
 fn save_wav16(wave: &Wave, name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tutti_codec_file_in_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join(name);
     let spec = hound::WavSpec {
@@ -153,7 +153,7 @@ fn asset(name: &str) -> std::path::PathBuf {
 /// The repo's `name` fixture cut to its first `keep` fraction.
 fn truncated_asset(name: &str, keep: f64) -> std::path::PathBuf {
     let bytes = std::fs::read(asset(name)).expect("fixture");
-    let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tutti_codec_file_in_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let path = dir.join(format!("cut_{name}"));
     std::fs::write(&path, &bytes[..(bytes.len() as f64 * keep) as usize]).expect("write");
@@ -218,7 +218,7 @@ fn a_truncated_flac_is_a_fault_not_a_clean_end() {
 fn a_file_without_an_exact_count_reads_clean() {
     let mut padded = std::fs::read(asset("stereo.mp3")).expect("fixture");
     padded.extend_from_slice(&[0; 4096]);
-    let dir = std::env::temp_dir().join(format!("tutti_io_file_in_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("tutti_codec_file_in_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let padded_path = dir.join("padded.mp3");
     std::fs::write(&padded_path, padded).expect("write");
@@ -338,11 +338,12 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
 }
 
 /// Through the trait alone, a cut FLAC yields its frames and then reads as
-/// failed, a whole file ends without failing, and a pump over the cut file
-/// finishes as `Failed` rather than `Ended`.
+/// failed, and a whole file ends without failing. (The pump over the cut file
+/// finishes as `Failed` rather than `Ended`: `tutti-io`'s
+/// `tests/file_in_pump.rs`.)
 ///
 /// Mutation (run): removing the `is_failed` override from `impl AudioIn for
-/// FileIn` fails the failed assertions and the pump's `Failed` case.
+/// FileIn` fails the failed assertions.
 #[test]
 fn a_decode_fault_reads_as_failed_through_the_trait() {
     fn frames_then_failed<I: AudioIn>(src: &mut I) -> (usize, bool) {
@@ -369,39 +370,6 @@ fn a_decode_fault_reads_as_failed_through_the_trait() {
     assert_eq!(whole, total);
     assert!(!failed);
 
-    struct Discard(ChannelLayout);
-    impl tutti_types::AudioOut for Discard {
-        fn layout(&self) -> ChannelLayout {
-            self.0
-        }
-        fn write(&mut self, _: &[f32]) {}
-        fn finalize(self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let run = |path: &std::path::Path| {
-        let src = FileIn::open(path).expect("open");
-        let sink = Discard(src.layout());
-        let scratch = vec![0.0f32; 1024 * usize::from(src.layout().count())];
-        let mut pump = crate::pump_loop::PumpLoop::new(
-            src,
-            sink,
-            scratch,
-            Default::default(),
-            Default::default(),
-        );
-        loop {
-            match pump.pump_once() {
-                crate::pump_loop::PumpPass::Wrote(_) => {}
-                end => return end,
-            }
-        }
-    };
-    assert_eq!(run(&cut), crate::pump_loop::PumpPass::Failed);
-    assert_eq!(
-        run(&asset("stereo.flac")),
-        crate::pump_loop::PumpPass::Ended
-    );
     let _ = std::fs::remove_file(&cut);
 }
 

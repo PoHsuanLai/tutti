@@ -14,8 +14,8 @@ use super::pool::*;
 use super::types::*;
 use crossbeam_channel::bounded;
 use std::sync::Arc;
+use tutti_codec::Wave;
 use tutti_graph::{IntoNode, Node, NodeParts, Prepare};
-use tutti_io::Wave;
 use tutti_types::SampleRate;
 use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, StretchFactor};
 

@@ -11,7 +11,7 @@ use atomic_float::AtomicF64;
 use dashmap::DashMap;
 use std::sync::atomic::Ordering;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_io::AudioIn;
+use tutti_types::AudioIn;
 use tutti_types::{SampleRate, SrcRatio};
 
 use super::cache::LruCache;
@@ -210,15 +210,17 @@ pub(super) fn handle_command(
 /// is asked in exactly one place. Re-deriving it here is how the two would drift
 /// the next time the conditions changed.
 #[cfg(codec)]
-fn open_stream(file_path: &std::path::Path) -> Option<(tutti_io::WaveMetadata, tutti_io::FileIn)> {
+fn open_stream(
+    file_path: &std::path::Path,
+) -> Option<(tutti_codec::WaveMetadata, tutti_codec::FileIn)> {
     if !crate::probe(file_path).ok()?.streamable {
         return None;
     }
     // Streamable, so both of these succeed — but they are still fallible calls
     // and are handled rather than unwrapped: the probe read the header a moment
     // ago, and a file can be replaced between the two reads.
-    let meta = tutti_io::Wave::read_metadata(file_path).ok()?;
-    let decoder = tutti_io::FileIn::open(file_path).ok()?;
+    let meta = tutti_codec::Wave::read_metadata(file_path).ok()?;
+    let decoder = tutti_codec::FileIn::open(file_path).ok()?;
     Some((meta, decoder))
 }
 

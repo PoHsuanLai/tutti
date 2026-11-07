@@ -63,9 +63,13 @@ pub use tutti_nodes as nodes;
 #[cfg(feature = "device")]
 pub use tutti_cpal as device;
 
-/// The I/O edge (`tutti-io`): file decode (`Wave`, `FileIn`), WAV out, mic
-/// monitoring and recording. Feature `io`, which `audio-io` and every codec
-/// imply.
+/// File codecs (`tutti-codec`): `Wave`, `FileIn` and the decoders behind them.
+/// Feature `codec`, which every format implies.
+#[cfg(feature = "codec")]
+pub use tutti_codec as codec;
+
+/// The live I/O edge (`tutti-io`): mic monitoring, the analysis tap, WAV out
+/// and recording. Feature `io`, which `audio-io` implies.
 #[cfg(feature = "io")]
 pub use tutti_io as io;
 

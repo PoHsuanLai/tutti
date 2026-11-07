@@ -392,6 +392,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-clap-test-plugin",
+ "tutti-codec",
  "tutti-cpal",
  "tutti-export",
  "tutti-fixtures",
@@ -4200,6 +4201,7 @@ version = "0.0.1"
 dependencies = [
  "tempfile",
  "tutti-clap-test-plugin",
+ "tutti-codec",
  "tutti-cpal",
  "tutti-dsp",
  "tutti-engine",
@@ -4301,6 +4303,7 @@ dependencies = [
  "hound",
  "md-5",
  "serde",
+ "symphonia",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -4320,6 +4323,7 @@ dependencies = [
  "criterion",
  "ringbuf",
  "thiserror 2.0.21",
+ "tutti-codec",
  "tutti-engine",
  "tutti-graph",
  "tutti-io",
@@ -4374,7 +4378,6 @@ dependencies = [
  "tutti-codec",
  "tutti-dsp",
  "tutti-graph",
- "tutti-io",
  "tutti-nodes",
  "tutti-sampler",
  "tutti-spatial",
@@ -4411,17 +4414,13 @@ name = "tutti-io"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "bevy_asset",
- "bevy_reflect",
  "hound",
  "ringbuf",
- "symphonia",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-io",
  "tutti-types",
 ]
 
@@ -4734,11 +4733,11 @@ dependencies = [
  "thread-priority",
  "tracing",
  "tracing-subscriber",
+ "tutti-codec",
  "tutti-dsp",
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-io",
  "tutti-mod",
  "tutti-nodes",
  "tutti-rt",
@@ -4755,6 +4754,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-clap-test-plugin",
+ "tutti-codec",
  "tutti-cpal",
  "tutti-engine",
  "tutti-export",
@@ -4836,6 +4836,18 @@ dependencies = [
  "tutti-spatial",
  "tutti-types",
  "vbap",
+]
+
+[[package]]
+name = "tutti-tempo"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "libm",
+ "serde",
+ "serde_json",
+ "tutti-fixtures",
+ "tutti-types",
 ]
 
 [[package]]

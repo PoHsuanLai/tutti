@@ -109,9 +109,9 @@ crates/             everything shipped, directory name = package name
   tutti-metering    # MasterMeter, LoadMeter
   tutti-engine      # Engine: the per-block graph render over a transport
   tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
-  tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the file
-                    #   side (Wave, FileIn, the symphonia decoder). Device-free,
-                    #   so tutti-cpal depends on it, not vice versa.
+  tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.
+                    #   Device-free, so tutti-cpal depends on it, not vice versa.
+  tutti-codec       # File codecs: the encoders, and the decoder (Wave, FileIn).
   tutti-mod         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.

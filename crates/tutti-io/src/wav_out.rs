@@ -56,7 +56,9 @@ use tutti_types::{ChannelLayout, ChannelTopology, Interleaved};
 /// # Examples
 ///
 /// ```
-/// use tutti_io::{AudioOut, Pcm, WavOut};
+/// use tutti_codec::Pcm;
+/// use tutti_io::WavOut;
+/// use tutti_types::AudioOut;
 ///
 /// # fn main() -> std::io::Result<()> {
 /// let dir = tempfile::tempdir()?;

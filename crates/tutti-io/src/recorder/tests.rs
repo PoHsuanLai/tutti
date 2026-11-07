@@ -1,7 +1,7 @@
 use super::*;
-use crate::Pcm;
 use crate::WavOut;
 use crate::pump_loop::{ManualDriver, PumpPass};
+use tutti_codec::Pcm;
 use tutti_types::ChannelLayout;
 use tutti_types::pump;
 use tutti_types::{AudioIn, OnEmpty};

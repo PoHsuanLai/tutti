@@ -302,10 +302,11 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// # Examples
 ///
 /// ```
+/// use tutti_codec::Pcm;
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+/// use tutti_io::{ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 /// use tutti_types::graph::{OutPort, Source};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
-/// use tutti_io::{Pcm, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 ///
 /// /// A stereo source: 0.5 on the left, -0.5 on the right.
 /// struct Tone;

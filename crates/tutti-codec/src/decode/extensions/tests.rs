@@ -56,7 +56,7 @@ fn the_list_has_no_duplicates() {
 /// The list is *derived*, and this is the case that proves it: `OggReader`
 /// declares seven extensions, and a hand-written list naming `ogg` alone
 /// would hide decodable `.opus` and `.oga` files.
-#[cfg(feature = "ogg")]
+#[cfg(feature = "decode-ogg")]
 #[test]
 fn the_ogg_feature_covers_every_extension_its_reader_declares() {
     for ext in ["ogg", "oga", "ogv", "ogx", "ogm", "spx", "opus"] {
@@ -64,8 +64,8 @@ fn the_ogg_feature_covers_every_extension_its_reader_declares() {
     }
 }
 
-/// Likewise: the `mp3` feature registers three descriptors, not one.
-#[cfg(feature = "mp3")]
+/// Likewise: the `decode-mp3` feature registers three descriptors, not one.
+#[cfg(feature = "decode-mp3")]
 #[test]
 fn the_mp3_feature_covers_mp1_and_mp2_as_well() {
     for ext in ["mp1", "mp2", "mp3"] {
@@ -75,7 +75,7 @@ fn the_mp3_feature_covers_mp1_and_mp2_as_well() {
 
 /// Compiled only where a codec is actually on, because with no features the
 /// honest answer is an empty list and there is nothing to assert about it.
-#[cfg(feature = "wav")]
+#[cfg(feature = "decode-wav")]
 #[test]
 fn a_wav_build_decodes_wav_and_its_container_alias() {
     assert!(can_decode("wav"));
@@ -85,10 +85,10 @@ fn a_wav_build_decodes_wav_and_its_container_alias() {
 /// AIFF is *not* decodable, and this pins it so the next person to assume
 /// otherwise gets a red test rather than a browser row that fails on click.
 ///
-/// It reads like WAV and symphonia can do it, but this crate's `wav` feature
+/// It reads like WAV and symphonia can do it, but this crate's `decode-wav` feature
 /// maps to `["symphonia/wav", "symphonia/pcm"]` — `symphonia/aiff` is never
 /// turned on. Delete this test when the feature is added, not before.
-#[cfg(feature = "wav")]
+#[cfg(feature = "decode-wav")]
 #[test]
 fn aiff_is_not_decodable_however_much_it_looks_like_wav() {
     assert!(!can_decode("aiff"));
@@ -98,4 +98,4 @@ fn aiff_is_not_decodable_however_much_it_looks_like_wav() {
 // No test for the codec-free build: this crate's test targets always have
 // every codec on (its dev-dependency on itself), so such a test could never
 // run here. The property holds by construction instead: every `add!` above is gated on
-// its feature, and `cargo check -p tutti-io` builds that configuration.
+// its feature, and `cargo check -p tutti-codec` builds that configuration.

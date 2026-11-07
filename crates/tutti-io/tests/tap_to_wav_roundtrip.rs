@@ -36,12 +36,15 @@
 //! `FRAMES` stays above the pump's scratch so a push that *exceeds* it forces
 //! a bad bound to be used.
 
+use tutti_codec::Pcm;
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
-use tutti_io::{AudioIn, ManualDriver, Pcm, PumpPass, Recorder, TapIn, WavOut};
+use tutti_io::{ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 use tutti_types::graph::{OutPort, Source};
-use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
+use tutti_types::{
+    AudioIn, Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId,
+};
 
 /// Frames rendered into the tap, as the audio callback would.
 const FRAMES: usize = 4096;

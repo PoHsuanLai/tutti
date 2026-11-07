@@ -89,8 +89,7 @@ impl AlsaEndpoints {
 
 /// Every device now, enumerated on `seq`.
 fn devices(seq: &SeqClient) -> Vec<OsDevice> {
-    let inputs = enumerate::endpoints(seq, Direction::Input);
-    let outputs = enumerate::endpoints(seq, Direction::Output);
+    let (inputs, outputs) = enumerate::both(seq);
     os_devices(&inputs, &outputs)
 }
 

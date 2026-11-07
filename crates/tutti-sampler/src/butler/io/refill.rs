@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
-use tutti_io::Wave;
+use tutti_codec::Wave;
 use tutti_rt::MAX_POS_RING_POSITION;
 
 /// How many frames to read this cycle, under the varifill strategy.
@@ -237,7 +237,7 @@ pub(in crate::butler) fn load_wave(
         return Some(cached);
     }
 
-    // `Wave::read` is `tutti-io`'s decode path, which is compiled only when a
+    // `Wave::read` is `tutti-codec`'s decode path, which is compiled only when a
     // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
     #[cfg(codec)]

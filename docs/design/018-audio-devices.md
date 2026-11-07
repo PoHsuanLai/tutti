@@ -12,8 +12,8 @@ blocks, audio identity is a name and a direction.
 
 Read in the code on `main`; nothing was run against a real card.
 
-- The device list is enumerated once (`device_state_init_system`) and never
-  refreshed.
+- The device list is enumerated once (`device_state_init_system` starts it)
+  and never refreshed.
 - Nothing watches the default device. `DeviceSelector::Default` is resolved
   only inside `start` and `restart`. cpal 0.15.3 has `Device::name` and no id,
   and no change notification on any host, so polling is the only portable way.
@@ -44,6 +44,11 @@ Read in the code on `main`; nothing was run against a real card.
    ALSA and WASAPI, so it never runs on the audio thread or in `update`. The
    thread opens its own `DeviceHost`, waits on a stop channel with a timeout
    (no sleeps), and ends when the poller drops.
+   Without a policy, the same rule holds for the one listing an app gets at
+   startup: `tutti-cpal::DeviceListing` is a one-shot thread, the session
+   (`Session::list_outputs`) takes its answer without blocking on a later
+   `Phase::Poll`, and an engine built over a driver of the host's own, which
+   names no device, lists nothing.
 3. **Policy, `tutti-session`.** `DeviceWatch` owns a source, a roster and a
    `Follow`. `Follow::step(Input, Instant) -> Option<DeviceRestart>` is pure:
    the time is a value. The session runs the watch in `Phase::Poll`.
@@ -69,7 +74,9 @@ pub struct Follow;   // step(FollowEvent, &Snapshot, Instant) -> Option<DeviceRe
 pub struct DeviceWatch;   // source + roster + Follow; poll(now, &mut Vec<SessionEvent>)
 Session::watch_devices(source, policy, want, running_on)
 SessionEvent::{DeviceLost, DeviceAppeared, DefaultChanged, RestartWanted(DeviceRestart),
-               DeviceRestarted(DeviceRestarted { previous_rate, rate }), RestartFailed(String)}
+               DeviceRestarted(DeviceRestarted { previous_rate, rate }), RestartFailed(String),
+               OutputsListed(Vec<DeviceId>), OutputsListFailed(String), OutputsListSlow(Duration)}
+Session::list_outputs(DeviceListing)   // the one-shot startup listing (§4)
 
 // bevy-tutti
 TuttiPlugin { output_device: DeviceSelector, watch_devices: Option<DevicePolicy>, .. }
@@ -149,6 +156,21 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   compares nothing and has no clock. The startup retry's decision is
   `DeviceWatch::retry_start`, in the session crate, and its poller moves into
   the session's watch when the engine is built.
+- **Startup enumeration is off the frame.** With watching off, the list in
+  `AudioDeviceState::output_devices` is empty until a one-shot
+  `DeviceListing` answers (`SessionEvent::OutputsListed`), some frames after
+  `Startup`; it stays empty if enumeration fails (`OutputsListFailed`) or never
+  returns. `OutputsListSlow` is reported once after `LISTING_WARNING` (5 s of
+  the phase's clock) and the app logs a warning. The thread is never joined: a
+  listing dropped while its thread is stuck in the host leaves that thread
+  detached until the process exits, holding nothing of the app's, so neither a
+  frame nor shutdown waits for it. `Device::devices()` stays a public blocking
+  call for a host that chooses to make it. An engine whose driver names no
+  device (`build_device_on`) lists nothing. **Still on the frame:** a
+  `DeviceSelector::Id` is resolved by listing the host (`host.device()`), in
+  the build, in `device_state_init_system`'s `device_name()` and after a
+  restart; only a `Default` selector is off it (cpal's ALSA `default` device
+  is a name, nothing is opened to resolve it).
 - **The poller watches the default host** (`AudioHost::Default`); a JACK app
   polls through its own `SnapshotSource`.
 - **What this does not claim.** Nothing here was exercised on real hardware,

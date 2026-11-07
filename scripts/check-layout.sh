@@ -25,7 +25,22 @@
 # - `tutti-codec` depends on `tutti-types` alone;
 # - `tutti-metering` depends on `tutti-types` alone, and `tutti-transport` on
 #   `tutti-types`, `tutti-rt` and `tutti-graph`;
+# - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
+# - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
+#   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
+#   feature enables no encoder library and an `encode-*` feature no
+#   `symphonia`, so a build that reads pulls no encoder (nor the C Vorbis
+#   library) and a build that writes pulls no decoder;
+# - `symphonia` is named in `tutti-codec/src/decode.rs` and `src/decode/`
+#   alone (a comment excepted), and no `pub` item there exposes it. The scan
+#   is per file: it collects the names the file imports from symphonia (an
+#   `as` rename counts as the new name, a glob import is refused) and every
+#   `type` alias whose right side uses one, then fails when a `pub` item's
+#   header, a `pub` field, or the whole body of a `pub enum` or `pub trait`
+#   uses `symphonia`, one of those names, or an `impl` header does. A
+#   `pub(super)` or private item may use them. The decoder is swapped by
+#   editing that module;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -65,7 +80,35 @@
 #   may depend on ['tutti-plugin-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
 #   tutti-engine (normal) points up" and "tutti-codec may depend on ['tutti-types']
-#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS".
+#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS";
+# - `symphonia` as a `[dependencies]` entry of `tutti-io`: "symphonia is a normal
+#   dependency of tutti-io; ... tutti-codec alone"; `"dep:vorbis_rs"` in the
+#   `decode-ogg` feature: "decode-ogg enables an encoder library"; `"dep:symphonia"`
+#   in `encode-wav`: "encode-wav enables symphonia"; `use symphonia::core::errors;`
+#   at the end of `tutti-io/src/lib.rs`: "names symphonia outside
+#   tutti-codec's decode module"; `pub fn probe(..) -> symphonia::core::errors::Error`
+#   in `tutti-codec/src/decode/read.rs`: "pub item names symphonia"; and the
+#   evasions of the first version of that scan (each planted in `error.rs` or
+#   `read.rs`, seen to exit 1, removed): `use symphonia::core::errors::Error as
+#   Raw;` with `Wrapped(Raw)` in `pub enum DecodeError`; `pub fn leak(r: &dyn
+#   FormatReader) -> Option<Error>` over plain imports; `type Hidden =
+#   symphonia::core::errors::Error;` with `pub fn f() -> Option<Hidden>`;
+#   `type Again = Error;` (an alias of an imported name) with `pub fn g() ->
+#   Option<Again>`; `use symphonia::core::errors::*;`; a `pub inner:
+#   Box<dyn FormatReader>` field.
+#
+# What the decode scan cannot see (a textual scan, not the compiler): an item a
+# macro writes; a public type reached through a type of ours that lives in
+# another file and wraps a symphonia type privately yet exposes it through a
+# trait it implements or an associated type, since each file is scanned
+# alone; an `impl Trait` return or an inferred type that is symphonia's; a
+# trait-impl method whose signature the trait fixes; a rename through `use
+# super::..` of a name another file imported from symphonia; and `cfg`-ed text
+# (it reads every cfg arm). The complete check is the crate's rustdoc JSON or
+# `cargo public-api`, which this repo does not run.
+# - `tutti-rt` as a `[dependencies]` entry of `tutti-tempo`: "tutti-tempo may depend on
+#   ['tutti-types'] only"; `tutti-graph` there too: "tutti-tempo -> tutti-graph (normal)
+#   points up or sideways".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -111,7 +154,7 @@ LAYERS = [
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
-     "tutti-codec"],
+     "tutti-codec", "tutti-tempo"],
     ["tutti-transport", "tutti-plugin-types"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
@@ -179,6 +222,104 @@ for name, p in pkgs.items():
         if layer[dep] >= layer[name]:
             fail(f"{name} -> {dep} ({kind}) points up or sideways (layer {layer[name]} -> {layer[dep]}); dependencies point down")
 
+# ---- the codec libraries stay behind tutti-codec ---------------------------
+CODEC_LIBS = ("symphonia", "flacenc", "aifc", "vorbis_rs")
+for name, p in pkgs.items():
+    if name == "tutti-codec":
+        continue
+    for d in p["dependencies"]:
+        if d["name"] in CODEC_LIBS and (d["kind"] or "normal") != "dev":
+            fail(f"{d['name']} is a {d['kind'] or 'normal'} dependency of {name}; the codec libraries are tutti-codec's alone")
+if "tutti-codec" in pkgs:
+    encoders = {"flacenc", "aifc", "vorbis_rs", "md-5"}
+    for feat, enables in pkgs["tutti-codec"]["features"].items():
+        names = {e.split("/")[0].removeprefix("dep:").removesuffix("?") for e in enables}
+        if feat.startswith("decode-") and names & encoders:
+            fail(f"{feat} enables an encoder library ({sorted(names & encoders)}); a build that reads pulls no encoder")
+        if feat.startswith("encode-") and "symphonia" in names:
+            fail(f"{feat} enables symphonia; a build that writes pulls no decoder")
+
+import re
+decode_root = os.path.join(root, "crates", "tutti-codec", "src", "decode")
+decode_files = {os.path.join(root, "crates", "tutti-codec", "src", "decode.rs")}
+for dirpath, _, files in os.walk(decode_root):
+    decode_files |= {os.path.join(dirpath, f) for f in files if f.endswith(".rs")}
+code_only = lambda text: re.sub(r"//[^\n]*", "", text)
+for top in ("crates", "testing"):
+    for dirpath, _, files in os.walk(os.path.join(root, top)):
+        for f in files:
+            path = os.path.join(dirpath, f)
+            if not f.endswith(".rs") or path in decode_files:
+                continue
+            r = os.path.relpath(path, root)
+            # A test oracle may read with symphonia: it is a dev-dependency.
+            if "/tests/" in r or "/benches/" in r or "/examples/" in r:
+                continue
+            if "symphonia" in code_only(open(path, encoding="utf-8").read()):
+                fail(f"{r} names symphonia outside tutti-codec's decode module")
+public_item = re.compile(
+    r"^[ \t]*pub (?:const |unsafe |async )*(?:fn|struct|enum|type|trait|use|static|const|mod)\b[^{;]*"
+    r"|^[ \t]*pub \w+:[^,\n]*"
+    r"|^[ \t]*impl\b[^{;]*",
+    re.M,
+)
+use_from_symphonia = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+symphonia\b([^;]*);", re.M)
+type_alias = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?type[ \t]+(\w+)(?:<[^>]*>)?[ \t]*=([^;]*);", re.M)
+
+def symphonia_names(text, rel_path):
+    """Names this file can use for something of symphonia's: what it imports
+    from symphonia (an `as` rename counts as the new name only), and every
+    `type` alias whose right side uses one of those."""
+    names = set()
+    for m in use_from_symphonia.finditer(text):
+        stmt = m.group(1)
+        if re.search(r"\*", stmt):
+            fail(f"{rel_path}: a glob import from symphonia hides the names it brings in")
+        for n in re.finditer(r"(\w+)(?!\s*::)(?!\w)(\s+as\b)?", stmt):
+            if n.group(2) or n.group(1) in ("as", "self"):
+                continue
+            names.add(n.group(1))
+        for n in re.finditer(r"\bas\s+(\w+)", stmt):
+            names.add(n.group(1))
+        if re.search(r"\bself\b", stmt):
+            segs = re.findall(r"(\w+)::", stmt)
+            if segs:
+                names.add(segs[-1])
+    grew = True
+    while grew:
+        grew = False
+        for m in type_alias.finditer(text):
+            rhs = m.group(2)
+            if m.group(1) not in names and (
+                "symphonia" in rhs or any(re.search(rf"(?<!::)\b{n}\b", rhs) for n in names)
+            ):
+                names.add(m.group(1))
+                grew = True
+    return names
+
+for path in sorted(decode_files):
+    if os.path.basename(path) == "tests.rs":
+        continue
+    rel_path = os.path.relpath(path, root)
+    text = code_only(open(path, encoding="utf-8").read())
+    names = symphonia_names(text, rel_path)
+    spans = [(m.start(), m.group(0)) for m in public_item.finditer(text)]
+    # A `pub enum` or `pub trait` is its whole body: a variant carries no `pub`
+    # of its own. A `pub struct`'s body is its `pub` fields (matched above).
+    for m in re.finditer(r"^[ \t]*pub (?:enum|trait)\b[^{;]*\{", text, re.M):
+        depth, i = 1, m.end()
+        while depth and i < len(text):
+            depth += (text[i] == "{") - (text[i] == "}")
+            i += 1
+        spans.append((m.start(), text[m.start():i]))
+    for start, item in spans:
+        # A name behind `::` belongs to another module (`io::Error`), unless
+        # it is the module itself.
+        hit = "symphonia" in item or any(re.search(rf"(?<!::)\b{n}\b", item) for n in names)
+        if hit:
+            line = text.count("\n", 0, start) + 1
+            fail(f"{rel_path}:{line}: a pub item names symphonia (or a name imported from it): {item.strip()[:80]}")
+
 def deps_of(name, kinds=("normal", "build", "dev")):
     return {d for d, k in internal_deps(pkgs[name]) if k in kinds}
 
@@ -203,6 +344,8 @@ if "tutti-metering" in pkgs:
     only("tutti-metering", ["tutti-types"])
 if "tutti-codec" in pkgs:
     only("tutti-codec", ["tutti-types"])
+if "tutti-tempo" in pkgs:
+    only("tutti-tempo", ["tutti-types"])
 if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:

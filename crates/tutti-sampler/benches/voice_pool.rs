@@ -25,8 +25,8 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
-use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{
     Command, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback, SlotId,

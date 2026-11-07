@@ -3,7 +3,7 @@ name = "tutti-io"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Tutti's audio I/O edge — mic monitoring and file decode in, WAV out"
+description = "Tutti's live audio I/O edge: mic monitoring and the analysis tap in, WAV out, and the recorder pump between them"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-io"
@@ -13,22 +13,6 @@ categories = ["multimedia::audio"]
 
 [lints]
 workspace = true
-
-[features]
-# No codec by default, as on every engine crate: a host doing only mic → WAV
-# needs no decoder. Each feature pulls exactly one symphonia container (and
-# its codec) for `Wave::read`, `Wave::read_metadata` and `FileIn`. `wav` needs
-# `pcm`: WAV is only the container.
-default = []
-wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
-flac = ["dep:symphonia", "symphonia/flac"]
-mp3 = ["dep:symphonia", "symphonia/mp3"]
-ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
-
-# `WaveAsset` — the Bevy `Asset` wrapper a loader hands out. Only the derive;
-# the loader itself lives in `bevy-tutti`. Present only with a codec as well,
-# since an asset that cannot be decoded has no constructor.
-bevy = ["dep:bevy_asset", "dep:bevy_reflect"]
 
 [dependencies]
 thiserror.workspace = true
@@ -42,14 +26,8 @@ tutti-graph = { path = "../tutti-graph" }
 ringbuf = "0.6"
 
 # The WAV writer behind the `WavOut` sink, the one an export writes through.
-tutti-codec = { path = "../tutti-codec", features = ["wav"] }
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav"] }
 
-# File decode for `Wave::read` / `FileIn`. No default features: each codec is a
-# feature above, so a build lists exactly the containers it can read.
-symphonia = { version = "0.5.5", optional = true, default-features = false }
-
-bevy_asset = { workspace = true, optional = true }
-bevy_reflect = { workspace = true, optional = true }
 tutti-types = { path = "../tutti-types", default-features = false }
 
 [dev-dependencies]
@@ -57,11 +35,9 @@ tutti-types = { path = "../tutti-types", default-features = false }
 hound = "3.5"
 # Finds the repo's `assets/` for the tests.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-# Every codec, for this crate's own tests. A dev-dependency on self is how a
-# feature reaches the test targets unconditionally; `required-features` would
-# instead *skip* `tests/decode_golden.rs` on a plain run and report green
-# having decoded nothing. Same device as `tutti-sampler`'s `test-support`.
-tutti-io = { path = ".", features = ["wav", "flac", "mp3", "ogg"] }
+# `FileIn` as the pump's source, in `tests/file_in_pump.rs`: the decoders on
+# for this crate's own tests.
+tutti-codec = { path = "../tutti-codec", features = ["encode-wav", "decode-wav", "decode-flac"] }
 # `contract::Direct`, the by-hand driver the monitor's allocation gate runs.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 tempfile = "3.8"

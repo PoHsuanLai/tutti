@@ -4,3 +4,16 @@
 [[profile.default.overrides]]
 filter = 'package(tutti-rt)'
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+# A `bevy-tutti` test that hangs (a device enumeration stuck inside a sound
+# server's ALSA plugin, a frame that waits on a thread that never answers)
+# fails after a minute and a half instead of blocking the run. The longest
+# healthy test takes under half a second (the whole suite 0.7 s measured with
+# `--features full,plugin`), so the limit is two orders of magnitude of
+# margin for a machine under load; a test that polls for a result waits at most
+# 20 s before it fails on its own. `tutti-session` and `tutti` open no device
+# in a test (a manual driver or `from_spec`), and `tutti-cpal` only opens a
+# host, which enumerates nothing, so they need none.
+[[profile.default.overrides]]
+filter = 'package(bevy-tutti)'
+slow-timeout = { period = "30s", terminate-after = 3 }

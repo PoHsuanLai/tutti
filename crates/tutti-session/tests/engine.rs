@@ -176,7 +176,7 @@ fn tone_at(i: usize) -> f32 {
 /// by `cents`. It reads the transport from its blocks' `Env`.
 fn voice(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let mut wave = tutti_io::Wave::new(1, RATE);
+    let mut wave = tutti_codec::Wave::new(1, RATE);
     for i in 0..RATE as usize {
         wave.push_frame(&[tone_at(i)]);
     }

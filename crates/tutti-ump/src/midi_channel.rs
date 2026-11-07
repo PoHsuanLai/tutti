@@ -116,7 +116,10 @@ impl TryFrom<u8> for MidiChannel {
 
     #[inline]
     fn try_from(raw: u8) -> Result<Self, OutOfRange> {
-        Self::new(raw).ok_or(OutOfRange { value: raw, max: Self::LAST.0 })
+        Self::new(raw).ok_or(OutOfRange {
+            value: raw,
+            max: Self::LAST.0,
+        })
     }
 }
 

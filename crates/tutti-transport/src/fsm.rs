@@ -6,13 +6,12 @@
 
 use super::motion::{FadeOut, MotionEvent, Then};
 use tutti_types::Beat;
-use tutti_types::Samples;
 
 /// What the transport is doing.
 ///
 /// The four settled states are what a UI shows; the two `Declick*` states are
-/// transient — audio is still sounding while its gain ramps to zero, and the
-/// fade's completion is what performs the stop or the jump.
+/// transient — the transport has already stopped or jumped, and the engine's
+/// gain is still ramping; the engine settles them as the command lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
 pub enum MotionState {
@@ -25,9 +24,9 @@ pub enum MotionState {
     FastForward,
     /// Scrubbing backward.
     Rewind,
-    /// Fading out, and stopping when the fade reaches zero.
+    /// Stopping, with the audio fading out.
     DeclickToStop,
-    /// Fading out, and jumping to a parked target when the fade reaches zero.
+    /// Jumping to a parked target, with the audio fading out.
     DeclickToLocate,
 }
 
@@ -103,17 +102,12 @@ pub(crate) enum TransitionResult {
     MotionChanged(MotionState),
     /// Jump now, landing in `motion`.
     Located { pos: Beat, motion: MotionState },
-    /// Fade out over `frames`, then perform `on_complete`.
+    /// Fade out, then perform `on_complete`.
     DeclickStarted {
         motion: MotionState,
-        frames: Samples,
         on_complete: DeclickOutcome,
     },
 }
-
-/// 10 ms at 48 kHz — long enough to kill a click, short enough not to read
-/// as a fade.
-pub const DEFAULT_DECLICK_FRAMES: Samples = Samples(480);
 
 /// The machine itself. The engine owns it, as a plain field of its
 /// `MotionAudio`, which publishes its results.
@@ -123,7 +117,6 @@ pub(crate) struct TransportFsm {
     prev_motion: MotionState,
     /// What the in-flight fade completes into. `None` when no fade is armed.
     pending: Option<DeclickOutcome>,
-    declick_frames: Samples,
 }
 
 impl TransportFsm {
@@ -132,7 +125,6 @@ impl TransportFsm {
             motion: MotionState::Stopped,
             prev_motion: MotionState::Stopped,
             pending: None,
-            declick_frames: DEFAULT_DECLICK_FRAMES,
         }
     }
 
@@ -167,9 +159,9 @@ impl TransportFsm {
 
     /// The motion to remember for [`MotionEvent::EndScrub`].
     ///
-    /// A declick state must never be remembered: restoring `DeclickToStop` with
-    /// `remaining == 0` makes `Engine::apply_declick` early-return, so
-    /// `complete_declick` never fires and the FSM hangs in that state forever.
+    /// A declick state must never be remembered: restoring `DeclickToStop`
+    /// with no outcome parked leaves `complete_declick` nothing to settle, so
+    /// the FSM would hang in that state forever.
     /// A fade interrupted by a scrub is abandoned, and the anchor becomes what
     /// the fade was heading *towards*.
     ///
@@ -212,16 +204,14 @@ impl TransportFsm {
         self.pending = Some(on_complete);
         Some(TransitionResult::DeclickStarted {
             motion,
-            frames: self.declick_frames,
             on_complete,
         })
     }
 
     /// Retarget an in-flight fade without restarting its ramp.
     ///
-    /// `Declick::start` resets `remaining` to full, which mid-fade steps the
-    /// gain back to 1.0 — an audible click, precisely what the fade exists to
-    /// prevent. So a fade that changes its mind keeps counting and only swaps
+    /// A fresh fade mid-fade would step the gain back to 1.0, an audible
+    /// click. So a fade that changes its mind keeps counting and only swaps
     /// what it completes into.
     #[inline]
     fn retarget_declick(
@@ -445,7 +435,6 @@ mod tests {
             result,
             Some(TransitionResult::DeclickStarted {
                 motion: MotionState::DeclickToStop,
-                frames: DEFAULT_DECLICK_FRAMES,
                 on_complete: DeclickOutcome::Stop,
             })
         ));
@@ -540,9 +529,9 @@ mod tests {
         );
     }
 
-    /// `prev_motion` must never capture a declick state. Restoring one with the
-    /// fade already cleared makes `Engine::apply_declick` early-return, so
-    /// `complete_declick` never fires and the FSM hangs in "stopping" forever.
+    /// `prev_motion` must never capture a declick state. Restoring one with no
+    /// outcome parked leaves `complete_declick` nothing to settle, so the FSM
+    /// hangs in "stopping" forever.
     #[test]
     fn scrubbing_never_resurrects_an_abandoned_fade() {
         let mut fsm = TransportFsm::new();
@@ -590,9 +579,8 @@ mod tests {
         );
     }
 
-    /// Retargeting an in-flight fade must not re-arm the ramp: `Declick::start`
-    /// resets `remaining` to full, which mid-fade steps the gain back to 1.0 and
-    /// clicks — exactly what the fade exists to prevent. A retarget reports
+    /// Retargeting an in-flight fade must not re-arm the ramp: a fresh fade
+    /// mid-fade steps the gain back to 1.0 and clicks. A retarget reports
     /// `MotionChanged` (which `publish` treats as "leave the ramp alone"),
     /// never `DeclickStarted`.
     #[test]

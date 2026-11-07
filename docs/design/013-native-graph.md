@@ -545,7 +545,8 @@ place that loses precision to be written out explicitly:
      applies a fade's outcome at once), so `Env` reads stopped (or jumped)
      from that frame and a beat command after it in the same block does not
      fire. The fade is a gain the engine puts on the output, and no frame
-     moves it by more than one fade step (`1/480`):
+     moves it by more than one fade step (a fade is 10 ms at the engine's
+     rate, so `1/480` at 48 kHz):
      - a **timed** command (`At::Frame`, `At::Beat`) is seen ahead: the
        engine looks one fade past each block for the next declicked command
        playback reaches, and fades the **old** position's audio out so the

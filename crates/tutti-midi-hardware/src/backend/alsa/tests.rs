@@ -377,15 +377,16 @@ fn the_kernels_system_client_is_not_listed() {
     assert!(!devices.list().iter().any(system), "{:?}", devices.list());
 }
 
-/// A backend whose enumeration panics the second time it is asked.
-struct Panicky;
+/// A backend whose enumeration panics once `armed` is set (not before: other
+/// processes' clients wake the watch at any time).
+struct Panicky(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl crate::MidiEndpoints for Panicky {
     fn watch(&self, sink: crate::ChangeSink) -> crate::Result<Box<dyn crate::Watch>> {
-        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let armed = std::sync::Arc::clone(&self.0);
         super::watch::start(sink, move |_| {
             assert!(
-                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0,
+                !armed.load(std::sync::atomic::Ordering::SeqCst),
                 "enumeration panics"
             );
             Vec::new()
@@ -417,8 +418,10 @@ impl crate::MidiEndpoints for Panicky {
 /// only joined) leaves `watch_failure` `None`.
 #[test]
 fn a_watch_that_panics_reports_its_failure() {
-    let devices = Devices::with_backend(Box::new(Panicky)).unwrap();
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let devices = Devices::with_backend(Box::new(Panicky(std::sync::Arc::clone(&armed)))).unwrap();
     assert_eq!(devices.watch_failure(), None);
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
     let _device = plug(&unique("panic"));
     let deadline = Instant::now() + PATIENCE;
     while devices.watch_failure().is_none() {

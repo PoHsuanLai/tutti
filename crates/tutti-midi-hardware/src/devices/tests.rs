@@ -163,7 +163,7 @@ fn wait_wakes_for_a_change_made_on_another_thread() {
 }
 
 /// Two subscribers each see every change; one reading takes nothing from the
-/// other. Mutation: one shared queue (the old `poll`) leaves the second
+/// other. Mutation: one shared queue (a shared queue) leaves the second
 /// subscriber empty and the second assertion fails.
 #[test]
 fn each_subscriber_sees_every_change() {

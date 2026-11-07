@@ -147,7 +147,7 @@ impl FakeCounters {
     /// Plugs `endpoint` in, as `direction` says, and tells every running
     /// watch. A device already plugged in under that id is replaced, which a
     /// watch sees as a change. The watch thread delivers it, and this returns
-    /// once it has: the event is waiting for the next `Devices::poll`.
+    /// once it has: the event is waiting in every subscriber's queue.
     pub fn plug(&self, endpoint: EndpointInfo, direction: Direction) {
         let mut devices = self.devices();
         let id = endpoint.id;

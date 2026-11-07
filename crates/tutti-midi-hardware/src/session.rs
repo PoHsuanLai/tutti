@@ -136,8 +136,9 @@ impl MidiSession {
         })
     }
 
-    /// The devices present and their changes. A host polls it for hot-plug
-    /// ([`Devices::poll`]); the session's `Phase::Poll` does.
+    /// The devices present. A host that wants hot-plug subscribes
+    /// ([`Devices::subscribe`]); the session's `Phase::Poll` has a
+    /// subscription of its own.
     pub fn devices(&self) -> &Devices {
         &self.inner.devices
     }

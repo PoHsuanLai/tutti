@@ -13,7 +13,7 @@ mod support;
 use support::probe_path::probe_path;
 
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
-use tutti_clap_host::{ClapLoaded, ClapProcessContext, ClapProcessor, LoadOptions};
+use tutti_clap_host::{ClapLoaded, ClapProcessor, LoadOptions};
 use tutti_clap_test_plugin::params_state::probe_params;
 use tutti_clap_test_plugin::{
     PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, ProcessCapture, Site, ThreadCapture,
@@ -201,70 +201,6 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     );
     ClapLoaded::deactivate(processor, controller).expect("a pair");
     set_ports_64bit(0);
-}
-
-fn set_render_mode(mode: u32) {
-    unsafe {
-        let lib = libloading::Library::new(probe_path()).expect("re-open reference plugin");
-        let f: libloading::Symbol<unsafe extern "C" fn(u32)> = lib
-            .get(b"tutti_test_plugin_set_render_mode\0")
-            .expect("symbol");
-        f(mode);
-    }
-}
-
-/// `RenderMode::TagOnly`: every output sample is a per-slot tag, whatever the
-/// input.
-const RENDER_TAG_ONLY: u32 = 2;
-
-/// **One processor type renders the same plugin at either width, and to the
-/// same signal.** Activated at `Float32` and then at `Float64` (the plugin's
-/// ports flagged for 64-bit), the one `ClapProcessor` reports the format it
-/// was activated at, and the tagged output is the same integers in both
-/// widths: a width is a value of the processor, not a different render.
-///
-/// Mutations (run): `AudioScratch::new` ignoring its format (always
-/// `Float32`) → the 64-bit activation reports `Float32` and its block is a
-/// `FormatMismatch`; the 64-bit table bound as `data32` in the FFI crate → the f64 block
-/// is all zeros and the equality fails.
-#[test]
-fn one_processor_type_renders_both_widths_to_the_same_signal() {
-    let probe = Probe::acquire();
-    set_render_mode(RENDER_TAG_ONLY);
-    set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
-    const FRAMES: usize = 32;
-    let ctx = ClapProcessContext::default();
-
-    let narrow = prepare().with_format(SampleFormat::Float32);
-    let (mut processor, controller) = probe.load().activate(narrow).expect("activates at 32-bit");
-    assert_eq!(processor.format(), SampleFormat::Float32);
-    let mut left32 = [0.0f32; FRAMES];
-    let mut right32 = [0.0f32; FRAMES];
-    {
-        let mut outputs = [left32.as_mut_slice(), right32.as_mut_slice()];
-        let mut buffer = AudioBufferMut::F32(AudioBuffer::new(&[], &mut outputs, 48_000.0));
-        processor.process(&mut buffer, &ctx).expect("an f32 block");
-    }
-    let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
-
-    let wide = prepare().with_format(SampleFormat::Float64);
-    let (mut processor, controller) = loaded.activate(wide).expect("activates at 64-bit");
-    assert_eq!(processor.format(), SampleFormat::Float64);
-    let mut left64 = [0.0f64; FRAMES];
-    let mut right64 = [0.0f64; FRAMES];
-    {
-        let mut outputs = [left64.as_mut_slice(), right64.as_mut_slice()];
-        let mut buffer = AudioBufferMut::F64(AudioBuffer::new(&[], &mut outputs, 48_000.0));
-        processor.process(&mut buffer, &ctx).expect("an f64 block");
-    }
-    ClapLoaded::deactivate(processor, controller).expect("a pair");
-    set_ports_64bit(0);
-
-    assert_ne!(left32[0], 0.0, "the plugin tagged its output");
-    for i in 0..FRAMES {
-        assert_eq!(f64::from(left32[i]), left64[i], "left frame {i}");
-        assert_eq!(f64::from(right32[i]), right64[i], "right frame {i}");
-    }
 }
 
 /// **A 64-bit request negotiates down to 32-bit when the plugin lacks

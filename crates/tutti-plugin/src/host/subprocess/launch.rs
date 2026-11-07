@@ -432,6 +432,49 @@ mod tests {
         );
     }
 
+    /// A library that is not a plugin fails the launch with the loader's own
+    /// reason. The server answers the load; it does not exit, which the host
+    /// would report as `ProcessCrashed`.
+    ///
+    /// The reference CLAP plugin's cdylib, which carries a `.so` name, is a real
+    /// library the server reads as VST2 and the VST2 loader refuses.
+    ///
+    /// Needs `cargo build -p tutti-plugin-server` first (`CLAUDE.md`).
+    ///
+    /// Mutation: restore the `?` on `Plugin::load` in the server's
+    /// `Session::handle_load` and the launch reports `ProcessCrashed`.
+    #[test]
+    #[cfg(all(unix, feature = "clap"))]
+    fn a_library_that_is_not_a_plugin_fails_the_launch_with_the_loaders_reason() {
+        let dir = TempDir::new("notaplugin");
+        let config = BridgeConfig {
+            socket_path: dir.path().join("s.sock"),
+            ..Default::default()
+        };
+        let not_a_plugin =
+            tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+
+        let err = match launch_with(
+            &ServerLocator::at(tutti_fixtures::plugin_server()),
+            &config,
+            &not_a_plugin,
+            SampleRate(48_000.0),
+        ) {
+            Err(e) => e,
+            Ok(mut server) => {
+                let _ = server.process.kill();
+                let _ = server.process.wait();
+                panic!("a library with no plugin entry point launched");
+            }
+        };
+        match err {
+            BridgeError::LoadFailed { reason, .. } => {
+                assert!(reason.contains("NotAPlugin"), "reason: {reason}");
+            }
+            other => panic!("expected LoadFailed, got {other:?}"),
+        }
+    }
+
     /// Whether process `pid` still exists, asked without signalling it.
     ///
     /// `kill -0` is the POSIX existence probe: it performs permission checks and

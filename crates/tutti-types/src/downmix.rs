@@ -502,18 +502,27 @@ mod tests {
         assert!((mono[0] - 2.0 * M3DB * M3DB).abs() < 1e-6, "{}", mono[0]);
     }
 
-    /// Every channel of `dst` is written, whatever the widths, so a caller
-    /// that emits `dst` as a frame never emits a short or stale one.
+    /// A stereo frame into four channels keeps the pair and zero-fills the
+    /// rest over stale data, so a caller emitting `dst` as a frame never
+    /// emits a short or stale one. (`matrix` pins the planar fold only.)
     ///
     /// Mutation (run): the wide branch skipping its copy fails.
     #[test]
-    fn fold_frame_writes_every_destination_channel() {
-        for (src_w, dst_w) in [(2usize, 6usize), (6, 2), (1, 4), (6, 1), (2, 12)] {
-            let src = vec![0.25f32; src_w];
-            let mut dst = vec![9.9f32; dst_w];
-            fold_frame(&src, &mut dst);
-            assert!(dst.iter().all(|&s| s != 9.9), "{src_w} -> {dst_w}: {dst:?}");
-        }
+    fn fold_frame_zero_fills_a_wider_destination_exactly() {
+        let mut dst = [9.9f32; 4];
+        fold_frame(&[0.25, -0.25], &mut dst);
+        assert_eq!(dst, [0.25, -0.25, 0.0, 0.0]);
+    }
+
+    /// Stereo into mono averages: an asymmetric pair tells the average from a
+    /// dropped right channel.
+    ///
+    /// Mutation (run): `fold_frame` mono arm taking `src[0]` fails.
+    #[test]
+    fn fold_frame_stereo_to_mono_averages_asymmetric_input() {
+        let mut mono = [0.0f32; 1];
+        fold_frame(&[0.5, 0.9], &mut mono);
+        assert!((mono[0] - 0.7).abs() < 1e-6, "{}", mono[0]);
     }
 
     #[test]

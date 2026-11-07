@@ -366,7 +366,12 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   `Reporter` sends `Gone` for such a handle before the `Present` of the new one,
   so a held input is closed. The limit: an exit announcement the kernel's queue
   dropped, followed by an identical device taking the number, goes unseen and
-  leaves a dead subscription listed as connected. Opening reads the handle
+  leaves a dead subscription listed as connected. The reverse also happens: the
+  kernel can announce the exit of a number's previous owner after a new client
+  has taken it, and the new device is then reported `Removed` and `Added` with
+  the same id (a held input on it is closed). Both need a number reused within
+  microseconds; the second showed up only when tests started and stopped
+  clients in parallel. Opening reads the handle
   after looking it up, not under the list's lock, so a handle reused in between
   opens the new device; the `Removed` that follows is how a holder finds out.
 - **A watch that dies says so.** An error or a panic in the watch thread sets

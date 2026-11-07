@@ -79,6 +79,33 @@ fn removed(id: DeviceId) -> impl Fn(&DeviceEvent) -> bool {
     move |e| matches!(e, DeviceEvent::Removed(i) if i.id == id)
 }
 
+/// Runs `open` until it succeeds. The kernel can announce the exit of a client
+/// number's previous owner after a new client has taken it; the watch then
+/// re-reports the device (`Removed`, `Added`, the same id) and the id is
+/// unlisted for a moment, so an open in that moment is refused.
+fn when_listed<T>(devices: &Devices, open: impl Fn() -> crate::Result<T>) -> T {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        match open() {
+            Ok(opened) => return opened,
+            Err(e) => {
+                assert!(Instant::now() < deadline, "{e}");
+                devices.wait(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+fn open_input_when_listed(
+    devices: &Devices,
+    id: &DeviceId,
+    ports: &HardwareMidiInputs,
+) -> Box<dyn crate::InputConnection> {
+    when_listed(devices, || {
+        devices.open_input(id, ports.open_input_port("test"))
+    })
+}
+
 fn info(event: DeviceEvent) -> DeviceInfo {
     event.info().clone()
 }
@@ -111,15 +138,30 @@ fn watch_threads() -> usize {
 }
 
 // Mutation record for this file, each seen to fail, then restored:
-// - `watch::start` returning `NoWatch` first: all six fail (the
+// - `watch::start` returning `NoWatch` first: all six original tests fail (the
 //   added and removed waits time out, and the thread count stays 0);
 // - `AlsaWatch::drop` forgetting the stop descriptor and not joining:
 //   `dropping_devices_ends_the_watch_thread` fails;
-// - `Reporter::report` comparing handles only: nothing here fails, because
-//   it needs two clients to swap a handle between two enumerations;
-//   `devices::tests::the_reporter_tells_a_reused_handle_from_the_device_it_replaced`
-//   covers it. Parallel runs of these tests hit that swap on their own
-//   (a client number freed by one test is taken by the next).
+// - `devices` enumerating on a client it opens itself, not the watch's:
+//   `an_idle_devices_does_not_wake_itself` fails with about 20,000 wakes in a
+//   second;
+// - `AlsaEndpoints::list` opening a client per call:
+//   `asking_for_capabilities_does_not_wake_the_watch` fails (1,255 wakes for
+//   1,000 asks);
+// - `SND_SEQ_PORT_CAP_SUBS_WRITE` back on the pump's port, or
+//   `SND_SEQ_PORT_CAP_SUBS_READ` on the output's:
+//   `the_engines_own_clients_are_not_listed` fails;
+// - `Reporter::report` with `departed` always false: `two_identical_clients...`
+//   `an_identical_device_that_takes_a_number_at_once...`,
+//   `an_input_held_when_its_device_vanishes...` and
+//   `devices::tests::a_handle_the_os_says_departed_is_a_new_device` fail;
+// - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
+//   fails.
+//
+// The kernel can announce a client's exit after a new client has taken its
+// number, and the watch then re-reports the new device (`Removed`, `Added`, the
+// same id). Parallel runs hit it, so these tests read ids from the list or retry
+// an open (`when_listed`) where it would matter.
 
 /// A client that appears is listed with its identity.
 #[test]
@@ -155,9 +197,7 @@ fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let device = plug(&name);
     let id = info(until(&devices, added(&name))).id;
 
-    let connection = devices
-        .open_input(&id, ports.open_input_port("held"))
-        .expect("the vanishing device opens while present");
+    let connection = open_input_when_listed(&devices, &id, &ports);
     drop(device);
     until(&devices, removed(id.clone()));
     assert!(
@@ -173,12 +213,29 @@ fn two_identical_clients_are_two_devices() {
     let devices = Devices::open().unwrap();
     let name = unique("twin");
     let first = plug(&name);
-    let a = info(until(&devices, added(&name)));
+    until(&devices, added(&name));
     let second = plug(&name);
-    let b = info(until(&devices, added(&name)));
-    assert_eq!(a.id.identity(), b.id.identity());
-    assert_ne!(a.id, b.id);
-    assert_eq!((a.id.ordinal(), b.id.ordinal()), (0, 1));
+    // Read the ids from the list once both are there: the kernel can announce
+    // a lagging exit for a number a client has just taken, which re-reports it
+    // (see the doc on `Reporter`), so which of the two is `#0` is not fixed.
+    let deadline = Instant::now() + PATIENCE;
+    let twins = || {
+        let want = format!("{name}: port");
+        let mut twins: Vec<_> = devices
+            .list()
+            .into_iter()
+            .filter(|d| d.name == want)
+            .collect();
+        twins.sort_by_key(|d| d.id.ordinal());
+        twins
+    };
+    while twins().len() < 2 {
+        assert!(Instant::now() < deadline, "{:?}", devices.list());
+        devices.wait(Duration::from_millis(50));
+    }
+    let twins = twins();
+    assert_eq!(twins[0].id.identity(), twins[1].id.identity());
+    assert_eq!((twins[0].id.ordinal(), twins[1].id.ordinal()), (0, 1));
     drop((first, second));
 }
 
@@ -208,11 +265,10 @@ fn opening_twice_gives_each_its_own_watch() {
 #[test]
 fn an_idle_devices_does_not_wake_itself() {
     let devices = Devices::open().unwrap();
-    // Anything real that happens on the machine is allowed to wake it a few
-    // times; a loop is thousands.
+    // Other processes' clients may wake it a few times; a loop is thousands.
     devices.wait(Duration::from_secs(1));
     let wakes = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(wakes <= 5, "{wakes} wakes in one idle second");
+    assert!(wakes <= 20, "{wakes} wakes in one idle second");
 }
 
 /// Opening an input and an output on a device makes the engine's own clients
@@ -229,10 +285,8 @@ fn the_engines_own_clients_are_not_listed() {
     let mut backlog = Vec::new();
     let id = info(until_in(&devices, &mut backlog, added(&name))).id;
 
-    let input = devices
-        .open_input(&id, ports.open_input_port("own"))
-        .unwrap();
-    let output = devices.open_output(&id).unwrap();
+    let input = open_input_when_listed(&devices, &id, &ports);
+    let output = when_listed(&devices, || devices.open_output(&id));
     drop(device);
     // Announcements are in order: whatever the opens announced is before this.
     until_in(&devices, &mut backlog, removed(id));
@@ -363,14 +417,14 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
     assert!(devices.capability(&id).is_some());
     devices.wait(Duration::from_millis(300));
     let before = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
-    for _ in 0..20 {
-        devices.capability(&id);
+    for _ in 0..1000 {
+        let _ = devices.capability(&id);
     }
     devices.wait(Duration::from_millis(500));
     let after = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
     assert!(
-        after - before <= 3,
-        "{} wakes for 20 capability asks",
+        after - before <= 200,
+        "{} wakes for 1000 capability asks",
         after - before
     );
 }

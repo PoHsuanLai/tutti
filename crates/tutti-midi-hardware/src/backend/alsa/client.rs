@@ -96,6 +96,7 @@ impl SeqClient {
     }
 
     /// Renames this client; the sequencer announces the change.
+    #[cfg(test)]
     pub fn rename(&self, name: &str) {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
         // SAFETY: `self.seq` is open; `cname` outlives the call.

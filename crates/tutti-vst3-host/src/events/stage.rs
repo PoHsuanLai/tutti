@@ -6,7 +6,7 @@ use tutti_plugin_types::{
 };
 use tutti_vst3_ffi::{EventList, NOTE_EXPRESSION_ROOM, Staging};
 
-use super::midi::midi1_data;
+use super::midi::{bank_program, midi1_data};
 use super::{
     Event, EventExt, MidiEncoder, MidiEvent, Payload, ToEvent, Utf16Chord, Utf16Scale, Utf16Text,
     sample_offset,
@@ -106,15 +106,14 @@ impl Stager {
             SysExStep::NotSysEx => {
                 // A Program Change with a bank is three MIDI-1 messages (CC 0, CC 32,
                 // PC), each its own event at the same offset.
-                let messages = event.to_midi1_messages();
-                if messages.len() > 1 {
+                if let Some(messages) = bank_program(event) {
                     // All three or none: a bank is not sent without its program.
                     if stage.room() < messages.len() {
                         stage.count_dropped(messages.len() as u64);
                         return;
                     }
                     let offset = sample_offset(event.frame_offset);
-                    for (bytes, _) in messages {
+                    for bytes in messages {
                         stage.push(midi1_data(offset, bytes));
                     }
                 } else if let Some(event) = self.encoder.encode(event) {

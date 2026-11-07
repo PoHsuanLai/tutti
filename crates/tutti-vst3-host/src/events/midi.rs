@@ -1,14 +1,15 @@
 //! `MidiEvent` to VST3 event and back.
 
+use tutti_midi_protocol::{narrow_bend, narrow_value, widen};
 use tutti_midi_types::PerNoteBendRanges;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
-use tutti_midi_types::midi2::{Channeled, UmpMessage};
-use tutti_midi_types::ump::SYSEX7_STATUS_SINGLE;
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{
+    Message, MidiChannel, MidiGroup, NoteNumber, RegisteredPerNoteController, SysexStatus, System,
+    U14, Ump, Unknown, Voice1, Voice2, decode as decode_ump,
+};
 
 use super::{
     Data, Event, K_DATA_TYPE_MIDI_SYSEX, MidiEvent, NoteOff, NoteOn, Payload, PolyPressure,
@@ -32,127 +33,256 @@ pub struct MidiEncoder {
 impl MidiEncoder {
     /// The VST3 event for `event`, at the stream state the encoder holds.
     ///
-    /// Notes and poly-pressure are matched on Channel Voice 2 via
-    /// [`tutti_midi_types::normalize`], so velocity and pressure reach the
-    /// plugin at their full bit width as `f32` rather than through 7-bit MIDI 1.
-    /// A per-note pitch bend becomes a tuning expression over its channel's
-    /// range, and a per-note bend sensitivity (RPN #00/07) sets that range and
-    /// is consumed (`None`): VST3 has no event for it. Registered and
-    /// assignable per-note controllers with a VST3 counterpart become
-    /// expression events. A single-packet SysEx, and any other message with a
-    /// MIDI-1 form, becomes a `Data` event. `None` for messages with neither,
-    /// and for a packet of a multi-packet SysEx, which the list reassembles.
+    /// The packet is read through `tutti_ump::decode`. A MIDI 1.0 note or key pressure
+    /// is widened ([`widen`]) and a MIDI 2.0 one is read as is, so velocity
+    /// and pressure reach the plugin at their full bit width as `f32` rather
+    /// than through 7-bit MIDI 1. A per-note pitch bend becomes a tuning
+    /// expression over its channel's range, and a per-note bend sensitivity
+    /// (RPN #00/07) sets that range and is consumed (`None`): VST3 has no
+    /// event for it. Registered and assignable per-note controllers with a
+    /// VST3 counterpart become expression events. A single-packet SysEx, and
+    /// any other message with a MIDI-1 form, becomes a `Data` event.
+    ///
+    /// `None` is a message this host is a sink for, arm by arm in
+    /// the encoder: VST3's event list has no raw UMP event, so a
+    /// message with no VST3 event and no MIDI 1.0 form, including an
+    /// [`Unknown`] packet, goes no further. A packet of a multi-packet SysEx
+    /// is `None` too: the list reassembles it.
+    ///
+    /// The group is ignored: one plugin instance has one set of channels,
+    /// whatever group a message arrives on.
     pub fn encode(&mut self, event: &MidiEvent) -> Option<Event> {
         if self.ranges.observe(event) {
             return None;
         }
-
         let offset = sample_offset(event.frame_offset);
-        let normalized = tutti_midi_types::normalize(event);
-        if let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) {
-            let channel = u8::from(cv2.channel());
-            match cv2 {
-                Cv2::NoteOn(m) => {
-                    let note = u8::from(m.note_number());
-                    return Some(Event::at(
-                        offset,
-                        Payload::NoteOn(NoteOn::new(
-                            channel.into(),
-                            note.into(),
-                            u16_to_unit_f32(m.velocity()),
-                            note_id_for(channel, note),
-                        )),
-                    ));
+        match decode_ump(Ump(event.data)) {
+            Ok(message) => self.message(offset, message),
+            // A reserved or undefined packet. VST3 has no event that carries
+            // raw words, so there is no way to forward it: this host is a
+            // sink for it.
+            Err(Unknown(_)) => None,
+        }
+    }
+
+    fn message(&self, offset: i32, message: Message) -> Option<Event> {
+        match message {
+            Message::Midi1(address, voice) => self.voice1(offset, address.channel, voice),
+            Message::Midi2(address, voice) => self.voice2(offset, address.channel, voice),
+            Message::System(_, system) => Some(midi1_data(offset, system_bytes(system))),
+            // VST3 wants a SysEx with its 0xF0 ... 0xF7 delimiters. A
+            // single-packet message fits the inline bytes (at most 6 payload,
+            // 8 framed); a packet of a multi-packet message cannot stand
+            // alone, and the list reassembles those.
+            Message::Sysex7(_, packet) => {
+                if packet.status() != SysexStatus::Complete {
+                    return None;
                 }
-                Cv2::NoteOff(m) => {
-                    let note = u8::from(m.note_number());
-                    return Some(Event::at(
-                        offset,
-                        Payload::NoteOff(NoteOff::new(
-                            channel.into(),
-                            note.into(),
-                            // The release velocity, at its full width.
-                            u16_to_unit_f32(m.velocity()),
-                            note_id_for(channel, note),
-                        )),
-                    ));
+                let payload = packet.bytes();
+                let mut framed = [0u8; Data::CAPACITY];
+                framed[0] = 0xF0;
+                for (slot, byte) in framed[1..].iter_mut().zip(payload) {
+                    *slot = byte.get();
                 }
-                Cv2::KeyPressure(m) => {
-                    let note = u8::from(m.note_number());
-                    return Some(Event::at(
-                        offset,
-                        Payload::PolyPressure(PolyPressure::new(
-                            channel.into(),
-                            note.into(),
-                            u32_to_unit_f32(m.key_pressure_data()),
-                            note_id_for(channel, note),
-                        )),
-                    ));
-                }
-                Cv2::PerNotePitchBend(m) => {
-                    let note = u8::from(m.note_number());
-                    let bend = bend_u32_to_signed_f32(m.pitch_bend_data());
-                    return NoteExpressionValue {
-                        sample_offset: offset,
-                        note_id: note_id_for(channel, note),
-                        expression_type: NoteExpressionType::Tuning,
-                        value: tuning_expression(bend, self.ranges.semitones(channel)),
-                    }
-                    .to_event();
-                }
-                Cv2::RegisteredPerNoteController(m) => {
-                    let note = u8::from(m.note_number());
-                    return registered_controller_expression(m.controller()).and_then(
-                        |(expression_type, data)| {
-                            NoteExpressionValue {
-                                sample_offset: offset,
-                                note_id: note_id_for(channel, note),
-                                expression_type,
-                                value: f64::from(u32_to_unit_f32(data)),
-                            }
-                            .to_event()
-                        },
-                    );
-                }
-                Cv2::AssignablePerNoteController(m) => {
-                    let note = u8::from(m.note_number());
-                    let value = u32_to_unit_f32(m.controller_data());
-                    return per_note_controller_expression(m.index()).and_then(|expression_type| {
-                        NoteExpressionValue {
-                            sample_offset: offset,
-                            note_id: note_id_for(channel, note),
-                            expression_type,
-                            value: f64::from(value),
-                        }
-                        .to_event()
-                    });
-                }
-                // CC, channel pressure, channel pitch bend and program change have no
-                // extra resolution VST3 can use: they ride the plugin's parameter funnel
-                // (`CcRoute`) or land as a raw Data event below.
-                _ => {}
+                framed[payload.len() + 1] = 0xF7;
+                let data = Data::new(K_DATA_TYPE_MIDI_SYSEX, &framed[..payload.len() + 2])?;
+                Some(Event::at(offset, Payload::Data(data)))
+            }
+            // Sinks: VST3 has no event for a clock, a stream message, flex
+            // data or SysEx 8, and the Data event carries only MIDI 1.0 bytes.
+            Message::Utility(_) | Message::Data128(..) | Message::Flex(..) | Message::Stream(_) => {
+                None
             }
         }
+    }
 
-        // VST3 wants a SysEx with its 0xF0 ... 0xF7 delimiters. A single-packet
-        // message fits the inline bytes (at most 6 payload, 8 framed); a packet
-        // of a multi-packet message cannot stand alone.
-        if let Some((status, payload, n)) = event.sysex7_payload() {
-            if status != SYSEX7_STATUS_SINGLE {
-                return None;
+    fn voice2(&self, offset: i32, channel: MidiChannel, voice: Voice2) -> Option<Event> {
+        let ch = channel.get();
+        match voice {
+            // A MIDI 2.0 Note On at velocity 0 is sent as a Note Off at
+            // release velocity 0, though M2-104 §7.4.2 keeps it a Note On. A
+            // widened MIDI 1.0 Note On at velocity 0 never gets here: it
+            // arrives as a Note Off.
+            Voice2::NoteOn {
+                note, velocity: 0, ..
+            } => Some(note_off(offset, ch, note, 0)),
+            // The attribute is not read: the Note On's `tuning` stays 0.
+            Voice2::NoteOn { note, velocity, .. } => Some(Event::at(
+                offset,
+                Payload::NoteOn(NoteOn::new(
+                    ch.into(),
+                    note.get().into(),
+                    u16_to_unit_f32(velocity),
+                    note_id_for(ch, note.get()),
+                )),
+            )),
+            Voice2::NoteOff { note, velocity, .. } => {
+                // The release velocity, at its full width.
+                Some(note_off(offset, ch, note, velocity))
             }
-            let mut framed = [0u8; Data::CAPACITY];
-            framed[0] = 0xF0;
-            framed[1..=n].copy_from_slice(&payload[..n]);
-            framed[n + 1] = 0xF7;
-            let data = Data::new(K_DATA_TYPE_MIDI_SYSEX, &framed[..n + 2])?;
-            return Some(Event::at(offset, Payload::Data(data)));
+            Voice2::PolyPressure { note, value } => Some(Event::at(
+                offset,
+                Payload::PolyPressure(PolyPressure::new(
+                    ch.into(),
+                    note.get().into(),
+                    u32_to_unit_f32(value),
+                    note_id_for(ch, note.get()),
+                )),
+            )),
+            Voice2::PerNotePitchBend { note, value } => {
+                let bend = bend_u32_to_signed_f32(value);
+                NoteExpressionValue {
+                    sample_offset: offset,
+                    note_id: note_id_for(ch, note.get()),
+                    expression_type: NoteExpressionType::Tuning,
+                    value: tuning_expression(bend, self.ranges.semitones(ch)),
+                }
+                .to_event()
+            }
+            Voice2::RegisteredPerNote {
+                note,
+                controller,
+                value,
+            } => {
+                let expression_type = registered_controller_expression(controller)?;
+                NoteExpressionValue {
+                    sample_offset: offset,
+                    note_id: note_id_for(ch, note.get()),
+                    expression_type,
+                    value: f64::from(u32_to_unit_f32(value)),
+                }
+                .to_event()
+            }
+            Voice2::AssignablePerNote {
+                note,
+                controller,
+                value,
+            } => {
+                let expression_type = per_note_controller_expression(controller)?;
+                NoteExpressionValue {
+                    sample_offset: offset,
+                    note_id: note_id_for(ch, note.get()),
+                    expression_type,
+                    value: f64::from(u32_to_unit_f32(value)),
+                }
+                .to_event()
+            }
+            // CC, channel pressure, channel pitch bend and program change
+            // have no extra resolution VST3 can use: they ride the plugin's
+            // parameter funnel (`CcRoute`) or land as a raw Data event.
+            Voice2::ControlChange { controller, value } => Some(midi1_data(
+                offset,
+                [0xB0 | ch, controller.get(), narrow_value(value).get()],
+            )),
+            // The program only: a bank is three messages, staged by
+            // `bank_program`.
+            Voice2::ProgramChange { program, .. } => {
+                Some(midi1_data(offset, [0xC0 | ch, program.get(), 0]))
+            }
+            Voice2::ChannelPressure(pressure) => Some(midi1_data(
+                offset,
+                [0xD0 | ch, narrow_value(pressure).get(), 0],
+            )),
+            Voice2::PitchBend(bend) => Some(midi1_data(offset, bend_bytes(ch, narrow_bend(bend)))),
+            // Sinks: VST3 has no event for an RPN or NRPN (the per-note bend
+            // sensitivity is consumed in `encode`), and per-note management
+            // has nothing to act on.
+            Voice2::Registered { .. }
+            | Voice2::Assignable { .. }
+            | Voice2::RelativeRegistered { .. }
+            | Voice2::RelativeAssignable { .. }
+            | Voice2::PerNoteManagement { .. } => None,
         }
+    }
 
-        // The VST3 carrier for any 3-byte MIDI-1 message: a Data event of subtype 0
-        // (the only subtype the SDK defines is SysEx).
-        let (bytes, _len) = event.to_midi1_bytes()?;
-        Some(midi1_data(offset, bytes))
+    /// A MIDI 1.0 message as a VST3 event. A note, key pressure, controller,
+    /// program, channel pressure or bend is read at MIDI 1.0 resolution and
+    /// carried as it came; a note or key pressure is widened to the full width
+    /// VST3's `f32` takes.
+    fn voice1(&self, offset: i32, channel: MidiChannel, voice: Voice1) -> Option<Event> {
+        let ch = channel.get();
+        match voice {
+            Voice1::NoteOn { .. } | Voice1::NoteOff { .. } | Voice1::PolyPressure { .. } => {
+                // Widened here, so a MIDI 1.0 Note On at velocity 0 is the Note
+                // Off of M2-104 App. D.3.1, which `voice2` encodes. `encode`
+                // handles a MIDI 2.0 velocity of 0 itself.
+                self.voice2(offset, channel, widen(voice))
+            }
+            Voice1::ControlChange { controller, value } => Some(midi1_data(
+                offset,
+                [0xB0 | ch, controller.get(), value.get()],
+            )),
+            Voice1::ProgramChange(program) => {
+                Some(midi1_data(offset, [0xC0 | ch, program.get(), 0]))
+            }
+            Voice1::ChannelPressure(pressure) => {
+                Some(midi1_data(offset, [0xD0 | ch, pressure.get(), 0]))
+            }
+            Voice1::PitchBend(bend) => Some(midi1_data(offset, bend_bytes(ch, bend))),
+        }
+    }
+}
+
+/// The three messages a MIDI 2.0 Program Change with a valid bank stands for
+/// (M2-104 App. D): Bank Select MSB (CC 0), Bank Select LSB (CC 32), then the
+/// Program Change. `None` for anything else.
+pub(super) fn bank_program(event: &MidiEvent) -> Option<[[u8; 3]; 3]> {
+    let Ok(Message::Midi2(
+        address,
+        Voice2::ProgramChange {
+            program,
+            bank: Some(bank),
+        },
+    )) = decode_ump(Ump(event.data))
+    else {
+        return None;
+    };
+    let ch = address.channel.get();
+    Some([
+        [0xB0 | ch, 0, bank.msb.get()],
+        [0xB0 | ch, 32, bank.lsb.get()],
+        [0xC0 | ch, program.get(), 0],
+    ])
+}
+
+fn note_off(offset: i32, channel: u8, note: NoteNumber, velocity: u16) -> Event {
+    Event::at(
+        offset,
+        Payload::NoteOff(NoteOff::new(
+            channel.into(),
+            note.get().into(),
+            u16_to_unit_f32(velocity),
+            note_id_for(channel, note.get()),
+        )),
+    )
+}
+
+/// The status and data bytes of a Pitch Bend.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "masked to 7 bits, so the narrowing cannot lose a bit the mask keeps"
+)]
+fn bend_bytes(channel: u8, bend: U14) -> [u8; 3] {
+    let bend = bend.get();
+    [0xE0 | channel, (bend & 0x7F) as u8, (bend >> 7) as u8]
+}
+
+/// A System message as its MIDI 1.0 bytes.
+fn system_bytes(system: System) -> [u8; 3] {
+    match system {
+        System::TimeCode(data) => [0xF1, data.get(), 0],
+        System::SongPosition(position) => {
+            let [_, lsb, msb] = bend_bytes(0, position);
+            [0xF2, lsb, msb]
+        }
+        System::SongSelect(song) => [0xF3, song.get(), 0],
+        System::TuneRequest => [0xF6, 0, 0],
+        System::TimingClock => [0xF8, 0, 0],
+        System::Start => [0xFA, 0, 0],
+        System::Continue => [0xFB, 0, 0],
+        System::Stop => [0xFC, 0, 0],
+        System::ActiveSensing => [0xFE, 0, 0],
+        System::Reset => [0xFF, 0, 0],
     }
 }
 
@@ -172,17 +302,35 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
-/// The same for a registered per-note controller, with its raw 32-bit data.
-/// Volume, pan and brightness (CC74, sound controller #5) have a VST3
-/// counterpart; the rest are dropped.
-fn registered_controller_expression(controller: Controller) -> Option<(NoteExpressionType, u32)> {
+/// The same for a registered per-note controller. Volume, pan and brightness
+/// (CC74, sound controller #5) have a VST3 counterpart; the rest are dropped.
+fn registered_controller_expression(
+    controller: RegisteredPerNoteController,
+) -> Option<NoteExpressionType> {
     match controller {
-        Controller::Volume(data) => Some((NoteExpressionType::Volume, data)),
-        Controller::Pan(data) => Some((NoteExpressionType::Pan, data)),
-        Controller::Brightness(data) | Controller::SoundController { index: 5, data } => {
-            Some((NoteExpressionType::Brightness, data))
-        }
-        _ => None,
+        RegisteredPerNoteController::Volume => Some(NoteExpressionType::Volume),
+        RegisteredPerNoteController::Pan => Some(NoteExpressionType::Pan),
+        RegisteredPerNoteController::Brightness => Some(NoteExpressionType::Brightness),
+        RegisteredPerNoteController::Modulation
+        | RegisteredPerNoteController::Breath
+        | RegisteredPerNoteController::Pitch
+        | RegisteredPerNoteController::Balance
+        | RegisteredPerNoteController::Expression
+        | RegisteredPerNoteController::SoundVariation
+        | RegisteredPerNoteController::Timbre
+        | RegisteredPerNoteController::ReleaseTime
+        | RegisteredPerNoteController::AttackTime
+        | RegisteredPerNoteController::DecayTime
+        | RegisteredPerNoteController::VibratoRate
+        | RegisteredPerNoteController::VibratoDepth
+        | RegisteredPerNoteController::VibratoDelay
+        | RegisteredPerNoteController::SoundController10
+        | RegisteredPerNoteController::ReverbSend
+        | RegisteredPerNoteController::Effects2Depth
+        | RegisteredPerNoteController::ChorusSend
+        | RegisteredPerNoteController::Effects4Depth
+        | RegisteredPerNoteController::Effects5Depth
+        | RegisteredPerNoteController::Reserved(_) => None,
     }
 }
 
@@ -242,10 +390,8 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
                 return MidiEvent::sysex7_single(MidiGroup::FIRST, inner)
                     .map(|m| m.with_frame_offset(frame));
             }
-            // Promoted to Channel Voice 2 here, so the engine sees one vocabulary
-            // whatever the source. System messages pass through unchanged.
-            return MidiEvent::from_midi1_bytes(frame, bytes)
-                .map(|e| tutti_midi_types::normalize(&e));
+            // Widened to Channel Voice 2 here. System messages pass through unchanged.
+            return MidiEvent::from_midi1_bytes(frame, bytes).map(widen_midi1);
         }
         Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),
         // A reassembled SysEx's bytes are in the list's buffer, which the list drains.
@@ -257,4 +403,26 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
         | Payload::ExpressionInt(_) => return None,
     };
     Some(built.with_frame_offset(frame))
+}
+
+/// A MIDI 1.0 channel voice event as the MIDI 2.0 message that means the same
+/// (M2-104 App. D.3), so the engine sees one vocabulary whatever the source.
+/// Any other message is forwarded unchanged.
+fn widen_midi1(event: MidiEvent) -> MidiEvent {
+    match decode_ump(Ump(event.data)) {
+        Ok(Message::Midi1(address, voice)) => {
+            let ump = Ump::from(Message::Midi2(address, widen(voice)));
+            MidiEvent::from_ump(event.frame_offset, ump.words())
+        }
+        Ok(
+            Message::Utility(_)
+            | Message::System(..)
+            | Message::Sysex7(..)
+            | Message::Midi2(..)
+            | Message::Data128(..)
+            | Message::Flex(..)
+            | Message::Stream(_),
+        )
+        | Err(Unknown(_)) => event,
+    }
 }

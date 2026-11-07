@@ -72,8 +72,10 @@ fn sample_plugin_dir() -> String {
         .unwrap_or_else(|| SAMPLE_PLUGIN_DIR_BUILT.to_string())
 }
 
-/// VST3 module lifecycle is not thread-safe across concurrent load/unload of
-/// the same DSO; serialise every test that touches a plugin.
+/// Serialises every test that touches a plugin. Opening a module is already
+/// serialised by `Module::open`; this still guards the process-wide
+/// `TUTTI_PROBE_MISBEHAVIOUR` variable some tests set, which every probe
+/// instance reads, and module teardown, which takes no lock.
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {

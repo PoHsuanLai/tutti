@@ -176,3 +176,44 @@ fn a_setup_answered_false_is_tolerated_and_recorded() {
     plugin.set_active(true).expect("activate");
     assert!(plugin.audio_side().is_some());
 }
+
+/// Opening one module image from several threads at once is safe.
+///
+/// The SDK's plugin side keeps process-global state that a module open
+/// mutates unlocked, and `dlopen` hands every thread the same image, so
+/// `Module::open` serialises itself. The modules are kept until the threads
+/// have joined and dropped on this thread, because teardown is not locked.
+///
+/// This is a probabilistic test: the race is in the plugin's memory, so a
+/// broken open usually aborts the process (a heap-corruption abort or an
+/// overflow panic in the host's COM release) and sometimes does not. Without
+/// the lock this test killed the process (abort or segfault) in 99 of 100
+/// runs on the machine it was written on; with it, none of 350 runs failed.
+/// A faster or slower machine may detect less often, never falsely.
+///
+/// Mutation: remove the `OPEN` lock in `Module::open` and the process aborts.
+#[test]
+fn concurrent_opens_of_one_image_do_not_corrupt_the_plugins_globals() {
+    const THREADS: usize = 8;
+    const OPENS: usize = 25;
+    let path = probe_path();
+    let start = std::sync::Barrier::new(THREADS);
+    let modules: Vec<Arc<Module>> = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..THREADS)
+            .map(|_| {
+                s.spawn(|| {
+                    start.wait();
+                    (0..OPENS)
+                        .map(|_| Module::open(&path).expect("the probe opens"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().expect("an open did not panic"))
+            .collect()
+    });
+    assert_eq!(modules.len(), THREADS * OPENS);
+    assert!(modules.iter().all(|m| m.class_count() > 0));
+}

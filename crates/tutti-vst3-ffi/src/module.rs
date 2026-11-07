@@ -3,7 +3,7 @@
 
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use libloading::Library;
 use vst3::Steinberg::{
@@ -98,13 +98,21 @@ impl std::fmt::Debug for Module {
 // SAFETY: `ComPtr` is a raw pointer, so neither trait is inferred. One module
 // backs several `Plugin`s, and `countClasses`, `getClassInfo` and
 // `createInstance` may be called concurrently (the SDK's own hosts scan from
-// worker threads). The factory is stateless towards the host (`setHostContext`,
-// its one mutating call, runs once in `open`, before the `Arc` exists), and the other fields never move
+// worker threads). Towards the host the factory is read-only once built:
+// `setHostContext`, its one mutating call, runs inside `open` under `OPEN`,
+// before the `Arc` exists. The other fields never move
 // under a shared reference: `_library` unloads only in `Drop`, which `Arc`
 // serialises, and `run_loop` is `Mutex`-guarded (see `com/run_loop.rs`).
 unsafe impl Send for Module {}
 // SAFETY: see `Send` above.
 unsafe impl Sync for Module {}
+
+/// Held across the whole of [`Module::open`]. The SDK's plugin side keeps
+/// process-global state that `open` mutates with no lock of its own:
+/// `LinuxPlatformTimer::runLoop`, `gPluginFactory` and `moduleCounter`, shared
+/// by every `open` of one image. Locking `setHostContext` alone still raced.
+/// Teardown (`Drop`) takes no lock.
+static OPEN: Mutex<()> = Mutex::new(());
 
 impl Module {
     /// The run loop this module lends the plugin. Shared with every
@@ -133,7 +141,10 @@ impl Module {
     /// [`LoadError`] if the OS cannot open the library, if the module's entry
     /// point refuses initialization, if the `GetPluginFactory` symbol is
     /// missing, or if the factory function returns null.
+    ///
+    /// Opens are serialised process-wide; see `OPEN`.
     pub fn open(lib_path: &Path) -> Result<Arc<Self>, LoadError> {
+        let _one_open_at_a_time = OPEN.lock().unwrap_or_else(PoisonError::into_inner);
         // SAFETY: loading a plugin runs its static initializers, which is what
         // the caller asked for by naming a plugin module; `Library::new`'s
         // contract is that the path is a library the process may run.

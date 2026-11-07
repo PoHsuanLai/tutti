@@ -18,19 +18,11 @@ mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
-/// VST3 module lifecycle is not thread-safe here: loading and unloading the
-/// same DSO concurrently races module init/exit and crashes. Every test that
-/// constructs a `Active` must hold this.
+/// Serialises every test that constructs an `Active`. `Module::open` already
+/// serialises opening, but module teardown takes no lock, and the default tests
+/// without this crashed (a heap-corruption abort) in 3 of 400 runs.
 ///
-/// This file went without one. Two of its tests run by default (the rest are
-/// `#[ignore]`d), both load real bundles, and under the default parallel runner
-/// the suite intermittently died with SIGTRAP — while passing single-threaded,
-/// which is what made it read as flaky rather than as a missing lock.
-///
-/// Per-file, like the statics in `vst3_conformance.rs` and
-/// `vst3_audio_correctness.rs`: each test binary is its own process, so a
-/// shared one would have to live in the library and exist in production purely
-/// for tests.
+/// Per-file: each test binary is its own process.
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquire [`PLUGIN_LOCK`], ignoring poisoning so one failing test does not

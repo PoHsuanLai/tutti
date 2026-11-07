@@ -453,7 +453,8 @@ impl FileIn {
 }
 
 /// Sequential reads at the file's **own** channel width. A decode error ends
-/// the stream (`0` from then on) and is kept for [`FileIn::error`]; use
+/// the stream (`0` from then on), is kept for [`FileIn::error`] and reads as
+/// [`is_failed`](AudioIn::is_failed); use
 /// [`fill_sequential_interleaved`](FileIn::fill_sequential_interleaved) to get
 /// it back as a `Result`.
 ///
@@ -463,7 +464,7 @@ impl FileIn {
 impl AudioIn for FileIn {
     /// A file has an end, and a decode error ends the stream there too (see the
     /// doc above): either way `0` means there is no more to read, and
-    /// [`FileIn::error`] says which.
+    /// [`is_failed`](Self::is_failed) says which.
     const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
 
     /// The file's own width, which is what [`poll_into`](Self::poll_into) produces.
@@ -479,6 +480,11 @@ impl AudioIn for FileIn {
     /// interleave for everything after it.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         self.fill_sequential_interleaved(out).unwrap_or(Samples(0))
+    }
+
+    /// Whether a decode fault ended the stream: [`FileIn::error`] is `Some`.
+    fn is_failed(&self) -> bool {
+        self.fault.is_some()
     }
 }
 

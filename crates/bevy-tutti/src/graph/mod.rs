@@ -41,7 +41,6 @@ pub mod pump;
 pub mod resources;
 pub mod schedule;
 pub mod spawn;
-pub mod tap;
 pub mod topology;
 pub mod transport;
 pub mod wire;
@@ -64,7 +63,6 @@ pub use spawn::crossfade_plugin_node;
 pub use spawn::{
     InsertAudioNode, PendingCrossfades, SpawnAudioNode, crossfade_audio_node, insert_and_bind,
 };
-pub use tap::AudioTapRes;
 pub use topology::LiveGraph;
 pub use transport::{EngineNodes, MetronomeRes, TransportRes};
 pub use wire::{GraphWirePlugin, MasterSources, PortSource, PortSources};

@@ -4345,7 +4345,7 @@ dependencies = [
  "rand 0.8.8",
  "rustfft",
  "thiserror 2.0.21",
- "tutti-metering",
+ "tutti-graph",
  "tutti-types",
 ]
 
@@ -4354,6 +4354,7 @@ name = "tutti-engine"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "ringbuf",
  "thiserror 2.0.21",
  "tutti-graph",
  "tutti-metering",
@@ -4420,7 +4421,6 @@ dependencies = [
  "tutti-codec",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-metering",
  "tutti-types",
 ]
 
@@ -4429,9 +4429,6 @@ name = "tutti-metering"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "parking_lot",
- "ringbuf",
- "thiserror 2.0.21",
  "tutti-types",
 ]
 

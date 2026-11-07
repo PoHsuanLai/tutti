@@ -25,13 +25,13 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_cpal::{AudioCallbackState, MAX_FRAMES, OutputBlock, process_audio};
 use tutti_engine::Engine;
-use tutti_graph::{Editor, Prepare};
-use tutti_metering::{AudioTap, MasterMeter, MeterWriter};
+use tutti_graph::{Editor, Prepare, TapReader};
+use tutti_metering::MasterMeter;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{Bpm, Hz, NodeKey, Q, SampleRate, Samples};
+use tutti_types::{Bpm, Hz, NodeKey, Q, SampleRate, Samples, TapAlign, TapId};
 use tutti_types::{ChannelLayout, InterleavedMut};
 
 // Without this every `assert_no_alloc` below is a silent no-op. See the module
@@ -47,10 +47,20 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// rather than shared because that one is `#[cfg(test)]`-private to the unit
 /// binary, and every type it needs is public.
 fn rolling_state() -> (Transport, AudioCallbackState) {
-    rolling_state_with(MasterMeter::pair().0, AudioTap::new())
+    let (transport, state, _, _) = rolling_state_with(false);
+    (transport, state)
 }
 
-fn rolling_state_with(writer: MeterWriter, tap: AudioTap) -> (Transport, AudioCallbackState) {
+/// [`rolling_state`], with a graph tap on both outputs when `tap` (the reader
+/// is returned, and must be held), and the engine's master meter to enable.
+fn rolling_state_with(
+    tap: bool,
+) -> (
+    Transport,
+    AudioCallbackState,
+    MasterMeter,
+    Option<TapReader>,
+) {
     let transport = Transport::new(SAMPLE_RATE);
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
@@ -78,17 +88,22 @@ fn rolling_state_with(writer: MeterWriter, tap: AudioTap) -> (Transport, AudioCa
         });
         2
     ];
+    let reader = tap.then(|| {
+        let sources = ed.spec().topology.outputs.clone();
+        ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(MAX_FRAMES))
+    });
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let meter = engine.master_meter().clone();
     // Every commit is sent; the editor only has to outlive the engine's
     // setup. Leaked like the fixtures in `support`, for the same reason.
     Box::leak(Box::new(ed));
-    let state = AudioCallbackState::new(engine, writer, tap);
+    let state = AudioCallbackState::new(engine);
 
     transport.settings.set_tempo(Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
-    (transport, state)
+    (transport, state, meter, reader)
 }
 
 /// Render `frames` once, outside any gate, to prime whatever the first call
@@ -192,19 +207,18 @@ fn process_audio_across_block_sizes_is_allocation_free() {
     });
 }
 
-/// The whole output callback, with the meter enabled and the tap open, must
-/// not allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
-/// block (so the gate ran the metering pass).
+/// The whole output callback, with the meter enabled and a graph tap open
+/// (never drained, so the ring fills and the op counts its drops), must not
+/// allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
+/// block (so the gate ran the metering pass) and the tap must hold frames.
 ///
 /// Mutation (run): a `Vec::with_capacity(1)` in `MeterWriter::measure`
 /// aborts it.
 #[test]
 fn a_metered_and_tapped_callback_is_allocation_free() {
-    let (writer, meter) = MasterMeter::pair();
+    let (_transport, state, meter, tap) = rolling_state_with(true);
+    let tap = tap.expect("opened");
     meter.enable();
-    let tap = AudioTap::new();
-    let _consumer = tap.open().expect("a fresh tap opens");
-    let (_transport, state) = rolling_state_with(writer, tap);
     let mut block = OutputBlock::new(std::sync::Arc::new(state), ChannelLayout::STEREO);
     let mut out = vec![0.0f32; MAX_FRAMES * 2];
     for _ in 0..4 {
@@ -217,4 +231,5 @@ fn a_metered_and_tapped_callback_is_allocation_free() {
         }
     });
     assert!(meter.get().peak_left.get() > 0.0, "the meter read nothing");
+    assert!(tap.available().get() > 0, "the tap read nothing");
 }

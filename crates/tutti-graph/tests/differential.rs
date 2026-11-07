@@ -43,7 +43,7 @@ use common::{Kind, Pair, bits, input_signal};
 use proptest::prelude::*;
 use tutti_graph::{EventEdge, EventIn, EventOut, GraphSpec, Unforkable};
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, NodeSpec, OutPort, Source};
-use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
+use tutti_types::{ChannelLayout, NodeKey, Samples, TapAlign, TapId, TapSpec, Topology};
 
 use tutti_graph::Node;
 
@@ -510,6 +510,52 @@ proptest! {
             pair.switch(&valid, &desc.kinds);
             let mut frame = 0;
             run(&mut pair, &schedule(which, seed, 700), &mut frame);
+        }
+    }
+
+    /// A tap changes nothing and reads exactly what it names: with an aligned
+    /// tap of every output's source open, the executor still renders the
+    /// reference's graph bit for bit, and the tap's lanes are the output
+    /// channels, sample for sample, at every block schedule, serial and
+    /// parallel. The reference knows no taps; this holds the tap op to the
+    /// output it must copy, on random graphs with feedback, PDC and events.
+    ///
+    /// Mutation (run, recorded here): skip the tap's aligning delay in
+    /// `compile` (`if false && spec.align == ToOutput ...`) -> a graph whose
+    /// outputs differ in latency has a lane ahead of its output and the
+    /// comparison fails. Mutation (run): make the `Op::Tap` arm in `exec.rs`
+    /// write the block twice -> the tap's lanes run ahead of the outputs.
+    #[test]
+    fn an_aligned_tap_of_the_outputs_is_the_output(seed in any::<u64>(), which in 0usize..5) {
+        for workers in modes(seed) {
+            let desc = random_graph(seed);
+            let outputs = desc.spec.topology.outputs.clone();
+            let mut spec = desc.spec.clone();
+            spec.topology.taps.insert(
+                TapId(1),
+                TapSpec { sources: outputs.clone(), align: TapAlign::ToOutput },
+            );
+            let valid = spec.validate().expect("generated graphs are valid");
+            let mut pair = Pair::with_workers(MAX_BLOCK, workers);
+            // The harness compiles the spec itself; the reader's lanes ride the
+            // same commit.
+            let mut tap = pair.editor.open_tap(TapId(1), outputs, TapAlign::ToOutput, Samples(1 << 16));
+            pair.switch(&valid, &desc.kinds);
+            let width = tap.width();
+            let mut frame = 0;
+            for n in schedule(which, seed, 700) {
+                let input = input_signal(frame, n);
+                let (exec, reference) = pair.block(n, &input);
+                prop_assert_eq!(bits(&exec), bits(&reference), "a tap changed the render at frame {}", frame);
+                let mut got = vec![0.0f32; n * width];
+                prop_assert_eq!(tap.pop_into(&mut got).get(), n);
+                for (c, channel) in exec.iter().enumerate() {
+                    let lane: Vec<f32> = got.iter().skip(c).step_by(width).copied().collect();
+                    prop_assert_eq!(bits(&[lane]), bits(std::slice::from_ref(channel)), "tap lane {} at frame {}", c, frame);
+                }
+                prop_assert_eq!(tap.take_lost().get(), 0);
+                frame += n as u64;
+            }
         }
     }
 

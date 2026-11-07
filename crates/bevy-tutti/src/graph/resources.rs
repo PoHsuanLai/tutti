@@ -221,6 +221,27 @@ impl AudioGraphRes {
         self.read().load_meter().cloned()
     }
 
+    /// Opens the tap on what the engine renders: every output channel at the
+    /// device's width, after the declick fader ([`Session::open_heard_tap`]).
+    /// The default way to record what the output sounds like; `Graph::open_output_tap`
+    /// (through [`graph`](Self::graph)) is the pre-fader signal of the graph.
+    /// An `Err` on a [`headless`](Self::headless) graph, which has no engine.
+    ///
+    /// # Errors
+    ///
+    /// As [`Session::open_heard_tap`].
+    pub fn open_heard_tap(
+        &self,
+        capacity: Samples,
+    ) -> Result<tutti_graph::TapReader, tutti_session::HeardTapError> {
+        self.read().open_heard_tap(capacity)
+    }
+
+    /// Closes the tap [`open_heard_tap`](Self::open_heard_tap) opened.
+    pub fn close_heard_tap(&self) {
+        self.read().close_heard_tap();
+    }
+
     /// `f` over what the session keeps for the plugin hosted at `node`
     /// (`tutti_session::HostedPlugin`: its handle, controls, liveness, last
     /// snapshot and, with `modulation`, its parameter mirror); `None` when

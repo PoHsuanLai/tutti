@@ -150,28 +150,53 @@ let reading = correlate(planes);
 
 ## Reading from a running graph
 
-Nothing here knows about the graph, so the seam is a `tutti_metering::AudioTap`: the
-audio thread pushes each block into it and a control thread drains it. What
-arrives on this side is an ordinary `&[f32]`, which is the whole reason these
-algorithms need no engine vocabulary.
+Nothing here knows about the graph, so the seam is a tap (`tutti-graph`'s
+`Editor::open_tap`, or a session's `Graph::open_tap`): the audio thread copies
+the sources into a ring a lane and a control thread drains them through the
+`TapReader`. What arrives on this side is an ordinary `&[f32]`, which is the
+whole reason these algorithms need no engine vocabulary.
 
 ```rust
 use tutti_dsp::correlate;
-use tutti_metering::AudioTap;
-use tutti_types::StereoPlanes;
+use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, StereoPlanes};
+use tutti_types::{TapAlign, TapId};
 
-let tap = AudioTap::new();
-let _consumer = tap.open().expect("a fresh tap has no consumer");
+/// A stereo source: 0.5 on the left, -0.5 on the right.
+struct Tone;
+impl Node for Tone {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(0.5);
+        io.output(1).fill(-0.5);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
-// The audio-callback side: an interleaved stereo block of 2 frames is 4
-// samples.
-let block = [0.5f32, -0.5, 0.5, -0.5];
-tap.push(&block);
+// A tap on the graph's two outputs.
+let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+editor.insert(NodeKey(1), "tone", Unforkable(Tone));
+let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
+editor.spec_mut().topology.outputs = vec![out(0), out(1)];
+let mut tap = editor.open_tap(TapId(0), vec![out(0), out(1)], TapAlign::ToOutput, Samples(256));
+editor.commit().expect("compiles");
+executor.apply_pending();
+editor.collect();
 
-// The analysis side, once the drained frames are deinterleaved. Draining the
-// ring itself needs `ringbuf`'s `Consumer` trait, which is the consumer's
-// dependency rather than this crate's.
-let (left, right) = ([0.5f32, 0.5], [-0.5f32, -0.5]);
+// The audio-callback side: a block of 2 frames.
+let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
+let transport = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+executor.process(2, &transport, &[], &mut [&mut l[..], &mut r[..]]);
+
+// The analysis side: two interleaved frames, deinterleaved.
+let mut drained = [0.0f32; 4];
+assert_eq!(tap.pop_into(&mut drained), Samples(2));
+let (left, right) = ([drained[0], drained[2]], [drained[1], drained[3]]);
 let planes = StereoPlanes::new(&left, &right).expect("drained in lockstep");
 
 // `Correlation` is a MEASUREMENT type, deliberately distinct from the control
@@ -202,7 +227,7 @@ The batch entry points allocate their results, so call them off the audio
 thread. The `step_*` functions and `FftScratch` let a caller reuse buffers
 across calls. `step_spectrum` allocates nothing once its state is built, and
 `step_windowed_loudness` allocates nothing either, but reads three-second windows
-on every call, so it belongs on the consumer side of an `AudioTap`, not in an
+on every call, so it belongs on the consumer side of a tap's `TapReader`, not in an
 audio callback.
 
 ## Features

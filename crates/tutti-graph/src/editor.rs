@@ -56,7 +56,7 @@ use std::sync::Arc;
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey};
+use tutti_types::{Latency, NodeKey, Samples, TapAlign, TapId, TapSpec};
 
 use tutti_types::At;
 
@@ -72,6 +72,7 @@ use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
+use crate::tap::{TapReader, TapWriter};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +142,18 @@ pub enum CommitError {
     /// verifier refuses ([`Plan::verify_fades`]). Nothing was
     /// sent.
     Fade(VerifyError),
+    /// A tap's lanes in the spec no longer match the width it was opened
+    /// with ([`Editor::open_tap`] fixed the reader's and the writer's width
+    /// there): the spec's `TapSpec::sources` was edited. Nothing was sent.
+    /// Close the tap and open another to change its width.
+    TapWidth {
+        /// The tap.
+        tap: TapId,
+        /// The lanes the spec names now.
+        sources: usize,
+        /// The lanes it was opened with.
+        opened: usize,
+    },
     /// No node at this key ([`Editor::set_latency`]).
     NoSuchNode {
         /// The key.
@@ -235,6 +248,15 @@ impl std::fmt::Display for CommitError {
                 write!(f, "node {} has no running unit to fade from", node.0)
             }
             Self::Fade(e) => write!(f, "{e}"),
+            Self::TapWidth {
+                tap,
+                sources,
+                opened,
+            } => write!(
+                f,
+                "tap {} names {sources} lanes but was opened with {opened}",
+                tap.0
+            ),
             Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
             Self::LatencyTooLong {
                 node,
@@ -339,6 +361,10 @@ pub struct Editor {
     /// Keys [`set_latency`](Self::set_latency) changed since the last
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
+    /// Tap producers opened since the last commit, sent with the next.
+    pending_taps: Vec<(TapId, TapWriter)>,
+    /// Each open tap's reader, to see which were dropped.
+    tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -425,6 +451,86 @@ fn refresh(key: NodeKey, shape: Shape, spec: &mut GraphSpec, shapes: &mut Shapes
 }
 
 impl Editor {
+    /// Declares a tap on `sources` (one lane each, any ports) and returns its
+    /// reader. It takes effect at the next [`commit`](Self::commit), which
+    /// compiles the tap's ops and hands the executor its producers; until
+    /// then the reader sees nothing. `capacity` is each lane's ring, in
+    /// frames; what the reader does not drain in time is counted
+    /// ([`TapReader::take_lost`]).
+    ///
+    /// Opening an id again replaces it: the new reader is fed from the next
+    /// commit and the old one gets nothing more. A tap the topology does not
+    /// name compiles to nothing, so a closed tap costs the audio thread
+    /// nothing.
+    ///
+    /// Nothing is validated here. A lane naming a node port or global input
+    /// that does not exist ([`Invalid::TapOutOfRange`](tutti_types::graph::Invalid))
+    /// makes **every** commit fail until the tap is closed or the source
+    /// exists. A latency change that resizes an aligned tap's delay shifts
+    /// the stream by the difference with no marker for the reader, as it does
+    /// an output. A tap sees the signal before the engine's declick fader.
+    pub fn open_tap(
+        &mut self,
+        id: TapId,
+        sources: Vec<Source>,
+        align: TapAlign,
+        capacity: Samples,
+    ) -> TapReader {
+        let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
+        self.pending_taps.retain(|(k, _)| *k != id);
+        self.pending_taps.push((id, writer));
+        self.tap_readers
+            .insert(id, (reader.width(), reader.watch()));
+        self.spec_mut()
+            .topology
+            .taps
+            .insert(id, TapSpec { sources, align });
+        reader
+    }
+
+    /// Removes a tap: its ops leave the plan at the next commit and its
+    /// producers are freed on the control side.
+    pub fn close_tap(&mut self, id: TapId) {
+        self.pending_taps.retain(|(k, _)| *k != id);
+        self.tap_readers.remove(&id);
+        self.spec_mut().topology.taps.remove(&id);
+    }
+
+    /// Refuses a spec whose tap lanes disagree with the width the tap was
+    /// opened with: the writer the executor holds has that many rings.
+    fn check_tap_widths(&self) -> Result<(), CommitError> {
+        for (&tap, spec) in &self.spec.topology.taps {
+            match self.tap_readers.get(&tap) {
+                Some(&(opened, _)) if opened != spec.sources.len() => {
+                    return Err(CommitError::TapWidth {
+                        tap,
+                        sources: spec.sources.len(),
+                        opened,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes every tap whose [`TapReader`] was dropped, and returns how many.
+    /// A dropped reader leaves its tap open (the audio thread then writes
+    /// nothing for it); this is the control-side tick that takes it out of the
+    /// plan. Moves the spec only when it closes one.
+    pub fn reap_taps(&mut self) -> usize {
+        let gone: Vec<TapId> = self
+            .tap_readers
+            .iter()
+            .filter(|(_, (_, alive))| alive.strong_count() == 0)
+            .map(|(&id, _)| id)
+            .collect();
+        for &id in &gone {
+            self.close_tap(id);
+        }
+        gone.len()
+    }
+
     /// An empty graph, and the executor that will run it, both for
     /// `prepare`. The only way to build an [`Executor`].
     #[must_use]
@@ -453,6 +559,8 @@ impl Editor {
             pending: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
+            pending_taps: Vec::new(),
+            tap_readers: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             committed: None,
@@ -1056,6 +1164,13 @@ impl Editor {
                 *s = Source::Zero;
             }
         }
+        for spec in t.taps.values_mut() {
+            for s in &mut spec.sources {
+                if matches!(s, Source::Node(p) if p.node == key) {
+                    *s = Source::Zero;
+                }
+            }
+        }
         self.spec.events.retain(|at, _| at.node != key);
         for sources in self.spec.events.values_mut() {
             sources.retain(|e: &EventEdge| e.from().node != key);
@@ -1228,6 +1343,7 @@ impl Editor {
         // of that spec too.
         self.limits.block(prepare.max_block().get())?;
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        self.check_tap_widths()?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
             .map_err(CommitError::Compile)?;
@@ -1424,7 +1540,9 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        self.check_tap_widths()?;
         if self.pending.is_empty()
+            && self.pending_taps.is_empty()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
@@ -1672,7 +1790,8 @@ impl Editor {
             }
             ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
-        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
+        let taps = std::mem::take(&mut self.pending_taps);
+        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params, taps);
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");

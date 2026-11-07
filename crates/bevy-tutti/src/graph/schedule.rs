@@ -134,7 +134,7 @@ pub(crate) fn configure_phases(app: &mut App) {
 /// that to exercise graph systems without a device. So a system gated here may
 /// still run in a `World` where `build_into` never executed, and **every
 /// resource `build_into` inserts can be absent**: `MetronomeRes`, `MeteringRes`,
-/// `AudioTapRes`, `MidiEngineNodes`, `MpeModeRes`, `ClockMasterRes`,
+/// `MidiEngineNodes`, `MpeModeRes`, `ClockMasterRes`,
 /// `DiskStreamerRes`, `MidiIoRes`, and the compensation cell. Add `PluginsRes`,
 /// which is inserted lazily and not by the engine block at all.
 ///

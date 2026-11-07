@@ -110,9 +110,10 @@
 //!   [`AudioParam`](graph::AudioParam) sets a parameter;
 //!   [`commit_graph`](graph::commit_graph) sends a frame's edits in one
 //!   commit (the session's own edit flag says whether there are any).
-//! - [`graph::TransportRes`], [`graph::MetronomeRes`], [`graph::MeteringRes`]
-//!   and [`graph::AudioTapRes`]: the transport, the click, the master meter
-//!   and an analysis tap on the master output.
+//! - [`graph::TransportRes`], [`graph::MetronomeRes`] and
+//!   [`graph::MeteringRes`]: the transport, the click and the master meter.
+//!   A tap on the graph's outputs (or any ports) is
+//!   `AudioGraphRes::graph().open_output_tap(..)`.
 //! - [`GraphLatency`] and [`ChannelCompensation`]: the latency compensation
 //!   figures of the plan the audio thread runs.
 //! - [`restart_device`]: moves the engine to another device or sample rate.
@@ -246,10 +247,10 @@ pub use engine::{
 pub mod prelude {
     pub use crate::graph::{
         AudioConfig, AudioGraphRes, AudioParam, AudioParamAppExt, AudioPump, AudioPumpAppExt,
-        AudioTapRes, EngineNodes, GraphReconcilePlugin, GraphReconcileSystems, GraphSource,
-        InsertAudioNode, MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources,
-        PumpFinished, SessionNode, SpawnAudioNode, TransportRes, commit_graph,
-        crossfade_audio_node, engine_ready,
+        EngineNodes, GraphReconcilePlugin, GraphReconcileSystems, GraphSource, InsertAudioNode,
+        MasterSources, MeteringRes, MetronomeRes, PortSource, PortSources, PumpFinished,
+        SessionNode, SpawnAudioNode, TransportRes, commit_graph, crossfade_audio_node,
+        engine_ready,
     };
     pub use crate::{
         AudioDeviceEvent, AudioDeviceFault, AudioDeviceState, AudioEngineState,
@@ -292,16 +293,16 @@ pub mod prelude {
     pub use crate::graph::AudioNode;
     pub use tutti_graph::CrossfadeCurve;
     pub use tutti_graph::MAX_ROOT_CHANNELS;
+    pub use tutti_graph::TapReader;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
-    pub use tutti_metering::{
-        AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
-    };
+    pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_session::HeardTapError;
     pub use tutti_transport::{Timeline, Transport, TransportCommand};
     pub use tutti_types::prelude::*;
-    pub use tutti_types::{At, BarNumber, Meter};
+    pub use tutti_types::{At, BarNumber, Meter, TapAlign, TapId};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     pub use tutti_nodes::{ClickState, MetronomeMode};

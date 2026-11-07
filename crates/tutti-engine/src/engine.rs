@@ -79,8 +79,8 @@ use tutti_graph::{
 };
 
 use std::time::Instant;
-use tutti_metering::{LoadMeter, LoadRecorder};
-use tutti_rt::AudioThreadCell;
+use tutti_metering::{LoadMeter, LoadRecorder, MasterMeter, MeterWriter};
+use tutti_rt::{AudioThreadCell, RtScope};
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
@@ -165,6 +165,52 @@ pub struct Engine {
     load: AudioThreadCell<LoadRecorder>,
     /// The reading half of `load`.
     meter: LoadMeter,
+    /// The master meter's audio half, and the stereo fold it measures.
+    heard: AudioThreadCell<Heard>,
+    /// The reading half of `heard`'s writer.
+    master: MasterMeter,
+    /// The tap after the fader, the audio thread's ends.
+    hearing: AudioThreadCell<crate::hearing::Hearing>,
+    /// Its control side.
+    heard_taps: crate::HeardTaps,
+}
+
+/// What the engine measures of the block it just rendered, after the fader.
+struct Heard {
+    writer: MeterWriter,
+    /// A block folded to stereo, for a device that is not: `capacity`
+    /// frames.
+    fold: Vec<f32>,
+}
+
+impl Heard {
+    /// Measures `output`, an interleaved block `channels` wide, as stereo.
+    /// A device wider or narrower than stereo is folded first
+    /// ([`tutti_types::fold_frame`]), `fold.len() / 2` frames at a time, and
+    /// the pieces are one pass: the reading covers the whole block.
+    #[inline]
+    fn measure(&mut self, output: &[f32], channels: usize) {
+        if !self.writer.is_enabled() {
+            return;
+        }
+        if channels == 2 {
+            self.writer.measure(output);
+            return;
+        }
+        self.writer.begin();
+        let piece = self.fold.len() / 2;
+        for block in output.chunks(piece * channels) {
+            let stereo = &mut self.fold[..block.len() / channels * 2];
+            for (frame, out) in block
+                .chunks_exact(channels)
+                .zip(stereo.as_chunks_mut::<2>().0)
+            {
+                tutti_types::fold_frame(frame, out);
+            }
+            self.writer.add(stereo);
+        }
+        self.writer.publish();
+    }
 }
 
 impl std::fmt::Debug for Engine {
@@ -174,6 +220,7 @@ impl std::fmt::Debug for Engine {
             .field("fader", &self.fader)
             .field("capacity", &self.capacity)
             .field("meter", &self.meter)
+            .field("master", &self.master)
             .finish_non_exhaustive()
     }
 }
@@ -296,6 +343,8 @@ impl Engine {
         // executor is always fresh at `Engine::new`.
         let dropped_seen = executor.dropped_event_count();
         let (recorder, meter) = LoadMeter::pair();
+        let (writer, master) = MasterMeter::pair();
+        let (heard_taps, hearing) = crate::hearing::link();
         Ok(Self {
             graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
@@ -309,6 +358,13 @@ impl Engine {
             capacity: Samples(stride),
             load: AudioThreadCell::new(recorder),
             meter,
+            heard: AudioThreadCell::new(Heard {
+                writer,
+                fold: vec![0.0; 2 * stride],
+            }),
+            master,
+            hearing: AudioThreadCell::new(hearing),
+            heard_taps,
         })
     }
 
@@ -324,8 +380,9 @@ impl Engine {
     /// another thread.
     ///
     /// What it times is the whole call, which is what a device deadline
-    /// counts; a driver's own work around it (tutti-cpal's master meter and
-    /// sample-format conversion, one linear pass each) is not in it. The
+    /// counts, the master meter's pass included; a driver's own work around
+    /// it (tutti-cpal's sample-format conversion, one linear pass) is not in
+    /// it. The
     /// budget is each graph block's frames at the rate that block ran at,
     /// summed, so a call that straddles a re-prepare's rate change is held
     /// to the rate in effect for each piece. A block refused the graph
@@ -335,6 +392,24 @@ impl Engine {
     /// [`LoadReading::dropped_events`](tutti_metering::LoadReading::dropped_events).
     pub fn load_meter(&self) -> &LoadMeter {
         &self.meter
+    }
+
+    /// The master meter: the peak and RMS of what [`process`](Self::process)
+    /// and [`process_segment`](Self::process_segment) last rendered, measured
+    /// on a stereo fold of the output buffer after the declick, whatever
+    /// renders it (a device callback, or a host pulling blocks offline).
+    /// Disabled until [`enable`](MasterMeter::enable)d, and then one pass
+    /// over each block. Clone it to read from another thread.
+    pub fn master_meter(&self) -> &MasterMeter {
+        &self.master
+    }
+
+    /// The control side of the tap after the fader ("what I'm hearing"): the
+    /// device-width output of every [`process`](Self::process) and
+    /// [`process_segment`](Self::process_segment) call, read through a
+    /// [`TapReader`](tutti_graph::TapReader). See [`HeardTaps`](crate::HeardTaps).
+    pub fn heard_taps(&self) -> crate::HeardTaps {
+        self.heard_taps.clone()
     }
 
     /// Renders the whole of `output` with no transport motion and no declick.
@@ -372,10 +447,16 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
+        // A free in a block is a debug panic: the hand-over of the heard tap
+        // sends what it replaces back to the control side.
+        let _rt = RtScope::enter();
+        self.hearing.borrow_mut().swap();
         // Refused only while the control side holds the graph
         // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.heard.borrow_mut().measure(output, out_ch);
+            self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
             }
@@ -401,8 +482,12 @@ impl Engine {
             });
             g.transport.advance(len, &t);
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
+            self.hearing
+                .borrow_mut()
+                .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
+        self.heard.borrow_mut().measure(output, out_ch);
         let mut load = self.load.borrow_mut();
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
@@ -426,6 +511,10 @@ impl Engine {
         let out_ch = output.stride();
         let frames = output.len();
         let output = output.samples_mut();
+        // A free in a block is a debug panic: the hand-over of the heard tap
+        // sends what it replaces back to the control side.
+        let _rt = RtScope::enter();
+        self.hearing.borrow_mut().swap();
         // The audio thread never panics on a borrow. The graph is refused
         // only while the control side holds it (`apply_pending` racing a
         // callback): this block is silent, and the motion queue, which the
@@ -435,6 +524,8 @@ impl Engine {
         // reached only under the graph borrow (here, or `apply_pending`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
+            self.heard.borrow_mut().measure(output, out_ch);
+            self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
             }
@@ -468,8 +559,12 @@ impl Engine {
             let mut fader = self.fader.borrow_mut();
             fader.fade = fade_frames(rate);
             fader.apply(&walk.gain, frame0, output, out_ch, done, len);
+            self.hearing
+                .borrow_mut()
+                .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
+        self.heard.borrow_mut().measure(output, out_ch);
         let mut load = self.load.borrow_mut();
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
@@ -1047,6 +1142,36 @@ mod tests {
         assert!(transport.motion.is_stopped(), "the queued Play waits");
         engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
         assert!(transport.motion.is_playing(), "the next block applies it");
+    }
+
+    /// A refused block is silence in the heard tap too: the tap keeps a
+    /// take's timing, as a recording of the device would, and the frames are
+    /// written (not counted lost). The plan tap, an op of the graph, has no
+    /// frames for a block the graph did not render.
+    ///
+    /// Mutation (run, recorded here): delete the `hearing.write` in the
+    /// refused-block path of `process` -> the tap holds no frames for it.
+    #[test]
+    fn a_refused_block_is_silence_in_the_heard_tap() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let mut tap = engine
+            .heard_taps()
+            .open(ChannelLayout::STEREO, Samples(256))
+            .expect("opens");
+        let mut buf = vec![1.0f32; 64 * 2];
+        let mut seg = vec![1.0f32; 32 * 2];
+        {
+            let _control = engine.graph.borrow_mut();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process_segment(&mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO));
+        }
+        let mut got = vec![f32::NAN; 96 * 2];
+        assert_eq!(tap.pop_into(&mut got), Samples(96));
+        assert!(got.iter().all(|&x| x == 0.0), "silence, whole frames");
+        assert_eq!(tap.take_lost(), Samples(0));
     }
 
     /// The motion machine outlives the engine that ran it: an engine built

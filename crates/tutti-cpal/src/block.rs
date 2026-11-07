@@ -2,8 +2,7 @@
 //!
 //! [`process_audio`] is the *inner* seam — the engine render, callable without
 //! a device. Everything around it in the output callback lives here: the
-//! [`MAX_FRAMES`] clamp, the zero-fill, the stereo metering fold, the
-//! [`meter_output`] call, and the sample-format conversion. Keeping it outside
+//! [`MAX_FRAMES`] clamp, the zero-fill and the sample-format conversion. Keeping it outside
 //! the closure handed to `device.build_output_stream` is what lets a test run
 //! it without a sound card.
 //!
@@ -29,7 +28,6 @@
 //! it.
 
 use std::sync::Arc;
-use tutti_metering::meter_output;
 use tutti_types::{ChannelLayout, InterleavedMut};
 
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
@@ -51,7 +49,6 @@ pub struct OutputBlock {
     /// derived ONCE here — never inside the per-frame loops.
     channels: usize,
     buffer: Vec<f32>,
-    meter_buf: Vec<f32>,
     last_rendered_frames: usize,
 }
 
@@ -77,7 +74,6 @@ impl OutputBlock {
             layout,
             channels,
             buffer: vec![0.0f32; MAX_FRAMES * channels],
-            meter_buf: vec![0.0f32; MAX_FRAMES * 2],
             last_rendered_frames: 0,
         }
     }
@@ -129,39 +125,8 @@ impl OutputBlock {
         mix.fill(0.0);
         let mut mix = InterleavedMut::new(mix, self.layout);
         process_audio(&self.state, &mut mix);
-        // Back to a flat slice for the metering fold and the device write.
-        // `samples()` is the escape hatch the type documents: both loops below
-        // are per-frame and must index raw.
+        // Back to a flat slice for the device write.
         let mix = mix.as_ref().samples();
-
-        // Meter a STEREO fold of the device buffer — `meter_output` and the UI
-        // waveform assume stereo, and a stereo monitor is meaningful at any
-        // device width.
-        //
-        // The `Stereo` arm is a deliberate optimization, not divergent logic:
-        // `fold_frame`'s 2-wide arm already passes a stereo frame through
-        // unchanged, so this only replaces a per-frame call with one bulk
-        // memcpy. Keep them in step — if the fold's stereo arm ever stops
-        // being a passthrough, this branch has to go, not be patched.
-        //
-        // Only when something reads it: with the meter disabled and the tap
-        // closed, `meter_output` does nothing, so neither is the fold done.
-        // Each flag is one atomic load; a flag that flips after this check
-        // is seen from the next callback.
-        let mut meter = self.state.meter.borrow_mut();
-        if meter.is_enabled() || self.state.tap.is_open() {
-            let stereo = &mut self.meter_buf[..frames * 2];
-            if self.layout == ChannelLayout::STEREO {
-                stereo.copy_from_slice(mix);
-            } else {
-                for (i, out) in stereo.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                    let f = &mix[i * channels..i * channels + channels];
-                    tutti_types::fold_frame(f, out);
-                }
-            }
-            meter_output(stereo, &mut meter, &self.state.tap);
-        }
-        drop(meter);
 
         write_output(data, channels, mix, frames);
     }

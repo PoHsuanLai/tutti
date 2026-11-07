@@ -18,7 +18,6 @@ use std::sync::Arc;
 use tutti_cpal::{AudioCallbackState, OutputSpec};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
-use tutti_metering::{AudioTap, MasterMeter, MeterWriter};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
@@ -71,7 +70,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
         );
         fan(ed, filter, outputs);
     });
-    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new());
+    let state = AudioCallbackState::new(engine);
 
     transport.settings.set_tempo(Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
@@ -90,58 +89,7 @@ pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
         ed.insert(NodeKey(1), "dc", Const::mono(level));
         fan(ed, NodeKey(1), outputs);
     });
-    Arc::new(AudioCallbackState::new(
-        engine,
-        MasterMeter::pair().0,
-        AudioTap::new(),
-    ))
-}
-
-/// [`dc_state`] with `writer` as the master meter's writer and the tap left
-/// closed: the caller keeps the reading half to enable it and read it back.
-pub fn dc_state_metered(
-    level: f32,
-    outputs: usize,
-    writer: MeterWriter,
-) -> Arc<AudioCallbackState> {
-    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
-        ed.insert(NodeKey(1), "dc", Const::mono(level));
-        fan(ed, NodeKey(1), outputs);
-    });
-    Arc::new(AudioCallbackState::new(engine, writer, AudioTap::new()))
-}
-
-/// A graph emitting `level` on exactly one output channel, silence on the
-/// rest, with the master tap already open.
-///
-/// This is what distinguishes a *fold* from a truncation: put the signal on a
-/// channel outside the front pair and a `[..2]` metering shortcut sees
-/// silence while a real fold does not. A uniform-DC graph cannot tell the two
-/// apart, because every channel carries the same value.
-pub fn dc_on_channel(
-    level: f32,
-    channel: usize,
-    outputs: usize,
-) -> (Arc<AudioCallbackState>, tutti_metering::TapCons) {
-    let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
-        ed.insert(NodeKey(1), "dc", Const::mono(level));
-        ed.spec_mut().topology.outputs = (0..outputs)
-            .map(|ch| {
-                if ch == channel {
-                    Source::Node(OutPort {
-                        node: NodeKey(1),
-                        port: 0,
-                    })
-                } else {
-                    Source::Zero
-                }
-            })
-            .collect();
-    });
-    let tap = AudioTap::new();
-    let cons = tap.open().expect("a fresh tap opens");
-    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, tap);
-    (Arc::new(state), cons)
+    Arc::new(AudioCallbackState::new(engine))
 }
 
 /// A spec with no device behind it, at `channels` width and `format`.

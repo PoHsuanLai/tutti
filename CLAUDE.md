@@ -38,6 +38,25 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
+- Copying audio out of the graph is a **tap**, read through one `TapReader`
+  (`TapIn` adapts it to `AudioIn`), and there are two kinds:
+  - **The plan tap** (`Graph::open_tap`, `open_output_tap`): `Topology.taps`,
+    one `Op::Tap` per tap in the plan, any port and width, aligned by the
+    compiler or raw, a `ringbuf` ring per lane written together (the lanes
+    cannot tear), the writer riding the commit queue. A closed tap compiles to
+    no op; a fork carries none. It sees the graph's signal **before the
+    engine's declick fader** and the fold to the device width, so a
+    transport-gated source steps at a stop.
+  - **The heard tap** (`Session::open_heard_tap`, the default for recording
+    what the output sounds like): `Engine` writes each chunk of its output
+    buffer after the fader, every device channel, from `process` and
+    `process_segment` (a device callback and an offline `render`, silence for
+    a refused block); an export forks without the engine and never writes to
+    it. One at a time; the writer reaches the audio thread over `ringbuf`
+    queues and the one it replaces goes back to the control side
+    (`tutti-engine/src/hearing.rs`).
+  Both count what a slow reader loses (`TapReader::take_lost`, and
+  `AudioIn::take_lost` through `Recorder::lost`).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
@@ -277,7 +296,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-mod      modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
-  tutti-metering `MasterMeter`, `AudioTap`, `LoadMeter`
+  tutti-metering `MasterMeter`, `LoadMeter`
   tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
                  conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
@@ -418,7 +437,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-metering` is a dev-dependency only), keeps every
+  rustfft, ebur128, libm and thiserror; `tutti-graph` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
@@ -704,7 +723,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
-  `AudioTap`, `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,

@@ -198,7 +198,11 @@ const EVENTS: Work = Work {
 /// plan unit index).
 pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
     match *op {
-        Op::GlobalIn { .. } | Op::Delay { .. } | Op::Output { .. } | Op::Capture { .. } => COPY,
+        Op::GlobalIn { .. }
+        | Op::Delay { .. }
+        | Op::Output { .. }
+        | Op::Capture { .. }
+        | Op::Tap { .. } => COPY,
         Op::EventDelay { .. } | Op::EventMerge { .. } | Op::EventCapture { .. } => EVENTS,
         Op::Node { unit, .. } => node_work(&shapes[unit as usize]),
     }

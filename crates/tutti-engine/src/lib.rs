@@ -6,7 +6,9 @@ mod error;
 pub use error::{Error, Result};
 
 mod engine;
+mod hearing;
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
+pub use hearing::{HeardTapError, HeardTaps};
 
 /// What a host driving the engine names, in one import.
 ///

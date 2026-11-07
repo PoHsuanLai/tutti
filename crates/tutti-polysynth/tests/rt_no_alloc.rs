@@ -275,6 +275,21 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             index: u7(7),
             value: 12 << 25,
         }),
+        // Pitch Bend Sensitivity (RPN 0) on the master channel, then
+        // Reset All Controllers and All Notes Off.
+        m2(Voice2::Registered {
+            bank: u7(0),
+            index: u7(0),
+            value: 7 << 25,
+        }),
+        m1(Voice1::ControlChange {
+            controller: CCNumber::of(121),
+            value: u7(0),
+        }),
+        m1(Voice1::ControlChange {
+            controller: CCNumber::of(123),
+            value: u7(0),
+        }),
         m2(Voice2::Assignable {
             bank: u7(1),
             index: u7(2),

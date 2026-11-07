@@ -1,4 +1,4 @@
-//! The end-to-end this crate describes but never ran: **`AudioTap` →
+//! The end-to-end this crate describes but never ran: **graph tap →
 //! `TapIn` → `Recorder` → `WavOut` → read it back**.
 //!
 //! Every piece had unit coverage and the whole had none. `tap_in.rs`'s tests
@@ -19,26 +19,34 @@
 //! duplicated, or channel-swapped frame shows up as a wrong *number* rather
 //! than a right total. A count-only assertion passes on all three.
 //!
-//! Mutations run against `tap_in.rs`, and what each actually broke:
+//! The tap is the real one: an executor renders a source whose frames carry
+//! their own index, and the plan's tap op copies them into the rings the
+//! reader drains.
+//!
+//! Mutations (run against `TapReader::pop_into` and `tap_op` in `tutti-graph`;
+//! the old `AudioTap` rows, frames→samples in `poll_into` and a left/right
+//! swap, are `tap_in/tests.rs`'s `rendered_frames_come_back_in_order_and_channel_side`
+//! and these):
 //!
 //! | mutation | fails |
 //! |---|---|
-//! | `Samples::from_interleaved_len(out.len(), …)` → `out.len()` in `poll_into` (frames→samples) | `…_in_order_through_the_whole_chain` only |
-//! | swap `l`/`r` when writing the frame | both |
+//! | `.min(out.len() / width)` → `.min(out.len())` in `pop_into` (frames→samples) | `…_in_order_through_the_whole_chain` only (it panics past the pump's buffer) |
+//! | swap the lanes (`skip(width - 1 - channel)`) | both |
 //!
-//! That first row is why `…_in_order_…` pushes more frames than the pump's
-//! scratch holds. Under the frames→samples mutation the burst test still
-//! passes: its 512-frame bursts are smaller than the 1024-frame scratch, so
-//! the ring runs dry before the inflated loop bound is reached and the count
-//! comes out right by accident. Only a push that *exceeds* the scratch forces
-//! the bad bound to be used. Keep `FRAMES` above `SCRATCH_FRAMES`.
+//! `FRAMES` stays above the pump's scratch so a push that *exceeds* it forces
+//! a bad bound to be used.
 
 use tutti_codec::Pcm;
+use tutti_graph::{
+    Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
+};
 use tutti_io::{ManualDriver, PumpPass, Recorder, TapIn, WavOut};
-use tutti_metering::AudioTap;
-use tutti_types::{AudioIn, ChannelLayout, Samples};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{
+    AudioIn, Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId,
+};
 
-/// Frames pushed into the tap, as the audio callback would.
+/// Frames rendered into the tap, as the audio callback would.
 const FRAMES: usize = 4096;
 
 /// A value that identifies its own frame index exactly under f32.
@@ -51,15 +59,72 @@ fn right_of(i: usize) -> f32 {
     -(i as f32 / 65_536.0) - 0.5
 }
 
-/// Push `n` interleaved stereo frames into `tap` the way the CPAL callback
-/// does — one bulk `push` of an `n`-frame block.
-fn push_block(tap: &AudioTap, from: usize, n: usize) {
-    let mut block = Vec::with_capacity(n * 2);
-    for i in from..from + n {
-        block.push(left_of(i));
-        block.push(right_of(i));
+/// A stereo source whose frame `i` is `(left_of(i), right_of(i))`, counted
+/// across blocks.
+struct Ramp {
+    at: usize,
+}
+
+impl Node for Ramp {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
     }
-    tap.push(&block);
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for k in 0..io.output(0).len() {
+            io.output(0)[k] = left_of(self.at + k);
+            io.output(1)[k] = right_of(self.at + k);
+        }
+        self.at += io.output(0).len();
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+const BLOCK: usize = 512;
+
+/// The graph the tap copies out of: a [`Ramp`] on a master tap.
+struct Graph {
+    exec: Executor,
+    _ed: Editor,
+}
+
+impl Graph {
+    /// Renders `n` frames, in blocks.
+    fn render(&mut self, n: usize) {
+        let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+        let (mut left, mut right) = ([0.0f32; BLOCK], [0.0f32; BLOCK]);
+        let mut left_over = n;
+        while left_over > 0 {
+            let len = left_over.min(BLOCK);
+            let mut outs: [&mut [f32]; 2] = [&mut left[..len], &mut right[..len]];
+            self.exec.process(len, &t, &[], &mut outs);
+            left_over -= len;
+        }
+    }
+}
+
+/// A stereo tap on a [`Ramp`], its ring `capacity` frames.
+fn graph_tap(capacity: usize) -> (Graph, TapReader) {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    ed.insert(NodeKey(1), "ramp", Unforkable(Ramp { at: 0 }));
+    let port = |port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
+        })
+    };
+    ed.spec_mut().topology.outputs = vec![port(0), port(1)];
+    let reader = ed.open_tap(
+        TapId(0),
+        vec![port(0), port(1)],
+        TapAlign::ToOutput,
+        Samples(capacity),
+    );
+    ed.commit().expect("compiles");
+    exec.apply_pending();
+    ed.collect();
+    (Graph { exec, _ed: ed }, reader)
 }
 
 /// **The whole chain, driven pass by pass, with every sample checked.**
@@ -73,13 +138,12 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tapped.wav");
 
-    let tap = AudioTap::new();
-    let cons = tap.open().expect("a fresh tap opens");
-    let src = TapIn::new(cons);
+    let (mut graph, reader) = graph_tap(FRAMES);
+    let src = TapIn::new(reader);
     assert_eq!(
         src.layout(),
         ChannelLayout::STEREO,
-        "the tap is a stereo monitor; the sink below is built to match"
+        "the tap has two lanes; the sink below is built to match"
     );
 
     let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
@@ -90,7 +154,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
     // Fill the tap first so the pump has something to move, then drain it with
     // a bounded number of passes — never a sleep, and never "pump until it
     // looks done".
-    push_block(&tap, 0, FRAMES);
+    graph.render(FRAMES);
     let moved = pump.pump_until_dry(64);
     assert_eq!(
         moved,
@@ -149,8 +213,8 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bursty.wav");
 
-    let tap = AudioTap::new();
-    let src = TapIn::new(tap.open().expect("a fresh tap opens"));
+    let (mut graph, reader) = graph_tap(2 * 512);
+    let src = TapIn::new(reader);
     let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
@@ -159,8 +223,8 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
     const BURST: usize = 512;
     const BURSTS: usize = 6;
     let mut moved = Samples::ZERO;
-    for b in 0..BURSTS {
-        push_block(&tap, b * BURST, BURST);
+    for _ in 0..BURSTS {
+        graph.render(BURST);
         moved += pump.pump_until_dry(16);
     }
     assert_eq!(
@@ -182,4 +246,37 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
              bursts did not concatenate"
         );
     }
+}
+
+/// **A recording through a tap that fell behind reports the gap, and the file
+/// closes up over it.** The ring holds 512 frames and 2048 are rendered before
+/// the pump runs, so the first 512 are kept and 1536 are lost. The recorder
+/// counts them; the file holds the 512 and is shorter than the take by the
+/// lost frames, with nothing in the audio to mark where.
+///
+/// Mutation (run, recorded here): delete `TapIn::take_lost` (the trait's
+/// zero default) -> `lost()` reads 0 and the first assertion fails. Delete the
+/// `fetch_add` in `PumpLoop::pump_once` -> the same.
+#[test]
+fn a_gap_in_a_take_is_counted_and_the_file_closes_up_over_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gappy.wav");
+    let (mut graph, reader) = graph_tap(512);
+    let src = TapIn::new(reader);
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
+    let (driver, pump) = ManualDriver::new();
+    let rec = Recorder::start_with(src, sink, driver).expect("pairs");
+
+    graph.render(2048);
+    let moved = pump.pump_until_dry(64);
+    assert_eq!(moved, Samples(512));
+    assert_eq!(rec.lost(), Samples(1536), "rendered = recorded + lost");
+    rec.finish().expect("finalizes");
+
+    let reader = hound::WavReader::open(&path).expect("readable");
+    assert_eq!(
+        reader.len() as usize,
+        512 * 2,
+        "the file is the frames that arrived"
+    );
 }

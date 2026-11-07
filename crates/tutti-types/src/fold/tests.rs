@@ -926,7 +926,7 @@ fn every_fallback_rule_is_pinned() {
             &ChannelTopology::new(dst.clone()),
         )
         .unwrap_or_else(|e| panic!("{name}: {e}"));
-        for o in 0..dst.len() {
+        for (o, speaker) in dst.iter().enumerate() {
             let row: Vec<f32> = (0..src.len())
                 .map(|k| {
                     want.iter()

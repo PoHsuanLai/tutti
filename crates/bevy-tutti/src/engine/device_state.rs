@@ -177,6 +177,9 @@ pub(crate) fn device_fault_poll(
     mut faults: MessageWriter<AudioDeviceFault>,
     mut changes: MessageWriter<AudioDeviceEvent>,
     mut commands: Commands,
+    watched: Option<Res<DevicesWatched>>,
+    lister: Res<OutputsLister>,
+    mut listed: ResMut<OutputsStarted>,
 ) {
     // `engine_ready` reads a state a host may insert without an engine.
     let Some(mut graph) = graph else { return };
@@ -219,10 +222,15 @@ pub(crate) fn device_fault_poll(
                  AudioDeviceState::output_devices stays empty until it does"
             ),
             SessionEvent::DeviceRestarted(_) => {
+                // A host-supplied driver that restarted onto a real device
+                // names one now: the listing starts here, once.
                 if let (Some(state), Some(driver)) = (state.as_mut(), driver.as_ref())
-                    && let Ok(name) = driver.device_name()
+                    && let Some(name) = (lister.name)(driver)
                 {
                     state.current_device = name;
+                    if watched.is_none() {
+                        start_listing(&mut graph, &lister, &mut listed);
+                    }
                 }
             }
             _ => {}
@@ -241,6 +249,11 @@ pub(crate) fn device_fault_poll(
         state.stream_faults = count;
     }
 }
+
+/// Whether the one enumeration of the output devices has been started: it
+/// starts once, when the engine first runs on a named device.
+#[derive(Resource, Debug, Default)]
+pub(crate) struct OutputsStarted(bool);
 
 /// Present once the session watches devices: the list is then the events',
 /// and startup does not enumerate.
@@ -348,6 +361,7 @@ impl Plugin for DeviceStatePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AudioDeviceState>()
             .init_resource::<OutputsLister>()
+            .init_resource::<OutputsStarted>()
             .add_message::<AudioDeviceFault>()
             .add_message::<AudioDeviceEvent>()
             .register_type::<AudioDeviceState>();
@@ -393,6 +407,22 @@ impl OutputsLister {
         }
     }
 
+    /// Names the device `name` while `named` is set and none otherwise, as a
+    /// driver does before and after a restart onto a real card.
+    #[cfg(test)]
+    pub(crate) fn naming_while(
+        mut self,
+        named: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        name: &'static str,
+    ) -> Self {
+        self.name = Box::new(move |_| {
+            named
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| name.to_owned())
+        });
+        self
+    }
+
     /// Names every device `name`, as a driver on a real card would.
     #[cfg(test)]
     pub(crate) fn naming(mut self, name: &'static str) -> Self {
@@ -420,6 +450,13 @@ fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
     }
 }
 
+/// [`list_outputs`], unless a listing was already started.
+fn start_listing(graph: &mut AudioGraphRes, lister: &OutputsLister, started: &mut OutputsStarted) {
+    if !std::mem::replace(&mut started.0, true) {
+        list_outputs(graph, lister);
+    }
+}
+
 /// Records which device is open and, unless devices are watched (which fills
 /// the list from events), starts listing the output devices.
 ///
@@ -429,26 +466,34 @@ fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
 ///
 /// An engine whose driver names no device (a host-supplied one, such as
 /// `build_device_on`) enumerates nothing: it has no use for the machine's
-/// devices, and must not open them. Both lookups are allowed to fail quietly:
-/// a driver that cannot name its device leaves those fields at their defaults
-/// rather than failing the startup schedule over a status display.
+/// devices, and must not open them. The name is the one the engine opened
+/// ([`Device::device_name`]), never a look at the host, so it cannot block.
+/// A driver that cannot name its device leaves those fields at their defaults
+/// rather than failing the startup schedule over a status display, and says
+/// so in a warning; the listing then starts at the first restart that names
+/// a device ([`device_fault_poll`]).
 pub(crate) fn device_state_init_system(
     driver: Option<NonSend<Device>>,
     watched: Option<Res<DevicesWatched>>,
     lister: Res<OutputsLister>,
     graph: Option<ResMut<AudioGraphRes>>,
     mut state: ResMut<AudioDeviceState>,
+    mut started: ResMut<OutputsStarted>,
 ) {
     let Some(driver) = driver else { return };
 
     let Some(name) = (lister.name)(&driver) else {
+        bevy_log::warn!(
+            "the audio device could not be named; AudioDeviceState::output_devices \
+             stays empty until a restart opens a device"
+        );
         return;
     };
     state.current_device = name;
     if watched.is_none()
         && let Some(mut graph) = graph
     {
-        list_outputs(&mut graph, &lister);
+        start_listing(&mut graph, &lister, &mut started);
     }
 }
 
@@ -727,6 +772,44 @@ mod tests {
         };
         assert_eq!(run(false), (1, vec!["Card".to_string(), "USB".to_string()]));
         assert_eq!(run(true), (0, Vec::new()));
+    }
+
+    /// A host-supplied driver that restarts onto a real device gets its
+    /// listing then: the init system names nothing and lists nothing, the
+    /// restart that names a device starts one enumeration, and a second
+    /// restart starts no other.
+    ///
+    /// Mutation: the `start_listing` call left out of the `DeviceRestarted`
+    /// arm of `device_fault_poll` leaves the count 0 and fails the second
+    /// assertion; calling `list_outputs` there instead of `start_listing`
+    /// makes the final count 2.
+    #[test]
+    fn a_restart_onto_a_real_device_starts_the_listing_once() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let named = std::sync::Arc::new(AtomicBool::new(false));
+        let mut app = running_app_with(|app| {
+            app.insert_resource(
+                counting(&calls, &["Card"]).naming_while(std::sync::Arc::clone(&named), "Card"),
+            );
+        });
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(calls.load(SeqCst), 0, "no device named at startup");
+
+        named.store(true, SeqCst);
+        for _ in 0..2 {
+            let (driver, _stream) = ManualStreamDriver::new();
+            crate::engine::restart::restart_device_on(app.world_mut(), spec(), driver, None)
+                .expect("restarts");
+            for _ in 0..3 {
+                app.update();
+            }
+        }
+        assert_eq!(calls.load(SeqCst), 1, "listed once, at the first name");
+        let state = app.world().resource::<AudioDeviceState>();
+        assert_eq!(state.current_device, "Card");
     }
 
     /// The device list follows the session's events instead of being

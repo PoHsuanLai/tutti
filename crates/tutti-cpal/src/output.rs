@@ -82,6 +82,10 @@ pub struct AudioEngine {
     target: Option<(DeviceHost, DeviceSelector)>,
     faults: Arc<StreamFaults>,
     running: Option<Box<dyn RunningStream>>,
+    /// The name of the device the last resolve opened, kept so that naming
+    /// it again never enumerates the host. `None` before one, and after a
+    /// restart onto a driver the caller supplied.
+    opened_name: Option<String>,
 }
 
 // Hand-rolled: the running stream is not `Debug`. Reports the configuration a
@@ -119,6 +123,7 @@ impl AudioEngine {
             target: Some((host, sel)),
             faults: Arc::new(StreamFaults::new()),
             running: None,
+            opened_name: device.name().ok(),
         })
     }
 
@@ -136,6 +141,7 @@ impl AudioEngine {
             target: None,
             faults: Arc::new(StreamFaults::new()),
             running: None,
+            opened_name: None,
         }
     }
 
@@ -192,6 +198,7 @@ impl AudioEngine {
         let device = host.device(Direction::Output, sel)?;
         let config = device.default_output_config()?;
         self.spec = OutputSpec::from_supported(&config);
+        self.opened_name = device.name().ok();
         Ok(device)
     }
 
@@ -200,6 +207,11 @@ impl AudioEngine {
     /// caller is the device.
     pub(crate) fn set_spec(&mut self, spec: OutputSpec) {
         self.spec = spec;
+    }
+
+    /// Forgets the opened device's name: the next stream is the caller's.
+    pub(crate) fn forget_opened(&mut self) {
+        self.opened_name = None;
     }
 
     /// Starts a stream at the current [`spec`](Self::spec) through `driver`.
@@ -287,6 +299,21 @@ impl AudioEngine {
             ));
         };
         Ok(host.device(Direction::Output, sel)?.name()?)
+    }
+
+    /// The name of the device the engine last opened, as it was then. Unlike
+    /// [`device_name`](Self::device_name) it asks the host nothing, so it
+    /// never enumerates (which can block for good in a sound server's ALSA
+    /// plugin): it is the name to read on a thread that renders a frame.
+    ///
+    /// # Errors
+    /// [`Error::InvalidDevice`] when no device has been opened: the engine
+    /// was built with [`from_spec`](Self::from_spec), or restarted onto a
+    /// driver the caller supplied.
+    pub fn opened_name(&self) -> Result<String> {
+        self.opened_name
+            .clone()
+            .ok_or_else(|| Error::InvalidDevice("no device has been opened by this engine".into()))
     }
 
     /// Lists the default host's output devices.

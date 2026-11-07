@@ -100,13 +100,16 @@ impl Device {
         }
     }
 
-    /// The name of the selected output device.
+    /// The name of the output device the engine last opened, as it was then.
+    /// It asks the host nothing, so it never enumerates the devices (which
+    /// can block for good) and is safe on the thread that builds a frame.
     ///
     /// # Errors
     ///
-    /// When the host cannot name it.
+    /// When no device has been opened: the engine runs on a driver the host
+    /// supplied.
     pub fn device_name(&self) -> Result<String> {
-        Ok(self.driver.engine().device_name()?)
+        Ok(self.driver.engine().opened_name()?)
     }
 
     /// The backend fault record, which survives stop and restart.

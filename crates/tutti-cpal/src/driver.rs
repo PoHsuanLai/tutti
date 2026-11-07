@@ -219,6 +219,7 @@ impl TuttiDriver {
         self.audio_engine.stop();
         let old = self.audio_engine.spec().clone();
         self.audio_engine.set_spec(spec);
+        self.audio_engine.forget_opened();
         self.rerate_or_restore(old, rerate)?;
         self.audio_engine
             .start_with(self.callback_state.clone(), driver)?;

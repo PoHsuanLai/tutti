@@ -115,3 +115,40 @@ fn test_transport_loop_wrapping() {
         "expected {expected:?} after one wrap, got {beat:?}"
     );
 }
+
+/// **Naming the opened device asks the host nothing.** `device_name` looks
+/// the selector up again (an enumeration, which can block for good), so the
+/// frame reads `opened_name`, the name the open recorded: set here the way
+/// `open` and `resolve` set it, on an engine with no host at all, where any
+/// look at the host is an error. A start on a driver the caller supplied
+/// forgets it, so a name is never the previous device's.
+///
+/// Mutations (run): `opened_name` answering from `device_name` makes the
+/// first assertion fail (this engine has no host to ask); `forget_opened`
+/// left out of `TuttiDriver::restart_on` makes the last assertion fail.
+#[test]
+fn the_opened_name_is_read_without_asking_the_host() {
+    let spec = OutputSpec::new(
+        SampleRate(48_000.0),
+        tutti_types::ChannelLayout::STEREO,
+        cpal::SampleFormat::F32,
+    );
+    let mut engine = AudioEngine::from_spec(spec.clone());
+    assert!(engine.opened_name().is_err(), "nothing opened yet");
+    engine.opened_name = Some("Card".into());
+    assert!(engine.device_name().is_err(), "a fresh look needs the host");
+    assert_eq!(engine.opened_name().unwrap(), "Card");
+
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
+    let mut driver = crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)));
+    let (manual, _stream) = crate::ManualStreamDriver::new();
+    driver
+        .restart_on(spec, manual, |_, _| Ok::<(), crate::Error>(()))
+        .unwrap();
+    assert!(
+        driver.engine().opened_name().is_err(),
+        "the caller's stream"
+    );
+}

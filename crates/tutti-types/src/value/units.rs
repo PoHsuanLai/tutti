@@ -1465,8 +1465,14 @@ impl Radians {
     fn wrap_out_of_range(x: f32) -> f32 {
         use core::f64::consts::{PI, TAU};
         let x = f64::from(x);
+        // `2^24` is not a tested accuracy boundary: `f64` holds the quotient to
+        // about `2^53`, and raising this to `1e12` passes every test. It only
+        // picks where `rem_euclid` takes over.
+        // The turn count multiplies by `1 / TAU`: a divide is the longest link
+        // in this chain, and the vocoder's per-bin wraps wait on it. Every
+        // `f32` input gives the same bits as dividing (swept).
         let s = if x.abs() < 16_777_216.0 {
-            x - TAU * ((x + PI) / TAU).floor()
+            x - TAU * ((x + PI) * (1.0 / TAU)).floor()
         } else {
             // `fmod` is exact, so a huge `x` costs one libm call and no
             // accumulated rounding beyond `TAU`'s own.

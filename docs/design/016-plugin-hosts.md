@@ -491,7 +491,7 @@ Four things the block leaves open are fixed as follows.
   any effect and its reply, the plugin settles in the state the last one asked
   for, with no plan in flight.
 
-`proptest` is a dev-dependency of `tutti-core` and `tutti-graph` at `1.9.0`;
+`proptest` is a dev-dependency of `tutti-graph` at `1.9.0`;
 `tutti-plugin-types` adds the same. The properties run the core through a test
 shell that performs each effect against a model of the plugin (split or not,
 the Processor held or away) and replies only as a plugin could, so a sequence
@@ -1681,8 +1681,7 @@ beyond `shadow_loads` and `load_shadow` is needed, and both default to refusing.
 The quirk is a `bool` the core reads and an `Effect` pair it plans.
 
 **The crossfade.** The graph already has the machinery in `tutti-graph`:
-`CrossfadeCurve::gains` (re-exported by `tutti-core`, which `tutti-plugin-server`
-depends on) and `Fade`. `Graph::crossfade_plugin` in `tutti-session` swaps a
+`CrossfadeCurve::gains` (`tutti-graph`'s) and `Fade`. `Graph::crossfade_plugin` in `tutti-session` swaps a
 whole `PluginClient`, which means a second server process; it does not reach one
 plugin's Processors inside a server, and a swap through it would lose the
 node's identity and cost IPC and a process per load. The swap therefore reuses the

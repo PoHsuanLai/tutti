@@ -47,11 +47,11 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tutti_core::transport::OfflineTransport;
 use tutti_export::{
     ConfigError, ExportConfig, Flow, Normalize, Outcome, Progress, RenderClock, RenderGraph,
     Rendered, Written,
 };
+use tutti_transport::OfflineTransport;
 use tutti_types::{NodeKey, Samples};
 
 use crate::graph::AudioNodeTarget;
@@ -178,7 +178,7 @@ impl ExportRequest {
     #[must_use]
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
-        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
+        T: RenderClock + tutti_transport::OfflineClock + 'static,
     {
         self.clock = ExportClock::timeline(timeline);
         self
@@ -268,7 +268,7 @@ impl ExportClock {
     /// node reads its block's transport from it through `Env`.
     pub fn timeline<T>(timeline: Arc<T>) -> Self
     where
-        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
+        T: RenderClock + tutti_transport::OfflineClock + 'static,
     {
         Self(Clock::Timeline {
             clock: timeline.clone() as Arc<dyn RenderClock>,
@@ -279,7 +279,7 @@ impl ExportClock {
     /// What the renderer advances.
     fn render_clock(&self) -> Arc<dyn RenderClock> {
         match &self.0 {
-            Clock::Frozen => Arc::new(tutti_core::transport::FrozenClock),
+            Clock::Frozen => Arc::new(tutti_transport::FrozenClock),
             Clock::Timeline { clock, .. } => Arc::clone(clock),
         }
     }
@@ -315,9 +315,9 @@ impl std::fmt::Debug for ExportClock {
 struct Stopped;
 
 /// The frozen render's timeline: only the render reads it.
-impl tutti_core::transport::OfflineClock for Stopped {}
+impl tutti_transport::OfflineClock for Stopped {}
 
-impl tutti_core::Timeline for Stopped {
+impl tutti_transport::Timeline for Stopped {
     fn beat(&self) -> tutti_types::Beat {
         tutti_types::Beat(0.0)
     }

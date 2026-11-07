@@ -34,7 +34,7 @@ Read in the code on `main`; nothing was run against a real card.
 
 1. **Pure core, `tutti-cpal::DeviceRoster`.** `apply(Snapshot) ->
    Vec<DeviceChange>` with no OS, thread or clock. It sits in `tutti-cpal`:
-   `tutti-types` is vocabulary only, `tutti-core` has no device concept, and
+   `tutti-types` is vocabulary only, `tutti-engine` has no device concept, and
    `tutti-session` (the policy) and `bevy-tutti` already reach the device
    through `tutti-cpal`. A new crate for one table would be a layer with one
    resident. The module imports nothing from cpal.

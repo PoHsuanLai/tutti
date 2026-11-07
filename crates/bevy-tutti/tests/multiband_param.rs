@@ -7,9 +7,9 @@ use bevy_tutti::AudioEngineState;
 use bevy_tutti::graph::{
     AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
-use tutti_core::transport::Transport;
 use tutti_graph::ParamNode;
 use tutti_nodes::MultibandCompressorNode;
+use tutti_transport::Transport;
 use tutti_types::ChannelLayout;
 use tutti_types::{Db, UnitAddr, UnitParam};
 

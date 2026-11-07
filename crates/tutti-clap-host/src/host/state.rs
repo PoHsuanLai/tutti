@@ -379,7 +379,7 @@ pub struct TransportState {
 /// bound a plugin that is misbehaving, or a host that never drains at all.
 ///
 /// 64, matching the engine's own UI→audio transport queue
-/// (`tutti_core`'s `COMMAND_QUEUE_CAPACITY`) — same kind of traffic, same
+/// (`tutti_transport`'s `COMMAND_QUEUE_CAPACITY`) — same kind of traffic, same
 /// conclusion. Deliberately not [`LOG_CAPACITY`], which is sized for a
 /// diagnostic stream whose recent history has value in bulk.
 pub const TRANSPORT_REQUEST_CAPACITY: usize = 64;

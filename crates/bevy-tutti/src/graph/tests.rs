@@ -131,9 +131,9 @@ fn every_param_write_path_reaches_a_fork() {
     app.add_plugins(GraphReconcilePlugin);
     #[cfg(feature = "modulation")]
     {
-        app.insert_resource(crate::graph::TransportRes(
-            tutti_core::transport::Transport::new(48_000.0),
-        ));
+        app.insert_resource(crate::graph::TransportRes(tutti_transport::Transport::new(
+            48_000.0,
+        )));
         app.add_plugins(crate::modulation::TuttiModulationPlugin);
     }
     app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
@@ -240,9 +240,9 @@ fn a_crossfade_during_a_re_prepare_lands_after_it() {
     app.add_plugins(GraphReconcilePlugin);
     #[cfg(feature = "modulation")]
     {
-        app.insert_resource(crate::graph::TransportRes(
-            tutti_core::transport::Transport::new(48_000.0),
-        ));
+        app.insert_resource(crate::graph::TransportRes(tutti_transport::Transport::new(
+            48_000.0,
+        )));
         app.add_plugins(crate::modulation::TuttiModulationPlugin);
     }
     let knob = app
@@ -346,9 +346,9 @@ fn a_crossfade_on_a_poisoned_graph_is_refused_and_keeps_the_controls() {
     app.add_plugins(GraphReconcilePlugin);
     #[cfg(feature = "modulation")]
     {
-        app.insert_resource(crate::graph::TransportRes(
-            tutti_core::transport::Transport::new(48_000.0),
-        ));
+        app.insert_resource(crate::graph::TransportRes(tutti_transport::Transport::new(
+            48_000.0,
+        )));
         app.add_plugins(crate::modulation::TuttiModulationPlugin);
     }
     let mut commands = app.world_mut().commands();

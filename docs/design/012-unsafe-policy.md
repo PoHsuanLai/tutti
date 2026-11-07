@@ -22,7 +22,7 @@ them; recount with the same rule before quoting one.
 | `crates/tutti-plugin-types/` | 10 | bundle/ABI value types |
 | `tutti-rt` | 60 | the non-FFI sites below |
 | `arc-lend` | 10 | the non-FFI sites below |
-| `tutti-core`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 7 | one test's counting allocator; no sites |
+| `tutti-engine`, `-transport`, `-metering`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 7 | one test's counting allocator; no sites |
 | `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 28 | tests' counting allocators and a libc-version probe |
 | `testing/` | 487 | the reference test plugins; never shipped |
 
@@ -85,7 +85,7 @@ named here so the list can be checked against the tree
   model run against the shipped code (`arc-lend/tests/loom.rs`) as well as by
   miri over the crate's concurrent stress test.
 
-Not sites: `tutti-core/src/engine.rs` (`Engine::apply_pending` is a safe
+Not sites: `tutti-engine/src/engine.rs` (`Engine::apply_pending` is a safe
 `pub fn` that panics on a conflicting borrow), `tutti-cpal` (its stream
 lives on an owner thread, with no `unsafe`), and
 `tutti-sampler/src/butler/prefetch.rs` (no `unsafe`). `tutti-polysynth` and

@@ -23,7 +23,7 @@
 use crate::control::{Control, Flow, Outcome};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
-use tutti_core::transport::RenderClock;
+use tutti_transport::RenderClock;
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// Widest graph output the fold handles (mono … 7.1.4). Channels past this are
@@ -31,7 +31,7 @@ use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 ///
 /// It is a stack ceiling for the per-frame gather scratch, not a limit on
 /// what can be exported: the destination width is dynamic, only the *source*
-/// gather is capped. Note this is 12 while `tutti_core`'s `MAX_ROOT_CHANNELS` is
+/// gather is capped. Note this is 12 while `tutti_graph`'s `MAX_ROOT_CHANNELS` is
 /// 8 — deliberately not unified here, since an offline render has no RT root's
 /// constraints.
 const MAX_SOURCE_CHANNELS: usize = 12;

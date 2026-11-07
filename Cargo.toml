@@ -33,7 +33,9 @@ members = [
     # Its own member so the contenders it measures stay out of arc-lend's
     # dev-dependencies. Unpublished; nothing depends on it.
     "testing/arc-lend-compare",
-    "crates/tutti-core",
+    "crates/tutti-engine",
+    "crates/tutti-transport",
+    "crates/tutti-metering",
     "crates/tutti-cpal",
     "crates/tutti-types",
     # Real-time-safe shared-memory primitives for the audio thread: the engine's

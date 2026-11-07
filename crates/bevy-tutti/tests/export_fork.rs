@@ -430,8 +430,8 @@ fn a_graph_with_no_outputs_says_so() {
 #[cfg(feature = "sampler")]
 #[test]
 fn a_node_export_follows_a_90_bpm_timeline() {
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_sampler::MemorySource;
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
     let mut app = app_over(graph_on());
@@ -728,12 +728,12 @@ mod plugin {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_nodes::ClickState;
     use tutti_nodes::testing::Const;
     use tutti_plugin::catalog::PluginId;
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_ump::{MidiChannel, MidiGroup};
 
     /// The probe's render modes this file drives (`tutti-clap-test-plugin`'s
@@ -1077,13 +1077,13 @@ mod synths {
         GraphReconcilePlugin, MasterSources, SessionNode, SpawnAudioNode, TransportRes,
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_types::{Beat, Bpm, Seconds};
     use tutti_ump::{MidiChannel, MidiGroup, U7};
 
@@ -1386,10 +1386,10 @@ mod disk {
 
     use std::path::Path;
 
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_sampler::{
         Command, DiskStreamer, DiskVoice, MemorySource, Playback, Voice, VoiceNode, VoiceSource,
     };
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, SamplePosition};
 
     /// Frame `i` of every test file: distinct per frame, and exactly what an

@@ -1116,7 +1116,7 @@ fn a_sink_is_never_parked() {
 /// they were, so a host committing every frame compiles only when it edits.
 ///
 /// Mutation (run): drop the unchanged check in `Editor::commit` → the second
-/// commit is in flight → fails here, and tutti-core's
+/// commit is in flight → fails here, and tutti-engine's
 /// `a_no_op_commit_allocates_a_bounded_amount` allocates ~100 KiB → fails.
 /// Mutation (run): compare only the spec, not the shapes, and drop the
 /// `latency_cuts` term → still passes: `set_latency` writes the figure into

@@ -44,8 +44,6 @@ tutti-plugin = { path = "../tutti-plugin" }
 # right and a re-export would hide that.
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 
-# Core types
-tutti-core = { path = "../tutti-core", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }

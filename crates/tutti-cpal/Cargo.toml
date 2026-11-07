@@ -41,7 +41,11 @@ jack = ["cpal/jack"]
 cpal = "0.15"
 thiserror.workspace = true
 
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-transport = { path = "../tutti-transport" }
+tutti-metering = { path = "../tutti-metering" }
+tutti-engine = { path = "../tutti-engine" }
+# `MAX_ROOT_CHANNELS`, the width the mic fold is sized for.
+tutti-graph = { path = "../tutti-graph" }
 
 # The live I/O edge: the capture ring and the monitor node `MicIn` hands back.
 tutti-io = { path = "../tutti-io", optional = true }
@@ -56,11 +60,8 @@ tutti-rt = { path = "../tutti-rt" }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 # Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
-# graphs. No cycle: `tutti-nodes` names nothing above `tutti-core`.
+# graphs. `tutti-nodes` does not depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# The fixture graphs are `tutti_graph`'s (`Engine::new` takes an editor and its
-# executor). No cycle: tutti-graph names only tutti-types.
-tutti-graph = { path = "../tutti-graph" }
 
 [[bench]]
 name = "audio_callback"

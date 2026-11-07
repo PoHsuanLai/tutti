@@ -96,7 +96,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 use crate::graph::AudioNode;
-use tutti_core::MAX_ROOT_CHANNELS;
+use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_types::ChannelLayout;
 
 use super::topology::{self, LiveGraph};

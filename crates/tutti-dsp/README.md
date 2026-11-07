@@ -150,14 +150,14 @@ let reading = correlate(planes);
 
 ## Reading from a running graph
 
-Nothing here knows about the graph, so the seam is a `tutti_core::AudioTap`: the
+Nothing here knows about the graph, so the seam is a `tutti_metering::AudioTap`: the
 audio thread pushes each block into it and a control thread drains it. What
 arrives on this side is an ordinary `&[f32]`, which is the whole reason these
 algorithms need no engine vocabulary.
 
 ```rust
 use tutti_dsp::correlate;
-use tutti_core::AudioTap;
+use tutti_metering::AudioTap;
 use tutti_types::StereoPlanes;
 
 let tap = AudioTap::new();

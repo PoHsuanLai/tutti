@@ -24,9 +24,9 @@ use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, EventSource, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiEngineNodes, MidiRouteFallback, MidiRouteRule, TuttiMidiPlugin};
-use tutti_core::transport::Transport;
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputNode};
 use tutti_polysynth::{PolySynth, SynthConfig};
+use tutti_transport::Transport;
 use tutti_types::{NodeKey, SampleRate};
 use tutti_ump::MidiChannel;
 

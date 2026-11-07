@@ -105,6 +105,11 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
+      # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
+      # private, the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
+      - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
+      - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -392,6 +397,22 @@ jobs:
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
 
+  # Benchmarks: proved to RUN, never compared.
+  #
+  # GitHub's runners are shared and swing 30-50% on this workload, and the
+  # engine's own profile_stretch_clone harness (deleted with `Net`; its
+  # figures are in doc 013) measured an 81x spread on a QUIET
+  # machine. A timing threshold here would flap, and a flapping gate gets
+  # `continue-on-error: true` within a month and then tests nothing — the same
+  # death the pre-extraction workflow died. So this job runs every benchmark
+  # exactly once (`--test`) to prove the harnesses still work against the
+  # current API, and compares nothing.
+  #
+  # The real perf gate is `tutti-engine/tests/alloc_budget.rs`, which runs in the
+  # ordinary test job: allocation counts are machine-independent, so a budget
+  # on them survives a noisy vCPU.
+  #
+  # Not on `pull_request`: this is a full release build of the workspace.
   bench-smoke:
     name: bench smoke
     if: github.event_name != 'pull_request'
@@ -562,7 +583,7 @@ jobs:
       # NOT test that — `bevy` is already off by default on every engine crate
       # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
-      - run: cargo check --locked -p tutti-core
+      - run: cargo check --locked -p tutti-transport -p tutti-metering -p tutti-engine
       - run: cargo check --locked -p tutti-types
       - run: cargo check --locked -p tutti-types --features bevy
 

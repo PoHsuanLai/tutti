@@ -18,12 +18,12 @@ use bevy_ecs::prelude::*;
 
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Normalize, RenderConfig,
 };
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_types::Db;
 use tutti_types::{Hz, Q};
 

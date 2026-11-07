@@ -27,7 +27,9 @@ workspace = true
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-transport = { path = "../tutti-transport" }
+tutti-metering = { path = "../tutti-metering" }
+tutti-engine = { path = "../tutti-engine" }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # Logging: what the `bevy_log` calls of `bevy-tutti`'s old `GraphRuntime`
 # became. `bevy_log` is a `tracing` subscriber, so a Bevy app sees these

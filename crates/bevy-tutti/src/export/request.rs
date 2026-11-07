@@ -136,7 +136,7 @@ impl ExportRequest {
     #[must_use]
     pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
     where
-        T: RenderClock + tutti_core::transport::OfflineClock + 'static,
+        T: RenderClock + tutti_transport::OfflineClock + 'static,
     {
         self.clock = ExportClock::timeline(timeline);
         self

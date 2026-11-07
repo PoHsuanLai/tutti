@@ -199,7 +199,7 @@ mod tests {
     /// **exactly**: IEEE-754 rounds each of those correctly, so the result is
     /// the same on every platform. `tanh` and `atan` are libm
     /// quality-of-implementation and differ in the last ulp between C runtimes
-    /// (the same reason `tutti-core`'s click digest is gated off MSVC), so those
+    /// (the same reason `tutti-nodes`'s click digest is gated off MSVC), so those
     /// two are pinned against the f64 closed form with a tolerance instead.
     ///
     /// Mutation: dropping `Crush`'s `max(1.0)` floor fails the drive-0.5 row

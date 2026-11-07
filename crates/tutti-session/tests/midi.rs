@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use std::time::{Duration, Instant};
-use tutti_core::MotionEvent;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{Direction, EndpointId};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_transport::MotionEvent;
 use tutti_types::{
     Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
 };

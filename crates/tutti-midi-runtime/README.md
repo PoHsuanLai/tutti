@@ -139,7 +139,7 @@ in `tutti-midi-types` (`ClipFileError`, `MidiParseError`).
 
 ## Where it sits
 
-Builds on `tutti-midi-types`, `tutti-core` and `tutti-graph`. Used by the
+Builds on `tutti-midi-types`, `tutti-transport` and `tutti-graph`. Used by the
 synth, SoundFont and plugin crates and by `tutti-midi-hardware`; re-exported by
 `tutti` and used by `bevy-tutti`.
 

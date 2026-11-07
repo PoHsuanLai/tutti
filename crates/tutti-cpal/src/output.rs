@@ -6,8 +6,8 @@
 
 use cpal::traits::DeviceTrait;
 use std::sync::Arc;
-use tutti_core::Engine;
-use tutti_core::{AudioTap, MasterMeter};
+use tutti_engine::Engine;
+use tutti_metering::{AudioTap, MasterMeter};
 use tutti_rt::with_no_denormals;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 

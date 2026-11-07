@@ -9,7 +9,6 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
-use tutti_core::FrozenClock;
 use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
@@ -17,6 +16,7 @@ use tutti_export::{
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
+use tutti_transport::FrozenClock;
 use tutti_types::{Amplitude, Hz, SampleRate};
 use tutti_types::{Db, Interleaved};
 

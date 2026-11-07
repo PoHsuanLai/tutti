@@ -269,7 +269,7 @@ pub struct InProcessVst2Controls {
 impl InProcessVst2Controls {
     /// Gives the plugin the project meter (see
     /// [`InProcessVst2Client::set_meter`]).
-    pub fn set_meter(&self, meter: tutti_core::ProjectMeter) {
+    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) {
         self.meter.set_meter(meter);
     }
 

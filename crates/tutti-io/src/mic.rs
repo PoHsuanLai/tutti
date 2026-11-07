@@ -79,7 +79,7 @@ use tutti_types::{Amplitude, ChannelLayout, SampleRate, Tail};
 // `MicRing` (`unimplemented!()` in its body, since `HeapCons` has none) →
 // the doctest compiles → fails.
 // A newtype rather than a bare `ringbuf::HeapCons`, so `ringbuf` stays an
-// implementation detail, as `tutti-core`'s `TapCons` is for the tap ring.
+// implementation detail, as `tutti-metering`'s `TapCons` is for the tap ring.
 pub struct MicRing(HeapCons<[f32; 2]>);
 
 impl MicRing {

@@ -23,10 +23,10 @@ use bevy_tutti::graph::{
 use bevy_tutti::modulation::{
     Macro, ModRange, ModRoute, ModSource, ParamRef, TuttiModulationPlugin,
 };
-use tutti_core::transport::Transport;
 use tutti_graph::{
     Cx, IntoNode, Io, Node, NodeParts, ParamInput, ParamNode, ParamSet, Prepare, Shape, Status,
 };
+use tutti_transport::Transport;
 use tutti_types::{AtomicF32, ChannelLayout};
 use tutti_types::{Db, Depth, UnitAddr, UnitParam};
 

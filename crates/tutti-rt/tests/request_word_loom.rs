@@ -35,8 +35,8 @@ use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
 use tutti_rt::{RequestBit, RequestWord};
 
-const A: RequestBit = RequestBit::new(0);
-const B: RequestBit = RequestBit::new(5);
+const A: RequestBit = RequestBit::of(0);
+const B: RequestBit = RequestBit::of(5);
 
 #[test]
 fn raises_from_two_threads_are_all_taken_once() {

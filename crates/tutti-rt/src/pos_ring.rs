@@ -12,8 +12,8 @@
 //!
 //! One writer (a streaming thread, [`PosWriter`]) and one reader (the audio
 //! thread, [`PosReader`]) share `N` frame slots. Slot `s mod N` holds position
-//! `s` — a position on whatever line the two agree on; tutti-sampler's disk
-//! ring uses a file counted straight on. The writer publishes the window
+//! `s` — a position on whatever line the two agree on, such as a file
+//! counted straight on. The writer publishes the window
 //! `[from, to)` of positions the slots hold as one packed word, appends at
 //! `to`, and may shrink the window (a retraction, a raise, a reset); the
 //! reader claims the positions its block may read, takes the window, and reads

@@ -265,3 +265,6 @@ impl<T: NoUninit + AnyBitPattern> EditReader<T> {
         self.shared.refused.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(all(test, not(loom)))]
+mod tests;

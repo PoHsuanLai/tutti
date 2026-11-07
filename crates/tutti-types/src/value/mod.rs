@@ -38,7 +38,7 @@ pub mod unit_param;
 
 pub use adsr::Adsr;
 pub use frame::{At, Frame};
-pub use frame_clock::{FrameClock, LoopRange, SegmentOrigin};
+pub use frame_clock::{FrameClock, LoopRange, Pass, PassEnd, SegmentOrigin};
 pub use latency::Latency;
 pub use max_block::{InvalidMaxBlock, MaxBlock};
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};

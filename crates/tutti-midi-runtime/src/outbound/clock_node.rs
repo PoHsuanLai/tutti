@@ -29,6 +29,14 @@ use crate::live::order::{in_offset_order, offset_of};
 /// The most events a [`ClockNode`] sends in one block, its declared event
 /// capacity. At 300 BPM and 30 fps an 8 192-frame block at 44.1 kHz holds
 /// about 23 ticks and 23 quarter-frames.
+///
+/// A loop wrap in the block adds a Song Position, a tick on the loop's start
+/// when it is on one and the pieces its restarted grid sends, so a short loop
+/// in a long block adds that per wrap. A loop of a sixteenth of a beat (1 500
+/// frames at 120 BPM and 48 kHz, 600 at 300 BPM) wraps about 14 times in an
+/// 8 192-frame block, well under the cap; it takes a loop of about sixty
+/// frames (a millisecond) to reach it. Past it the events of later passes are refused and
+/// counted ([`ClockMaster::dropped_events`]).
 pub const CLOCK_EVENT_CAPACITY: usize = 256;
 
 /// Outbound MIDI clock and timecode as a graph node with one event output.

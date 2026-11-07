@@ -16,8 +16,17 @@
 //! - **Timing Clock** (0xF8) at every 1/24-beat while playing.
 //! - **Start** (0xFA) / **Continue** (0xFB) / **Stop** (0xFC) on transport
 //!   edges — Start when playback begins at beat 0, Continue otherwise.
-//! - **Song Position** (0xF2) on Continue and on seek-while-playing, in MIDI
-//!   beats (1/16 notes).
+//! - **Song Position** (0xF2) on Continue, on seek-while-playing and on the
+//!   frame a loop wraps, in MIDI beats (1/16 notes).
+//!
+//! A loop wrap is a locate on its own frame: a Song Position there (also on a
+//! block's first frame, when the previous block ended on the wrap), the next
+//! ticks from the wrapped beat, and the MTC grid restarts. A Song Position
+//! counts sixteenths and rounds to the nearest, so a loop start off a
+//! sixteenth leaves a receiver up to 1/8 beat behind the sender's tick grid,
+//! as after any locate. The restarted grid puts its first piece 0 on the next
+//! even frame of the timeline from the wrapped beat, so a loop start that is
+//! not on an even frame leaves up to two frames with no quarter-frames.
 //! - **MTC quarter-frames** (0xF1) at frame-rate×4, cycling the 8 SMPTE nibbles
 //!   (when `send_mtc` is set).
 
@@ -28,15 +37,18 @@ use atomic_float::AtomicF64;
 use tutti_graph::Transport;
 use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_types::{Beat, BeatDuration, SampleRate, first_frame_at_or_after};
+use tutti_types::{
+    Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
+};
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
 const PPQN: f64 = 24.0;
 /// Below this beat, a play edge is treated as "from the top" → Start (0xFA)
 /// rather than Continue (0xFB). Wide enough to absorb float jitter at beat 0.
 const START_EPSILON_BEATS: f64 = 1e-6;
-/// A same-frame beat move larger than this (while playing) is a seek, not the
-/// normal forward creep of one block — triggers a fresh Song Position.
+/// A start beat further than this from where the previous block ended (while
+/// playing) is a seek, not the normal run-on of the next block: it triggers a
+/// fresh Song Position.
 const SEEK_EPSILON_BEATS: f64 = 1e-3;
 
 /// Generates outbound MIDI clock / timecode from the transport.
@@ -79,16 +91,18 @@ struct PrevTick {
     /// `is_playing()` at the previous tick — for stopped↔playing edge detection
     /// (the transport exposes no edges of its own).
     playing: AtomicBool,
-    /// `current_beat()` at the previous tick — for seek detection and to carry
-    /// the fractional clock-tick phase across blocks.
-    beat: AtomicF64,
-    /// How far the previous tick's block was due to move the beat, in beats:
-    /// what the beat is compared with at the next tick to tell a locate from
-    /// ordinary playback. The previous block's figure, not this one's — they
-    /// differ when the block size, the tempo or (on a device restart) the
-    /// sample rate moved in between, and comparing with this block's called
-    /// that a seek.
-    advance: AtomicF64,
+    /// The beat the previous tick's block ended on, a loop wrap in it
+    /// included: what the next block's start is compared with to tell a
+    /// locate from ordinary playback. The previous block's end, not this
+    /// block's figure: the block size, the tempo or (on a device restart) the
+    /// sample rate may have moved in between, and a wrap moves the beat
+    /// backwards.
+    end: AtomicF64,
+    /// The previous tick's block ended on a loop wrap, on its last frame's
+    /// successor: that frame is the next block's first, whose clock already
+    /// stands on the wrapped beat, so the wrap shows in no pass of its own
+    /// and `end` equals the start. The next tick sends its Song Position.
+    wrapped: AtomicBool,
 }
 
 /// The MTC quarter-frame grid.
@@ -131,8 +145,8 @@ impl ClockMaster {
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
             prev: PrevTick {
                 playing: AtomicBool::new(false),
-                beat: AtomicF64::new(0.0),
-                advance: AtomicF64::new(0.0),
+                end: AtomicF64::new(0.0),
+                wrapped: AtomicBool::new(false),
             },
             mtc: MtcGrid {
                 base: AtomicU64::new(0),
@@ -273,11 +287,16 @@ impl ClockMaster {
     /// the first of those frames) to `emit`. Call once per stretch of
     /// unchanging transport: a block, or each of its segments.
     ///
-    /// Events come out in the order generated, not by offset: the MTC
-    /// quarter-frames follow the block's ticks.
+    /// Events come out in the order generated, not by offset: in each pass
+    /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
     pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(MidiEvent)) {
-        // Once per block: a rate moved mid-block would split it in two.
-        let sample_rate = self.sample_rate();
+        // Once per block: a rate moved mid-block would split it in two. A
+        // counted transport carries the rate its block runs at, and that is
+        // the one its clock is rebuilt at (a master re-rated between the
+        // host's block and this tick would otherwise mix the two).
+        let sample_rate = transport
+            .origin()
+            .map_or_else(|| self.sample_rate(), |o| o.sample_rate);
         if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
             // Keep prev.playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
@@ -285,13 +304,13 @@ impl ClockMaster {
             self.prev
                 .playing
                 .store(transport.playing, Ordering::Release);
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
         let playing = transport.playing;
         let was_playing = self.prev.playing.swap(playing, Ordering::AcqRel);
         let beat = transport.beat();
-        let prev_beat = Beat(self.prev.beat.swap(beat.get(), Ordering::AcqRel));
 
         // --- transport edges -------------------------------------------------
         if playing && !was_playing {
@@ -308,37 +327,39 @@ impl ClockMaster {
             self.restart_mtc();
         } else if !playing && was_playing {
             emit(MidiEvent::stop(self.group));
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
         if !playing {
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
-        // --- seek while playing ---------------------------------------------
-        // A block normally advances the beat by what it was due to (the
-        // previous tick's `expected_advance`); anything else, either direction,
-        // is a locate.
         let tempo = transport.tempo;
         if tempo.get() <= 0.0 {
+            // Not moving: the next block starts where this one did.
+            self.prev.end.store(beat.get(), Ordering::Release);
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
         // Kept as the `BeatDuration` the shared derivation returns rather than
         // unwrapped to f64: this is a *span* of beats per sample, while `beat`
-        // below is a *position*. Both are beats-denominated and neither is an
+        // is a *position*. Both are beats-denominated and neither is an
         // `Hz` — a beat-synced rate is beats-per-cycle, the inverse of a
         // frequency. Unwrapping either lets the two mix silently.
         let beats_per_sample = tutti_types::beats_per_sample(tempo, sample_rate);
-        let expected_advance = beats_per_sample * block_size as f64;
-        let prev_advance = BeatDuration(
-            self.prev
-                .advance
-                .swap(expected_advance.get(), Ordering::AcqRel),
-        );
+
+        // --- seek while playing ---------------------------------------------
+        // A block starts where the previous one ended; any other start, either
+        // direction, is a locate. So is a block that starts on a wrap: the
+        // previous block ended on it, and one Song Position serves it and a
+        // locate on the same frame.
+        let prev_end = Beat(self.prev.end.load(Ordering::Acquire));
         let is_edge = playing && !was_playing;
-        let jumped = !is_edge
-            && ((beat - prev_beat) - prev_advance).abs() > BeatDuration(SEEK_EPSILON_BEATS);
-        if jumped {
+        let located = (beat - prev_end).abs() > BeatDuration(SEEK_EPSILON_BEATS);
+        let wrapped = self.prev.wrapped.load(Ordering::Acquire);
+        if !is_edge && (located || wrapped) {
             emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
@@ -346,62 +367,83 @@ impl ClockMaster {
             self.restart_mtc();
         }
 
-        // --- 24-PPQN clock ticks --------------------------------------------
-        // Emit a 0xF8 at every 1/24-beat boundary playback reaches inside this
-        // block, on its frame. `tick_beats` is the clock-tick spacing in beats
-        // (1/24).
-        //
-        // Placed by the engine's one beat→frame rule
-        // (`first_frame_at_or_after`) and compared as integer
-        // frames, not as beats against `beat + expected_advance`: a tick on
-        // a block boundary is reached on the next block's first frame (offset
-        // `block_size` here, 0 there), so it goes out once. Comparing beats,
-        // the previous block's end and this block's start round
-        // independently, and a boundary tick was sent twice or not at all.
-        //
-        // Where playback starts, continues or locates on a tick boundary, that
-        // tick goes out on the first frame, after the Start / Continue / Song
-        // Position sent above (same offset, later in the queue). MIDI 1.0
-        // (MMA, "System Real Time Messages", Start and Continue): a receiver
-        // begins on the first Timing Clock after Start / Continue, so the
-        // clock of the start beat must be sent; skipping it leaves every
-        // receiving device one tick behind. Off a boundary, the first tick is
-        // the next boundary's.
+        // --- per pass: 24-PPQN clock ticks, MTC ------------------------------
+        // The block is cut at each loop wrap (`FrameClock::passes`) and each
+        // pass is placed from its own first beat, so the ticks after a wrap
+        // follow the wrapped playhead instead of running on past the loop's
+        // end. A wrap is a locate on its own frame: a Song Position there, and
+        // the MTC grid restarts on it.
+        let region = transport
+            .looping
+            .and_then(|l| LoopRange::new(l.start, l.end));
+        let mut clock = transport.clock(sample_rate);
+        let mut ends_on_wrap = false;
+        for pass in clock.passes(Samples(block_size), region) {
+            ends_on_wrap = pass.end == PassEnd::Wrap;
+            if !pass.start.is_zero() {
+                emit(
+                    MidiEvent::song_position(self.group, beats_to_midi_beats(pass.beat))
+                        .with_frame_offset(frame_offset(pass.start.get())),
+                );
+                self.restart_mtc();
+            }
+            self.tick_clock(&pass, beats_per_sample, emit);
+            if self.send_mtc.load(Ordering::Acquire) {
+                self.tick_mtc(&pass, sample_rate, beats_per_sample, emit);
+            }
+        }
+        self.prev.end.store(clock.beat().get(), Ordering::Release);
+        self.prev.wrapped.store(ends_on_wrap, Ordering::Release);
+    }
+
+    /// Emit a 0xF8 at every 1/24-beat boundary playback reaches inside `pass`,
+    /// on its frame. `tick_beats` is the clock-tick spacing in beats (1/24).
+    ///
+    /// Placed by the engine's one beat→frame rule
+    /// (`first_frame_at_or_after`) and compared as integer
+    /// frames, not as beats against the pass's end: a tick on a block
+    /// boundary is reached on the next block's first frame (offset `len`
+    /// here, 0 there), so it goes out once. Comparing beats, the previous
+    /// block's end and this block's start round independently, and a
+    /// boundary tick was sent twice or not at all.
+    ///
+    /// Where playback starts, continues, locates or wraps on a tick boundary,
+    /// that tick goes out on the first frame, after the Start / Continue /
+    /// Song Position sent for it (same offset, later in the queue). MIDI 1.0
+    /// (MMA, "System Real Time Messages", Start and Continue): a receiver
+    /// begins on the first Timing Clock after Start / Continue, so the
+    /// clock of the start beat must be sent; skipping it leaves every
+    /// receiving device one tick behind. Off a boundary, the first tick is
+    /// the next boundary's.
+    fn tick_clock(
+        &self,
+        pass: &Pass,
+        beats_per_sample: BeatDuration,
+        emit: &mut impl FnMut(MidiEvent),
+    ) {
         let tick_beats = BeatDuration(1.0 / PPQN);
-        let max_offset = (block_size - 1) as u32;
-        // The tick at or before `beat`: its frame is 0 (on `beat`, within the
-        // rule's tolerance) or before this block (already sent, or behind an
-        // off-tick start).
-        let mut tick_idx = (beat.get() / tick_beats.get()).floor() as i64;
+        // The tick at or before the pass's first beat: its frame is 0 (on the
+        // beat, within the rule's tolerance) or before the pass (already
+        // sent, or behind an off-tick start).
+        let mut tick_idx = (pass.beat.get() / tick_beats.get()).floor() as i64;
         loop {
             let tick_beat = Beat(tick_idx as f64 * tick_beats.get());
-            let k = first_frame_at_or_after((tick_beat - beat) / beats_per_sample);
+            let k = first_frame_at_or_after((tick_beat - pass.beat) / beats_per_sample);
             tick_idx += 1;
             if k < 0 {
                 continue;
             }
-            match u32::try_from(k) {
-                Ok(k) if k <= max_offset => {
-                    emit(MidiEvent::timing_clock(self.group).with_frame_offset(k));
-                }
+            match usize::try_from(k) {
+                Ok(k) if k < pass.len.get() => emit(
+                    MidiEvent::timing_clock(self.group)
+                        .with_frame_offset(frame_offset(pass.start.get() + k)),
+                ),
                 _ => break,
             }
         }
-
-        // --- MTC quarter-frames ---------------------------------------------
-        if self.send_mtc.load(Ordering::Acquire) {
-            self.tick_mtc(
-                block_size,
-                sample_rate,
-                beats_per_sample,
-                beat,
-                max_offset,
-                emit,
-            );
-        }
     }
 
-    /// Emit MTC quarter-frames that fall within this block. Quarter-frames go
+    /// Emit MTC quarter-frames that fall within `pass`. Quarter-frames go
     /// out at `fps * 4` Hz; each carries one of 8 nibbles of the current SMPTE
     /// time (M2-104 §7.6, MTC quarter-frame 0xF1).
     /// `beats_per_sample` is a rate and `beat` a position. They were adjacent
@@ -409,13 +451,12 @@ impl ClockMaster {
     /// the two types make that a compile error.
     fn tick_mtc(
         &self,
-        block_size: usize,
+        pass: &Pass,
         sample_rate: SampleRate,
         beats_per_sample: BeatDuration,
-        beat: Beat,
-        max_offset: u32,
         emit: &mut impl FnMut(MidiEvent),
     ) {
+        let (beat, len) = (pass.beat, pass.len.get());
         let fps = self.fps();
         let rate = sample_rate.get();
         if !(fps.fps() > 0.0 && rate > 0.0) {
@@ -459,14 +500,14 @@ impl ClockMaster {
         }
         let mut cycle = self.mtc.cycle.load(Ordering::Acquire);
 
-        // Quarter-frames due inside [0, block_size), each on the frame it
-        // falls in (the floor of its position, as the MTC grid always was).
+        // Quarter-frames due inside [0, len), each on the frame it falls in
+        // (the floor of its position, as the MTC grid always was).
         loop {
             let qf_sample = (self.mtc_due(next, rate, fps) - at as f64).max(0.0);
-            if qf_sample >= block_size as f64 {
+            if qf_sample >= len as f64 {
                 break;
             }
-            let sample_offset = (qf_sample as u32).min(max_offset);
+            let sample_offset = pass.start.get() + (qf_sample as usize).min(len - 1);
             let piece = (next & 0x07) as u8;
             // A cycle's timecode is that of the sample piece 0 goes out on;
             // the receiver adds the two frames the cycle takes.
@@ -475,16 +516,23 @@ impl ClockMaster {
                 cycle = mtc_cycle_nibbles(&tc, fps);
             }
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;
-            emit(MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset));
+            emit(
+                MidiEvent::mtc_quarter_frame(self.group, nibble)
+                    .with_frame_offset(frame_offset(sample_offset)),
+            );
             next += 1;
         }
 
         self.mtc.cycle.store(cycle, Ordering::Release);
         self.mtc.next.store(next, Ordering::Release);
-        self.mtc
-            .frames
-            .store(at + block_size as u64, Ordering::Release);
+        self.mtc.frames.store(at + len as u64, Ordering::Release);
     }
+}
+
+/// A frame index as an event's offset; a block is never near `u32::MAX`
+/// frames, so the saturation is unreachable.
+fn frame_offset(frames: usize) -> u32 {
+    u32::try_from(frames).unwrap_or(u32::MAX)
 }
 
 /// Convert a beat position to MIDI beats (1/16 notes) for Song Position, which

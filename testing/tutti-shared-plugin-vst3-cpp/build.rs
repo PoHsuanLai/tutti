@@ -165,10 +165,12 @@ fn link_bundle<'a>(
     let objects: Vec<&PathBuf> = objects.collect();
     let mut cmd = compiler.to_command();
     if compiler.is_like_msvc() {
+        // No `.ilk`: an incremental-link file would sit in the bundle's arch
+        // directory beside the module.
         cmd.arg("/nologo").arg("/LD");
         cmd.args(&objects);
         cmd.arg(format!("/Fe:{}", so.display()));
-        cmd.arg("/link");
+        cmd.arg("/link").arg("/INCREMENTAL:NO");
         // Keep the import library and its export file out of the bundle. MSVC
         // writes both beside the DLL by default, and a `.vst3` bundle is a
         // directory a host *scans* — anything in the arch dir is a candidate

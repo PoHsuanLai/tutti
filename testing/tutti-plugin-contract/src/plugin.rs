@@ -59,15 +59,24 @@ pub fn vst3_module() -> PathBuf {
 /// The C++ plugin's module, in the bundle its crate's `build.rs` links.
 #[must_use]
 pub fn vst3_cpp_module() -> PathBuf {
-    let dir = vst3_cpp_bundle()
+    // The extension its `build.rs` gives the module.
+    let ext = if cfg!(windows) {
+        "vst3"
+    } else if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    let module = vst3_cpp_bundle()
         .join("Contents")
-        .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
-    std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("the C++ plugin bundle {}: {e}", dir.display()))
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .find(|p| p.is_file())
-        .unwrap_or_else(|| panic!("no module in {}", dir.display()))
+        .join(tutti_plugin_types::bundle::native_arch_subdirs()[0])
+        .join(format!("shared-vst3-cpp.{ext}"));
+    assert!(
+        module.is_file(),
+        "no C++ plugin module at {}",
+        module.display()
+    );
+    module
 }
 
 /// The `.vst3` directory around a module. The plugin-server picks the format

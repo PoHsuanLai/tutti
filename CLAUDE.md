@@ -275,6 +275,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
   tutti-metering `MasterMeter`, `AudioTap`, `LoadMeter`
+  tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
+                 conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-io       I/O edge: live + file decode
@@ -304,7 +306,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
-   `tutti-codec`
+   `tutti-codec`, `tutti-tempo`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
@@ -362,6 +364,17 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `TransportAudio` (`Transport::audio`, taken once) is the audio side the
   engine drives across the crate edge; the clock, control inputs and pending
   list behind it are crate-private.
+- `tutti-tempo` depends on `tutti-types` alone (and `libm`, so a ramp's figures
+  do not depend on the platform's libm), keeps every module private
+  (`tutti_tempo::TempoMap`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]` and has no `bevy` feature; `serde` is optional and
+  only on `CellGrid`. A `TempoMap` is an immutable value built on the control
+  side: its constructors refuse a tempo that is not finite and positive
+  themselves, whatever `Bpm` accepts, and no query allocates. Seconds are `f64`
+  (`Seconds` is `f32`). A map reaches a constant-tempo reader as `Cell`s on one
+  fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
+  `chord_cell` is a pure function of the absolute frame, a cell inside a step
+  has that step's tempo to the bit, and the crate derives no grid from a block.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-codec` depends on `tutti-types` alone, keeps every module private

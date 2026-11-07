@@ -115,6 +115,8 @@ jobs:
       # And `tutti-sf2` and `tutti-rustysynth`: modules private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_sf2 binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: scripts/check-canonical-paths.sh tutti_rustysynth array_math bi_quad_filter channel chorus envelope_stage error lfo modulation_envelope oscillator region_ex region_pair reverb soundfont_math synthesizer synthesizer_settings voice voice_collection volume_envelope
+      # And `tutti-tempo`, which keeps its modules private.
+      - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -344,6 +346,7 @@ jobs:
           cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
@@ -379,6 +382,7 @@ jobs:
           # if that edge goes away.
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
+          cargo nextest run --locked -p tutti-tempo --features serde
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json

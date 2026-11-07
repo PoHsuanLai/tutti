@@ -158,6 +158,12 @@ impl Device {
 
     /// The default host's output devices.
     ///
+    /// **Blocks** for as long as the host's enumeration does: on ALSA it opens
+    /// every PCM, which can wait on a sound server for good. Call it off the
+    /// thread that renders or builds frames; the session's own listing
+    /// ([`Session::list_outputs`]) is that, and a host may choose to call
+    /// this one anyway.
+    ///
     /// # Errors
     ///
     /// When the host cannot enumerate.
@@ -412,6 +418,18 @@ impl Session {
         self.device_watch = Some(DeviceWatch::new(source, policy, want, running_on));
     }
 
+    /// Starts listing the host's output devices on a thread of its own
+    /// (design 018): enumeration can block for good, so it never runs here.
+    /// The answer is taken without blocking by a later
+    /// [`Phase::Poll`](crate::Phase::Poll) and reported once, as
+    /// [`SessionEvent::OutputsListed`] or [`SessionEvent::OutputsListFailed`];
+    /// [`SessionEvent::OutputsListSlow`] is reported once if it takes
+    /// [`LISTING_WARNING`](crate::LISTING_WARNING). Replaces a listing still
+    /// waiting, whose thread is left to end on its own.
+    pub fn list_outputs(&mut self, listing: tutti_cpal::DeviceListing) {
+        self.output_listing = Some(crate::watch::OutputListing::new(listing));
+    }
+
     /// The [`Phase::Poll`](crate::Phase::Poll) body: what restarts reported, the stream's own
     /// faults, then the watch.
     pub(crate) fn device_poll(&mut self, now: std::time::Instant, out: &mut Vec<SessionEvent>) {
@@ -425,6 +443,13 @@ impl Session {
                     lost = fault.kind == tutti_cpal::StreamFaultKind::Disconnected;
                     out.push(SessionEvent::DeviceFault(fault));
                 }
+            }
+        }
+        if let Some(listing) = &mut self.output_listing {
+            let (event, finished) = listing.poll(now);
+            out.extend(event);
+            if finished {
+                self.output_listing = None;
             }
         }
         if let Some(watch) = &mut self.device_watch {

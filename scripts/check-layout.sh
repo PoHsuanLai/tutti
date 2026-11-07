@@ -25,6 +25,7 @@
 # - `tutti-codec` depends on `tutti-types` alone;
 # - `tutti-metering` depends on `tutti-types` alone, and `tutti-transport` on
 #   `tutti-types`, `tutti-rt` and `tutti-graph`;
+# - `tutti-tempo` depends on `tutti-types` alone;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
@@ -65,7 +66,10 @@
 #   may depend on ['tutti-plugin-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
 #   tutti-engine (normal) points up" and "tutti-codec may depend on ['tutti-types']
-#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS".
+#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS";
+# - `tutti-rt` as a `[dependencies]` entry of `tutti-tempo`: "tutti-tempo may depend on
+#   ['tutti-types'] only"; `tutti-graph` there too: "tutti-tempo -> tutti-graph (normal)
+#   points up or sideways".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -111,7 +115,7 @@ LAYERS = [
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-sf2"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
-     "tutti-codec"],
+     "tutti-codec", "tutti-tempo"],
     ["tutti-transport", "tutti-plugin-types", "tutti-rustysynth"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
@@ -203,6 +207,8 @@ if "tutti-metering" in pkgs:
     only("tutti-metering", ["tutti-types"])
 if "tutti-codec" in pkgs:
     only("tutti-codec", ["tutti-types"])
+if "tutti-tempo" in pkgs:
+    only("tutti-tempo", ["tutti-types"])
 if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:

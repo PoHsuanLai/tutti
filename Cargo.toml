@@ -36,6 +36,9 @@ members = [
     "crates/tutti-engine",
     "crates/tutti-transport",
     "crates/tutti-metering",
+    # The tempo map: step and ramp segments, beat, seconds and frame conversion.
+    # Depends on `tutti-types` alone (and `libm`); nothing adopts it yet.
+    "crates/tutti-tempo",
     "crates/tutti-cpal",
     "crates/tutti-types",
     # The audio file encoders (WAV, AIFF, FLAC, Ogg Vorbis) behind one `Encoder`

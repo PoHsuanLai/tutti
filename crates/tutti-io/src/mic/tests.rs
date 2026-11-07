@@ -1,17 +1,10 @@
 use super::*;
-use ringbuf::{
-    HeapRb,
-    traits::{Producer, Split},
-};
 use tutti_graph::contract::prepared;
 
-fn ring_with(frames: &[[f32; 2]]) -> (MicRing, ringbuf::HeapProd<[f32; 2]>) {
-    let rb = HeapRb::<[f32; 2]>::new(64);
-    let (mut prod, cons) = rb.split();
-    for &f in frames {
-        let _ = prod.try_push(f);
-    }
-    (MicRing::new(cons), prod)
+fn ring_with(frames: &[[f32; 2]]) -> (MicRing, TapWriter) {
+    let (ring, mut writer) = MicRing::pair(ChannelLayout::STEREO, Samples(64));
+    writer.push_interleaved(frames.as_flattened());
+    (ring, writer)
 }
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -122,28 +115,24 @@ fn a_block_leaves_the_ring_untouched_until_it_can_write() {
 /// of its storage, then the ones at the start, in push order, and pads
 /// with silence past them.
 ///
-/// Mutation (run): copy only the first of `as_slices`' two runs (`for
-/// run in [head]`) → the frames past the wrap read as silence → fails.
+/// Mutation (run): `pop_planes` in the tap reader popping into
+/// `plane[..frames.min(2)]` stops after two frames → the third and the
+/// post-wrap reads come back as silence → fails.
 #[test]
 fn a_block_reads_across_the_ring_wrap() {
-    let rb = HeapRb::<[f32; 2]>::new(4);
-    let (mut prod, cons) = rb.split();
-    let mut node = monitor(MicRing::new(cons));
-    for f in [[1.0, -1.0], [2.0, -2.0], [3.0, -3.0]] {
-        let _ = prod.try_push(f);
-    }
+    let (ring, mut prod) = MicRing::pair(ChannelLayout::STEREO, Samples(4));
+    let mut node = monitor(ring);
+    prod.push_interleaved(&[1.0, -1.0, 2.0, -2.0, 3.0, -3.0]);
     assert_eq!(block(&mut node, 3)[0], [1.0, 2.0, 3.0]);
     // Three more: the fourth slot, then the first two, wrapped.
-    for f in [[4.0, -4.0], [5.0, -5.0], [6.0, -6.0]] {
-        let _ = prod.try_push(f);
-    }
+    prod.push_interleaved(&[4.0, -4.0, 5.0, -5.0, 6.0, -6.0]);
     let out = block(&mut node, 5);
     assert_eq!(out[0], [4.0, 5.0, 6.0, 0.0, 0.0]);
     assert_eq!(out[1], [-4.0, -5.0, -6.0, 0.0, 0.0]);
 }
 
-/// The declared shape: no inputs, stereo out, never skipped as silent,
-/// no latency.
+/// The declared shape: no inputs, as wide as the ring out, never skipped as
+/// silent, no latency.
 #[test]
 fn the_declared_shape_matches_what_the_graph_is_told() {
     let (ring, _prod) = ring_with(&[]);
@@ -193,4 +182,47 @@ fn the_mic_refuses_to_fork() {
         .fork(ForkTarget::Master, ForkMode::Live, prepare)
         .expect_err("a fork through the live mic is refused");
     assert_eq!(err, ForkError::NotForkable { key: NodeKey(7) });
+}
+
+/// The node is as wide as its ring: six lanes are six outputs, each channel on
+/// its own output in the order the device pushed it, and the shape says so.
+///
+/// Mutation (run): `Shape::audio(.., ChannelLayout::STEREO)` back in `shape`
+/// fails the width assertion; `pop_planes` handing lane `c` the plane `5 - c`
+/// fails the order.
+#[test]
+fn a_ring_of_six_is_six_outputs_in_the_order_pushed() {
+    let (ring, mut writer) = MicRing::pair(ChannelLayout::from(6u16), Samples(64));
+    writer.push_interleaved(&[
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, //
+        -1.0, -2.0, -3.0, -4.0, -5.0, -6.0,
+    ]);
+    let node = MicMonitorNode::new(ring);
+    assert_eq!(node.shape().audio_out, ChannelLayout::from(6u16));
+    let mut node = prepared(node, RATE, 64);
+    let out = block(&mut node, 3);
+    assert_eq!(out.len(), 6);
+    for (c, plane) in out.iter().enumerate() {
+        let v = (c + 1) as f32;
+        assert_eq!(plane, &[v, -v, 0.0], "channel {c}");
+    }
+}
+
+/// A frame the ring has no room for is refused whole, on every channel: a
+/// ring of room for two frames, offered three, keeps the first two complete
+/// and the lanes level, never a third frame on some channels.
+///
+/// Mutation (run): pushing each lane up to its own room (not the fewest) in
+/// `TapWriter::push_interleaved` is not reachable here (equal rings); dropping
+/// the `.min(frames)` there makes the third frame overrun and the writer's
+/// `debug_assert` fail.
+#[test]
+fn a_full_ring_refuses_whole_frames() {
+    let (ring, mut writer) = MicRing::pair(ChannelLayout::from(3u16), Samples(2));
+    writer.push_interleaved(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    let mut node = monitor(ring);
+    let out = block(&mut node, 4);
+    assert_eq!(out[0], [1.0, 4.0, 0.0, 0.0]);
+    assert_eq!(out[1], [2.0, 5.0, 0.0, 0.0]);
+    assert_eq!(out[2], [3.0, 6.0, 0.0, 0.0]);
 }

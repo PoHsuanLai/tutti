@@ -88,6 +88,13 @@ pub enum Error {
         graph: tutti_types::SampleRate,
     },
 
+    /// The inputs asked of a capture device cannot be selected: none were
+    /// named, or one is past the device's last.
+    ///
+    /// Returned by `MicIn::open_inputs` (feature `capture`).
+    #[error("cannot select those inputs: {0}")]
+    Inputs(#[from] tutti_types::FoldError),
+
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -118,38 +118,182 @@ fn a_default_that_already_matches_is_accepted_with_no_ranges() {
 
 /// A `MicIn` over an empty ring and a fresh fault record, with no device.
 fn mic_without_a_device() -> MicIn {
-    mic_with_ring(8).0
+    mic_with_ring(2, 8).0
 }
 
-/// [`mic_without_a_device`], and the producer and loss counter its callback
-/// would hold.
-fn mic_with_ring(frames: usize) -> (MicIn, HeapProd<[f32; 2]>, Arc<AtomicU64>) {
-    let (prod, cons) = HeapRb::<[f32; 2]>::new(frames).split();
-    let lost = Arc::new(AtomicU64::new(0));
+/// [`mic_without_a_device`] `width` wide, and the writer its callback would
+/// hold.
+fn mic_with_ring(width: u16, frames: usize) -> (MicIn, TapWriter) {
+    let (reader, writer) = TapReader::standalone(TapId(0), usize::from(width), Samples(frames));
     let mic = MicIn {
-        cons,
-        lost: Arc::clone(&lost),
+        tap: TapIn::new(reader),
         sample_rate: SampleRate(48_000.0),
+        device_inputs: ChannelLayout::from(width),
         faults: Arc::new(StreamFaults::new()),
         _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
     };
-    (mic, prod, lost)
+    (mic, writer)
 }
 
 /// A full ring drops the callback's frames and the source counts them; the
-/// count clears when read. (The callback's push is `push_or_count`; the stream
-/// that calls it needs a device.)
+/// count clears when read. (The stream that fills the ring needs a device; the
+/// writer's refusal is the same one `Capture::block` hits.)
 ///
-/// Mutation (run, recorded here): `push_or_count` not counting -> 0 and this
-/// fails.
+/// Mutation (run, recorded here): `take_lost` returning `Samples(0)` fails.
 #[test]
 fn a_full_ring_counts_the_frames_the_callback_dropped() {
-    let (mut mic, mut prod, lost) = mic_with_ring(2);
+    let (mut mic, mut writer) = mic_with_ring(2, 2);
     for i in 0..5 {
-        push_or_count(&mut prod, &lost, [i as f32, 0.0]);
+        writer.push_interleaved(&[i as f32, 0.0]);
     }
     assert_eq!(AudioIn::take_lost(&mut mic), Samples(3));
     assert_eq!(AudioIn::take_lost(&mut mic), Samples(0), "reading clears");
+}
+
+/// A capture of `device` inputs, selecting `inputs`, over rings of room for
+/// `frames` frames; the mic end and the monitor's.
+fn capture(device: u16, inputs: &[usize], frames: usize) -> (Capture, MicIn, tutti_io::MicRing) {
+    let select = Fold::select(ChannelLayout::from(device), inputs).expect("a selection");
+    let width = select.dst_layout();
+    let (reader, rec) =
+        TapReader::standalone(TapId(0), usize::from(width.count()), Samples(frames));
+    let (ring, mon) = tutti_io::MicRing::pair(width, Samples(frames));
+    let capture = Capture::new(select, ChannelLayout::from(device), rec, Some(mon));
+    let mic = MicIn {
+        tap: TapIn::new(reader),
+        sample_rate: SampleRate(48_000.0),
+        device_inputs: ChannelLayout::from(device),
+        faults: Arc::new(StreamFaults::new()),
+        _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
+    };
+    (capture, mic, ring)
+}
+
+/// Inputs 3 and 4 of 16 reach the recording as its two channels, in that
+/// order, and the monitor ring carries the same two; inputs beyond the first
+/// two are reachable, which the stereo fold never allowed.
+///
+/// The device frames are `100 * frame + input`, so every sample says where it
+/// came from.
+///
+/// Mutation (run): `Fold::select(.., &[2, 3])` read as `&[0, 1]` in the test's
+/// setup (the old stereo rule) fails the figures; the callback reading
+/// `select.frame(&self.frame[..2], ..)` panics on the width assert; a chunk
+/// that skipped `self.mon` fails the monitor assertion.
+#[test]
+fn inputs_three_and_four_of_sixteen_are_the_recording() {
+    let (mut cap, mut mic, ring) = capture(16, &[2, 3], 64);
+    let data: Vec<f32> = (0..3)
+        .flat_map(|f| (0..16).map(move |c| (100 * f + c) as f32))
+        .collect();
+    cap.block(&data);
+    assert_eq!(AudioIn::layout(&mic), ChannelLayout::STEREO);
+    assert_eq!(
+        mic.topology().positions(),
+        [tutti_types::Speaker::Discrete; 2]
+    );
+    assert_eq!(mic.device_inputs(), ChannelLayout::from(16u16));
+    let mut out = [0.0f32; 8];
+    assert_eq!(mic.poll_into(&mut out), Samples(3));
+    assert_eq!(out[..6], [2.0, 3.0, 102.0, 103.0, 202.0, 203.0]);
+
+    let mut node = tutti_graph::contract::prepared(
+        tutti_io::MicMonitorNode::new(ring),
+        SampleRate(48_000.0),
+        64,
+    );
+    let env = tutti_graph::Env {
+        frame: tutti_types::Frame(0),
+        sample_rate: SampleRate(48_000.0),
+        block_len: Samples(3),
+        transport: tutti_graph::Transport::default(),
+        changes: tutti_graph::TransportChanges::NONE,
+        play: tutti_graph::PlayClock::ZERO,
+    };
+    let heard = tutti_graph::contract::drive_input(&mut node, &env, &[], &[], &[]).audio;
+    assert_eq!(heard[0], [2.0, 102.0, 202.0]);
+    assert_eq!(heard[1], [3.0, 103.0, 203.0]);
+}
+
+/// A six-input interface delivers six discrete channels when asked, and is no
+/// longer folded as 5.1: the sixth input arrives untouched beside the first.
+/// One input may feed both sides (`&[0, 0]`), which is what `open` does for a
+/// mono device.
+///
+/// Mutation (run): routing the selection through `Fold::assuming_smpte` (the
+/// old width fold) puts the LFE-position input (3) at `0.0` and the centre at
+/// -3 dB on the sides, failing the figures.
+#[test]
+fn a_six_input_interface_is_six_inputs_not_five_point_one() {
+    let (mut cap, mut mic, _ring) = capture(6, &[0, 1, 2, 3, 4, 5], 64);
+    cap.block(&[0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    let mut out = [0.0f32; 6];
+    assert_eq!(mic.poll_into(&mut out), Samples(1));
+    assert_eq!(out, [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+
+    let (mut cap, mut mic, _ring) = capture(1, &[0, 0], 64);
+    cap.block(&[0.25f32, -0.5]);
+    let mut out = [0.0f32; 4];
+    assert_eq!(mic.poll_into(&mut out), Samples(2));
+    assert_eq!(out, [0.25, 0.25, -0.5, -0.5]);
+}
+
+/// A callback larger than the chunk runs in chunks, in order, and an integer
+/// device converts per sample.
+///
+/// 150 frames of `i16` input 1 (of 2) are 64 + 64 + 22: the frames come out
+/// whole and in order.
+///
+/// Mutation (run): the chunk loop resetting `frames` into the same slot
+/// (`chunks_exact_mut` zipped from the start per frame, not per chunk) is what
+/// this guards; dropping the `data.chunks` loop for one chunk loses all but
+/// the first 64 frames and fails the length.
+#[test]
+fn a_big_callback_runs_in_chunks_and_integers_convert() {
+    let (mut cap, mut mic, _ring) = capture(2, &[1], 512);
+    let data: Vec<i16> = (0..150).flat_map(|f| [0, f as i16 * 100]).collect();
+    cap.block(&data);
+    let mut out = vec![0.0f32; 200];
+    let n = mic.poll_into(&mut out);
+    assert_eq!(n, Samples(150));
+    for (f, &s) in out[..150].iter().enumerate() {
+        let want = f32::from(f as i16 * 100) / 32768.0;
+        assert!((s - want).abs() < 1e-6, "frame {f}: {s} vs {want}");
+    }
+}
+
+/// The default selection is the first two inputs, or a lone input twice.
+///
+/// Mutation (run): `usize::from(width.count() > 1)` written as `1` selects
+/// input 1 of a mono device, which `Fold::select` then refuses, and a wide
+/// device gets `[0, 1]` either way; written as `0` gives a stereo device the
+/// left input twice: fails the second row.
+#[test]
+fn the_default_is_the_first_two_inputs_or_the_lone_one_twice() {
+    assert_eq!(default_inputs(ChannelLayout::MONO), [0, 0]);
+    assert_eq!(default_inputs(ChannelLayout::STEREO), [0, 1]);
+    assert_eq!(default_inputs(ChannelLayout::from(16u16)), [0, 1]);
+}
+
+/// An input the device does not have is an `Error::Inputs`, with `FoldError`'s
+/// reason; so is an empty selection.
+///
+/// Mutation (run): removing the `#[from]` conversion does not compile; the
+/// `NoSuchChannel` arm is `Fold::select`'s, pinned in `tutti-types`.
+#[test]
+fn an_input_past_the_devices_last_is_an_error() {
+    let err = Error::from(Fold::select(ChannelLayout::from(4u16), &[2, 4]).unwrap_err());
+    assert!(
+        matches!(
+            err,
+            Error::Inputs(tutti_types::FoldError::NoSuchChannel { channel: 4, .. })
+        ),
+        "{err}"
+    );
+    assert!(matches!(
+        Error::from(Fold::select(ChannelLayout::STEREO, &[]).unwrap_err()),
+        Error::Inputs(tutti_types::FoldError::Empty(_))
+    ));
 }
 
 /// A disconnect reported through the shared fault record fails the source, and
@@ -183,16 +327,14 @@ fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
 /// `Starved` and fails the `Failed` assertion.
 #[test]
 fn a_recorder_on_a_disconnected_mic_fails_the_take() {
-    let (mut prod, cons) = HeapRb::<[f32; 2]>::new(8).split();
-    let mut mic = mic_without_a_device();
-    mic.cons = cons;
+    let (mic, mut prod) = mic_with_ring(2, 8);
     let faults = mic.faults();
     let path = std::env::temp_dir().join(format!("tutti-mic-fault-{}.wav", std::process::id()));
     let sink = mic.matching_sink(&path, Pcm::Float32).unwrap();
     let (driver, pump) = tutti_io::ManualDriver::new();
     let mut rec = tutti_io::Recorder::start_with(mic, sink, driver).unwrap();
 
-    assert!(prod.try_push([0.5, -0.5]).is_ok());
+    prod.push_interleaved(&[0.5, -0.5]);
     faults.record(&cpal::StreamError::DeviceNotAvailable);
     assert_eq!(
         pump.pump_once(),

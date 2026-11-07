@@ -18,7 +18,7 @@ workspace = true
 default = []
 # Mic capture (`MicIn`). Gated because it needs the capture ring and the
 # monitor node `tutti-io` defines; without it this crate is output-only.
-capture = ["dep:tutti-io", "dep:tutti-codec", "dep:ringbuf"]
+capture = ["dep:tutti-io", "dep:tutti-codec"]
 
 # JACK, through cpal's implicitly-featured optional `jack` dependency.
 #
@@ -43,7 +43,7 @@ thiserror.workspace = true
 
 tutti-transport = { path = "../tutti-transport" }
 tutti-engine = { path = "../tutti-engine" }
-# `MAX_ROOT_CHANNELS`, the width the mic fold is sized for.
+# `TapReader` and `TapWriter`, the mic's rings.
 tutti-graph = { path = "../tutti-graph" }
 
 # The live I/O edge: the capture ring and the monitor node `MicIn` hands back.
@@ -51,12 +51,12 @@ tutti-io = { path = "../tutti-io", optional = true }
 # `Pcm`, the width of the WAV sink `MicIn::matching_sink` opens.
 tutti-codec = { path = "../tutti-codec", optional = true }
 
-# The mic ring's producer half, moved to the CPAL input callback thread.
-ringbuf = { version = "0.6", optional = true }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 
 [dev-dependencies]
+# `contract::prepared`, to drive the mic's monitor node by hand in the capture tests.
+tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 # The RT gates render a real graph under a disabled allocator.
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true

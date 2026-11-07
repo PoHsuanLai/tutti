@@ -710,7 +710,6 @@ mod master_record {
 mod io_graph_composition {
     use bevy_app::prelude::*;
     use bevy_ecs::prelude::*;
-    use ringbuf::traits::{Producer as _, Split as _};
 
     use bevy_tutti::AudioEngineState;
     use bevy_tutti::graph::AudioNode;
@@ -733,9 +732,11 @@ mod io_graph_composition {
 
     /// A monitor node plus the producer end of the ring feeding it, so a test can
     /// play the part of the capture callback without a device.
-    fn monitor_with_feed(capacity: usize) -> (MicMonitorNode, ringbuf::HeapProd<[f32; 2]>) {
-        let (prod, cons) = ringbuf::HeapRb::<[f32; 2]>::new(capacity).split();
-        let ring = MicRing::new(cons);
+    fn monitor_with_feed(capacity: usize) -> (MicMonitorNode, tutti_graph::TapWriter) {
+        let (ring, prod) = MicRing::pair(
+            tutti_types::ChannelLayout::STEREO,
+            tutti_types::Samples(capacity),
+        );
         (MicMonitorNode::new(ring), prod)
     }
 
@@ -847,7 +848,7 @@ mod io_graph_composition {
 
         // Play the capture callback: push a constant, distinguishable frame.
         for _ in 0..128 {
-            prod.try_push([0.5, -0.5]).expect("ring has room");
+            prod.push_interleaved(&[0.5, -0.5]);
         }
 
         let out = render(&mut app, 64);
@@ -884,7 +885,7 @@ mod io_graph_composition {
         app.update();
 
         for _ in 0..128 {
-            prod.try_push([0.5, -0.5]).expect("ring has room");
+            prod.push_interleaved(&[0.5, -0.5]);
         }
 
         let out = render(&mut app, 64);

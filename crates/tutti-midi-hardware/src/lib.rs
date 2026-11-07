@@ -59,8 +59,6 @@ pub use tutti_midi_types::{
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
-// `MidiChannel` re-exports through `cc::mapping`, and the name resolves to the
-// `tutti_types` newtype — not a `u8` alias.
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCTarget, MappingId};
 
 pub use tutti_midi_types::sync::{

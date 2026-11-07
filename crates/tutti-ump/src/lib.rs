@@ -5,7 +5,8 @@
 //! transposed `(group, channel)` pair does not compile.
 //!
 //! The crate depends on no other tutti crate, so the audio graph can carry
-//! packets without linking a MIDI codec.
+//! packets without linking a MIDI codec. `serde` (off by default) derives
+//! `Serialize` and `Deserialize` on the three address types.
 
 #![forbid(unsafe_code)]
 

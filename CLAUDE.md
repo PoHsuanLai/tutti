@@ -279,8 +279,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-ump` depends on no workspace crate, keeps every module private
   (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
-  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`; the
-  umbrella preludes and `tutti-session` export them.
+  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
+  `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
+  exports `MidiChannel` behind `midi`. A consumer that persists one with serde
+  depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
 - `tutti-types` names no other tutti crate. Its one workspace-member
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.

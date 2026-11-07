@@ -5,9 +5,8 @@
 //! header sets `dwChannelMask` to the lowest `channels` bits (it has no API to
 //! change it), which a mask-honouring reader takes as FL FR FC LFE ... rather than
 //! tutti's order. And it counts data bytes in a `u32` with no guard, so a file
-//! past 4 GiB wraps its header. The live sink (`tutti-io`'s `WavOut`) and the
-//! offline encoder (`tutti-export`) both use this module, so they cannot
-//! disagree.
+//! past 4 GiB wraps its header. A live sink and an offline encoder can
+//! both use this module, so they cannot disagree.
 //!
 //! # The mask
 //!

@@ -227,11 +227,11 @@ impl DelayLineNode {
             delay_ramps: vec![Ramp::new(0.0, 0.0, 1); n],
             taps: vec![0.0; n],
             good: [
-                LastGood::new(feedback.get()),
-                LastGood::new(0.0),
-                LastGood::new(Mix::WET.get()),
+                LastGood::new(feedback.get(), 0.0),
+                LastGood::fixed(0.0),
+                LastGood::fixed(Mix::WET.get()),
             ],
-            good_delay: vec![LastGood::new(delay_secs.get()); n],
+            good_delay: vec![LastGood::new(delay_secs.get(), 0.0); n],
         }
     }
 

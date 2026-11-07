@@ -142,9 +142,9 @@ impl<F: Real> LadderFilterNode<F> {
             last_drive: None,
             stages: vec![[zero; 4]; n],
             good: [
-                LastGood::new(frequency.get()),
-                LastGood::new(resonance.get()),
-                LastGood::new(Drive::UNITY.get()),
+                LastGood::new(frequency.get(), 0.0),
+                LastGood::new(resonance.get(), 0.0),
+                LastGood::fixed(Drive::UNITY.get()),
             ],
         }
     }

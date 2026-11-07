@@ -17,9 +17,8 @@
 //! that has to survive that.
 //!
 //! The block-relative half of the split (an *offset* into the current block,
-//! valid only inside it) lives in `tutti-graph`, whose blocks it is relative
-//! to; the only conversion between the two goes through the block's
-//! environment there.
+//! valid only inside it) belongs to whatever owns the block; the only
+//! conversion between the two goes through that block's environment.
 //!
 //! # Algebra
 //!
@@ -145,8 +144,8 @@ impl AddAssign<Samples> for Frame {
 /// When a scheduled command takes effect.
 ///
 /// Every control-thread command that is meant to happen *during playback* —
-/// a scheduled event or parameter ramp in `tutti-graph`, and play / stop /
-/// seek in the engine's transport — states its time as one of these. There is
+/// a scheduled event or parameter ramp, and play / stop / seek on a
+/// transport — states its time as one of these. There is
 /// **no untimed overload**: "whenever the next block starts" is spelled
 /// [`NextBlock`](At::NextBlock), a visible, greppable choice rather than a
 /// default nobody chose.

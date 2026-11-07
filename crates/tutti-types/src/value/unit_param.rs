@@ -9,8 +9,7 @@
 //! This module is the **pure vocabulary**: the enum, its `u16` conversions
 //! and the addresses built on it ([`UnitAddr`], [`ParamAddr`]), with no
 //! audio-engine dependency. A node maps each [`UnitAddr`] it exposes to one of
-//! its `f32` cells in a `tutti_graph::ParamSet`, which is how a host sets a
-//! param by address.
+//! its `f32` cells, which is how a host sets a param by address.
 
 use core::num::NonZeroU8;
 
@@ -359,7 +358,7 @@ impl From<UnitAddr> for ParamAddr {
 /// `UnitParam` alone is untyped: `Cutoff` and `GainDb` both carry an `f32`,
 /// and nothing stops a caller writing a decibel figure to a cutoff. A
 /// `ParamKey<U>` pins the unit, so a value travelling under a key — an
-/// automation ramp in `tutti-graph`, for one — is built from a `U` and read
+/// automation ramp, for one — is built from a `U` and read
 /// back as a `U`, with the `f32` in between never exposed.
 ///
 /// The keys exist only for parameters whose unit is not in doubt, as

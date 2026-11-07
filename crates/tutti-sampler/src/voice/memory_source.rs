@@ -19,7 +19,9 @@ use tutti_types::{
 };
 
 use super::clock::{BlockClock, Clock};
-use super::interp::{Gate, hermite_lanes, place, read_looped_frame, split_position, tap};
+use super::interp::{
+    Gate, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
+};
 use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
 use crate::lanes::{Gather, UNPREPARED_FRAMES};
@@ -820,6 +822,29 @@ impl MemorySource {
         };
         let step = self.read_rate().then(stretch_rate);
         place(clock, range, gate, step, out)
+    }
+
+    /// [`placed_positions`](Self::placed_positions) for the tail of a wrap
+    /// crossfade (`interp::place_tail`), at unity stretch: the frames of
+    /// `range` it sounds over, relative to `range`, or `None`.
+    #[inline]
+    pub(crate) fn placed_tail(
+        &self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        out: &mut [Option<SamplePosition>],
+    ) -> Option<Range<usize>> {
+        let Some(gate) = self.gate(ReadRate::UNITY) else {
+            out.fill(None);
+            return None;
+        };
+        place_tail(
+            clock,
+            range,
+            gate,
+            self.read_rate().then(ReadRate::UNITY),
+            out,
+        )
     }
 
     /// [`read_placed_into`](Self::read_placed_into) for a block: frame `i`

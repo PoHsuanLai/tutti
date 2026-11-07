@@ -18,11 +18,11 @@ mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
-/// Serialises every test that constructs an `Active`. `Module::open` and a
-/// module's teardown are already serialised, but creating and destroying
-/// plugin instances of one image is not, and the default tests without this
-/// still crashed (heap corruption, a COM over-release) in 5 of 800 runs with
-/// both locks in place.
+/// Serialises every test that constructs an `Active`, which load real
+/// third-party plugins (macOS only; they skip elsewhere). `Module::open` and
+/// a module's teardown serialise themselves, and a plugin's own instance
+/// creation is not known to need this. Third-party code has process globals
+/// we cannot see, so the guard stays until measured against those plugins.
 ///
 /// Per-file: each test binary is its own process.
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());

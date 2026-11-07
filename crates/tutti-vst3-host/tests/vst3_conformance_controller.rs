@@ -72,7 +72,6 @@ fn report_host_capability_score() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -157,7 +156,6 @@ fn restart_component_requests_reach_the_host() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -193,7 +191,6 @@ fn progress_reports_are_accepted() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -227,7 +224,6 @@ fn prefetchable_support_is_queryable() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -256,7 +252,6 @@ fn midi_learn_forwards_from_the_main_thread() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let mut inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -328,7 +323,6 @@ fn warn_tag_block_is_isolated() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -374,7 +368,6 @@ fn host_checker_reports_no_errors_through_output_params() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
 
     let mut inst = match Active::<f32>::load(&path, 48_000.0, 512) {
@@ -442,7 +435,6 @@ fn plugin_state_round_trips() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     let mut exercised = 0usize;
 

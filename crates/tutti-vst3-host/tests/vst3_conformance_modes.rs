@@ -190,6 +190,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
     let event_in = info.has_midi_input as c_int;
     let event_out = info.has_midi_output as c_int;
     for id in inst.parameter_ids() {
+        let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
 
@@ -200,6 +201,7 @@ fn live_realtime_prefetch_toggle_is_spec_clean() {
     let counts_cell: &'static Mutex<Vec<i64>> = Box::leak(Box::new(Mutex::new(vec![0i64; n])));
 
     conformance::set_observer(Box::new(move |data, setup| {
+        let _hc = hostcheck_lock();
         unsafe {
             hc_configure(
                 setup.sampleRate,

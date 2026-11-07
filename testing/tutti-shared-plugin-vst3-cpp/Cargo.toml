@@ -1,0 +1,16 @@
+[package]
+name = "tutti-shared-plugin-vst3-cpp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The shared test plugin's spec as a C++ VST3 plugin on the Steinberg SDK base classes (comparison build)"
+license = "MIT OR Apache-2.0"
+publish = false
+# Passes the bundle directory to dependents as DEP_TUTTI_SHARED_VST3_CPP_DIR.
+links = "tutti_shared_vst3_cpp"
+
+[lib]
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1"

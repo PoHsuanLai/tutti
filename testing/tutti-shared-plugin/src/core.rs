@@ -57,6 +57,8 @@ pub const AUX: u32 = 1;
 pub const MODE: u32 = 2;
 /// Number of parameters.
 pub const PARAMS: u32 = 3;
+/// Parameter names, by id.
+pub const NAMES: [&str; PARAMS as usize] = ["level", "aux", "mode"];
 /// Number of modes.
 pub const MODES: u32 = 5;
 /// Latency of the Delay mode, in frames.
@@ -316,6 +318,14 @@ impl Core {
         } else {
             self.overflow.store(1, Relaxed);
         }
+    }
+
+    /// Records a parameter value the host set outside a block's event list, at
+    /// offset 0: VST2 has no parameter events, so the host's `setParameter`
+    /// calls are what it sent. The log has one writer; a call from another
+    /// thread while blocks run can lose an entry.
+    pub fn log_set_param(&self, id: u32, value: f64) {
+        self.log(1, 0, id, value);
     }
 
     fn log(&self, kind: u64, offset: u32, id: u32, value: f64) {

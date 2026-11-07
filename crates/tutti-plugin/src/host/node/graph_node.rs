@@ -28,8 +28,6 @@ use crate::protocol::{
     ChordValue, Features, MidiEvent, MidiEventVec, ParameterChanges, ScaleValue, TransportInfo,
 };
 
-/// A bound plugin, processed through the pipelined IPC path. See
-/// [`PluginClient`].
 impl<S> PluginClient<S> {
     /// The shape the plugin's node declares: its buses as audio ports, one
     /// MIDI event input, one MIDI event output if it has MIDI-out, and its
@@ -45,6 +43,8 @@ impl<S> PluginClient<S> {
     }
 }
 
+/// A bound plugin, processed through the pipelined IPC path. See
+/// [`PluginClient`].
 impl Node for PluginClient<Bound> {
     /// The plugin's buses as audio ports, and its latency: the plugin's own
     /// figure **plus** the chunk the pipeline holds

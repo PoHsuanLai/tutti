@@ -745,7 +745,7 @@ fn a_plugin_that_crashes_every_time_is_given_up_on() {
         drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
         0
     );
-    let Some(SessionEvent::PluginGaveUp { node: at, why }) = drive
+    let Some(SessionEvent::PluginGaveUp { node: at, why, .. }) = drive
         .events
         .iter()
         .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
@@ -959,14 +959,17 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
             ("TUTTI_CLAP_PROBE_RESTART_PORT_LAYOUT", "1"),
         ],
         |b| {
-            b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
-                max_failures: 2,
-                backoff: Duration::from_millis(1),
-                ..Default::default()
-            }))
+            b.snapshot_interval(Duration::from_secs(1))
+                .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                    max_failures: 2,
+                    backoff: Duration::from_millis(1),
+                    ..Default::default()
+                }))
         },
     );
     let (node, _) = wired_probe(&mut s);
+    snapshot_now(&mut s, node);
+    let kept = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "a second attempt", |e| {
         matches!(e, SessionEvent::PluginReloading { attempt: 2, .. })
@@ -990,7 +993,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
     drive.until(&mut s, "given up", |e| {
         matches!(e, SessionEvent::PluginGaveUp { .. })
     });
-    let Some(SessionEvent::PluginGaveUp { why, .. }) = drive
+    let Some(SessionEvent::PluginGaveUp { why, snapshot, .. }) = drive
         .events
         .iter()
         .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
@@ -998,6 +1001,11 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
         unreachable!()
     };
     assert!(why.last.contains("ports differ"), "{why}");
+    assert_eq!(
+        snapshot.as_deref(),
+        Some(kept.as_slice()),
+        "the user's last state goes out with the event"
+    );
     assert!(!s.graph_ref().contains(node));
     s.update();
     assert!(!s.graph_ref().is_edited());
@@ -1044,14 +1052,18 @@ fn recovered_state(drive: &Drive) -> Vec<tutti_session::StateRestore> {
 /// Mutations (each run, each failed): `withhold_snapshot` not clearing the
 /// snapshot (every attempt carries it: budget spent, `PluginGaveUp`, no
 /// recovery); the dead-on-arrival check removed from `install_reload` (the
-/// dead replacement is installed and reported `Restored`).
+/// dead replacement is installed and reported `Restored`); the withheld
+/// bytes not kept (`withheld_snapshot` is `None`); `land_snapshot` replacing
+/// them (the default-state snapshot overwrites them).
 #[test]
 fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     let once = once_file("recovery-withheld.once");
     let mut s = session_built(
         &[
+            PASSTHROUGH,
+            APPLY_GAIN,
             ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
-            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "3"),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "40"),
             ("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD", "1"),
         ],
         |b| {
@@ -1063,7 +1075,21 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         },
     );
     let (node, _) = wired_probe(&mut s);
+    let id = gain_param(&s, node);
+    // A state that is not the plugin's default.
+    s.plugin(node)
+        .unwrap()
+        .handle()
+        .params()
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(Instant::now() < deadline, "the probe never took the value");
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+    }
     snapshot_now(&mut s, node);
+    let users = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
     let mut drive = Drive::new();
     drive.until(&mut s, "recovered", |e| {
         matches!(e, SessionEvent::PluginRecovered { .. })
@@ -1084,6 +1110,21 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
     );
     assert!(s.plugin(node).unwrap().snapshot().is_none());
     assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    // The user's state is kept for the host, not thrown away...
+    assert_eq!(
+        s.plugin(node).unwrap().withheld_snapshot(),
+        Some(users.as_slice())
+    );
+    // ...and the snapshots taken since, of a plugin at its defaults, do not
+    // replace it.
+    snapshot_now(&mut s, node);
+    let fresh = s.plugin(node).unwrap().snapshot().expect("a new snapshot");
+    assert_ne!(fresh, users.as_slice(), "the plugin is at its defaults");
+    assert_eq!(
+        s.plugin(node).unwrap().withheld_snapshot(),
+        Some(users.as_slice()),
+        "a default-state snapshot replaced the withheld one"
+    );
 }
 
 /// **A plugin that dies soon after restoring a snapshot loses it for the next
@@ -1291,4 +1332,45 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         .export_blocking(request(ExportSource::Mix))
         .expect("the next export is not refused");
     assert!(next.finished().is_some(), "and renders to its end");
+}
+
+/// **A replacement that refused the snapshot is not blamed for its death.**
+/// Every server aborts on its third block and refuses any state. The first
+/// replacement is `Refused` (it never restored anything), and its death is
+/// not the snapshot's doing: the snapshot is offered again (`Refused`
+/// again), none is withheld.
+///
+/// Mutation (run, failed): `probation_until` also set on a refusal (the
+/// second replacement is `Withheld` and the snapshot is gone).
+#[test]
+fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "3"),
+            ("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD", "1"),
+        ],
+        |b| {
+            b.snapshot_interval(Duration::from_secs(1))
+                .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                    max_failures: 5,
+                    backoff: Duration::from_millis(1),
+                    ..Default::default()
+                }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    snapshot_now(&mut s, node);
+    let mut drive = Drive::new();
+    drive.until(&mut s, "two recoveries", |e| {
+        matches!(e, SessionEvent::PluginRecovered { attempts: 2, .. })
+    });
+    let states = recovered_state(&drive);
+    assert!(
+        states
+            .iter()
+            .all(|s| matches!(s, tutti_session::StateRestore::Refused { .. })),
+        "{states:?}"
+    );
+    assert!(s.plugin(node).unwrap().withheld_snapshot().is_none());
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
 }

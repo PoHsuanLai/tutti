@@ -108,6 +108,9 @@ pub struct PluginGaveUp {
     pub entity: Entity,
     /// Why.
     pub why: GiveUp,
+    /// The last state worth keeping (the snapshot a reload withheld, else the
+    /// last captured), to offer the user a manual reload.
+    pub snapshot: Option<Vec<u8>>,
 }
 
 /// Liveness and last-known-good state for one loaded plugin.
@@ -352,7 +355,11 @@ pub fn plugin_health_poll(
                     });
                 graph.set_changed();
             }
-            SessionEvent::PluginGaveUp { node, why } => {
+            SessionEvent::PluginGaveUp {
+                node,
+                why,
+                snapshot,
+            } => {
                 let Some(&entity) = by_node.get(&node) else {
                     continue;
                 };
@@ -360,7 +367,11 @@ pub fn plugin_health_poll(
                     .entity(entity)
                     .remove::<PluginEditorOpen>()
                     .remove::<AudioNode>()
-                    .trigger(move |entity: Entity| PluginGaveUp { entity, why });
+                    .trigger(move |entity: Entity| PluginGaveUp {
+                        entity,
+                        why,
+                        snapshot,
+                    });
                 graph.set_changed();
             }
             SessionEvent::PluginLatencyChanged { .. } => graph.set_changed(),

@@ -47,8 +47,11 @@ pub struct RecoveryPolicy {
     pub hang_window: Duration,
     /// How long without a newly abandoned block means blocks stopped coming
     /// (a stopped or restarted device), not that the plugin is slow to
-    /// abandon: the suspicion starts over. Longer than the bridge's longest
-    /// wait for one block.
+    /// abandon: the suspicion starts over. It must exceed the longest
+    /// interval between abandoned blocks, which is the block period (the
+    /// bridge abandons one per block). A block period above it (about 1 s,
+    /// 65536 frames at 48 kHz) goes undetected: every gap would read as a
+    /// stopped device.
     pub stall_gap: Duration,
     /// How long after a plugin restores a snapshot a death is taken to be
     /// the snapshot's doing: the next load goes without it

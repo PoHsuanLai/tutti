@@ -300,6 +300,10 @@ pub enum SessionEvent {
         node: AudioNode,
         /// Why.
         why: crate::GiveUp,
+        /// The last state worth keeping, for a host that offers the user a
+        /// manual reload: the snapshot a reload withheld, else the last one
+        /// captured.
+        snapshot: Option<Vec<u8>>,
     },
 }
 
@@ -400,10 +404,15 @@ impl std::fmt::Debug for SessionEvent {
                 .field("attempts", attempts)
                 .finish(),
             #[cfg(feature = "plugin")]
-            Self::PluginGaveUp { node, why } => f
+            Self::PluginGaveUp {
+                node,
+                why,
+                snapshot,
+            } => f
                 .debug_struct("PluginGaveUp")
                 .field("node", node)
                 .field("why", why)
+                .field("snapshot_bytes", &snapshot.as_ref().map(Vec::len))
                 .finish(),
         }
     }

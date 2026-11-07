@@ -336,6 +336,10 @@ pub struct HostedPlugin {
     snapshot: Option<Vec<u8>>,
     /// When the snapshot's capture was asked for.
     snapshot_from: Option<Instant>,
+    /// A snapshot left out of a reload ([`StateRestore::Withheld`]), kept for
+    /// the host ([`withheld_snapshot`](Self::withheld_snapshot)); later
+    /// snapshots go to `snapshot` and never replace it.
+    withheld: Option<Vec<u8>>,
     /// Until when a plugin that has just restored a state is suspected of
     /// dying of it.
     probation_until: Option<Instant>,
@@ -426,6 +430,7 @@ impl HostedPlugin {
             told: false,
             snapshot: None,
             snapshot_from: None,
+            withheld: None,
             probation_until: None,
             origin: None,
             recovery: None,
@@ -484,6 +489,7 @@ impl HostedPlugin {
         self.told = false;
         self.snapshot = None;
         self.snapshot_from = None;
+        self.withheld = None;
         self.probation_until = None;
         self.recovery = self.recovery.as_ref().map(|r| Recovery::new(r.policy()));
         self.reload = Reload::default();
@@ -494,7 +500,8 @@ impl HostedPlugin {
     /// Takes the snapshot for the cause of a failure: the next load goes
     /// without it, and it is not offered again.
     fn withhold_snapshot(&mut self, now: Instant) {
-        if self.snapshot.take().is_some() {
+        if let Some(bytes) = self.snapshot.take() {
+            self.withheld = Some(bytes);
             self.reload.withheld_age = Some(
                 self.snapshot_from
                     .map_or(Duration::ZERO, |t| now.saturating_duration_since(t)),
@@ -550,6 +557,15 @@ impl HostedPlugin {
     /// What the session believes about its liveness.
     pub fn liveness(&self) -> &PluginLiveness {
         &self.status
+    }
+
+    /// The snapshot a reload left out because the plugin died loading it, or
+    /// soon after ([`StateRestore::Withheld`]): the user's last state, which a
+    /// host may still offer to load by hand. Kept until the plugin is
+    /// withheld from again or replaced by the host; the snapshots taken since
+    /// (of a plugin at its defaults) do not replace it.
+    pub fn withheld_snapshot(&self) -> Option<&[u8]> {
+        self.withheld.as_deref()
     }
 
     /// The last state captured while it was healthy: what a replacement
@@ -1120,6 +1136,7 @@ impl Session {
         // resets (`HostedPlugin::replace`).
         let snapshot = hosted.snapshot.take();
         let snapshot_from = hosted.snapshot_from;
+        let withheld_bytes = hosted.withheld.take();
         let recovery = hosted.recovery.take();
         let latency_before = hosted.reload.latency_before;
         let withheld = hosted.reload.withheld_age;
@@ -1137,6 +1154,7 @@ impl Session {
                 // Between a re-prepare's two commits: try again next phase.
                 if let Some(hosted) = self.graph.plugins.get_mut(&node) {
                     hosted.snapshot = snapshot;
+                    hosted.withheld = withheld_bytes;
                     hosted.recovery = recovery;
                     #[cfg(feature = "modulation")]
                     {
@@ -1155,6 +1173,7 @@ impl Session {
                 tracing::error!("plugin {node:?}: the replacement was refused: {refused}");
                 if let Some(hosted) = self.graph.plugins.get_mut(&node) {
                     hosted.snapshot = snapshot;
+                    hosted.withheld = withheld_bytes;
                     hosted.recovery = recovery;
                     #[cfg(feature = "modulation")]
                     {
@@ -1172,6 +1191,7 @@ impl Session {
             return;
         };
         hosted.snapshot = snapshot;
+        hosted.withheld = withheld_bytes;
         hosted.snapshot_from = snapshot_from;
         hosted.recovery = recovery;
         if let Some(recovery) = hosted.recovery.as_mut() {
@@ -1187,6 +1207,13 @@ impl Session {
             // plugin reports. Writing them back would undo the restore and
             // bypass the lanes that own those parameters. The new plugin's
             // own read, after the restore, is the mirror.
+            //
+            // A modulation lane on a parameter needs no seeding here: the
+            // swap moved the node's generation, so the reconciler rebuilds
+            // the lane (a new node, its knob starting at this mirror's
+            // value) and the old lane, with whatever GUI value its knob
+            // held, goes with the old unit. The new lane's first value is
+            // the restored one.
             drop(old_mirror);
         }
         let restore = match (restore, withheld) {
@@ -1260,8 +1287,19 @@ impl Session {
 
     fn finish_gave_up(&mut self, gave_up: Vec<(AudioNode, GiveUp)>, out: &mut Vec<SessionEvent>) {
         for (node, why) in gave_up {
+            // The last state worth offering a user: what was withheld, else
+            // the last snapshot. The record goes with the node.
+            let snapshot = self
+                .graph
+                .plugins
+                .get(&node)
+                .and_then(|h| h.withheld.clone().or_else(|| h.snapshot.clone()));
             self.remove(node);
-            out.push(SessionEvent::PluginGaveUp { node, why });
+            out.push(SessionEvent::PluginGaveUp {
+                node,
+                why,
+                snapshot,
+            });
         }
     }
 
@@ -1495,10 +1533,7 @@ impl Session {
             self.remove(node);
             out.push(SessionEvent::PluginDied { node, cause });
         }
-        for (node, why) in gave_up {
-            self.remove(node);
-            out.push(SessionEvent::PluginGaveUp { node, why });
-        }
+        self.finish_gave_up(gave_up, out);
     }
 
     /// `Phase::RenderMode`: Offline while an export token lives, Realtime

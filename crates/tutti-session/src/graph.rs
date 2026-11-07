@@ -6,7 +6,7 @@
 //!
 //! | `Graph` | the editor |
 //! |---|---|
-//! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `AudioNode::fresh`, its controls handed back |
+//! | `insert` | `Editor::insert` of the node's own [`IntoNode`] at a [`NodeKey`] minted by `NodeKey::fresh`, its controls handed back |
 //! | `set_source`, `set_output_source`, `widen_outputs` | written into `editor.spec_mut()` |
 //! | `set_param` | the node's [`ParamSet`], when it has one |
 //! | `replace`, `crossfade` | `Editor::replace_or_swap` with a [`Fade`]: a plain swap when there is nothing to fade from |
@@ -39,7 +39,6 @@ use std::any::Any;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use tutti_core::AudioNode;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
@@ -71,13 +70,13 @@ const PLUGIN_KIND: &str = "tutti-session:plugin";
 /// Where one input port — a node's, or a global output channel — reads from.
 ///
 /// The graph's answer to "what feeds this port", naming the node by its
-/// [`AudioNode`]. Read back with [`Graph::source`] and
+/// [`NodeKey`]. Read back with [`Graph::source`] and
 /// [`Graph::output_source`]; written with [`Graph::set_source`] and
 /// [`Graph::set_output_source`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GraphSource {
     /// Output `port` of `node`.
-    Node(AudioNode, usize),
+    Node(NodeKey, usize),
     /// Global graph input `port` — a hardware or host input channel.
     Input(usize),
     /// Silence: what a port nothing has written holds.
@@ -87,17 +86,17 @@ pub enum GraphSource {
 
 impl GraphSource {
     /// Output `port` of `node`.
-    pub const fn node(node: AudioNode, port: usize) -> Self {
+    pub const fn node(node: NodeKey, port: usize) -> Self {
         Self::Node(node, port)
     }
 }
 
-/// One event output: `node`'s event output `port`. From an [`AudioNode`]
+/// One event output: `node`'s event output `port`. From an [`NodeKey`]
 /// alone, its output 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventSource {
     /// The node.
-    pub node: AudioNode,
+    pub node: NodeKey,
     /// Its event output.
     pub port: u16,
 }
@@ -105,18 +104,18 @@ pub struct EventSource {
 impl EventSource {
     /// Names `node`'s event output `port`.
     #[must_use]
-    pub const fn new(node: AudioNode, port: u16) -> Self {
+    pub const fn new(node: NodeKey, port: u16) -> Self {
         Self { node, port }
     }
 
     /// A total order for a set of sources: by node, then port.
     fn key(&self) -> (u64, u16) {
-        (self.node.key().0, self.port)
+        (self.node.0, self.port)
     }
 }
 
-impl From<AudioNode> for EventSource {
-    fn from(node: AudioNode) -> Self {
+impl From<NodeKey> for EventSource {
+    fn from(node: NodeKey) -> Self {
         Self::new(node, 0)
     }
 }
@@ -189,7 +188,7 @@ pub enum CrossfadeRefused {
     Poisoned(String),
     /// The node is not in the graph.
     #[error("{0:?} is not in the graph")]
-    NoSuchNode(AudioNode),
+    NoSuchNode(NodeKey),
     /// The editor refused the swap.
     #[error("the graph refused the swap: {0}")]
     Editor(tutti_graph::CommitError),
@@ -197,7 +196,7 @@ pub enum CrossfadeRefused {
 
 /// One node's handle, and its params by address when it has any.
 struct Entry {
-    node: AudioNode,
+    node: NodeKey,
     /// What [`set_param`](Graph::set_param) writes through, and what a fork
     /// of the node starts from.
     params: Option<ParamSet>,
@@ -220,7 +219,7 @@ trait ErasedSwap: Send {
     fn swap(
         self: Box<Self>,
         graph: &mut Graph,
-        node: AudioNode,
+        node: NodeKey,
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<Box<dyn Any + Send>, ReplaceRefused<Box<dyn ErasedSwap>>>;
@@ -236,7 +235,7 @@ where
     fn swap(
         self: Box<Self>,
         graph: &mut Graph,
-        node: AudioNode,
+        node: NodeKey,
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<Box<dyn Any + Send>, ReplaceRefused<Box<dyn ErasedSwap>>> {
@@ -259,7 +258,7 @@ impl ErasedSwap for PluginSwap {
     fn swap(
         self: Box<Self>,
         graph: &mut Graph,
-        node: AudioNode,
+        node: NodeKey,
         fade: Seconds,
         curve: CrossfadeCurve,
     ) -> Result<Box<dyn Any + Send>, ReplaceRefused<Box<dyn ErasedSwap>>> {
@@ -274,7 +273,7 @@ impl ErasedSwap for PluginSwap {
 /// A crossfade parked while the graph re-prepares.
 struct Parked {
     id: CrossfadeId,
-    node: AudioNode,
+    node: NodeKey,
     swap: Box<dyn ErasedSwap>,
     fade: Seconds,
     curve: CrossfadeCurve,
@@ -294,12 +293,12 @@ impl std::fmt::Debug for Parked {
 /// What a parked crossfade came to on a retry.
 pub(crate) enum Retried {
     Landed {
-        node: AudioNode,
+        node: NodeKey,
         id: CrossfadeId,
         controls: Box<dyn Any + Send>,
     },
     Failed {
-        node: AudioNode,
+        node: NodeKey,
         id: CrossfadeId,
         refused: CrossfadeRefused,
     },
@@ -314,7 +313,7 @@ pub(crate) enum Retried {
 /// # Why opaque
 ///
 /// Every method is named in graph terms (insert a node, set a port's source,
-/// replace a node under a fade) and takes an [`AudioNode`] and a
+/// replace a node under a fade) and takes an [`NodeKey`] and a
 /// [`GraphSource`], never a runtime type. There is no access to the
 /// `Editor`: the edit/commit boundary stays visible.
 pub struct Graph {
@@ -342,7 +341,7 @@ pub struct Graph {
     /// crossfade to another plugin and a removal update them where they
     /// happen.
     #[cfg(feature = "plugin")]
-    pub(crate) plugins: BTreeMap<AudioNode, crate::HostedPlugin>,
+    pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
 }
 
 impl std::fmt::Debug for Graph {
@@ -378,12 +377,6 @@ pub enum Committed {
 
 fn compensation_of(plan: &tutti_graph::Plan) -> Compensation {
     Compensation::new(plan.compensation().to_vec(), plan.total_latency().samples())
-}
-
-/// `node`'s key. [`AudioNode::fresh`] draws it from [`NodeKey::fresh`]'s
-/// process-wide counter, so a key minted this way is unique without a map.
-pub(crate) fn key(node: AudioNode) -> NodeKey {
-    node.0
 }
 
 /// The graph's `Prepare`: `rate`, `max_block`, and the device's callback
@@ -465,7 +458,7 @@ impl Graph {
             n => n,
         };
         (n > 1).then(|| {
-            Arc::new(tutti_core::WorkerPool::builder(n).name(name).build())
+            Arc::new(tutti_graph::WorkerPool::builder(n).name(name).build())
                 as Arc<dyn tutti_graph::Pool>
         })
     }
@@ -602,11 +595,11 @@ impl Graph {
     /// [`add`](Self::add), which does, and keeps its reclaimer
     /// ([`SessionNode::reclaimer`]): a node inserted here is not swept by
     /// the reclaim phase.
-    pub fn insert<N: IntoNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
-        let id = AudioNode::fresh();
-        let controls = self.editor.insert(key(id), N::kind(), node);
+    pub fn insert<N: IntoNode>(&mut self, node: N) -> (NodeKey, N::Controls) {
+        let id = NodeKey::fresh();
+        let controls = self.editor.insert(id, N::kind(), node);
         self.nodes.insert(
-            key(id),
+            id,
             Entry {
                 node: id,
                 params: None,
@@ -620,7 +613,7 @@ impl Graph {
     /// [`insert`](Self::insert) a [`SessionNode`], its params addressed by
     /// [`SessionNode::params`] and its reclaimer kept
     /// ([`SessionNode::reclaimer`]).
-    pub fn add<N: SessionNode>(&mut self, node: N) -> (AudioNode, N::Controls) {
+    pub fn add<N: SessionNode>(&mut self, node: N) -> (NodeKey, N::Controls) {
         let (id, controls) = self.insert(node);
         self.address::<N>(id, &controls);
         (id, controls)
@@ -628,8 +621,8 @@ impl Graph {
 
     /// Keeps what a [`SessionNode`] says of its controls under `node`: its
     /// params and its reclaimer.
-    fn address<N: SessionNode>(&mut self, node: AudioNode, controls: &N::Controls) {
-        if let Some(entry) = self.nodes.get_mut(&key(node)) {
+    fn address<N: SessionNode>(&mut self, node: NodeKey, controls: &N::Controls) {
+        if let Some(entry) = self.nodes.get_mut(&node) {
             entry.params = N::params(controls);
             entry.reclaimer = N::reclaimer(controls);
         }
@@ -641,14 +634,14 @@ impl Graph {
     /// and declares its latency in its `Shape`. Capture its controls first:
     /// the plugin is out of reach once inserted.
     #[cfg(feature = "plugin")]
-    pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> AudioNode {
-        let node = AudioNode::fresh();
+    pub fn insert_plugin(&mut self, client: Box<tutti_plugin::handles::PluginClient>) -> NodeKey {
+        let node = NodeKey::fresh();
         let hosted =
             crate::HostedPlugin::new(tutti_plugin::handles::PluginHandle::from_client(&client))
                 .with_controls(client.controls());
-        let _controls = self.editor.insert(key(node), PLUGIN_KIND, client.bind());
+        let _controls = self.editor.insert(node, PLUGIN_KIND, client.bind());
         self.nodes.insert(
-            key(node),
+            node,
             Entry {
                 node,
                 params: None,
@@ -669,10 +662,10 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn host_plugin(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         handle: tutti_plugin::handles::PluginHandle,
     ) -> bool {
-        if !self.nodes.contains_key(&key(node)) {
+        if !self.nodes.contains_key(&node) {
             return false;
         }
         self.plugins.insert(node, crate::HostedPlugin::new(handle));
@@ -692,7 +685,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn replace_plugin(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         client: Box<tutti_plugin::handles::PluginClient>,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -750,7 +743,7 @@ impl Graph {
     ) -> tutti_export::Result<PendingExport> {
         let target = match target {
             AudioNodeTarget::Master => tutti_graph::ForkTarget::Master,
-            AudioNodeTarget::Node(node) => tutti_graph::ForkTarget::Node(key(node)),
+            AudioNodeTarget::Node(node) => tutti_graph::ForkTarget::Node(node),
         };
         let fork = tutti_export::RenderGraph::gather(
             &self.editor,
@@ -794,17 +787,17 @@ impl Graph {
     /// ([`SessionNode::reclaimer`]): for a test that a path inserts a node
     /// through [`add`](Self::add). Not API.
     #[doc(hidden)]
-    pub fn keeps_reclaimer(&self, node: AudioNode) -> bool {
+    pub fn keeps_reclaimer(&self, node: NodeKey) -> bool {
         self.nodes
-            .get(&key(node))
+            .get(&node)
             .is_some_and(|entry| entry.reclaimer.is_some())
     }
 
     /// Addresses `node`'s params by `params` (a `ParamNode`'s controls): what
     /// [`set_param`](Self::set_param) writes through for it, and what a fork
     /// of it starts from. `None` takes the address away.
-    pub fn set_node_params(&mut self, node: AudioNode, params: Option<ParamSet>) {
-        if let Some(entry) = self.nodes.get_mut(&key(node)) {
+    pub fn set_node_params(&mut self, node: NodeKey, params: Option<ParamSet>) {
+        if let Some(entry) = self.nodes.get_mut(&node) {
             entry.params = params;
         }
     }
@@ -832,7 +825,7 @@ impl Graph {
     /// it, dropping `incoming`.
     pub fn replace<N: IntoNode>(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         incoming: N,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -846,7 +839,7 @@ impl Graph {
     /// [`replace`](Self::replace)'s swap, leaving the plugin record alone.
     fn swap_unit<N: IntoNode>(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         incoming: N,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -859,16 +852,15 @@ impl Graph {
         if self.editor.is_repreparing() {
             return Err(ReplaceRefused::Busy(incoming));
         }
-        let k = key(node);
-        if !self.nodes.contains_key(&k) {
+        if !self.nodes.contains_key(&node) {
             return Err(ReplaceRefused::Failed(CrossfadeRefused::NoSuchNode(node)));
         }
         let rate = self.editor.prepare().sample_rate();
         let controls = self
             .editor
-            .replace_or_swap(k, incoming, Fade::seconds(fade, rate, curve))
+            .replace_or_swap(node, incoming, Fade::seconds(fade, rate, curve))
             .map_err(|e| ReplaceRefused::Failed(CrossfadeRefused::Editor(e)))?;
-        if let Some(entry) = self.nodes.get_mut(&k) {
+        if let Some(entry) = self.nodes.get_mut(&node) {
             entry.params = None;
             entry.reclaimer = None;
         }
@@ -889,7 +881,7 @@ impl Graph {
     /// On a poisoned graph, or a node not in it: the incoming node is dropped.
     pub fn crossfade<N>(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         incoming: N,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -931,7 +923,7 @@ impl Graph {
     #[cfg(feature = "plugin")]
     pub fn crossfade_plugin(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         client: Box<tutti_plugin::handles::PluginClient>,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -958,7 +950,7 @@ impl Graph {
 
     fn park(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         swap: Box<dyn ErasedSwap>,
         fade: Seconds,
         curve: CrossfadeCurve,
@@ -1022,7 +1014,7 @@ impl Graph {
     }
 
     /// How many event inputs `node` declares.
-    pub fn node_event_inputs(&self, node: AudioNode) -> usize {
+    pub fn node_event_inputs(&self, node: NodeKey) -> usize {
         self.shape(node).map_or(0, |s| usize::from(s.event_in))
     }
 
@@ -1034,7 +1026,7 @@ impl Graph {
     /// Event edges from a node the graph did not insert through
     /// [`insert`](Self::insert) (a modulation lane on a plugin's event
     /// input) are not the caller's, and stay.
-    pub fn set_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
+    pub fn set_event_sources(&mut self, sink: NodeKey, port: u16, sources: &[EventSource]) {
         if port != 0 {
             self.write_event_sources(sink, port, sources);
             return;
@@ -1049,15 +1041,12 @@ impl Graph {
 
     /// Feeds `sink`'s event input `port` from exactly `sources`, but for
     /// edges from nodes the graph did not insert.
-    fn write_event_sources(&mut self, sink: AudioNode, port: u16, sources: &[EventSource]) {
-        let at = EventIn {
-            node: key(sink),
-            port,
-        };
+    fn write_event_sources(&mut self, sink: NodeKey, port: u16, sources: &[EventSource]) {
+        let at = EventIn { node: sink, port };
         let mut want: Vec<EventOut> = sources
             .iter()
             .map(|s| EventOut {
-                node: key(s.node),
+                node: s.node,
                 port: s.port,
             })
             .collect();
@@ -1088,11 +1077,8 @@ impl Graph {
 
     /// The event outputs feeding `sink`'s event input `port`, in the graph's
     /// order: every edge the spec holds, a modulation lane's included.
-    pub fn event_sources(&self, sink: AudioNode, port: u16) -> Vec<EventSource> {
-        let at = EventIn {
-            node: key(sink),
-            port,
-        };
+    pub fn event_sources(&self, sink: NodeKey, port: u16) -> Vec<EventSource> {
+        let at = EventIn { node: sink, port };
         self.editor
             .spec()
             .events
@@ -1101,7 +1087,7 @@ impl Graph {
             .flatten()
             .map(|e| {
                 let from = e.from();
-                EventSource::new(AudioNode(from.node), from.port)
+                EventSource::new(from.node, from.port)
             })
             .collect()
     }
@@ -1115,20 +1101,20 @@ impl Graph {
     ///
     /// Each [`Feeder`] owns only its own entry, so feeders never overwrite
     /// each other.
-    pub fn set_feed(&mut self, sink: AudioNode, feeder: Feeder, sources: Vec<EventSource>) {
+    pub fn set_feed(&mut self, sink: NodeKey, feeder: Feeder, sources: Vec<EventSource>) {
         if sources.is_empty() {
             // No entry is made for a feeder that feeds nothing.
-            let Some(feeds) = self.feeds.get_mut(&key(sink)) else {
+            let Some(feeds) = self.feeds.get_mut(&sink) else {
                 return;
             };
             if feeds.remove(&feeder).is_none() {
                 return;
             }
             if feeds.is_empty() {
-                self.feeds.remove(&key(sink));
+                self.feeds.remove(&sink);
             }
         } else {
-            let feeds = self.feeds.entry(key(sink)).or_default();
+            let feeds = self.feeds.entry(sink).or_default();
             if feeds.get(&feeder) == Some(&sources) {
                 return;
             }
@@ -1138,18 +1124,18 @@ impl Graph {
     }
 
     /// What `feeder` feeds `sink`: empty when nothing.
-    pub fn feed(&self, sink: AudioNode, feeder: Feeder) -> &[EventSource] {
+    pub fn feed(&self, sink: NodeKey, feeder: Feeder) -> &[EventSource] {
         self.feeds
-            .get(&key(sink))
+            .get(&sink)
             .and_then(|f| f.get(&feeder))
             .map_or(&[], Vec::as_slice)
     }
 
     /// Every source any feeder feeds `sink`, sorted and without repeats.
-    pub fn fed(&self, sink: AudioNode) -> Vec<EventSource> {
+    pub fn fed(&self, sink: NodeKey) -> Vec<EventSource> {
         let mut all: Vec<EventSource> = self
             .feeds
-            .get(&key(sink))
+            .get(&sink)
             .into_iter()
             .flat_map(|f| f.values().flatten().copied())
             .collect();
@@ -1161,14 +1147,14 @@ impl Graph {
     /// Moves every feeder's sources from sink `from` to sink `to`, replacing
     /// what each fed `to`: a host whose sink was re-bound to a new node keeps
     /// its feeds. `from` is left fed by nothing.
-    pub fn move_feeds(&mut self, from: AudioNode, to: AudioNode) {
+    pub fn move_feeds(&mut self, from: NodeKey, to: NodeKey) {
         if from == to {
             return;
         }
-        let Some(moved) = self.feeds.remove(&key(from)) else {
+        let Some(moved) = self.feeds.remove(&from) else {
             return;
         };
-        let into = self.feeds.entry(key(to)).or_default();
+        let into = self.feeds.entry(to).or_default();
         for (feeder, sources) in moved {
             into.insert(feeder, sources);
         }
@@ -1179,16 +1165,16 @@ impl Graph {
     /// Write `sink`'s feeds into its event input 0: the union of every
     /// feeder's sources still in the graph, beside the edges the host wired
     /// there itself (every edge the feeds did not put there), which stay.
-    fn write_feeds(&mut self, sink: AudioNode) {
-        if !self.nodes.contains_key(&key(sink)) || self.node_event_inputs(sink) == 0 {
+    fn write_feeds(&mut self, sink: NodeKey) {
+        if !self.nodes.contains_key(&sink) || self.node_event_inputs(sink) == 0 {
             return;
         }
         let union = self.fed_in_graph(sink);
-        let ours = self.fed_edges.get(&key(sink)).cloned().unwrap_or_default();
+        let ours = self.fed_edges.get(&sink).cloned().unwrap_or_default();
         let mut all: Vec<EventSource> = self
             .event_sources(sink, 0)
             .into_iter()
-            .filter(|s| self.nodes.contains_key(&key(s.node)) && !ours.contains(s))
+            .filter(|s| self.nodes.contains_key(&s.node) && !ours.contains(s))
             .collect();
         let hand = all.len();
         let theirs: Vec<EventSource> = union
@@ -1201,7 +1187,7 @@ impl Graph {
     }
 
     /// Every source any feeder feeds `sink` that is in the graph.
-    fn fed_in_graph(&self, sink: AudioNode) -> Vec<EventSource> {
+    fn fed_in_graph(&self, sink: NodeKey) -> Vec<EventSource> {
         self.fed(sink)
             .into_iter()
             .filter(|s| self.contains(s.node))
@@ -1209,11 +1195,11 @@ impl Graph {
     }
 
     /// Records `sources` as the edges the feeds own on `sink`'s input 0.
-    fn set_fed_edges(&mut self, sink: AudioNode, sources: Vec<EventSource>) {
+    fn set_fed_edges(&mut self, sink: NodeKey, sources: Vec<EventSource>) {
         if sources.is_empty() {
-            self.fed_edges.remove(&key(sink));
+            self.fed_edges.remove(&sink);
         } else {
-            self.fed_edges.insert(key(sink), sources);
+            self.fed_edges.insert(sink, sources);
         }
     }
 
@@ -1222,14 +1208,14 @@ impl Graph {
     /// dangling, and the feeds into and from it go.
     ///
     /// Returns whether it was there; removing a node twice is a no-op.
-    pub fn remove(&mut self, node: AudioNode) -> bool {
-        if self.nodes.remove(&key(node)).is_none() {
+    pub fn remove(&mut self, node: NodeKey) -> bool {
+        if self.nodes.remove(&node).is_none() {
             return false;
         }
         #[cfg(feature = "plugin")]
         self.plugins.remove(&node);
-        self.editor.remove(key(node));
-        self.feeds.remove(&key(node));
+        self.editor.remove(node);
+        self.feeds.remove(&node);
         for feeds in self.feeds.values_mut() {
             for sources in feeds.values_mut() {
                 sources.retain(|s| s.node != node);
@@ -1237,7 +1223,7 @@ impl Graph {
             feeds.retain(|_, s| !s.is_empty());
         }
         self.feeds.retain(|_, f| !f.is_empty());
-        self.fed_edges.remove(&key(node));
+        self.fed_edges.remove(&node);
         for sources in self.fed_edges.values_mut() {
             sources.retain(|s| s.node != node);
         }
@@ -1248,8 +1234,8 @@ impl Graph {
 
     /// Whether `node` is in the graph, a modulation lane or signal node
     /// included (staged, committed or not).
-    pub fn contains(&self, node: AudioNode) -> bool {
-        self.editor.spec().topology.nodes.contains_key(&key(node))
+    pub fn contains(&self, node: NodeKey) -> bool {
+        self.editor.spec().topology.nodes.contains_key(&node)
     }
 
     /// Applies `decl` to the editor through `m` (doc 014 §8.2), resolving the
@@ -1300,8 +1286,8 @@ impl Graph {
     /// without the param takes nothing. `param` is a [`UnitAddr`] (a kind and
     /// an index among the node's params of that kind); a bare `UnitParam` is
     /// index 0.
-    pub fn set_param(&mut self, node: AudioNode, param: impl Into<UnitAddr>, value: f32) {
-        if let Some(params) = self.nodes.get(&key(node)).and_then(|e| e.params.as_ref()) {
+    pub fn set_param(&mut self, node: NodeKey, param: impl Into<UnitAddr>, value: f32) {
+        if let Some(params) = self.nodes.get(&node).and_then(|e| e.params.as_ref()) {
             params.set(param, value);
         }
     }
@@ -1329,7 +1315,7 @@ impl Graph {
     fn lower(source: GraphSource) -> Source {
         match source {
             GraphSource::Node(node, port) => Source::Node(OutPort {
-                node: key(node),
+                node,
                 port: port as u16,
             }),
             GraphSource::Input(port) => Source::Global(port as u16),
@@ -1348,9 +1334,9 @@ impl Graph {
     }
 
     /// What feeds `node`'s input `port`.
-    pub fn source(&self, node: AudioNode, port: usize) -> GraphSource {
+    pub fn source(&self, node: NodeKey, port: usize) -> GraphSource {
         let at = InPort {
-            node: key(node),
+            node,
             port: port as u16,
         };
         match self.editor.spec().topology.edges.get(&at) {
@@ -1366,13 +1352,13 @@ impl Graph {
     /// # Panics
     ///
     /// If `source` is `node` itself: a node cannot feed its own input.
-    pub fn set_source(&mut self, node: AudioNode, port: usize, source: GraphSource) {
+    pub fn set_source(&mut self, node: NodeKey, port: usize, source: GraphSource) {
         assert!(
             !matches!(source, GraphSource::Node(from, _) if from == node),
             "a node cannot feed its own input"
         );
         let at = InPort {
-            node: key(node),
+            node,
             port: port as u16,
         };
         let edges = &mut self.editor.spec_mut().topology.edges;
@@ -1393,7 +1379,7 @@ impl Graph {
     // --- Param modulation ---
 
     /// Whether `node` declares `param` modulatable (its shape's params).
-    pub fn declares_param(&self, node: AudioNode, param: impl Into<UnitAddr>) -> bool {
+    pub fn declares_param(&self, node: NodeKey, param: impl Into<UnitAddr>) -> bool {
         self.shape(node)
             .is_some_and(|s| s.params.index_of(param).is_some())
     }
@@ -1411,20 +1397,20 @@ impl Graph {
     /// would otherwise fail on (`GraphInvalid::BadParamRange`).
     pub fn set_param_mod(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         param: impl Into<UnitAddr>,
-        source: Option<AudioNode>,
+        source: Option<NodeKey>,
         range: ParamRange,
     ) -> Result<(), GraphInvalid> {
         let at = ParamIn {
-            node: key(node),
+            node,
             param: param.into(),
         };
         if range.min.is_nan() || range.max.is_nan() {
             return Err(GraphInvalid::BadParamRange { at, range });
         }
         let want = source.map(|from| EventOut {
-            node: key(from),
+            node: from,
             port: 0,
         });
         let held = self.editor.spec().params.get(&at).map(|m| m.source);
@@ -1446,9 +1432,9 @@ impl Graph {
     }
 
     /// Stops modulating `node`'s `param`: it reads its own control again.
-    pub fn clear_param_mod(&mut self, node: AudioNode, param: impl Into<UnitAddr>) {
+    pub fn clear_param_mod(&mut self, node: NodeKey, param: impl Into<UnitAddr>) {
         let at = ParamIn {
-            node: key(node),
+            node,
             param: param.into(),
         };
         if self.editor.spec_mut().params.remove(&at).is_some() {
@@ -1457,12 +1443,12 @@ impl Graph {
     }
 
     /// How `node`'s `param` is modulated, as the graph value holds it.
-    pub fn param_mod(&self, node: AudioNode, param: impl Into<UnitAddr>) -> Option<ParamMod> {
+    pub fn param_mod(&self, node: NodeKey, param: impl Into<UnitAddr>) -> Option<ParamMod> {
         self.editor
             .spec()
             .params
             .get(&ParamIn {
-                node: key(node),
+                node,
                 param: param.into(),
             })
             .cloned()
@@ -1490,9 +1476,8 @@ impl Graph {
 
     /// Feeds **every** global output from `node`: channel `c` from its port
     /// `c % node_outputs(node)`, or silence if it has no outputs.
-    pub fn set_outputs_from(&mut self, node: AudioNode) {
+    pub fn set_outputs_from(&mut self, node: NodeKey) {
         let outs = self.node_outputs(node);
-        let k = key(node);
         for (c, source) in self
             .editor
             .spec_mut()
@@ -1505,7 +1490,7 @@ impl Graph {
                 Source::Zero
             } else {
                 Source::Node(OutPort {
-                    node: k,
+                    node,
                     port: (c % outs) as u16,
                 })
             };
@@ -1525,29 +1510,29 @@ impl Graph {
         self.editor.spec().topology.outputs.len()
     }
 
-    pub(crate) fn shape(&self, node: AudioNode) -> Option<tutti_graph::Shape> {
-        self.editor.shapes().get(&key(node)).copied()
+    pub(crate) fn shape(&self, node: NodeKey) -> Option<tutti_graph::Shape> {
+        self.editor.shapes().get(&node).copied()
     }
 
     /// `node`'s input port count.
-    pub fn node_inputs(&self, node: AudioNode) -> usize {
+    pub fn node_inputs(&self, node: NodeKey) -> usize {
         self.shape(node).map_or(0, |s| s.audio_in.count() as usize)
     }
 
     /// `node`'s output port count.
-    pub fn node_outputs(&self, node: AudioNode) -> usize {
+    pub fn node_outputs(&self, node: NodeKey) -> usize {
         self.shape(node).map_or(0, |s| s.audio_out.count() as usize)
     }
 
     /// The latency `node` reports: the shape the editor holds, read when the
     /// node was inserted (prepared at the graph's rate) and moved since only
     /// by a re-prepare or a hosted plugin's latency change.
-    pub fn node_latency(&self, node: AudioNode) -> Samples {
+    pub fn node_latency(&self, node: NodeKey) -> Samples {
         self.shape(node).map_or(Samples(0), |s| s.latency.samples())
     }
 
     /// The tail `node` reports.
-    pub fn node_tail(&self, node: AudioNode) -> Tail {
+    pub fn node_tail(&self, node: NodeKey) -> Tail {
         self.shape(node).map_or(Tail::None, |s| s.tail)
     }
 
@@ -1616,8 +1601,8 @@ impl Graph {
     ///
     /// Returns whether the editor's figure moved.
     #[cfg(feature = "plugin")]
-    pub fn refresh_node_latency(&mut self, node: AudioNode, latency: Latency) -> bool {
-        if !self.nodes.contains_key(&key(node)) {
+    pub fn refresh_node_latency(&mut self, node: NodeKey, latency: Latency) -> bool {
+        if !self.nodes.contains_key(&node) {
             return false;
         }
         // Clamped to what PDC compensates, as the editor clamps a latency it
@@ -1628,7 +1613,7 @@ impl Graph {
         if self.node_latency(node) == latency.samples() {
             return false;
         }
-        match self.editor.set_latency(key(node), latency) {
+        match self.editor.set_latency(node, latency) {
             Ok(()) => {
                 self.edited = true;
                 true
@@ -1727,7 +1712,7 @@ pub(crate) enum AudioNodeTarget {
     /// The master: every global output.
     Master,
     /// `node`'s outputs.
-    Node(AudioNode),
+    Node(NodeKey),
 }
 
 /// Resolves a host's modulation keys to graph nodes.
@@ -1739,7 +1724,7 @@ pub(crate) enum AudioNodeTarget {
 #[cfg(feature = "modulation")]
 pub trait ModKeys {
     /// The node a target's key names.
-    fn node(&self, target: u64) -> Option<AudioNode>;
+    fn node(&self, target: u64) -> Option<NodeKey>;
     /// What feeds source `source`'s node.
     fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed>;
 }
@@ -1753,7 +1738,7 @@ pub trait ModKeys {
 struct ModHostOver<'a> {
     nodes: &'a BTreeMap<NodeKey, Entry>,
     #[cfg(feature = "plugin")]
-    plugins: &'a BTreeMap<AudioNode, crate::HostedPlugin>,
+    plugins: &'a BTreeMap<NodeKey, crate::HostedPlugin>,
     keys: &'a dyn ModKeys,
     /// Each plugin target the apply resolved, by node and parameter: where
     /// `Phase::Plugins` writes a GUI edit (`ModState::plugin_target`).
@@ -1762,13 +1747,12 @@ struct ModHostOver<'a> {
 
 /// A plugin parameter's modulation target, by its node and parameter id.
 #[cfg(feature = "modulation")]
-pub(crate) type PluginTargets = BTreeMap<(AudioNode, u32), tutti_mod::TargetKey>;
+pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_mod::TargetKey>;
 
 #[cfg(feature = "modulation")]
 impl tutti_nodes::ModHost for ModHostOver<'_> {
     fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
-        let audio_node = self.keys.node(target.node)?;
-        let node = key(audio_node);
+        let node = self.keys.node(target.node)?;
         Some(match target.param.as_unit() {
             // A native param, at any index: the node's own cell for that
             // address is the lane's knob.
@@ -1791,13 +1775,11 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
                 #[cfg(feature = "plugin")]
                 let knob = self
                     .plugins
-                    .get(&audio_node)
+                    .get(&node)
                     .map_or(Some(None), |p| p.param_value(id))?;
                 #[cfg(not(feature = "plugin"))]
                 let knob = None;
-                self.plugin_targets
-                    .borrow_mut()
-                    .insert((audio_node, id), target);
+                self.plugin_targets.borrow_mut().insert((node, id), target);
                 tutti_nodes::Target::Foreign {
                     node,
                     port: 0,

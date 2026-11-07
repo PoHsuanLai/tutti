@@ -25,8 +25,8 @@
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!
-//! The node handle itself, [`AudioNode`](tutti_core::AudioNode), lives in
-//! tutti-core: an entity carrying one *is* a node in the graph.
+//! The node handle itself is [`AudioNode`]: an entity carrying one *is* a node
+//! in the graph.
 
 pub mod capture;
 pub mod commit;
@@ -34,6 +34,7 @@ pub mod despawn;
 pub mod events;
 pub mod latency;
 pub mod metering;
+mod node;
 pub mod param;
 pub mod plugin;
 pub mod pump;
@@ -50,6 +51,7 @@ pub use commit::{collect_graph, commit_graph, reclaim_graph};
 pub use despawn::reconcile_node_despawn;
 pub use events::{EventSource, EventSources, EventWiring, GraphEventsPlugin, NodeControls};
 pub use metering::MeteringRes;
+pub use node::AudioNode;
 pub use param::{AudioParam, AudioParamAppExt, reconcile_audio_param, write_param};
 pub use plugin::GraphReconcilePlugin;
 pub use pump::{

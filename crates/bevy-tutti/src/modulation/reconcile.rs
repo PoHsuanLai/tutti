@@ -16,7 +16,7 @@ use bevy_ecs::message::{Message, MessageWriter};
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_graph::EventOut;
 use tutti_mod::{
     Declarations, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey,
@@ -349,8 +349,9 @@ impl Declared<'_, '_> {
 /// §4.6): every key this adapter mints is an entity's bits
 /// (`Entity::to_bits`), decoded here and nowhere else.
 impl tutti_session::ModKeys for Declared<'_, '_> {
-    fn node(&self, target: u64) -> Option<AudioNode> {
+    fn node(&self, target: u64) -> Option<NodeKey> {
         self.node_of(Entity::try_from_bits(target)?)
+            .map(AudioNode::key)
     }
 
     fn feed(&self, source: SourceKey) -> Option<Feed> {

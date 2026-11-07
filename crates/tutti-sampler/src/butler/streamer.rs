@@ -4,7 +4,7 @@ use super::{BufferConfig, ButlerSender, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use std::sync::Arc;
-use tutti_core::PrerollTable;
+use tutti_graph::PrerollTable;
 use tutti_types::SampleRate;
 
 /// The disk-streaming engine: owns the butler thread that reads files into

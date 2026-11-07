@@ -156,10 +156,11 @@ pub use tutti_plugin as plugin;
 pub mod prelude {
     pub use tutti_core::prelude::*;
     pub use tutti_core::transport::{
-        ClickState, FadeOut, LoopEdit, LoopRegion, MetronomeMode, MotionEvent, MotionState,
-        OfflineTimeline, OfflineTimelineConfig, Then,
+        FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
+        OfflineTimelineConfig, Then,
     };
     pub use tutti_graph::CrossfadeCurve;
+    pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_types::LoopRange;
     pub use tutti_types::prelude::*;

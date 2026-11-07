@@ -220,7 +220,7 @@ pub mod __private {
 // compensates and publishes without it. See the `graph::latency` module docs.
 pub use graph::latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
 /// The table [`ChannelCompensation`] shares.
-pub use tutti_core::PrerollTable;
+pub use tutti_graph::PrerollTable;
 
 #[cfg(feature = "plugin")]
 pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
@@ -288,8 +288,8 @@ pub mod prelude {
     #[cfg(feature = "sampler")]
     pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
+    pub use crate::graph::AudioNode;
     pub use tutti_core::prelude::*;
-    pub use tutti_core::transport::ClickState;
     pub use tutti_graph::CrossfadeCurve;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
@@ -299,8 +299,9 @@ pub mod prelude {
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     pub use tutti_core::transport::{
-        FadeOut, LoopEdit, LoopRegion, MetronomeMode, MotionEvent, MotionState, Then,
+        FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, Then,
     };
+    pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_types::LoopRange;
 }
 

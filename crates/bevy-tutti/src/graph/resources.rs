@@ -7,7 +7,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_session::{Graph, Phase, PhaseCx, Session, SessionEvent};
 use tutti_types::Samples;
 use tutti_types::{ChannelLayout, SampleRate};
@@ -231,7 +231,7 @@ impl AudioGraphRes {
         node: AudioNode,
         f: impl FnOnce(&tutti_session::HostedPlugin) -> R,
     ) -> Option<R> {
-        self.read().plugin(node).map(f)
+        self.read().plugin(node.0).map(f)
     }
 
     /// The render mode last announced to the hosted plugins: `Offline`
@@ -248,14 +248,14 @@ impl AudioGraphRes {
     ///
     /// Returns whether it was there; removing a node twice is a no-op.
     pub fn remove(&mut self, node: AudioNode) -> bool {
-        self.write().remove(node)
+        self.write().remove(node.0)
     }
 
     // --- Latency ---
 
     /// The session's published per-channel pre-roll, republished with every
     /// plan: what [`ChannelCompensation`](crate::ChannelCompensation) holds.
-    pub(crate) fn compensation(&self) -> std::sync::Arc<tutti_core::PrerollTable> {
+    pub(crate) fn compensation(&self) -> std::sync::Arc<tutti_graph::PrerollTable> {
         std::sync::Arc::clone(self.read().compensation())
     }
 

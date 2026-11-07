@@ -16,12 +16,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use tutti_core::AudioNode;
 use tutti_midi_runtime::{
     MidiClipControls, MidiClipNode, MidiQueueNode, MidiReceiver, MidiSender, RouteRule,
     TimedMidiEvent, compile_routes,
 };
 use tutti_midi_types::ump::MidiEvent;
+use tutti_types::NodeKey;
 use tutti_ump::MidiChannel;
 
 use crate::graph::{Feeder, Graph};
@@ -252,7 +252,7 @@ pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRoute
 #[derive(Clone, Debug)]
 pub struct LiveInput {
     /// The queue node.
-    pub node: AudioNode,
+    pub node: NodeKey,
     /// The sender into it.
     pub sender: MidiSender,
 }
@@ -275,7 +275,7 @@ pub struct MidiRouteId(u64);
 /// Several rules may name the same channel; every matching rule's targets
 /// receive the event.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MidiRouteRule<T = AudioNode> {
+pub struct MidiRouteRule<T = NodeKey> {
     /// Channel filter: `None` matches any channel, `Some(n)` only channel
     /// `n`.
     pub channel: Option<MidiChannel>,
@@ -324,26 +324,26 @@ impl<T> MidiRouteRule<T> {
 #[derive(Debug)]
 struct Clip {
     controls: MidiClipControls,
-    target: AudioNode,
+    target: NodeKey,
 }
 
 /// One live input: its sender and the target it feeds.
 struct Live {
     sender: MidiSender,
-    target: AudioNode,
+    target: NodeKey,
 }
 
 /// The session's MIDI state.
 #[derive(Default)]
 pub(crate) struct MidiState {
-    clips: BTreeMap<AudioNode, Clip>,
-    live: BTreeMap<AudioNode, Live>,
+    clips: BTreeMap<NodeKey, Clip>,
+    live: BTreeMap<NodeKey, Live>,
     /// The session's own route rules, and the last id minted.
     rules: BTreeMap<MidiRouteId, MidiRouteRule>,
-    fallback: Option<AudioNode>,
+    fallback: Option<NodeKey>,
     minted: u64,
     /// The sinks the last route compile fed.
-    routed: BTreeSet<AudioNode>,
+    routed: BTreeSet<NodeKey>,
     /// Whether a host's last `set_routes` declared any rule or fallback:
     /// the routes are then the host's, and the session's own are refused.
     host_routes: bool,
@@ -394,7 +394,7 @@ impl MidiState {
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
     /// is no longer one.
-    pub(crate) fn forget_node(&mut self, node: AudioNode) {
+    pub(crate) fn forget_node(&mut self, node: NodeKey) {
         self.clips.remove(&node);
         self.live.remove(&node);
         self.routed.remove(&node);
@@ -462,7 +462,7 @@ pub struct Midi<'a> {
 
 impl Midi<'_> {
     /// `target`, if it takes MIDI: it is in the graph with an event input.
-    fn takes_midi(&self, target: AudioNode) -> Result<()> {
+    fn takes_midi(&self, target: NodeKey) -> Result<()> {
         if self.graph.contains(target) && self.graph.node_event_inputs(target) > 0 {
             Ok(())
         } else {
@@ -480,7 +480,7 @@ impl Midi<'_> {
     ///
     /// [`Error::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI.
-    pub fn live_input(&mut self, target: AudioNode) -> Result<LiveInput> {
+    pub fn live_input(&mut self, target: NodeKey) -> Result<LiveInput> {
         self.takes_midi(target)?;
         if let Some((node, live)) = self.fed_by(target, Feeder::LiveInput, &self.state.live) {
             return Ok(LiveInput {
@@ -518,9 +518,9 @@ impl Midi<'_> {
     /// no MIDI.
     pub fn play_clip(
         &mut self,
-        target: AudioNode,
+        target: NodeKey,
         events: impl IntoIterator<Item = TimedMidiEvent>,
-    ) -> Result<AudioNode> {
+    ) -> Result<NodeKey> {
         self.takes_midi(target)?;
         let clip = match self.clip(target) {
             Some(clip) => {
@@ -543,7 +543,7 @@ impl Midi<'_> {
     /// Empties `target`'s clip, ending the notes it left sounding. The clip
     /// stays, to play the next [`play_clip`](Self::play_clip). `false`
     /// when `target` has none.
-    pub fn stop_clip(&mut self, target: AudioNode) -> bool {
+    pub fn stop_clip(&mut self, target: NodeKey) -> bool {
         match self.clip(target) {
             Some(clip) => {
                 self.state.clips[&clip].controls.clear();
@@ -554,7 +554,7 @@ impl Midi<'_> {
     }
 
     /// `target`'s clip node, if it has one.
-    pub fn clip(&self, target: AudioNode) -> Option<AudioNode> {
+    pub fn clip(&self, target: NodeKey) -> Option<NodeKey> {
         self.fed_by(target, Feeder::Sequencer, &self.state.clips)
             .map(|(clip, _)| clip)
     }
@@ -564,10 +564,10 @@ impl Midi<'_> {
     /// `target` only what [`retarget`](Self::retarget) unfeeds.
     fn fed_by<'s, V>(
         &self,
-        target: AudioNode,
+        target: NodeKey,
         feeder: Feeder,
-        ours: &'s BTreeMap<AudioNode, V>,
-    ) -> Option<(AudioNode, &'s V)> {
+        ours: &'s BTreeMap<NodeKey, V>,
+    ) -> Option<(NodeKey, &'s V)> {
         self.graph
             .feed(target, feeder)
             .iter()
@@ -585,7 +585,7 @@ impl Midi<'_> {
     /// [`Error::NoEventInput`] when `target` is not in the graph or takes
     /// no MIDI; [`Error::NotSessionMidi`] when `node` is not a clip or live
     /// input of this session's.
-    pub fn retarget(&mut self, node: AudioNode, target: AudioNode) -> Result<()> {
+    pub fn retarget(&mut self, node: NodeKey, target: NodeKey) -> Result<()> {
         self.takes_midi(target)?;
         let (old, feeder) = if let Some(clip) = self.state.clips.get_mut(&node) {
             (
@@ -649,7 +649,7 @@ impl Midi<'_> {
     /// [`Error::NoMidiInput`] on a session with no MIDI input node;
     /// [`Error::TwoRouteDeclarers`] while a host's
     /// [`set_routes`](Self::set_routes) declares the routes.
-    pub fn set_route_fallback(&mut self, fallback: Option<AudioNode>) -> Result<()> {
+    pub fn set_route_fallback(&mut self, fallback: Option<NodeKey>) -> Result<()> {
         let input = self.input()?;
         self.own_may_declare()?;
         self.state.fallback = fallback;
@@ -665,11 +665,11 @@ impl Midi<'_> {
         }
     }
 
-    fn input(&self) -> Result<AudioNode> {
+    fn input(&self) -> Result<NodeKey> {
         self.nodes.map(|n| n.input).ok_or(Error::NoMidiInput)
     }
 
-    fn compile_own(&mut self, input: AudioNode) {
+    fn compile_own(&mut self, input: NodeKey) {
         let rules = std::mem::take(&mut self.state.rules);
         let fallback = self.state.fallback;
         self.compile_routes(input, rules.values(), fallback, Some);
@@ -700,10 +700,10 @@ impl Midi<'_> {
     /// Nothing is changed.
     pub fn set_routes<'r, T: Copy + Ord + 'r>(
         &mut self,
-        input: AudioNode,
+        input: NodeKey,
         rules: impl IntoIterator<Item = &'r MidiRouteRule<T>>,
         fallback: Option<T>,
-        resolve: impl Fn(T) -> Option<AudioNode>,
+        resolve: impl Fn(T) -> Option<NodeKey>,
     ) -> Result<()> {
         if !self.state.rules.is_empty() || self.state.fallback.is_some() {
             return Err(Error::TwoRouteDeclarers("the session's own `route`"));
@@ -718,10 +718,10 @@ impl Midi<'_> {
     /// replacing every route before.
     fn compile_routes<'r, T: Copy + Ord + 'r>(
         &mut self,
-        input: AudioNode,
+        input: NodeKey,
         rules: impl IntoIterator<Item = &'r MidiRouteRule<T>>,
         fallback: Option<T>,
-        resolve: impl Fn(T) -> Option<AudioNode>,
+        resolve: impl Fn(T) -> Option<NodeKey>,
     ) {
         let ports = compile_routes(
             rules.into_iter().filter(|r| r.enabled).map(|r| RouteRule {
@@ -730,7 +730,7 @@ impl Midi<'_> {
             }),
             fallback,
         );
-        let mut wanted: BTreeMap<AudioNode, Vec<EventSource>> = BTreeMap::new();
+        let mut wanted: BTreeMap<NodeKey, Vec<EventSource>> = BTreeMap::new();
         for (target, ports) in ports {
             let Some(sink) = resolve(target).filter(|&n| self.graph.contains(n)) else {
                 continue;

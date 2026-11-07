@@ -129,7 +129,7 @@ impl ProjectMeter {
 
     /// A reader of the cell the metronome reads, registered for the node
     /// built over it. Control thread: registering may allocate.
-    pub(crate) fn reader(&self) -> Reader<MeterMap> {
+    pub fn reader(&self) -> Reader<MeterMap> {
         self.0.cell.reader()
     }
 

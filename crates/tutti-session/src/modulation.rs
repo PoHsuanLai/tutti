@@ -32,7 +32,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_core::AudioNode;
 use tutti_graph::EventOut;
 use tutti_mod::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
@@ -43,7 +42,7 @@ use tutti_nodes::{Feed, ReconcileError};
 use tutti_types::{Depth, NodeKey, ParamAddr, UnitAddr, UnitParam};
 
 use crate::ModKeys;
-use crate::graph::{Graph, key};
+use crate::graph::Graph;
 
 /// How long a modulation target may stay unresolved before it is logged:
 /// today's 240 frames at 60 Hz (design 015 §4.4). A target waits an update
@@ -57,14 +56,14 @@ pub const UNRESOLVED_WARNING: Duration = Duration::from_secs(4);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamRef {
     /// The node with the param.
-    pub node: AudioNode,
+    pub node: NodeKey,
     /// The param's address on that node.
     pub param: ParamAddr,
 }
 
 impl ParamRef {
     /// `param` on `node`.
-    pub fn new(node: AudioNode, param: impl Into<ParamAddr>) -> Self {
+    pub fn new(node: NodeKey, param: impl Into<ParamAddr>) -> Self {
         Self {
             node,
             param: param.into(),
@@ -72,7 +71,7 @@ impl ParamRef {
     }
 
     /// A native param of `node`, at index 0.
-    pub const fn unit(node: AudioNode, param: UnitParam) -> Self {
+    pub const fn unit(node: NodeKey, param: UnitParam) -> Self {
         Self {
             node,
             param: ParamAddr::Unit(param),
@@ -82,7 +81,7 @@ impl ParamRef {
     /// A native param of `node` at `index` among the node's params of that
     /// kind (a multiband compressor's threshold of band `index`).
     /// [`unit`](Self::unit) is index 0.
-    pub const fn unit_at(node: AudioNode, param: UnitParam, index: u8) -> Self {
+    pub const fn unit_at(node: NodeKey, param: UnitParam, index: u8) -> Self {
         Self {
             node,
             param: ParamAddr::unit(UnitAddr::new(param, index)),
@@ -90,7 +89,7 @@ impl ParamRef {
     }
 
     /// Parameter `id` of the plugin hosted on `node`.
-    pub const fn plugin(node: AudioNode, id: u32) -> Self {
+    pub const fn plugin(node: NodeKey, id: u32) -> Self {
         Self {
             node,
             param: ParamAddr::Id(id),
@@ -102,7 +101,7 @@ impl ParamRef {
     #[must_use]
     pub fn key(self) -> TargetKey {
         TargetKey {
-            node: key(self.node).0,
+            node: self.node.0,
             param: self.param,
         }
     }
@@ -111,7 +110,7 @@ impl ParamRef {
     #[must_use]
     pub fn from_key(target: TargetKey) -> Self {
         Self {
-            node: AudioNode(NodeKey(target.node)),
+            node: NodeKey(target.node),
             param: target.param,
         }
     }
@@ -384,7 +383,7 @@ impl ModState {
     /// The target of the lane on plugin parameter `id` at `node`, when the
     /// last apply resolved one.
     #[cfg(feature = "plugin")]
-    pub(crate) fn plugin_target(&self, node: AudioNode, id: u32) -> Option<TargetKey> {
+    pub(crate) fn plugin_target(&self, node: NodeKey, id: u32) -> Option<TargetKey> {
         self.plugin_targets.get(&(node, id)).copied()
     }
 
@@ -476,8 +475,8 @@ impl ModState {
 /// What feeds one of the session's own signal sources.
 #[derive(Clone, Copy, Debug)]
 enum OwnFeed {
-    Audio(AudioNode),
-    Events(AudioNode, u16),
+    Audio(NodeKey),
+    Events(NodeKey, u16),
 }
 
 #[derive(Debug)]
@@ -596,9 +595,9 @@ impl OwnMods {
 
     /// Forgets every declaration on `node`'s params: a removed node takes
     /// its ranges, automation and the routes into it with it.
-    pub(crate) fn forget_node(&mut self, node: AudioNode) {
+    pub(crate) fn forget_node(&mut self, node: NodeKey) {
         self.built = None;
-        let bits = key(node).0;
+        let bits = node.0;
         self.ranges.retain(|t, _| t.node != bits);
         self.automation.retain(|t, _| t.node != bits);
         self.routes
@@ -611,19 +610,16 @@ impl OwnMods {
 struct OwnKeys<'a>(&'a OwnMods);
 
 impl ModKeys for OwnKeys<'_> {
-    fn node(&self, target: u64) -> Option<AudioNode> {
+    fn node(&self, target: u64) -> Option<NodeKey> {
         // A key no node has any more names one the editor does not hold:
         // the reconciler leaves its target unresolved.
-        Some(AudioNode(NodeKey(target)))
+        Some(NodeKey(target))
     }
 
     fn feed(&self, source: SourceKey) -> Option<Feed> {
         Some(match self.0.sources.get(&source)?.feed? {
-            OwnFeed::Audio(node) => Feed::Audio(key(node)),
-            OwnFeed::Events(node, port) => Feed::Events(EventOut {
-                node: key(node),
-                port,
-            }),
+            OwnFeed::Audio(node) => Feed::Audio(node),
+            OwnFeed::Events(node, port) => Feed::Events(EventOut { node, port }),
         })
     }
 }
@@ -765,18 +761,13 @@ impl Mods<'_> {
     }
 
     /// A follower of every audio output of `input`.
-    pub fn follower(&mut self, follower: Follower, input: AudioNode) -> SourceKey {
+    pub fn follower(&mut self, follower: Follower, input: NodeKey) -> SourceKey {
         self.add_source(follower.into(), Some(OwnFeed::Audio(input)))
     }
 
     /// A note envelope on event output `port` of `midi` (a clip node, a
     /// live input).
-    pub fn note_envelope(
-        &mut self,
-        envelope: NoteEnvelope,
-        midi: AudioNode,
-        port: u16,
-    ) -> SourceKey {
+    pub fn note_envelope(&mut self, envelope: NoteEnvelope, midi: NodeKey, port: u16) -> SourceKey {
         self.add_source(envelope.into(), Some(OwnFeed::Events(midi, port)))
     }
 

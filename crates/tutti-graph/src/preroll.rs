@@ -23,7 +23,7 @@ use tutti_types::value::Samples;
 /// later [`set`](Self::set).
 ///
 /// ```
-/// use tutti_core::PrerollTable;
+/// use tutti_graph::PrerollTable;
 /// use tutti_types::Samples;
 ///
 /// let table = PrerollTable::default();

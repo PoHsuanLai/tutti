@@ -24,7 +24,7 @@ use bevy_tutti::export::{
     ExportClock, ExportDone, ExportError, ExportNode, ExportOutput, ExportPlugin, ExportRequest,
     ExportSource, ExportTarget, PreparedGraph,
 };
-use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
+use bevy_tutti::graph::{AudioConfig, AudioGraphRes, AudioNode, GraphSource};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
 };
@@ -162,8 +162,8 @@ fn chain(app: &mut App) -> Entity {
     graph
         .graph()
         .set_output_source(1, GraphSource::Node(osc, 0));
-    app.world_mut().spawn(osc);
-    app.world_mut().spawn(filter).id()
+    app.world_mut().spawn(AudioNode(osc));
+    app.world_mut().spawn(AudioNode(filter)).id()
 }
 
 /// FNV-1a over the planes' little-endian `f32` bits, plane after plane.
@@ -399,7 +399,7 @@ fn a_graph_with_no_outputs_says_so() {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.graph().insert(Osc::sine(Hz(220.0)))
     };
-    let entity = app.world_mut().spawn(node).id();
+    let entity = app.world_mut().spawn(AudioNode(node.0)).id();
     for source in [ExportSource::Mix, ExportSource::Node(entity)] {
         match export(&mut app, buffers(source, 0.01)) {
             Got::Other(why) => assert!(
@@ -444,7 +444,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
         graph.graph().set_outputs_from(node);
-        app.world_mut().spawn(node).id()
+        app.world_mut().spawn(AudioNode(node)).id()
     };
     let zero = {
         let mut wave = tutti_io::Wave::new(1, RATE);
@@ -454,7 +454,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         let source = MemorySource::placed(Arc::new(wave), tutti_types::Beat(0.0), None);
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (node, _params) = graph.graph().insert(source);
-        app.world_mut().spawn(node).id()
+        app.world_mut().spawn(AudioNode(node)).id()
     };
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -684,8 +684,11 @@ fn an_unforkable_node_refuses_the_export_by_name() {
             .set_output_source(1, GraphSource::Node(osc, 0));
         (mic, osc)
     };
-    let mic_entity = app.world_mut().spawn((mic, Name::new("Mic"))).id();
-    let osc_entity = app.world_mut().spawn(osc).id();
+    let mic_entity = app
+        .world_mut()
+        .spawn((AudioNode(mic), Name::new("Mic")))
+        .id();
+    let osc_entity = app.world_mut().spawn(AudioNode(osc)).id();
 
     match export(&mut app, buffers(ExportSource::Mix, 0.05)) {
         Got::NotForkable(node) => {
@@ -718,7 +721,6 @@ fn an_unforkable_node_refuses_the_export_by_name() {
 mod plugin {
     use super::*;
     use crate::common::plugin::{clap_probe, plugin_server};
-
     use std::time::{Duration, Instant};
 
     use bevy_tutti::graph::{
@@ -726,10 +728,10 @@ mod plugin {
     };
     use bevy_tutti::midi::{MidiSequencePlugin, MidiSourceInstall};
     use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
-    use tutti_core::AudioNode;
-    use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
+    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
+    use tutti_nodes::ClickState;
     use tutti_nodes::testing::Const;
     use tutti_plugin::catalog::PluginId;
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -808,7 +810,7 @@ mod plugin {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(node)
         };
-        let dc = app.world_mut().spawn(dc).id();
+        let dc = app.world_mut().spawn(AudioNode(dc)).id();
         app.world_mut().entity_mut(probe).insert(
             PortSources::silent()
                 .with(
@@ -1522,10 +1524,10 @@ mod disk {
                 graph.graph().insert(wrapped).0,
                 graph.graph().insert(memory).0,
             );
-            app.world_mut().spawn(bare);
+            app.world_mut().spawn(AudioNode(bare));
             (
-                app.world_mut().spawn(wrapped).id(),
-                app.world_mut().spawn(memory).id(),
+                app.world_mut().spawn(AudioNode(wrapped)).id(),
+                app.world_mut().spawn(AudioNode(memory)).id(),
             )
         };
 
@@ -1580,7 +1582,7 @@ mod disk {
             let voice = node_of(VoiceSource::Disk(disk_voice(&streamer, 1.0)));
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             let (node, _) = graph.graph().insert(voice);
-            app.world_mut().spawn(node).id()
+            app.world_mut().spawn(AudioNode(node)).id()
         };
         let planes = export(
             &mut app,
@@ -1805,7 +1807,9 @@ mod disk {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             let (node, _) = graph.graph().insert(voice);
             graph.graph().set_outputs_from(node);
-            app.world_mut().spawn((node, Name::new("Clip"))).id()
+            app.world_mut()
+                .spawn((AudioNode(node), Name::new("Clip")))
+                .id()
         };
         std::fs::remove_file(&path).expect("removes");
         match export(&mut app, on(0.2, ExportSource::Mix, &timeline(120.0))) {
@@ -2385,7 +2389,10 @@ mod off_thread {
             .graph()
             .set_output_source(1, GraphSource::Node(broken, 0));
         let mut app = app_over(graph);
-        let entity = app.world_mut().spawn((broken, Name::new("Server"))).id();
+        let entity = app
+            .world_mut()
+            .spawn((AudioNode(broken), Name::new("Server")))
+            .id();
 
         match export(&mut app, buffers(ExportSource::Mix, 0.05)) {
             Got::ForkSource(node, cause) => {

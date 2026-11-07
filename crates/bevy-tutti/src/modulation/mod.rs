@@ -43,7 +43,7 @@
 //!     .id();
 //! app.world_mut().flush();
 //!
-//! fn wobble(mut mods: Mods, filter: Single<Entity, With<tutti_core::AudioNode>>) {
+//! fn wobble(mut mods: Mods, filter: Single<Entity, With<crate::graph::AudioNode>>) {
 //!     let cutoff = ParamRef::unit(*filter, UnitParam::Cutoff);
 //!     mods.range(cutoff, 200.0, 4_000.0);
 //!     let lfo = mods.lfo(Lfo::sine().rate(BeatDuration(0.5)));

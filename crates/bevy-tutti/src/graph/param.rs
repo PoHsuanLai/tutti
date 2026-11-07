@@ -66,7 +66,7 @@
 use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_types::{Unit, UnitAddr, UnitParam};
 
 use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
@@ -150,7 +150,7 @@ pub fn write_param(
     // Through the node's `ParamSet`, never a handle captured from the unit:
     // that would move the live unit and leave a fork at the value it was
     // built with.
-    graph.graph().set_param(*node, param, value);
+    graph.graph().set_param(node.0, param, value);
 }
 
 /// Pushes every changed [`AudioParam<U, P>`] into its node.

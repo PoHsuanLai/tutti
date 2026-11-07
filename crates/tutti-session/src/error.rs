@@ -45,7 +45,7 @@ pub enum Error {
     /// `Midi::retarget`.
     #[cfg(feature = "midi")]
     #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
-    NoEventInput(tutti_core::AudioNode),
+    NoEventInput(tutti_types::NodeKey),
 
     /// A route rule on a session with no MIDI input node (one built
     /// detached).
@@ -57,7 +57,7 @@ pub enum Error {
     /// the session's.
     #[cfg(feature = "midi")]
     #[error("{0:?} is not a clip or live input of this session's")]
-    NotSessionMidi(tutti_core::AudioNode),
+    NotSessionMidi(tutti_types::NodeKey),
 
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's

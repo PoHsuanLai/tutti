@@ -5,9 +5,12 @@
 
 use std::sync::Arc;
 
-use tutti_core::{ClickNode, ClickSettings, MetronomeMode, Transport, WorkerPool};
-use tutti_graph::{Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status};
+use tutti_core::Transport;
+use tutti_graph::{
+    Cost, Cx, Editor, Executor, Io, Node, Prepare, Schedule, Shape, Status, WorkerPool,
+};
 use tutti_graph::{Transport as BlockTransport, Unforkable};
+use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_types::NodeKey;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};

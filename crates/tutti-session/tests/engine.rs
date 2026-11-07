@@ -18,7 +18,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::{MetronomeMode, MotionEvent};
+use tutti_core::MotionEvent;
+use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::assert_golden;
 use tutti_session::{GraphSource, Session};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};

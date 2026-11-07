@@ -35,7 +35,7 @@ import os, re, sys
 # (crate-relative path, type): what removes the entry.
 EXCEPTIONS = {
     ("crates/tutti-midi-types/src/mpe/sensitivity.rs", "PitchBendSensitivity"):
-        "R2a: serde through try_from",
+        "permanent: every u32 is a valid RPN word",
     ("crates/tutti-plugin-types/src/parameters.rs", "Normalized"):
         "R2b: serde through try_from",
     ("crates/tutti-plugin-types/src/parameters.rs", "ParamId"):

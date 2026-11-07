@@ -28,8 +28,8 @@ pub enum MpeZone {
 ///
 /// They are separate state, not one value seen from two angles — RPN 0 arrives
 /// per channel, so a controller can legitimately set them independently.
-const MASTER_PITCH_BEND_SEMITONES: u8 = 2;
-const MEMBER_PITCH_BEND_SEMITONES: u8 = 48;
+const MASTER_PITCH_BEND: PitchBendSensitivity = PitchBendSensitivity::of(2);
+const MEMBER_PITCH_BEND: PitchBendSensitivity = PitchBendSensitivity::of(48);
 
 /// One zone's layout and bend ranges — the whole description of how an MPE
 /// instrument occupies the sixteen channels.
@@ -68,12 +68,8 @@ impl MpeZoneConfig {
             zone: MpeZone::Lower,
             master_channel: 0, // Ch1 (0-indexed)
             member_count: member_count.clamp(1, 15),
-            master_pitch_bend_range: PitchBendSensitivity::from_semitones(
-                MASTER_PITCH_BEND_SEMITONES,
-            ),
-            member_pitch_bend_range: PitchBendSensitivity::from_semitones(
-                MEMBER_PITCH_BEND_SEMITONES,
-            ),
+            master_pitch_bend_range: MASTER_PITCH_BEND,
+            member_pitch_bend_range: MEMBER_PITCH_BEND,
             enabled: true,
         }
     }
@@ -84,12 +80,8 @@ impl MpeZoneConfig {
             zone: MpeZone::Upper,
             master_channel: 15, // Ch16 (0-indexed)
             member_count: member_count.clamp(1, 15),
-            master_pitch_bend_range: PitchBendSensitivity::from_semitones(
-                MASTER_PITCH_BEND_SEMITONES,
-            ),
-            member_pitch_bend_range: PitchBendSensitivity::from_semitones(
-                MEMBER_PITCH_BEND_SEMITONES,
-            ),
+            master_pitch_bend_range: MASTER_PITCH_BEND,
+            member_pitch_bend_range: MEMBER_PITCH_BEND,
             enabled: true,
         }
     }
@@ -98,7 +90,7 @@ impl MpeZoneConfig {
     /// channels, so both ranges are the same ±2.
     pub fn single_channel(channel: u8) -> Self {
         // The standard MIDI 1.0 channel default, which is the MPE master's.
-        let range = PitchBendSensitivity::from_semitones(MASTER_PITCH_BEND_SEMITONES);
+        let range = MASTER_PITCH_BEND;
         Self {
             zone: MpeZone::SingleChannel(channel.min(15)),
             master_channel: channel.min(15),
@@ -125,15 +117,15 @@ impl MpeZoneConfig {
 
     /// Override the **master** channel's bend range (RPN 0 on the master).
     #[must_use]
-    pub fn with_master_pitch_bend_range(mut self, semitones: u8) -> Self {
-        self.master_pitch_bend_range = PitchBendSensitivity::from_semitones(semitones);
+    pub fn with_master_pitch_bend_range(mut self, range: PitchBendSensitivity) -> Self {
+        self.master_pitch_bend_range = range;
         self
     }
 
     /// Override the **member** channels' bend range (RPN 0 on a member).
     #[must_use]
-    pub fn with_member_pitch_bend_range(mut self, semitones: u8) -> Self {
-        self.member_pitch_bend_range = PitchBendSensitivity::from_semitones(semitones);
+    pub fn with_member_pitch_bend_range(mut self, range: PitchBendSensitivity) -> Self {
+        self.member_pitch_bend_range = range;
         self
     }
 
@@ -323,7 +315,7 @@ mod serde_tests {
         // 2.5 semitones: representable in 7.25 fixed point, not in whole
         // semitones — so a `to_semitones`/`from_semitones` round trip loses it.
         let fractional = PitchBendSensitivity::from_rpn_bits(
-            PitchBendSensitivity::from_semitones(2).to_rpn_bits() + (1 << 24),
+            PitchBendSensitivity::of(2).to_rpn_bits() + (1 << 24),
         );
         let cfg = MpeZoneConfig {
             member_pitch_bend_range: fractional,

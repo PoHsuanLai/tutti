@@ -1231,7 +1231,7 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
             MidiChannel::FIRST,
             RPN_BANK_MPE,
             RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+            PitchBendSensitivity::of(24).to_rpn_bits(),
         )
         .with_frame_offset(100),
         quarter_bend(192),

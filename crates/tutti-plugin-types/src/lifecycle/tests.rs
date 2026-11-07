@@ -1680,3 +1680,41 @@ fn a_max_block_keeps_the_range_contract() {
         invalid: &[Samples(0)],
     });
 }
+
+/// `BeatsPerBar` keeps the range contract. It is tested here, not in
+/// `tutti-types`, which dev-depends on no workspace crate.
+///
+/// Mutation (run): `new` accepting 0 (the bound check without the zero test)
+/// fails the helper at "new accepted 0". Not run: the serde attribute, the
+/// error carrying the raw and `of` panicking, which the helper checks the same
+/// way as for `NoteValue` below, whose serde attribute removal was run.
+#[cfg(feature = "serde")]
+#[test]
+fn a_beats_per_bar_keeps_the_range_contract() {
+    use crate::BeatsPerBar;
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: BeatsPerBar::new,
+        get: BeatsPerBar::get,
+        of: Some(BeatsPerBar::of),
+        valid: &[1, 2, 7, 63, 64],
+        invalid: &[0, 65, 999, u32::MAX],
+    });
+}
+
+/// `NoteValue` keeps the range contract: only powers of two from 1 to 64.
+///
+/// Mutation (run): `new` checking only `1..=64` (not `is_power_of_two`) fails
+/// the helper at "new accepted 3"; the `serde(try_from)` attribute removed
+/// fails it at the serde refusal.
+#[cfg(feature = "serde")]
+#[test]
+fn a_note_value_keeps_the_range_contract() {
+    use crate::NoteValue;
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: NoteValue::new,
+        get: NoteValue::get,
+        of: Some(NoteValue::of),
+        valid: &[1, 2, 4, 8, 16, 32, 64],
+        invalid: &[0, 3, 5, 6, 7, 12, 63, 65, 128, 1 << 31, u32::MAX],
+    });
+}

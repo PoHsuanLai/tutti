@@ -89,8 +89,8 @@ pub use graph::{NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
 
 // Musical meter.
 pub use meter::{
-    BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
-    TimeSignature,
+    BarCount, BarNumber, BarPosition, BeatsPerBar, InvalidBeatsPerBar, InvalidNoteValue, Meter,
+    MeterChange, MeterMap, NoteValue, TimeSignature,
 };
 
 /// The names a consumer of this crate actually reaches for, in one import.

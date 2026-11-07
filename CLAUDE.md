@@ -534,7 +534,7 @@ shape (`MidiChannel` is the reference). No macro.
 
 | Item | Rule |
 |---|---|
-| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds (see the types not yet conforming, below). `const fn` when the check is const. |
+| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds. `const fn` when the check is const. |
 | `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
 | `get(self) -> Raw`, `From<Self> for Raw` | Always. |
 | `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
@@ -551,9 +551,9 @@ shape (`MidiChannel` is the reference). No macro.
   `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
   whole semitones, serde the bits) and gives the other a named constructor
   (`from_rpn_bits`).
-- Not yet conforming: `BeatsPerBar::new` and `NoteValue::new` clamp (or
-  round) under the name `new`, and their serde clamps too. Each becomes
-  `clamped` or `nearest` with a refusing `new`.
+- `BeatsPerBar` and `NoteValue` keep the shape: `new` refuses and serde
+  refuses. Only `BeatsPerBar::clamped` saturates (the beat index in `bar_at`);
+  `NoteValue` has no saturating constructor until a lenient importer needs one.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
   `scripts/check-range-types.sh` fails a private tuple field with a derived

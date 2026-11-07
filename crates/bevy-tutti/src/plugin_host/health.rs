@@ -14,8 +14,17 @@
 //!   a plugin dead after at least [`Liveness::DEATHS`] consecutive unhealthy
 //!   observations spanning at least [`Liveness::DEFAULT_WINDOW`] (50 ms), on
 //!   the wall clock each frame passes, so it holds at any frame rate. A
-//!   dead plugin's node is removed and reported once, with the engine's
+//!   dead plugin is reloaded at its node (the default; see below), or, with
+//!   recovery off, its node is removed and reported once, with the engine's
 //!   cause.
+//! - **Recovery.** `tutti_session::Recovery` decides, on `Instant`s the
+//!   session is given: a death or a hang (blocks abandoned with no reply for
+//!   seconds, `PluginHandle::block_counts`) keeps the node, reloads the
+//!   plugin with its last snapshot after a backoff, and gives up after
+//!   too many failures in a window. This module holds none of that: it runs
+//!   the reload jobs the session hands out on the task pool, and puts what
+//!   the session reports on the entity ([`PluginReloading`], [`PluginRecovered`],
+//!   [`PluginGaveUp`]; the replacement's handle into [`PluginEmitter`]).
 //! - **Latency.** A plugin may change its latency while loaded (a
 //!   linear-phase EQ switched into an oversampling mode); the figure its node
 //!   declares now (`PluginControls::declared_latency`) is handed to the
@@ -51,19 +60,63 @@ use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use tutti_core::AudioNode;
 #[cfg(doc)]
 use tutti_plugin::Liveness;
-use tutti_session::{Phase, PluginSnapshotTaken, SessionEvent};
+use tutti_session::{
+    GiveUp, Phase, PluginReloaded, PluginSnapshotTaken, SessionEvent, StateRestore,
+};
 
-use crate::graph::AudioGraphRes;
-use crate::plugin_host::editor::PluginEditorOpen;
+use crate::graph::{AudioGraphRes, CapturedControls};
+use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 
 /// What the session believes about a plugin's liveness: `Healthy`,
 /// `Failing` (the debounce's count) or `Dead` (with the engine's cause).
 pub use tutti_session::PluginLiveness;
 
+/// The plugin on this entity died or hung, and recovery is on: its node stays
+/// (silent) and a replacement loads after `delay`. Triggered per attempt.
+/// `PluginHealth::status` reads `Recovering`.
+#[derive(EntityEvent, Debug, Clone)]
+pub struct PluginReloading {
+    /// The plugin entity.
+    pub entity: Entity,
+    /// Why it needs a replacement.
+    pub cause: String,
+    /// Failures within the budget's window, this one included.
+    pub attempt: u32,
+    /// The wait before the load.
+    pub delay: std::time::Duration,
+}
+
+/// A replacement is at this entity's node, wiring intact. Its editor, if one
+/// was open, closed with the old plugin: reopen it.
+#[derive(EntityEvent, Debug, Clone)]
+pub struct PluginRecovered {
+    /// The plugin entity.
+    pub entity: Entity,
+    /// Whether its state came back, and how old the snapshot was.
+    pub state: StateRestore,
+    /// The node's latency before the failure and now.
+    pub latency: (tutti_types::Samples, tutti_types::Samples),
+    /// Attempts it took.
+    pub attempts: u32,
+}
+
+/// Recovery stopped: the entity lost its `AudioNode`, as for a death with
+/// recovery off.
+#[derive(EntityEvent, Debug, Clone)]
+pub struct PluginGaveUp {
+    /// The plugin entity.
+    pub entity: Entity,
+    /// Why.
+    pub why: GiveUp,
+    /// The last state worth keeping (the snapshot a reload withheld, else the
+    /// last captured), to offer the user a manual reload.
+    pub snapshot: Option<Vec<u8>>,
+}
+
 /// Liveness and last-known-good state for one loaded plugin.
 ///
 /// Inserted by the load path alongside
-/// [`PluginEmitter`](crate::plugin_host::PluginEmitter).
+/// [`PluginEmitter`].
 ///
 /// Not `Debug`: the in-flight snapshot is a `Task`, which is not.
 #[derive(Component, Default)]
@@ -98,9 +151,10 @@ impl std::fmt::Debug for PluginHealth {
 impl PluginHealth {
     /// The last state captured while this plugin was healthy.
     ///
-    /// Feed it to a fresh [`PluginRequest`](super::PluginRequest) to reinstate a
-    /// crashed plugin — there is no in-place recovery, so a replacement entity
-    /// is the only route back.
+    /// Recovery restores it by itself while it is on (the default,
+    /// `TuttiPlugin::plugin_recovery`). With recovery off, or after
+    /// [`PluginGaveUp`], feed it to a fresh [`PluginRequest`](super::PluginRequest)
+    /// to reinstate the plugin by hand.
     pub fn snapshot(&self) -> Option<&Vec<u8>> {
         self.last_snapshot.as_ref()
     }
@@ -150,6 +204,7 @@ impl PluginHealth {
 pub fn plugin_health_poll(
     _main: bevy_ecs::system::NonSendMarker,
     #[cfg(feature = "modulation")] mut reads: Local<Vec<Task<tutti_session::PluginParamsRead>>>,
+    mut reloads: Local<Vec<Task<PluginReloaded>>>,
     mut commands: Commands,
     graph: Option<ResMut<AudioGraphRes>>,
     mut plugins: ParamSet<(
@@ -170,9 +225,20 @@ pub fn plugin_health_poll(
         graph.bypass_change_detection().session().land_params(read);
         false
     });
-    let events = graph
+    // Replacement loads finished since the last frame, landed at the node
+    // they were for; what they report joins the phase's.
+    let mut landed = Vec::new();
+    reloads.retain_mut(|task| {
+        let Some(done) = block_on(future::poll_once(task)) else {
+            return true; // still loading
+        };
+        landed.extend(graph.bypass_change_detection().session().land_reload(done));
+        false
+    });
+    let mut events = graph
         .bypass_change_detection()
         .run_phase(Phase::Plugins, Instant::now());
+    events.extend(landed);
 
     // The session's belief, onto each plugin's component (only plugin
     // entities carry one); written only when it moved, so
@@ -194,7 +260,10 @@ pub fn plugin_health_poll(
     let named: HashSet<AudioNode> = events
         .iter()
         .filter_map(|event| match event {
-            SessionEvent::PluginDied { node, .. } => Some(*node),
+            SessionEvent::PluginDied { node, .. }
+            | SessionEvent::PluginReloading { node, .. }
+            | SessionEvent::PluginRecovered { node, .. }
+            | SessionEvent::PluginGaveUp { node, .. } => Some(*node),
             SessionEvent::PluginSnapshotDue(job) => Some(job.node()),
             _ => None,
         })
@@ -223,6 +292,81 @@ pub fn plugin_health_poll(
                     .entity(entity)
                     .remove::<PluginEditorOpen>()
                     .remove::<AudioNode>();
+                graph.set_changed();
+            }
+            SessionEvent::PluginReloading {
+                node,
+                cause,
+                attempt,
+                delay,
+            } => {
+                let Some(&entity) = by_node.get(&node) else {
+                    continue;
+                };
+                // The dead plugin's editor and snapshot job go with it.
+                if let Ok((_, _, Some(mut health))) = entities.get_mut(entity) {
+                    health.pending_snapshot = None;
+                }
+                commands
+                    .entity(entity)
+                    .remove::<PluginEditorOpen>()
+                    .trigger(move |entity: Entity| PluginReloading {
+                        entity,
+                        cause,
+                        attempt,
+                        delay,
+                    });
+            }
+            SessionEvent::PluginReloadDue(job) => {
+                reloads.push(AsyncComputeTaskPool::get().spawn(async move { job.run() }));
+            }
+            SessionEvent::PluginRecovered {
+                node,
+                state,
+                latency,
+                attempts,
+            } => {
+                let Some(&entity) = by_node.get(&node) else {
+                    continue;
+                };
+                // The replacement's handle and controls, from the session's
+                // record; the node and its wiring are the same.
+                let Some(hosted) = graph.bypass_change_detection().session().plugin(node) else {
+                    continue;
+                };
+                let handle = hosted.handle().clone();
+                let controls = CapturedControls::for_hosted(hosted);
+                commands.entity(entity).queue(move |mut e: EntityWorldMut| {
+                    e.insert(PluginEmitter { handle });
+                    controls.replace(&mut e, node);
+                });
+                commands
+                    .entity(entity)
+                    .trigger(move |entity: Entity| PluginRecovered {
+                        entity,
+                        state,
+                        latency,
+                        attempts,
+                    });
+                graph.set_changed();
+            }
+            SessionEvent::PluginGaveUp {
+                node,
+                why,
+                snapshot,
+            } => {
+                let Some(&entity) = by_node.get(&node) else {
+                    continue;
+                };
+                commands
+                    .entity(entity)
+                    .remove::<PluginEditorOpen>()
+                    .remove::<AudioNode>()
+                    .trigger(move |entity: Entity| PluginGaveUp {
+                        entity,
+                        why,
+                        snapshot,
+                    });
                 graph.set_changed();
             }
             SessionEvent::PluginLatencyChanged { .. } => graph.set_changed(),

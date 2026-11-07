@@ -1994,3 +1994,48 @@ needs and records it in its pull request's description.
 - Sampler stream-open, metrics and refill planning (fp-edge F2, F3, F8).
 - A `FileFacts`-style value for the sampler's probe; the same pattern, a
   different crate.
+
+## 9. Crash and hang recovery
+
+Distinct from the `Lifecycle<L>` of §2: that restarts one plugin inside a live
+process (re-activation, a rate change). This replaces a plugin whose
+`plugin-server` died, or stopped answering. The two meet only at the host
+boundary.
+
+**The pure core.** `tutti_session::Recovery::step(RecoveryEvent, now) ->
+RecoveryAction` in `tutti-session/src/recovery.rs`: time is a value, there is
+no thread and no I/O. Events: died, loaded, load failed, the bridge's block
+totals, tick. Actions: wait, terminate, reload (delay, attempt), give up. A
+budget of `max_failures` within `window` stops a plugin that crashes on load;
+the wait doubles from `backoff` to `backoff_cap`; a reload that never reports
+back fails at `load_timeout`.
+
+**The hang verdict.** `PluginHandle::block_counts` reads two monotonic totals
+the bridge thread keeps (blocks abandoned on a missed budget, replies taken,
+on time or owed): relaxed atomics, nothing on the audio thread. A hang is
+abandoned blocks growing with no reply in between, at least `hang_blocks` of
+them, held for `hang_window`. A reply, or a stretch of `stall_gap` with no new
+abandoned block (a stopped or restarted device sends none), starts the
+suspicion over, so a slow plugin that answers is never declared hung and a
+frozen count never is. The session then ends the server
+(`PluginHandle::terminate`, which latches the reason), so a hung plugin dies by
+the ordinary path and is gone before its replacement loads.
+
+**The glue.** The node stays in the graph, silent. The existing `PluginLoad` is
+the load, handed to the host as a job (`SessionEvent::PluginReloadDue`) with the
+last snapshot as its state; `Session::land_reload` swaps the result in at the
+same `AudioNode` (`Graph::replace_plugin`), so every edge is the same edge. A
+replacement whose ports differ from the node's is a failed attempt (the edges
+would no longer validate). A state that kills the plugin loading it, or that it
+dies of soon after (`state_probation`), is withheld from the next attempt
+(`StateRestore::Withheld`). The commit re-plans PDC for the replacement's
+latency. Modulation lanes on the plugin are rebuilt by the reconciler for the
+new unit.
+
+**Limits.** Recovery covers plugins loaded through `Session::add_plugin`, out
+of process. An in-process VST2 plugin cannot be recovered (a crash takes the
+process) and a hang in it blocks the audio thread, which nothing observes; a
+plugin a host inserted itself (`Graph::insert_plugin`, `host_plugin`) has no
+recorded path. State changed since the last snapshot is lost. An export
+started while the plugin is being replaced is refused (the fork of a dead
+plugin cannot save its state).

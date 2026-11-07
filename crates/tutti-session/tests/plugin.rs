@@ -47,6 +47,14 @@ fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
 /// An offline stereo session at 48 kHz, its servers' environment set:
 /// the server's path, the offline extra, and `extra`.
 fn session(extra: &[(&str, &str)]) -> Session {
+    session_built(extra, |b| b)
+}
+
+/// [`session`] with the builder `build` shapes.
+fn session_built(
+    extra: &[(&str, &str)],
+    build: impl FnOnce(tutti_session::SessionBuilder) -> tutti_session::SessionBuilder,
+) -> Session {
     set_env("TUTTI_PLUGIN_SERVER", plugin_server());
     set_env(
         "TUTTI_CLAP_PROBE_OFFLINE_EXTRA_LATENCY",
@@ -55,7 +63,7 @@ fn session(extra: &[(&str, &str)]) -> Session {
     for (key, value) in extra {
         set_env(key, value);
     }
-    Session::builder()
+    build(Session::builder())
         .build_offline(RATE, ChannelLayout::STEREO, Samples(BLOCK))
         .expect("an offline session builds")
 }
@@ -259,7 +267,8 @@ fn a_plugin_added_mid_export_is_told_offline() {
     await_latency(&s, late, base, "told Realtime once the export ends");
 }
 
-/// **A plugin dead for the window is removed, and reported once.** The probe
+/// **With recovery off, a plugin dead for the window is removed, and reported
+/// once.** The probe
 /// aborts on its first block; once the engine latches the death, the
 /// debounce counts unhealthy observations at the `now`s the test passes:
 /// `Liveness::DEATHS` of them inside the window (50 ms) are still Failing,
@@ -275,7 +284,9 @@ fn a_plugin_added_mid_export_is_told_offline() {
 /// record check, so the two last asserts guard a regression in that order.
 #[test]
 fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
-    let mut s = session(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")]);
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
+        b.plugin_recovery(None)
+    });
     let (node, _) = wired_probe(&mut s);
 
     // Render until the engine latches the death (the server aborted on its
@@ -435,6 +446,771 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     assert_eq!(meter.retired_len(), 0, "the update freed it");
 }
 
+// --- Recovery ---------------------------------------------------------------
+
+/// The reference plugin's applied `Gain` parameter.
+fn gain_param(_s: &Session, _node: AudioNode) -> tutti_plugin::handles::ParamId {
+    tutti_plugin::handles::ParamId::new(tutti_clap_test_plugin::params_state::GAIN_PARAM_ID)
+}
+
+fn param(s: &Session, node: AudioNode, id: tutti_plugin::handles::ParamId) -> Option<f64> {
+    s.plugin(node)
+        .expect("hosted")
+        .handle()
+        .params()
+        .parameter_value(id)
+        .map(|v| v.get())
+}
+
+/// Whether a read-back value is the 0.25 that was set (it passes through the
+/// plugin's f32 and dB range).
+fn is_quarter(v: Option<f64>) -> bool {
+    v.is_some_and(|v| (v - 0.25).abs() < 1e-4)
+}
+
+/// A marker path for `TUTTI_CLAP_PROBE_ONCE_FILE`, free now: the first server
+/// to start fails, replacements do not.
+fn once_file(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_file(&path);
+    path.to_string_lossy().into_owned()
+}
+
+/// The reference plugin in `TagPassthrough`: with nothing wired it renders a
+/// constant (its tag), so a block of silence is a plugin that is not there.
+const PASSTHROUGH: (&str, &str) = ("TUTTI_CLAP_PROBE_RENDER_MODE", "1");
+
+/// The probe applies the parameter writes it is sent (its `Gain`) to its
+/// audio, which is also what makes it take them from the host at all.
+const APPLY_GAIN: (&str, &str) = ("TUTTI_CLAP_PROBE_APPLY_GAIN", "1");
+
+/// Renders one block and returns whether any sample was non-zero.
+fn renders_sound(s: &mut Session) -> bool {
+    let mut out = vec![0.0f32; BLOCK * 2];
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    out.iter().any(|&x| x != 0.0)
+}
+
+/// A virtual clock for the session's phases, and every event they and the
+/// reload jobs reported.
+struct Drive {
+    now: Instant,
+    events: Vec<SessionEvent>,
+    /// Run when a reload job is handed out, before it is run.
+    on_reload_due: Option<Box<dyn Fn()>>,
+}
+
+impl Drive {
+    fn new() -> Self {
+        Self {
+            now: Instant::now(),
+            events: Vec::new(),
+            on_reload_due: None,
+        }
+    }
+
+    /// One frame: a block rendered (the server gets real time to act), the
+    /// plugins' phase at the clock 20 ms on, and any reload job run and
+    /// landed at once, as a host would on a worker.
+    fn step(&mut self, s: &mut Session) {
+        let _ = renders_sound(s);
+        std::thread::sleep(Duration::from_millis(5));
+        self.now += Duration::from_millis(20);
+        let mut out = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(self.now), &mut out);
+        for event in out {
+            if let SessionEvent::PluginReloadDue(job) = event {
+                if let Some(check) = &self.on_reload_due {
+                    check();
+                }
+                let landed = s.land_reload(job.run());
+                self.events.extend(landed);
+            } else {
+                self.events.push(event);
+            }
+        }
+        // The commit that puts a replacement into the executor's plan, and the
+        // collect that frees the plan's old unit on this thread.
+        s.run_phase(Phase::Commit, PhaseCx::at(self.now), &mut Vec::new());
+        s.run_phase(Phase::Collect, PhaseCx::at(self.now), &mut Vec::new());
+    }
+
+    /// Steps until an event satisfies `stop` (10 s of wall time at most).
+    fn until(&mut self, s: &mut Session, why: &str, stop: impl Fn(&SessionEvent) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.events.iter().any(&stop) {
+            assert!(Instant::now() < deadline, "{why}: {:?}", self.events);
+            self.step(s);
+        }
+    }
+
+    fn count(&self, f: impl Fn(&SessionEvent) -> bool) -> usize {
+        self.events.iter().filter(|e| f(e)).count()
+    }
+}
+
+/// **A crashed plugin comes back at its node with its last state.** The
+/// probe's first server aborts on its 60th block (a replacement does not: the
+/// once-file); before that a parameter is set and a snapshot captured. The
+/// death is reported as `PluginReloading` with the node kept, and the load
+/// is handed out as a job; landing it puts the replacement at the same node
+/// with its wiring (the outputs still read it, so the render is sound again
+/// with no re-wiring), the parameter back at the snapshot's value, and
+/// `PluginRecovered` saying the state was restored, how old, and that the
+/// latency moved by the replacement's extra (the plan's total with it: the
+/// commit re-plans PDC).
+///
+/// Mutations (each run, each failed): `install_reload` not calling
+/// `replace_plugin` (the node stays dead: no sound, no `PluginRecovered`);
+/// the job built with `state: None` (the parameter reads its default);
+/// `install_reload` not putting the snapshot back after the swap, which
+/// clears it (no recovery point after the first recovery); the latency pair
+/// not read after the swap (`(before, before)`); writing the old mirror's
+/// load-time values to the replacement after the swap (the parameter is
+/// overwritten again over the blocks that follow).
+#[test]
+fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
+    const EXTRA: usize = 48;
+    let once = once_file("recovery-crash.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            APPLY_GAIN,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "60"),
+            ("TUTTI_CLAP_PROBE_RESTART_LATENCY", &EXTRA.to_string()),
+        ],
+        |b| b.snapshot_interval(Duration::from_secs(1)),
+    );
+    let (node, _) = wired_probe(&mut s);
+    // The graph's figure for the node: the probe's own and the pipeline's.
+    let base = s.graph_ref().node_latency(node);
+    let id = gain_param(&s, node);
+
+    // A value worth restoring, and a snapshot of it.
+    s.plugin(node)
+        .unwrap()
+        .handle()
+        .params()
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(
+            Instant::now() < deadline,
+            "the probe never took the value: {:?}",
+            param(&s, node, id)
+        );
+        // The write rides the next block to the server.
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let t0 = Instant::now();
+    for at in [0, 2_000] {
+        let mut out = Vec::new();
+        s.run_phase(
+            Phase::Plugins,
+            PhaseCx::at(t0 + Duration::from_millis(at)),
+            &mut out,
+        );
+        for event in out {
+            if let SessionEvent::PluginSnapshotDue(job) = event {
+                assert!(s.land_snapshot(job.run()), "the snapshot is stored");
+            }
+        }
+    }
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
+    let total_before = s.latency();
+
+    // Render into the crash, then through the recovery.
+    let mut drive = Drive::new();
+    drive.now = t0 + Duration::from_secs(3);
+    drive.until(&mut s, "recovered", |e| {
+        matches!(e, SessionEvent::PluginRecovered { .. })
+    });
+    let kinds: Vec<&str> = drive
+        .events
+        .iter()
+        .map(|e| match e {
+            SessionEvent::PluginReloading { .. } => "reloading",
+            SessionEvent::PluginRecovered { .. } => "recovered",
+            _ => "other",
+        })
+        .filter(|k| *k != "other")
+        .collect();
+    assert_eq!(kinds, ["reloading", "recovered"], "{:?}", drive.events);
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+    let Some(SessionEvent::PluginRecovered {
+        node: at,
+        state,
+        latency,
+        attempts,
+    }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginRecovered { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(*at, node, "the same node");
+    assert!(
+        matches!(state, tutti_session::StateRestore::Restored { .. }),
+        "{state:?}"
+    );
+    assert_eq!(*attempts, 1);
+    assert_eq!(latency.0, base);
+    assert_eq!(
+        latency.1,
+        Samples(base.0 + EXTRA),
+        "the replacement's latency"
+    );
+    assert!(s.graph_ref().contains(node));
+    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    // The snapshot is still the node's recovery point: a second failure
+    // restores it again.
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
+
+    // The state came back.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(
+            Instant::now() < deadline,
+            "the replacement's parameter is {:?}, not the snapshot's 0.25",
+            param(&s, node, id)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // And it stays restored: nothing writes the load-time values over it
+    // (a write rides the next blocks to the server, so render some).
+    for _ in 0..40 {
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        is_quarter(param(&s, node, id)),
+        "the restored parameter was overwritten: {:?}",
+        param(&s, node, id)
+    );
+
+    // The commit re-plans PDC for the new latency, and the outputs (never
+    // re-wired) read the replacement.
+    s.update();
+    let total_after = s.latency();
+    assert_eq!(
+        total_after.0,
+        total_before.0 + EXTRA,
+        "PDC follows the latency"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !renders_sound(&mut s) {
+        assert!(
+            Instant::now() < deadline,
+            "the recovered plugin renders nothing"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A plugin that fails every load is given up on, and its node removed.**
+/// Every server aborts on its first block, so each reload comes up and dies:
+/// two reloads (the policy's budget), then `PluginGaveUp` naming the failures,
+/// the node and its record gone, and no `PluginDied`.
+///
+/// Mutations (each run, each failed): the budget compared past its limit (a
+/// third reload); `GiveUp` not removing the node (`contains` still true).
+#[test]
+fn a_plugin_that_crashes_every_time_is_given_up_on() {
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1")], |b| {
+        b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+            max_failures: 2,
+            backoff: Duration::from_millis(1),
+            ..Default::default()
+        }))
+    });
+    let (node, _) = wired_probe(&mut s);
+    let mut drive = Drive::new();
+    drive.until(&mut s, "given up", |e| {
+        matches!(e, SessionEvent::PluginGaveUp { .. })
+    });
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginReloading { .. })),
+        2,
+        "{:?}",
+        drive.events
+    );
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+    let Some(SessionEvent::PluginGaveUp { node: at, why, .. }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(*at, node);
+    assert_eq!(why.failures, 3);
+    assert!(!s.graph_ref().contains(node), "the node is removed");
+    assert!(s.plugin(node).is_none(), "and its record");
+}
+
+/// **A reload job dropped unrun is a failed attempt**, and the next one is
+/// handed out: nothing waits on a job that will never land.
+///
+/// Mutation (run, failed): the sole-owner check of the job's token removed
+/// (no second `PluginReloading`, the first job's slot waits forever).
+#[test]
+fn a_reload_job_dropped_unrun_is_a_failed_attempt() {
+    let once = once_file("recovery-dropped.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| {
+            b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                backoff: Duration::from_millis(1),
+                ..Default::default()
+            }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    let mut now = Instant::now();
+    let mut reloadings = 0;
+    let mut dropped = 0;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reloadings < 2 {
+        assert!(Instant::now() < deadline, "no second attempt");
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+        now += Duration::from_millis(20);
+        let mut out = Vec::new();
+        s.run_phase(Phase::Plugins, PhaseCx::at(now), &mut out);
+        for event in out {
+            match event {
+                SessionEvent::PluginReloading { node: n, .. } => {
+                    assert_eq!(n, node);
+                    reloadings += 1;
+                }
+                // Dropped: the host never ran it.
+                SessionEvent::PluginReloadDue(job) => {
+                    dropped += 1;
+                    drop(job);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(dropped, 1);
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Recovering { .. }
+    ));
+}
+
+/// Whether the process `pid` is gone (reaped, or dead and awaiting reaping).
+#[cfg(target_os = "linux")]
+fn process_ended(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit(')')
+            .next()
+            .is_some_and(|rest| rest.trim_start().starts_with(['Z', 'X'])),
+    }
+}
+
+/// A policy that suspects a hang after 16 blocks and 100 ms of the clock the
+/// test drives (20 ms a step).
+fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
+    tutti_session::RecoveryPolicy {
+        hang_blocks: 16,
+        hang_window: Duration::from_millis(100),
+        backoff: Duration::from_millis(1),
+        ..Default::default()
+    }
+}
+
+/// **A plugin that stops answering is ended, then replaced.** The probe's
+/// first server parks in `process()` for good (the once-file: a replacement
+/// does not): it never crashes, so only the abandoned-block count shows it.
+/// The session ends its server (the death reads "stopped answering"), the
+/// node is kept, and when the replacement's load is handed out the hung
+/// server is already gone: a live server is never left beside its
+/// replacement. The replacement renders.
+///
+/// Mutations (each run, each failed): the hang verdict not calling
+/// `terminate` (the hung server is never ended: no `PluginReloading`);
+/// `terminate` not latching its cause (the death reads "Bridge process
+/// crashed", not "stopped answering"); `terminate` not killing the server
+/// (the server is still alive when the load is handed out).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plugin_that_stops_answering_is_ended_and_replaced() {
+    let once = once_file("recovery-hang.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
+        ],
+        |b| b.plugin_recovery(Some(quick_hang_policy())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    let pid = s
+        .plugin(node)
+        .unwrap()
+        .handle()
+        .server_pid()
+        .expect("an out-of-process plugin has a server");
+
+    let mut drive = Drive::new();
+    drive.on_reload_due = Some(Box::new(move || {
+        assert!(
+            process_ended(pid),
+            "the hung server {pid} was still alive when its replacement was loaded"
+        );
+    }));
+    drive.until(&mut s, "recovered", |e| {
+        matches!(e, SessionEvent::PluginRecovered { .. })
+    });
+    let Some(SessionEvent::PluginReloading { cause, .. }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginReloading { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(cause.contains("stopped answering"), "{cause}");
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginDied { .. })),
+        0
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !renders_sound(&mut s) {
+        assert!(Instant::now() < deadline, "the replacement renders nothing");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// **A slow plugin that still answers is not declared hung.** Every block
+/// takes the probe 80 ms, far over the bridge's budget for a 512-frame block:
+/// blocks are abandoned all the time, and every one's reply comes back late.
+/// Abandoned blocks pass the policy's 16 many times over, but replies keep
+/// arriving between the readings, so the plugin is left alone for four
+/// seconds; both totals did rise (else the test proves nothing).
+///
+/// Mutation (run, failed): `Channels::note_replied` not counting (no reply
+/// is an answer): the abandoned total grows with the replies flat, and the
+/// verdict ends the server. (Not counting an owed reply alone survives here:
+/// this plugin's replies also reach the bridge as the answer to the next
+/// block; the owed path is pinned by `Channels`' own test.)
+#[test]
+fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
+    let mut s = session_built(
+        &[PASSTHROUGH, ("TUTTI_CLAP_PROBE_STALL_US", "80000")],
+        |b| b.plugin_recovery(Some(quick_hang_policy())),
+    );
+    let (node, _) = wired_probe(&mut s);
+    let mut drive = Drive::new();
+    // Four seconds of wall time: at 80 ms a block, with the bridge's budget
+    // missed on most, far more than 16 blocks are abandoned over it.
+    let until = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < until {
+        drive.step(&mut s);
+    }
+    let counts = s.plugin(node).unwrap().handle().block_counts();
+    assert!(
+        counts.abandoned > 16,
+        "{counts:?}: the plugin is not slow enough"
+    );
+    assert!(counts.replies > 0, "{counts:?}: it never answered");
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginReloading { .. })),
+        0
+    );
+    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+}
+
+/// **A replacement with other ports is a failed attempt, and the graph stays
+/// editable.** The replacement server reports an extra aux bus (an updated
+/// binary whose buses changed). The node's edges stay as they are, so
+/// swapping it in would leave the topology invalid and refuse every later
+/// commit while the session called the plugin healthy. It is refused before
+/// the swap: the next attempt is scheduled (the same refusal again, until
+/// the budget is spent), the reason reaches `PluginGaveUp`, and an edit made
+/// meanwhile commits.
+///
+/// Mutation (run, failed): the port comparison removed from
+/// `install_reload` (the swap happens: the edit stays uncommitted, and the
+/// plugin is reported recovered).
+#[test]
+fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
+    let once = once_file("recovery-ports.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+            ("TUTTI_CLAP_PROBE_RESTART_PORT_LAYOUT", "1"),
+        ],
+        |b| {
+            b.snapshot_interval(Duration::from_secs(1))
+                .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                    max_failures: 2,
+                    backoff: Duration::from_millis(1),
+                    ..Default::default()
+                }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    snapshot_now(&mut s, node);
+    let kept = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let mut drive = Drive::new();
+    drive.until(&mut s, "a second attempt", |e| {
+        matches!(e, SessionEvent::PluginReloading { attempt: 2, .. })
+    });
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginRecovered { .. })),
+        0,
+        "{:?}",
+        drive.events
+    );
+    // An edit made now commits.
+    let (extra, _) = s.graph().insert(ForkByClone(DropWitness(Arc::default())));
+    assert!(s.graph_ref().is_edited());
+    s.update();
+    assert!(
+        !s.graph_ref().is_edited(),
+        "the commit was refused: the topology is invalid"
+    );
+    assert!(s.graph_ref().contains(extra));
+
+    drive.until(&mut s, "given up", |e| {
+        matches!(e, SessionEvent::PluginGaveUp { .. })
+    });
+    let Some(SessionEvent::PluginGaveUp { why, snapshot, .. }) = drive
+        .events
+        .iter()
+        .find(|e| matches!(e, SessionEvent::PluginGaveUp { .. }))
+    else {
+        unreachable!()
+    };
+    assert!(why.last.contains("ports differ"), "{why}");
+    assert_eq!(
+        snapshot.as_deref(),
+        Some(kept.as_slice()),
+        "the user's last state goes out with the event"
+    );
+    assert!(!s.graph_ref().contains(node));
+    s.update();
+    assert!(!s.graph_ref().is_edited());
+}
+
+/// Captures a snapshot of `node` at once, as a host's worker would (the
+/// session's snapshot cadence is 1 s here, driven by the virtual clock).
+fn snapshot_now(s: &mut Session, node: AudioNode) {
+    let t0 = Instant::now();
+    for at in [0, 2_000] {
+        let mut out = Vec::new();
+        s.run_phase(
+            Phase::Plugins,
+            PhaseCx::at(t0 + Duration::from_millis(at)),
+            &mut out,
+        );
+        for event in out {
+            if let SessionEvent::PluginSnapshotDue(job) = event {
+                assert!(s.land_snapshot(job.run()), "the snapshot is stored");
+            }
+        }
+    }
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
+}
+
+fn recovered_state(drive: &Drive) -> Vec<tutti_session::StateRestore> {
+    drive
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::PluginRecovered { state, .. } => Some(state.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A snapshot that kills the plugin loading it is not tried again.** The
+/// first server dies; every replacement dies when it is handed a state. The
+/// first attempt (with the snapshot) fails before the plugin is installed,
+/// so it is never reported recovered; the second goes without the state,
+/// comes up, and says so: `StateRestore::Withheld`, the snapshot gone from
+/// the record.
+///
+/// Mutations (each run, each failed): `withhold_snapshot` not clearing the
+/// snapshot (every attempt carries it: budget spent, `PluginGaveUp`, no
+/// recovery); the dead-on-arrival check removed from `install_reload` (the
+/// dead replacement is installed and reported `Restored`); the withheld
+/// bytes not kept (`withheld_snapshot` is `None`); `land_snapshot` replacing
+/// them (the default-state snapshot overwrites them).
+#[test]
+fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
+    let once = once_file("recovery-withheld.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            APPLY_GAIN,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "40"),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_STATE_LOAD", "1"),
+        ],
+        |b| {
+            b.snapshot_interval(Duration::from_secs(1))
+                .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                    backoff: Duration::from_millis(1),
+                    ..Default::default()
+                }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    let id = gain_param(&s, node);
+    // A state that is not the plugin's default.
+    s.plugin(node)
+        .unwrap()
+        .handle()
+        .params()
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !is_quarter(param(&s, node, id)) {
+        assert!(Instant::now() < deadline, "the probe never took the value");
+        let _ = renders_sound(&mut s);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    snapshot_now(&mut s, node);
+    let users = s.plugin(node).unwrap().snapshot().unwrap().to_vec();
+    let mut drive = Drive::new();
+    drive.until(&mut s, "recovered", |e| {
+        matches!(e, SessionEvent::PluginRecovered { .. })
+    });
+    let states = recovered_state(&drive);
+    assert!(
+        matches!(
+            states.as_slice(),
+            [tutti_session::StateRestore::Withheld { .. }]
+        ),
+        "{states:?} in {:?}",
+        drive.events
+    );
+    assert_eq!(
+        drive.count(|e| matches!(e, SessionEvent::PluginReloading { .. })),
+        2,
+        "the attempt with the snapshot failed first"
+    );
+    assert!(s.plugin(node).unwrap().snapshot().is_none());
+    assert_eq!(s.plugin(node).unwrap().liveness(), &PluginLiveness::Healthy);
+    // The user's state is kept for the host, not thrown away...
+    assert_eq!(
+        s.plugin(node).unwrap().withheld_snapshot(),
+        Some(users.as_slice())
+    );
+    // ...and the snapshots taken since, of a plugin at its defaults, do not
+    // replace it.
+    snapshot_now(&mut s, node);
+    let fresh = s.plugin(node).unwrap().snapshot().expect("a new snapshot");
+    assert_ne!(fresh, users.as_slice(), "the plugin is at its defaults");
+    assert_eq!(
+        s.plugin(node).unwrap().withheld_snapshot(),
+        Some(users.as_slice()),
+        "a default-state snapshot replaced the withheld one"
+    );
+}
+
+/// **A plugin that dies soon after restoring a snapshot loses it for the next
+/// load.** Every server aborts on its third block. The first replacement
+/// takes the snapshot (`Restored`) and dies within the probation, so the
+/// next load goes without it (`Withheld`); a death outside the probation
+/// would have used the snapshot again.
+///
+/// Mutation (run, failed): `probation_until` never set on a restore (the
+/// second replacement is `Restored` again, off the same snapshot).
+#[test]
+fn a_plugin_that_dies_soon_after_restoring_loses_the_snapshot() {
+    let mut s = session_built(&[("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "3")], |b| {
+        b.snapshot_interval(Duration::from_secs(1))
+            .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                max_failures: 5,
+                backoff: Duration::from_millis(1),
+                ..Default::default()
+            }))
+    });
+    let (node, _) = wired_probe(&mut s);
+    snapshot_now(&mut s, node);
+    let mut drive = Drive::new();
+    drive.until(&mut s, "a recovery without the snapshot", |e| {
+        matches!(
+            e,
+            SessionEvent::PluginRecovered {
+                state: tutti_session::StateRestore::Withheld { .. },
+                ..
+            }
+        )
+    });
+    let states = recovered_state(&drive);
+    assert!(
+        matches!(
+            states.as_slice(),
+            [
+                tutti_session::StateRestore::Restored { .. },
+                tutti_session::StateRestore::Withheld { .. }
+            ]
+        ),
+        "{states:?}"
+    );
+}
+
+/// **An export started while the plugin is being replaced is refused.** The
+/// dead plugin cannot hand over its state for the fork, so the gather names
+/// the failure; the session and its render mode are left as they were, and an
+/// export started after the recovery works.
+///
+/// Not mutation-tested: it pins what the fork of a dead plugin does today.
+#[test]
+fn an_export_during_the_recovery_window_is_refused() {
+    let once = once_file("recovery-export.once");
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "1"),
+        ],
+        |b| {
+            b.plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                backoff: Duration::from_secs(3_600),
+                ..Default::default()
+            }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    // Dead and waiting for a backoff that does not end.
+    let mut drive = Drive::new();
+    drive.until(&mut s, "reloading", |e| {
+        matches!(e, SessionEvent::PluginReloading { .. })
+    });
+    assert!(matches!(
+        s.plugin(node).unwrap().liveness(),
+        PluginLiveness::Recovering { .. }
+    ));
+    let refused = s.export(request(ExportSource::Mix));
+    let refusal = format!("{:?}", refused.as_ref().err());
+    assert!(
+        refusal.contains("SaveState(PluginCrashed)"),
+        "the fork of a dead plugin is refused: {refusal}"
+    );
+    assert!(!s.export_in_flight());
+    assert_eq!(s.render_mode(), RenderMode::Realtime);
+}
+
 /// Copies stereo through, and cancels the export it renders in when it
 /// processes its second block. Forked by clone: the fork shares the handle.
 #[derive(Clone)]
@@ -556,4 +1332,45 @@ fn a_cancelled_export_frees_the_token_and_the_forked_server() {
         .export_blocking(request(ExportSource::Mix))
         .expect("the next export is not refused");
     assert!(next.finished().is_some(), "and renders to its end");
+}
+
+/// **A replacement that refused the snapshot is not blamed for its death.**
+/// Every server aborts on its third block and refuses any state. The first
+/// replacement is `Refused` (it never restored anything), and its death is
+/// not the snapshot's doing: the snapshot is offered again (`Refused`
+/// again), none is withheld.
+///
+/// Mutation (run, failed): `probation_until` also set on a refusal (the
+/// second replacement is `Withheld` and the snapshot is gone).
+#[test]
+fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
+    let mut s = session_built(
+        &[
+            ("TUTTI_CLAP_PROBE_CRASH_ON_BLOCK", "3"),
+            ("TUTTI_CLAP_PROBE_REFUSE_STATE_LOAD", "1"),
+        ],
+        |b| {
+            b.snapshot_interval(Duration::from_secs(1))
+                .plugin_recovery(Some(tutti_session::RecoveryPolicy {
+                    max_failures: 5,
+                    backoff: Duration::from_millis(1),
+                    ..Default::default()
+                }))
+        },
+    );
+    let (node, _) = wired_probe(&mut s);
+    snapshot_now(&mut s, node);
+    let mut drive = Drive::new();
+    drive.until(&mut s, "two recoveries", |e| {
+        matches!(e, SessionEvent::PluginRecovered { attempts: 2, .. })
+    });
+    let states = recovered_state(&drive);
+    assert!(
+        states
+            .iter()
+            .all(|s| matches!(s, tutti_session::StateRestore::Refused { .. })),
+        "{states:?}"
+    );
+    assert!(s.plugin(node).unwrap().withheld_snapshot().is_none());
+    assert!(s.plugin(node).unwrap().snapshot().is_some());
 }

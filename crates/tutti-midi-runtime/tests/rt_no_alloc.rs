@@ -299,7 +299,7 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
 /// note-offs withheld), then 200 notes ended and 200 started at once (104
 /// note-offs refused, owed, retried on the next block).
 ///
-/// Mutation (run): a `Vec` allocated in `HeldNotes::play`'s withhold branch →
+/// Mutation (run): a `Vec` allocated in `Sending::on`'s withhold branch →
 /// the gate panics. (The loss log's own full path is gated in tutti-graph's
 /// `rt_no_alloc`, `losses_past_the_log_and_the_ring_do_not_allocate`.)
 #[test]
@@ -369,4 +369,76 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
         "{} refused",
         exec.dropped_event_count()
     );
+}
+
+/// The ledger on every path, with a full table: 2,100 notes sound at once
+/// across two groups against 2,048 keys (the last 52 are withheld), all end
+/// on one frame into a port that takes 584 of them (the rest are owed and
+/// paid over the next blocks), then a release request, a seek (every held
+/// note ended again) and a stop. None allocates.
+///
+/// Mutation (run): a `Vec` collected in `NoteLedger::pay` → the gate panics.
+/// A `Vec` in `Sending::on`'s full-table branch → the gate panics.
+#[test]
+fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
+    let beat = |frame: u64| Beat(frame as f64 / 24_000.0);
+    let key = |i: u32| {
+        (
+            MidiGroup::of((i / 2_048) as u8),
+            MidiChannel::of((i % 2_048 / 128) as u8),
+            (i % 128) as u8,
+        )
+    };
+    let events = (0..2_100u32).flat_map(|i| {
+        let (g, c, n) = key(i);
+        [
+            TimedMidiEvent::new(beat(u64::from(i)), MidiEvent::note_on(g, c, n, 0x8000)),
+            TimedMidiEvent::new(beat(4_000), MidiEvent::note_off(g, c, n, 0)),
+        ]
+    });
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let clip = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
+    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.commit().unwrap();
+    let mut drain = [MidiEvent::noop(); 1024];
+    let mut f = 0u64;
+    let mut block = |exec: &mut tutti_graph::Executor, rolling: bool, frame: u64| {
+        let t = Transport::new(rolling, Bpm(120.0), beat(frame), None);
+        exec.process(512, &t, &[], &mut []);
+        out.poll_into(&mut drain)
+    };
+    let mut polled = block(&mut exec, true, f);
+    assert_no_alloc::assert_no_alloc(|| {
+        // The table fills over blocks 0 to 4, then the offs at frame 4,000.
+        for _ in 0..11 {
+            f += 512;
+            polled += block(&mut exec, true, f);
+        }
+        let ticket = clip.release_held();
+        f += 512;
+        polled += block(&mut exec, true, f);
+        assert!(clip.drained(ticket).is_ok());
+        // A seek back: the table is empty, the notes start again.
+        for k in 0..8 {
+            polled += block(&mut exec, true, 512 * k);
+        }
+        // A jump while the table is full, then a stop.
+        polled += block(&mut exec, true, 0);
+        polled += block(&mut exec, false, 0);
+        polled += block(&mut exec, false, 0);
+    });
+    assert!(polled > 0);
+    // The table filled, offs were refused, and some were paid late.
+    assert!(exec.dropped_event_count() > 52 + 1_400);
+    assert!(exec.lost_event_count() < exec.dropped_event_count());
 }

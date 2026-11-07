@@ -51,3 +51,11 @@ serde_json = "1"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[dev-dependencies.criterion]
+workspace = true
+
+# The fold against the width folds it replaces, on interleaved and planar blocks.
+[[bench]]
+name = "fold"
+harness = false

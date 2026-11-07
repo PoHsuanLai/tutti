@@ -21,6 +21,7 @@ pub mod value;
 // module path would be a second name for a type that already has one.
 mod channels;
 mod downmix;
+mod fold;
 mod interleaved;
 mod topology;
 
@@ -60,6 +61,9 @@ pub use channels::ChannelLayout;
 // Channel topology — which speaker each channel feeds. Distinct from the count
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.
 pub use topology::{ChannelTopology, Speaker};
+
+// How one topology becomes another: the one fold, built on the control side.
+pub use fold::{Fold, FoldEnd, FoldError};
 
 // Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby). `M3DB` is
 // the −3 dB centre/surround coefficient those matrices apply, and it comes along

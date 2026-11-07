@@ -374,8 +374,9 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 /// channel identity and folds through [`fold_frame`].
 ///
 /// - mono wave → N-wide frame: [`Fold`]'s lone-centre rule, built once as a
-///   [`MonoSpread::to`]: the centre channel of a 6, 8 or 12-wide frame
-///   (nothing in the others), left and right of a stereo one (as the stereo
+///   [`MonoSpread::to`]: the centre channel of a 6, 8 or 12-wide voice
+///   (nothing in the others; a 12-wide voice is placed as its first 8 channels,
+///   the most a reader writes, and a bare `out` of 12 fans), left and right of a stereo one (as the stereo
 ///   kernel always did), the one channel of a mono one. A width the engine has
 ///   no order for (3, 4, 5, 7, 9 to 11, 13 and up) has no centre to name, so
 ///   the sample fans to every channel, as it did before.

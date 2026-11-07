@@ -1329,9 +1329,10 @@ fn a_placed_fork_reads_the_renders_transport() {
 /// Mutation (run): `MonoSpread::to` returning `FAN` for every width (the old
 /// fan-out) fails the 6, 8 and 12 rows on the silent lanes; the lane path
 /// leaving lane 0 as the mono block (skipping the rewrite in
-/// `MonoSpread::lanes`) fails the centre-only rows in the placed read;
-/// `lanes` with the scratch copy taken after lane 0 is rewritten reads zeros
-/// for the centre and fails them.
+/// `MonoSpread::lanes`) fails the centre-only rows of "placed lanes", the one
+/// read that reaches it (the others read a frame at a time); `lanes` with the
+/// scratch copy taken after lane 0 is rewritten reads zeros for the centre and
+/// fails them.
 #[test]
 fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
@@ -1349,9 +1350,21 @@ fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
         let mut free = MemorySource::with_channels(ramp_wave(64, SR), width);
         let mut placed =
             MemorySource::with_channels(ramp_wave(64, SR), width).placed_at(VoiceWindow::default());
+        // Unprepared, a placed source reads a frame at a time; prepared, its
+        // gather is sized and it reads lanes (`read_placed_lanes`, where the
+        // spread is `MonoSpread::lanes`).
+        let mut lanes =
+            MemorySource::with_channels(ramp_wave(64, SR), width).placed_at(VoiceWindow::default());
+        lanes.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
+        assert!(lanes.gather.frames() >= 8, "the lane path is reachable");
         let free = planes(&mut free, None, 8);
         let placed = planes(&mut placed, Some(&transport), 8);
-        for (what, out) in [("free-running", free), ("placed", placed)] {
+        let lanes = planes(&mut lanes, Some(&transport), 8);
+        for (what, out) in [
+            ("free-running", free),
+            ("placed", placed),
+            ("placed lanes", lanes),
+        ] {
             assert_eq!(out.len(), width);
             for (c, plane) in out.iter().enumerate() {
                 let carries = centre.is_none() || centre == Some(c);

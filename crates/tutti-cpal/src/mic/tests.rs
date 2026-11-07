@@ -369,3 +369,33 @@ fn a_mic_whose_backend_keeps_failing_without_audio_is_failed() {
     faults.record_at(&err, t0 + crate::faults::STALL_GRACE);
     assert!(AudioIn::is_failed(&mic));
 }
+
+// `Capture` is crate-private, so its allocation gate lives in the library's own
+// test binary rather than in `tests/` (where the output gates are). Nothing
+// else in this binary allocates inside an `assert_no_alloc` section.
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+/// The capture callback does not allocate: blocks of `f32` and `i16`, wider than
+/// a chunk, with the recording ring and the monitor ring both filling and
+/// then refusing (the full-ring branch), run under a disabled allocator.
+///
+/// Mutation (run, recorded here): a `let _scratch = vec![0.0f32; 1];` at the top
+/// of `Capture::block` aborts the gate and fails this test.
+#[test]
+fn the_capture_callback_does_not_allocate() {
+    let (mut cap, mut mic, _ring) = capture(8, &[2, 3], 256);
+    let f32s = vec![0.25f32; 8 * 150];
+    let i16s = vec![1000i16; 8 * 150];
+    // Warm both conversions, outside the gate.
+    cap.block(&f32s);
+    cap.block(&i16s);
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..8 {
+            cap.block(&f32s);
+            cap.block(&i16s);
+        }
+    });
+    // The rings filled and refused whole frames; nothing was lost silently.
+    assert!(AudioIn::take_lost(&mut mic).get() > 0);
+}

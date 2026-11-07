@@ -732,6 +732,13 @@ mod io_graph_composition {
 
     /// A monitor node plus the producer end of the ring feeding it, so a test can
     /// play the part of the capture callback without a device.
+    /// Frames the tests below push, into a ring of [`FEED_RING`]. `push_interleaved`
+    /// drops what a full ring cannot take, silently, so the room is checked
+    /// at compile time.
+    const FED_FRAMES: usize = 128;
+    const FEED_RING: usize = 512;
+    const _: () = assert!(FED_FRAMES <= FEED_RING);
+
     fn monitor_with_feed(capacity: usize) -> (MicMonitorNode, tutti_graph::TapWriter) {
         let (ring, prod) = MicRing::pair(
             tutti_types::ChannelLayout::STEREO,
@@ -836,7 +843,7 @@ mod io_graph_composition {
     #[test]
     fn frames_pushed_by_the_capture_callback_reach_the_graph_output() {
         let mut app = app();
-        let (monitor, mut prod) = monitor_with_feed(512);
+        let (monitor, mut prod) = monitor_with_feed(FEED_RING);
 
         let id = {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
@@ -847,7 +854,7 @@ mod io_graph_composition {
         app.update();
 
         // Play the capture callback: push a constant, distinguishable frame.
-        for _ in 0..128 {
+        for _ in 0..FED_FRAMES {
             prod.push_interleaved(&[0.5, -0.5]);
         }
 
@@ -874,7 +881,7 @@ mod io_graph_composition {
     #[test]
     fn an_undeclared_monitor_produces_silence_at_the_master() {
         let mut app = app();
-        let (monitor, mut prod) = monitor_with_feed(512);
+        let (monitor, mut prod) = monitor_with_feed(FEED_RING);
 
         {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
@@ -884,7 +891,7 @@ mod io_graph_composition {
         }
         app.update();
 
-        for _ in 0..128 {
+        for _ in 0..FED_FRAMES {
             prod.push_interleaved(&[0.5, -0.5]);
         }
 

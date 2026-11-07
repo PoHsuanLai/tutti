@@ -17,7 +17,9 @@ use tutti_types::{ChannelTopology, Speaker};
 /// it is a position the format named and [`Speaker`] cannot, not a channel
 /// known to feed no speaker, so it is not [`Speaker::Discrete`]. A fold that
 /// meets one refuses it ([`FoldError::Unnamed`](tutti_types::FoldError::Unnamed))
-/// rather than guess where it goes.
+/// rather than guess where it goes. (No consumer builds that fold from a
+/// decoded topology yet; the sampler still folds by width, so such a file is
+/// played, mis-placed, until it does.)
 fn speaker(flag: Channels) -> Speaker {
     use Speaker::*;
     match flag {

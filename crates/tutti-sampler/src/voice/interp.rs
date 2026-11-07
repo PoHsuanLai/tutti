@@ -499,8 +499,8 @@ pub(crate) fn read_looped_frame(
 /// engine's one rule ([`Fold`]'s: a lone centre feeds the destination's centre
 /// if it has one, else its front left and right) rather than copying it to every
 /// channel. Built once per reader, on the control side
-/// ([`to`](Self::to) allocates); [`frame`](Self::frame) and
-/// [`lane`](Self::lane) are allocation-free.
+/// ([`to`](Self::to) allocates); its per-frame and per-block writes are
+/// allocation-free.
 ///
 /// The destination is taken to be the engine's own order for its width
 /// ([`Fold::assuming_smpte`]): a voice's outputs are a count, and the count is
@@ -559,7 +559,7 @@ impl MonoSpread {
     }
 
     /// Spreads the mono block in `lanes[0][range]` over the first `width`
-    /// lanes, in place: lane `c`'s `range` is what [`frame`](Self::frame)
+    /// lanes, in place: lane `c`'s `range` is what `frame`
     /// writes at channel `c` for each of the mono samples, bit for bit.
     /// `scratch` (at least `range.len()` long) holds the mono block while lane
     /// 0 is itself rewritten, which a centre-only spread silences.

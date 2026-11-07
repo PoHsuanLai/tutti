@@ -21,7 +21,9 @@ pub use cases::*;
 pub use format::{Format, Gap, ParamTiming, run};
 pub use formats::Clap;
 pub use plugin::{clap as clap_path, library};
-pub use transcript::{Kind, Logged, Transcript, patch_mode, set_mode, transcript};
+pub use transcript::{
+    Kind, Logged, Transcript, find_blob, patch_mode, replace_blob, set_mode, transcript,
+};
 
 /// The case list, once: a test per case, and the names a [`Gap`] may use.
 #[macro_export]
@@ -46,6 +48,7 @@ macro_rules! contract {
             corrupt_state_leaves_plugin_usable,
             halves_of_two_activations_are_stuck,
             f64_carries_same_audio,
+            overflowing_log_fails_the_oracle,
             process_does_not_allocate);
     };
     (@each $fmt:ty, $gaps:expr, $($case:ident),*) => {

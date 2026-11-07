@@ -3,8 +3,9 @@
 
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParameterChanges,
-    PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat, Samples,
+    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamFlags,
+    ParameterChanges, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor, SampleFormat,
+    Samples,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -30,7 +31,7 @@ fn active_in<F: Format>(mode: Mode) -> Active<F::L> {
 
 fn active_with<F: Format>(mode: Mode, block: usize, format: SampleFormat) -> Active<F::L> {
     let mut loaded = F::load();
-    set_mode(&mut loaded, mode);
+    set_mode::<F, _>(&mut loaded, mode);
     Active::activate(loaded, prepare(RATE, block, format))
         .unwrap_or_else(|(_, why)| panic!("activation refused: {why:?}"))
 }
@@ -86,7 +87,7 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
     let out = a.render(&silence(128), 128, &ProcessContext::new());
     assert!(out[0].iter().all(|&v| v == spec::tag(0)));
     assert!(out[1].iter().all(|&v| v == spec::tag(1)));
-    let t = transcript(a.controller());
+    let t = transcript::<F, _>(a.controller());
     assert_eq!((t.rate, t.max_block), (44_100.0, 128), "what it was told");
     assert_eq!(t.prepares, 2);
 }
@@ -132,20 +133,26 @@ pub fn tail_reported<F: Format>() {
     );
 }
 
-/// The plugin lists its parameters with their defaults.
-// Mutation (run): the host lists every parameter but the last -> fails.
+/// The plugin lists its parameters with their names, defaults and, where the
+/// format reports it, that they are automatable. Not step counts: CLAP's stepped
+/// flag carries none, and VST2 has no steps.
+// Mutation (run): the host lists every parameter but the last -> fails; the
+// plugin swaps two names -> fails; the host reports automatable as hidden ->
+// fails.
 pub fn parameters_listed<F: Format>() {
-    let mut got: Vec<(u32, f64)> = F::load()
-        .parameters()
-        .iter()
-        .map(|p| (p.id.get(), p.default_value()))
-        .collect();
-    got.sort_by_key(|&(id, _)| id);
-    let want: Vec<(u32, f64)> = Param::ALL
-        .iter()
-        .map(|&(p, default)| (p.id().get(), default))
-        .collect();
-    assert_eq!(got, want);
+    let mut got = F::load().parameters();
+    got.sort_by_key(|p| p.id.get());
+    assert_eq!(got.len(), Param::ALL.len(), "the listed parameters");
+    for (info, &(param, default)) in got.iter().zip(&Param::ALL) {
+        assert_eq!(info.id, param.id());
+        assert_eq!(info.name, param.name(), "{param:?} name");
+        assert_eq!(info.default_value(), default, "{param:?} default");
+        assert_ne!(
+            info.flag(ParamFlags::AUTOMATABLE),
+            Some(false),
+            "{param:?} automatable"
+        );
+    }
 }
 
 /// A parameter written loaded reads back, loaded and active.
@@ -219,7 +226,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     for frames in [1, 7, 33] {
         a.silent(frames);
     }
-    let t = transcript(a.controller());
+    let t = transcript::<F, _>(a.controller());
     assert_eq!(t.blocks, [64, 1, 7, 33], "block sizes the host sent");
     for kind in [Kind::Param, Kind::NoteOn, Kind::NoteOff] {
         let offsets: Vec<u32> = t.of(kind).map(|e| e.offset).collect();
@@ -232,6 +239,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
             "{kind:?} outside the block"
         );
     }
+    assert_eq!(t.of(Kind::Param).count(), 2);
     assert_eq!(t.of(Kind::NoteOn).count(), 2);
     assert_eq!(t.of(Kind::NoteOff).count(), 1);
 }
@@ -254,7 +262,7 @@ pub fn state_round_trip<F: Format>() {
 // Mutation (run): the plugin resets its level on activation -> fails.
 pub fn loaded_write_reaches_the_audio<F: Format>() {
     let mut loaded = F::load();
-    set_mode(&mut loaded, Mode::Level);
+    set_mode::<F, _>(&mut loaded, Mode::Level);
     write(&mut loaded, Param::Level, 0.75);
     let out = activate(loaded, BLOCK).silent(BLOCK);
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
@@ -265,7 +273,7 @@ pub fn loaded_write_reaches_the_audio<F: Format>() {
 // Mutation (run): the plugin saves the default level -> fails.
 pub fn loaded_write_survives_a_save<F: Format>() {
     let mut loaded = F::load();
-    set_mode(&mut loaded, Mode::Level);
+    set_mode::<F, _>(&mut loaded, Mode::Level);
     write(&mut loaded, Param::Level, 0.75);
     let saved = loaded.save_state().expect("saves");
     let mut other = F::load();
@@ -307,7 +315,32 @@ pub fn f64_carries_same_audio<F: Format>() {
     assert!(out[1].iter().all(|&v| v == 2.5));
 }
 
+/// A plugin whose log overflowed fails the oracle instead of passing on the
+/// part it kept.
+// Mutation (run): the plugin not flagging blocks past the ring -> fails.
+pub fn overflowing_log_fails_the_oracle<F: Format>() {
+    let mut a = active_in::<F>(Mode::Tag);
+    for _ in 0..=spec::LOG_BLOCKS {
+        a.silent(BLOCK);
+    }
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        transcript::<F, _>(a.controller())
+    }));
+    let why = read.expect_err("a transcript past the log's room is refused");
+    let text = why
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| why.downcast_ref::<&str>().copied());
+    assert!(
+        text.is_some_and(|t| t.contains("log overflowed")),
+        "{text:?}"
+    );
+}
+
 /// Rendering a block allocates nothing (run under `AllocDisabler`).
+///
+/// A failure aborts the process, so under plain `cargo test` it takes the whole
+/// test binary with it, and a [`Gap`](crate::Gap) cannot express it.
 // Mutation (run): the host allocates once per block -> aborts under `AllocDisabler`.
 pub fn process_does_not_allocate<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);

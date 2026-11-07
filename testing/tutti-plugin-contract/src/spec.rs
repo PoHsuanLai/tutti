@@ -28,6 +28,21 @@ impl Param {
     }
 }
 
+impl Param {
+    /// The name every format lists it under.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Param::Level => "level",
+            Param::Aux => "aux",
+            Param::Mode => "mode",
+        }
+    }
+}
+
+/// Blocks the plugin's transcript keeps; one more overflows it.
+pub const LOG_BLOCKS: usize = 16;
+
 /// An id the plugin does not list.
 pub const UNLISTED: ParamId = ParamId::new(77);
 

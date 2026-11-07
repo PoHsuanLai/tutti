@@ -8,7 +8,7 @@
 use tutti_plugin::BridgeConfig;
 use tutti_plugin::handles::{ParamId, PluginClient, PluginHandle};
 use tutti_plugin_contract::spec::{Mode, Param};
-use tutti_plugin_contract::{Transcript, clap_path};
+use tutti_plugin_contract::{Clap, Format, Transcript, clap_path, patch_mode};
 
 // Mutation (run): the plugin saving a mode word of 0 fails it.
 #[test]
@@ -21,11 +21,15 @@ fn clap_mode_and_transcript_cross_the_process_boundary() {
     let pid = handle.server_pid().expect("the plugin lives in a server");
     assert_ne!(pid, std::process::id(), "a process other than this one");
 
-    let mut state = handle.state().save_state().expect("saves");
-    tutti_plugin_contract::patch_mode(&mut state, Mode::Level);
-    handle.state().load_state(&state).expect("loads");
+    let state = handle.state().save_state().expect("saves");
+    let blob = patch_mode(Clap::extract_blob(&state), Mode::Level);
+    handle
+        .state()
+        .load_state(&Clap::embed_blob(&state, &blob))
+        .expect("loads");
 
-    let after = Transcript::parse(&handle.state().save_state().expect("saves again"));
+    let saved = handle.state().save_state().expect("saves again");
+    let after = Transcript::parse(&Clap::extract_blob(&saved));
     assert_eq!(after.mode, Mode::Level.index(), "the mode crossed");
     let level = handle
         .params()

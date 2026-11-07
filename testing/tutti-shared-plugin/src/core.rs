@@ -35,7 +35,8 @@
 //! | 8, 16 | `level`, `aux` (f64) |
 //! | 24 | process calls (u64), then total frames (u64) |
 //! | 40 | prepare calls (u32), rate (f64), max block (u32) |
-//! | 56 | `n` (u32), then the last `n` block sizes (u32 each), oldest first |
+//! | 56 | overflow (u32): 1 when the host sent more blocks or events than the log keeps or the plugin queues, else 0 |
+//! | 60 | `n` (u32), then the last `n` block sizes (u32 each), oldest first |
 //! | after | `m` (u32), then `m` events of 24 bytes in arrival order |
 //!
 //! An event is `kind << 32 | offset` (u64; kind 1 parameter, 2 note on, 3 note
@@ -180,6 +181,7 @@ pub struct Core {
     rate: AtomicU64,
     max_block: AtomicU32,
     blocks_n: AtomicU32,
+    overflow: AtomicU32,
     blocks: [AtomicU32; LOG_BLOCKS],
     log_n: AtomicU32,
     log: [[AtomicU64; 3]; LOG_EVENTS],
@@ -223,6 +225,7 @@ impl Core {
             rate: AtomicU64::new(0),
             max_block: z(),
             blocks_n: z(),
+            overflow: z(),
             blocks: std::array::from_fn(|_| z()),
             log_n: z(),
             log: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
@@ -274,6 +277,7 @@ impl Core {
         self.calls.store(0, Relaxed);
         self.frames.store(0, Relaxed);
         self.blocks_n.store(0, Relaxed);
+        self.overflow.store(0, Relaxed);
         self.log_n.store(0, Relaxed);
         self.rate.store(rate.to_bits(), Relaxed);
         self.max_block.store(max_block as u32, Relaxed);
@@ -309,6 +313,8 @@ impl Core {
         }
         if dsp.events.len() < MAX_EVENTS {
             dsp.events.push(ev);
+        } else {
+            self.overflow.store(1, Relaxed);
         }
     }
 
@@ -319,6 +325,8 @@ impl Core {
             self.log[n][1].store(u64::from(id), Relaxed);
             self.log[n][2].store(value.to_bits(), Relaxed);
             self.log_n.store(n as u32 + 1, Release);
+        } else {
+            self.overflow.store(1, Relaxed);
         }
     }
 
@@ -335,6 +343,9 @@ impl Core {
     ) {
         let n = self.calls.fetch_add(1, Relaxed);
         self.frames.fetch_add(frames as u64, Relaxed);
+        if n as usize >= LOG_BLOCKS {
+            self.overflow.store(1, Relaxed);
+        }
         let slot = (n as usize) % LOG_BLOCKS;
         self.blocks[slot].store(frames as u32, Relaxed);
         self.blocks_n
@@ -437,6 +448,7 @@ impl Core {
         b.extend_from_slice(&self.prepares.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.rate.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.max_block.load(Relaxed).to_le_bytes());
+        b.extend_from_slice(&self.overflow.load(Relaxed).to_le_bytes());
         let nb = self.blocks_n.load(Acquire);
         let kept = (nb as usize).min(LOG_BLOCKS);
         b.extend_from_slice(&(kept as u32).to_le_bytes());
@@ -484,5 +496,72 @@ impl Core {
         self.set_param(LEVEL, level);
         self.set_param(AUX, aux);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OVERFLOW_AT: usize = 56;
+
+    fn overflow(core: &Core) -> u32 {
+        let blob = core.save();
+        u32::from_le_bytes(blob[OVERFLOW_AT..OVERFLOW_AT + 4].try_into().unwrap())
+    }
+
+    fn block(core: &Core, dsp: &mut Dsp) {
+        let (ins, mut out) = ([0.0f32; 4], [0.0f32; 4]);
+        core.process(dsp, 4, 0, &[&ins], &mut [&mut out]);
+    }
+
+    fn ready() -> (Core, Dsp) {
+        let (core, mut dsp) = (Core::new(), Dsp::default());
+        core.prepare(&mut dsp, 48_000.0, 4);
+        (core, dsp)
+    }
+
+    // Mutation (run): not setting the flag when the log is full fails
+    // `a_full_event_log_sets_overflow`; not setting it past the block ring
+    // fails `more_blocks_than_the_ring_keeps_sets_overflow`; `prepare` not
+    // clearing it fails `preparing_clears_overflow`.
+    #[test]
+    fn a_log_within_its_caps_does_not_overflow() {
+        let (core, mut dsp) = ready();
+        for k in 0..LOG_EVENTS as u32 {
+            core.push(&mut dsp, Ev::NoteOn { offset: k, key: 60 });
+        }
+        for _ in 0..LOG_BLOCKS {
+            block(&core, &mut dsp);
+        }
+        assert_eq!(overflow(&core), 0);
+    }
+
+    #[test]
+    fn a_full_event_log_sets_overflow() {
+        let (core, mut dsp) = ready();
+        for k in 0..=LOG_EVENTS as u32 {
+            core.push(&mut dsp, Ev::NoteOn { offset: k, key: 60 });
+        }
+        assert_eq!(overflow(&core), 1);
+    }
+
+    #[test]
+    fn more_blocks_than_the_ring_keeps_sets_overflow() {
+        let (core, mut dsp) = ready();
+        for _ in 0..=LOG_BLOCKS {
+            block(&core, &mut dsp);
+        }
+        assert_eq!(overflow(&core), 1);
+    }
+
+    #[test]
+    fn preparing_clears_overflow() {
+        let (core, mut dsp) = ready();
+        for _ in 0..=LOG_BLOCKS {
+            block(&core, &mut dsp);
+        }
+        core.prepare(&mut dsp, 48_000.0, 4);
+        assert_eq!(overflow(&core), 0);
     }
 }

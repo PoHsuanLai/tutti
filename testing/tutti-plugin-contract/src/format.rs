@@ -19,6 +19,11 @@ pub enum ParamTiming {
 /// The case still runs. It must fail with `fails_with`, so a gap that stops
 /// being true, or a case that starts failing for another reason, fails the
 /// test. Keep `fails_with` specific.
+///
+/// A gap is a failure that unwinds. A case that aborts the process cannot be
+/// one: `process_does_not_allocate` aborts under `AllocDisabler`, taking the
+/// whole test binary with it under plain `cargo test`, so a format that
+/// allocates in `process` fails it outright.
 #[derive(Clone, Copy, Debug)]
 pub struct Gap {
     /// Why the format cannot pass it.
@@ -41,6 +46,22 @@ pub trait Format {
     const GAPS: &'static [(&'static str, Gap)];
     /// Loads a fresh instance of the shared plugin.
     fn load() -> Self::L;
+
+    /// The plugin's own bytes (they begin with its magic) inside the state the
+    /// host saved. The default assumes the host stores the plugin's bytes
+    /// verbatim somewhere in its state; a format that encodes state (an AU
+    /// property list, say) overrides this and [`embed_blob`](Self::embed_blob)
+    /// to decode and encode it.
+    fn extract_blob(state: &[u8]) -> Vec<u8> {
+        crate::find_blob(state)
+    }
+
+    /// `state` with the plugin's bytes replaced by `blob`, which has the length
+    /// [`extract_blob`](Self::extract_blob) returned. Default: the verbatim
+    /// counterpart of the default `extract_blob`.
+    fn embed_blob(state: &[u8], blob: &[u8]) -> Vec<u8> {
+        crate::replace_blob(state, blob)
+    }
 }
 
 fn message(payload: &(dyn Any + Send)) -> &str {

@@ -7,6 +7,7 @@
 
 use tutti_plugin_types::Control;
 
+use crate::Format;
 use crate::spec::Mode;
 
 const MAGIC: [u8; 4] = *b"TSP1";
@@ -50,6 +51,9 @@ pub struct Transcript {
     pub max_block: u32,
     /// Events in arrival order.
     pub events: Vec<Logged>,
+    /// The host sent more than the plugin keeps, so the lists above are
+    /// incomplete.
+    pub overflow: bool,
 }
 
 /// A reader over the blob.
@@ -75,31 +79,53 @@ impl Cursor<'_> {
     }
 }
 
-/// Where the plugin's blob starts inside whatever the host saved: a host may
-/// wrap the plugin's bytes in a container of its own.
-fn blob_at(bytes: &[u8]) -> usize {
-    bytes
+/// Where the plugin's bytes start inside a state the host saved verbatim.
+fn blob_at(state: &[u8]) -> usize {
+    state
         .windows(MAGIC.len())
         .position(|w| w == MAGIC)
         .expect("the state holds the plugin's blob")
 }
 
+/// The plugin's blob, found in a state the host stores verbatim: what
+/// [`Format::extract_blob`](crate::Format::extract_blob) does by default.
+#[must_use]
+pub fn find_blob(state: &[u8]) -> Vec<u8> {
+    state[blob_at(state)..].to_vec()
+}
+
+/// `state` with the plugin's blob replaced by `blob` (the same length, found
+/// as [`find_blob`] does): the default of
+/// [`Format::embed_blob`](crate::Format::embed_blob).
+#[must_use]
+pub fn replace_blob(state: &[u8], blob: &[u8]) -> Vec<u8> {
+    let at = blob_at(state);
+    let mut out = state.to_vec();
+    out[at..at + blob.len()].copy_from_slice(blob);
+    out
+}
+
 impl Transcript {
-    /// Parses a saved state.
+    /// Parses the plugin's blob (from its magic).
     ///
     /// # Panics
     ///
-    /// When the state holds no complete blob of the plugin's.
+    /// When `blob` is not a complete blob of the plugin's.
     #[must_use]
-    pub fn parse(bytes: &[u8]) -> Self {
-        let mut c = Cursor(&bytes[blob_at(bytes)..]);
-        c.take::<4>();
+    pub fn parse(blob: &[u8]) -> Self {
+        let mut c = Cursor(blob);
+        assert_eq!(
+            c.take::<4>(),
+            MAGIC,
+            "the blob starts with the plugin's magic"
+        );
         let mode = c.u32();
         c.take::<16>(); // level, aux
         c.take::<16>(); // process calls, frames
         let prepares = c.u32();
         let rate = c.f64();
         let max_block = c.u32();
+        let overflow = c.u32() != 0;
         let blocks = (0..c.u32()).map(|_| c.u32()).collect();
         let events = (0..c.u32())
             .map(|_| {
@@ -126,7 +152,23 @@ impl Transcript {
             rate,
             max_block,
             events,
+            overflow,
         }
+    }
+
+    /// The transcript, refused when it is incomplete: a case that iterates a
+    /// list the plugin truncated would otherwise pass on what is left.
+    ///
+    /// # Panics
+    ///
+    /// When the plugin's log overflowed.
+    #[must_use]
+    pub fn complete(self) -> Self {
+        assert!(
+            !self.overflow,
+            "the plugin's log overflowed: the host sent more than it keeps"
+        );
+        self
     }
 
     /// The events of one kind, in arrival order.
@@ -136,27 +178,96 @@ impl Transcript {
 }
 
 /// The transcript of what `c`'s plugin has been sent.
-pub fn transcript<C: Control + ?Sized>(c: &mut C) -> Transcript {
-    Transcript::parse(&c.save_state().expect("the plugin saves"))
-}
-
-/// Selects the plugin's mode by saving its state, patching the mode word in
-/// place and loading it back. A mode parameter would not do: a write to a VST3
-/// separate controller reaches the component only inside a block, after setup
-/// has read the mode.
-pub fn set_mode<C: Control + ?Sized>(c: &mut C, mode: Mode) {
-    let mut state = c.save_state().expect("the plugin saves");
-    patch_mode(&mut state, mode);
-    c.load_state(&state)
-        .expect("the plugin takes its configuration");
-}
-
-/// Sets the mode word of the plugin's blob inside `state`, in place.
 ///
 /// # Panics
 ///
-/// When `state` holds no blob of the plugin's.
-pub fn patch_mode(state: &mut [u8], mode: Mode) {
-    let at = blob_at(state) + MAGIC.len();
-    state[at..at + 4].copy_from_slice(&mode.index().to_le_bytes());
+/// When the plugin's log overflowed.
+pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
+    let state = c.save_state().expect("the plugin saves");
+    Transcript::parse(&F::extract_blob(&state)).complete()
+}
+
+/// Selects the plugin's mode by saving its state, patching the mode word of the
+/// plugin's blob and loading it back. A mode parameter would not do: a write to
+/// a VST3 separate controller reaches the component only inside a block, after
+/// setup has read the mode.
+pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
+    let state = c.save_state().expect("the plugin saves");
+    let patched = F::embed_blob(&state, &patch_mode(F::extract_blob(&state), mode));
+    c.load_state(&patched)
+        .expect("the plugin takes its configuration");
+}
+
+/// `blob` with its mode word set.
+#[must_use]
+pub fn patch_mode(mut blob: Vec<u8>, mode: Mode) -> Vec<u8> {
+    let at = MAGIC.len();
+    blob[at..at + 4].copy_from_slice(&mode.index().to_le_bytes());
+    blob
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blob(overflow: u32, blocks: &[u32]) -> Vec<u8> {
+        let mut b = MAGIC.to_vec();
+        b.extend_from_slice(&1u32.to_le_bytes()); // mode
+        b.extend_from_slice(&[0; 32]); // level, aux, calls, frames
+        b.extend_from_slice(&2u32.to_le_bytes()); // prepares
+        b.extend_from_slice(&48_000f64.to_bits().to_le_bytes());
+        b.extend_from_slice(&64u32.to_le_bytes());
+        b.extend_from_slice(&overflow.to_le_bytes());
+        b.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+        for n in blocks {
+            b.extend_from_slice(&n.to_le_bytes());
+        }
+        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&(2u64 << 32 | 7).to_le_bytes());
+        b.extend_from_slice(&60u64.to_le_bytes());
+        b.extend_from_slice(&0f64.to_bits().to_le_bytes());
+        b
+    }
+
+    // Mutation (run): reading the fields one word early fails every assertion.
+    #[test]
+    fn a_blob_parses_to_what_it_holds() {
+        let t = Transcript::parse(&blob(0, &[64, 1])).complete();
+        assert_eq!(
+            (t.mode, t.prepares, t.rate, t.max_block),
+            (1, 2, 48_000.0, 64)
+        );
+        assert_eq!(t.blocks, [64, 1]);
+        assert_eq!(
+            t.events,
+            [Logged {
+                kind: Kind::NoteOn,
+                offset: 7,
+                id: 60,
+                value: 0.0
+            }]
+        );
+    }
+
+    // Mutation (run): `complete` not checking the flag fails it.
+    #[test]
+    #[should_panic(expected = "log overflowed")]
+    fn an_overflowed_transcript_is_refused() {
+        let _ = Transcript::parse(&blob(1, &[64])).complete();
+    }
+
+    // Mutation (run): `replace_blob` writing at the start of the state fails it.
+    #[test]
+    fn a_blob_is_found_and_replaced_inside_a_wrapper() {
+        let mut state = b"wrap".to_vec();
+        state.extend(blob(0, &[64]));
+        state.extend_from_slice(b"tail");
+        let found = find_blob(&state);
+        let patched = replace_blob(&state, &patch_mode(found, Mode::Notes));
+        assert!(patched.starts_with(b"wrap") && patched.ends_with(b"tail"));
+        assert_eq!(
+            Transcript::parse(&find_blob(&patched)).mode,
+            Mode::Notes.index()
+        );
+    }
 }

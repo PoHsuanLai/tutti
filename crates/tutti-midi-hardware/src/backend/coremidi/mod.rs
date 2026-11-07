@@ -28,14 +28,17 @@ use coremidi::{
 };
 
 use crate::InputProducerHandle;
-use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
-use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::capability::{EndpointInfo, UmpCapability};
+use crate::devices::{ChangeSink, os_devices};
+use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
 use tutti_midi_types::{MidiOut, Protocol};
 
 pub mod virtual_destination;
 pub mod virtual_source;
+mod watch;
 pub use virtual_destination::UmpVirtualDestination;
 pub use virtual_source::UmpVirtualSource;
 
@@ -48,6 +51,7 @@ pub use virtual_source::UmpVirtualSource;
 /// on first use and kept for the life of the process; a failed creation is not
 /// cached, so a later call retries.
 pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::OSStatus> {
+    hub_first();
     static CLIENT: std::sync::Mutex<Option<&'static Client>> = std::sync::Mutex::new(None);
     let mut slot = CLIENT
         .lock()
@@ -58,6 +62,18 @@ pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::
     let client: &'static Client = Box::leak(Box::new(Client::new("tutti-midi")?));
     *slot = Some(client);
     Ok(client)
+}
+
+/// Starts the device watch's client. CoreMIDI sends notifications to the run
+/// loop of the process's first client, so every place this backend creates a
+/// client (`shared_client`, `virtual_source::shared_raw_client`) calls this
+/// first, before taking its own lock.
+///
+/// Rule: nothing the hub thread runs may call back into those two functions
+/// (they wait for the hub to start, and the hub thread's `snapshot` is
+/// `CoreMidiEndpoints::devices`, which builds no client), or startup deadlocks.
+pub(crate) fn hub_first() {
+    let _ = watch::hub();
 }
 
 /// CoreMIDI's `kMIDIProtocol_2_0`, as `kMIDIPropertyProtocolID` reports it.
@@ -94,8 +110,13 @@ fn endpoint_capability(object: &coremidi::Object) -> UmpCapability {
 /// An endpoint without a unique id is therefore left out of the list rather than
 /// handed an index that would name a different device after a hot-plug.
 fn endpoint_id(object: &coremidi::Object) -> Option<EndpointId> {
-    let unique: std::result::Result<i32, _> = Properties::unique_id().value_from(object);
-    unique.ok().map(|id| EndpointId::from_raw(id as u32 as u64))
+    unique_id(object).map(|id| EndpointId::from_raw(id as u32 as u64))
+}
+
+/// `kMIDIPropertyUniqueID`, which persists across restarts: it is also the
+/// endpoint's [`Identity`].
+fn unique_id(object: &coremidi::Object) -> Option<i32> {
+    Properties::unique_id().value_from(object).ok()
 }
 
 /// The macOS [`MidiEndpoints`] implementation.
@@ -149,7 +170,20 @@ impl CoreMidiEndpoints {
     }
 }
 
+impl CoreMidiEndpoints {
+    /// Every device now. Run by the hub thread: it must not create a client
+    /// (`hub_first`).
+    fn devices() -> Vec<OsDevice> {
+        let this = Self { client: None };
+        os_devices(&this.inputs(), &this.outputs())
+    }
+}
+
 impl MidiEndpoints for CoreMidiEndpoints {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        watch::start(sink, Self::devices)
+    }
+
     fn inputs(&self) -> Vec<EndpointInfo> {
         (0..Sources::count())
             .filter_map(Source::from_index)
@@ -157,6 +191,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
             .filter_map(|(index, source)| {
                 Some(EndpointInfo {
                     id: endpoint_id(&source)?,
+                    identity: Identity::CoreMidi(unique_id(&source)?),
                     name: endpoint_name(&source, index),
                     capability: endpoint_capability(&source),
                 })
@@ -171,6 +206,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
             .filter_map(|(index, dest)| {
                 Some(EndpointInfo {
                     id: endpoint_id(&dest)?,
+                    identity: Identity::CoreMidi(unique_id(&dest)?),
                     name: endpoint_name(&dest, index),
                     capability: endpoint_capability(&dest),
                 })

@@ -49,6 +49,9 @@ members = [
     # MIDI 1.0 to MIDI 2.0 widening and the M2-115 scaling (design 017 §4 and §6);
     # depends on `tutti-ump` alone.
     "crates/tutti-midi-protocol",
+    # The pure core of MIDI device detection (design 017 §5): `DeviceId` and
+    # `DeviceTable`. Depends on no workspace crate.
+    "crates/tutti-midi-device",
     "crates/tutti-graph",
     "crates/tutti-mod",
     "crates/tutti-export",

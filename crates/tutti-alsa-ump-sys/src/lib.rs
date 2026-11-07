@@ -288,6 +288,20 @@ unsafe extern "C" {
     pub fn snd_seq_port_info_get_name(info: *const snd_seq_port_info_t) -> *const c_char;
     /// The port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_get_capability(info: *const snd_seq_port_info_t) -> c_uint;
+    /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
+    pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
+    /// Fill `info` from one of `seq`'s own ports.
+    pub fn snd_seq_get_port_info(
+        seq: *mut snd_seq_t,
+        port: c_int,
+        info: *mut snd_seq_port_info_t,
+    ) -> c_int;
+    /// Change one of `seq`'s own ports to `info`; the sequencer announces it.
+    pub fn snd_seq_set_port_info(
+        seq: *mut snd_seq_t,
+        port: c_int,
+        info: *mut snd_seq_port_info_t,
+    ) -> c_int;
     /// Advance `info` to the client's next port; negative when there is none.
     pub fn snd_seq_query_next_port(seq: *mut snd_seq_t, info: *mut snd_seq_port_info_t) -> c_int;
 

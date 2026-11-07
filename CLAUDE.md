@@ -367,8 +367,9 @@ Use the `tutti_types::value::units` newtype, never a bare float, for any
 quantity one covers: fields, signatures, `Param<U>` and return types.
 
 - **Operators are opt-in per type, and every omission is deliberate.** Read
-  the omission ledger in `units.rs`'s tests before adding one. If it is listed
-  there, write a named method instead.
+  the omission ledgers in `value/units/`'s tests (one per family) before
+  adding one; a unit's `unit!` ability list is its whole algebra. If it is
+  listed there, write a named method instead.
 - **An omission must ship with its replacement in the same change.**
 - **Convert with the named converters** (`Db::to_amplitude`,
   `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.

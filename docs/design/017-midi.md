@@ -312,6 +312,56 @@ impl DeviceTable {
 - `FakeBackend` has `plug()` and `unplug()`, so a test drives hot-plug with no
   device.
 
+**Built** (stage 4, first part). `tutti-midi-device` is a new crate that holds
+`DeviceTable`, `OsChange`, `OsDevice`, `DeviceEvent`, `DeviceInfo`, `DeviceId` and
+`EndpointId` and nothing else; it has no dependency yet (the stage's `Endpoint`
+and `Connection` will add `tutti-ump`). `Devices` is in `tutti-midi-hardware`,
+over a `Watch` the backend returns from `MidiEndpoints::watch`.
+
+- **Linux.** A thread subscribes to `System:Announce` and blocks in `poll` on the
+  sequencer's descriptors and a stop descriptor. On any announcement it
+  enumerates again and reports the difference; it never reads what the event
+  says. Dropping `Devices` closes the stop descriptor and joins the thread.
+  Tested against the real sequencer: user-space clients appear and exit, and the
+  tests see `Added` and `Removed` (suite `sequencer-tests`). The watch needs no
+  UMP: a kernel without it still announces.
+- **macOS.** A thread creates a CoreMIDI client with a notification block and
+  runs its run loop; a setup notification triggers the same re-enumeration.
+  Compiled and linted for `aarch64-apple-darwin` from Linux; never run.
+- **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
+  watches nothing, as it enumerates nothing. Opening reports `Unsupported`.
+- **`DeviceId`** is an `Identity` and an ordinal. `Identity` is the Product
+  Instance Id, CoreMIDI's `MIDIUniqueID`, or the ALSA client and port name. No
+  backend produces a Product Instance Id yet: alsa-lib 1.2.16 has no getter for
+  one and CoreMIDI offers its unique id. The ordinal is the lowest one no listed
+  device with that identity holds, so two identical keyboards are `#0` and `#1`
+  and a freed ordinal comes back. A rename is `Changed` and keeps the id.
+- **A reused handle is a new device.** ALSA gives a new client the number of one
+  that just exited, so two enumerations can see one handle for two devices. The
+  backend's `Reporter` sends `Gone` for a handle whose identity changed, before
+  the `Present` of the new one.
+- **Session.** `Phase::Poll` reads `Devices::poll`, reports each event as
+  `SessionEvent::MidiDevice`, and closes a held input or output whose device was
+  removed, reporting `MidiInputLost` or `MidiOutputLost` after it
+  (`SessionBuilder::midi_hardware_over` takes a `FakeBackend`). `bevy-tutti` writes
+  `MidiHotplug` for each device event and clears its poll timer for a lost port.
+
+Deviations from the sketch above:
+
+- `open_input` takes the ring's producer: `open_input(&id, producer)`. Input
+  events reach the graph through a ring, and the producer is what the backend
+  feeds.
+- `MidiSession` keys its connections by `DeviceId`, and its `inputs` and `outputs`
+  return `DeviceInfo`; `Devices::capability(&id)` answers what `EndpointInfo`
+  carried.
+- The stage-1 note says `tutti-midi-device` depends on `tutti-ump`; this PR's
+  crate does not.
+
+Not built: the flush of held notes when a device is lost (§8.3). Nothing at the
+input edge tracks held notes yet, so the retired port discards what it had queued
+and releases nothing. A device removed while a note is held leaves it sounding
+until the node that tracks notes exists.
+
 ### Timing at the edge
 
 - **The clock map.** `ClockMap` converts an OS time to a frame. It is pure: it
@@ -576,7 +626,8 @@ a behaviour change.
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.
 4. **`tutti-midi-device` and the `-ffi` crates.** Device detection comes first
-   (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1.
+   (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1:
+   done, except the flush (§5, "Built").
    Then model, connection, identity, device loss, timing (§5), and the backends
    with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves

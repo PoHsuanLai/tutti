@@ -176,7 +176,7 @@ impl Devices {
     }
 
     /// As [`open`](Self::open), over a supplied backend: a test's
-    /// [`FakeBackend`](crate::test_support::FakeBackend).
+    /// `test_support::FakeBackend`.
     ///
     /// # Errors
     ///

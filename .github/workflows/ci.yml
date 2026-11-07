@@ -99,6 +99,8 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
+      # And `tutti-midi-device`, which keeps its modules private.
+      - run: scripts/check-canonical-paths.sh tutti_midi_device id table
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db catalog database facts fs pedal record scanner
       # And `tutti-dsp`: its modules are private, the root names every item.
@@ -256,6 +258,11 @@ jobs:
       #                         `export,modulation` so the render mode and the
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
+      #                         and its hot-plug tests
+      #   tutti-midi-hardware/sequencer-tests — `Devices` against the real ALSA
+      #                         sequencer (`backend/alsa/tests.rs`): user-space
+      #                         clients are the devices. Needs `snd-seq` loaded and
+      #                         `/dev/snd/seq` readable, which the step below sets up
       #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
@@ -286,6 +293,7 @@ jobs:
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
@@ -297,6 +305,13 @@ jobs:
       # job does. CLAP only: that is the format the reference plugin is, and the
       # default features would pull the VST3 SDK submodules this checkout does
       # not fetch.
+      # `tutti-midi-hardware/sequencer-tests` opens the ALSA sequencer: the
+      # kernel module is loaded and the node made readable first.
+      - name: Load the ALSA sequencer (tutti-midi-hardware/sequencer-tests)
+        run: |
+          sudo modprobe snd-seq
+          sudo chmod a+rw /dev/snd/seq
+
       - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap and tutti/clap spawn it)
         run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap
 
@@ -314,6 +329,7 @@ jobs:
           # dev-dependency turns it on); this step names it so tests/serde.rs still runs
           # if that edge goes away.
           cargo nextest run --locked -p tutti-ump --features serde
+          cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json

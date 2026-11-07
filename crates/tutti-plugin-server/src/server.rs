@@ -12,8 +12,9 @@ use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 /// Ask the OS to schedule this thread as realtime, now that it is about to do
 /// nothing but per-block audio work.
 ///
-/// The host side never needs this: CoreAudio, WASAPI and JACK all create the
-/// audio callback's thread at realtime priority themselves. A plugin subprocess
+/// The host side needs this less: CoreAudio, WASAPI and JACK create the
+/// audio callback's thread at an elevated priority themselves (cpal's ALSA
+/// backend does not: its callback thread is an ordinary one). A plugin subprocess
 /// gets no such treatment — it is an ordinary `Command::spawn` at default
 /// priority — yet it must answer within the same block period. Measured with
 /// eight real plugins at 64/48k, that asymmetry swung the number of on-time

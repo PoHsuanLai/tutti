@@ -75,7 +75,7 @@ if [ -f crates/tutti/src/lib.rs ]; then
 fi
 
 # Per-module gate. Called as: <crate_path_prefix> <mod> [<mod> ...]
-# e.g. `tutti_types value rt` checks for tutti_types::value:: and tutti_types::rt::
+# e.g. `tutti_rt cell vec` checks for tutti_rt::cell:: and tutti_rt::vec::
 if [ "$#" -ge 2 ]; then
   crate="$1"; shift
   echo "==> redundant ${crate}::<module>:: paths"

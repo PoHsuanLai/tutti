@@ -32,7 +32,7 @@
 //!   time-slice, so a caller that only spins keeps the helper off the core
 //!   for good once it is queued behind it (here, after its block): the
 //!   watchdog has to abort the block. A caller that yields after 250 µs
-//!   without progress (`rt/spin.rs`) goes behind the helper, which finishes
+//!   without progress (`src/spin.rs`) goes behind the helper, which finishes
 //!   the task, and the wait is about the rest of the task plus that budget.
 //!   This case is asserted.
 //!

@@ -324,8 +324,9 @@ for that crate is an `unsafe fn`, which is `no_denormals`. Ours is safe because
 the engine owns every caller and the audit above, and it stays a module in
 `tutti-rt`. That crate holds the engine's runtime primitives, not this guard
 alone, and is `publish = false`: the guard is reachable only by workspace
-crates and consumers that take the repository as a git dependency, which is
-narrower than when it sat in the publishable `tutti-types`. Publishing
+crates and consumers that take the repository as a git dependency, no more
+than when it sat in `tutti-types` (which depended on unpublished `arc-lend`,
+so could not be published either). Publishing
 `tutti-rt` would raise the question again.
 
 ## Two buffer vocabularies — edges vs graph nodes

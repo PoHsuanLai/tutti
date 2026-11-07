@@ -1360,7 +1360,7 @@ host state) and AU's property listener are made on whatever thread the plugin
 chooses. Each becomes a bit in one atomic word:
 
 ```rust
-// tutti-rt: : one AtomicU32. `raise` is fetch_or(Release), wait-free, any
+// tutti-rt: one AtomicU32. `raise` is fetch_or(Release), wait-free, any
 // thread; `take` is swap(0, Acquire), main thread only.
 pub struct RequestWord(AtomicU32);
 impl RequestWord {
@@ -1371,10 +1371,10 @@ impl RequestWord {
 
 `RequestBit` is a position in the word, and `tutti-plugin-types` maps `Request`
 to one (`Request::bit`, `taken(&word)`); timers and descriptors carry an id and
-have none. The `EditRing` is `tutti_types::edit_ring::<T>(capacity)`, a writer
+have none. The `EditRing` is `tutti_rt::edit_ring::<T>(capacity)`, a writer
 and a reader end over `Copy` values, and `tutti-plugin-types` types it as
 `Edit` with `edits(capacity)` (`EditSink`, `EditDrain`). Both are in
-`tutti-types` as the lock-free rule asks. `RequestWord` is safe atomics; the
+`tutti-rt` as the lock-free rule asks. `RequestWord` is safe atomics; the
 ring's slots are `UnsafeCell` words (loom's under the flag, with a `Sync`
 argument in `// SAFETY:`), so its model sees each slot's hand-over and checks
 the `Release`/`Acquire` on `head` and `tail`. `EditDrain::drain` applies what

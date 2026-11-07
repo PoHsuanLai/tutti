@@ -1,5 +1,5 @@
 //! A `loom` model of [`SplitMut`] / [`SplitRw`]'s claim protocol — the
-//! shipped code, whose atomics are loom's under the flag (see `rt/split.rs`'s
+//! shipped code, whose atomics are loom's under the flag (see `src/split.rs`'s
 //! `sync` module).
 //!
 //! ```text
@@ -21,7 +21,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/split.rs` and a model failed
+//! Each was applied to `src/split.rs` and a model failed
 //! (`LOOM_MAX_PREEMPTIONS=3`):
 //!
 //! - `release_exclusive`'s `Release` weakened to `Relaxed` →

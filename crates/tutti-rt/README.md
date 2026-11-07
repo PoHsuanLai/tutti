@@ -5,8 +5,8 @@ Real-time-safe shared-memory primitives for the audio thread.
 ## What this is
 
 The structures the engine's audio callback touches, and the home of the
-engine's lock-free and `unsafe` runtime structures. It names no tutti crate: its dependencies are `arc-lend`, `arrayvec` and
-`bytemuck` (and `loom` under `--cfg loom`), so any crate may take it without
+engine's lock-free and `unsafe` runtime structures. It names no tutti crate: its dependencies are
+`arc-lend`, `arrayvec` and `bytemuck` (and `loom` under `--cfg loom`), so any crate may take it without
 taking the unit vocabulary.
 
 - **`AudioThreadCell`** — interior mutability with a one-borrow-at-a-time

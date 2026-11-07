@@ -1,6 +1,5 @@
 #![doc = include_str!("../README.md")]
 #![deny(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! Real-time-safe shared-memory primitives for the audio thread.
 //!

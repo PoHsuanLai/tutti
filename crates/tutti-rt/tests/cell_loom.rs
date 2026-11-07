@@ -1,6 +1,6 @@
 //! A `loom` model of [`AudioThreadCell`]'s always-on borrow check: the
 //! shipped code, whose state word is loom's atomic under the flag (see
-//! `rt/cell.rs`'s `sync` module).
+//! `src/cell.rs`'s `sync` module).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test cell_loom
@@ -24,7 +24,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/cell.rs`, and the models named failed:
+//! Each was applied to `src/cell.rs`, and the models named failed:
 //!
 //! - `try_acquire_writer` always granting (the check compiled out, as it was
 //!   in release builds) → three models: "Causality violation: Concurrent

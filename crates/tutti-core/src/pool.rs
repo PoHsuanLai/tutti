@@ -35,7 +35,7 @@
 //! The caller's own wait, for a helper still running a task or still inside
 //! the gate, spins, and on Linux yields its core once per
 //! [`WorkerPoolBuilder::caller_yield_after`] (250 µs by default) in which
-//! the helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is
+//! the helper made no progress (`tutti-rt`'s `src/spin.rs`). That yield is
 //! for a helper queued behind the caller on the caller's core, and it only
 //! helps one at the caller's priority (below).
 //!

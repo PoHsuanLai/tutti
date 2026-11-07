@@ -6,7 +6,7 @@
 //!     cargo test -p tutti-rt --release --test pos_ring_loom
 //! ```
 //!
-//! Under `--cfg loom`, `rt/pos_ring.rs` builds its atomics from `loom` (its
+//! Under `--cfg loom`, `src/pos_ring.rs` builds its atomics from `loom` (its
 //! `sync` module), so every interleaving and reordering loom explores is one
 //! the real `claim`/`idle`/`push`/`retract_to`/`raise_from`/`reset` can take.
 //! (tutti-sampler, which wraps the ring, cannot build under the flag:

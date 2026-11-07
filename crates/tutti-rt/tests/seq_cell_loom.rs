@@ -1,5 +1,5 @@
 //! A `loom` model of [`SeqWriter`] and [`SeqReader`]: the shipped code, whose atomics and fences
-//! are loom's under the flag (see `rt/seq_cell.rs`'s `sync` module).
+//! are loom's under the flag (see `src/seq_cell.rs`'s `sync` module).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test seq_cell_loom
@@ -19,7 +19,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/seq_cell.rs` (re-run against the typed
+//! Each was applied to `src/seq_cell.rs` (re-run against the typed
 //! `SeqWriter<T>`) and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
 //! unbounded (the pair runs in about four seconds):
 //!

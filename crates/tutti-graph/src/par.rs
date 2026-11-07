@@ -44,7 +44,7 @@
 //! # Safety without `unsafe`
 //!
 //! This crate stays `#![forbid(unsafe_code)]`. The claims come from
-//! `tutti_types::{SplitRw, SplitMut}`, whose borrows are checked at run time:
+//! `tutti_rt::{SplitRw, SplitMut}`, whose borrows are checked at run time:
 //! if two ops that share a slot ever ran at once (a compiler bug), the second
 //! claim panics — it is never a second reference. The task dispatch
 //! (`tutti_rt::TaskGraph`) and the pool handshake

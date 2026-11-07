@@ -1,5 +1,5 @@
 //! A `loom` model of [`edit_ring`]: the shipped code, whose atomics and slot
-//! cells are loom's under the flag (see `rt/edits.rs`).
+//! cells are loom's under the flag (see `src/edits.rs`).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test edit_ring_loom
@@ -25,7 +25,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/edits.rs`; the model failed as noted.
+//! Each was applied to `src/edits.rs`; the model failed as noted.
 //!
 //! - `push`'s store of `head` weakened to `Relaxed` → a causality violation
 //!   (the consumer reads a slot whose write it is not ordered after);

@@ -65,7 +65,7 @@ serial one.
   own crate, `crates/arc-lend` (`ArcLend`/`Loan`; its loom model is
   `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
-  models fences exactly; see `rt/job_gate.rs`).
+  models fences exactly; see `tutti-rt/src/job_gate.rs`).
 - **Nodes run under `ScopedNoDenormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**

@@ -1,5 +1,5 @@
 //! A `loom` model of [`PackedAtomic`]: the shipped code, whose atomic is
-//! loom's under the flag (see `rt/packed_atomic.rs`'s `sync` module).
+//! loom's under the flag (see `src/packed_atomic.rs`'s `sync` module).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test packed_atomic_loom
@@ -15,7 +15,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/packed_atomic.rs` and the model failed:
+//! Each was applied to `src/packed_atomic.rs` and the model failed:
 //!
 //! - `store` writing the word's two halves separately (a `fetch_and`
 //!   clearing one half, then a `fetch_or` of its new bytes, then the same

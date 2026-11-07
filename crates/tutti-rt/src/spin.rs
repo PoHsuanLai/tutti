@@ -77,7 +77,7 @@ use loom::{hint::spin_loop, thread::yield_now};
 /// block. A pool sets them (`tutti_core::WorkerPoolBuilder`), and the
 /// executor hands its pool's to [`TaskGraph::work`](super::TaskGraph::work);
 /// a [`JobGate`](super::JobGate) holds its own for its close. See the
-/// module docs (`src/rt/spin.rs`).
+/// module docs (`src/spin.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockWaits {
     /// How long the counter the audio thread waits on may stay unmoved
@@ -143,7 +143,7 @@ const LOOM_HELPER_SPINS: u32 = 2;
 
 /// A wait that spins, then yields its core after
 /// [`BlockWaits::caller_yield_after`] without progress (on Linux). See the
-/// module docs (`src/rt/spin.rs`).
+/// module docs (`src/spin.rs`).
 pub(super) struct SpinThenYield {
     /// The counter's value at the last wait.
     seen: u32,

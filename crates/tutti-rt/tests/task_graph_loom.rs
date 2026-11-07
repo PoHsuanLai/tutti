@@ -1,5 +1,5 @@
 //! A `loom` model of [`TaskGraph`]'s dispatch — the shipped code, whose
-//! atomics are loom's under the flag (see `rt/task_graph.rs`'s `sync`
+//! atomics are loom's under the flag (see `src/task_graph.rs`'s `sync`
 //! module).
 //!
 //! ```text
@@ -18,7 +18,7 @@
 //!   checks this alone: its tasks read nothing, two of its five are sinks,
 //!   and only the sinks are counted for termination, so a non-sink task's
 //!   write reaches the caller only through the counter chain to a sink
-//!   (`rt/task_graph.rs`, "Ordering");
+//!   (`src/task_graph.rs`, "Ordering");
 //! - **`begin` re-arms the counters**: a second block runs every task
 //!   again;
 //! - **a helper may leave early** (under loom its budget is a count: it
@@ -28,7 +28,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/task_graph.rs` and a model failed
+//! Each was applied to `src/task_graph.rs` and a model failed
 //! (`LOOM_MAX_PREEMPTIONS=3`):
 //!
 //! - the successor decrement's `AcqRel` weakened to `Release` →
@@ -53,7 +53,7 @@
 //!   second block's counters wrap and never reach zero, so the caller
 //!   spins; loom fails it with "Model exceeded maximum number of
 //!   branches"). Re-run after the caller's wait became `SpinThenYield`
-//!   (`rt/spin.rs`, budget 2 under loom), and after the termination count
+//!   (`src/spin.rs`, budget 2 under loom), and after the termination count
 //!   became the sinks': it still fails the same way.
 //!
 //! The record was re-run in full when the termination count became the

@@ -39,7 +39,7 @@
 //! inside the job, which leave as soon as the job's own termination says so.
 //! That wait spins, and on Linux yields the caller's core once per
 //! [`BlockWaits::caller_yield_after`] (the gate's own, 250 µs by default) in
-//! which `entered` has not moved (`SpinThenYield`, `src/rt/spin.rs`), so a
+//! which `entered` has not moved (`SpinThenYield`, `src/spin.rs`), so a
 //! helper queued behind a `SCHED_FIFO` caller on its own core can run and
 //! leave.
 
@@ -77,7 +77,7 @@ mod sync {
 type Job = *const (dyn Fn(usize) + Sync + 'static);
 
 /// A gate that lends one borrowed job at a time to helper threads. See the
-/// module docs (`src/rt/job_gate.rs`).
+/// module docs (`src/job_gate.rs`).
 pub struct JobGate {
     /// `generation << 1 | open`.
     state: AtomicU64,
@@ -353,7 +353,7 @@ mod tests {
     /// The close, waiting for a helper still inside the job, yields the
     /// caller's core once its budget passes with `entered` unchanged: what
     /// lets a helper queued behind a `SCHED_FIFO` caller on one core leave
-    /// at all (`src/rt/spin.rs`). The caller's clock is a stepped one (a
+    /// at all (`src/spin.rs`). The caller's clock is a stepped one (a
     /// quarter of the budget per read), and the helper stays inside until it
     /// sees the caller's yield counted, so no timing is involved; the 10 s
     /// bound is only how a missing yield fails rather than hangs. Linux

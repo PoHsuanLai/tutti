@@ -6,7 +6,6 @@ rust-version.workspace = true
 description = "Real-time-safe shared-memory primitives for the audio thread"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-rt"
 readme = "README.md"
 keywords = ["audio", "real-time", "lock-free"]
 categories = ["multimedia::audio", "concurrency"]
@@ -50,7 +49,3 @@ assert_no_alloc = { version = "1", default-features = false }
 # and sets their scheduling policy: `sched_setaffinity`, `pthread_setschedparam`.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = "0.2"
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]

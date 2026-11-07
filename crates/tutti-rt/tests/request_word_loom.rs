@@ -1,5 +1,5 @@
 //! A `loom` model of [`RequestWord`]: the shipped code, whose atomics are
-//! loom's under the flag (see `rt/request_word.rs`'s `sync` module).
+//! loom's under the flag (see `src/request_word.rs`'s `sync` module).
 //!
 //! ```text
 //! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test request_word_loom
@@ -18,7 +18,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/request_word.rs`; the model failed as noted.
+//! Each was applied to `src/request_word.rs`; the model failed as noted.
 //!
 //! - `take` as `load` then `store(0)` (not one swap) → "a bit lost, or taken
 //!   twice": a raise between the two is cleared unseen;

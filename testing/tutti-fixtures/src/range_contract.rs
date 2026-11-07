@@ -19,8 +19,8 @@ pub struct RangeContract<'a, T, R> {
 ///
 /// For each valid raw, `new`, `get`, `TryFrom`, `Into` and `of` agree and serde
 /// round-trips as the bare raw. For each invalid raw, `new` is `None`,
-/// `TryFrom` errs, `of` panics and serde refuses. JSON has no NaN or infinity:
-/// for those raws serde is not checked, only the constructors.
+/// `TryFrom` errs with an error that carries the raw (its `Debug` shows it),
+/// `of` panics and serde refuses. NaN and infinity reach serde as JSON `null`.
 pub fn check_range_contract<T, R>(c: &RangeContract<'_, T, R>)
 where
     T: TryFrom<R> + Into<R> + Copy + PartialEq + Debug + Serialize + DeserializeOwned,
@@ -53,20 +53,23 @@ where
     }
     for &r in c.invalid {
         assert!((c.new)(r).is_none(), "new accepted {r:?}");
-        assert!(T::try_from(r).is_err(), "try_from accepted {r:?}");
+        let err = T::try_from(r).expect_err(&format!("try_from accepted {r:?}"));
+        assert!(
+            format!("{err:?}").contains(&format!("{r:?}")),
+            "the error for {r:?} does not carry it: {err:?}"
+        );
         if let Some(of) = c.of {
             assert!(
                 catch_unwind(AssertUnwindSafe(|| of(r))).is_err(),
                 "of accepted {r:?}"
             );
         }
+        // JSON writes NaN and infinity as `null`, which must be refused too.
         let json = serde_json::to_string(&r).unwrap();
-        if json != "null" {
-            assert!(
-                serde_json::from_str::<T>(&json).is_err(),
-                "deserialize accepted {r:?}"
-            );
-        }
+        assert!(
+            serde_json::from_str::<T>(&json).is_err(),
+            "deserialize accepted {r:?}"
+        );
     }
 }
 
@@ -87,9 +90,9 @@ mod tests {
                 }
             }
             impl TryFrom<u8> for $name {
-                type Error = &'static str;
-                fn try_from(v: u8) -> Result<Self, &'static str> {
-                    Self::new(v).ok_or("out of range")
+                type Error = String;
+                fn try_from(v: u8) -> Result<Self, String> {
+                    Self::new(v).ok_or(format!("{v} out of range"))
                 }
             }
             impl From<$name> for u8 {
@@ -140,5 +143,27 @@ mod tests {
     #[should_panic(expected = "deserialize accepted 10")]
     fn a_serde_bypass_fails() {
         check_range_contract(&contract(Bypass::new, |g| g.0));
+    }
+
+    /// Mutation: the error built without the raw (`Mute`) fails with "does not
+    /// carry it".
+    #[test]
+    #[should_panic(expected = "does not carry it")]
+    fn an_error_without_the_raw_fails() {
+        #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+        #[serde(try_from = "u8")]
+        struct Mute(u8);
+        impl TryFrom<u8> for Mute {
+            type Error = &'static str;
+            fn try_from(v: u8) -> Result<Self, &'static str> {
+                (v <= 9).then_some(Self(v)).ok_or("out of range")
+            }
+        }
+        impl From<Mute> for u8 {
+            fn from(m: Mute) -> u8 {
+                m.0
+            }
+        }
+        check_range_contract(&contract(|v| Mute::try_from(v).ok(), |m| m.0));
     }
 }

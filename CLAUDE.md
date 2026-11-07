@@ -394,7 +394,7 @@ shape (`MidiChannel` is the reference). No macro.
 
 | Item | Rule |
 |---|---|
-| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds. `const fn` when the check is const. |
+| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds (see the types not yet conforming, below). `const fn` when the check is const. |
 | `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
 | `get(self) -> Raw`, `From<Self> for Raw` | Always. |
 | `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
@@ -403,13 +403,24 @@ shape (`MidiChannel` is the reference). No macro.
 | `masked(raw)` | Only for bits the wire has just framed. |
 | `Default` | Only if the default is in range. |
 
-- No public field, no infallible `From<Raw>`, no `unsafe` constructor. A
-  type whose range is the whole raw (`ChannelLayout`) has no `new`.
+- No public field, no infallible `From<Raw>`, no `unsafe` constructor.
+- A type whose range is the whole raw (`ChannelLayout`, the RPN word of
+  `PitchBendSensitivity`) has no `new -> Option`, no `TryFrom` and no refusing
+  serde; its plain derived serde is on the lint's exception list by name.
+- A type with two raws (whole units and wire bits) says in its docs which raw
+  `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
+  whole semitones, serde the bits) and gives the other a named constructor
+  (`from_rpn_bits`).
+- Not yet conforming: `Normalized::new`, `BeatsPerBar::new` and
+  `NoteValue::new` clamp (or round) under the name `new`, and
+  `BeatsPerBar`/`NoteValue` serde clamps too. Each becomes `clamped` or
+  `nearest` with a refusing `new`.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
-  `scripts/check-range-types.sh` fails a private tuple field with a plain
-  derived `Deserialize`. Its exception list names what removes each entry.
-- `tutti-ump` cannot dev-depend on `tutti-fixtures` (`check-layout.sh`: it
+  `scripts/check-range-types.sh` fails a private tuple field with a derived
+  `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
+  flagged too). Its exception list names what removes each entry.
+- `tutti-ump` does not dev-depend on `tutti-fixtures` (`check-layout.sh`: it
   depends on no workspace crate, of any kind), so its types keep their own
   tests.
 

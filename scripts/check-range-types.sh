@@ -2,14 +2,15 @@
 #
 # A tuple struct with a private field must not derive `Deserialize` plainly:
 # the derive builds the value without `new`, so a document can carry a raw the
-# type refuses (CLAUDE.md, "Range-checked values"). The derive is fine with
-# `serde(try_from = ..)`, `serde(from = ..)` or `serde(transparent)`, or when
-# the struct is on EXCEPTIONS.
+# type refuses (CLAUDE.md, "Range-checked values"). The one accepted spelling
+# is `serde(try_from = ..)`. `transparent` and `from = ..` build the value
+# without a check too, so they are flagged like a plain derive. A type whose
+# every raw is valid goes on EXCEPTIONS, by name, with that reason.
 #
 # EXCEPTIONS is the debt, one entry per type with what removes it. An entry
 # whose type no longer matches is an error, so the list cannot rot.
 #
-# Limits: a textual scan of `struct Name(..)` followed by its attributes. It
+# Limits: a textual scan of `struct Name(..)` preceded by its attributes. It
 # sees tuple structs only (not named fields) and a derive spelled in
 # `#[derive]` or `#[cfg_attr(.., derive(..))]`; a hand-written `impl
 # Deserialize` is not checked. Test files (`tests/`) are skipped.
@@ -20,6 +21,8 @@
 # - `#[cfg_attr(feature = "serde", derive(serde::Deserialize))] pub struct P(pub(crate) u8);`:
 #   flagged (multi-line attribute, `pub(crate)` is private to the type's API);
 # - the same with `serde(try_from = "u8")`: passes;
+# - `#[derive(serde::Deserialize)] #[serde(transparent)] struct P(u8);` and the
+#   same with `serde(from = "u8")`: flagged;
 # - an EXCEPTIONS entry for a type that does not exist: "stale exception".
 #
 # Needs python3. No build.
@@ -35,13 +38,17 @@ EXCEPTIONS = {
         "R2a: serde through try_from",
     ("crates/tutti-plugin-types/src/parameters.rs", "Normalized"):
         "R2b: serde through try_from",
+    ("crates/tutti-plugin-types/src/parameters.rs", "ParamId"):
+        "permanent: every u32 is a valid id",
+    ("crates/tutti-types/src/value/latency.rs", "Latency"):
+        "permanent: every Samples is a valid latency, and new is infallible",
     ("crates/tutti-types/src/channels.rs", "ChannelLayout"):
         "permanent: every u16 is a valid layout, so the derive cannot admit a bad raw",
 }
 
 # `struct Name(` whose first field is not `pub` (`pub(..)` is not public).
 tuple = re.compile(r'^[ \t]*(?:#\[.*?\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?struct[ \t]+(\w+)(?:<[^>]*>)?[ \t]*\([ \t\n]*(pub(?![\w(])|\))?', re.M)
-plain_ok = re.compile(r'try_from|\bfrom[ \t]*=|transparent')
+plain_ok = re.compile(r'\btry_from\b')
 
 def attrs_before(text, pos):
     # The attributes directly above `pos`, walking back over `#[..]` (matched

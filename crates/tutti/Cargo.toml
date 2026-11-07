@@ -114,9 +114,10 @@ ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
 # writes through. Implied by every format, so it is rarely named directly.
 codec = ["dep:tutti-codec"]
 
-# `tutti::io` — `tutti-io`, the live I/O edge. Implied by `audio-io`, so it is
+# `tutti::io` — `tutti-io`, the live I/O edge. Implies `codec`: `WavOut::create`
+# takes a `tutti::codec::Pcm`. Implied by `audio-io`, so it is
 # rarely named directly.
-io = ["dep:tutti-io"]
+io = ["dep:tutti-io", "codec"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------
 midi = [

@@ -8,17 +8,17 @@ use super::*;
 fn each_decoder_error_has_its_own_variant() {
     assert!(matches!(
         convert(Symphonia::DecodeError("bad")),
-        DecodeError::Malformed("bad")
+        DecodeError::Malformed(m) if m == "bad"
     ));
     assert!(matches!(
         convert(Symphonia::Unsupported("codec")),
-        DecodeError::Unsupported("codec")
+        DecodeError::Unsupported(m) if m == "codec"
     ));
     let io = convert(Symphonia::IoError(io::Error::from(io::ErrorKind::NotFound)));
     assert!(matches!(io, DecodeError::Io(e) if e.kind() == io::ErrorKind::NotFound));
     assert!(matches!(
         convert(Symphonia::LimitError("big")),
-        DecodeError::Limit("big")
+        DecodeError::Limit(m) if m == "big"
     ));
     assert!(matches!(
         convert(Symphonia::ResetRequired),

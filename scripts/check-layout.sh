@@ -32,9 +32,14 @@
 #   `symphonia`, so a build that reads pulls no encoder (nor the C Vorbis
 #   library) and a build that writes pulls no decoder;
 # - `symphonia` is named in `tutti-codec/src/decode.rs` and `src/decode/`
-#   alone (a comment excepted), and no `pub` item there names it in its
-#   signature, a field or an `impl` header (a `pub(super)` item may): the
-#   decoder is swapped by editing that module;
+#   alone (a comment excepted), and no `pub` item there exposes it. The scan
+#   is per file: it collects the names the file imports from symphonia (an
+#   `as` rename counts as the new name, a glob import is refused) and every
+#   `type` alias whose right side uses one, then fails when a `pub` item's
+#   header, a `pub` field, or the whole body of a `pub enum` or `pub trait`
+#   uses `symphonia`, one of those names, or an `impl` header does. A
+#   `pub(super)` or private item may use them. The decoder is swapped by
+#   editing that module;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -81,7 +86,25 @@
 #   in `encode-wav`: "encode-wav enables symphonia"; `use symphonia::core::errors;`
 #   at the end of `tutti-io/src/lib.rs`: "names symphonia outside
 #   tutti-codec's decode module"; `pub fn probe(..) -> symphonia::core::errors::Error`
-#   in `tutti-codec/src/decode/read.rs`: "pub item names symphonia".
+#   in `tutti-codec/src/decode/read.rs`: "pub item names symphonia"; and the
+#   evasions of the first version of that scan (each planted in `error.rs` or
+#   `read.rs`, seen to exit 1, removed): `use symphonia::core::errors::Error as
+#   Raw;` with `Wrapped(Raw)` in `pub enum DecodeError`; `pub fn leak(r: &dyn
+#   FormatReader) -> Option<Error>` over plain imports; `type Hidden =
+#   symphonia::core::errors::Error;` with `pub fn f() -> Option<Hidden>`;
+#   `type Again = Error;` (an alias of an imported name) with `pub fn g() ->
+#   Option<Again>`; `use symphonia::core::errors::*;`; a `pub inner:
+#   Box<dyn FormatReader>` field.
+#
+# What the decode scan cannot see (a textual scan, not the compiler): an item a
+# macro writes; a public type reached through a type of ours that lives in
+# another file and wraps a symphonia type privately yet exposes it through a
+# trait it implements or an associated type, since each file is scanned
+# alone; an `impl Trait` return or an inferred type that is symphonia's; a
+# trait-impl method whose signature the trait fixes; a rename through `use
+# super::..` of a name another file imported from symphonia; and `cfg`-ed text
+# (it reads every cfg arm). The complete check is the crate's rustdoc JSON or
+# `cargo public-api`, which this repo does not run.
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -236,23 +259,62 @@ public_item = re.compile(
     r"|^[ \t]*impl\b[^{;]*",
     re.M,
 )
+use_from_symphonia = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?use[ \t]+symphonia\b([^;]*);", re.M)
+type_alias = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?type[ \t]+(\w+)(?:<[^>]*>)?[ \t]*=([^;]*);", re.M)
+
+def symphonia_names(text, rel_path):
+    """Names this file can use for something of symphonia's: what it imports
+    from symphonia (an `as` rename counts as the new name only), and every
+    `type` alias whose right side uses one of those."""
+    names = set()
+    for m in use_from_symphonia.finditer(text):
+        stmt = m.group(1)
+        if re.search(r"\*", stmt):
+            fail(f"{rel_path}: a glob import from symphonia hides the names it brings in")
+        for n in re.finditer(r"(\w+)(?!\s*::)(?!\w)(\s+as\b)?", stmt):
+            if n.group(2) or n.group(1) in ("as", "self"):
+                continue
+            names.add(n.group(1))
+        for n in re.finditer(r"\bas\s+(\w+)", stmt):
+            names.add(n.group(1))
+        if re.search(r"\bself\b", stmt):
+            segs = re.findall(r"(\w+)::", stmt)
+            if segs:
+                names.add(segs[-1])
+    grew = True
+    while grew:
+        grew = False
+        for m in type_alias.finditer(text):
+            rhs = m.group(2)
+            if m.group(1) not in names and (
+                "symphonia" in rhs or any(re.search(rf"(?<!::)\b{n}\b", rhs) for n in names)
+            ):
+                names.add(m.group(1))
+                grew = True
+    return names
+
 for path in sorted(decode_files):
     if os.path.basename(path) == "tests.rs":
         continue
+    rel_path = os.path.relpath(path, root)
     text = code_only(open(path, encoding="utf-8").read())
+    names = symphonia_names(text, rel_path)
     spans = [(m.start(), m.group(0)) for m in public_item.finditer(text)]
-    # A `pub struct`, `pub enum` or `pub trait` is its whole body: a variant
-    # carries no `pub` of its own.
-    for m in re.finditer(r"^[ \t]*pub (?:struct|enum|trait)\b[^{;]*\{", text, re.M):
+    # A `pub enum` or `pub trait` is its whole body: a variant carries no `pub`
+    # of its own. A `pub struct`'s body is its `pub` fields (matched above).
+    for m in re.finditer(r"^[ \t]*pub (?:enum|trait)\b[^{;]*\{", text, re.M):
         depth, i = 1, m.end()
         while depth and i < len(text):
             depth += (text[i] == "{") - (text[i] == "}")
             i += 1
         spans.append((m.start(), text[m.start():i]))
     for start, item in spans:
-        if "symphonia" in item or re.search(r"\bSymphonia\b", item):
+        # A name behind `::` belongs to another module (`io::Error`), unless
+        # it is the module itself.
+        hit = "symphonia" in item or any(re.search(rf"(?<!::)\b{n}\b", item) for n in names)
+        if hit:
             line = text.count("\n", 0, start) + 1
-            fail(f"{os.path.relpath(path, root)}:{line}: a pub item names symphonia: {item.strip()[:80]}")
+            fail(f"{rel_path}:{line}: a pub item names symphonia (or a name imported from it): {item.strip()[:80]}")
 
 def deps_of(name, kinds=("normal", "build", "dev")):
     return {d for d, k in internal_deps(pkgs[name]) if k in kinds}

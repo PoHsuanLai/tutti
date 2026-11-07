@@ -275,7 +275,8 @@ impl FileIn {
     /// The fault that cut a sequential read short, if one did: a packet that
     /// failed to decode, or (FLAC only, whose frame count is exact) a stream
     /// that ended before that count, where a damaged frame can read as a
-    /// clean end of file.     ///
+    /// clean end of file.
+    ///
     /// [`poll_into`](AudioIn::poll_into) has no error channel: a failed read
     /// returns the frames decoded before it and then `0`, the same as
     /// end-of-file, so a consumer that sees `0` asks here to tell a corrupt
@@ -353,7 +354,7 @@ impl FileIn {
                 Ok((0, _)) => {
                     let fault = self
                         .truncation()
-                        .then_some(DecodeError::Malformed(TRUNCATED));
+                        .then_some(DecodeError::Malformed(TRUNCATED.into()));
                     return (filled, fault);
                 }
                 Ok(_) => {}
@@ -473,7 +474,14 @@ impl AudioIn for FileIn {
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.fill_sequential_interleaved(out).unwrap_or(Samples(0))
+        // Not through `fill_sequential_interleaved`, whose `Err` is a copy of
+        // the fault: here it would be dropped.
+        if self.fault.is_some() {
+            return Samples::ZERO;
+        }
+        let (filled, fault) = self.fill(out);
+        self.fault = fault;
+        Samples(filled)
     }
 
     /// Whether a decode fault ended the stream: [`FileIn::error`] is `Some`.

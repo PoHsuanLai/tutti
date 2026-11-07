@@ -1,12 +1,5 @@
 //! Decoding a file into a [`Wave`], and reading its header without decoding.
 //!
-//! The entry points are [`Wave::read`], [`Wave::read_metadata`] and, for
-//! Bevy, `WaveAsset::from_bytes`. Decoded samples are pinned bit-for-bit by
-//! `tests/decode_golden.rs` against committed fixtures. Codec-gated: with no `wav`/`flac`/`mp3`/`ogg` feature there is no
-//! symphonia and this module does not exist.
-
-//! Decoding a file into a [`Wave`], and reading its header without decoding.
-//!
 //! The entry points are [`Wave::read`], [`Wave::read_metadata`] and
 //! [`Wave::from_bytes`]. Decoded samples are pinned bit-for-bit by
 //! `tests/decode_golden.rs` against committed fixtures.

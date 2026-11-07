@@ -112,6 +112,20 @@ impl Scanner {
         Ok(self.pedal.recover(db, save))
     }
 
+    /// Drops the pedal's entries for `file` (a canonical path), so that a
+    /// plugin the user took off the blacklist is not put back by the next
+    /// recovery from an entry a failed save kept.
+    ///
+    /// # Errors
+    ///
+    /// [`ScanBusy`] while a scan is using the pedal: its entries are live
+    /// probes, which this must not touch.
+    pub fn forget(&self, file: &Path) -> Result<(), ScanBusy> {
+        let _claim = Claim::take(&self.pedal)?;
+        self.pedal.forget(file);
+        Ok(())
+    }
+
     /// Scans directories on a background thread, returning immediately.
     ///
     /// Runs crash recovery on the calling thread first (see

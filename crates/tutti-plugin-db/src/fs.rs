@@ -4,7 +4,11 @@ use super::facts::FileFacts;
 use super::format::PluginFormat;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::debug;
+
+/// Disambiguates concurrent temp files within one process.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The one extension → format table: the single source of truth for which
 /// file extensions name a plugin. [`PluginFormat::EXTENSIONS`]
@@ -185,6 +189,38 @@ impl Walk {
             self.found.push((real, format));
         }
     }
+}
+
+/// Replaces `path` with what `fill` writes, leaving the old file if anything
+/// fails. The temp file is a sibling so the rename stays on one filesystem
+/// (a cross-device rename fails with EXDEV). Used for every file this crate
+/// keeps whole across a crash: the database and the pedal.
+pub(super) fn replace_file(
+    path: &Path,
+    fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        fill(&mut f)?;
+        // Durability across power loss cannot be observed by a test; the
+        // contract this function's tests pin is the old-or-new one.
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[cfg(test)]

@@ -10,18 +10,15 @@
 //! that is not possible, [`save`] leaves the row out, logs it, saves the rest,
 //! and returns an error if the row was a blacklisted one.
 
+use super::fs::replace_file;
 use super::table::{Delta, FileRow, PluginDb};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, warn};
 
 /// The version of the file layout [`save`] writes and [`load`] reads.
 const VERSION: u64 = 1;
-
-/// Disambiguates concurrent temp files within one process.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 struct Out<'a> {
@@ -224,37 +221,6 @@ pub fn save(db: &PluginDb, path: impl AsRef<Path>) -> std::io::Result<()> {
         ));
     }
     Ok(())
-}
-
-/// Replaces `path` with what `fill` writes, leaving the old file if anything
-/// fails. The temp file is a sibling so the rename stays on one filesystem
-/// (a cross-device rename fails with EXDEV).
-fn replace_file(
-    path: &Path,
-    fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
-) -> std::io::Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!(
-        "tmp-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
-        fill(&mut f)?;
-        // Durability across power loss cannot be observed by a test; the
-        // contract this function's tests pin is the old-or-new one.
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
 }
 
 #[cfg(test)]

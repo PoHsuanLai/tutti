@@ -3,6 +3,7 @@
 //! plugin so the scan can make progress.
 
 use super::facts::FileFacts;
+use super::fs::{canonical_path, replace_file};
 use super::table::PluginDb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,19 +41,19 @@ impl Pedal {
                 _ => Ok(()),
             };
         }
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut f = std::fs::File::create(&self.path)?;
-        for (i, entry) in entries.iter().enumerate() {
-            if i > 0 {
-                f.write_all(&[0])?;
+        // Whole-file replace: a host dying mid-write must leave the old
+        // entries, which may be the only record of a crash. (That window cannot
+        // be hit from a test; `read_only_pedal_is_replaced_not_truncated`
+        // distinguishes the two ways of writing.)
+        replace_file(&self.path, |f| {
+            for (i, entry) in entries.iter().enumerate() {
+                if i > 0 {
+                    f.write_all(&[0])?;
+                }
+                f.write_all(&path_bytes(entry))?;
             }
-            f.write_all(&path_bytes(entry))?;
-        }
-        f.sync_all()
+            Ok(())
+        })
     }
 
     /// Record the plugin that is about to be probed, keeping any entry a
@@ -64,6 +65,18 @@ impl Pedal {
         entries.retain(|p| p != plugin);
         entries.push(plugin.to_path_buf());
         self.write(&entries)
+    }
+
+    /// Drops every entry that names `file` (compared by canonical path): the
+    /// user has taken the file off the blacklist, and a kept entry would put it
+    /// back at the next recovery.
+    pub(super) fn forget(&self, file: &Path) {
+        let mut entries = self.entries();
+        let before = entries.len();
+        entries.retain(|p| canonical_path(p) != file);
+        if entries.len() != before {
+            let _ = self.write(&entries);
+        }
     }
 
     /// Remove the probe's entry on clean completion; a retained entry stays.
@@ -303,6 +316,48 @@ mod tests {
         pedal.disarm(b);
         assert_eq!(pedal.entries(), [a]);
         pedal.disarm(a);
+        assert!(!pedal.path.exists());
+    }
+
+    /// The pedal is replaced whole, never truncated in place: a read-only
+    /// pedal file (replaceable, because the directory is writable) is rewritten
+    /// without error, which an in-place `File::create` cannot do. Running as
+    /// root defeats the permission check, so there the test cannot fail.
+    /// Mutation: write the pedal with `File::create(&self.path)` in `write`.
+    #[cfg(unix)]
+    #[test]
+    fn read_only_pedal_is_replaced_not_truncated() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let pedal = Pedal::new(dir.path().join(".scanning"));
+        let (a, b) = (Path::new("/p/a.vst3"), Path::new("/p/b.vst3"));
+        pedal.arm(a).unwrap();
+        std::fs::set_permissions(&pedal.path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        pedal.arm(b).unwrap();
+
+        assert_eq!(pedal.entries(), [a, b]);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no temp file"
+        );
+    }
+
+    /// `forget` drops the entries for a file and keeps the rest.
+    /// Mutation: retain everything in `forget`.
+    #[test]
+    fn forget_drops_only_the_named_files_entries() {
+        let dir = TempDir::new().unwrap();
+        let pedal = Pedal::new(dir.path().join(".scanning"));
+        let (a, b) = (dir.path().join("a.vst3"), dir.path().join("b.vst3"));
+        pedal.arm(&a).unwrap();
+        pedal.arm(&b).unwrap();
+
+        pedal.forget(&a);
+
+        assert_eq!(pedal.entries(), [b.clone()]);
+        pedal.forget(&b);
         assert!(!pedal.path.exists());
     }
 }

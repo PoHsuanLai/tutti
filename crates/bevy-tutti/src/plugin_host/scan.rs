@@ -106,6 +106,12 @@ pub struct InFlightScan {
 ///
 /// Exclusive so the in-flight marker is in the world before any later system
 /// of the frame looks for it.
+///
+/// If the pedal is busy (a worker from an earlier scan has not exited yet, or
+/// another catalog shares the pedal path) the request is written again for
+/// the next frame. It retries every frame for as long as the pedal stays busy,
+/// so a pedal held for good by another catalog makes the request wait forever
+/// (silently, at debug level).
 pub fn start_scan(world: &mut World) {
     // Drain regardless; one request is as good as five.
     let requested = world
@@ -299,6 +305,68 @@ mod tests {
         assert_eq!(
             *world.resource::<PluginCatalogState>(),
             PluginCatalogState::Idle
+        );
+    }
+
+    /// A request that arrives while the pedal is busy starts no scan, is not
+    /// lost across frames (the message buffers are swapped between the
+    /// attempts, as a frame boundary does), and starts the scan once the other
+    /// worker has exited.
+    /// Mutation: drop the `world.write_message(RescanPlugins)` line in
+    /// `start_scan`.
+    #[test]
+    fn a_rescan_requested_while_the_pedal_is_busy_starts_when_it_clears() {
+        use std::sync::{Mutex, mpsc};
+        use tutti_plugin_db::{PluginDb, ScanPoll, Scanner};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        std::fs::write(plugins_dir.join("a.clap"), b"x").unwrap();
+        let mut world = world(&dir);
+        // The catalog's pedal sits beside its database file.
+        let (parked_tx, parked_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let other = Scanner::new(dir.path().join(".scanning"), move |path, format| {
+            parked_tx.send(()).unwrap();
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(30));
+            Ok(tutti_plugin_db::probe_plugin_fallback(path, format))
+        });
+        let mut other_db = PluginDb::new();
+        let parked = other
+            .spawn(&mut other_db, [&plugins_dir], |_| Ok(()))
+            .unwrap();
+        parked_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+
+        world.write_message(RescanPlugins);
+        for _ in 0..3 {
+            start_scan(&mut world);
+            assert!(!world.contains_resource::<InFlightScan>());
+            world.resource_mut::<Messages<RescanPlugins>>().update();
+        }
+
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match parked.poll(&mut other_db) {
+                ScanPoll::Running => {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::yield_now();
+                }
+                _ => break,
+            }
+        }
+        start_scan(&mut world);
+
+        assert!(
+            world.contains_resource::<InFlightScan>(),
+            "the request was lost"
         );
     }
 }

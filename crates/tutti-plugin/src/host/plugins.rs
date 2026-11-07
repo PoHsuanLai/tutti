@@ -483,8 +483,21 @@ impl Plugins {
     /// Returns `true` if a blacklisted file was found and cleared. Offer this
     /// to users: crash recovery also blacklists after a force-quit, power loss
     /// or out-of-memory kill, so false positives are expected.
+    ///
+    /// The file's entry in the crash sentinel is dropped too (one a failed or
+    /// absent save kept), so the next recovery does not blacklist it again. While
+    /// a rescan is running the sentinel is that scan's, and is left alone: the
+    /// entry is then dropped by the next `unblacklist`.
     pub fn unblacklist(&mut self, path: impl AsRef<Path>) -> bool {
-        self.db.unblacklist(&key(path.as_ref()))
+        let path = key(path.as_ref());
+        self.forget_in_pedal(&path);
+        self.db.unblacklist(&path)
+    }
+
+    fn forget_in_pedal(&self, file: &Path) {
+        if self.scanner.forget(file).is_err() {
+            tracing::warn!("a rescan is running; not touching its crash sentinel for {file:?}");
+        }
     }
 
     /// Clears every blacklist entry and returns the paths cleared.
@@ -497,7 +510,9 @@ impl Plugins {
     /// Unlike [`Self::unblacklist`] this forgets the plugin entirely, so the
     /// next scan treats it as new.
     pub fn remove(&mut self, path: impl AsRef<Path>) {
-        self.db.apply(Delta::remove(key(path.as_ref())));
+        let path = key(path.as_ref());
+        self.forget_in_pedal(&path);
+        self.db.apply(Delta::remove(path));
     }
 
     /// Probes one plugin file and adds it to the catalog, returning its
@@ -937,5 +952,34 @@ mod tests {
         assert!(plugins.unblacklist(alias_dir.join("Also.vst3")));
 
         assert_eq!(plugins.db().len(), 0);
+    }
+
+    /// A plugin the user unblacklists, or removes, is not put back by the next
+    /// recovery from an entry a failed save kept in the sentinel.
+    /// Mutation: skip `forget_in_pedal` in `unblacklist` (the first assert), or
+    /// in `remove` (the second).
+    #[test]
+    fn unblacklist_and_remove_drop_the_retained_sentinel_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = CatalogConfig::new(dir.path().join("db.json"), crate::catalog::NO_SCAN_DIRS);
+        let (a, b) = (dir.path().join("A.vst3"), dir.path().join("B.vst3"));
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"x").unwrap();
+        let entries = format!("{}\0{}", a.display(), b.display());
+        std::fs::write(config.pedal_path(), entries).unwrap();
+        let mut plugins =
+            Plugins::empty(config.clone()).with_saver(|_| Err(std::io::Error::other("no disk")));
+        assert_eq!(plugins.recover_crash().unwrap().len(), 2);
+        assert!(config.pedal_path().exists(), "kept: the save failed");
+
+        assert!(plugins.unblacklist(&a));
+        plugins.rescan().unwrap();
+        assert!(!plugins.is_blacklisted(&a), "the user's unblacklist held");
+        assert!(plugins.is_blacklisted(&b), "the other entry is still kept");
+
+        plugins.remove(&b);
+        plugins.rescan().unwrap();
+        assert!(plugins.db().row(&b).is_none(), "the removal held");
+        assert!(!config.pedal_path().exists());
     }
 }

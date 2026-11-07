@@ -5,13 +5,11 @@
 //!
 //! Mutation record (each planted in `src/midi1.rs`, seen to fail, restored):
 //! - `NOTE_ON_FLOOR` removed from the Note On arm of `narrow` ->
-//!   `a_note_on_never_narrows_to_velocity_zero`,
-//!   `narrow_returns_what_widen_was_given`;
-//! - the same floor applied to Note Off too -> `a_note_off_keeps_a_zero_velocity`;
-//! - the bank LSB sent as CC 33 (in `Bank::bytes`) -> `a_bank_is_three_messages`;
-//! - the Program Change sent before the bank -> `a_bank_is_three_messages`;
-//! - `Voice2::ProgramChange { bank: Some(..) }` matched without sending the
-//!   bank -> `a_bank_is_three_messages`;
+//!   `a_note_on_never_narrows_to_velocity_zero`;
+//! - the same floor applied to Note Off too -> `a_note_off_keeps_a_zero_velocity`
+//!   and `narrow_returns_what_widen_was_given`;
+//! - the bank LSB sent as CC 33 (in `Bank::bytes`), the Program Change sent
+//!   before the bank, and the bank not sent -> `a_bank_is_three_messages`;
 //! - a per-note pitch bend narrowed to a channel pitch bend ->
 //!   `messages_without_a_midi1_form_send_nothing`.
 

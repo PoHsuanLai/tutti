@@ -10,8 +10,8 @@
 //! This asserts the whole promotion chain: raw bytes, `Midi1Parser`, UMP
 //! SysEx7 packets, `Sysex7PacketReassembler`, a typed `CiMessage`.
 //!
-//! Mutation (run): `Midi1Parser` splitting SysEx at seven bytes a packet
-//! instead of six -> the reassembled payload is not the probe's -> fails.
+//! Mutation (run): `Midi1Parser` pushing a packet at five bytes instead of six,
+//! and its last packet always `Complete` instead of `End` -> fails each time.
 
 use tutti_midi_runtime::{CiInitiator, Sysex7PacketReassembler};
 use tutti_midi_types::ci::{DiscoveryData, Muid, NO_FUNCTION_BLOCK, ci_to_sysex7, sysex7_to_ci};

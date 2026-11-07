@@ -435,12 +435,12 @@ fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
     let mut s = offline();
     let tap = s.graph().open_output_tap(Samples(64));
     s.update();
-    assert_eq!(taps(&s), 2, "one op a lane while it is open");
+    assert_eq!(taps(&s), 1, "one op a tap while it is open");
     drop(tap);
     s.update();
     assert_eq!(
         taps(&s),
-        2,
+        1,
         "the reclaim of this update closed it; the plan is the last commit's"
     );
     s.update();

@@ -274,12 +274,12 @@ fn rendering_blocks_allocates_nothing() {
 }
 
 /// A sine fanned out to `nodes` gains, committed, with blocks run on a
-/// four-participant [`WorkerPool`](tutti_core::WorkerPool) when `pooled`:
+/// four-participant [`WorkerPool`](tutti_graph::WorkerPool) when `pooled`:
 /// one task per gain, so the plan spreads.
 fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
     if pooled {
-        exec.set_pool(Some(std::sync::Arc::new(tutti_core::WorkerPool::new(4))));
+        exec.set_pool(Some(std::sync::Arc::new(tutti_graph::WorkerPool::new(4))));
     }
     ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
     for i in 1..=nodes as u64 {

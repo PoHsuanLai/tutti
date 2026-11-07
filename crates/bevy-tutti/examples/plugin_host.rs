@@ -37,6 +37,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, PortSources,
     SpawnAudioNode, TransportRes,
@@ -45,8 +46,8 @@ use bevy_tutti::plugin_host::{
     PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLiveness, PluginLoadDone,
     PluginLoadTerminated, PluginRequest, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
 };
-use tutti_core::AudioNode;
-use tutti_core::transport::{ClickState, Transport};
+use tutti_core::transport::Transport;
+use tutti_nodes::ClickState;
 use tutti_plugin::catalog::{CatalogConfig, NO_SCAN_DIRS, PluginId, Plugins};
 
 #[cfg(feature = "modulation")]
@@ -371,7 +372,7 @@ fn report(world: &mut World) {
         let inputs = world
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .node_event_inputs(node);
+            .node_event_inputs(node.0);
         println!("midi: the plugin's node has {inputs} event input(s)");
     }
 
@@ -400,8 +401,8 @@ fn report(world: &mut World) {
             Some(n) => {
                 println!(
                     "plugin node io: {} in, {} out",
-                    graph.graph_ref().node_inputs(n),
-                    graph.graph_ref().node_outputs(n)
+                    graph.graph_ref().node_inputs(n.0),
+                    graph.graph_ref().node_outputs(n.0)
                 );
             }
             None => println!("plugin node io: node not resolvable in the graph"),

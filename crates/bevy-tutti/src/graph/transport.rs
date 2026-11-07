@@ -13,7 +13,8 @@
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use tutti_core::transport::{ClickState, Timeline, Transport};
+use tutti_core::transport::{Timeline, Transport};
+use tutti_nodes::ClickState;
 
 /// The live transport. Newtype over tutti-core's [`Transport`] — every method
 /// below is the engine's, reached through the `Deref`.
@@ -139,7 +140,7 @@ impl std::ops::Deref for MetronomeRes {
 /// [`spawn_audio_node`](crate::graph::SpawnAudioNode::spawn_audio_node) hands
 /// back. This one is built during engine construction, so without this
 /// resource its entity is unreachable: it carries
-/// [`AudioNode`](tutti_core::AudioNode) and nothing else.
+/// [`AudioNode`](crate::graph::AudioNode) and nothing else.
 ///
 /// That matters because [`PortSources`](crate::graph::PortSources) names
 /// sources by `Entity`. An unreachable entity is an unwirable node.
@@ -148,7 +149,7 @@ impl std::ops::Deref for MetronomeRes {
 /// a declaration names entities, so a bare engine id would be unusable here.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EngineNodes {
-    /// The [`ClickNode`](tutti_core::ClickNode) — the metronome.
+    /// The [`ClickNode`](tutti_nodes::ClickNode) — the metronome.
     ///
     /// Its **outputs are unwired**: where the click lands is the host's
     /// declaration, like every other source.

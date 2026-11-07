@@ -134,6 +134,9 @@ jobs:
       # the layers in CLAUDE.md (`cargo metadata`, no build).
       - run: rustup toolchain install
       - run: scripts/check-layout.sh
+      # A tuple struct with a private field does not derive `Deserialize`
+      # plainly: the derive skips `new` (python3 over the source, no build).
+      - run: scripts/check-range-types.sh
 
   clippy:
     name: clippy
@@ -581,7 +584,6 @@ jobs:
       # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
       - run: cargo check --locked -p tutti-core
-      - run: cargo check --locked -p tutti-core --features bevy
       - run: cargo check --locked -p tutti-types
       - run: cargo check --locked -p tutti-types --features bevy
 

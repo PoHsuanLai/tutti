@@ -47,7 +47,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tutti_core::AudioNode;
 use tutti_core::transport::OfflineTransport;
 use tutti_export::{
     ConfigError, ExportConfig, Flow, Normalize, Outcome, Progress, RenderClock, RenderGraph,
@@ -60,10 +59,10 @@ use crate::graph::PendingExport;
 use crate::{Error, Session};
 
 /// Which audio an export renders. `N` names a node: the graph's
-/// [`AudioNode`] in the session, a host's own key (an entity) where the host
+/// [`NodeKey`] in the session, a host's own key (an entity) where the host
 /// resolves it to one ([`try_map`](Self::try_map)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExportSource<N = AudioNode> {
+pub enum ExportSource<N = NodeKey> {
     /// What the global outputs hear: a fork of every node an output
     /// reaches (a node none reaches is not copied, and need not be
     /// forkable).

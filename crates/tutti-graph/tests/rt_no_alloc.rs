@@ -9,7 +9,7 @@
 //! threads as well as the caller — runs its share of each block inside
 //! `assert_no_alloc` (`common::TestPool::no_alloc`), so an allocation or a
 //! free on any of them aborts. What the parallel gate cannot see: the pool's
-//! own idle loop between jobs (the test pool spins; `tutti_core::WorkerPool`'s
+//! own idle loop between jobs (the test pool spins; `tutti_graph::WorkerPool`'s
 //! park and wake are covered by `tutti-core`'s `rt_no_alloc_engine`).
 //!
 //! What this cannot cover, stated rather than implied: applying a commit

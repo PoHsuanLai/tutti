@@ -8,7 +8,7 @@
 //!
 //! Each plugin the graph holds (`Graph::insert_plugin`,
 //! [`Session::add_plugin`], [`Graph::host_plugin`]) has a [`HostedPlugin`],
-//! keyed by its [`AudioNode`]: its handle, its controls (an out-of-process
+//! keyed by its [`NodeKey`]: its handle, its controls (an out-of-process
 //! plugin's latency and meter cells), its liveness, whether it was told
 //! the render mode, its last snapshot, and (`modulation`) its parameter
 //! mirror. A crossfade to another plugin (`Graph::crossfade_plugin`,
@@ -80,10 +80,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tutti_core::AudioNode;
 use tutti_plugin::catalog::{AudioConfig, Plugin, PluginId};
 use tutti_plugin::handles::{PluginControls, PluginHandle, PluginMeter, PluginStatus};
 use tutti_plugin::{BridgeError, Liveness, Verdict};
+use tutti_types::NodeKey;
 use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::{
@@ -518,7 +518,7 @@ impl HostedPlugin {
         now: Instant,
         delay: Duration,
         attempt: u32,
-        node: AudioNode,
+        node: NodeKey,
         out: &mut Vec<SessionEvent>,
     ) {
         self.status = PluginLiveness::Recovering {
@@ -600,7 +600,7 @@ impl HostedPlugin {
 /// next one.
 #[must_use = "a snapshot does nothing until it is run and landed"]
 pub struct PluginSnapshot {
-    node: AudioNode,
+    node: NodeKey,
     /// Boxed: a `SessionEvent` carries the job, and a handle is large.
     handle: Box<PluginHandle>,
     token: Arc<()>,
@@ -609,7 +609,7 @@ pub struct PluginSnapshot {
 
 impl PluginSnapshot {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 
@@ -635,7 +635,7 @@ impl std::fmt::Debug for PluginSnapshot {
 /// A finished [`PluginSnapshot`], for [`Session::land_snapshot`].
 #[must_use = "land it with `Session::land_snapshot`"]
 pub struct PluginSnapshotTaken {
-    node: AudioNode,
+    node: NodeKey,
     state: Result<Vec<u8>, tutti_plugin::error::StateError>,
     /// The record's token when the job was asked for: a crossfade to
     /// another plugin mints a new one, and the job no longer lands.
@@ -654,7 +654,7 @@ impl std::fmt::Debug for PluginSnapshotTaken {
 
 impl PluginSnapshotTaken {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 }
@@ -665,7 +665,7 @@ impl PluginSnapshotTaken {
 /// [`Session::land_reload`]. Dropped unrun, the attempt counts as failed.
 #[must_use = "a reload does nothing until it is run and landed"]
 pub struct PluginReload {
-    node: AudioNode,
+    node: NodeKey,
     load: PluginLoad,
     token: Arc<()>,
     /// How old the snapshot it restores is, if it restores one.
@@ -674,7 +674,7 @@ pub struct PluginReload {
 
 impl PluginReload {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 
@@ -702,7 +702,7 @@ impl std::fmt::Debug for PluginReload {
 /// A finished [`PluginReload`], for [`Session::land_reload`].
 #[must_use = "land it with `Session::land_reload`"]
 pub struct PluginReloaded {
-    node: AudioNode,
+    node: NodeKey,
     loaded: PluginLoaded,
     token: Arc<()>,
     snapshot_age: Option<Duration>,
@@ -719,7 +719,7 @@ impl std::fmt::Debug for PluginReloaded {
 
 impl PluginReloaded {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 }
@@ -732,7 +732,7 @@ impl PluginReloaded {
 #[cfg(feature = "modulation")]
 #[must_use = "a parameter read does nothing until it is run and landed"]
 pub struct PluginParamRead {
-    node: AudioNode,
+    node: NodeKey,
     /// Boxed: a `SessionEvent` carries the job, and a handle is large.
     read: Box<tutti_plugin::ParamRead>,
     token: Arc<()>,
@@ -741,7 +741,7 @@ pub struct PluginParamRead {
 #[cfg(feature = "modulation")]
 impl PluginParamRead {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 
@@ -769,7 +769,7 @@ impl std::fmt::Debug for PluginParamRead {
 #[must_use = "land it with `Session::land_params`"]
 #[derive(Debug)]
 pub struct PluginParamsRead {
-    node: AudioNode,
+    node: NodeKey,
     values: std::collections::HashMap<
         tutti_plugin::handles::ParamId,
         tutti_plugin::handles::Normalized,
@@ -781,7 +781,7 @@ pub struct PluginParamsRead {
 #[cfg(feature = "modulation")]
 impl PluginParamsRead {
     /// The plugin's node.
-    pub fn node(&self) -> AudioNode {
+    pub fn node(&self) -> NodeKey {
         self.node
     }
 }
@@ -822,7 +822,7 @@ impl Session {
     pub fn add_plugin_blocking(
         &mut self,
         request: PluginLoadRequest,
-    ) -> Result<AudioNode, BridgeError> {
+    ) -> Result<NodeKey, BridgeError> {
         let done = self.plugin_load(request).run();
         self.add_plugin(done)
     }
@@ -843,7 +843,7 @@ impl Session {
     /// # Errors
     ///
     /// Why the load failed.
-    pub fn add_plugin(&mut self, loaded: PluginLoaded) -> Result<AudioNode, BridgeError> {
+    pub fn add_plugin(&mut self, loaded: PluginLoaded) -> Result<NodeKey, BridgeError> {
         crate::main_thread();
         let path = loaded.path;
         let config = loaded.config;
@@ -892,12 +892,12 @@ impl Session {
     }
 
     /// The plugin hosted at `node`.
-    pub fn plugin(&self, node: AudioNode) -> Option<&HostedPlugin> {
+    pub fn plugin(&self, node: NodeKey) -> Option<&HostedPlugin> {
         self.graph.plugins.get(&node)
     }
 
     /// Every hosted plugin, in node order.
-    pub fn plugins(&self) -> impl Iterator<Item = (AudioNode, &HostedPlugin)> {
+    pub fn plugins(&self) -> impl Iterator<Item = (NodeKey, &HostedPlugin)> {
         self.graph.plugins.iter().map(|(&n, p)| (n, p))
     }
 
@@ -1063,7 +1063,7 @@ impl Session {
     /// the graph stops re-preparing.
     fn install_reload(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         ready: Ready,
         now: Instant,
         out: &mut Vec<SessionEvent>,
@@ -1239,11 +1239,11 @@ impl Session {
     /// or the end of trying.
     fn fail_reload(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         reason: String,
         now: Instant,
         out: &mut Vec<SessionEvent>,
-        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+        gave_up: &mut Vec<(NodeKey, GiveUp)>,
     ) {
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
             return;
@@ -1264,12 +1264,12 @@ impl Session {
     /// Carries out the answer to a failed attempt.
     fn apply_failure(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         action: RecoveryAction,
         reason: String,
         now: Instant,
         out: &mut Vec<SessionEvent>,
-        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+        gave_up: &mut Vec<(NodeKey, GiveUp)>,
     ) {
         match action {
             RecoveryAction::Reload { delay, attempt } => {
@@ -1286,7 +1286,7 @@ impl Session {
         }
     }
 
-    fn finish_gave_up(&mut self, gave_up: Vec<(AudioNode, GiveUp)>, out: &mut Vec<SessionEvent>) {
+    fn finish_gave_up(&mut self, gave_up: Vec<(NodeKey, GiveUp)>, out: &mut Vec<SessionEvent>) {
         for (node, why) in gave_up {
             // The last state worth offering a user: what was withheld, else
             // the last snapshot. The record goes with the node.
@@ -1309,10 +1309,10 @@ impl Session {
     /// the load out when its backoff has passed.
     fn drive_reload(
         &mut self,
-        node: AudioNode,
+        node: NodeKey,
         now: Instant,
         out: &mut Vec<SessionEvent>,
-        gave_up: &mut Vec<(AudioNode, GiveUp)>,
+        gave_up: &mut Vec<(NodeKey, GiveUp)>,
     ) {
         let rate = self.graph.prepared().sample_rate();
         let Some(hosted) = self.graph.plugins.get_mut(&node) else {
@@ -1379,7 +1379,7 @@ impl Session {
         let interval = self.snapshot_interval;
         let mut dead = Vec::new();
         let mut gave_up = Vec::new();
-        let nodes: Vec<AudioNode> = self.graph.plugins.keys().copied().collect();
+        let nodes: Vec<NodeKey> = self.graph.plugins.keys().copied().collect();
         for node in nodes {
             let Some(hosted) = self.graph.plugins.get_mut(&node) else {
                 continue;
@@ -1629,7 +1629,7 @@ mod tests {
 
     struct Rig {
         session: Session,
-        node: AudioNode,
+        node: NodeKey,
         saves: Arc<AtomicUsize>,
         dead: Arc<AtomicBool>,
         t0: Instant,

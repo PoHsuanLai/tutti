@@ -26,12 +26,13 @@ mod support;
 
 use support::{Change, model_beats};
 use tutti_core::{
-    ClickNode, ClickSettings, Engine, FadeOut, LoopEdit, MetronomeMode, MotionEvent,
-    OfflineTimeline, OfflineTimelineConfig, Then, Transport, TransportCommand,
+    Engine, FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then,
+    Transport, TransportCommand,
 };
 use tutti_graph::{
     Cx, Editor, Env, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Unforkable,
 };
+use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_types::NodeKey;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{

@@ -30,11 +30,12 @@ use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
 };
 use tutti_nodes::testing::{Const, Sink};
+use tutti_types::NodeKey;
 use tutti_types::graph::{OutPort, Source};
 
 /// A tiny CPAL-free graph with one node piped to the output bus, so a fork
 /// of it has something to render.
-fn graph_with_one_node_on() -> (AudioGraphRes, tutti_core::AudioNode) {
+fn graph_with_one_node_on() -> (AudioGraphRes, NodeKey) {
     let mut graph = AudioGraphRes::headless(0, 2);
     let (node, _) = graph.graph().insert(Const::mono(0.5));
     graph.graph().set_outputs_from(node);
@@ -73,7 +74,10 @@ fn app_with_engine_on() -> (App, Entity) {
     // resource, so a test graph alone is not enough.
     app.insert_resource(bevy_tutti::AudioEngineState::Running);
     // `ExportSource::Node` names an entity, so bind one to the node.
-    let entity = app.world_mut().spawn(node).id();
+    let entity = app
+        .world_mut()
+        .spawn(bevy_tutti::graph::AudioNode(node))
+        .id();
     (app, entity)
 }
 
@@ -216,7 +220,7 @@ fn an_unrenderable_node_reports_a_failure() {
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let (id, _) = graph.graph().insert(Sink::mono());
-        app.world_mut().spawn(id).id()
+        app.world_mut().spawn(bevy_tutti::graph::AudioNode(id)).id()
     };
 
     static FAILED: AtomicUsize = AtomicUsize::new(0);

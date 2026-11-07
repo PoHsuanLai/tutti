@@ -3,8 +3,8 @@
 //! `crossfade_audio_node` bind to an entity, on a session that already
 //! passes its own.
 
+use crate::graph::AudioNode;
 use bevy_app::prelude::*;
-use tutti_core::AudioNode;
 use tutti_graph::{IntoNode, NodeParts, ParamSet, Prepare};
 use tutti_types::{ChannelLayout, Drive, UnitParam};
 
@@ -157,7 +157,7 @@ fn every_param_write_path_reaches_a_fork() {
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
         .graph()
-        .set_param(node, UnitParam::Drive, 5.0);
+        .set_param(node.0, UnitParam::Drive, 5.0);
     #[cfg(feature = "modulation")]
     {
         use crate::modulation::{Macro, ModRange, ModRoute, ModSource, ParamRef};

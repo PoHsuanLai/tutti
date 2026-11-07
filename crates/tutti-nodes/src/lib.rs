@@ -68,6 +68,9 @@ pub use tutti_types::{
 // pool, node authoring markers, spawners, ECS reconcilers, deferred
 // convolver load — is the host's, and deliberately outside this workspace.
 
+mod click;
+pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
+
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for
 // `tutti-mod`'s `Wave` (the one wave function both tiers evaluate).

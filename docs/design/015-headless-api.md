@@ -141,7 +141,7 @@ The ordered bootstrap in `build_on`, step by step:
 | `spawn_audio_node` and friends | `graph/spawn.rs:114-212` | glue | stays |
 | Crossfade retry queue, 5 ms equal-amplitude fade | `graph/spawn.rs:327-429` (fade at `:367`) | logic | `Graph::crossfade` + session retry |
 | `CapturedControls` (plugin controls, meter) | `graph/capture.rs:57-151` | logic, bound to an entity | the capture moves; `bind` stays |
-| `EventFeeds` (named feeders merged per sink) | `graph/events.rs:80-110` | logic | session, keyed by `AudioNode` (§4.5) |
+| `EventFeeds` (named feeders merged per sink) | `graph/events.rs:80-110` | logic | session, keyed by `NodeKey` (§4.5) |
 | `GraphNode` trait, `param_graph_node!` list | `graph/events.rs:112-280` | logic (which controls are a `ParamSet`) | `tutti_session::SessionNode` |
 | Event `reconcile` | `graph/events.rs:292-347` | glue | stays |
 | `AudioParam<U, P>` | `graph/param.rs` | glue | stays |
@@ -246,7 +246,7 @@ unplayable.
 | Asset and pending task | `soundfont.rs` | glue | stays |
 | Export pipeline (detail below) | `export/run.rs:50-335` | logic | `ExportJob` |
 | `ExportRequest` component: `ExportSource::Node(Entity)` (`request.rs:61`), `PrepareGraph = Fn(&World)` (`:609`) | `export/request.rs` | glue over a request | stays; translates into the session's request (§4.3) |
-| `NodeNames`: entity ↔ node, error names through `Name` | `export/run.rs:272-296` | glue | stays; maps the session's `AudioNode`s back |
+| `NodeNames`: entity ↔ node, error names through `Name` | `export/run.rs:272-296` | glue | stays; maps the session's `NodeKey`s back |
 | Observers, `poll_exports` | `export/run.rs:336-372` | glue | stays |
 | `io/mod.rs` | | re-exports | stays |
 
@@ -412,12 +412,12 @@ pub trait SessionNode: IntoNode {
 }
 
 pub enum SessionEvent {
-    PluginDied { node: AudioNode },           // after the debounce (§4.4), with recovery off
-    PluginReloading { node: AudioNode, cause: String, attempt: u32, delay: Duration },
+    PluginDied { node: NodeKey },           // after the debounce (§4.4), with recovery off
+    PluginReloading { node: NodeKey, cause: String, attempt: u32, delay: Duration },
     PluginReloadDue(PluginReload),            // a job: run off-thread, `Session::land_reload`
-    PluginRecovered { node: AudioNode, state: StateRestore, latency: (Samples, Samples), attempts: u32 },
-    PluginGaveUp { node: AudioNode, why: GiveUp },
-    PluginLatencyChanged { node: AudioNode, latency: Samples },
+    PluginRecovered { node: NodeKey, state: StateRestore, latency: (Samples, Samples), attempts: u32 },
+    PluginGaveUp { node: NodeKey, why: GiveUp },
+    PluginLatencyChanged { node: NodeKey, latency: Samples },
     ModulationRefused(ModRefusal),            // keyed by the host's TargetKey / SourceKey / RouteKey (§4.7)
     ExportDone(Result<ExportOutput, ExportError>),
     DeviceFault(StreamFault),
@@ -426,7 +426,7 @@ pub enum SessionEvent {
 }
 ```
 
-- **The node handle is `AudioNode`**, as now. A crossfade keeps the key
+- **The node handle is `NodeKey`**, as now. A crossfade keeps the key
   (`Editor::replace_or_swap` swaps the unit behind it,
   `graph/runtime.rs:435-466`), so a headless host can hold a handle across
   swaps.
@@ -563,7 +563,7 @@ knob writes at the next update.
 ```rust
 let job = s.plugin_load(PluginLoadRequest { id: PluginId::from_path(path), state: None }); // &self; Send; rate from the session
 let done = job.run();                        // any thread
-let synth = s.add_plugin(done)?;             // main thread: AudioNode; controls and meter captured
+let synth = s.add_plugin(done)?;             // main thread: NodeKey; controls and meter captured
 ```
 
 **MIDI.**
@@ -582,7 +582,7 @@ It is today's `bevy-tutti` request with the two Bevy-bound fields
 replaced:
 
 ```rust
-pub enum ExportSource<N = AudioNode> { Mix, Node(N) } // bevy-tutti: ExportSource<Entity>
+pub enum ExportSource<N = NodeKey> { Mix, Node(N) } // bevy-tutti: ExportSource<Entity>
 pub struct ExportRequest {
     pub source: ExportSource,
     pub target: ExportTarget,                        // File { path, normalize } | Buffers, moved
@@ -609,9 +609,9 @@ s.finish_export(done)?;               // main thread: drop the leftovers, releas
 
 - The Bevy `ExportRequest` component stays in `bevy-tutti`. Its observer
   runs the `PrepareGraph` hook's `Fn(&World)` half on the main thread,
-  resolves `ExportSource<Entity>` to `ExportSource<AudioNode>` (`try_map`),
+  resolves `ExportSource<Entity>` to `ExportSource<NodeKey>` (`try_map`),
   and builds the session's request with the returned edit. `NodeNames` stays too: it maps
-  the `AudioNode` an `ExportError` names back to an entity and its `Name`.
+  the `NodeKey` an `ExportError` names back to an entity and its `Name`.
 - **One export at a time.** `s.export` returns `Error::ExportInFlight`
   while another is in flight. `bevy-tutti` keeps its queue of request
   entities, as today.
@@ -777,15 +777,15 @@ and re-derive its wires (`Changed<AudioNode>`).
 
 Why a headless host does not need it:
 
-- Its handle is the `AudioNode` itself, stable across crossfades.
+- Its handle is the `NodeKey` itself, stable across crossfades.
 - Imperative calls *on a value that compiles at a boundary* are what
   "declared" means here.
 
-**Event feeds are keyed by the sink's `AudioNode`.** Today `EventFeeds` is
+**Event feeds are keyed by the sink's `NodeKey`.** Today `EventFeeds` is
 keyed by the sink's `Entity` (`graph/events.rs:80`), and an entity survives
 a re-bind. A node key does not. So:
 
-- `Graph::move_feeds(from: AudioNode, to: AudioNode)` moves every feeder's
+- `Graph::move_feeds(from: NodeKey, to: NodeKey)` moves every feeder's
   sources from one sink to another.
 - `bevy-tutti`'s `Changed<AudioNode>` path calls it with the entity's old
   and new nodes when it re-derives the entity's wires. The old node is the
@@ -813,7 +813,7 @@ resolves a host's modulation keys to graph nodes.
 
 ```rust
 pub trait ModKeys {
-    fn node(&self, target: u64) -> Option<AudioNode>;
+    fn node(&self, target: u64) -> Option<NodeKey>;
     /// Plugin parameter `id`'s value on `target`'s node: `None` while not read yet,
     /// `Some(None)` for a parameter it does not list. Goes once plugins move into the session (§9.6, below).
     fn plugin_value(&self, target: u64, id: u32) -> Option<Option<f32>>;
@@ -831,11 +831,11 @@ pub trait ModKeys {
 - **`plugin_value` is temporary.** Until plugins move into the session
   (§9.6) the plugin mirror (`PluginParamValues`) is a component on the
   plugin's entity, so only the host can read it. Then the session owns the
-  mirror, keyed by `AudioNode`, reads the value itself once `node`
+  mirror, keyed by `NodeKey`, reads the value itself once `node`
   resolves, and the method goes.
 - **Headless:** `s.mods()` keeps its own declarations. It mints
   `SourceKey`s and `RouteKey`s from a counter, and keys targets by the
-  `AudioNode`'s `NodeKey` bits, so the session's own resolver applies.
+  `NodeKey` bits, so the session's own resolver applies.
   There is no new id type: `tutti_mod::SourceId(pub u32)` (`program.rs:46`)
   is the compiler's own index and stays out of the API.
 - **Bevy:** `Declared` implements `ModKeys` over entities. The re-apply
@@ -856,7 +856,7 @@ map them back:
 - a headless host compares them with the keys `s.mods()` returned.
 
 The other host ids stay in the host: `ExportError::NotForkable` names an
-`AudioNode`, and `bevy-tutti`'s `NodeNames` maps it to an entity and its
+`NodeKey`, and `bevy-tutti`'s `NodeNames` maps it to an entity and its
 `Name`.
 
 ## 5. Examples
@@ -888,8 +888,8 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 ```
 
 - This is line for line the Bevy example, with `ParamRef` taking an
-  `AudioNode` where Bevy takes an `Entity`. The session's `ParamRef` is
-  `{ node: AudioNode, param: ParamAddr }`.
+  `NodeKey` where Bevy takes an `Entity`. The session's `ParamRef` is
+  `{ node: NodeKey, param: ParamAddr }`.
 - `m.follower` takes `tutti-mod`'s `Follower` (attack and release, the
   `Source` half) and the node it follows (the feed). Bevy's `Follower`
   component keeps its `input: Entity` and wraps the same builder.
@@ -960,7 +960,7 @@ Three engine changes this example needs, each a **(c)** move in §9:
 | `graph/commit.rs`, `latency.rs` publish | logic | one main-thread system calling `run_phase(Commit)` |
 | `graph/schedule.rs` | `GraphReconcileSystems`, `GraphDirty` | the sets, built from `PHASES`; `GraphDirty` deleted (§4.4) |
 | `graph/topology.rs`, `wire.rs`, `spawn.rs`, `despawn.rs`, `param.rs` | glue | unchanged but for two calls: the crossfade calls `Graph::crossfade`, the re-bind calls `Graph::move_feeds` |
-| `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `tutti_session::SessionNode`; feeds keyed by `AudioNode`, in the session |
+| `graph/events.rs` | `GraphNode`, `EventFeeds` | `GraphNode` becomes `tutti_session::SessionNode`; feeds keyed by `NodeKey`, in the session |
 | `graph/pump.rs` | thread loop + systems | systems only, over `tutti-io`'s `Recorder` |
 | `modulation/` | declare + reconcile | components and `Mods` stay; `Declared: ModKeys`; the two systems collect and call `run_phase` with a `ModInput` |
 | `plugin_host/` | load, health, latency, params, render mode, windows, scan | load, param read and snapshot are jobs on the task pool (two loads at a time); health, latency, params and render mode are session phases; windows, scan and catalog stay |
@@ -1145,7 +1145,7 @@ third umbrella.
   piece with one owner goes to that crate; a piece composing several goes
   to `tutti-session`."
 - **"Wiring is declared, not called"** (§9.7): add one line saying a
-  headless `Session` declares through its own spec, keyed by `AudioNode`,
+  headless `Session` declares through its own spec, keyed by `NodeKey`,
   and that `update()` commits iff the graph was edited.
 - **Commands** (§9.7): add `scripts/check-bevy-free.sh` and
   `scripts/check-adapter.sh` beside the other two scripts.
@@ -1353,7 +1353,7 @@ in-place shutdown tests in `recorder.rs`.
   `Session::restart(&mut Device, ..)`; `render`.
 - The main-thread asserts of §4.2.
 - Commit with compensation publication, the crossfade retry, `EventFeeds`
-  keyed by `AudioNode` with `move_feeds`, `SessionNode` with the
+  keyed by `NodeKey` with `move_feeds`, `SessionNode` with the
   engine-node list.
 - `PHASES`, `PhaseCx`, `run_phase` and `update()`, with the edit flag
   replacing `GraphDirty`.
@@ -1410,7 +1410,7 @@ lines.
 | `GraphNode` (and its impls for the engine's nodes, the voices, the panners) | `SessionNode`; `param_graph_node!` names it through `__private` |
 | `GraphNode::captured` (default: nothing captured) | removed: a Bevy-free trait cannot name `CapturedControls`. The spawn paths bind `CapturedControls::default()` (a plugin's, `for_plugin`), and a host with other controls calls `CapturedControls::bind` |
 | `GraphDirty` | the edit flag, `Graph::is_edited`; `update()` and `Phase::Commit` commit iff it is set |
-| `EventFeeds` (keyed by `Entity`) | `Graph::{set_feed, feed, move_feeds}`, keyed by `AudioNode`; `remove` purges a node from every feed |
+| `EventFeeds` (keyed by `Entity`) | `Graph::{set_feed, feed, move_feeds}`, keyed by `NodeKey`; `remove` purges a node from every feed |
 | `ModEntities` | `ModKeys` (`node`, `plugin_value`, `feed`), implemented by `Declared` |
 | `engine/build.rs`'s assembly (graph, transport, click, MIDI nodes, streamer, callback state) | `SessionBuilder::{build_offline, build_detached, build_device, build_device_on}` |
 | `TuttiDriver` as a resource | `Device` (`!Send`, a non-send resource) |
@@ -1583,7 +1583,7 @@ Where the code differs from the text above:
   `ModulationRefused` maps a refusal's keys back to entities.
 - **`Graph::modulate` and `Graph::send_mod_resyncs` are `pub(crate)`**:
   the phases are the one way in.
-- **`AudioNode` is `Ord`**, for the session's `BTreeMap`s.
+- **`NodeKey` is `Ord`**, for the session's `BTreeMap`s.
 - **`live_input` returns a `LiveInput`** (its node and its `MidiSender`),
   and **`Midi::retarget`** re-aims a clip or live input: both outlive their
   target, so a host whose entity is re-bound keeps them, and removes one
@@ -1657,7 +1657,7 @@ Two private modules, `plugin` (feature `plugin`) and `export`
 | `plugin_load_start`'s task: `PluginClient` load, param read, state restore | `Session::plugin_load` → `PluginLoad` (`Send`; `with_config`, `at_rate`), `run()` → `PluginLoaded`; `Session::add_plugin` (and `add_plugin_blocking`) |
 | `plugin_load_promote`'s insert, controls and meter capture | `Session::add_plugin` keeps a `HostedPlugin` record per node (`Session::plugin`, `plugins`); Bevy binds its shadow from it (`CapturedControls::for_hosted`) |
 | `PluginParamValues` as a component, `read_plugin_params`, `PluginParamRead`, `plugin_param_edits` | the record's mirror (`HostedPlugin::param_values`), started in the load job; GUI edits drained into the lanes' knobs by `Phase::Plugins` |
-| `ModKeys::plugin_value` | deleted: `ModHostOver` reads the session's mirror by `AudioNode` |
+| `ModKeys::plugin_value` | deleted: `ModHostOver` reads the session's mirror by `NodeKey` |
 | `plugin_health_poll`'s debounce and teardown | `Phase::Plugins`: `PluginLiveness` on the record; a dead (or hung) plugin is reloaded at its node by the pure `Recovery` (doc 016 §9), or, with `plugin_recovery(None)`, its node is removed and `SessionEvent::PluginDied { node, cause }` fires once |
 | `plugin_latency_poll`, `AudioGraphRes::refresh_node_latency` | `Phase::Plugins` → `Graph::refresh_node_latency`, `SessionEvent::PluginLatencyChanged` |
 | `plugin_state_snapshot`'s 512-frame counter and inline task | `SessionEvent::PluginSnapshotDue(PluginSnapshot)` every `SNAPSHOT_INTERVAL` (8 s) of `now`, a job; `Session::land_snapshot(PluginSnapshotTaken)` |

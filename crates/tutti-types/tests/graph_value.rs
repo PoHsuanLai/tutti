@@ -10,7 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use tutti_types::graph_tail;
-use tutti_types::{ChannelLayout, Samples, Tail};
+use tutti_types::{ChannelLayout, Samples, Tail, TapAlign, TapId, TapSpec};
 use tutti_types::{Feed, LatencyGraph, latency};
 use tutti_types::{
     NodeKey, Topology,
@@ -178,6 +178,44 @@ fn validate_reports_every_fault_at_once() {
             .any(|e| matches!(e, Invalid::OutputOutOfRange { channel, .. } if *channel == 0)),
         "{errs:?}"
     );
+}
+
+/// A tap names its sources like an output does, and is held to the same
+/// ranges: a node port that does not exist, a node that is not in the map and
+/// a global input past the declared width are each refused, by lane. `Zero`
+/// and a port that exists pass.
+///
+/// Mutation (run, recorded here): delete the tap loop in `Topology::validate`
+/// -> the three bad lanes validate and `expect_err` panics.
+#[test]
+fn a_tap_lane_must_name_a_source_that_exists() {
+    let mut t = chain();
+    let tap = TapId(7);
+    t.taps.insert(
+        tap,
+        TapSpec {
+            sources: vec![
+                Source::Node(out(B, 0)),
+                Source::Zero,
+                Source::Node(out(B, 3)),
+                Source::Node(out(C, 0)),
+                Source::Global(5),
+            ],
+            align: TapAlign::ToOutput,
+        },
+    );
+    let errs = t.validate().expect_err("three bad lanes");
+    let lanes: Vec<usize> = errs
+        .iter()
+        .filter_map(|e| match e {
+            Invalid::TapOutOfRange { tap: id, lane, .. } if *id == tap => Some(*lane),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lanes, [2, 3, 4], "{errs:?}");
+
+    t.taps.get_mut(&tap).expect("tap").sources.truncate(2);
+    assert!(t.validate().is_ok(), "the good lanes validate");
 }
 
 /// An unbroken cycle is rejected; the same cycle with the returning edge

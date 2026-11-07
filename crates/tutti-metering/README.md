@@ -6,17 +6,17 @@ Level metering for the Tutti audio engine.
 
 - `MasterMeter` / `MeterWriter` / `MeterReading`: peak and RMS of the output.
   The audio thread holds the writer; any thread reads through `MasterMeter`.
-- `AudioTap`: hands the callback's output to an analysis consumer through a
-  lock-free ring (`AudioTap::open`, `TapCons`).
 - `LoadRecorder` / `LoadMeter` / `LoadReading`: how much of each block's time budget the render
   used, and the blocks over budget. The audio thread holds the recorder; any
   thread reads through `LoadMeter`.
-- `meter_output`: what the audio callback runs on one block to feed the meter
-  and the tap.
+
+`tutti-engine`'s `Engine` feeds both meters on every block it renders, a device
+callback's or an offline session's. Copying audio out of the graph is
+`tutti-graph`'s taps (`Editor::open_tap`, `TapReader`), not this crate's.
 
 ## Dependencies
 
-`tutti-types` alone (plus `ringbuf`, `parking_lot` and `thiserror`).
+`tutti-types` alone (plus `thiserror`).
 `#![forbid(unsafe_code)]`.
 
 ## License

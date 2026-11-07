@@ -6,11 +6,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tutti_graph::PrerollTable;
-use tutti_metering::{AudioTap, MasterMeter};
+use tutti_graph::TapReader;
+use tutti_metering::MasterMeter;
 use tutti_nodes::ClickSettings;
 use tutti_transport::Transport;
-use tutti_types::{NodeKey, Samples};
+use tutti_types::{ChannelLayout, NodeKey, Samples};
 
+use crate::HeardTapError;
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 
 /// One step of [`Session::update`]. [`PHASES`] is their order.
@@ -63,7 +65,9 @@ pub enum Phase {
     /// request and port set. A value a block still held when it was
     /// replaced stays retired until a scan after the block ends; a cell
     /// that is not published again gets that scan here. A lock and a
-    /// length check per cell when nothing is retired.
+    /// length check per cell when nothing is retired. It also closes the
+    /// graph's taps whose readers were dropped
+    /// ([`Graph::open_tap`](crate::Graph::open_tap)).
     Reclaim,
 }
 
@@ -601,8 +605,11 @@ pub struct Session {
     pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
     pub(crate) load: Option<tutti_metering::LoadMeter>,
-    pub(crate) meter: MasterMeter,
-    pub(crate) tap: AudioTap,
+    /// The engine's master meter, offline or on a device; `None` detached.
+    pub(crate) meter: Option<MasterMeter>,
+    /// The engine's tap after the fader and the device width it was built
+    /// for; `None` detached.
+    pub(crate) heard: Option<(tutti_engine::HeardTaps, ChannelLayout)>,
     pub(crate) click: Option<NodeKey>,
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
@@ -774,7 +781,12 @@ impl Session {
             }
             Phase::Reclaim => {
                 // Any thread that owns the session: what it frees is
-                // tables, meters, programs and clips, never a unit.
+                // tables, meters, programs and clips, never a unit. A tap
+                // whose reader was dropped goes out of the next plan.
+                self.graph.reap_taps();
+                if let Some((taps, _)) = &self.heard {
+                    taps.reclaim();
+                }
                 self.reclaim();
             }
         }
@@ -974,9 +986,59 @@ impl Session {
         &self.click_settings
     }
 
-    /// The master meter the device callback feeds.
-    pub fn master_meter(&self) -> &MasterMeter {
-        &self.meter
+    /// Opens the tap on **what the engine renders**: every output channel at
+    /// the device's width, after the declick fader. It is the engine's f32
+    /// output buffer, not the device's bytes: the device layer clamps a long
+    /// callback to its `MAX_FRAMES` and converts to the device's sample type
+    /// after the engine has written the tap. It is read through the same
+    /// [`TapReader`] as a plan tap, and is the default way to record what the
+    /// output sounds like. A transport stop fades in it as it does in the
+    /// engine's output, so a take has no click there; [`Graph::open_output_tap`] is the
+    /// pre-fader signal of the graph, aligned by the compiler, and steps at a
+    /// stop for a transport-gated source.
+    ///
+    /// It is written by the engine, on every path that renders through it: a
+    /// device callback, [`render`](Self::render), and a block the engine
+    /// refuses (silence, whole frames, so a take keeps its timing). An export
+    /// forks the graph and renders without the engine, so it never writes to
+    /// it. There is one at a time; its ring holds `capacity` frames and what
+    /// the reader does not drain in time is dropped and counted
+    /// ([`TapReader::take_lost`]). It flows from the first
+    /// render that begins after this returns, and is closed by
+    /// [`close_heard_tap`](Self::close_heard_tap) or, once its reader is
+    /// dropped, by the next [`Reclaim`](Phase::Reclaim) phase. The width is
+    /// the device's when the session was built: a restart onto a device of
+    /// another width counts the tap's blocks lost until it is opened again.
+    ///
+    /// # Errors
+    ///
+    /// [`HeardTapError::Detached`] on a session without an engine,
+    /// [`HeardTapError::Busy`] while another reader is alive, and
+    /// [`HeardTapError::Backpressure`] while the audio thread has not taken
+    /// the last installs.
+    pub fn open_heard_tap(&self, capacity: Samples) -> Result<TapReader, HeardTapError> {
+        let (taps, layout) = self.heard.as_ref().ok_or(HeardTapError::Detached)?;
+        taps.open(*layout, capacity).map_err(|e| match e {
+            tutti_engine::HeardTapError::Backpressure => HeardTapError::Backpressure,
+            _ => HeardTapError::Busy,
+        })
+    }
+
+    /// Closes the tap [`open_heard_tap`](Self::open_heard_tap) opened. The
+    /// reader keeps what it was written.
+    pub fn close_heard_tap(&self) {
+        if let Some((taps, _)) = &self.heard {
+            taps.close();
+        }
+    }
+
+    /// The master meter: the peak and RMS of each block the engine renders,
+    /// after the declick, on a stereo fold of the output buffer. Fed by every
+    /// block the device callback (or, offline, [`render`](Self::render))
+    /// renders, and enabled from the build; `None` on a detached session,
+    /// which has no engine.
+    pub fn master_meter(&self) -> Option<&MasterMeter> {
+        self.meter.as_ref()
     }
 
     /// The engine's DSP-load meter: each block's render time against its
@@ -987,11 +1049,6 @@ impl Session {
     /// which has no engine.
     pub fn load_meter(&self) -> Option<&tutti_metering::LoadMeter> {
         self.load.as_ref()
-    }
-
-    /// The tap the device callback pushes to, closed until opened.
-    pub fn tap(&self) -> &AudioTap {
-        &self.tap
     }
 
     /// The engine's MIDI nodes, when the builder inserted them.

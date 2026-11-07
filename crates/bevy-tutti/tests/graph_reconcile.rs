@@ -555,87 +555,89 @@ mod audio_param {
     }
 }
 
-/// The tap the audio callback pushes into must be reachable from the ECS.
+/// A tap on the graph must be reachable from the ECS.
 ///
-/// `build_into` created an `AudioTap`, handed a clone to the RT callback, and
-/// dropped the local. Nothing else held a handle, so `open()` — the only way to
-/// get the consumer end — was unreachable, and the callback pushed every block
-/// into a ring nobody could ever read. `tutti-dsp`, the documented
-/// consumer, had no route in at all.
-///
-/// These drive the wrapper directly. The build-time publish itself needs a real
-/// audio device (`TuttiPlugin { disabled: true }` skips `build_into` entirely),
-/// so it is covered by the ignored test at the bottom rather than claimed here.
-mod audio_tap {
-    use bevy_app::App;
-    use bevy_tutti::graph::AudioTapRes;
+/// The old `AudioTapRes` wrapped a callback-side producer so a host could ask
+/// for the consumer end. A tap is now an op in the plan, declared through the
+/// session's graph, and `AudioGraphRes::graph()` is the way in: these drive it
+/// on a headless graph (which renders on the calling thread, device-free). The
+/// build-time publish of a device's graph is `engine::build`'s
+/// `the_engine_publishes_the_meter_and_taps_its_callback_feeds`.
+mod graph_tap {
+    use bevy_tutti::prelude::*;
+    use tutti_nodes::testing::Const;
 
-    /// A published tap starts closed: opening is the host's decision, not the
-    /// engine's, and while closed the audio thread pays one atomic load.
-    #[test]
-    fn a_published_tap_starts_closed() {
-        let mut app = App::new();
-        app.insert_resource(AudioTapRes::default());
-
-        assert!(!app.world().resource::<AudioTapRes>().is_open());
+    /// A headless one-output graph playing a constant 0.25.
+    fn graph() -> AudioGraphRes {
+        let mut graph = AudioGraphRes::headless(0, 1);
+        let (dc, _) = graph.graph().insert(Const::mono(0.25));
+        graph.graph().set_output_source(0, GraphSource::Node(dc, 0));
+        graph
     }
 
-    /// The whole point of the seam: a host can get the consumer end, and it sees
-    /// what the callback pushed.
+    /// The whole point of the seam: a host gets the reader through the
+    /// resource, and it sees what the graph rendered.
+    ///
+    /// Mutation (run, recorded here): `Graph::open_tap` not marking the graph
+    /// edited, with nothing else edited after the first render -> no plan
+    /// carries the tap and the reader stays empty.
     #[test]
-    fn opening_the_tap_yields_a_consumer_that_sees_the_pushed_frames() {
-        let mut app = App::new();
-        app.insert_resource(AudioTapRes::default());
+    fn opening_a_tap_yields_a_reader_that_sees_the_rendered_frames() {
+        let mut graph = graph();
+        let mut out = [0.0f32];
+        graph.render_frame(&mut out);
+        let mut reader = graph.graph().open_output_tap(Samples(64));
+        for _ in 0..3 {
+            graph.render_frame(&mut out);
+        }
 
-        // The callback's half — the clone `build_into` hands to `AudioCallbackState`.
-        let callback_side = app.world().resource::<AudioTapRes>().0.clone();
-        let mut consumer = app
-            .world()
-            .resource::<AudioTapRes>()
-            .open()
-            .expect("a fresh tap opens");
-        assert!(app.world().resource::<AudioTapRes>().is_open());
-
-        // Two interleaved stereo frames, as a block would arrive.
-        callback_side.push(&[0.25, -0.5, 0.75, -1.0]);
-
-        assert_eq!(consumer.try_pop(), Some((0.25, -0.5)));
-        assert_eq!(consumer.try_pop(), Some((0.75, -1.0)));
-        assert_eq!(consumer.try_pop(), None, "and nothing more than was pushed");
+        let mut got = [f32::NAN; 8];
+        assert_eq!(
+            reader.pop_into(&mut got),
+            Samples(3),
+            "three frames rendered since the open"
+        );
+        assert_eq!(got[..3], [0.25; 3]);
     }
 
-    /// Closing stops the copy, so a host that finishes analysing gets its
-    /// atomic-load-only path back.
+    /// Closing stops the copy, so a host that finishes analysing is back to a
+    /// plan with no tap op.
     #[test]
     fn closing_the_tap_stops_the_copy() {
-        let mut app = App::new();
-        app.insert_resource(AudioTapRes::default());
+        let mut graph = graph();
+        let mut reader = graph.graph().open_output_tap(Samples(64));
+        let mut out = [0.0f32];
+        graph.render_frame(&mut out);
+        graph.graph().close_tap(reader.id());
+        graph.render_frame(&mut out);
+        graph.render_frame(&mut out);
 
-        let callback_side = app.world().resource::<AudioTapRes>().0.clone();
-        let mut consumer = app
-            .world()
-            .resource::<AudioTapRes>()
-            .open()
-            .expect("a fresh tap opens");
-        app.world().resource::<AudioTapRes>().close();
-        assert!(!app.world().resource::<AudioTapRes>().is_open());
-
-        callback_side.push(&[0.25, -0.5]);
-
-        assert_eq!(consumer.try_pop(), None, "a closed tap copies nothing");
+        let mut got = [f32::NAN; 8];
+        assert_eq!(
+            reader.pop_into(&mut got),
+            Samples(1),
+            "only the frame rendered while open"
+        );
     }
 
-    /// A closed tap accepts pushes without panicking — the state the audio thread
-    /// is in for every block until a host opens it.
+    /// A graph that never opened a tap renders as it always did: the first
+    /// plan has no tap, and the reader a later open returns starts empty.
     #[test]
-    fn pushing_into_a_closed_tap_is_a_no_op() {
-        let tap = AudioTapRes::default();
-        tap.0.push(&[0.1, 0.2, 0.3, 0.4]);
-        assert!(!tap.is_open());
+    fn a_graph_without_a_tap_renders_untouched() {
+        let mut graph = graph();
+        let mut out = [0.0f32];
+        graph.render_frame(&mut out);
+        assert_eq!(out[0], 0.25);
+        let reader = graph.graph().open_output_tap(Samples(64));
+        assert_eq!(
+            reader.available(),
+            Samples(0),
+            "a tap flows from its commit"
+        );
     }
 
     // `the_engine_publishes_its_tap` (ignored: it opened a real device) moved
-    // to `engine::build`'s `the_engine_publishes_the_tap_its_callback_feeds`,
+    // to `engine::build`'s `the_engine_publishes_the_meter_and_taps_its_callback_feeds`,
     // which builds device-free and checks the frames reach the published tap.
 }
 

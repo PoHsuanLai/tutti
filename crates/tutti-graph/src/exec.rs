@@ -190,7 +190,8 @@ use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan,
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
-use tutti_types::PlayReading;
+use crate::tap::TapWriter;
+use tutti_types::{PlayReading, TapId};
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
@@ -337,6 +338,8 @@ pub(crate) struct Commit {
     /// Held-key tables the executor let go of, freed on the control side.
     spare_held: Vec<Tables>,
     old_state: Option<State>,
+    /// Tap producers the editor opened since the last commit, by lane.
+    taps: Vec<(TapId, TapWriter)>,
 }
 
 impl Drop for Commit {
@@ -354,6 +357,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
+        taps: Vec<(TapId, TapWriter)>,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -416,6 +420,7 @@ impl Commit {
             spare_params,
             spare_held: Vec::with_capacity(delta_units),
             old_state: None,
+            taps,
         })
     }
 
@@ -434,6 +439,7 @@ impl Commit {
             spare_params: Vec::with_capacity(units),
             spare_held: Vec::with_capacity(units),
             old_state: None,
+            taps: Vec::new(),
         })
     }
 
@@ -638,6 +644,8 @@ struct State {
     rings: Vec<Option<Ring>>,
     audio_fb: Vec<Option<AudioRing>>,
     event_fb: Vec<Option<EventFifo>>,
+    /// One producer per planned tap lane (`None`: nobody opened it).
+    taps: Vec<Option<TapWriter>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
     /// Plan units with a scheduled command landing this block.
@@ -659,6 +667,7 @@ impl State {
             rings: Vec::new(),
             audio_fb: Vec::new(),
             event_fb: Vec::new(),
+            taps: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
             has_due: Vec::new(),
@@ -1147,7 +1156,7 @@ impl Executor {
         c.incoming = incoming;
 
         let old_plan = self.plan.take();
-        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed);
+        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.taps);
         c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
         c.spare_held.append(&mut departed.spare);
         self.suspended = false;
@@ -1160,7 +1169,13 @@ impl Executor {
 
     /// The state for `plan`, carrying what survives out of `self.state`
     /// (which keeps what does not, to be retired with it).
-    fn rebuild(&mut self, plan: &Plan, old_plan: Option<&Plan>, departed: &mut Gone) -> State {
+    fn rebuild(
+        &mut self,
+        plan: &Plan,
+        old_plan: Option<&Plan>,
+        departed: &mut Gone,
+        opened: &mut Vec<(TapId, TapWriter)>,
+    ) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
         // After a sample-rate change nothing time-based carries: every ring
@@ -1263,6 +1278,31 @@ impl Executor {
                     carried
                         .unwrap_or_else(|| EventFifo::sized(f.key.delay(), rate(from), max_block)),
                 )
+            })
+            .collect();
+
+        // Taps, by id: a tap the old plan ran carries its writer; one opened
+        // since the last commit arrives in the commit and wins over a carried
+        // one of the same id (opening an id again replaces it). A writer the
+        // new plan does not name stays in the old state (or the commit) and is
+        // freed on the control side with it.
+        let old_taps: BTreeMap<TapId, usize> = old_plan
+            .map(|p| p.taps.iter().enumerate().map(|(i, k)| (*k, i)).collect())
+            .unwrap_or_default();
+        let taps: Vec<Option<TapWriter>> = plan
+            .taps
+            .iter()
+            .map(|k| {
+                opened
+                    .iter()
+                    .position(|(o, _)| o == k)
+                    .map(|at| opened.swap_remove(at).1)
+                    .or_else(|| {
+                        old_taps
+                            .get(k)
+                            .and_then(|&i| old.taps.get_mut(i))
+                            .and_then(Option::take)
+                    })
             })
             .collect();
 
@@ -1495,6 +1535,7 @@ impl Executor {
             rings,
             audio_fb,
             event_fb,
+            taps,
             inject,
             has_inject,
             has_due: vec![false; plan.units.len()],
@@ -1692,6 +1733,7 @@ impl Executor {
                 rings,
                 audio_fb,
                 event_fb,
+                taps,
                 inject,
                 has_inject,
                 has_due,
@@ -1754,6 +1796,7 @@ impl Executor {
                         rings,
                         audio_fb,
                         event_fb,
+                        taps,
                         inject,
                         has_inject,
                         has_due,
@@ -1843,6 +1886,16 @@ impl Executor {
                                 &*st.flags,
                                 src,
                             );
+                        }
+                        Op::Tap { tap, srcs } => {
+                            if let Some(tap) = taps[tap as usize].as_mut() {
+                                crate::tap::tap_op(
+                                    tap,
+                                    &*st.arena,
+                                    &plan.audio_list[srcs.range()],
+                                    frames,
+                                );
+                            }
                         }
                         Op::Capture { feedback, src } => {
                             let ring = audio_fb[feedback as usize]

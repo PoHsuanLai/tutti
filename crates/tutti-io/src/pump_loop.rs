@@ -1,7 +1,7 @@
 //! The pump loop and the drivers that run it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tutti_types::Samples;
@@ -63,17 +63,27 @@ pub struct PumpLoop<I, O, S = f32> {
     /// Set by the first [`PumpPass::Failed`]; the [`Recorder`] holds the other
     /// end.
     failed: Arc<AtomicBool>,
+    /// Frames the source discarded, summed ([`AudioIn::take_lost`]); the
+    /// [`Recorder`] holds the other end.
+    lost: Arc<AtomicU64>,
 }
 
 impl<I, O, S> PumpLoop<I, O, S> {
     /// A loop over `src` and `sink` moving at most `scratch.len()` samples per
     /// pass, raising `failed` when a pass fails.
-    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>, failed: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(
+        src: I,
+        sink: O,
+        scratch: Vec<S>,
+        failed: Arc<AtomicBool>,
+        lost: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             src,
             sink,
             scratch,
             failed,
+            lost,
         }
     }
 }
@@ -101,6 +111,8 @@ where
     /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
     pub fn pump_once(&mut self) -> PumpPass {
         let mut n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        self.lost
+            .fetch_add(self.src.take_lost().get() as u64, Ordering::Relaxed);
         // A source can push its last frames and then fail between the poll that
         // came back empty and this check. The failure flag is read after the
         // empty poll, so every frame pushed before it is visible to a second
@@ -290,21 +302,46 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// # Examples
 ///
 /// ```
-/// use tutti_metering::AudioTap;
-/// use tutti_types::Samples;
 /// use tutti_codec::Pcm;
+/// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 /// use tutti_io::{ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+/// use tutti_types::graph::{OutPort, Source};
+/// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
+///
+/// /// A stereo source: 0.5 on the left, -0.5 on the right.
+/// struct Tone;
+/// impl Node for Tone {
+///     fn shape(&self) -> Shape {
+///         Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+///     }
+///     fn prepare(&mut self, _: &Prepare) {}
+///     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+///         io.output(0).fill(0.5);
+///         io.output(1).fill(-0.5);
+///         Status::Modified
+///     }
+///     fn reset(&mut self) {}
+/// }
 ///
 /// # fn main() -> tutti_io::Result<()> {
-/// let tap = AudioTap::new();
-/// let src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
+/// let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+/// editor.insert(NodeKey(1), "tone", Unforkable(Tone));
+/// let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
+/// editor.spec_mut().topology.outputs = vec![out(0), out(1)];
+/// let reader = editor.open_tap(TapId(0), vec![out(0), out(1)], TapAlign::ToOutput, Samples(1024));
+/// editor.commit().expect("compiles");
+/// executor.apply_pending();
+/// editor.collect();
+/// let src = TapIn::new(reader);
 /// let dir = tempfile::tempdir()?;
 /// let wav = WavOut::create(dir.path().join("take.wav"), 48_000.0, 2u16, Pcm::Float32)?;
 ///
 /// let (driver, pump) = ManualDriver::new();
 /// let rec = Recorder::start_with(src, wav, driver)?;
 ///
-/// tap.push(&[0.5, -0.5, 0.25, -0.25]);
+/// let (mut left, mut right) = ([0.0f32; 2], [0.0f32; 2]);
+/// let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+/// executor.process(2, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Wrote(Samples(2))));
 /// assert_eq!(pump.pump_once(), Some(PumpPass::Starved));
 ///

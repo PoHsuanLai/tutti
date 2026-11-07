@@ -525,6 +525,12 @@ impl Session {
         if let Some(streamer) = &self.disk_streamer {
             streamer.set_sample_rate(rate);
         }
+        // The heard tap opens at the device's width from here on; one open
+        // across this change keeps counting its blocks lost (see
+        // `Session::open_heard_tap`).
+        if let Some((_, layout)) = &mut self.heard {
+            *layout = spec.channels;
+        }
         follow(spec);
         Ok(())
     }

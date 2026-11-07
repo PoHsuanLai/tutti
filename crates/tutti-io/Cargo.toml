@@ -15,9 +15,6 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-# `AudioTap`, the analysis tap `TapIn` reads.
-tutti-metering = { path = "../tutti-metering" }
-
 thiserror.workspace = true
 
 # The node contract `MicMonitorNode` is written against. No cycle:

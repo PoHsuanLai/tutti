@@ -1,7 +1,7 @@
 //! The output callback, tested without a sound card.
 //!
 //! None of this was reachable before [`OutputBlock`] existed. The
-//! `MAX_FRAMES` clamp, the zero-fill, the stereo metering fold and the
+//! `MAX_FRAMES` clamp, the zero-fill and the
 //! eight-way sample-format conversion all lived inside the closure handed to
 //! `build_output_stream`, so the only thing that could run them was CPAL with
 //! a device open — and this crate had six tests, none of which touched any of
@@ -20,8 +20,10 @@
 //! | scale the conversion by 0.5 in `write_output` | `every_sample_format_carries_the_dc_level_it_was_given` |
 //! | `frame < rendered_frames` → `true` (no tail silencing) | `an_oversized_callback_silences_its_tail` |
 //! | drop `.min(MAX_FRAMES)` | `an_oversized_callback_silences_its_tail` (index panic) |
-//! | `fold_frame(f, out)` → `out.copy_from_slice(&f[..2])` | `a_wide_device_meters_a_fold_not_the_first_two_channels` |
-//! | delete the `layout == STEREO` memcpy branch | nothing — see `the_stereo_metering_shortcut_agrees_with_the_fold` |
+//!
+//! The master meter's tests (the stereo fold of a wide device, the analytic
+//! level, enabled against disabled) are `tutti-engine`'s `tests/master_meter.rs`:
+//! the engine feeds the meter, not this callback.
 
 mod support;
 
@@ -112,125 +114,6 @@ fn an_oversized_callback_silences_its_tail() {
     );
 }
 
-/// **A wide device meters a fold of every channel, not the first two.**
-///
-/// `meter_output` and the UI waveform assume stereo, so the callback folds the
-/// device buffer down before metering. Taking the first two channels instead
-/// would drop the centre and the surrounds entirely — a 5.1 mix whose
-/// dialogue never appears on the meter and never reaches a master recording.
-///
-/// The signal is put on the **centre** channel with the front pair silent,
-/// which is the only arrangement that separates the two behaviours: under a
-/// uniform-DC graph a fold and a `[..2]` truncation agree exactly, and an
-/// earlier draft of this test proved nothing for that reason.
-///
-/// Read through the tap rather than the meter: the tap carries the same folded
-/// buffer frame by frame, where the meter reports a smoothed level.
-#[test]
-fn a_wide_device_meters_a_fold_not_the_first_two_channels() {
-    // 5.1 order: L, R, C, LFE, Ls, Rs. Channel 2 is the centre.
-    let (state, mut cons) = support::dc_on_channel(1.0, 2, 6);
-    let mut block = OutputBlock::new(state, ChannelLayout::from(6usize));
-    let mut out = vec![0.0f32; 64 * 6];
-    block.render(&mut out);
-
-    // The device buffer itself: silent front pair, loud centre.
-    assert_eq!(out[0], 0.0, "left must be silent");
-    assert_eq!(out[1], 0.0, "right must be silent");
-    assert_eq!(out[2], 1.0, "the centre carries the signal");
-
-    let (l, r) = cons
-        .try_pop()
-        .expect("the callback must have pushed a metered frame");
-    assert!(
-        l != 0.0 || r != 0.0,
-        "the metered fold must carry the centre channel; it read ({l}, {r}), \
-         which is what a `[..2]` truncation of this buffer would give"
-    );
-}
-
-/// **The metering fold runs when only the meter reads it.** The callback
-/// skips the fold while the meter is disabled and the tap closed, since
-/// `meter_output` then does nothing; an enabled meter with the tap closed
-/// must still read the block. Both a stereo device (the memcpy branch) and a
-/// wide one (the fold) are checked, with the meter off first, then on.
-///
-/// Mutation (run): gate the fold on the tap alone (`if
-/// self.state.tap.is_open()`) → the enabled meter reads 0 → fails.
-#[test]
-fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
-    for width in [2usize, 6] {
-        let (writer, meter) = tutti_metering::MasterMeter::pair();
-        let state = support::dc_state_metered(0.5, width, writer);
-        let mut block = OutputBlock::new(state, ChannelLayout::from(width));
-        let mut out = vec![0.0f32; 64 * width];
-
-        block.render(&mut out);
-        assert_eq!(
-            meter.get().peak_left.get(),
-            0.0,
-            "width {width}: disabled reads nothing"
-        );
-
-        meter.enable();
-        block.render(&mut out);
-        let peak = meter.get().peak_left.get();
-        assert!(peak > 0.0, "width {width}: the enabled meter read {peak}");
-    }
-}
-
-/// **A stereo callback at the `MAX_FRAMES` ceiling reads its analytic
-/// level**: a constant 0.5 reads 0.5 as both peak and RMS. (A wide device's
-/// fold is not a passthrough, so its figure is the fold's, pinned by
-/// `a_wide_device_meters_a_fold_not_the_first_two_channels`.)
-///
-/// Mutation (run): doubling the buffer handed to `meter_output` in
-/// `block.rs` → the peak reads 1.0 → fails. The metered length is pinned by
-/// `tutti-metering`'s `a_block_past_8192_frames_is_metered_whole`.
-#[test]
-fn a_full_block_reads_its_analytic_level() {
-    let (writer, meter) = tutti_metering::MasterMeter::pair();
-    meter.enable();
-    let state = support::dc_state_metered(0.5, 2, writer);
-    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
-    let mut out = vec![0.0f32; MAX_FRAMES * 2];
-    block.render(&mut out);
-    let r = meter.get();
-    for (what, got) in [
-        ("peak left", r.peak_left),
-        ("peak right", r.peak_right),
-        ("rms left", r.rms_left),
-        ("rms right", r.rms_right),
-    ] {
-        assert!((got.get() - 0.5).abs() < 1e-6, "{what} read {}", got.get());
-    }
-}
-
-/// **The stereo memcpy shortcut is bit-equal to the general fold.**
-///
-/// `block.rs` claims the `layout == STEREO` branch "is a deliberate
-/// optimization, not divergent logic", because `fold_frame`'s 2-wide arm is
-/// already a passthrough, and warns that if that ever stops being true the
-/// branch has to go rather than be patched. Nothing checked the claim.
-///
-/// Honest about what this can and cannot do: it pins `fold_frame`'s stereo arm
-/// as a passthrough, which is the premise the shortcut rests on. It cannot
-/// detect the shortcut being *deleted*, because both paths then agree — that
-/// is a performance change, not a correctness one, and a test is the wrong
-/// instrument for it.
-#[test]
-fn the_stereo_metering_shortcut_agrees_with_the_fold() {
-    let mut folded = [0.0f32; 2];
-    tutti_types::fold_frame(&[0.25, -0.75], &mut folded);
-    assert_eq!(
-        folded,
-        [0.25, -0.75],
-        "fold_frame's 2-wide arm must stay a passthrough — the callback's \
-         stereo memcpy branch is only valid while it is. If this fails, delete \
-         that branch rather than patching it (see block.rs)."
-    );
-}
-
 /// The block reports the width it was built for, and renders at it.
 #[test]
 fn the_block_renders_at_the_width_it_was_built_for() {
@@ -253,24 +136,4 @@ fn an_empty_callback_renders_nothing_and_does_not_panic() {
     let mut out: [f32; 0] = [];
     block.render(&mut out);
     assert_eq!(block.last_rendered_frames(), 0);
-}
-
-/// **The callback hands the tap every frame it rendered**, not a prefix: a
-/// 64-frame block leaves 64 frames in the ring, the last still the DC level.
-///
-/// Mutation (run): `tap.push(&output[..output.len() / 2])` in
-/// `tutti-metering`'s `meter_output` → 32 frames → fails.
-#[test]
-fn the_callback_taps_the_whole_block() {
-    let (state, mut cons) = support::dc_on_channel(0.5, 0, 2);
-    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
-    let mut out = vec![0.0f32; 64 * 2];
-    block.render(&mut out);
-
-    assert_eq!(cons.occupied_len(), 64);
-    let mut last = None;
-    while let Some(f) = cons.try_pop() {
-        last = Some(f);
-    }
-    assert_eq!(last, Some((0.5, 0.0)));
 }

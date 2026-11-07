@@ -96,7 +96,7 @@ impl Control {
 #[derive(Clone, Debug)]
 pub(crate) struct TransportClock {
     /// Everything shared with the live transport. A derived stream
-    /// ([`starting_at`](Self::starting_at), [`at_tempo`](Self::at_tempo))
+    /// (`starting_at`, `at_tempo`)
     /// severs it wholesale; every other field is this clock's own.
     links: ClockLinks,
     /// The playhead, and the tempo in force (its hysteresis applied) and rate

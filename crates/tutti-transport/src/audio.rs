@@ -50,7 +50,7 @@ impl Applied {
     }
 }
 
-/// The audio thread's transport: see the [module docs](self).
+/// The audio thread's transport: see the module docs.
 ///
 /// Not `Clone`. Dropping it hands the motion machine (with the loop region
 /// and the claim on the playhead) back to the [`Transport`], so a later

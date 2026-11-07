@@ -67,12 +67,12 @@ impl Default for SeekSlot {
     }
 }
 
-/// Everything [`TransportClock`](super::TransportClock) shares with the live
+/// Everything `TransportClock` shares with the live
 /// transport.
 ///
 /// The membership rule is exactly a derived stream's cut
-/// ([`TransportClock::starting_at`](super::TransportClock::starting_at), via
-/// [`severed`](Self::severed)): every field here is `Arc`-shared, so an
+/// (`TransportClock::starting_at`, via
+/// `severed`): every field here is `Arc`-shared, so an
 /// offline render stepping a clone must drop all of them or it stomps live
 /// playback. Fields the clock owns privately are deliberately *not* here.
 ///

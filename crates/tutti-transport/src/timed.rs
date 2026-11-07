@@ -111,7 +111,7 @@ pub struct Scheduled {
     /// a cancel compares against.
     seq: u64,
     /// An `At::Frame`'s frame, unrounded: a rate change moves it by
-    /// `new / old` ([`Schedule::rescale`]), and `at` is this rounded to the
+    /// `new / old` (`ScheduleAudio::rescale`), and `at` is this rounded to the
     /// nearest frame, so two changes in a row round once rather than twice
     /// (the graph executor's `CommandRx::rescale` keeps the same figure).
     pos: f64,
@@ -228,7 +228,7 @@ impl Schedule {
 
     /// Control thread: the device rate is changing, and every command sent
     /// from here on is written in the new rate's frames. The boundary
-    /// [`rescale`](Self::rescale) keeps to — the same rule as the
+    /// `ScheduleAudio::rescale` keeps to — the same rule as the
     /// executor's own schedule (`Editor::reprepare`), where a commit's
     /// sequence number is the boundary; here it is the send order.
     pub(crate) fn mark_rate_change(&self) {

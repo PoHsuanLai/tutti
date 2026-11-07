@@ -224,10 +224,10 @@ impl Engine {
     /// 64-frame chunking; a device block longer than the prepared maximum is rendered as
     /// consecutive graph blocks of at most that — and builds each block's
     /// `Env` from `transport`: the frame is the executor's clock, which
-    /// tracks device time, and the transport snapshot comes from a
-    /// [`TransportClock`] the engine drives over `transport`'s
-    /// [`clock_links`](tutti_transport::Transport::clock_links), so it publishes the
-    /// playhead, steady time and tempo in force.
+    /// tracks device time, and the transport snapshot comes from the
+    /// [`TransportAudio`] the engine takes from `transport`
+    /// ([`Transport::audio`](tutti_transport::Transport::audio)) and drives, so
+    /// it publishes the playhead, steady time and tempo in force.
     ///
     /// **Bounds the editor** ([`Editor::set_limits`]) to at most
     /// [`MAX_ROOT_CHANNELS`] global outputs and a `MaxBlock` of at most the
@@ -237,17 +237,17 @@ impl Engine {
     /// past them. The editor is borrowed mutably for the check, so no commit
     /// can slip in beside it.
     ///
-    /// **One engine per transport.** The engine's clock is `transport`'s one
-    /// playhead writer ([`Transport::clock_links`](tutti_transport::Transport::clock_links)):
-    /// while this engine is alive, another built over the same transport, or
-    /// a clone of it, is refused with [`GraphEngineError::PlayheadClaimed`] —
-    /// two would both consume every seek and both write the playhead. The
-    /// engine also takes the transport's motion machine, which applies
-    /// [`MotionFsm`]'s commands. Both are given back when this engine is
+    /// **One engine per transport.** The engine holds `transport`'s one audio
+    /// side ([`Transport::audio`](tutti_transport::Transport::audio)): the
+    /// playhead writer and the motion machine, which applies
+    /// [`MotionFsm`]'s commands. While this engine is alive, another built
+    /// over the same transport, or a clone of it, is refused with
+    /// [`GraphEngineError::TransportHeld`] — two would both consume every
+    /// seek and both write the playhead. It is given back when this engine is
     /// dropped, so a later engine resumes the same motion state.
     ///
-    /// Nor can the graph hold a second writer: a `TransportClock` can only
-    /// write a playhead through links from that one call. A node that
+    /// Nor can the graph hold a second writer: only that audio side writes
+    /// a playhead. A node that
     /// follows the beat (`ClickNode`, a beat-synced LFO or automation lane)
     /// reads it from its block's `Env`, which shares nothing.
     ///
@@ -259,10 +259,9 @@ impl Engine {
     /// Returns an error, leaving `editor` unchanged, when:
     ///
     /// - [`GraphEngineError::NotAPair`]: `executor` is not `editor`'s.
-    /// - [`GraphEngineError::PlayheadClaimed`]: another engine over
-    ///   `transport` (or a clone of it) is alive.
-    /// - [`GraphEngineError::MotionHeld`]: an engine is alive over another
-    ///   transport that shares `transport`'s `motion` handle.
+    /// - [`GraphEngineError::TransportHeld`]: another engine over
+    ///   `transport` (or a clone of it, or a transport sharing its `motion`
+    ///   handle) is alive.
     /// - [`GraphEngineError::Limits`]: what the editor already sent has more
     ///   than [`MAX_ROOT_CHANNELS`] global outputs or a `MaxBlock` above the
     ///   capacity.

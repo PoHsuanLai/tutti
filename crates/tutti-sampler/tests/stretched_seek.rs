@@ -10,8 +10,8 @@
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::contract;
-use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};

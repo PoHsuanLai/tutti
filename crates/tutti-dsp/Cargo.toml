@@ -47,8 +47,8 @@ default = []
 
 [dev-dependencies]
 # The README's "Reading from a running graph" doctest shows the engine-side
-# seam (`tutti_metering::AudioTap`); nothing in the library reaches tutti-metering.
-tutti-metering = { path = "../tutti-metering" }
+# seam (a graph tap's `TapReader`); nothing in the library reaches tutti-graph.
+tutti-graph = { path = "../tutti-graph" }
 # Reproducible noise for the correlation tests, which otherwise hand-roll a
 # generator. Seeded, so an uncorrelated-input assertion is not flaky.
 #

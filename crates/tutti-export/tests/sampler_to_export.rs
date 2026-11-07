@@ -51,12 +51,12 @@
 use std::f32::consts::TAU;
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_export::{
     ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
     render_to_file,
 };
 use tutti_graph::GraphBuilder;
-use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, Cents, SampleRate, StretchFactor};

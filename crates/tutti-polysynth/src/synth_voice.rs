@@ -377,6 +377,12 @@ impl SynthVoice {
         Resonance(base + self.cc_resonance_value * (max_res - base))
     }
 
+    /// CC 74 and CC 71 positions. Observability for tests.
+    #[cfg(test)]
+    pub(crate) fn sound_controllers(&self) -> (f32, f32) {
+        (self.cc_cutoff_value, self.cc_resonance_value)
+    }
+
     #[cfg(test)]
     pub(crate) fn mod_wheel(&self) -> f32 {
         self.mod_wheel_value

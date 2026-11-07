@@ -85,12 +85,12 @@ pub use tail::{GraphTail, TailGraph, graph_tail};
 // and `Invalid` stay module-qualified, because each is a generic word that reads
 // wrong unprefixed — `graph::Source` is an edge's origin, and a root `Source`
 // beside `io::AudioIn` would be read as an input device.
-pub use graph::{NodeKey, Topology, Valid};
+pub use graph::{NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
 
 // Musical meter.
 pub use meter::{
-    BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
-    TimeSignature,
+    BarCount, BarNumber, BarPosition, BeatsPerBar, InvalidBeatsPerBar, InvalidNoteValue, Meter,
+    MeterChange, MeterMap, NoteValue, TimeSignature,
 };
 
 /// The names a consumer of this crate actually reaches for, in one import.

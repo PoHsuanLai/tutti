@@ -16,7 +16,7 @@
 //!   is always patched. `Drop` cannot return the result; it lands in the
 //!   [`FinalizeStatus`] taken beforehand.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tutti_types::Samples;
@@ -59,7 +59,8 @@ const SCRATCH_FRAMES: Samples = Samples(1024);
 /// # Examples
 ///
 /// ```no_run
-/// # use tutti_io::{Recorder, WavOut, Pcm};
+/// # use tutti_codec::Pcm;
+/// # use tutti_io::{Recorder, WavOut};
 /// # fn go<I: tutti_types::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
 /// let wav = WavOut::create("take.wav", 48_000.0, 2u16, Pcm::Float32)
 ///     .expect("sink opens");
@@ -77,6 +78,8 @@ pub struct Recorder {
     handle: Option<Box<dyn RunningPump>>,
     /// Raised by the pump on its first failed pass; see [`failed`](Self::failed).
     failed: Arc<AtomicBool>,
+    /// Frames the source discarded; see [`lost`](Self::lost).
+    lost: Arc<AtomicU64>,
     /// Written only by `drop`; every other shutdown returns its result.
     status: Arc<FinalizeStatus>,
 }
@@ -209,11 +212,13 @@ impl Recorder {
 
         let running = Arc::new(AtomicBool::new(true));
         let failed = Arc::new(AtomicBool::new(false));
+        let lost = Arc::new(AtomicU64::new(0));
         let pump_loop = PumpLoop::new(
             src,
             sink,
             vec![S::default(); scratch_samples],
             Arc::clone(&failed),
+            Arc::clone(&lost),
         );
 
         let handle = driver.drive(pump_loop, Arc::clone(&running));
@@ -222,6 +227,7 @@ impl Recorder {
             running,
             handle: Some(Box::new(handle)),
             failed,
+            lost,
             status: Arc::new(FinalizeStatus::default()),
         })
     }
@@ -303,6 +309,19 @@ impl Recorder {
     #[must_use]
     pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
+    }
+
+    /// The frames the source discarded so far ([`AudioIn::take_lost`]): a
+    /// tap's ring that the pump did not drain in time, a capture ring that
+    /// overflowed. A live take's health beside [`failed`](Self::failed).
+    ///
+    /// **A gap closes up.** The sink is written the frames that arrived, in
+    /// order, so a file is shorter than the take by this many frames, with
+    /// nothing in the audio to mark where. Zero means the file is the whole
+    /// take. Readable after the take ends.
+    #[must_use]
+    pub fn lost(&self) -> Samples {
+        Samples(usize::try_from(self.lost.load(Ordering::Relaxed)).unwrap_or(usize::MAX))
     }
 
     /// Whether the pump has stopped running passes, so

@@ -20,8 +20,14 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
 - **The transport.** `Transport`, its motion state machine and timed commands
   are `tutti-transport`'s; the engine holds the transport's `TransportAudio` and
   applies what the transport schedules.
-- **Metering.** `MasterMeter`, `AudioTap` and `LoadMeter` are `tutti-metering`'s;
-  the engine writes the load meter once per block.
+- **Metering.** `MasterMeter` and `LoadMeter` are `tutti-metering`'s;
+  the engine writes both once per block (the master meter on a stereo fold of
+  the output buffer, after the declick).
+- **Taps.** Copying audio out of the graph is `tutti-graph`'s (`Editor::open_tap`,
+  `TapReader`), an op in the compiled plan, before the declick fader. The engine
+  writes the other kind itself: `Engine::heard_taps()` opens a tap on its
+  device-width output after the fader (what is heard), read through the same
+  `TapReader`.
 - **MIDI.** `Engine` is MIDI-free; MIDI travels on the graph's event ports
   (`tutti-graph`), and the MIDI nodes are `tutti-midi-runtime`'s.
 - **The device.** Opening a stream and driving the real-time callback is

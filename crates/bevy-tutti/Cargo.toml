@@ -31,9 +31,8 @@ bevy_reflect.workspace = true
 bevy_tasks.workspace = true
 
 # Tutti audio engine — bevy-tutti depends on the subsystem crates directly.
-# (The Asset derive on `WaveAsset` is `tutti-io/bevy`, enabled by `sampler`
-# below.) bevy-tutti supplies the node component, the reconcile systems and the
-# CPAL audio callback (src/engine/).
+# bevy-tutti supplies the node component, the reconcile systems and the CPAL
+# audio callback (src/engine/).
 tutti-transport = { path = "../tutti-transport" }
 tutti-metering = { path = "../tutti-metering" }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
@@ -69,10 +68,12 @@ tutti-sampler = { path = "../tutti-sampler", optional = true, default-features =
 # The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
 # is a component around `tutti_io::Recorder`, the one pump loop. `audio-io`
 # adds the device half and re-exports `WavOut`,
-# `MicMonitorNode` and `Recorder` through `crate::io`; `sampler` adds
-# `Wave`/`WaveAsset`/the decoder. With no codec feature the crate compiles no
-# decoder.
+# `MicMonitorNode` and `Recorder` through `crate::io`.
 tutti-io = { path = "../tutti-io" }
+# `Pcm` (a `WavOut` width) and, with a decode feature, `Wave` and the decoder
+# the `sampler` feature loads through. With no decode feature the crate
+# compiles no decoder.
+tutti-codec = { path = "../tutti-codec" }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
@@ -150,12 +151,12 @@ convolution = ["tutti-nodes/convolution", "tutti-session/convolution"]
 # the units and the curve type underneath.
 modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy", "tutti-session/modulation"]
 
-# Audio formats. The decoder is `tutti-io`'s (always a dependency, see above);
-# the sampler forwards to it too when it is on.
-wav = ["tutti-io/wav", "tutti-sampler?/wav"]
-flac = ["tutti-io/flac", "tutti-sampler?/flac"]
-mp3 = ["tutti-io/mp3", "tutti-sampler?/mp3"]
-ogg = ["tutti-io/ogg", "tutti-sampler?/ogg"]
+# Audio formats. The decoder is `tutti-codec`'s (always a dependency, see
+# above); the sampler forwards to it too when it is on.
+wav = ["tutti-codec/decode-wav", "tutti-sampler?/wav"]
+flac = ["tutti-codec/decode-flac", "tutti-sampler?/flac"]
+mp3 = ["tutti-codec/decode-mp3", "tutti-sampler?/mp3"]
+ogg = ["tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
 
 # MIDI — two axes. `midi` is the hardware-free engine: types, bus, routing, clip
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
@@ -187,15 +188,13 @@ soundfont = ["midi", "dep:tutti-soundfont", "tutti-session/soundfont"]
 # (`tutti-sampler` → `crate::sampler`).
 #
 # Deliberately does NOT carry the live I/O edge — that is `audio-io` below.
-# `tutti-sampler` depends on `tutti-io` for `Wave` and the decoder, but not
-# the other way, so folding them together would make a host wanting only
-# mic→WAV compile the butler thread to get it. `tutti-io/bevy` is the
-# `WaveAsset` derive the `.wav` loader hands out.
+# `tutti-sampler` depends on `tutti-codec` for `Wave` and the decoder, so
+# folding the two together would make a host wanting only mic→WAV compile the
+# butler thread to get it.
 sampler = [
     "wav",
     "dep:tutti-sampler",
     "tutti-sampler/bevy",
-    "tutti-io/bevy",
     "tutti-session/sampler",
 ]
 
@@ -254,10 +253,8 @@ assert_no_alloc = { version = "1", default-features = false }
 # it back with `hound` — same crates the sampler's own capture tests use.
 hound = "3.5"
 tempfile = "3.8"
-# `AudioTap::open` hands back a `ringbuf` consumer. Naming its `Consumer` trait
-# is what lets the tap test pop the frames a simulated callback pushed, rather
-# than asserting only that an `is_open` flag flipped. Same version tutti-metering
-# builds the ring with.
+# The mic-monitor tests build the capture ring by hand (`MicMonitorNode`'s
+# `HeapProd`), in the version the device layer builds it with.
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `tests/plugin_capture.rs` loads the reference CLAP plugin through a real
 # `plugin-server`, to pin that a loaded plugin's shadow is captured and driven.

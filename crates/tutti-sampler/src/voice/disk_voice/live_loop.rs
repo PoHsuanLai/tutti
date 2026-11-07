@@ -59,8 +59,8 @@ fn write_ramp(path: &Path, rate: u32, frames: usize) {
 }
 
 /// The same ramp, resident, for the memory tier.
-fn ramp_wave(rate: u32, frames: usize) -> Arc<tutti_io::Wave> {
-    let mut wave = tutti_io::Wave::new(2, rate as f64);
+fn ramp_wave(rate: u32, frames: usize) -> Arc<tutti_codec::Wave> {
+    let mut wave = tutti_codec::Wave::new(2, rate as f64);
     for i in 0..frames {
         wave.push_frame(&[value(i), -value(i)]);
     }
@@ -261,7 +261,7 @@ struct Memory {
 }
 
 impl Memory {
-    fn new(wave: Arc<tutti_io::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
+    fn new(wave: Arc<tutti_codec::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
         let clock = MockTransport::rolling(Beat::new(from), Bpm::new(120.0));
         let mut source = MemorySource::placed(wave, Beat(0.0), None);
         source.set_speed(PlaybackRate::new(speed));

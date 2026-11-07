@@ -71,11 +71,10 @@ pub mod testing;
 pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,
-// `Voice`'s memory tier) is `tutti-io`'s. Re-exported so a consumer building a
-// voice needs no direct `tutti-io` dependency. `WaveAsset` is not here: it
-// exists only under `tutti-io/bevy`, which this crate does not enable — it is
-// `bevy_tutti::sampler`'s to surface.
-pub use tutti_io::Wave;
+// `Voice`'s memory tier) is `tutti-codec`'s. Re-exported so a consumer building
+// a voice needs no direct `tutti-codec` dependency. `WaveAsset`, the Bevy
+// wrapper of one, is `bevy_tutti::sampler`'s.
+pub use tutti_codec::Wave;
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.
@@ -134,7 +133,7 @@ pub use ports::{Command, Commands, Source, Status};
 // butler read one function rather than two copies of a rule.
 //
 // Codec-gated because it *is* the codec layer: `Wave::read_metadata` and
-// `WaveMetadata` are themselves gated in `tutti-io`, so with no format feature
+// `WaveMetadata` are themselves gated in `tutti-codec`, so with no format feature
 // there is no header to read. Absent rather than always-`false` — a host that
 // compiled out every codec cannot open files at all, and a probe that silently
 // answered "not streamable" would look like a property of the file.

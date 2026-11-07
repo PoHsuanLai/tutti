@@ -2,12 +2,11 @@
 //!
 //! `tutti-nodes`' `engine_render` bench measures `Engine::process`. That is
 //! not what a sound card calls. The real callback also clamps to
-//! `MAX_FRAMES`, zero-fills the mix, folds the device buffer to stereo, calls
-//! `meter_output`, and converts to the device's sample format. [`OutputBlock`]
-//! runs all of that without a live stream, so it can be measured here.
+//! `MAX_FRAMES`, zero-fills the mix and converts to the device's sample
+//! format. [`OutputBlock`] runs all of that without a live stream, so it can be measured here.
 //!
 //! **The case that justifies this file is `callback/vs_render`.** Its delta
-//! against `engine_render` is the metering-and-conversion tax the engine
+//! against `engine_render` is the conversion tax the engine
 //! bench cannot see. If that tax is a large fraction of the block budget,
 //! optimising DSP is the wrong place to look.
 //!
@@ -20,21 +19,16 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
 use tutti_engine::Engine;
-use tutti_graph::{Editor, Prepare};
-use tutti_metering::AudioTap;
-use tutti_metering::MasterMeter;
+use tutti_graph::{Editor, Prepare, TapReader};
 use tutti_nodes::testing::Osc;
 use tutti_transport::Transport;
 use tutti_types::SampleRate;
 use tutti_types::graph::{OutPort, Source};
-use tutti_types::{ChannelLayout, Hz, InterleavedMut, NodeKey, Samples};
+use tutti_types::{ChannelLayout, Hz, InterleavedMut, NodeKey, Samples, TapAlign, TapId};
 
 const SR: f64 = 48_000.0;
 
-fn state(
-    outputs: usize,
-    tap_open: bool,
-) -> (Arc<AudioCallbackState>, Option<tutti_metering::TapCons>) {
+fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<TapReader>) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     ed.insert(NodeKey(1), "sine", Osc::sine(Hz(440.0)));
     ed.spec_mut().topology.outputs = vec![
@@ -44,18 +38,17 @@ fn state(
         });
         outputs
     ];
+    let tap = tap_open.then(|| {
+        let sources = ed.spec().topology.outputs.clone();
+        ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(8192))
+    });
     ed.commit().expect("commits");
     let engine = Engine::new(&Transport::new(SR), &mut ed, exec).expect("within the limits");
     // Built once per case in setup, so the leak is bounded by case count
     // rather than iteration count.
     Box::leak(Box::new(ed));
 
-    let tap = AudioTap::new();
-    let cons = tap_open.then(|| tap.open().expect("a fresh tap opens"));
-    (
-        Arc::new(AudioCallbackState::new(engine, MasterMeter::pair().0, tap)),
-        cons,
-    )
+    (Arc::new(AudioCallbackState::new(engine)), tap)
 }
 
 /// The full callback across block sizes and device widths.
@@ -116,9 +109,10 @@ fn bench_vs_render(c: &mut Criterion) {
 
 /// What an open tap costs the audio thread.
 ///
-/// `AudioTap` is opt-in precisely so a closed one is nearly free — the claim
-/// is "one atomic load". This prices it, and prices the push when it is open,
-/// which is what a host recording the master bus pays.
+/// A closed tap is not in the plan, so it costs nothing. This prices the
+/// graph's tap op when it is open on both outputs, aligned and never drained
+/// (the ring fills and the op counts what it drops): the figure a host
+/// recording the master bus pays.
 fn bench_tap(c: &mut Criterion) {
     let mut group = c.benchmark_group("callback/tap");
     const FRAMES: usize = 256;
@@ -131,8 +125,9 @@ fn bench_tap(c: &mut Criterion) {
         group.bench_function(label, |b| {
             b.iter(|| block.render(black_box(&mut data)));
         });
-        // Held so an open tap stays open for the whole measurement; a dropped
-        // consumer would close it and quietly measure the `closed` case twice.
+        // Held so an open tap keeps its reader for the whole measurement; a
+        // dropped reader would make the op write nothing and quietly measure
+        // the `closed` case twice.
         drop(cons);
     }
     group.finish();

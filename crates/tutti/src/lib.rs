@@ -36,7 +36,7 @@ pub use tutti_engine as engine;
 /// machine, timed commands, the offline timeline.
 pub use tutti_transport as transport;
 
-/// Level metering (`tutti-metering`): `MasterMeter`, `AudioTap`, `LoadMeter`.
+/// Level metering (`tutti-metering`): `MasterMeter`, `LoadMeter`.
 pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
@@ -63,9 +63,13 @@ pub use tutti_nodes as nodes;
 #[cfg(feature = "device")]
 pub use tutti_cpal as device;
 
-/// The I/O edge (`tutti-io`): file decode (`Wave`, `FileIn`), WAV out, mic
-/// monitoring and recording. Feature `io`, which `audio-io` and every codec
-/// imply.
+/// File codecs (`tutti-codec`): `Wave`, `FileIn` and the decoders behind them.
+/// Feature `codec`, which every format implies.
+#[cfg(feature = "codec")]
+pub use tutti_codec as codec;
+
+/// The live I/O edge (`tutti-io`): mic monitoring, the analysis tap, WAV out
+/// and recording. Feature `io`, which `audio-io` implies.
 #[cfg(feature = "io")]
 pub use tutti_io as io;
 
@@ -159,10 +163,8 @@ pub use tutti_plugin as plugin;
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_engine::prelude::*;
-    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS};
-    pub use tutti_metering::{
-        AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
-    };
+    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS, TapReader};
+    pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_transport::{
@@ -170,7 +172,7 @@ pub mod prelude {
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
     pub use tutti_types::prelude::*;
-    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
+    pub use tutti_types::{At, BarNumber, LoopRange, Meter, TapAlign, TapId};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and its enumeration record.
@@ -183,7 +185,9 @@ pub mod prelude {
     #[cfg(all(feature = "session", feature = "device"))]
     pub use tutti_session::Device;
     #[cfg(feature = "session")]
-    pub use tutti_session::{GraphSource, Phase, Session, SessionBuilder, SessionEvent};
+    pub use tutti_session::{
+        GraphSource, HeardTapError, Phase, Session, SessionBuilder, SessionEvent,
+    };
 
     // What a session's calls take, by the feature that gates each (design
     // 015 §5): a modulation target, an export, a plugin load, a MIDI file.

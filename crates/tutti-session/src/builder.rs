@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::PrerollTable;
-use tutti_metering::{AudioTap, MasterMeter};
 use tutti_nodes::{ClickNode, ClickSettings};
 use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
@@ -329,9 +328,9 @@ impl SessionBuilder {
             graph: parts.graph,
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
+            meter: engine.as_ref().map(master_meter_of),
+            heard: None,
             engine,
-            meter: MasterMeter::default(),
-            tap: AudioTap::new(),
             click: parts.click,
             click_settings: parts.click_settings,
             compensation: parts.compensation,
@@ -355,6 +354,8 @@ impl SessionBuilder {
             device_watch: None,
             #[cfg(feature = "device")]
             device_events: Vec::new(),
+            #[cfg(feature = "device")]
+            output_listing: None,
             #[cfg(feature = "plugin")]
             snapshot_interval: self.snapshot_interval,
             #[cfg(feature = "plugin")]
@@ -391,7 +392,10 @@ impl SessionBuilder {
             root_width(self.outputs_floor, layout),
         )?;
         let engine = parts.graph.engine(&parts.transport)?;
-        self.session(parts, Some(engine), true)
+        let heard = engine.heard_taps();
+        let mut session = self.session(parts, Some(engine), true)?;
+        session.heard = Some((heard, layout));
+        Ok(session)
     }
 
     /// A session with no engine: the executor stays on this side, every
@@ -490,20 +494,22 @@ impl SessionBuilder {
         let engine = parts.graph.engine(&parts.transport)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
-        // Consumers read the meter directly, so it measures from the start.
-        let (writer, meter) = MasterMeter::pair();
-        meter.enable();
-        session.meter = meter;
-        let state = Arc::new(tutti_cpal::AudioCallbackState::new(
-            engine,
-            writer,
-            session.tap.clone(),
-        ));
+        session.meter = Some(master_meter_of(&engine));
+        session.heard = Some((engine.heard_taps(), spec.channels));
+        let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;
         let device = crate::Device::new(tutti_cpal::TuttiDriver::new(audio_engine, state));
         session.faults = Some((device.faults(), device.faults().count()));
         Ok((session, device))
     }
+}
+
+/// The engine's master meter, enabled: consumers read it directly, so it
+/// measures from the start.
+fn master_meter_of(engine: &tutti_engine::Engine) -> tutti_metering::MasterMeter {
+    let meter = engine.master_meter().clone();
+    meter.enable();
+    meter
 }
 
 /// How wide the graph root is built, given what the project asks for and

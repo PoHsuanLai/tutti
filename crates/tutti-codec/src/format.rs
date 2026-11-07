@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::pcm::IntDepth;
-#[cfg(any(feature = "wav", feature = "aiff"))]
+#[cfg(any(feature = "encode-wav", feature = "encode-aiff"))]
 use crate::pcm::Pcm;
 use std::path::Path;
 use tutti_types::ChannelLayout;
@@ -14,20 +14,20 @@ use tutti_types::ChannelLayout;
 /// [`IntDepth`]), and Ogg Vorbis, which is lossy and float internally, has no
 /// width at all.
 ///
-/// Each variant exists only with its cargo feature (`wav`, `aiff`, `flac`,
-/// `vorbis`), so a format this build cannot write cannot be named.
+/// Each variant exists only with its cargo feature (`encode-wav`, `encode-aiff`, `encode-flac`,
+/// `encode-vorbis`), so a format this build cannot write cannot be named.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Format {
     /// Uncompressed RIFF/WAVE at any [`Pcm`] width.
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "encode-wav")]
     Wav(Pcm),
     /// AIFF at an integer width; AIFF-C at `Float32`, since float samples are
     /// an AIFF-C extension.
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     Aiff(Pcm),
     /// Lossless FLAC at an integer width.
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "encode-flac")]
     Flac {
         /// The sample width.
         depth: IntDepth,
@@ -35,7 +35,7 @@ pub enum Format {
         level: FlacLevel,
     },
     /// Lossy Ogg Vorbis. Vorbis's own channel mappings cap the width at 8.
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     Vorbis {
         /// The target VBR quality.
         quality: Quality,
@@ -43,7 +43,7 @@ pub enum Format {
 }
 
 /// `Wav(Pcm::Int24)`: the format an export defaults to.
-#[cfg(feature = "wav")]
+#[cfg(feature = "encode-wav")]
 impl Default for Format {
     fn default() -> Self {
         Self::Wav(Pcm::default())
@@ -61,16 +61,16 @@ impl Format {
     pub fn from_extension(ext: &str) -> Result<Self> {
         let ext = ext.to_lowercase();
         match ext.as_str() {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             "wav" => Ok(Self::Wav(Pcm::default())),
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             "flac" => Ok(Self::Flac {
                 depth: IntDepth::default(),
                 level: FlacLevel::default(),
             }),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             "aiff" | "aif" => Ok(Self::Aiff(Pcm::default())),
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             "ogg" => Ok(Self::Vorbis {
                 quality: Quality::default(),
             }),
@@ -100,13 +100,13 @@ impl Format {
     #[must_use]
     pub fn int_depth(&self) -> Option<IntDepth> {
         match *self {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Self::Wav(pcm) => pcm.int_depth(),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Self::Aiff(pcm) => pcm.int_depth(),
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Self::Flac { depth, .. } => Some(depth),
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Self::Vorbis { .. } => None,
         }
     }
@@ -115,16 +115,16 @@ impl Format {
     /// `None` when its size is not bounded by a header field. Only WAV is: its
     /// sizes are 32-bit.
     #[must_use]
-    #[cfg_attr(not(feature = "wav"), expect(unused_variables))]
+    #[cfg_attr(not(feature = "encode-wav"), expect(unused_variables))]
     pub fn max_frames(&self, layout: ChannelLayout) -> Option<u64> {
         match *self {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Self::Wav(pcm) => Some(crate::wav::max_data_frames(layout, pcm)),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Self::Aiff(_) => None,
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Self::Flac { .. } => None,
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Self::Vorbis { .. } => None,
         }
     }
@@ -174,7 +174,7 @@ impl Quality {
     /// The quality, or `None` when `raw` is outside `0.0..=1.0` or NaN.
     ///
     /// ```
-    /// # #[cfg(feature = "vorbis")] {
+    /// # #[cfg(feature = "encode-vorbis")] {
     /// use tutti_codec::Quality;
     ///
     /// assert_eq!(Quality::new(0.5).map(Quality::get), Some(0.5));

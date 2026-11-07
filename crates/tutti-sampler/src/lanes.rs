@@ -368,7 +368,7 @@ mod tests {
         use tutti_graph::{Node, Prepare};
         use tutti_types::{Beat, SampleRate, Samples};
 
-        let mut wave = tutti_io::Wave::new(2, 48_000.0);
+        let mut wave = tutti_codec::Wave::new(2, 48_000.0);
         wave.push_frame(&[0.0, 0.0]);
         let wave = std::sync::Arc::new(wave);
         let source = MemorySource::placed(std::sync::Arc::clone(&wave), Beat::new(0.0), None);

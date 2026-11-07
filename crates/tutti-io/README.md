@@ -1,7 +1,7 @@
 # tutti-io
 
-Tutti's audio I/O edge: what comes in from a device or a file, and what goes
-out to a file. Device-free: the sound-card side lives in `tutti-cpal`, and the
+Tutti's live audio I/O edge: what comes in from a device or the graph's tap,
+and what goes out to a file. Device-free: the sound-card side lives in `tutti-cpal`, and the
 `tutti` facade re-exports this crate as `tutti::io` (feature `io`).
 
 ## What is here
@@ -11,11 +11,11 @@ Four live pieces, and recording is just a pump between two of them:
 - `MicMonitorNode` — the read side, a graph node over a device-filled
   ring, so a live input can sit anywhere in the graph. Inserted unforkable: an
   export of a graph holding the live mic is refused, naming it.
-- `TapIn` — the *other* read side: the analysis tap's consumer end adapted to
-  `AudioIn`, so what the graph is playing records through the same pump that
-  records a microphone. `AudioTap` itself is `tutti-metering`'s (the audio callback
-  pushes into it); this is only the adapter that lets it meet the I/O
-  vocabulary.
+- `TapIn` — the *other* read side: a tap's `TapReader` adapted to `AudioIn`,
+  so what the graph is producing records through the same pump that records a
+  microphone. The tap itself is `tutti-graph`'s (an op in the compiled plan, on
+  any ports, at any width); this is only the adapter that lets its reader meet
+  the I/O vocabulary, as wide as the tap.
 - `WavOut` — the write side, an `AudioOut` sink.
 - `Recorder` — `pump(src, sink)` on its own thread, plus the stop policy and the
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
@@ -24,19 +24,8 @@ Four live pieces, and recording is just a pump between two of them:
   `Recorder` and ends it through the non-blocking `request_stop`,
   `is_finished` and `finish_in_place`.
 
-And the file side, which needs no device either:
-
-- `Wave` — a resident, planar sample buffer: what a sampler voice plays.
-- `Wave::read` / `Wave::read_metadata` — decode a file into one, or read only
-  its header. Behind the codec features.
-- `FileIn` — the streaming read, an `AudioIn` over a file at the file's own
-  width, with sample-accurate `seek`. The read-side twin of `WavOut`.
-- `WaveAsset` — the Bevy asset wrapper (feature `bevy`).
-- `can_decode` / `decodable_extensions` — which formats *this build* reads.
-
-The traits this crate implements are re-exported from its root (`pump`,
-`AudioIn`, `AudioOut`, `OnEmpty`, `Pcm`), so a consumer reaches the
-vocabulary and its live impls from one place.
+Reading a file is `tutti-codec`'s (`Wave`, `Wave::read`, `FileIn`); this crate
+holds the live edge only, and writes WAV through `tutti-codec`'s encoder.
 
 ## What this crate does not own
 
@@ -50,44 +39,72 @@ vocabulary and its live impls from one place.
 - **Offline rendering.** That is `tutti-export`'s. The two are peers: one moves
   frames in real time between endpoints a host owns, the other renders a graph
   faster than real time to a file.
-- **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump`, `ChannelLayout` and
-  the PCM quantizers are all `tutti-types`'.
-  This crate supplies the live *impls*, not the traits.
+- **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump` and `ChannelLayout`
+  are `tutti-types`'; import them from there. This crate supplies the live
+  *impls*, not the traits.
+- **File decode.** `Wave`, `FileIn` and the decoders are `tutti-codec`'s.
 
 ```text
-tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
+tutti-types    AudioIn/AudioOut, ChannelLayout
     ↑
-tutti-metering  AudioTap
+tutti-graph    TapReader
+tutti-codec     the encoder WavOut writes through
     ↑
-tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
-               Wave, FileIn, the decoder
+tutti-io       MicMonitorNode, WavOut, TapIn, Recorder   (device-free)
     ↑
 tutti-cpal     MicIn, the output stream, the driver      (owns CPAL)
 ```
 
 `tutti-cpal` depends on this crate (behind its `capture` feature) for the ring
-and the monitor node; `tutti-sampler` depends on it for `Wave` and the decoder,
-and `bevy-tutti` for both.
+and the monitor node, and `bevy-tutti` for the recorder.
 
 ## Example — recording what the graph is playing
 
-The tap path end to end, and it needs no device: `tutti-metering`'s `AudioTap` is
-pushed by the audio callback, `TapIn` is its consumer end as an `AudioIn`, and
+The tap path end to end, and it needs no device: a tap on the graph's two
+outputs fills as the graph renders, `TapIn` is its reader as an `AudioIn`, and
 `pump` moves one block into a `WavOut`. Swap `TapIn` for `tutti_cpal::MicIn` and
 the same three lines record a microphone — that interchangeability is the reason
 the traits exist.
 
 ```rust
-use tutti_metering::AudioTap;
-use tutti_types::Samples;
-use tutti_io::{pump, AudioIn, AudioOut, Pcm, TapIn, WavOut};
+use tutti_codec::Pcm;
+use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_io::{TapIn, WavOut};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, TapAlign, TapId};
+use tutti_types::{pump, AudioIn, AudioOut, Samples};
 
-let tap = AudioTap::new();
-let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
+/// A stereo source: 0.25 on the left, -0.25 on the right.
+struct Tone;
+impl Node for Tone {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(0.25);
+        io.output(1).fill(-0.25);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
-// The callback pushes an interleaved stereo block.
-let block = [0.25f32, -0.25, 0.5, -0.5, 0.75, -0.75];
-tap.push(&block);
+// A tap on both of the graph's outputs, copied as the graph renders.
+let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+editor.insert(NodeKey(1), "tone", Unforkable(Tone));
+let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
+editor.spec_mut().topology.outputs = vec![out(0), out(1)];
+let reader = editor.open_tap(TapId(0), vec![out(0), out(1)], TapAlign::ToOutput, Samples(1024));
+editor.commit().expect("compiles");
+executor.apply_pending();
+editor.collect();
+let mut src = TapIn::new(reader);
+
+// The audio callback renders three frames.
+let mut left = [0.0f32; 3];
+let mut right = [0.0f32; 3];
+let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 
 let dir = tempfile::tempdir().expect("temp dir");
 let path = dir.path().join("take.wav");
@@ -118,13 +135,8 @@ wav.finalize().expect("header back-patches");
 
 ## Features
 
-All off by default (`default = []`):
-
-- `wav` / `flac` / `mp3` / `ogg` — one symphonia container (and codec) each,
-  for `Wave::read`, `Wave::read_metadata` and `FileIn`. With none, those do
-  not exist and `decodable_extensions()` is empty; `Wave` itself is always
-  there.
-- `bevy` — the `Asset` derive on `WaveAsset`. Needs a codec as well.
+None. A decoder is `tutti-codec`'s `decode-*` features, and the Bevy asset
+wrapper of a decoded file is `bevy-tutti`'s.
 
 ## License
 

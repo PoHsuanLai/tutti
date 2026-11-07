@@ -106,12 +106,12 @@ crates/             everything shipped, directory name = package name
   tutti-graph       # The graph: `Node` contract, Topology->Plan compiler (PDC),
                     #   executor. Design doc 013.
   tutti-transport   # Transport: tempo, loop, motion state machine, timed commands
-  tutti-metering    # MasterMeter, AudioTap, LoadMeter
+  tutti-metering    # MasterMeter, LoadMeter
   tutti-engine      # Engine: the per-block graph render over a transport
   tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
-  tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the file
-                    #   side (Wave, FileIn, the symphonia decoder). Device-free,
-                    #   so tutti-cpal depends on it, not vice versa.
+  tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.
+                    #   Device-free, so tutti-cpal depends on it, not vice versa.
+  tutti-codec       # File codecs: the encoders, and the decoder (Wave, FileIn).
   tutti-mod         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
@@ -121,8 +121,8 @@ crates/             everything shipped, directory name = package name
   tutti-sampler     # Sample playback (streaming, audition)
   tutti-polysynth   # Polyphonic subtractive/wavetable synth
   tutti-soundfont   # SoundFont (.sf2) playback
-  tutti-rustysynth  # Our fork of rustysynth (SoundFont synth). Excluded from
-                    #   clippy and rustdoc in CI.
+  tutti-sf2         # A SoundFont 2 file as data (no synth).
+  tutti-rustysynth  # The SoundFont synthesizer over it (a port of rustysynth).
   tutti-midi-types / -runtime / -hardware / -file, tutti-alsa-ump-sys
   tutti-plugin / -types / -server
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
@@ -138,9 +138,6 @@ testing/            never shipped
 vendor/             third-party code we never edit
   vst3-sdk          # The three Steinberg submodules
 ```
-
-`tutti-rustysynth` is excluded from clippy and rustdoc in CI: it carries
-pre-existing lint debt that is not ours to pay yet.
 
 ## Unit Types (MANDATORY)
 

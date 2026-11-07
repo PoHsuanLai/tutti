@@ -45,15 +45,23 @@ fn sf2_path() -> std::path::PathBuf {
 
 /// Render one note through the **forked** synth.
 fn render_fork(preset: i32, key: i32, vel: i32) -> (Vec<f32>, Vec<f32>) {
-    use tutti_rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
+    use tutti_rustysynth::{Synthesizer, SynthesizerSettings};
+    use tutti_sf2::SoundFont;
+    use tutti_types::SampleRate;
+    use tutti_ump::{MidiChannel, NoteNumber, U7};
 
     let mut f = File::open(sf2_path()).expect("open sf2");
     let sf = Arc::new(SoundFont::new(&mut f).expect("parse sf2"));
-    let settings = SynthesizerSettings::new(SR);
+    let settings = SynthesizerSettings::new(SampleRate::from(SR as u32));
     let mut synth = Synthesizer::new(&sf, &settings).expect("synth");
 
-    synth.process_midi_message(0, 0xC0, preset, 0); // program change
-    synth.note_on(0, key, vel);
+    let u7 = |raw: i32| U7::new(u8::try_from(raw).expect("7 bits")).expect("7 bits");
+    synth.program_change(MidiChannel::FIRST, u7(preset));
+    synth.note_on(
+        MidiChannel::FIRST,
+        NoteNumber::new(u7(key).get()).expect("7 bits"),
+        u7(vel),
+    );
 
     let mut l = vec![0.0f32; FRAMES];
     let mut r = vec![0.0f32; FRAMES];

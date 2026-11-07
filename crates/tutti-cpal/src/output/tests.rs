@@ -1,7 +1,6 @@
 use super::*;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
-use tutti_metering::MasterMeter;
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
@@ -53,7 +52,7 @@ fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
     ];
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new());
+    let state = AudioCallbackState::new(engine);
     (transport, state)
 }
 

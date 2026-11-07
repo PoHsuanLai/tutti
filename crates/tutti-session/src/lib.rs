@@ -68,7 +68,7 @@ mod watch;
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
 pub use device::{Device, DeviceRestart, DeviceRestarted};
-pub use error::{Error, Result};
+pub use error::{Error, HeardTapError, Result};
 #[cfg(feature = "export")]
 pub use export::{
     EXPORT_STALL_WARNING, ExportClock, ExportHandle, ExportJob, ExportOutput, ExportRendered,
@@ -108,4 +108,4 @@ pub use session::{PHASES, Phase, PhaseCx, Session, SessionEvent};
 #[cfg(feature = "midi")]
 pub use tutti_ump::MidiChannel;
 #[cfg(feature = "device")]
-pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent};
+pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent, LISTING_WARNING};

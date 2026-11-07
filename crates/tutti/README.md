@@ -86,12 +86,13 @@ Most of what a host names is in [`prelude`](crate::prelude).
 |---|---|---|---|
 | `tutti::engine` | `tutti-engine` | the per-block graph render: `Engine` | always |
 | `tutti::transport` | `tutti-transport` | `Transport`, tempo, loop, motion state machine, timed commands, offline timeline | always |
-| `tutti::metering` | `tutti-metering` | `MasterMeter`, `AudioTap`, `LoadMeter` | always |
+| `tutti::metering` | `tutti-metering` | `MasterMeter`, `LoadMeter` | always |
 | `tutti::types` | `tutti-types` | units, channel layouts, buffer views, RT primitives | always |
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |
 | `tutti::device` | `tutti-cpal` | the sound card: CPAL output stream, mic capture, driver lifecycle | `device` |
-| `tutti::io` | `tutti-io` | the I/O edge: file decode, WAV out, mic monitoring, recording | `io` |
+| `tutti::codec` | `tutti-codec` | audio file codecs: `Wave`, `FileIn`, the decoders | `codec` (implied by every format) |
+| `tutti::io` | `tutti-io` | the live I/O edge: WAV out, mic monitoring, the analysis tap, recording | `io` |
 | `tutti::export` | `tutti-export` | offline render of a graph to a buffer or a file | `export` |
 | `tutti::sampler` | `tutti-sampler` | sample playback: in-memory and streamed voices, time stretch | `sampler` |
 | `tutti::polysynth` | `tutti-polysynth` | polyphonic subtractive synth node | `synth` |
@@ -115,9 +116,10 @@ None are on by default.
 - `device` — `tutti::device`, the sound card. Off by default so an offline
   render, a CI job or a server builds without ALSA or CoreAudio headers.
 - `jack` — JACK output through `tutti-cpal` (links libjack; implies `device`).
-- `wav`, `flac`, `mp3`, `ogg` — audio file codecs (each implies `io`, and
-  enables the same codec in the sampler when `sampler` is on).
-- `io` — `tutti::io`. Implied by `audio-io` and every codec.
+- `wav`, `flac`, `mp3`, `ogg` — audio file decoders (each implies `codec`, and
+  enables the same decoder in the sampler when `sampler` is on).
+- `codec` — `tutti::codec`. Implied by every format.
+- `io` — `tutti::io`. Implied by `audio-io`.
 - `audio-io` — mic capture and monitoring (implies `io`; the capture stream
   itself needs `device`).
 - `export` — `tutti::export`.

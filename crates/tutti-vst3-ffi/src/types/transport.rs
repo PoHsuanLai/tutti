@@ -263,7 +263,7 @@ mod tests {
             .with_bar(8.0, Default::default())
             .with_loop(true, 2.0, 6.0)
             .with_tempo(128.0)
-            .with_time_signature(TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH))
+            .with_time_signature(TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH))
             .with_playing(true)
             .with_recording(true)
             .with_system_time_ns(9_000_000_000)

@@ -26,9 +26,9 @@
 
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare};
-use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport};
 use tutti_types::graph::{OutPort, Source};

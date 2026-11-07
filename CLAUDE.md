@@ -38,6 +38,25 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
+- Copying audio out of the graph is a **tap**, read through one `TapReader`
+  (`TapIn` adapts it to `AudioIn`), and there are two kinds:
+  - **The plan tap** (`Graph::open_tap`, `open_output_tap`): `Topology.taps`,
+    one `Op::Tap` per tap in the plan, any port and width, aligned by the
+    compiler or raw, a `ringbuf` ring per lane written together (the lanes
+    cannot tear), the writer riding the commit queue. A closed tap compiles to
+    no op; a fork carries none. It sees the graph's signal **before the
+    engine's declick fader** and the fold to the device width, so a
+    transport-gated source steps at a stop.
+  - **The heard tap** (`Session::open_heard_tap`, the default for recording
+    what the output sounds like): `Engine` writes each chunk of its output
+    buffer after the fader, every device channel, from `process` and
+    `process_segment` (a device callback and an offline `render`, silence for
+    a refused block); an export forks without the engine and never writes to
+    it. One at a time; the writer reaches the audio thread over `ringbuf`
+    queues and the one it replaces goes back to the control side
+    (`tutti-engine/src/hearing.rs`).
+  Both count what a slow reader loses (`TapReader::take_lost`, and
+  `AudioIn::take_lost` through `Recorder::lost`).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
@@ -129,7 +148,7 @@ just test-all                      # both
   finds in the test binary's own profile directory (no build script or env
   var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
   dev-dependency and absence is a failure, never a skip. A crate-local file
-  (`tutti-rustysynth`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
+  (`tutti-sf2`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
@@ -174,10 +193,11 @@ just test-all                      # both
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
-- **Bevy-free floor:** four engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-types`, `tutti-io`, `tutti-mod`, `tutti-sampler`); the
-  rest have none, and `tutti-session`, `tutti-graph`
-  and `tutti-ump` must never grow one. `bevy-tutti` is the only crate that
+- **Bevy-free floor:** three engine crates have an optional, off-by-default
+  `bevy` feature (`tutti-types`, `tutti-mod`, `tutti-sampler`); the
+  rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`, `tutti-io`
+  and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
+  decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
@@ -209,10 +229,10 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
 
 `just check-windows` runs this over the workspace and over the plugin crates
 with every format feature. It leaves out the members that cannot
-cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `vorbis` feature,
-which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
+cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `encode-vorbis`
+feature, which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
 real Windows C headers. `tutti-codec` itself is linted with its other formats
-(`wav,aiff,flac`). CI's `clippy (windows)` job
+(`encode-wav,encode-aiff,encode-flac` and every `decode-*`). CI's `clippy (windows)` job
 runs everything natively on a `windows-latest` runner. It only lints: no CI job
 runs the tests on Windows.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
@@ -262,10 +282,12 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
-  tutti-codec    the audio file encoders: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
+  tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink; the `Pcm` widths and their one
-                 quantization. Depends on `tutti-types` alone
+                 quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
+                 `Wave::read_metadata`, `FileIn` (the streaming `AudioIn`),
+                 `DecodeError`, `can_decode`. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
@@ -274,14 +296,17 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-mod      modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
-  tutti-metering `MasterMeter`, `AudioTap`, `LoadMeter`
+  tutti-metering `MasterMeter`, `LoadMeter`
+  tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
+                 conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
-  tutti-io       I/O edge: live + file decode
+  tutti-io       live I/O edge: mic monitor, `TapIn`, `WavOut`, `Recorder`
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
-  tutti-soundfont, tutti-rustysynth (our fork of rustysynth)
+  tutti-soundfont, tutti-sf2 (the SoundFont 2 file as data), tutti-rustysynth
+                 (the synthesizer over it; a port of rustysynth)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
@@ -300,11 +325,11 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
+0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
-   `tutti-codec`
-3. `tutti-transport`, `tutti-plugin-types`
+   `tutti-codec`, `tutti-tempo`
+3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
    `tutti-plugin-db`
@@ -320,7 +345,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
+  Our own forks (`tutti-sf2`, `tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
@@ -361,13 +386,29 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `TransportAudio` (`Transport::audio`, taken once) is the audio side the
   engine drives across the crate edge; the clock, control inputs and pending
   list behind it are crate-private.
+- `tutti-tempo` depends on `tutti-types` alone (and `libm`, so a ramp's figures
+  do not depend on the platform's libm), keeps every module private
+  (`tutti_tempo::TempoMap`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]` and has no `bevy` feature; `serde` is optional and
+  only on `CellGrid`. A `TempoMap` is an immutable value built on the control
+  side: its constructors refuse a tempo that is not finite and positive
+  themselves, whatever `Bpm` accepts, and no query allocates. Seconds are `f64`
+  (`Seconds` is `f32`). A map reaches a constant-tempo reader as `Cell`s on one
+  fixed `CellGrid`, also cut at every point's frame (`TempoMap::next_change`);
+  `chord_cell` is a pure function of the absolute frame, a cell inside a step
+  has that step's tempo to the bit, and the crate derives no grid from a block.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-codec` depends on `tutti-types` alone, keeps every module private
   (`tutti_codec::Encoder`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]`, is `publish = false` and has no `bevy` feature.
-  Each format is a cargo feature (`wav`, `aiff`, `flac`, `vorbis`), none on by
-  default, and a `Format` variant exists only with its feature: no `cfg(not)`
+  Each format is a cargo feature, none on by default: `encode-wav`,
+  `encode-aiff`, `encode-flac`, `encode-vorbis` for writing and `decode-wav`,
+  `decode-flac`, `decode-mp3`, `decode-ogg` for reading. A decode feature pulls
+  exactly one `symphonia` container and no encoder library, an encode feature
+  pulls no decoder, and the C Vorbis library is `encode-vorbis`'s alone, so a
+  build that only reads never needs it (`scripts/check-layout.sh` holds both).
+  A `Format` variant exists only with its `encode-*` feature: no `cfg(not)`
   arm refuses a format. An `Encoder` takes blocks already at the
   `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
   the crate stops a caller from handing it blocks that were not. Pulling,
@@ -384,13 +425,20 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
   them. A new format is a `Format` variant, a writer type, a `contract!` line in
   `src/contract.rs` and a row in `tests/bytes.rs`.
+  Decoding has no trait: it is plain functions and types of our own over
+  `symphonia`, all in `src/decode.rs` and `src/decode/`, so the library is
+  swapped by editing that module. No `symphonia` type is in a public signature,
+  field or error (`DecodeError` is ours), and no file outside that module names
+  it (`scripts/check-layout.sh`). `Wave` is here because decoding produces it and
+  `tutti-sampler`, `tutti-export` and `bevy-tutti` consume it; it needs no
+  feature. `FileIn` is here because it is the decoder's streaming state.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
   `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-metering` is a dev-dependency only), keeps every
+  rustfft, ebur128, libm and thiserror; `tutti-graph` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
@@ -428,7 +476,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   name its types from it, not through `tutti-plugin`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
-- `tutti-rustysynth` (our fork) is excluded from clippy and rustdoc.
+- `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
+  sample headers, sample data, raw generators) and holds nothing that plays.
+  It depends on `tutti-ump` alone, keeps every module private
+  (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
+  `#![forbid(unsafe_code)]`. `tutti-rustysynth` is the synthesizer over it
+  (`Synthesizer`, typed over `MidiChannel`, `NoteNumber`, `U7`, `U14` and
+  `SampleRate`), with the same rules. It sits in layer 3 so that it may take
+  `tutti-dsp` (layer 2) later; it names nothing of it today. Both keep the
+  original author's MIT license and copyright (`LICENSE.txt`).
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they
@@ -465,7 +521,7 @@ shape (`MidiChannel` is the reference). No macro.
 
 | Item | Rule |
 |---|---|
-| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds (see the types not yet conforming, below). `const fn` when the check is const. |
+| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds. `const fn` when the check is const. |
 | `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
 | `get(self) -> Raw`, `From<Self> for Raw` | Always. |
 | `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
@@ -482,9 +538,9 @@ shape (`MidiChannel` is the reference). No macro.
   `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
   whole semitones, serde the bits) and gives the other a named constructor
   (`from_rpn_bits`).
-- Not yet conforming: `BeatsPerBar::new` and `NoteValue::new` clamp (or
-  round) under the name `new`, and their serde clamps too. Each becomes
-  `clamped` or `nearest` with a refusing `new`.
+- `BeatsPerBar` and `NoteValue` keep the shape: `new` refuses and serde
+  refuses. Only `BeatsPerBar::clamped` saturates (the beat index in `bar_at`);
+  `NoteValue` has no saturating constructor until a lenient importer needs one.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
   `scripts/check-range-types.sh` fails a private tuple field with a derived
@@ -676,7 +732,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
-  `AudioTap`, `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,

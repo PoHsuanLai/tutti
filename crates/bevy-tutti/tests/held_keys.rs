@@ -116,6 +116,10 @@ fn count(seen: &Seen, off: bool) -> usize {
         .count()
 }
 
+/// A held key across a moved declaration.
+///
+/// Mutation (run): `Held::observe` in `tutti-graph` doing nothing -> the sink
+/// that loses the feed is never told the note ended -> fails.
 #[test]
 fn moving_an_event_declaration_with_a_held_key() {
     let mut app = app();

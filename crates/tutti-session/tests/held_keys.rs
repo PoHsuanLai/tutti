@@ -110,6 +110,9 @@ fn offs(seen: &Seen) -> usize {
 }
 
 /// A clip holds note 60 for a long time; mid-note the host re-aims it.
+///
+/// Mutation (run): `Held::observe` in `tutti-graph` doing nothing -> the sink
+/// that loses the feed is never told the note ended -> fails.
 #[test]
 fn retarget_with_a_held_clip_note() {
     let mut s = offline();
@@ -151,6 +154,8 @@ fn retarget_with_a_held_clip_note() {
 }
 
 /// The host's routes move a held key from one sink to another, then to none.
+///
+/// Mutation (run): `Held::observe` doing nothing -> fails.
 #[test]
 fn set_routes_with_a_held_key() {
     let mut s = offline();

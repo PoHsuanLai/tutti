@@ -148,7 +148,7 @@
 //!
 //! # Held keys
 //!
-//! A unit whose event outputs carry notes ([`Shape::note_events`]) has the keys
+//! A unit whose event outputs carry notes ([`Shape::note_events`](crate::Shape::note_events)) has the keys
 //! each port holds tracked after its op (`src/held.rs`). When a commit removes
 //! an event edge, or its source is replaced or removed, the sink that survives
 //! is sent the pedal-ups and note-offs of what the source held, after the

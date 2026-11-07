@@ -279,7 +279,7 @@ pub(crate) struct Block<'b, 'o> {
     pub(crate) rings: &'b mut [Option<Ring>],
     pub(crate) audio_fb: &'b mut [Option<crate::kernels::AudioRing>],
     pub(crate) event_fb: &'b mut [Option<crate::kernels::EventFifo>],
-    pub(crate) taps: &'b mut [Option<crate::tap::TapLane>],
+    pub(crate) taps: &'b mut [Option<crate::tap::TapWriter>],
     pub(crate) inject: &'b mut [Inject],
     pub(crate) has_inject: &'b mut [bool],
     pub(crate) has_due: &'b mut [bool],
@@ -307,7 +307,7 @@ struct Shared<'s, 'o> {
     rings: SplitMut<'s, Option<Ring>>,
     audio_fb: SplitMut<'s, Option<crate::kernels::AudioRing>>,
     event_fb: SplitMut<'s, Option<crate::kernels::EventFifo>>,
-    taps: SplitMut<'s, Option<crate::tap::TapLane>>,
+    taps: SplitMut<'s, Option<crate::tap::TapWriter>>,
     inject: SplitMut<'s, Inject>,
     inject_spans: &'s [Span],
     has_inject: SplitMut<'s, bool>,
@@ -533,13 +533,13 @@ impl Shared<'_, '_> {
                     src,
                 );
             }
-            Op::Tap { lane, src } => {
-                let mut lane = self.taps.claim(lane as usize);
-                if let Some(lane) = lane.as_mut() {
+            Op::Tap { tap, srcs } => {
+                let mut tap = self.taps.claim(tap as usize);
+                if let Some(tap) = tap.as_mut() {
                     let a = ArenaView {
                         view: self.arena.view(held_audio),
                     };
-                    crate::tap::tap_op(lane, &a, src, frames);
+                    crate::tap::tap_op(tap, &a, &self.plan.audio_list[srcs.range()], frames);
                 }
             }
             Op::Capture { feedback, src } => {

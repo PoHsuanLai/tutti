@@ -186,14 +186,12 @@ use crate::node::{
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
-use crate::plan::{
-    DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, TapLaneKey, UnitIdx,
-};
+use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
-use crate::tap::TapLane;
-use tutti_types::PlayReading;
+use crate::tap::TapWriter;
+use tutti_types::{PlayReading, TapId};
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
@@ -341,7 +339,7 @@ pub(crate) struct Commit {
     spare_held: Vec<Tables>,
     old_state: Option<State>,
     /// Tap producers the editor opened since the last commit, by lane.
-    taps: Vec<(TapLaneKey, TapLane)>,
+    taps: Vec<(TapId, TapWriter)>,
 }
 
 impl Drop for Commit {
@@ -359,7 +357,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
-        taps: Vec<(TapLaneKey, TapLane)>,
+        taps: Vec<(TapId, TapWriter)>,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -647,7 +645,7 @@ struct State {
     audio_fb: Vec<Option<AudioRing>>,
     event_fb: Vec<Option<EventFifo>>,
     /// One producer per planned tap lane (`None`: nobody opened it).
-    taps: Vec<Option<TapLane>>,
+    taps: Vec<Option<TapWriter>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
     /// Plan units with a scheduled command landing this block.
@@ -1176,7 +1174,7 @@ impl Executor {
         plan: &Plan,
         old_plan: Option<&Plan>,
         departed: &mut Gone,
-        opened: &mut Vec<(TapLaneKey, TapLane)>,
+        opened: &mut Vec<(TapId, TapWriter)>,
     ) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
@@ -1283,19 +1281,18 @@ impl Executor {
             })
             .collect();
 
-        // Tap lanes, by key: a lane the old plan ran carries its producer; a
-        // newly opened one arrives in the commit. A producer the new plan does
-        // not name stays in the old state (or the commit) and is freed on the
-        // control side with it.
-        let old_taps: BTreeMap<TapLaneKey, usize> = old_plan
+        // Taps, by id: a tap the old plan ran carries its writer; one opened
+        // since the last commit arrives in the commit and wins over a carried
+        // one of the same id (opening an id again replaces it). A writer the
+        // new plan does not name stays in the old state (or the commit) and is
+        // freed on the control side with it.
+        let old_taps: BTreeMap<TapId, usize> = old_plan
             .map(|p| p.taps.iter().enumerate().map(|(i, k)| (*k, i)).collect())
             .unwrap_or_default();
-        let taps: Vec<Option<TapLane>> = plan
+        let taps: Vec<Option<TapWriter>> = plan
             .taps
             .iter()
             .map(|k| {
-                // A lane opened since the last commit wins over a carried one
-                // of the same key: that is a reopen.
                 opened
                     .iter()
                     .position(|(o, _)| o == k)
@@ -1890,9 +1887,14 @@ impl Executor {
                                 src,
                             );
                         }
-                        Op::Tap { lane, src } => {
-                            if let Some(lane) = taps[lane as usize].as_mut() {
-                                crate::tap::tap_op(lane, &*st.arena, src, frames);
+                        Op::Tap { tap, srcs } => {
+                            if let Some(tap) = taps[tap as usize].as_mut() {
+                                crate::tap::tap_op(
+                                    tap,
+                                    &*st.arena,
+                                    &plan.audio_list[srcs.range()],
+                                    frames,
+                                );
                             }
                         }
                         Op::Capture { feedback, src } => {

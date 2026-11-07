@@ -123,7 +123,7 @@ fn rig(workers: usize, no_alloc: bool) -> Rig {
 
 /// The graph input at frame `t`.
 fn input_at(t: u64) -> f32 {
-    ((t * 7919) % 211) as f32 / 211.0 - 0.5
+    ((t * 7919) % 20_011) as f32 / 20_011.0 - 0.5
 }
 
 /// What chain `k` plays at frame `t` once aligned: the input, `LATENCY` frames
@@ -337,7 +337,11 @@ fn a_closed_tap_leaves_no_op() {
         Samples(64),
     );
     commit(&mut r);
-    assert_eq!(ops(&r), (never + 2, 2), "a raw tap is one op a lane");
+    assert_eq!(
+        ops(&r),
+        (never + 1, 1),
+        "a raw tap is one op, whatever its width"
+    );
 
     r.ed.close_tap(tap.id());
     commit(&mut r);
@@ -570,4 +574,144 @@ fn closing_a_tap_twice_is_a_no_op() {
     commit(&mut r);
     let plan = r.ed.base().expect("plan");
     assert!(!plan.ops().iter().any(|o| matches!(o, Op::Tap { .. })));
+}
+
+/// The lanes of a tap cannot tear, whatever the reader does. A reader thread
+/// drains in small pops with pauses against a ring that overflows (256 frames,
+/// 100-frame blocks), so frames are dropped; every frame that arrives must have
+/// all its lanes from the same instant. The lanes read independent chains (so
+/// they are produced by different tasks of a pool render), and each frame's
+/// instant is recovered from lane 0's value (the input is injective over the
+/// run) and the other lanes checked against the analytic chains at that
+/// instant. Accounting is exact: frames read plus frames counted lost is every
+/// frame rendered.
+///
+/// This is the review's repro: before the tap was one op that writes its lanes
+/// by one count, lane 1 accepted frames lane 0 refused and the lanes stayed
+/// offset for good (hundreds of torn frames in a run, lane 0 alone counting).
+///
+/// Mutation (run, recorded here): in `tap_op`, push each lane's whole block
+/// (`take = frames` per lane, independent `push_slice`) -> torn frames, and
+/// the accounting fails. Mutation (run): `pop_into` popping the lane's own
+/// occupancy rather than the minimum -> torn frames.
+fn concurrent_drain(workers: usize, width: usize, align: TapAlign) {
+    const BLOCKS: usize = 130;
+    let mut r = rig(workers, workers > 1);
+    let sources: Vec<Source> = (0..width).map(|k| r.gains[k * 5 / (width - 1)]).collect();
+    let chains: Vec<u64> = (0..width as u64)
+        .map(|k| k * 5 / (width as u64 - 1))
+        .collect();
+    let tap = r.ed.open_tap(TapId(1), sources, align, Samples(256));
+    commit(&mut r);
+    let delay = |k: u64| match align {
+        TapAlign::Raw => 5 * k,
+        TapAlign::ToOutput => LATENCY,
+    };
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let (frames, lost) = std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let mut tap = tap;
+            let mut got = Vec::new();
+            let mut buf = vec![0.0f32; width * 5];
+            loop {
+                let n = tap.pop_into(&mut buf).get();
+                got.extend_from_slice(&buf[..n * width]);
+                if n == 0 {
+                    if done.load(std::sync::atomic::Ordering::Acquire) && tap.available().get() == 0
+                    {
+                        break;
+                    }
+                } else {
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+            }
+            (got, tap.take_lost().get())
+        });
+        for i in 0..BLOCKS {
+            block(&mut r, BLOCK, (i * BLOCK) as u64);
+        }
+        done.store(true, std::sync::atomic::Ordering::Release);
+        reader.join().expect("the reader finished")
+    });
+    assert!(lost > 0, "the ring overflowed, so the test saw drops");
+    let read = frames.len() / width;
+    assert_eq!(
+        read + lost,
+        BLOCKS * BLOCK,
+        "every frame is read or counted lost"
+    );
+    // Instants by lane 0's value (injective over the run, but for silence).
+    let at: std::collections::HashMap<u32, u64> = (0..(BLOCKS * BLOCK) as u64)
+        .map(|t| (chain_at(chains[0], delay(chains[0]), t).to_bits(), t))
+        .collect();
+    let mut torn = 0;
+    for frame in frames.chunks_exact(width) {
+        let Some(&t) = at.get(&frame[0].to_bits()) else {
+            continue;
+        };
+        if frame[0] == 0.0 {
+            continue;
+        }
+        for (k, &x) in frame.iter().enumerate() {
+            if x.to_bits() != chain_at(chains[k], delay(chains[k]), t).to_bits() {
+                torn += 1;
+                break;
+            }
+        }
+    }
+    assert_eq!(torn, 0, "torn frames of {read}");
+}
+
+#[test]
+fn lanes_do_not_tear_under_a_concurrent_drain() {
+    for width in [2, 6] {
+        for align in [TapAlign::Raw, TapAlign::ToOutput] {
+            concurrent_drain(1, width, align);
+        }
+    }
+}
+
+/// The same, on the pool: the chains run in different tasks and the tap op
+/// joins them, and every participant is inside `assert_no_alloc`.
+///
+/// Mutation (run, recorded here): as above, and `Op::Tap` not scheduled after
+/// every lane's chain is covered by the aligned-tap tests.
+#[test]
+fn lanes_do_not_tear_on_the_pool() {
+    for workers in [2, 4] {
+        for width in [2, 6] {
+            for align in [TapAlign::Raw, TapAlign::ToOutput] {
+                concurrent_drain(workers, width, align);
+            }
+        }
+    }
+}
+
+/// Opening an id again replaces the tap: the new reader is fed from the next
+/// commit, the old one gets nothing more, and the old writer is retired on the
+/// control side (a free in a block is a debug panic).
+///
+/// Mutation (run, recorded here): in `Executor::rebuild`, let the carried
+/// writer win over the one just opened -> the new reader stays empty.
+#[test]
+fn opening_an_id_again_replaces_the_tap() {
+    let mut r = rig(1, false);
+    let first =
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let second =
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(1024));
+    commit(&mut r);
+    block(&mut r, 100, 100);
+    assert_eq!(
+        first.available().get(),
+        100,
+        "the old reader got only the first block"
+    );
+    assert_eq!(
+        second.available().get(),
+        100,
+        "the new reader got the second"
+    );
 }

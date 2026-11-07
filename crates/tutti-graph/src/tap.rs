@@ -2,8 +2,8 @@
 //!
 //! A tap is declared on the [`Topology`](tutti_types::Topology) as "copy these
 //! sources" ([`TapSpec`](tutti_types::TapSpec)); the compiler emits one
-//! [`Op::Tap`](crate::Op::Tap) per source and, for an aligned tap, the same
-//! delay an output channel gets. A tap that is not in the topology compiles to
+//! [`Op::Tap`](crate::Op::Tap) per tap, reading every lane's source, and, for an
+//! aligned tap, the same delay an output channel gets for each. A tap that is not in the topology compiles to
 //! nothing.
 //!
 //! The ring each lane writes is `ringbuf`'s single-producer, single-consumer
@@ -13,8 +13,12 @@
 //! takes no lock and frees nothing: a producer left behind by a plan that no
 //! longer names it is retired with the old state, on the control side.
 //!
-//! Dropping the [`TapReader`] first is safe. The lane then finds no reader and
-//! writes nothing, and the ring is freed with the producer when the tap is
+//! The lanes of a tap are written together by one op and read by whole
+//! frames, so they cannot tear: frame `n` of every lane is the same frame,
+//! whatever the reader's speed (see [`TapWriter`]).
+//!
+//! Dropping the [`TapReader`] first is safe. The tap then finds no reader and
+//! writes nothing, and the rings are freed with the writer when the tap is
 //! closed ([`Editor::close_tap`](crate::Editor::close_tap)) or reaped
 //! ([`Editor::reap_taps`](crate::Editor::reap_taps)), on the control side.
 //! Dropping the reader last frees the ring on the reader's thread.
@@ -29,41 +33,55 @@ use tutti_types::{ChannelLayout, Samples, TapId};
 
 use crate::slots::AudioSlots;
 
-/// The executor's end of one lane.
-pub(crate) struct TapLane {
-    prod: HeapProd<f32>,
-    /// Where this lane counts the frames its ring refused. Only the first
-    /// lane of a tap holds it: the lanes fill and drain in step, so one
-    /// lane's loss is the tap's, counted once.
-    lost: Option<Arc<AtomicU64>>,
+/// The executor's end of a tap: every lane's ring producer, written together.
+///
+/// A tap's lanes are rings of the same capacity that the executor fills with
+/// the same number of frames each block and the reader drains by whole frames,
+/// so frame `n` of every lane is the same frame by construction. One thread
+/// writes and one reads, which is why the minimums below are safe: a ring's
+/// vacancy only grows under the reader and its occupancy only grows under the
+/// writer, so a count taken before a push can only be an underestimate.
+pub(crate) struct TapWriter {
+    lanes: Vec<HeapProd<f32>>,
+    /// Frames the rings refused, shared with the reader.
+    lost: Arc<AtomicU64>,
 }
 
-impl std::fmt::Debug for TapLane {
+impl std::fmt::Debug for TapWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TapLane").finish_non_exhaustive()
+        f.debug_struct("TapWriter").finish_non_exhaustive()
     }
 }
 
-impl Drop for TapLane {
+impl Drop for TapWriter {
     fn drop(&mut self) {
-        RtScope::check_outside("a tap lane");
+        RtScope::check_outside("a tap writer");
     }
 }
 
-/// [`Op::Tap`](crate::Op::Tap): slot `src` into the lane's ring. What does not
-/// fit is counted, never silently dropped; with no reader there is nothing to
-/// count or write.
+/// [`Op::Tap`](crate::Op::Tap): the first `frames` samples of each of `srcs`
+/// into the tap's lanes. Every lane takes the same count, the fewest frames
+/// any ring has room for, and the rest is counted lost, once for the tap. With
+/// no reader there is nothing to write or count.
 #[inline]
-pub(crate) fn tap_op<A: AudioSlots>(lane: &mut TapLane, arena: &A, src: u32, frames: usize) {
-    if !lane.prod.read_is_held() {
+pub(crate) fn tap_op<A: AudioSlots>(tap: &mut TapWriter, arena: &A, srcs: &[u32], frames: usize) {
+    if !tap.lanes.first().is_some_and(Observer::read_is_held) {
         return;
     }
-    let block = arena.slot(src, frames);
-    let pushed = lane.prod.push_slice(block);
-    if let Some(lost) = &lane.lost
-        && pushed < block.len()
-    {
-        lost.fetch_add((block.len() - pushed) as u64, Ordering::Relaxed);
+    let room = tap
+        .lanes
+        .iter()
+        .map(Observer::vacant_len)
+        .min()
+        .unwrap_or(0);
+    let take = room.min(frames);
+    for (lane, &src) in tap.lanes.iter_mut().zip(srcs) {
+        let pushed = lane.push_slice(&arena.slot(src, frames)[..take]);
+        debug_assert_eq!(pushed, take, "room was counted across every lane");
+    }
+    if take < frames {
+        tap.lost
+            .fetch_add((frames - take) as u64, Ordering::Relaxed);
     }
 }
 
@@ -96,24 +114,21 @@ impl Drop for TapReader {
 }
 
 impl TapReader {
-    /// A reader and the lanes the executor will write, `width` of them, each
-    /// holding `capacity` frames (at least one).
-    pub(crate) fn pair(id: TapId, width: usize, capacity: Samples) -> (Self, Vec<TapLane>) {
+    /// A reader and the writer the executor will fill it with: `width` lanes,
+    /// each holding `capacity` frames (at least one).
+    pub(crate) fn pair(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
         let lost = Arc::new(AtomicU64::new(0));
-        let (lanes, prods): (Vec<_>, Vec<_>) = (0..width)
-            .map(|lane| {
-                let (prod, cons) = HeapRb::<f32>::new(capacity.get().max(1)).split();
-                let lost = (lane == 0).then(|| Arc::clone(&lost));
-                (cons, TapLane { prod, lost })
-            })
+        let (cons, prods): (Vec<_>, Vec<_>) = (0..width)
+            .map(|_| HeapRb::<f32>::new(capacity.get().max(1)).split())
+            .map(|(prod, cons)| (cons, prod))
             .unzip();
         let reader = Self {
             id,
-            lanes,
-            lost,
+            lanes: cons,
+            lost: Arc::clone(&lost),
             alive: Arc::new(()),
         };
-        (reader, prods)
+        (reader, TapWriter { lanes: prods, lost })
     }
 
     /// A handle the editor keeps to see whether this reader is still alive.
@@ -139,7 +154,9 @@ impl TapReader {
         ChannelLayout::from_count(self.lanes.len().try_into().unwrap_or(u16::MAX))
     }
 
-    /// Frames readable now (the fewest across lanes, so a read is whole).
+    /// Frames readable now: the fewest across lanes. The writer fills every
+    /// lane by the same count, so a lane may briefly hold more than the
+    /// others mid-block, and a read never goes past the shortest.
     #[must_use]
     pub fn available(&self) -> Samples {
         Samples(

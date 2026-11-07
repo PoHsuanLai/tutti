@@ -70,10 +70,9 @@ use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
-use crate::plan::TapLaneKey;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
-use crate::tap::{TapLane, TapReader};
+use crate::tap::{TapReader, TapWriter};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -342,7 +341,7 @@ pub struct Editor {
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
     /// Tap producers opened since the last commit, sent with the next.
-    pending_taps: Vec<(TapLaneKey, TapLane)>,
+    pending_taps: Vec<(TapId, TapWriter)>,
     /// Each open tap's reader, to see which were dropped.
     tap_readers: BTreeMap<TapId, std::sync::Weak<()>>,
     next_gen: BTreeMap<NodeKey, u32>,
@@ -447,14 +446,9 @@ impl Editor {
         align: TapAlign,
         capacity: Samples,
     ) -> TapReader {
-        let (reader, lanes) = TapReader::pair(id, sources.len(), capacity);
-        self.pending_taps.retain(|(k, _)| k.tap != id);
-        self.pending_taps.extend(
-            lanes
-                .into_iter()
-                .enumerate()
-                .map(|(lane, l)| (TapLaneKey { tap: id, lane }, l)),
-        );
+        let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
+        self.pending_taps.retain(|(k, _)| *k != id);
+        self.pending_taps.push((id, writer));
         self.tap_readers.insert(id, reader.watch());
         self.spec_mut()
             .topology
@@ -466,7 +460,7 @@ impl Editor {
     /// Removes a tap: its ops leave the plan at the next commit and its
     /// producers are freed on the control side.
     pub fn close_tap(&mut self, id: TapId) {
-        self.pending_taps.retain(|(k, _)| k.tap != id);
+        self.pending_taps.retain(|(k, _)| *k != id);
         self.tap_readers.remove(&id);
         self.spec_mut().topology.taps.remove(&id);
     }

@@ -10,8 +10,13 @@
 //! On a notification that the device setup changed, each registered watch
 //! enumerates again and reports the difference, as the ALSA watch does.
 //!
-//! None of this has been run on macOS from the author's side; `tests.rs` is the
-//! check macOS CI makes.
+//! GitHub's macOS runner showed that the notification path cannot be relied on: a
+//! client created on a background thread got no notification at all, and its run
+//! loop had no source (`run_current` returned at once, every time). The hub
+//! thread therefore also looks again once a second whenever its loop has nothing
+//! to wait for, which finds a hot-plug within about a second there; where
+//! CoreMIDI does deliver notifications the loop blocks and the look is on the
+//! notification. Nothing here has been run on a Mac with a main run loop.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -31,16 +36,11 @@ const IDLE_RETURN: Duration = Duration::from_millis(50);
 /// How long the hub thread rests before it runs the loop again after such a
 /// return, so a loop with no source is four wakes a second and not a spin.
 const IDLE_REST: Duration = Duration::from_millis(250);
-
-/// DIAG
-pub(super) static RL_RETURNS: AtomicU64 = AtomicU64::new(0); // DIAG
-pub(super) static RL_LAST_MS: AtomicU64 = AtomicU64::new(0); // DIAG
-/// DIAG
-#[cfg(test)]
-pub(super) static NOTIFICATIONS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0); // DIAG
-#[cfg(not(test))]
-static NOTIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
+/// How often a hub whose run loop has no source looks again by itself. On
+/// GitHub's macOS runner CoreMIDI attached no source to the loop of the thread
+/// that created the client and sent no notification at all, so the watch cannot
+/// rely on one.
+const IDLE_LOOK: Duration = Duration::from_secs(1);
 
 /// One registered watch: the reporting state of a `Devices`, and the sink to
 /// tell if it fails.
@@ -122,8 +122,6 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
             .spawn(move || {
                 let client =
                     Client::new_with_notifications("tutti-midi-watch", move |n: &Notification| {
-                        eprintln!("DIAG notification {n:?}"); // DIAG
-                        NOTIFICATIONS.fetch_add(1, Ordering::SeqCst); // DIAG
                         if matches!(
                             n,
                             Notification::SetupChanged
@@ -137,13 +135,20 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
                 let _ = ready.send(client.as_ref().map(|_| ()).map_err(|s| *s));
                 // The client lives as long as the process.
                 let Ok(_client) = client else { return };
+                let mut looked = Instant::now();
                 loop {
                     let started = Instant::now();
                     CFRunLoop::run_current();
-                    RL_RETURNS.fetch_add(1, Ordering::SeqCst); // DIAG
-                    RL_LAST_MS.store(started.elapsed().as_millis() as u64, Ordering::SeqCst); // DIAG
                     if started.elapsed() < IDLE_RETURN {
+                        // The loop had nothing to wait for: no notification
+                        // can reach it, so look on a timer instead.
                         std::thread::sleep(IDLE_REST);
+                        if looked.elapsed() >= IDLE_LOOK {
+                            hub.notify();
+                            looked = Instant::now();
+                        }
+                    } else {
+                        looked = Instant::now();
                     }
                 }
             })

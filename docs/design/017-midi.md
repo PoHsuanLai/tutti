@@ -337,9 +337,15 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   thread that runs its run loop for the life of the process; each `Devices` is a
   registration with it, removed on drop. (coremidi 0.9.2's `Client` never
   disposes on drop, so a client per `Devices` would leak one.) A run loop that
-  returns at once is rested four times a second, not spun. A panic in a watch's enumeration is caught, fails that watch (`watch_failure`, as on Linux) and leaves the others; a refused client fails the watch the same way and is retried by the next. Compiled and linted
+  returns at once is rested four times a second, not spun. A panic in a watch's enumeration is caught, fails that watch (`watch_failure`, as on Linux) and leaves the others; a refused client fails the watch the same way and is retried by the next. On GitHub's macOS runner CoreMIDI sent the
+  background client no notification (the loop had no source), so the hub also
+  looks again once a second whenever its loop has nothing to wait for; a
+  hot-plug there is found in about a second. Where CoreMIDI does notify the loop
+  blocks and the look is on the notification, which has not been observed. The
+  hub never holds its lock across a CoreMIDI call (a lock held across one
+  stalled the notification callback and hung the tests). Compiled and linted
   for `aarch64-apple-darwin` from Linux; its test runs only on macOS CI, and
-  none of this has been run by the author.
+  the author has not run any of this on a Mac.
 - **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
   watches nothing, as it enumerates nothing. Opening reports `Unsupported`.
 - **`DeviceId`** is an `Identity` and an ordinal. `Identity` is the Product

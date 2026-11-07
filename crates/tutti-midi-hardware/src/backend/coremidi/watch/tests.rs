@@ -23,102 +23,29 @@ fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
     );
 }
 
-static STAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
-fn stage(n: usize) {
-    STAGE.store(n, std::sync::atomic::Ordering::SeqCst); // DIAG
-}
-
-fn diag_flow(settle: Option<Duration>, poke: u8) {
-    std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_secs(70)); // DIAG watchdog
-        eprintln!(
-            "DIAG WATCHDOG stage={} notifications={}",
-            STAGE.load(std::sync::atomic::Ordering::SeqCst),
-            NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst)
-        );
-        std::process::abort();
-    });
-    stage(1);
+/// A virtual destination that appears is `Added` and, dropped, `Removed`; the
+/// watch's registration ends with `Devices`. On GitHub's macOS runner CoreMIDI
+/// sent the background client no notification, so this passes on the hub's own
+/// look (see `watch.rs`); mutation: with `IDLE_LOOK` never reached (`hub.notify`
+/// removed from the idle branch) the first wait times out there.
+#[test]
+fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let name = format!("tutti-test-{}", std::process::id());
     let devices = Devices::open().unwrap();
-    stage(2);
     assert_eq!(registered(), 1);
-    if let Some(settle) = settle {
-        devices.wait(settle); // DIAG
-    }
+
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
-    stage(3);
-    match poke {
-        1 => eprintln!("DIAG poke count {}", coremidi::Destinations::count()),
-        2 => eprintln!(
-            "DIAG poke devices {}",
-            crate::backend::coremidi::CoreMidiEndpoints::devices().len()
-        ),
-        _ => {}
-    }
-    let stop = std::sync::atomic::AtomicBool::new(false);
-    struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
-    impl Drop for Stop<'_> {
-        fn drop(&mut self) {
-            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    std::thread::scope(|scope| {
-        let _stop = Stop(&stop); // DIAG: a failure must not hang the scope
-        scope.spawn(|| {
-            let start = Instant::now();
-            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                eprintln!(
-                    "DIAG t={:?} runloop_returns={} last_ms={} notifications={} table={:?}",
-                    start.elapsed(),
-                    RL_RETURNS.load(std::sync::atomic::Ordering::SeqCst),
-                    RL_LAST_MS.load(std::sync::atomic::Ordering::SeqCst),
-                    NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
-                    devices
-                        .list()
-                        .iter()
-                        .map(|d| d.name.clone())
-                        .collect::<Vec<_>>()
-                );
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        });
-        let added = until(
-            &devices,
-            |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
-        );
-        stage(4);
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        drop(destination);
-        stage(5);
-        let id = added.info().id.clone();
-        until(
-            &devices,
-            |e| matches!(e, DeviceEvent::Removed(i) if i.id == id),
-        );
-    });
-    stage(6);
+    let added = until(
+        &devices,
+        |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
+    );
+    drop(destination);
+    let id = added.info().id.clone();
+    until(
+        &devices,
+        |e| matches!(e, DeviceEvent::Removed(i) if i.id == id),
+    );
+
     drop(devices);
-    stage(7);
     assert_eq!(registered(), 0);
-}
-
-#[test]
-fn diag_immediate() {
-    diag_flow(None, 0);
-}
-
-#[test]
-fn diag_settled() {
-    diag_flow(Some(Duration::from_secs(2)), 0);
-}
-
-#[test]
-fn diag_poke_count() {
-    diag_flow(None, 1);
-}
-
-#[test]
-fn diag_poke_devices() {
-    diag_flow(None, 2);
 }

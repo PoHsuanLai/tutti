@@ -16,9 +16,9 @@
 //!   deliberately *not* a `Unit` (it is compared and added, not interpolated
 //!   or automated).
 
-// `#[macro_use]` propagates the `unit_*` operator macros up to the crate root,
-// so sibling modules (`meter`) can opt a type into an algebra instead of
-// hand-writing it. Declared first for the same textual-scoping reason.
+// `#[macro_use]` propagates `unit!` up to the crate root, so sibling modules
+// (`meter`, `samples`, `frame`) define their quantities with it instead of
+// hand-writing the type. Declared first for the same textual-scoping reason.
 #[macro_use]
 pub mod units;
 

@@ -2,7 +2,7 @@
 //! [`MidiEvent`] and emit the MIDI-1 wire form back out.
 
 use midi2::prelude::*;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Midi1Parser, MidiGroup, Ump};
 
 use crate::ump::MidiEvent;
 
@@ -32,10 +32,12 @@ impl TryFrom<&[u8]> for MidiEvent {
 }
 
 impl MidiEvent {
-    /// Parses raw MIDI 1.0 wire bytes (2-3 byte channel-voice or 1-byte system
-    /// real-time message) into a UMP [`MidiEvent`] of type 0x2 (Channel Voice 1)
-    /// or 0x1 (System). Returns `None` on malformed input or SysEx (use
-    /// [`Self::sysex7_fragments`] for that).
+    /// Parses one MIDI 1.0 channel-voice or system message at the start of
+    /// `bytes` into a UMP [`MidiEvent`] of type 0x2 (Channel Voice 1) or 0x1
+    /// (System), keeping the 7-bit values. Bytes after the message are
+    /// ignored, as the padding of a fixed three-byte field is. Returns `None`
+    /// on malformed input, an undefined status or SysEx (use
+    /// [`Self::sysex7_fragments`] for that). Never allocates.
     ///
     /// Everything lands on [`MidiGroup::FIRST`], and that is not a placeholder:
     /// MIDI 1.0 has no group field at all. A DIN stream *is* one cable, so the
@@ -45,83 +47,9 @@ impl MidiEvent {
     /// re-stamps the group at the port boundary, where the answer is known.
     #[must_use]
     pub fn from_midi1_bytes(frame_offset: u32, bytes: &[u8]) -> Option<Self> {
-        use midly::live::{LiveEvent, SystemRealtime};
-        let ev = LiveEvent::parse(bytes).ok()?;
-        let out = match ev {
-            LiveEvent::Midi { channel, message } => {
-                midi1_channel_voice_to_ump(MidiChannel::masked(channel.as_int()), message)
-            }
-            LiveEvent::Realtime(rt) => match rt {
-                SystemRealtime::TimingClock => Self::timing_clock(MidiGroup::FIRST),
-                SystemRealtime::Start => Self::start(MidiGroup::FIRST),
-                SystemRealtime::Continue => Self::continue_msg(MidiGroup::FIRST),
-                SystemRealtime::Stop => Self::stop(MidiGroup::FIRST),
-                SystemRealtime::ActiveSensing => Self::active_sensing(MidiGroup::FIRST),
-                SystemRealtime::Reset => Self::system_reset(MidiGroup::FIRST),
-                _ => return None,
-            },
-            LiveEvent::Common(common) => match common {
-                midly::live::SystemCommon::MidiTimeCodeQuarterFrame(kind, val) => {
-                    let data = (mtc_qf_nibble(kind) << 4) | val.as_int();
-                    Self::mtc_quarter_frame(MidiGroup::FIRST, data)
-                }
-                midly::live::SystemCommon::SongPosition(pos) => {
-                    Self::song_position(MidiGroup::FIRST, pos.as_int())
-                }
-                midly::live::SystemCommon::SongSelect(song) => {
-                    Self::song_select(MidiGroup::FIRST, song.as_int())
-                }
-                midly::live::SystemCommon::TuneRequest => Self::tune_request(MidiGroup::FIRST),
-                midly::live::SystemCommon::SysEx(_)
-                | midly::live::SystemCommon::Undefined(_, _) => {
-                    return None;
-                }
-            },
-        };
-        Some(out.with_frame_offset(frame_offset))
+        let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;
+        Some(Self::from_ump(frame_offset, Ump::from(message).words()))
     }
-}
-
-/// Map a midly `MtcQuarterFrameMessage` to its 0-7 piece code (top nibble
-/// of the MTC quarter-frame data byte).
-fn mtc_qf_nibble(kind: midly::live::MtcQuarterFrameMessage) -> u8 {
-    use midly::live::MtcQuarterFrameMessage::*;
-    match kind {
-        FramesLow => 0,
-        FramesHigh => 1,
-        SecondsLow => 2,
-        SecondsHigh => 3,
-        MinutesLow => 4,
-        MinutesHigh => 5,
-        HoursLow => 6,
-        HoursHigh => 7,
-    }
-}
-
-/// Build a UMP type 0x2 (MIDI 1.0 Channel Voice) event from a midly
-/// `MidiMessage`. Keeps the 7-bit data values (no upconversion to MIDI 2.0).
-fn midi1_channel_voice_to_ump(channel: MidiChannel, msg: midly::MidiMessage) -> MidiEvent {
-    use midly::MidiMessage::*;
-    let (opcode, d1, d2) = match msg {
-        NoteOff { key, vel } => (0x8u32, key.as_int(), vel.as_int()),
-        NoteOn { key, vel } => (0x9u32, key.as_int(), vel.as_int()),
-        Aftertouch { key, vel } => (0xAu32, key.as_int(), vel.as_int()),
-        Controller { controller, value } => (0xBu32, controller.as_int(), value.as_int()),
-        ProgramChange { program } => (0xCu32, program.as_int(), 0),
-        ChannelAftertouch { vel } => (0xDu32, vel.as_int(), 0),
-        PitchBend { bend } => {
-            let bend14 = (bend.as_int() as i32 + 8192).clamp(0, 16383) as u32;
-            let lsb = (bend14 & 0x7F) as u8;
-            let msb = ((bend14 >> 7) & 0x7F) as u8;
-            (0xEu32, lsb, msb)
-        }
-    };
-    let w0 = (0x2u32 << 28)
-        | (opcode << 20)
-        | ((channel.get() as u32) << 16)
-        | (((d1 & 0x7F) as u32) << 8)
-        | ((d2 & 0x7F) as u32);
-    MidiEvent::from_ump(0, &[w0])
 }
 
 /// Up to three MIDI 1.0 wire messages, each `([status, d1, d2], length)`, from
@@ -188,6 +116,11 @@ impl MidiEvent {
     #[must_use]
     pub fn to_midi1_messages(&self) -> Midi1Messages {
         let mut out = Midi1Messages::default();
+        // Only System (1), MIDI 1.0 (2) and MIDI 2.0 (4) channel voice packets
+        // have a MIDI 1.0 form; the others never reach the `midi2` decoder.
+        if !matches!(self.data[0] >> 28, 0x1 | 0x2 | 0x4) {
+            return out;
+        }
         if let Some((channel, bank, program)) = self.program_change_bank() {
             out.push([0xB0 | channel, 0, ((bank >> 7) & 0x7F) as u8], 3);
             out.push([0xB0 | channel, 32, (bank & 0x7F) as u8], 3);

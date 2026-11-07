@@ -28,7 +28,6 @@ features instead. Name the feature:
 
 ```bash
 cargo check -p tutti-core
-cargo check -p tutti-core --features bevy
 ```
 
 ## The import-path gate
@@ -160,9 +159,9 @@ for a control is silent, and the compiler should refuse it. Same split `Q` and
 
 **Operators are opt-in per type, and every omission is deliberate.** `Db * 2.0`
 squares the amplitude; `Beat + Beat` has no origin; `Azimuth` has no ordering
-because a circle has no ends. Before adding an operator, read the omission ledger
-in `units.rs`'s tests — if the operator is listed there, the answer is a named
-method, not an `impl`.
+because a circle has no ends. Before adding an operator, read the omission ledgers
+in `value/units/`'s tests (one per family) — if the operator is listed there,
+the answer is a named method, not an `impl`.
 
 **An omission must ship with its replacement.** This rule was paid for: `Degrees`
 omitted `Ord` and `Add`, named `shortest_arc_to`/`wrap_signed` as the
@@ -461,8 +460,9 @@ param takes nothing. `P` is a packed `UnitAddr` (index in the high byte, the
 `UnitParam` discriminant in the low), so a node's only param of a kind is the
 plain `{ UnitParam::X as u16 }` and a node with several names the others with
 `{ UnitAddr::new(UnitParam::X, i).to_u16() }` (doc 013, "Param addresses").
-`AudioNode` is the only thing `tutti-core` gates behind its `bevy` feature: one
-`derive(Component)` on one struct.
+`AudioNode`, the component wrapping a `NodeKey`, is `bevy-tutti`'s; the engine
+and `tutti-session` key a node by `NodeKey`, and `tutti-core` has no `bevy`
+feature.
 
 The session runs a frame as the phases of `tutti_session::PHASES`, and
 `bevy-tutti` schedules each in a `SessionPhaseSystems(Phase)` set chained
@@ -476,8 +476,8 @@ port of its `Topology` value, a port never written keeps its value, and
 `Session::update()` compiles it iff the graph was edited, so a frame's edits
 coalesce into one commit. The ECS layer exists so a *component* can be
 re-bound to a new node and re-derive its wires (`Changed<AudioNode>`). A
-headless host's handle is the `AudioNode` itself, stable across crossfades,
-so it needs none of that. Event feeds are keyed by the sink's `AudioNode`;
+headless host's handle is the `NodeKey` itself, stable across crossfades,
+so it needs none of that. Event feeds are keyed by the sink's `NodeKey`;
 `Graph::move_feeds` carries them to a replacement, which is what Bevy's
 re-bind calls. There is no whole-`Topology` replace, since it would fight
 Bevy's partial declarations when both hosts share one session, and no direct

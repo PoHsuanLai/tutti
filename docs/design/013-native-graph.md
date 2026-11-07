@@ -261,7 +261,7 @@ the interpreter.
   and `PARKED_LOAN_LIMIT` are gone: a node cannot park a `Loan` across
   blocks, and a `mem::forget` pins one value per reader. The per-channel
   compensation table is not a cell: no audio thread reads it (the butler
-  and the host do), so it is a `tutti_core::PrerollTable`, a plain lock
+  and the host do), so it is a `tutti_graph::PrerollTable`, a plain lock around a copy of `Plan::compensation()` (nothing in `tutti-graph` uses it; the crate is the shared home for the session that writes it and the butler that reads it)
   (`Session::compensation`, `ChannelCompensation`).
   `crates/arc-lend/BENCHMARKS.md` compares the cell with `arc-swap`,
   `basedrop`, `left-right` and the locks, and with the shared-slot design
@@ -1353,7 +1353,7 @@ nothing to move):
 | `ChannelSumNode`, `DownmixNode`, `testing::*` | tutti-nodes | none | — | yes | — |
 | `VbapPannerNode` | tutti-spatial | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `vbap` |
 | `HrtfBinauralNode` | tutti-spatial | azimuth, elevation, blend | detaches all | yes | `hrtf` |
-| `ClickNode` | tutti-core | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
+| `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
 | `TransportClock` | tutti-core | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
 | `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
 | `stretch::Unit` | tutti-sampler | the vocoder bank (stretch and pitch cells are private per clone) | fresh bank | yes | `isolate_snapshots_stretch_and_pitch` |
@@ -3401,7 +3401,7 @@ What each layer holds:
   with any number of participants. `Executor::set_pool` installs one
   (control thread: it builds the parallel state for the running plan);
   `Executor::is_parallel` reports whether blocks spread.
-- **The pool (`tutti_core::WorkerPool`).** Helper threads that spin, then
+- **The pool (`tutti_graph::WorkerPool`).** Helper threads that spin, then
   yield, then park between jobs (crill's progressive backoff); the caller
   wakes at most `wake - 1` parked helpers per block (`Thread::unpark`, the
   one system call the audio thread makes for the pool) and never waits for a
@@ -6624,8 +6624,9 @@ the nodes' own tests, `TransportClock`'s `AudioUnit` half); what was left:
   `alloc_budget.rs`'s build and no-op-commit budgets measure the `Editor`
   (a chain of `n` gains) instead of a `Net`, with their ceilings kept.
 - **`AudioNode` wraps a `NodeKey`**, not fundsp's `NodeId`; `NodeKey::fresh`
-  (tutti-types) is the process-wide counter `NodeId::new` was, and
-  `AudioNode::fresh` mints one. bevy-tutti's `PluginShadow`,
+  (tutti-types) is the process-wide counter `NodeId::new` was. (Since the
+  core split, `AudioNode` is `bevy-tutti`'s component and the engine and
+  `tutti-session` use `NodeKey` directly.) bevy-tutti's `PluginShadow`,
   `ModParamsHandle` and `PreparedExport::fresh_key`, and tutti-sampler's
   `VoicePoolNode`, carry the key.
 - **tutti-graph**: the fundsp dev-dependency. The builder suite checked its
@@ -7423,7 +7424,7 @@ converts at its edges in an f64 graph.
 | `MemorySource`, `DiskSource`, `DiskVoice`, `VoiceNode`, `VoicePool` | tutti-sampler | Both for output and interpolation; the sample data stays f32 | decoded audio is at most 24-bit (32-bit float files are f32), so f32 storage loses nothing, and f64 storage would double RAM and the disk rings' bandwidth. In an f64 graph the taps widen and the Hermite runs in f64 (+12–15%, measured). The phase vocoder (`stretch::Unit`) stays f32 (rustfft f32) and its output widens |
 | `PolySynth` | tutti-polysynth | f32 | its voice bank is `f32x8` lanes (`wide`); f64 would halve the voices per vector. The edge widens its output exactly |
 | `SoundFontUnit` | tutti-soundfont | f32 | rustysynth renders in f32 internally |
-| `ClickNode` | tutti-core | Both | a generated click; cheap to make generic |
+| `ClickNode` | tutti-nodes | Both | a generated click; cheap to make generic |
 | `MicMonitorNode` | tutti-io | f32 | it reads the device ring, which is f32; the widen at its edge is exact |
 | `PluginClient<Bound>`, `InProcessVst` | tutti-plugin | what the plugin negotiated (below) | |
 | MIDI nodes, `ControlLaneNode`, `NoteEnvelopeNode`, `EnvelopeFollowerNode`'s output | midi, tutti-nodes | no audio output: format does not apply | event-only. `EnvelopeFollowerNode` reads audio, so it is Both on its input |

@@ -246,7 +246,7 @@ scratch it renders through is sized at activation.
 
 A plugin that spreads its own work over `clap.thread-pool` has its requests
 run on the pool given to [`ClapController::set_thread_pool`] (any
-`tutti_graph::Pool`, such as `tutti_core::WorkerPool`), with the calling audio
+`tutti_graph::Pool`, such as `tutti_graph::WorkerPool`), with the calling audio
 thread taking part; without one, they are refused and the plugin runs the
 tasks itself. Only a request from inside the plugin's `process` is served.
 

@@ -300,10 +300,10 @@ fn lane_block(
     clock.advance(tutti_types::Samples(n), looping);
 }
 
-/// A [`WorkerPool`](tutti_core::WorkerPool) whose every participant runs its
+/// A [`WorkerPool`](tutti_graph::WorkerPool) whose every participant runs its
 /// share of a job inside `assert_no_alloc`, the helper threads included
 /// (the gate is per thread).
-struct GatedPool(tutti_core::WorkerPool);
+struct GatedPool(tutti_graph::WorkerPool);
 
 impl tutti_graph::Pool for GatedPool {
     fn participants(&self) -> usize {
@@ -336,7 +336,7 @@ fn event_lanes_are_allocation_free_serial_and_on_a_pool() {
     for workers in [None, Some(4)] {
         let (mut ed, mut exec) = lane_graph(128);
         if let Some(w) = workers {
-            let pool = tutti_core::WorkerPool::builder(w)
+            let pool = tutti_graph::WorkerPool::builder(w)
                 .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();
@@ -380,7 +380,7 @@ fn event_lanes_render_the_same_serial_and_parallel() {
     let render = |workers: Option<usize>| {
         let (mut ed, mut exec) = lane_graph(128);
         if let Some(w) = workers {
-            exec.set_pool(Some(Arc::new(tutti_core::WorkerPool::builder(w).build())));
+            exec.set_pool(Some(Arc::new(tutti_graph::WorkerPool::builder(w).build())));
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
@@ -655,7 +655,7 @@ fn two_hundred_lanes_render_the_same_serial_and_parallel() {
     let render = |workers: Option<usize>| {
         let (mut ed, mut exec, controls) = lanes_200(128);
         if let Some(w) = workers {
-            exec.set_pool(Some(Arc::new(tutti_core::WorkerPool::builder(w).build())));
+            exec.set_pool(Some(Arc::new(tutti_graph::WorkerPool::builder(w).build())));
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
@@ -706,7 +706,7 @@ fn two_hundred_lanes_are_allocation_free_serial_and_on_a_pool() {
     for workers in [None, Some(4)] {
         let (mut ed, mut exec, controls) = lanes_200(128);
         if let Some(w) = workers {
-            let pool = tutti_core::WorkerPool::builder(w)
+            let pool = tutti_graph::WorkerPool::builder(w)
                 .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();
@@ -985,7 +985,7 @@ fn signal_sources_render_the_same_serial_and_parallel() {
     let render = |workers: Option<usize>| {
         let (mut ed, mut exec) = signal_graph(128);
         if let Some(w) = workers {
-            exec.set_pool(Some(Arc::new(tutti_core::WorkerPool::builder(w).build())));
+            exec.set_pool(Some(Arc::new(tutti_graph::WorkerPool::builder(w).build())));
         }
         let mut clock = tutti_types::FrameClock::new(
             tutti_types::Beat(0.0),
@@ -1034,7 +1034,7 @@ fn signal_sources_are_allocation_free_serial_and_on_a_pool() {
     for workers in [None, Some(4)] {
         let (mut ed, mut exec) = signal_graph(128);
         if let Some(w) = workers {
-            let pool = tutti_core::WorkerPool::builder(w)
+            let pool = tutti_graph::WorkerPool::builder(w)
                 .spin_budget(std::time::Duration::from_micros(1))
                 .idle(std::time::Duration::from_micros(1))
                 .build();

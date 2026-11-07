@@ -69,7 +69,7 @@ pub type VoiceCommands = NodeControls<VoiceNodeHandle>;
 /// An extension trait on `Commands` for the same reason
 /// [`SpawnAudioNode`](crate::graph::SpawnAudioNode) is one: the insert returns
 /// its id inside a deferred command. The entity gets [`SamplerVoice`],
-/// [`AudioNode`](tutti_core::AudioNode) and [`VoiceCommands`]; it arrives
+/// [`AudioNode`](crate::graph::AudioNode) and [`VoiceCommands`]; it arrives
 /// unwired, like every node.
 pub trait SpawnVoice {
     /// Adds `voice` to the graph as a `width`-wide node on a **new** entity.

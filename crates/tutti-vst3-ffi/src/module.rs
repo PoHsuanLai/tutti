@@ -419,7 +419,7 @@ impl FactoryInfo {
     /// bundle contain?" from a cache.
     ///
     /// **Nothing in tutti acts on this yet.** The scan cache
-    /// (`tutti_plugin::host::discovery`) is keyed on file mtime alone, and it
+    /// (`tutti_plugin_db`) is keyed on file mtime alone, and it
     /// stores one descriptor per bundle path while `find_audio_class` takes
     /// only the first audio class — so a bundle's class *list* is not something
     /// the catalog can currently represent, let alone re-derive. Acting on the

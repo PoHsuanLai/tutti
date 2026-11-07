@@ -128,7 +128,7 @@ pub struct TuttiPlugin {
     pub disabled: bool,
     /// How many threads render a block, the audio callback included (doc 013,
     /// "The parallel executor"). `1`, the default, renders on the
-    /// callback alone; more starts a `tutti_core::WorkerPool` of that many
+    /// callback alone; more starts a `tutti_graph::WorkerPool` of that many
     /// participants, over which each block's independent nodes spread, and
     /// an export forks onto a pool of its own of the same size. `0` means
     /// one per core. The render is the same sample for sample whatever the

@@ -31,8 +31,7 @@ pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
 
     let voice = if control == sdk_enum_i32(kPitchBend) {
         // 14-bit: LSB = value, MSB = value2.
-        let bend = u16::from(v1.get()) | (u16::from(v2.get()) << 7);
-        Voice1::PitchBend(U14::new(bend)?)
+        Voice1::PitchBend(U14::from_halves(v2, v1))
     } else if control == sdk_enum_i32(kAfterTouch) {
         Voice1::ChannelPressure(v1)
     } else if control == sdk_enum_i32(kCtrlPolyPressure) {

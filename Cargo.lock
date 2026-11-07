@@ -405,6 +405,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-plugin",
+ "tutti-plugin-db",
  "tutti-plugin-server",
  "tutti-polysynth",
  "tutti-rt",
@@ -4270,7 +4271,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-clap-ffi",
  "tutti-clap-test-plugin",
- "tutti-core",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-protocol",
@@ -4296,20 +4296,17 @@ dependencies = [
  "approx",
  "assert_no_alloc",
  "atomic_float",
- "bevy_ecs",
- "bevy_reflect",
  "criterion",
  "crossbeam-queue",
- "hashbrown 0.16.1",
  "insta",
  "parking_lot",
  "proptest",
  "rand 0.8.8",
  "ringbuf",
- "serde",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-graph",
+ "tutti-nodes",
  "tutti-rt",
  "tutti-types",
  "tutti-ump",
@@ -4375,6 +4372,10 @@ dependencies = [
 [[package]]
 name = "tutti-fixtures"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "tutti-graph"
@@ -4459,7 +4460,6 @@ dependencies = [
  "atomic_float",
  "criterion",
  "crossbeam-queue",
- "tutti-core",
  "tutti-graph",
  "tutti-midi-types",
  "tutti-rt",
@@ -4533,7 +4533,6 @@ dependencies = [
  "parking_lot",
  "raw-window-handle",
  "serde",
- "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "thread-priority",
@@ -4549,6 +4548,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-mod",
  "tutti-nodes",
+ "tutti-plugin-db",
  "tutti-plugin-types",
  "tutti-rt",
  "tutti-types",
@@ -4557,6 +4557,18 @@ dependencies = [
  "tutti-vst2-test-plugin",
  "tutti-vst3-host",
  "windows 0.52.0",
+]
+
+[[package]]
+name = "tutti-plugin-db"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-channel",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tutti-plugin-types",
 ]
 
 [[package]]
@@ -4603,6 +4615,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",
@@ -4617,7 +4630,6 @@ dependencies = [
  "assert_no_alloc",
  "criterion",
  "thiserror 2.0.21",
- "tutti-core",
  "tutti-dsp",
  "tutti-graph",
  "tutti-midi-protocol",

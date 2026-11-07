@@ -126,25 +126,22 @@ pub use tutti_midi_types::ump::MidiEvent;
 // `crate::protocol::{...}` is the single import point for the bridge.
 //
 // - Plugin load metadata: the catalog-identity `PluginDescriptor` (+ its
-//   per-format `PluginClass`) lives in `crate::host::discovery::record`; the
+//   per-format `PluginClass`) lives in `tutti-plugin-types`; the
 //   runtime engine-wiring `LoadedPlugin` lives in the format-agnostic
 //   `tutti-plugin-types`. They ride on `BridgeMessage::PluginLoaded`
 //   (descriptor + loaded) / probe replies (descriptor only).
 // - Parameters, transport snapshot, note-expression and harmony events:
 //   cross-format vocabulary shared with the host crates
 //   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
-pub use crate::host::discovery::record::{
-    AuComponentType, ClapFeature, PluginClass, PluginDescriptor, Vst2Category, Vst3PlugType,
-    Vst3SubCategories,
-};
 pub use tutti_plugin_types::{
-    AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology, ChordChanges,
-    ChordValue, ContentScale, EditorPresence, FeatureReport, Features, LayoutSupport, LoadedPlugin,
-    Normalized, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo, ParameterPoint,
-    ParameterQueue, PluginTail, PointBuf, Preset, PresetId, PresetSupport, RenderMode, Samples,
-    ScaleChanges, ScaleValue, TimeSignature, TransportInfo,
+    AuComponentType, AutomationMode, BusChannels, BusTopologies, ChannelLayout, ChannelTopology,
+    ChordChanges, ChordValue, ClapFeature, ContentScale, EditorPresence, FeatureReport, Features,
+    LayoutSupport, LoadedPlugin, Normalized, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionIntValue, NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType,
+    NoteExpressionValue, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges,
+    ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail,
+    PointBuf, Preset, PresetId, PresetSupport, RenderMode, Samples, ScaleChanges, ScaleValue,
+    TimeSignature, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories,
 };
 
 #[cfg(test)]

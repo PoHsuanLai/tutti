@@ -107,6 +107,7 @@ check-features:
     cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
@@ -131,6 +132,7 @@ test-features:
     cargo nextest run --locked -p tutti-ump --features serde
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support
+    cargo nextest run --locked -p tutti-plugin-db --features json
     cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'
@@ -301,7 +303,6 @@ plugin-server-release:
 # sides.
 check-bevy-free:
     cargo check --locked -p tutti-core
-    cargo check --locked -p tutti-core --features bevy
     cargo check --locked -p tutti-types
     cargo check --locked -p tutti-types --features bevy
     # The facade, and the assertion the two `cargo check`s above cannot make.
@@ -346,6 +347,11 @@ check-plugin-ffi:
 # dependencies point down the layers in CLAUDE.md. `cargo metadata`, no build.
 check-layout:
     scripts/check-layout.sh
+
+# A tuple struct with a private field must not derive `Deserialize` plainly:
+# the derive skips `new`. Python over the source, no build.
+check-range-types:
+    scripts/check-range-types.sh
 
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant
@@ -396,6 +402,7 @@ check-windows:
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
+    win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets
     win -p tutti-vst2-host --all-targets
     win -p tutti-vst3-host -p tutti-plugin-server --lib --bins
@@ -458,4 +465,4 @@ deny:
     cargo deny --locked check advisories
 
 # Everything CI runs, in CI's order.
-ci: lint deny check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-features check-loom test test-features test-editor test-doc test-release doc
+ci: lint deny check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-range-types check-features check-loom test test-features test-editor test-doc test-release doc

@@ -17,7 +17,8 @@ only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
 holds the `Editor`; PDC is the compiler's, export forks the live graph with
 `Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
-the numeric tower are deleted; `AudioNode` wraps a `NodeKey`, and
+the numeric tower are deleted; the engine and `tutti-session` key a node by
+`NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
 `tutti_types::latency` is a pure pass that is the compiler's own solve. A
 block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
@@ -47,7 +48,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 ## The parallel executor (doc 013)
 
 A block's tasks may run on several threads (`Executor::set_pool`,
-`tutti_core::WorkerPool`), and the render must stay bit-identical to the
+`tutti_graph::WorkerPool`), and the render must stay bit-identical to the
 serial one.
 
 - **A cheap node declares its cost** (`Shape::with_cost`: `Cost::Light`
@@ -89,6 +90,7 @@ scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-s
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
+scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
 just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
 
@@ -163,9 +165,9 @@ just test-all                      # both
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
-- **Bevy-free floor:** five engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-core`, `tutti-types`, `tutti-io`, `tutti-mod`,
-  `tutti-sampler`); the rest have none, and `tutti-session`, `tutti-graph`
+- **Bevy-free floor:** four engine crates have an optional, off-by-default
+  `bevy` feature (`tutti-types`, `tutti-io`, `tutti-mod`, `tutti-sampler`); the
+  rest have none, and `tutti-session`, `tutti-graph`
   and `tutti-ump` must never grow one. `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
@@ -236,18 +238,25 @@ crates/          everything shipped; directory name = package name; no nesting
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
-                 needs); no dependencies but `bytemuck` (and optional `serde`)
+                 needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
+                 `frame` and `Midi1Parser`, the status bytes the hosts use
+                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
+                 until VST2 and AU move); no dependencies but `bytemuck` (and
+                 optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen` and the M2-115 scaling; depends on `tutti-ump` alone
+                 stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
+                 depends on `tutti-ump` alone
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
-                 executor + reference interpreter; `Engine` renders it
+                 executor + reference interpreter, the `WorkerPool` and the
+                 `PrerollTable`; `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
                  dynamics, convolver, delay lines, waveshapers
   tutti-mod      modulation compiler
-  tutti-core     graph runtime, transport, metering
+  tutti-core     graph runtime, transport, metering (the metronome node,
+                 `ClickNode`, is `tutti-nodes`')
   tutti-io       I/O edge: live + file decode
   tutti-cpal     device
   tutti-export   offline render
@@ -255,7 +264,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-soundfont, tutti-rustysynth (our fork of rustysynth)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
-  tutti-plugin{,-types,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   vst-tutti (our fork of the vst crate; its split is a later lane)
 testing/         never shipped
@@ -274,7 +283,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
 3. `tutti-core`, `tutti-plugin-types`
 4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`
@@ -341,6 +351,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
   re-exports no crate whole (`scripts/check-adapter.sh`).
+- `tutti-plugin-db` depends on `tutti-plugin-types` alone among workspace
+  crates, keeps every module private (`tutti_plugin_db::PluginScanner`; CI runs
+  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
+  `bevy` feature. It holds plugin discovery (the directory walk, the scanner,
+  the pedal, the catalog and its records) and never loads a plugin: the probe is
+  a parameter, and `tutti-plugin` supplies the out-of-process one. Consumers
+  name its types from it, not through `tutti-plugin`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - `tutti-rustysynth` (our fork) is excluded from clippy and rustdoc.
@@ -359,8 +376,9 @@ Use the `tutti_types::value::units` newtype, never a bare float, for any
 quantity one covers: fields, signatures, `Param<U>` and return types.
 
 - **Operators are opt-in per type, and every omission is deliberate.** Read
-  the omission ledger in `units.rs`'s tests before adding one. If it is listed
-  there, write a named method instead.
+  the omission ledgers in `value/units/`'s tests (one per family) before
+  adding one; a unit's `unit!` ability list is its whole algebra. If it is
+  listed there, write a named method instead.
 - **An omission must ship with its replacement in the same change.**
 - **Convert with the named converters** (`Db::to_amplitude`,
   `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.
@@ -371,6 +389,43 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   f64). Say why in a comment.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
+
+## Range-checked values
+
+A type that refuses some raws of its representation is hand-written to one
+shape (`MidiChannel` is the reference). No macro.
+
+| Item | Rule |
+|---|---|
+| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds (see the types not yet conforming, below). `const fn` when the check is const. |
+| `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
+| `get(self) -> Raw`, `From<Self> for Raw` | Always. |
+| `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
+| serde | `serde(try_from = "Raw", into = "Raw")` or a hand impl through `TryFrom`; never a plain derive on the private field. |
+| `clamped(raw)` / `nearest(raw)` | Saturation, named, only where a hot path or a lenient import needs it. A float maps NaN to a documented value. |
+| `masked(raw)` | Only for bits the wire has just framed. |
+| `Default` | Only if the default is in range. |
+
+- No public field, no infallible `From<Raw>`, no `unsafe` constructor.
+- A type whose range is the whole raw (`ChannelLayout`, the RPN word of
+  `PitchBendSensitivity`) has no `new -> Option`, no `TryFrom` and no refusing
+  serde; its plain derived serde is on the lint's exception list by name.
+- A type with two raws (whole units and wire bits) says in its docs which raw
+  `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
+  whole semitones, serde the bits) and gives the other a named constructor
+  (`from_rpn_bits`).
+- Not yet conforming: `Normalized::new`, `BeatsPerBar::new` and
+  `NoteValue::new` clamp (or round) under the name `new`, and
+  `BeatsPerBar`/`NoteValue` serde clamps too. Each becomes `clamped` or
+  `nearest` with a refusing `new`.
+- **A new type is checked by `tutti_fixtures::check_range_contract`** in a
+  test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
+  `scripts/check-range-types.sh` fails a private tuple field with a derived
+  `Deserialize` that is not `serde(try_from)` (`transparent` and `from` are
+  flagged too). Its exception list names what removes each entry.
+- `tutti-ump` does not dev-depend on `tutti-fixtures` (`check-layout.sh`: it
+  depends on no workspace crate, of any kind), so its types keep their own
+  tests.
 
 ## Publishing to the audio thread (MANDATORY)
 
@@ -446,13 +501,13 @@ Scalars use `Param<U>`.
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
 - A headless `Session` declares through its own spec, keyed by
-  `AudioNode`, and `Session::update()` commits iff the graph was edited.
+  `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check
   (`topology::disagreements`) compares only declared ports; never compare a
   whole-graph fold (a latency plan) against the value.
-- A declaration names an *entity*, the graph keys an `AudioNode`; re-binding
+- A declaration names an *entity*, the graph keys a `NodeKey`, which `bevy-tutti`'s `AudioNode` component holds; re-binding
   an entity to a new node re-derives its wires (`Changed<AudioNode>`).
 - Keys are sink ports, so fan-in cannot be represented. Summing is a node's
   job.

@@ -12,9 +12,9 @@ socket for control, so a plugin that crashes takes down only its subprocess:
 the host keeps running and reports the error. VST2 plugins run in the host
 process behind the `vst2` feature.
 
-The crate also covers discovery (scanning plugin directories, a persistent
-catalog with incremental rescan and crash blacklisting) and the main-thread
-control surface (parameters, state, presets, editor windows).
+The crate also drives discovery (scanning plugin directories, a persistent
+catalog with incremental rescan and crash blacklisting, in `tutti-plugin-db`)
+and covers the main-thread control surface (parameters, state, presets, editor windows).
 
 `bevy-tutti` builds its plugin-hosting feature (`plugin`) on this crate.
 
@@ -48,8 +48,8 @@ let _controls = editor.insert(NodeKey(1), "plugin", plugin);
 ```
 
 A host that does not already know the path discovers one first — see
-[`catalog`], whose two pure functions ([`discover`](catalog::discover) and
-[`PluginRecord::probe`](catalog::PluginRecord::probe)) need no feature flag, and
+[`catalog`], whose [`probe_record`](catalog::probe_record) pairs with
+`tutti_plugin_db::discover` and needs no feature flag, and
 whose [`Plugins`](catalog::Plugins) adds incremental rescan and crash recovery on
 top.
 
@@ -90,10 +90,9 @@ plugin's format.
 - [`catalog`] — discovering, persisting and loading plugins:
   [`Plugin`](catalog::Plugin) (one loaded plugin),
   [`Plugins`](catalog::Plugins) (catalog with incremental rescan and crash
-  recovery), [`discover`](catalog::discover) /
-  [`PluginRecord::probe`](catalog::PluginRecord::probe) (the stateless pair),
-  and the [`PluginDescriptor`](catalog::PluginDescriptor) /
-  [`PluginClass`](catalog::PluginClass) identity types.
+  recovery), [`probe_record`](catalog::probe_record) (the stateless probe),
+  and the [`PluginDescriptor`](catalog::PluginDescriptor) identity type. The
+  scanner, the catalog traits and their records are `tutti-plugin-db`'s.
 - [`handles`] — [`PluginClient`](handles::PluginClient) (the graph node),
   [`PluginHandle`](handles::PluginHandle) (the control surface),
   [`PluginControls`](handles::PluginControls) and parameter automation.
@@ -116,11 +115,10 @@ app's choices, so the default build pulls no `serde_json` and no format FFI.
 Without any feature, VST3, CLAP, AU and VST2 plugins all load in the
 subprocess, with no editor support.
 
-- `json` — `catalog::JsonCatalog`, a JSON-file-backed
-  [`catalog::PluginCatalog`]. One ready-made store, not the shape of the API:
-  implement the trait over your own store instead, or use the pure
-  [`catalog::discover`] / [`PluginRecord::probe`][catalog::PluginRecord::probe]
-  pair.
+- `json` — `tutti_plugin_db::JsonCatalog`, a JSON-file-backed
+  `PluginCatalog`, and `Plugins::with_json_catalog`. One ready-made store, not
+  the shape of the API: implement the trait over your own store instead, or use
+  `tutti_plugin_db::discover` with [`probe_record`](catalog::probe_record).
 - `vst3`, `clap`, `au` — editor support for that format. Loads the plugin
   library a second time in the *host* process for editor rendering only; audio
   still runs out of process. The editor instance is therefore not isolated: a

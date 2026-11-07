@@ -3,11 +3,10 @@
 
 use std::sync::Arc;
 
-use tutti_core::{
-    AudioNode, AudioTap, ClickNode, ClickSettings, MAX_ROOT_CHANNELS, MasterMeter, PrerollTable,
-    Transport,
-};
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_core::{AudioTap, MAX_ROOT_CHANNELS, MasterMeter, Transport};
+use tutti_graph::PrerollTable;
+use tutti_nodes::{ClickNode, ClickSettings};
+use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
 use crate::{Result, Session};
@@ -67,7 +66,7 @@ impl Default for SessionBuilder {
 struct Parts {
     graph: Graph,
     transport: Transport,
-    click: Option<AudioNode>,
+    click: Option<NodeKey>,
     click_settings: Arc<ClickSettings>,
     compensation: Arc<PrerollTable>,
     #[cfg(feature = "midi")]

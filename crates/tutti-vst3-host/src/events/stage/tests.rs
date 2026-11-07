@@ -625,3 +625,50 @@ fn a_negative_offset_sorts_before_zero() {
         vec![(-1, ("expr", 2)), (0, ("on", 60)), (3, ("expr", 1))]
     );
 }
+
+/// **Draining a plugin's SysEx allocates nothing**, whichever way the plugin
+/// handed it over: a framed message in a plain `Data` event (the single-packet
+/// path, with a byte whose top bit is set, which reads with that bit dropped),
+/// and a message of several packets (the reassembled path).
+///
+/// Mutation (run): `MidiEvent::sysex7_single` built through midi2's
+/// `Sysex7::<Vec<u32>>` again → `assert_no_alloc` aborts on the first
+/// `Data` event.
+#[test]
+fn draining_a_plugins_sysex_allocates_nothing() {
+    use tutti_vst3_ffi::{Data, Payload};
+
+    // Single packet: `F0 .. F7` in a Data event of subtype 0.
+    let list = EventList::input();
+    let mut staging = list.begin();
+    for bytes in [
+        &[0xF0, 1, 2, 3, 0xF7][..],
+        &[0xF0, 0x81, 0xFF, 2, 0xF7],
+        &[0xF0, 0xF7],
+    ] {
+        let data = Data::new(0, bytes).unwrap();
+        assert!(staging.push(Event::at(7, Payload::Data(data))));
+    }
+    staging.finish();
+    let mut out = RtMidiEvents::new();
+    assert_no_alloc::assert_no_alloc(|| drain_midi(&list, &mut out));
+    let payloads: Vec<Vec<u8>> = out
+        .iter()
+        .map(|e| {
+            let (status, bytes, n) = e.sysex7_payload().expect("a SysEx7 packet");
+            assert_eq!((status, e.frame_offset), (0, 7));
+            bytes[..n].to_vec()
+        })
+        .collect();
+    assert_eq!(payloads, [vec![1, 2, 3], vec![1, 0x7F, 2], vec![]]);
+
+    // Several packets, staged through the reassembler and drained.
+    let payload: Vec<u8> = (0..20).collect();
+    let mut packets = Vec::new();
+    MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
+    let list = EventList::input();
+    Stager::default().stage(&list, &midi_only(&packets));
+    let mut out = RtMidiEvents::new();
+    assert_no_alloc::assert_no_alloc(|| drain_midi(&list, &mut out));
+    assert_eq!(out.len(), MidiEvent::sysex7_packet_count(20));
+}

@@ -31,11 +31,10 @@ bevy_reflect.workspace = true
 bevy_tasks.workspace = true
 
 # Tutti audio engine — bevy-tutti depends on the subsystem crates directly.
-# `tutti-core/bevy_ecs` enables the `Component`
-# derives on the entity-as-node primitives. (The Asset derive on `WaveAsset`
-# is `tutti-io/bevy`, enabled by `sampler` below.) bevy-tutti supplies the
-# reconcile systems and the CPAL audio callback (src/engine/).
-tutti-core = { path = "../tutti-core", default-features = false, features = ["bevy_ecs"] }
+# (The Asset derive on `WaveAsset` is `tutti-io/bevy`, enabled by `sampler`
+# below.) bevy-tutti supplies the node component, the reconcile systems and the
+# CPAL audio callback (src/engine/).
+tutti-core = { path = "../tutti-core", default-features = false }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
 # `ChannelLayout` field; ignoring it in reflection would reset a surround
@@ -54,7 +53,7 @@ tutti-graph = { path = "../tutti-graph" }
 # re-exported: a Bevy app sees this crate's API (`param_graph_node!` names
 # `SessionNode` through `__private`).
 tutti-session = { path = "../tutti-session", default-features = false, features = ["device"] }
-# tutti-nodes is pure DSP; its ECS binding is this crate.
+# tutti-nodes holds graph nodes and no ECS types; the bindings are this crate's.
 # The optional `convolution` feature below adds the convolver on top.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 
@@ -90,6 +89,8 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-
 tutti-plugin = { path = "../tutti-plugin", optional = true, features = [
     "json",
 ] }
+# The scan's progress and record types; the scanner itself runs in `tutti-plugin`.
+tutti-plugin-db = { path = "../tutti-plugin-db", optional = true }
 tutti-plugin-server = { path = "../tutti-plugin-server", optional = true, default-features = false }
 
 # Plugin editor windows: native child-window parenting for hosted GUIs.
@@ -206,6 +207,7 @@ audio-io = ["tutti-cpal/capture", "tutti-session/audio-io"]
 # Plugin hosting: editor windows, catalog scan, crash detection.
 plugin = [
     "dep:tutti-plugin",
+    "dep:tutti-plugin-db",
     "dep:tutti-plugin-server",
     "dep:bevy_window",
     "dep:raw-window-handle",

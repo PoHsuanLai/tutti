@@ -341,27 +341,23 @@ impl core::fmt::Display for TimeSignature {
     }
 }
 
-/// A bar's position on the timeline.
-///
-/// **1-based**: bar 1 is the first bar, which is what every display, every plugin
-/// ABI (CLAP's `bar_number`), and every musician means. Bar 0 and below are legal
-/// and describe pre-roll — a count-in sits at negative beats.
-///
-/// A position, not a count: `BarNumber + BarNumber` has no meaning without an
-/// origin, exactly as `Beat + Beat` does not. Subtracting two gives a
-/// [`BarCount`].
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct BarNumber(pub i64);
+unit! {
+    /// A bar's position on the timeline.
+    ///
+    /// **1-based**: bar 1 is the first bar, which is what every display, every plugin
+    /// ABI (CLAP's `bar_number`), and every musician means. Bar 0 and below are legal
+    /// and describe pre-roll — a count-in sits at negative beats.
+    ///
+    /// A position, not a count: `BarNumber + BarNumber` has no meaning without an
+    /// origin, exactly as `Beat + Beat` does not. Subtracting two gives a
+    /// [`BarCount`].
+    pub struct BarNumber(pub i64): Display, From, Affine(BarCount);
+}
 
-/// A number of bars — the displacement between two [`BarNumber`]s.
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct BarCount(pub i64);
+unit! {
+    /// A number of bars — the displacement between two [`BarNumber`]s.
+    pub struct BarCount(pub i64): Display, Additive, Signed;
+}
 
 // Both fields are public — unlike the signature halves, a bar number has no range
 // invariant for a constructor to enforce — but `new`/`get` exist anyway, because
@@ -423,25 +419,19 @@ impl BarCount {
     }
 }
 
-// The affine pair. `unit_affine!` is written against `+`/`-` only, so it applies
-// to integral bar-space unchanged — the macros are visible here because `value`
-// is `#[macro_use]`d ahead of this module in lib.rs.
+// `BarNumber` and `BarCount` are an affine pair, `Affine(BarCount)`. The set is
+// complete rather than trimmed to current callers: a half-implemented affine
+// pair is a worse API than an unused operator.
 //
-// The set is complete rather than trimmed to current callers: a half-implemented
-// affine pair is a worse API than an unused operator.
+// Deliberately absent: `BarNumber + BarNumber`, which `Affine` omits for the
+// same reason it omits `Beat + Beat` — adding two positions needs an origin.
 //
-// Deliberately absent: `BarNumber + BarNumber`, which `unit_affine!` omits for
-// the same reason it omits `Beat + Beat` — adding two positions needs an origin.
-unit_affine!(BarNumber, BarCount);
+// `BarCount` composes with itself and negates, the same algebra `Additive` and
+// `Signed` give `BeatDuration`.
 
-// `BarCount` composes with itself and negates, the same algebra `unit_additive!` +
-// `unit_signed!` give `BeatDuration`.
-unit_additive!(BarCount);
-unit_signed!(BarCount);
-
-// Scaling stays hand-written. `unit_scalable!` would also generate `Div`, which
+// Scaling stays hand-written. `Scalable` would also generate `Div`, which
 // truncates on `i64` — and a fraction of a bar is a `BeatDuration`, not a
-// `BarCount`. The omission is the point, so the macro must not be used here.
+// `BarCount`. The omission is the point, so the ability must not be used here.
 impl core::ops::Mul<i64> for BarCount {
     type Output = Self;
     #[inline]
@@ -458,39 +448,22 @@ impl core::ops::Mul<BarCount> for i64 {
     }
 }
 
-impl core::fmt::Display for BarNumber {
+// `From<i64>` is the `From` ability. The plugin ABIs that carry bar numbers as
+// `i32` get the pair below, written out because `i32` is a lossy cast, not a
+// widening.
+impl From<i32> for BarNumber {
     #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.0, f)
+    fn from(n: i32) -> Self {
+        Self(n as i64)
     }
 }
 
-impl core::fmt::Display for BarCount {
+impl From<BarNumber> for i32 {
     #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.0, f)
+    fn from(b: BarNumber) -> Self {
+        b.0 as i32
     }
 }
-
-/// Integer conversions for bar numbers, for the plugin ABIs that carry them.
-macro_rules! bar_conversions {
-    ($($t:ty),*) => {$(
-        impl From<$t> for BarNumber {
-            #[inline]
-            fn from(n: $t) -> Self {
-                Self(n as i64)
-            }
-        }
-        impl From<BarNumber> for $t {
-            #[inline]
-            fn from(b: BarNumber) -> Self {
-                b.0 as $t
-            }
-        }
-    )*};
-}
-
-bar_conversions!(i32, i64);
 
 /// Where a beat position falls in musical bar/beat terms.
 ///

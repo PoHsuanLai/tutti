@@ -9,12 +9,12 @@
 use std::path::Path;
 
 use crate::error::Result;
-use crate::host::discovery::record::PluginRole;
-use crate::host::discovery::{format_from_path, record::PluginFormat};
 use crate::host::handles::PluginHandle;
 use crate::host::node::PluginClient;
 use crate::protocol::{Features, LoadedPlugin, PluginDescriptor};
 use crate::util::config::AudioConfig;
+use tutti_plugin_db::{PluginFormat, format_from_path};
+use tutti_plugin_types::PluginRole;
 use tutti_types::SampleRate;
 
 /// The audio node, whichever backend produced it.

@@ -30,10 +30,10 @@ mod graph_wire {
         PortSources,
     };
     // `GraphSource` is the graph's own spelling of what feeds a port.
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::GraphSource;
-    use tutti_core::AudioNode;
     use tutti_nodes::testing::{Osc, Through};
-    use tutti_types::{ChannelLayout, Hz};
+    use tutti_types::{ChannelLayout, Hz, NodeKey};
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     fn app() -> App {
@@ -51,11 +51,11 @@ mod graph_wire {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(node)
         };
-        app.world_mut().spawn(id).id()
+        app.world_mut().spawn(AudioNode(id)).id()
     }
 
-    fn node_id(app: &App, entity: Entity) -> AudioNode {
-        *app.world().get::<AudioNode>(entity).expect("AudioNode")
+    fn node_id(app: &App, entity: Entity) -> NodeKey {
+        app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 
     /// The headline claim: a declaration on the sink reaches the engine.
@@ -177,7 +177,7 @@ mod graph_wire {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(Osc::sine(Hz(440.0)))
         };
-        app.world_mut().entity_mut(pending).insert(id);
+        app.world_mut().entity_mut(pending).insert(AudioNode(id));
         app.update();
 
         assert_eq!(
@@ -273,7 +273,7 @@ mod graph_wire {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(Osc::sine(Hz(880.0)))
         };
-        app.world_mut().entity_mut(osc).insert(second);
+        app.world_mut().entity_mut(osc).insert(AudioNode(second));
         app.update();
 
         assert_eq!(
@@ -868,13 +868,14 @@ mod param_mod_wire {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, PortSource, PortSources};
-    use tutti_core::AudioNode;
     use tutti_graph::{EventOut, ParamRange};
     use tutti_nodes::testing::Osc;
     use tutti_nodes::{DistortionNode, ShapeKind};
     use tutti_types::Hz;
+    use tutti_types::NodeKey;
     use tutti_types::UnitParam;
 
     fn app() -> App {
@@ -892,11 +893,11 @@ mod param_mod_wire {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(node)
         };
-        app.world_mut().spawn(id).id()
+        app.world_mut().spawn(AudioNode(id)).id()
     }
 
-    fn node_id(app: &App, entity: Entity) -> AudioNode {
-        *app.world().get::<AudioNode>(entity).expect("AudioNode")
+    fn node_id(app: &App, entity: Entity) -> NodeKey {
+        app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 
     /// A param source: one event output, sending nothing (a control lane's
@@ -985,7 +986,7 @@ mod param_mod_wire {
                 .expect("the modulation")
                 .source,
             Some(EventOut {
-                node: lfo_id.key(),
+                node: lfo_id,
                 port: 0,
             }),
             "the drive is modulated beside the audio"

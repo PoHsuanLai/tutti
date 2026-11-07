@@ -5,8 +5,10 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tutti_core::{AudioNode, AudioTap, ClickSettings, MasterMeter, PrerollTable, Transport};
-use tutti_types::Samples;
+use tutti_core::{AudioTap, MasterMeter, Transport};
+use tutti_graph::PrerollTable;
+use tutti_nodes::ClickSettings;
+use tutti_types::{NodeKey, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
 
@@ -140,7 +142,7 @@ pub enum SessionEvent {
     /// (`()` for a plugin), its params already addressed.
     CrossfadeLanded {
         /// The node it swapped behind.
-        node: AudioNode,
+        node: NodeKey,
         /// The id [`Graph::crossfade`] returned.
         id: CrossfadeId,
         /// The incoming node's controls.
@@ -151,7 +153,7 @@ pub enum SessionEvent {
     /// was dropped.
     CrossfadeFailed {
         /// The node it was to swap behind.
-        node: AudioNode,
+        node: NodeKey,
         /// The id [`Graph::crossfade`] returned.
         id: CrossfadeId,
         /// Why.
@@ -172,7 +174,7 @@ pub enum SessionEvent {
     /// 256 entries, leaves some out here and not there.
     EventsDropped {
         /// The node.
-        node: AudioNode,
+        node: NodeKey,
         /// Its event output port, `None` for a loss the node had that no
         /// output port owns: events a plugin took in and did not deliver, a
         /// scheduled command that did not fit.
@@ -273,7 +275,7 @@ pub enum SessionEvent {
     #[cfg(feature = "plugin")]
     PluginDied {
         /// The node it was at, now removed.
-        node: AudioNode,
+        node: NodeKey,
         /// The engine's latched reason.
         cause: String,
     },
@@ -282,7 +284,7 @@ pub enum SessionEvent {
     #[cfg(feature = "plugin")]
     PluginLatencyChanged {
         /// The plugin's node.
-        node: AudioNode,
+        node: NodeKey,
         /// Its latency now.
         latency: Samples,
     },
@@ -304,7 +306,7 @@ pub enum SessionEvent {
     #[cfg(feature = "plugin")]
     PluginReloading {
         /// The plugin's node, kept.
-        node: AudioNode,
+        node: NodeKey,
         /// Why it needs a replacement: the engine's latched cause, or a
         /// failed attempt's reason.
         cause: String,
@@ -323,7 +325,7 @@ pub enum SessionEvent {
     #[cfg(feature = "plugin")]
     PluginRecovered {
         /// The plugin's node.
-        node: AudioNode,
+        node: NodeKey,
         /// Whether its state came back, and from how long before.
         state: crate::StateRestore,
         /// The node's latency before the failure and now. PDC follows at
@@ -336,7 +338,7 @@ pub enum SessionEvent {
     #[cfg(feature = "plugin")]
     PluginGaveUp {
         /// The node it was at, now removed.
-        node: AudioNode,
+        node: NodeKey,
         /// Why.
         why: crate::GiveUp,
         /// The last state worth keeping, for a host that offers the user a
@@ -484,15 +486,15 @@ impl std::fmt::Debug for SessionEvent {
 #[derive(Clone, Debug)]
 pub struct MidiNodes {
     /// The hardware input's node: its ports feed what a route rule names.
-    pub input: AudioNode,
+    pub input: NodeKey,
     /// Its controls (the MPE mode).
     pub input_controls: tutti_midi_runtime::MidiInputControls,
     /// The clock's node.
-    pub clock: AudioNode,
+    pub clock: NodeKey,
     /// The clock master: enable it, pick MTC and its frame rate.
     pub clock_master: Arc<tutti_midi_runtime::ClockMaster>,
     /// The hardware out's node, fed by the clock ([`Feeder::Clock`](crate::Feeder)).
-    pub hardware_out: AudioNode,
+    pub hardware_out: NodeKey,
     /// What a host drains to the OS.
     pub out_controls: tutti_midi_runtime::MidiOutControls,
 }
@@ -548,7 +550,7 @@ pub struct Session {
     pub(crate) load: Option<Arc<tutti_core::LoadMeter>>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
-    pub(crate) click: Option<AudioNode>,
+    pub(crate) click: Option<NodeKey>,
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
     /// the graph (a disk stream), republished with every plan.
@@ -737,7 +739,7 @@ impl Session {
                 .filter(|(_, (count, recovered))| *count > 0 || *recovered > 0)
                 .map(
                     |((node, port), (count, recovered))| SessionEvent::EventsDropped {
-                        node: AudioNode(node),
+                        node,
                         port,
                         count,
                         recovered,
@@ -806,7 +808,7 @@ impl Session {
     /// `modulation`), and, when it is a clip or live input of the
     /// session's (`midi`, feature `midi`), that. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
-    pub fn remove(&mut self, node: AudioNode) -> bool {
+    pub fn remove(&mut self, node: NodeKey) -> bool {
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);
         #[cfg(feature = "midi")]
@@ -907,7 +909,7 @@ impl Session {
 
     /// The metronome's node (unwired: the host declares where it lands),
     /// when the builder inserted one.
-    pub fn click_node(&self) -> Option<AudioNode> {
+    pub fn click_node(&self) -> Option<NodeKey> {
         self.click
     }
 

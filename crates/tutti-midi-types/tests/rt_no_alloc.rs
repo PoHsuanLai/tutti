@@ -76,3 +76,53 @@ fn midi_clock_decoder_queries_are_allocation_free() {
         }
     });
 }
+
+/// `from_midi1_bytes` runs on a plugin's output and a packet transport, where
+/// the bytes are not ours: a stray status, a truncated message, an undefined
+/// status and SysEx allocate nothing and read as `None`, and a good message
+/// still reads.
+///
+/// Mutation (run): the old `midly` path restored in `from_midi1_bytes` ->
+/// the process aborts on `[0xF7, 1, 2]` under `assert_no_alloc`.
+#[test]
+fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
+    use tutti_midi_types::ump::MidiEvent;
+
+    let hostile: [&[u8]; 8] = [
+        &[0xF7, 1, 2],
+        &[0x90, 60],
+        &[0x90],
+        &[0xF0, 1, 2],
+        &[0xF4, 1, 2],
+        &[0xFD],
+        &[0x90, 0x80, 1],
+        &[],
+    ];
+    assert_no_alloc::assert_no_alloc(|| {
+        for bytes in hostile {
+            assert!(
+                MidiEvent::from_midi1_bytes(0, bytes).is_none(),
+                "{bytes:02X?}"
+            );
+        }
+        assert!(MidiEvent::from_midi1_bytes(3, &[0x90, 60, 100]).is_some());
+    });
+}
+
+/// Building a single SysEx7 packet allocates nothing, a byte with its top bit
+/// set included.
+///
+/// Mutation (run): `sysex7_single` built through `Sysex7::<Vec<u32>>` again ->
+/// the process aborts.
+#[test]
+fn sysex7_single_is_allocation_free() {
+    use tutti_midi_types::ump::MidiEvent;
+    use tutti_ump::MidiGroup;
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for payload in [&[][..], &[1, 2, 3], &[0x81, 0xFF, 2, 3, 4, 5]] {
+            assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, payload).is_some());
+        }
+        assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+    });
+}

@@ -351,9 +351,9 @@ fn raw_note(on: bool, n: u8, attribute_type: u8, velocity: u16) -> MidiEvent {
 }
 
 /// M2-104 7.4.14 Table 8 marks attribute types 0x04 to 0xFF reserved for
-/// senders and says nothing of dropping the note; 7.1.1 has a receiver ignore
-/// reserved values. So the attribute is ignored and the note plays: a Note On
-/// of any reserved type sounds, and a Note Off of any releases the note.
+/// senders (2.1.3: do not use) and gives a receiver no rule for them. The
+/// attribute is not read and the note plays: a Note On of any reserved type
+/// sounds, and a Note Off of any releases the note.
 #[test]
 fn a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note() {
     for kind in [4u8, 9, 255] {

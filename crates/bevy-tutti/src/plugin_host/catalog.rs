@@ -35,7 +35,8 @@ use bevy_log::{info, warn};
 use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
 use tutti_plugin::BridgeError;
-use tutti_plugin::catalog::{PluginId, PluginRecord};
+use tutti_plugin::catalog::{PluginId, probe_record};
+use tutti_plugin_db::PluginRecord;
 
 use crate::plugin_host::PluginsRes;
 
@@ -99,8 +100,7 @@ pub fn start_probe(
             continue; // already probing this one
         }
         let probe_path = path.clone();
-        let task =
-            AsyncComputeTaskPool::get().spawn(async move { PluginRecord::probe(&probe_path) });
+        let task = AsyncComputeTaskPool::get().spawn(async move { probe_record(&probe_path) });
         in_flight.tasks.insert(path.clone(), task);
     }
 }

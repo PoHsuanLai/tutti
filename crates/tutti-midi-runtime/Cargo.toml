@@ -33,8 +33,6 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 [dev-dependencies]
 # The graph's by-hand node driver, `tutti_graph::contract::Direct`.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
-# The worker pool of `tests/cost_classes.rs`.
-tutti-core = { version = "0.0.1", path = "../tutti-core", default-features = false }
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 

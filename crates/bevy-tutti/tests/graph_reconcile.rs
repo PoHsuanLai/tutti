@@ -27,11 +27,11 @@ mod graph_reconcile {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{
         AudioGraphRes, GraphReconcileSystems, SpawnAudioNode, commit_graph, crossfade_audio_node,
         engine_ready, reconcile_node_despawn,
     };
-    use tutti_core::AudioNode;
     use tutti_nodes::testing::Osc;
     use tutti_types::Hz;
 
@@ -157,7 +157,7 @@ mod graph_reconcile {
                 app.world()
                     .resource::<AudioGraphRes>()
                     .graph_ref()
-                    .contains(*node)
+                    .contains(node.0)
             );
         }
         assert_eq!(count, 1);
@@ -173,7 +173,7 @@ mod graph_reconcile {
         };
         app.update();
 
-        let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -214,7 +214,7 @@ mod graph_reconcile {
                 .id()
         };
         app.update();
-        let node_id = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -279,7 +279,7 @@ mod graph_reconcile {
         };
         app.update();
 
-        let node_id_before = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node_id_before = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -299,7 +299,7 @@ mod graph_reconcile {
         app.update();
 
         // Same NodeKey stays — that's the contract of crossfade.
-        let node_id_after = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node_id_after = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert_eq!(node_id_before, node_id_after);
         assert!(
             app.world()
@@ -323,6 +323,7 @@ mod audio_param {
     use bevy_ecs::prelude::*;
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{
         AudioGraphRes, AudioParam, AudioParamAppExt, CapturedControls, GraphReconcilePlugin,
         SessionNode, TransportRes,
@@ -382,7 +383,7 @@ mod audio_param {
             node
         };
         let mut entity = app.world_mut().spawn(drive);
-        controls.bind(&mut entity, node);
+        controls.bind(&mut entity, AudioNode(node));
         let entity = entity.id();
         (app, entity)
     }
@@ -641,8 +642,8 @@ mod audio_tap {
 /// The node the engine builds for itself.
 mod engine_nodes {
     use bevy_app::App;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioGraphRes, EngineNodes};
-    use tutti_core::AudioNode;
 
     /// The metronome reads the beat of every frame from its block's `Env`,
     /// so it has no inputs to wire and cannot miss a wire.
@@ -661,7 +662,7 @@ mod engine_nodes {
         app.update();
 
         let nodes = *app.world().resource::<EngineNodes>();
-        let id_of = |entity| *app.world().get::<AudioNode>(entity).unwrap();
+        let id_of = |entity| app.world().get::<AudioNode>(entity).unwrap().0;
         let click = id_of(nodes.click);
 
         let graph = app.world().resource::<AudioGraphRes>();

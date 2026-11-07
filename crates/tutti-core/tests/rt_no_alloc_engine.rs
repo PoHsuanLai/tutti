@@ -28,8 +28,8 @@ mod support;
 
 use assert_no_alloc::AllocDisabler;
 use std::sync::Arc;
-use tutti_core::{ClickNode, ClickSettings, MetronomeMode, Transport};
-use tutti_core::{Engine, LoopEdit};
+use tutti_core::{Engine, LoopEdit, Transport};
+use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_types::LoopRange;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
@@ -273,11 +273,11 @@ fn graph_engine_with_env_clock_and_metronome_is_allocation_free() {
     assert!(clicked, "the metronome clicked");
 }
 
-/// A [`WorkerPool`](tutti_core::WorkerPool) whose every participant runs its
+/// A [`WorkerPool`](tutti_graph::WorkerPool) whose every participant runs its
 /// share of a job inside `assert_no_alloc` — the helper threads too, which a
 /// gate around the callback alone would not see (`assert_no_alloc` is per
 /// thread).
-struct GatedPool(tutti_core::WorkerPool);
+struct GatedPool(tutti_graph::WorkerPool);
 
 impl tutti_graph::Pool for GatedPool {
     fn participants(&self) -> usize {
@@ -314,7 +314,7 @@ fn graph_engine_on_a_worker_pool_is_allocation_free() {
         tutti_types::Samples(512),
     ));
     // Parks quickly, so the gated blocks below wake parked helpers.
-    let pool = tutti_core::WorkerPool::builder(4)
+    let pool = tutti_graph::WorkerPool::builder(4)
         .spin_budget(std::time::Duration::from_micros(1))
         .idle(std::time::Duration::from_micros(1))
         .build();

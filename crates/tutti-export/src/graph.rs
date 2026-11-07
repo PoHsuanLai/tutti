@@ -172,7 +172,7 @@ impl RenderGraph {
     /// `None` on the render's own thread. Returns the pool it replaces. The
     /// render is bit for bit the same either way; a pool only spreads each
     /// block's independent nodes across its threads. Give an export its own
-    /// pool (a `tutti_core::WorkerPool`), not the live engine's: a job finds
+    /// pool (a `tutti_graph::WorkerPool`), not the live engine's: a job finds
     /// a pool busy with another caller's and runs on its caller alone.
     pub fn set_pool(&mut self, pool: Option<Arc<dyn Pool>>) -> Option<Arc<dyn Pool>> {
         self.executor.set_pool(pool)

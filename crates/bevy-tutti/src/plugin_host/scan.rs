@@ -41,7 +41,8 @@ use bevy_ecs::message::Messages;
 use bevy_ecs::prelude::*;
 use bevy_log::{info, warn};
 
-use tutti_plugin::catalog::{Plugins, ScanHandle, ScanPhase, ScanProgress, ScanResult, ScanTicket};
+use tutti_plugin::catalog::{Plugins, ScanTicket};
+use tutti_plugin_db::{ScanHandle, ScanPhase, ScanProgress, ScanResult};
 
 use crate::plugin_host::PluginsRes;
 

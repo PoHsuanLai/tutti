@@ -96,9 +96,11 @@ jobs:
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
+      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_protocol scale voice
+      - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
+      # And `tutti-plugin-db`, which keeps its modules private.
+      - run: scripts/check-canonical-paths.sh tutti_plugin_db catalog database facts fs pedal record scanner
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
       # And `tutti-rt`, which keeps its modules private: the root names every item.
@@ -130,6 +132,9 @@ jobs:
       # the layers in CLAUDE.md (`cargo metadata`, no build).
       - run: rustup toolchain install
       - run: scripts/check-layout.sh
+      # A tuple struct with a private field does not derive `Deserialize`
+      # plainly: the derive skips `new` (python3 over the source, no build).
+      - run: scripts/check-range-types.sh
 
   clippy:
     name: clippy
@@ -195,6 +200,7 @@ jobs:
         shell: bash
         run: |
           cargo clippy --locked -p tutti-plugin --features clap,vst3,vst2,json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
       # WASAPI capture, which the `features` job lints only on Linux.
       - name: Device features
@@ -257,6 +263,7 @@ jobs:
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
+      #   tutti-plugin-db/json — `JsonCatalog` and its tests
       #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
       #                         `clap_*`, `plugin_param_delivery*` and
       #                         `vst2_in_process*` suites): no other job turns
@@ -284,6 +291,7 @@ jobs:
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
 
       # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin.rs` and
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
@@ -311,6 +319,7 @@ jobs:
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
+          cargo nextest run --locked -p tutti-plugin-db --features json
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
       # pool runs each task inside `spawn`, on the main thread: a render's
@@ -560,7 +569,6 @@ jobs:
       # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
       - run: cargo check --locked -p tutti-core
-      - run: cargo check --locked -p tutti-core --features bevy
       - run: cargo check --locked -p tutti-types
       - run: cargo check --locked -p tutti-types --features bevy
 

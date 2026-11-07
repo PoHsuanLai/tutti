@@ -113,6 +113,12 @@ bits!(
     DeltaTicks, u32, 20
 );
 
+impl From<U7> for u8 {
+    fn from(value: U7) -> Self {
+        value.get()
+    }
+}
+
 bounded!(
     /// A Function Block number (`0..=31`). A reserved number read from the wire
     /// is kept, so such a message re-encodes exactly.

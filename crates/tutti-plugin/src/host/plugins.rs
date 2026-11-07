@@ -16,13 +16,14 @@
 //! # }
 //! ```
 //!
-//! Custom persistence (any [`crate::catalog::PluginCatalog`] impl —
+//! Custom persistence (any [`tutti_plugin_db::PluginCatalog`] impl —
 //! SQLite, in-memory, etc.) works without the `json` feature:
 //!
 //! ```no_run
 //! use std::collections::HashMap;
 //! use std::path::{Path, PathBuf};
-//! use tutti_plugin::catalog::{CatalogConfig, PluginCatalog, PluginRecord, Plugins};
+//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
+//! use tutti_plugin_db::{PluginCatalog, PluginRecord};
 //!
 //! // Four methods are required; `flush` defaults to a no-op, which suits a
 //! // store that is not durable.
@@ -48,16 +49,17 @@
 //! [`Plugins::with_audio_config`] when the defaults don't fit.
 
 use crate::error::{BridgeError, Result};
-#[cfg(feature = "json")]
-use crate::host::discovery::JsonCatalog;
-use crate::host::discovery::{
-    CatalogExt, FileFacts, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
-};
+use crate::host::db_probe::{probe_plugin, probe_record};
 use crate::host::plugin::Plugin;
 use crate::protocol::PluginDescriptor;
 use crate::util::config::{AudioConfig, CatalogConfig};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "json")]
+use tutti_plugin_db::JsonCatalog;
+use tutti_plugin_db::{
+    CatalogExt, FileFacts, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
+};
 use tutti_types::SampleRate;
 
 /// Identifies a plugin in a [`Plugins`] catalog by its file path.
@@ -124,7 +126,7 @@ impl Plugins {
 
     /// Creates a JSON-backed catalog loaded from `config.db_path`.
     ///
-    /// See [`JsonCatalog::load`](crate::catalog::JsonCatalog::load) for how a
+    /// See [`JsonCatalog::load`](tutti_plugin_db::JsonCatalog::load) for how a
     /// missing or corrupt file is handled. Requires the `json` feature.
     #[cfg(feature = "json")]
     #[must_use]
@@ -201,7 +203,7 @@ impl Plugins {
     /// # }
     /// ```
     pub fn spawn_rescan(self) -> (ScanHandle, ScanTicket) {
-        let scanner = PluginScanner::new(self.catalog, self.config.pedal_path());
+        let scanner = PluginScanner::new(self.catalog, self.config.pedal_path(), probe_plugin);
         let handle = scanner.spawn_scan(&self.config.scan_dirs);
         let ticket = ScanTicket {
             catalog_rx: handle.catalog_rx.clone(),
@@ -222,7 +224,7 @@ impl Plugins {
         // the placeholder is never observed by callers.
         let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
         let catalog = std::mem::replace(&mut self.catalog, placeholder);
-        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path());
+        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path(), probe_plugin);
         let result = scanner.scan(&self.config.scan_dirs);
         self.catalog = scanner.into_catalog();
         result
@@ -291,8 +293,8 @@ impl Plugins {
     //
     // Must stay in step with `open`: both use the mtime-aware check.
     ///
-    /// [`CatalogExt::is_blacklisted`]: crate::catalog::CatalogExt::is_blacklisted
-    /// [`CatalogExt::is_blacklisted_and_unchanged`]: crate::catalog::CatalogExt::is_blacklisted_and_unchanged
+    /// [`CatalogExt::is_blacklisted`]: tutti_plugin_db::CatalogExt::is_blacklisted
+    /// [`CatalogExt::is_blacklisted_and_unchanged`]: tutti_plugin_db::CatalogExt::is_blacklisted_and_unchanged
     #[must_use]
     pub fn is_blacklisted(&self, path: impl AsRef<Path>) -> bool {
         let path = path.as_ref();
@@ -375,15 +377,15 @@ impl Plugins {
     /// shipped inside an application bundle or a file the user picked.
     /// **Blocking**: the probe spawns a subprocess and waits on a handshake,
     /// up to about seven seconds if the plugin hangs. A frame-driven host should
-    /// run [`PluginRecord::probe`] on a worker and pass the result to
+    /// run [`probe_record`] on a worker and pass the result to
     /// [`register_record`](Self::register_record) instead.
     ///
     /// # Errors
     ///
-    /// Returns any error of [`PluginRecord::probe`], for example when the file
+    /// Returns any error of [`probe_record`], for example when the file
     /// extension is not a plugin format or the probe fails.
     pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> Result<PluginId> {
-        let record = PluginRecord::probe(plugin_path)?;
+        let record = probe_record(plugin_path)?;
         Ok(self.register_record(record))
     }
 
@@ -391,7 +393,7 @@ impl Plugins {
     /// [`PluginId`].
     ///
     /// The non-blocking half of [`register_path`](Self::register_path): run
-    /// [`PluginRecord::probe`] on any thread (it needs no catalog) and pass the
+    /// [`probe_record`] on any thread (it needs no catalog) and pass the
     /// result here. A record with the same path is replaced. Call
     /// [`save`](Self::save) to persist.
     pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
@@ -431,7 +433,7 @@ impl Plugins {
         // work here, not just cheaply-reloadable file-backed ones.
         let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
         let catalog = std::mem::replace(&mut self.catalog, placeholder);
-        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path());
+        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path(), probe_plugin);
         scanner.recover_crash();
         self.catalog = scanner.into_catalog();
     }
@@ -529,7 +531,7 @@ impl PluginCatalog for PlaceholderCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::discovery::record::Blacklist;
+    use tutti_plugin_db::Blacklist;
 
     /// Minimal in-memory catalog, so these tests do not need the `json`
     /// feature or a file on disk.
@@ -557,7 +559,7 @@ mod tests {
     fn blacklisted_record(path: &Path, reason: &str) -> PluginRecord {
         PluginRecord {
             path: path.to_path_buf(),
-            format: crate::host::discovery::record::PluginFormat::Vst3,
+            format: tutti_plugin_db::PluginFormat::Vst3,
             descriptor: PluginDescriptor::default(),
             modification_time: FileFacts::read(path).mtime.unwrap_or(0),
             blacklist: Blacklist::Blacklisted {
@@ -725,7 +727,7 @@ mod tests {
         for path in [&here, &gone] {
             mem.upsert(PluginRecord {
                 path: path.clone(),
-                format: crate::host::discovery::record::PluginFormat::Vst3,
+                format: tutti_plugin_db::PluginFormat::Vst3,
                 descriptor: PluginDescriptor::default(),
                 modification_time: 0,
                 blacklist: Blacklist::Ok,

@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::WorkerPool;
+use tutti_graph::WorkerPool;
 use tutti_graph::{
     Cost, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone, Io, Node,
     Prepare, Schedule, Shape, Status, Transport, Unforkable,

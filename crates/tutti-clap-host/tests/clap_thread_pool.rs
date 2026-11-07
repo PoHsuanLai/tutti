@@ -122,7 +122,12 @@ fn request_now(tasks: u32) -> i32 {
 }
 
 fn pool(participants: usize) -> Arc<WorkerPool> {
-    Arc::new(WorkerPool::new(participants))
+    Arc::new(
+        WorkerPool::builder()
+            .num_threads(participants)
+            .build()
+            .expect("a worker pool"),
+    )
 }
 
 /// Blocks until the capture shows a request spread over several threads,
@@ -339,10 +344,12 @@ impl Pool for GatedPool {
 
 fn gated(participants: usize) -> Arc<GatedPool> {
     Arc::new(GatedPool(
-        WorkerPool::builder(participants)
+        WorkerPool::builder()
+            .num_threads(participants)
             .spin_budget(Duration::from_micros(1))
             .idle(Duration::from_micros(1))
-            .build(),
+            .build()
+            .expect("a worker pool"),
     ))
 }
 

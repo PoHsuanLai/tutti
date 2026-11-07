@@ -298,10 +298,14 @@ fn a_crossfaded_voice_plays_on_through_the_fade() {
 /// read through the beat, which the wrapped segments carry to rounding, so
 /// the later passes read a hair off the whole frame). (Until the voice
 /// read its `Env`, the 64-frame chunk the wrap fell in played on past the
-/// loop's end, from its first frame's beat.)
+/// loop's end, from its first frame's beat.) Over the 240 frames after the
+/// wrap the loop's start fades in under the tone that played on past the
+/// loop's end, at equal power; from then on it is the loop alone.
 ///
 /// Mutation (run): `Runs` not cutting a run at a wrap (`wrap_offset`
 /// answering `None`) → the block plays on past the loop's end → fails.
+/// Mutation (run): no crossfade at the wrap (`Wrap::new` answering `None`)
+/// → the frames after the wrap are the loop's start alone → fails.
 #[test]
 fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     let blocks = 60_000 / 512;
@@ -321,9 +325,23 @@ fn a_loop_wrap_plays_the_tone_a_loop_back_from_its_frame() {
     for f in 0..end {
         assert_tone_exact("loop, before the wrap", &b, f, f);
     }
+    // 5 ms at 48 kHz, after every wrap: the loop's start under the source
+    // past the loop's end.
+    let fade = 240;
     for f in end..b.len() / 2 {
-        let src = FPB + (f - end) % len;
-        assert_tone("loop, from the wrap", &b, f, src);
+        let k = (f - end) % len;
+        let head = tone_at(FPB + k);
+        if k < fade {
+            let (g_in, g_out) = CrossfadeCurve::EqualPower.gains(k, fade);
+            let want = g_in * head + g_out * tone_at(end + k);
+            let got = b[2 * f];
+            assert!(
+                (got - want).abs() < 1e-3,
+                "loop, crossfading: frame {f} read {got}, the blend is {want}"
+            );
+        } else {
+            assert_tone("loop, from the wrap", &b, f, FPB + k);
+        }
     }
 }
 

@@ -66,7 +66,12 @@ fn wire(ed: &mut Editor, node: NodeKey, port: u16, from: NodeKey) {
 fn wide(lanes: usize, depth: usize, workers: usize) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     let sum = NodeKey(1_000_000);
     ed.insert(sum, "sum", ChannelSumNode::new(lanes, ChannelLayout::MONO));
@@ -147,7 +152,12 @@ fn gain(ed: &mut Editor, k: NodeKey, i: usize, light: bool) {
 fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     ed.spec_mut().topology.inputs = ChannelLayout::MONO;
     let sum = NodeKey(1_000_000);
@@ -179,7 +189,12 @@ fn tiny(lanes: usize, light: bool, workers: usize) -> Executor {
 fn mixed(lanes: usize, depth: usize, fan: usize, light: bool, workers: usize) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(FRAMES)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     let sum = NodeKey(1_000_000);
     ed.insert(sum, "sum", ChannelSumNode::new(lanes, ChannelLayout::MONO));

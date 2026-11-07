@@ -450,17 +450,27 @@ impl Graph {
         self.render_workers = workers;
     }
 
-    /// A fresh pool of the configured size, its threads named `name`, or
-    /// `None` for one participant (render on the caller alone).
+    /// A fresh pool of the configured size, its threads named `name-<i>`, or
+    /// `None` for one participant or when the system refuses a thread
+    /// (render on the caller alone).
     pub(crate) fn render_pool(&self, name: &str) -> Option<Arc<dyn tutti_graph::Pool>> {
         let n = match self.render_workers {
             0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
             n => n,
         };
-        (n > 1).then(|| {
-            Arc::new(tutti_graph::WorkerPool::builder(n).name(name).build())
-                as Arc<dyn tutti_graph::Pool>
-        })
+        if n < 2 {
+            return None;
+        }
+        let name = name.to_owned();
+        let pool = tutti_graph::WorkerPool::builder()
+            .num_threads(n)
+            .thread_name(move |i| format!("{name}-{i}"))
+            .build()
+            .inspect_err(|e| {
+                tracing::warn!("graph: a {n}-thread worker pool was refused, rendering alone: {e}");
+            })
+            .ok()?;
+        Some(Arc::new(pool))
     }
 
     /// Hand the executor over: to the engine, or to a test's audio side.

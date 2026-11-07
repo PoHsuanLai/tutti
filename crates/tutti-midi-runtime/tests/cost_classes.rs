@@ -109,7 +109,12 @@ fn connect(ed: &mut Editor, from: NodeKey, to: NodeKey) {
 fn graph(workers: usize, declared: bool) -> (Executor, Vec<MidiOutControls>, Vec<Seen>) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     let (mut outs, mut seen, mut outputs) = (Vec::new(), Vec::new(), Vec::new());
     for k in 0..LANES + HEAVY {

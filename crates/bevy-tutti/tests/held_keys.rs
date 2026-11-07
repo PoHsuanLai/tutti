@@ -15,10 +15,10 @@ use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, EventSources, GraphReconcilePlugin, SessionNode, SpawnAudioNode,
     TransportRes,
 };
-use tutti_core::transport::Transport;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status, Unforkable,
 };
+use tutti_transport::Transport;
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate};
 use tutti_ump::Ump;
 

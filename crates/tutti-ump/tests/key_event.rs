@@ -127,3 +127,32 @@ fn a_key_carries_its_fields() {
     assert_eq!((key.is_m2(), key.lane(), key.note()), (true, 0x1f, 0x45));
     assert_eq!(Key::from_index(key.index()), key);
 }
+
+/// MIDI 2.0 reads the pedal from the 32-bit value (down from half), and the
+/// controller index as `decode` does: seven bits, the eighth ignored.
+///
+/// Mutation (run): read the M2 value from the first word, or the index with
+/// `& 0xff` -> fails.
+#[test]
+fn the_midi2_pedal_reads_index_and_value_as_decode_does() {
+    let pedal = |w0: u32, w1: u32| Ump([w0, w1, 0, 0]).key_event();
+    let sustain = |down| {
+        Some(KeyEvent::Sustain {
+            m2: true,
+            lane: 0x33,
+            down,
+        })
+    };
+    assert_eq!(pedal(0x43b3_4000, 0x8000_0000), sustain(true));
+    assert_eq!(pedal(0x43b3_4000, 0x7fff_ffff), sustain(false));
+    assert_eq!(pedal(0x43b3_4000, 0), sustain(false));
+    // Controller 65 is not the pedal.
+    assert_eq!(pedal(0x43b3_4100, 0xffff_ffff), None);
+    // The eighth index bit is ignored, as in `decode`.
+    let w = [0x43b3_c000, 0xffff_ffff, 0, 0];
+    assert_eq!(
+        decode(Ump(w)).ok().and_then(expected),
+        Ump(w).key_event(),
+        "agrees with decode on an index with bit 7 set"
+    );
+}

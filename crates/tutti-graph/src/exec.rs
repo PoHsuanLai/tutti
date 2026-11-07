@@ -153,7 +153,10 @@
 //! an event edge, or its source is replaced or removed, the sink that survives
 //! is sent the pedal-ups and note-offs of what the source held, after the
 //! events flushed to it. A new edge sends nothing: the off of a note its sink
-//! never saw begin reaches it, which ends nothing.
+//! never saw begin reaches it, which ends nothing. While a replace with a fade
+//! waits behind a running one, the running replacement keeps its table; when the
+//! waiting unit takes over, the keys of the one that stopped are written ahead
+//! of the next block's events on the unit's own output.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -488,10 +491,7 @@ fn retire_fade(fade_back: &mut HeapProd<Box<Crossfade>>, x: Box<Crossfade>) {
 ///
 /// Returns the held keys of the unit that stopped writing, if the cut
 /// displaced one that was.
-fn cut_fades(
-    u: &mut Unit,
-    fade_back: &mut HeapProd<Box<Crossfade>>,
-) -> Option<Vec<Option<Held>>> {
+fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) -> Option<Vec<Option<Held>>> {
     let mut stale = None;
     if let Some(mut q) = u.queued.take() {
         let newest = q.waiting.take().expect("a queued fade holds its unit");
@@ -1390,7 +1390,8 @@ impl Executor {
                     }
                 }
                 if u.queued.is_some() {
-                    u.next_held.resize_with(pu.shape.event_out as usize, || None);
+                    u.next_held
+                        .resize_with(pu.shape.event_out as usize, || None);
                     if pu.shape.note_events {
                         for h in &mut u.next_held {
                             h.get_or_insert_with(Held::new);

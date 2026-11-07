@@ -322,7 +322,8 @@ impl Shape {
     /// This shape, declaring that its event outputs never carry a note or a
     /// sustain pedal (a clock, a segment stream), so the executor keeps no
     /// held-key table for them. A node that then writes one trips a debug
-    /// assertion.
+    /// assertion; in a release build nothing checks, and the note it starts is
+    /// never closed when its edge ends.
     ///
     /// ```
     /// use tutti_graph::Shape;

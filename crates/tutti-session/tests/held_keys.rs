@@ -5,13 +5,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::MotionEvent;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_session::{MidiRouteRule, Session, SessionNode};
+use tutti_transport::MotionEvent;
 use tutti_types::{
     Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
 };

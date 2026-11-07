@@ -949,12 +949,8 @@ fn a_second_fade_closes_the_first_replacements_keys_when_it_takes_over() {
         let fade = Fade::new(Samples(MAX * 3), Default::default());
         let swap = |r: &mut Rig, mail: &Mail| {
             let ed = r.ed.as_mut().unwrap();
-            ed.replace(
-                NodeKey(1),
-                Unforkable(Src { mail: mail.clone() }),
-                fade.clone(),
-            )
-            .expect("replaces");
+            ed.replace(NodeKey(1), Unforkable(Src { mail: mail.clone() }), fade)
+                .expect("replaces");
             ed.commit().unwrap();
             r.exec.as_mut().unwrap().apply_pending();
             ed.collect();
@@ -1005,12 +1001,8 @@ fn a_third_fade_supersedes_the_waiting_one() {
         let fade = Fade::new(Samples(MAX * 3), Default::default());
         let swap = |r: &mut Rig, mail: &Mail| {
             let ed = r.ed.as_mut().unwrap();
-            ed.replace(
-                NodeKey(1),
-                Unforkable(Src { mail: mail.clone() }),
-                fade.clone(),
-            )
-            .expect("replaces");
+            ed.replace(NodeKey(1), Unforkable(Src { mail: mail.clone() }), fade)
+                .expect("replaces");
             ed.commit().unwrap();
             r.exec.as_mut().unwrap().apply_pending();
             ed.collect();
@@ -1149,20 +1141,23 @@ fn a_replaced_sink_is_not_sent_a_close() {
 fn closes_the_delay_cannot_hold_are_counted() {
     let mut r = Rig::with_lag(Mode::Serial, &[2], true);
     r.wire(&[(1, 2)]);
-    // More distinct held keys than the 64-event capacity of a FIFO can queue.
-    for note in 0..64u32 {
-        for ch in 0..8u32 {
+    // Distinct held keys, a block's worth at a time, more than the FIFO of
+    // the delayed edge can queue.
+    for block in 0..8u32 {
+        for k in 0..64u32 {
+            let (note, ch) = (k, block);
             r.send([0x2090_0000 | (ch << 16) | (note << 8) | 100, 0, 0, 0]);
         }
+        r.block();
     }
-    r.block();
-    r.block();
+    let before = r.exec.as_ref().unwrap().lost_event_count();
+    assert_eq!(before, 0, "no event was lost before the replace");
     r.replace_source();
     r.block();
     r.block();
     r.block();
     let lost = r.exec.as_ref().unwrap().lost_event_count();
-    assert!(lost > 0, "the loss is visible: {lost}");
+    assert!(lost > 0, "the closes the FIFO could not hold are counted");
 }
 
 /// A source that declares no note events keeps no table and closes nothing.
@@ -1246,50 +1241,56 @@ fn a_shape_carries_note_events_by_default() {
     assert!(!shape.with_no_note_events().note_events);
 }
 
-/// A fork starts with empty tables: it closes what it has seen itself, and
-/// knows nothing of the live graph's held keys.
-#[test]
-fn a_fork_closes_what_it_has_seen() {
-    #[derive(Clone)]
-    struct Once(bool);
-    impl Node for Once {
-        fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
-        }
-        fn prepare(&mut self, _: &Prepare) {}
-        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-            if !std::mem::replace(&mut self.0, true) {
-                let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
-            }
-            Status::Modified
-        }
-        fn reset(&mut self) {}
+/// Fork fixtures: a source that sends `ON60` once, and a sink that logs. A
+/// clone of the source starts as the given flag says: unsent, or already
+/// mid-note (its table in the fork is still empty).
+struct Once(bool, bool);
+impl Clone for Once {
+    fn clone(&self) -> Self {
+        Once(self.1, self.1)
     }
-    #[derive(Clone)]
-    struct Hear(Log, u64);
-    impl Node for Hear {
-        fn shape(&self) -> Shape {
-            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
-        }
-        fn prepare(&mut self, _: &Prepare) {}
-        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-            for e in io.events(0) {
-                if let EventKind::Midi(Ump(w)) = e.kind {
-                    self.0
-                        .lock()
-                        .unwrap()
-                        .push((self.1, cx.env.frame_at(e.offset).get(), w));
-                }
-            }
-            io.output(0).fill(0.0);
-            Status::Silent
-        }
-        fn reset(&mut self) {}
+}
+impl Node for Once {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
     }
-    let log: Log = Arc::default();
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        if !std::mem::replace(&mut self.0, true) {
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
+        }
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+#[derive(Clone)]
+struct Hear(Log, u64);
+impl Node for Hear {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for e in io.events(0) {
+            if let EventKind::Midi(Ump(w)) = e.kind {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((self.1, cx.env.frame_at(e.offset).get(), w));
+            }
+        }
+        io.output(0).fill(0.0);
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+
+/// A live graph of `Once` into `Hear`, forked after `blocks` live blocks; the
+/// fork's source is mid-note if `mid_note`.
+fn forked(log: &Log, blocks: usize, mid_note: bool) -> (Editor, Executor) {
     let prep = common::prepare(MAX);
     let (mut ed, mut exec) = Editor::new(prep);
-    ed.insert(NodeKey(1), "once", ForkByClone(Once(false)));
+    ed.insert(NodeKey(1), "once", ForkByClone(Once(false, mid_note)));
     ed.insert(NodeKey(2), "hear", ForkByClone(Hear(log.clone(), 2)));
     ed.spec_mut()
         .connect_events(at(2), EventEdge::Direct(out(1)));
@@ -1302,9 +1303,20 @@ fn a_fork_closes_what_it_has_seen() {
     ed.commit().unwrap();
     exec.apply_pending();
     ed.collect();
-    let (mut fed, mut fexec) = ed
-        .fork(ForkTarget::Master, ForkMode::Offline, prep)
-        .expect("forks");
+    let mut out_buf = [0.0f32; MAX];
+    for _ in 0..blocks {
+        exec.process(MAX, &Transport::default(), &[], &mut [&mut out_buf[..]]);
+    }
+    ed.fork(ForkTarget::Master, ForkMode::Offline, prep)
+        .expect("forks")
+}
+
+/// A fork closes what it has seen itself: the live graph has not run, so the
+/// fork's source sends the note and its edge cut closes it.
+#[test]
+fn a_fork_closes_what_it_has_seen() {
+    let log: Log = Arc::default();
+    let (mut fed, mut fexec) = forked(&log, 0, false);
     let mut out_buf = [0.0f32; MAX];
     let t = Transport::default();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
@@ -1315,6 +1327,37 @@ fn a_fork_closes_what_it_has_seen() {
     fed.collect();
     fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
     assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![ON60, OFF60]);
+}
+
+/// A key held when the graph is forked: the fork starts with empty tables, so
+/// cutting the edge in the fork sends its sink nothing for it. The documented
+/// limit: a fork closes only what it has seen itself.
+///
+/// No mutation breaks this: it pins an absence. A fork that copied the live
+/// tables would log an `OFF60` and fail it, which is the change to make if
+/// the limit is ever lifted.
+#[test]
+fn a_fork_does_not_close_a_key_held_at_fork_time() {
+    let log: Log = Arc::default();
+    let (mut fed, mut fexec) = forked(&log, 1, true);
+    assert_eq!(
+        sink_words(&log.lock().unwrap(), 2),
+        vec![ON60],
+        "live heard it"
+    );
+    let mut out_buf = [0.0f32; MAX];
+    let t = Transport::default();
+    fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
+    fed.spec_mut().events.clear();
+    fed.commit().unwrap();
+    fexec.apply_pending();
+    fed.collect();
+    fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
+    assert_eq!(
+        sink_words(&log.lock().unwrap(), 2),
+        vec![ON60],
+        "the fork sent nothing for the key it never saw start"
+    );
 }
 
 mod random {
@@ -1375,17 +1418,80 @@ mod random {
         held
     }
 
-    fn run(mode: Mode, lag: bool, steps: &[Step]) -> Vec<(u64, u64, Words)> {
+    type Key = (u32, u32, u32);
+
+    fn key_of(w: &Words) -> Key {
+        (w[0] >> 28, (w[0] >> 16) & 0xf, (w[0] >> 8) & 0x7f)
+    }
+
+    fn is_on(w: &Words) -> bool {
+        (w[0] >> 20) & 0xf == 0x9
+    }
+
+    /// What the source wrote, by key.
+    #[derive(Default)]
+    struct Sent {
+        ons: std::collections::BTreeMap<Key, u32>,
+        offs: std::collections::BTreeMap<Key, u32>,
+    }
+
+    impl Sent {
+        fn count(&mut self, w: &Words, by: i32) {
+            let map = if is_on(w) {
+                &mut self.ons
+            } else {
+                &mut self.offs
+            };
+            let n = map.entry(key_of(w)).or_default();
+            *n = n.checked_add_signed(by).expect("counts what was sent");
+        }
+    }
+
+    /// A sink's stream against what the source wrote: it hears no on the
+    /// source did not write, and an off for a key it does not hold (an orphan
+    /// off, or the close of a note that began before its edge) is for a key
+    /// the source wrote something for.
+    fn audit(words: &[Words], sent: &Sent) -> Result<(), String> {
+        let mut held = std::collections::BTreeSet::new();
+        let mut ons: std::collections::BTreeMap<Key, u32> = Default::default();
+        let mut orphans: std::collections::BTreeMap<Key, u32> = Default::default();
+        for w in words {
+            let key = key_of(w);
+            if is_on(w) {
+                held.insert(key);
+                *ons.entry(key).or_default() += 1;
+            } else if !held.remove(&key) {
+                *orphans.entry(key).or_default() += 1;
+            }
+        }
+        for (k, n) in &ons {
+            let wrote = sent.ons.get(k).copied().unwrap_or(0);
+            if *n > wrote {
+                return Err(format!("{k:?}: heard {n} ons, the source wrote {wrote}"));
+            }
+        }
+        for k in orphans.keys() {
+            if !sent.ons.contains_key(k) && !sent.offs.contains_key(k) {
+                return Err(format!("{k:?}: an off for a key the source never wrote"));
+            }
+        }
+        Ok(())
+    }
+
+    fn run(mode: Mode, lag: bool, steps: &[Step]) -> (Vec<(u64, u64, Words)>, Sent) {
         let sinks = [2u64, 3, 4];
         let mut r = Rig::with_lag(mode, &sinks, lag);
         let mut source_holds = [false; 6];
+        let mut sent = Sent::default();
         for s in steps {
             match s {
                 Step::Block => r.block(),
                 Step::Toggle(k) => {
                     let on = !source_holds[*k as usize];
                     source_holds[*k as usize] = on;
-                    r.send(key_words(*k, on));
+                    let w = key_words(*k, on);
+                    sent.count(&w, 1);
+                    r.send(w);
                 }
                 Step::Wire(mask) => {
                     let edges: Vec<(u64, u64)> = sinks
@@ -1399,7 +1505,9 @@ mod random {
                 Step::Replace => {
                     // A new unit starts with nothing held; its mail is empty
                     // too (the old unit's pending sends die with it).
-                    r.mail.lock().unwrap().clear();
+                    for (_, w) in r.mail.lock().unwrap().drain(..) {
+                        sent.count(&w, -1);
+                    }
                     r.replace_source();
                     source_holds = [false; 6];
                 }
@@ -1409,24 +1517,32 @@ mod random {
         r.wire(&[]);
         r.block();
         r.block();
-        r.log.lock().unwrap().clone()
+        let log = r.log.lock().unwrap().clone();
+        (log, sent)
     }
 
     proptest! {
         #![proptest_config(ProptestConfig { cases: 300, ..ProptestConfig::default() })]
 
-        /// Every sink ends with nothing held, and serial, parallel and
-        /// reference agree, with and without a PDC delay.
+        /// Every sink ends with nothing held, hears no on the source did not
+        /// write, and no off for a key the source never wrote. Serial,
+        /// parallel and reference agree, with and without a PDC delay. (The
+        /// reference does not model a crossfade, so no fade is in this walk.)
+        ///
+        /// Mutation (run): `Held::close_into` also closing a key the port
+        /// never held (note 100) -> an off for a key never written -> fails.
         #[test]
         fn sinks_end_holding_nothing(steps in steps(), lag in any::<bool>()) {
-            let serial = run(Mode::Serial, lag, &steps);
-            let parallel = run(Mode::Parallel, lag, &steps);
-            let reference = run(Mode::Reference, lag, &steps);
+            let (serial, sent) = run(Mode::Serial, lag, &steps);
+            let (parallel, _) = run(Mode::Parallel, lag, &steps);
+            let (reference, _) = run(Mode::Reference, lag, &steps);
             prop_assert_eq!(by_sink(&serial), by_sink(&parallel));
             prop_assert_eq!(by_sink(&serial), by_sink(&reference));
             for sink in [2u64, 3, 4] {
                 let held = held_at_end(&sink_words(&serial, sink));
                 prop_assert!(held.is_empty(), "sink {} holds {:?}", sink, held);
+                let audited = audit(&sink_words(&serial, sink), &sent);
+                prop_assert!(audited.is_ok(), "sink {}: {:?}", sink, audited);
             }
         }
     }

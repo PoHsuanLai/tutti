@@ -5170,7 +5170,13 @@ the one place that says what a ported node can rely on:
   note-offs after the events a vanished delay flushed (through the delay when
   the edge and its delay go on). A new edge sends nothing; a sink fed by
   several sources cannot tell whose note a key is. A re-prepare parks the
-  tables with the executor; a fork starts with empty ones.
+  tables with the executor; a fork starts with empty ones. A replace with a
+  fade while one runs waits in the unit's `queued` slot, and the running
+  replacement keeps writing, so its table stays; the waiting unit's tables
+  are allocated beside it, and when it takes over the two swap and the
+  keys of the unit that stopped are closed ahead of the next block, on the
+  unit's own output port (a hard replace or a cut closes them at the
+  commit). The reference interpreter does not model a crossfade.
 - **Declared capacity.** `Shape::event_capacity` is the most events
   a node writes to each event output per block (`with_event_capacity(n)`;
   `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every

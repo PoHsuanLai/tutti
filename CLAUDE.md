@@ -89,6 +89,7 @@ scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-s
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
+scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
 just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
 
@@ -380,6 +381,32 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
   f64). Say why in a comment.
 - **Adding a unit:** only with a distinct range *or* a distinct algebra. Two
   names for the same behaviour is not a type.
+
+## Range-checked values
+
+A type that refuses some raws of its representation is hand-written to one
+shape (`MidiChannel` is the reference). No macro.
+
+| Item | Rule |
+|---|---|
+| `new(raw) -> Option<Self>` | Refuses what the type cannot hold; never clamps, wraps or rounds. `const fn` when the check is const. |
+| `of(raw) -> Self` | `const fn` that panics, for a literal or a constant. Omit it when named constants cover the literals. |
+| `get(self) -> Raw`, `From<Self> for Raw` | Always. |
+| `TryFrom<Raw>` | Agrees with `new`; its error carries the refused raw. |
+| serde | `serde(try_from = "Raw", into = "Raw")` or a hand impl through `TryFrom`; never a plain derive on the private field. |
+| `clamped(raw)` / `nearest(raw)` | Saturation, named, only where a hot path or a lenient import needs it. A float maps NaN to a documented value. |
+| `masked(raw)` | Only for bits the wire has just framed. |
+| `Default` | Only if the default is in range. |
+
+- No public field, no infallible `From<Raw>`, no `unsafe` constructor. A
+  type whose range is the whole raw (`ChannelLayout`) has no `new`.
+- **A new type is checked by `tutti_fixtures::check_range_contract`** in a
+  test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
+  `scripts/check-range-types.sh` fails a private tuple field with a plain
+  derived `Deserialize`. Its exception list names what removes each entry.
+- `tutti-ump` cannot dev-depend on `tutti-fixtures` (`check-layout.sh`: it
+  depends on no workspace crate, of any kind), so its types keep their own
+  tests.
 
 ## Publishing to the audio thread (MANDATORY)
 

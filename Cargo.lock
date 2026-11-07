@@ -4376,6 +4376,10 @@ dependencies = [
 [[package]]
 name = "tutti-fixtures"
 version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "tutti-graph"
@@ -4615,6 +4619,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-fixtures",
  "tutti-midi-types",
  "tutti-rt",
  "tutti-types",

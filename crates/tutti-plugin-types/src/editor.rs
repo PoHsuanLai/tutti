@@ -291,4 +291,21 @@ mod tests {
             assert!(ContentScale::try_from(bad).is_err(), "{bad}");
         }
     }
+
+    /// The range contract (`new`, `TryFrom`, `Into`, serde), checked by the
+    /// shared helper. `ContentScale` has no `of`.
+    ///
+    /// Mutation: drop `is_finite` from `ContentScale::new` → the helper
+    /// reports "new accepted inf".
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_content_scale_keeps_the_range_contract() {
+        tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+            new: ContentScale::new,
+            get: ContentScale::get,
+            of: None,
+            valid: &[0.5, 1.0, 2.0, 3.0],
+            invalid: &[0.0, -0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
+        });
+    }
 }

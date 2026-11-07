@@ -98,7 +98,7 @@ impl RequestBits {
 /// Up to 32 kinds of request, raised on any thread and taken on one.
 ///
 /// ```
-/// use tutti_types::{RequestBit, RequestWord};
+/// use tutti_rt::{RequestBit, RequestWord};
 ///
 /// const RESTART: RequestBit = RequestBit::new(0);
 /// let word = RequestWord::new();

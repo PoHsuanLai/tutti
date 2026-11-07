@@ -37,7 +37,7 @@ use arrayvec::ArrayVec;
 /// # Examples
 ///
 /// ```
-/// use tutti_types::RtVec;
+/// use tutti_rt::RtVec;
 ///
 /// let mut due: RtVec<u32, 2> = RtVec::new();
 /// assert!(due.push(10));

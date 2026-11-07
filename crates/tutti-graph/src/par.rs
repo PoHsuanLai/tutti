@@ -44,11 +44,11 @@
 //! # Safety without `unsafe`
 //!
 //! This crate stays `#![forbid(unsafe_code)]`. The claims come from
-//! `tutti_types::{SplitRw, SplitMut}`, whose borrows are checked at run time:
+//! `tutti_rt::{SplitRw, SplitMut}`, whose borrows are checked at run time:
 //! if two ops that share a slot ever ran at once (a compiler bug), the second
 //! claim panics — it is never a second reference. The task dispatch
-//! (`tutti_types::TaskGraph`) and the pool handshake
-//! (`tutti_types::JobGate`, used by `tutti_core::WorkerPool`) are loom-checked
+//! (`tutti_rt::TaskGraph`) and the pool handshake
+//! (`tutti_rt::JobGate`, used by `tutti_core::WorkerPool`) are loom-checked
 //! there.
 //!
 //! # Real time
@@ -71,7 +71,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
-use tutti_types::{
+use tutti_rt::{
     BlockWaits, ClaimTable, Held, Participant, RtScope, ScopedNoDenormals, SplitMut, SplitRw,
     TaskGraph,
 };
@@ -129,7 +129,7 @@ pub trait Pool: Send + Sync + 'static {
 
     /// How long a participant of the executor's block waits before it gives
     /// way: the caller by yielding its core, a helper by leaving the block
-    /// (`tutti_types::TaskGraph`'s "Waiting"). Read once per block, on the
+    /// (`tutti_rt::TaskGraph`'s "Waiting"). Read once per block, on the
     /// audio thread, so it must not allocate or lock. Required, so a pool
     /// that wraps another forwards its inner pool's rather than the
     /// defaults; one with no settings of its own returns

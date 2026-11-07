@@ -31,7 +31,7 @@ use std::time::Instant;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_types::AudioThreadCell;
+use tutti_rt::AudioThreadCell;
 
 use super::PortId;
 

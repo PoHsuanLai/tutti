@@ -2,7 +2,7 @@
 //! code runs on both executors: the serial walk borrows straight out of the
 //! [`Arena`] and the event slots (`split_at_mut`, as `arena.rs` explains),
 //! and the parallel one out of a per-op view of them whose every slot is
-//! **claimed** before use (`tutti_types::SplitRw`), so two ops the schedule
+//! **claimed** before use (`tutti_rt::SplitRw`), so two ops the schedule
 //! wrongly runs at once panic on the slot they share instead of aliasing
 //! it. Neither needs `unsafe` here.
 //!
@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use tutti_types::RwView;
+use tutti_rt::RwView;
 
 use crate::arena::{Arena, Line, Role, borrow_sorted};
 use crate::event::Event;

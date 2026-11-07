@@ -17,8 +17,8 @@
 //! read head to guess.
 //!
 //! The slots, the window and the protocol that keeps a write from ever
-//! landing under a read are `tutti_types::PosRing`'s (its module docs have the
-//! argument, and `tutti-types/tests/pos_ring_loom.rs` checks it under loom).
+//! landing under a read are `tutti_rt::PosRing`'s (its module docs have the
+//! argument, and `tutti-rt/tests/pos_ring_loom.rs` checks it under loom).
 //! Its one `PosWriter` is the butler's [`RegionOut`]'s; its one `PosReader`
 //! waits in the [`Ring`] until a voice takes it ([`Ring::take_reader`]), so
 //! one live reader per ring is the type's rule, not a flag's. This module
@@ -49,9 +49,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tutti_io::Wave;
-use tutti_types::{
-    ArcLend, ChannelLayout, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader, Samples,
-};
+use tutti_rt::{ArcLend, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader};
+use tutti_types::{ChannelLayout, Samples};
 
 #[cfg(codec)]
 use tutti_io::FileIn;

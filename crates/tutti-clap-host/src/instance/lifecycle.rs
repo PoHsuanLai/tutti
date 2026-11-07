@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
 use tutti_plugin_types::{PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken};
-use tutti_types::ArcLend;
+use tutti_rt::ArcLend;
 
 /// Heap reservation for pooled per-call event scratch on a `ClapProcessor`,
 /// beyond the parameter points each list also has room for.

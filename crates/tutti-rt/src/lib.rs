@@ -1,4 +1,7 @@
-//! Real-time-callback primitives — the types the audio thread touches.
+#![doc = include_str!("../README.md")]
+#![deny(missing_docs)]
+
+//! Real-time-safe shared-memory primitives for the audio thread.
 //!
 //! Interior mutability, fixed-capacity buffers, and the denormals guard: each
 //! is `#[no_alloc]`-safe on the audio path and carries no engine dependency.
@@ -56,19 +59,19 @@
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
-pub mod cell;
-pub mod denormals;
+mod cell;
+mod denormals;
 mod edits;
-pub mod job_gate;
-pub mod packed_atomic;
-pub mod pos_ring;
-pub mod request_word;
-pub mod scope;
-pub mod seq_cell;
+mod job_gate;
+mod packed_atomic;
+mod pos_ring;
+mod request_word;
+mod scope;
+mod seq_cell;
 mod spin;
-pub mod split;
-pub mod task_graph;
-pub mod vec;
+mod split;
+mod task_graph;
+mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
@@ -85,3 +88,9 @@ pub use spin::BlockWaits;
 pub use split::{ClaimConflict, ClaimTable, Claimed, ClaimedRun, Held, RwView, SplitMut, SplitRw};
 pub use task_graph::{Participant, TaskGraph};
 pub use vec::RtVec;
+
+// The cell non-scalar state reaches the audio thread through: a control
+// thread publishes, the audio thread only borrows (`Loan`), so it never frees.
+// Its own crate (`arc-lend`, which names nothing of tutti's); re-exported here
+// so the engine spells it `tutti_rt::ArcLend`.
+pub use arc_lend::{ArcLend, Loan, Reader};

@@ -28,8 +28,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
+use tutti_rt::{ArcLend, Reader};
 use tutti_types::MeterMap;
-use tutti_types::{ArcLend, Reader};
 
 /// What a following node reads: the project's meter, or none (the node then
 /// reads 4/4 from bar 0).

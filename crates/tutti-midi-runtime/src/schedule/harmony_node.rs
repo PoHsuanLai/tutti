@@ -32,7 +32,8 @@ use tutti_graph::{
     HarmonyKind, IntoNode, Io, MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape,
     Status,
 };
-use tutti_types::{ArcLend, Beat, ChannelLayout, Reader};
+use tutti_rt::{ArcLend, Reader};
+use tutti_types::{Beat, ChannelLayout};
 
 use super::walk::{Beated, Visit, Walk, lands_on_first_frame};
 

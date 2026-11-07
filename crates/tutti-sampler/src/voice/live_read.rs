@@ -54,7 +54,8 @@
 //! instead. A block that reads nothing tells the ring so (`PosReader::idle`), so a
 //! paused voice holds no refill back.
 
-use tutti_types::{PosClaim, PosReader, Reader, SamplePosition};
+use tutti_rt::{PosClaim, PosReader, Reader};
+use tutti_types::SamplePosition;
 
 use crate::MAX_SAMPLER_CHANNELS;
 use crate::butler::{Arrangement, RingMap, RtState, SharedReader};

@@ -4,7 +4,7 @@
 //! disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice)
 //! read fractional sample positions, so both must interpolate the same way or
 //! the same source sounds different on the two tiers. Both call one kernel,
-//! [`tutti_types::cubic_hermite`]; shared here are its block form and one
+//! [`tutti_dsp::cubic_hermite`]; shared here are its block form and one
 //! transport-placement gate.
 //!
 //! `read_frame` is the in-memory reader only — the streaming tier pulls from the
@@ -21,8 +21,8 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use tutti_dsp::cubic_hermite;
 use tutti_io::Wave;
-use tutti_types::cubic_hermite;
 use tutti_types::{
     Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition, SampleRate, Samples, TimelineSegment,
     fold_frame, snap_to_whole_frame,

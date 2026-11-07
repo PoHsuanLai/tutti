@@ -25,7 +25,8 @@ use tutti_graph::{
 use tutti_midi_types::mpe::MpeMode;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{Midi1ToMidi2Translator, MidiIn};
-use tutti_types::{ArcLend, ChannelLayout, Reader};
+use tutti_rt::{ArcLend, Reader};
+use tutti_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use super::order::{in_offset_order, offset_of};

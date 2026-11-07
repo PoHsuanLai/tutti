@@ -1,7 +1,7 @@
 # tutti-types
 
-The engine's shared value vocabulary: unit newtypes, RT-callback primitives, and
-the `AudioIn`/`AudioOut` I/O traits.
+Typed quantities and shapes shared by every engine crate: unit newtypes,
+channel layouts, and the `AudioIn`/`AudioOut` I/O traits.
 
 ## What this is
 
@@ -14,12 +14,6 @@ re-exports it as `tutti::types`. What is in it:
 - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
   trait, the measurement newtypes (`Hz`, `Seconds`, `Db`, `Beat`, `Bpm`,
   `Samples`, …), and the atomic `Param<U>` cell that holds one.
-- **RT primitives** — what the audio callback touches: `AudioThreadCell`
-  (one-borrow-at-a-time interior mutability), the capped `RtVec` (through
-  `&mut self`; behind an `AudioThreadCell` for `&self`), the `RtScope`
-  "inside a block" marker, the `ScopedNoDenormals` guard, and
-  `ArcLend`/`Loan` (re-exported from the `arc-lend` crate) for handing
-  non-scalar state to the audio thread.
 - **Channels** — `ChannelLayout` (`Mono`/`Stereo`/`Multi(n)`): the one answer to
   "mono, stereo, or how many?" that every subsystem shares instead of a private
   enum or a bare channel-count integer. `ChannelTopology` + `Speaker` answer the
@@ -47,7 +41,7 @@ re-exports it as `tutti::types`. What is in it:
   musical math, so it layers *over* a transport rather than living inside one.
 
 **The root is the API.** Everything is re-exported there, so `tutti_types::Bpm`
-and `tutti_types::AudioThreadCell` resolve directly — import from the root, or
+and `tutti_types::AudioIn` resolve directly — import from the root, or
 from `prelude` for the common subset, not through a module path. Most modules
 are private for that reason; the ones that stay public are the ones
 consumers name as modules (`tutti_types::AudioIn`).
@@ -55,9 +49,11 @@ consumers name as modules (`tutti_types::AudioIn`).
 ## What this crate does not own
 
 Anything that renders, decodes, or opens a device. It is the **root leaf** —
-Bevy-free, engine-free, depending only on `arrayvec` and `atomic_float` (plus
-`serde` and `bevy_reflect` behind their features). The graph runtime is
-`tutti-graph`'s, the engine `tutti-core`'s, the device `tutti-cpal`'s, the file
+Bevy-free, engine-free, depending on no workspace crate (its outside
+dependencies are `atomic_float` and `libm`, plus `serde` and `bevy_reflect`
+behind their features) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
+runtime primitives are `tutti-rt`'s, the graph runtime is `tutti-graph`'s, the
+engine `tutti-core`'s, the device `tutti-cpal`'s, the file
 codecs `tutti-io`'s and `tutti-export`'s. Two consequences make the split
 load-bearing:
 

@@ -38,7 +38,8 @@ use tutti_types::At;
 
 use super::loop_region::LoopEdit;
 use super::motion::MotionEvent;
-use tutti_types::{AudioThreadCell, Bpm};
+use tutti_rt::AudioThreadCell;
+use tutti_types::Bpm;
 
 /// Scheduled transport commands that may be in flight at once: sent and not
 /// yet applied or cancelled.

@@ -146,7 +146,7 @@ pub struct EditReader<T> {
 /// If `capacity` is zero.
 ///
 /// ```
-/// use tutti_types::edit_ring;
+/// use tutti_rt::edit_ring;
 ///
 /// let (mut writer, mut reader) = edit_ring::<[u32; 2]>(2);
 /// writer.push([1, 2]).unwrap();

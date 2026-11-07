@@ -84,7 +84,7 @@
 //! The audio thread ([`Participant::Caller`]) waits until the block is done:
 //! it spins, and on Linux, once no task has finished anywhere for
 //! [`BlockWaits::caller_yield_after`] (250 µs by default), it yields its
-//! core once and spins again (`SpinThenYield`, `src/rt/spin.rs`). A healthy
+//! core once and spins again (`SpinThenYield`, `src/spin.rs`). A healthy
 //! block rarely waits that long without a task finishing, so its wait is
 //! the plain spin. `remaining` counts only sinks, so it is not that signal:
 //! each helper also counts the tasks it finishes on a counter of its own
@@ -99,7 +99,7 @@
 //! the yield returns at once when no thread of the caller's priority is
 //! ready on its core; under `SCHED_OTHER` it may give the core to another
 //! task for a slice, which is why only a stuck wait yields. Elsewhere than
-//! Linux the caller only spins (`src/rt/spin.rs`, "Only on Linux").
+//! Linux the caller only spins (`src/spin.rs`, "Only on Linux").
 //! A [`Participant::Helper`] with nothing to take spins for at most
 //! [`BlockWaits::helper_leave_after`] (15 µs by default; `SpinThenLeave`)
 //! and then **leaves** `work`, forfeiting the rest of the block, rather than
@@ -132,7 +132,7 @@ const PROGRESS_SLOTS: usize = 8;
 /// Waits between two reads of the helpers' completion counters by a waiting
 /// caller: each read takes the counters' lines from their helpers, so it is
 /// rare next to the caller's budget, 250 µs by default (a wait is 10 to
-/// 100 ns, see `src/rt/spin.rs`'s `CLOCK_EVERY`). Under loom, every wait.
+/// 100 ns, see `src/spin.rs`'s `CLOCK_EVERY`). Under loom, every wait.
 const PROGRESS_EVERY: u32 = if cfg!(loom) { 1 } else { 64 };
 
 /// An atomic on a cache line pair of its own (128 bytes: adjacent-line
@@ -156,7 +156,7 @@ pub enum Participant {
 }
 
 /// A DAG of tasks, run once per block. See the module docs
-/// (`src/rt/task_graph.rs`).
+/// (`src/task_graph.rs`).
 pub struct TaskGraph {
     /// Predecessor count per task.
     initial: Box<[u32]>,
@@ -572,7 +572,7 @@ mod tests {
     /// The caller, with nothing to take while a helper holds the only task
     /// in flight, yields its core once its budget passes with no task
     /// finished: what lets a helper queued behind a `SCHED_FIFO` caller on
-    /// one core run at all (`src/rt/spin.rs`). The caller's clock is a
+    /// one core run at all (`src/spin.rs`). The caller's clock is a
     /// stepped one (a quarter of the budget per read), and the helper holds
     /// task 0 until it sees the caller's yield counted, so no timing is
     /// involved; the 10 s bound is only how a missing yield fails rather
@@ -614,8 +614,8 @@ mod tests {
                 saw
             });
             held_rx.recv().unwrap();
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
             g.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });
@@ -654,7 +654,7 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 go_rx.recv().unwrap();
-                crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.helper_leave_after);
+                crate::spin::tests::step_clock(BlockWaits::DEFAULT.helper_leave_after);
                 g.work(Participant::Helper(1), waits, |_| {});
                 left_tx.send(g.done()).unwrap();
             });
@@ -704,8 +704,8 @@ mod tests {
                 });
             });
             held_rx.recv().unwrap();
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
             g.work(Participant::Caller, waits, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });

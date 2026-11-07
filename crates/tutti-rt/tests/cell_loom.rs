@@ -1,9 +1,9 @@
 //! A `loom` model of [`AudioThreadCell`]'s always-on borrow check: the
 //! shipped code, whose state word is loom's atomic under the flag (see
-//! `rt/cell.rs`'s `sync` module).
+//! `src/cell.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test cell_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test cell_loom
 //! ```
 //!
 //! The cell holds a `loom::cell::UnsafeCell`: each granted mutable borrow
@@ -24,7 +24,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/cell.rs`, and the models named failed:
+//! Each was applied to `src/cell.rs`, and the models named failed:
 //!
 //! - `try_acquire_writer` always granting (the check compiled out, as it was
 //!   in release builds) → three models: "Causality violation: Concurrent
@@ -65,7 +65,7 @@ use std::sync::Arc;
 
 use loom::cell::UnsafeCell;
 use loom::thread;
-use tutti_types::AudioThreadCell;
+use tutti_rt::AudioThreadCell;
 
 /// The tracked payload. `Sync` by assertion, so the shared borrows (which
 /// need `T: Sync`) are open to it: whether that assertion holds is exactly

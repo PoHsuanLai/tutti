@@ -27,6 +27,7 @@ contract = []
 # The value (`Topology`, `NodeKey`, ports), the unit newtypes and the latency /
 # tail vocabulary.
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-rt = { path = "../tutti-rt" }
 # `Ump`, the packet an event carries, and its note-off test. No other tutti
 # crate and no codec: this is why the packet is not in `tutti-types`.
 tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }

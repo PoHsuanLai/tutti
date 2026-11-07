@@ -296,7 +296,7 @@ fn freeing_a_control_freed_value_inside_process_panics_in_debug() {
     struct ControlFreed(#[allow(dead_code, reason = "held only to be freed")] Vec<f32>);
     impl Drop for ControlFreed {
         fn drop(&mut self) {
-            tutti_types::RtScope::check_outside("a probe buffer");
+            tutti_rt::RtScope::check_outside("a probe buffer");
         }
     }
     struct Freer(Option<ControlFreed>);

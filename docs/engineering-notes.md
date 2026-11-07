@@ -100,7 +100,10 @@ crates/             everything shipped, directory name = package name
   tutti-session     # Bevy-free API layer: the cross-crate composition both
                     #   umbrellas use (design 015). Not an umbrella itself.
   arc-lend          # The publish cell. No dependencies.
-  tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}
+  tutti-types       # Engine value vocabulary + io::{AudioIn, AudioOut, pump}.
+                    #   No workspace dependency; forbids `unsafe`.
+  tutti-rt          # Real-time-safe shared-memory primitives: the lock-free and
+                    #   `unsafe` runtime structure, every loom model, `ArcLend`.
   tutti-graph       # The graph: `Node` contract, Topology->Plan compiler (PDC),
                     #   executor. Design doc 013.
   tutti-core        # Engine runtime (Engine, Transport, Metering)
@@ -186,7 +189,7 @@ same behaviour is not a type.
 
 Non-scalar state handed from a control thread to the audio thread — a routing
 table, a `MeterMap`, a coefficient set — goes through
-`tutti_types::{ArcLend, Loan}`, re-exported from the `arc-lend` crate. Scalars
+`tutti_rt::{ArcLend, Loan}`, re-exported from the `arc-lend` crate. Scalars
 keep using `Param<U>`. (It was `RtPublish`/`RtRef` in `tutti-types` until it
 moved into its own crate.)
 
@@ -309,17 +312,22 @@ We kept our own guard rather than adopt `no_denormals` 0.3.0:
 
 - Its only API is `pub unsafe fn no_denormals(f)`. Three of the five
   callers are in `tutti-graph`, which is `#![forbid(unsafe_code)]`, so
-  adopting it needs a safe wrapper in `tutti-types`: the module it was
+  adopting it needs a safe wrapper in `tutti-rt`: the module it was
   meant to delete.
 - On aarch64 with `fp16` it also sets FZ16, which ours does not.
 - On any architecture but x86, x86_64 and aarch64 it is a
   `compile_error!`; ours compiles to an empty struct.
 
-There is no crate of our own either. A crate with a safe constructor would
-publish a guarantee Rust does not give; the honest API for that crate is
-an `unsafe fn`, which is `no_denormals`. Ours is safe because the engine
-owns every caller and the audit above, and it stays a module in
-`tutti-types`.
+There is no crate of its own either. A crate offered for the guard alone, with a
+safe constructor, would publish a guarantee Rust does not give; the honest API
+for that crate is an `unsafe fn`, which is `no_denormals`. Ours is safe because
+the engine owns every caller and the audit above, and it stays a module in
+`tutti-rt`. That crate holds the engine's runtime primitives, not this guard
+alone, and is `publish = false`: the guard is reachable only by workspace
+crates and consumers that take the repository as a git dependency, no more
+than when it sat in `tutti-types` (which depended on unpublished `arc-lend`,
+so could not be published either). Publishing
+`tutti-rt` would raise the question again.
 
 ## Two buffer vocabularies — edges vs graph nodes
 

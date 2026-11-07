@@ -943,7 +943,7 @@ mod tests {
     /// A 20 000-frame mono ring writer holding frames `0..10_000` of a
     /// resident ramp, unlooped, with its reader's block in flight at
     /// `[0, 64)`; the reader, for a hook to move; and the ramp.
-    fn switching_ring() -> (RegionOut, tutti_types::PosReader, Arc<Wave>) {
+    fn switching_ring() -> (RegionOut, tutti_rt::PosReader, Arc<Wave>) {
         use super::super::command::RegionId;
         use super::super::prefetch::RegionBuffer;
         const LEN: usize = 20_000;

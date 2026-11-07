@@ -58,7 +58,7 @@ pub fn is_framed(message: &[u8]) -> bool {
 ///
 /// A message is delivered whole or not at all: one whose packets do not all
 /// fit in `out`'s room is dropped and latches `out`'s
-/// [`is_overflowed`](tutti_types::RtVec::is_overflowed), because a `START` left
+/// [`is_overflowed`](tutti_rt::RtVec::is_overflowed), because a `START` left
 /// without its `END` would corrupt the stream that follows it. Returns
 /// whether it was pushed.
 pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> bool {

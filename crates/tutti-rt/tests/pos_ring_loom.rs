@@ -3,10 +3,10 @@
 //!
 //! ```text
 //! LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" \
-//!     cargo test -p tutti-types --release --test pos_ring_loom
+//!     cargo test -p tutti-rt --release --test pos_ring_loom
 //! ```
 //!
-//! Under `--cfg loom`, `rt/pos_ring.rs` builds its atomics from `loom` (its
+//! Under `--cfg loom`, `src/pos_ring.rs` builds its atomics from `loom` (its
 //! `sync` module), so every interleaving and reordering loom explores is one
 //! the real `claim`/`idle`/`push`/`retract_to`/`raise_from`/`reset` can take.
 //! (tutti-sampler, which wraps the ring, cannot build under the flag:
@@ -85,7 +85,7 @@
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::{PosReader, PosRing, PosWriter};
+use tutti_rt::{PosReader, PosRing, PosWriter};
 
 const STRIDE: usize = 2;
 

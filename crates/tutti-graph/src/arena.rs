@@ -231,9 +231,9 @@ impl Arena {
     /// each slot claimed by the op that touches it (`slots.rs`).
     pub(crate) fn split<'a>(
         &'a mut self,
-        table: &'a mut tutti_types::ClaimTable,
-    ) -> tutti_types::SplitRw<'a, Line> {
-        tutti_types::SplitRw::new(&mut self.lines, self.stride, table)
+        table: &'a mut tutti_rt::ClaimTable,
+    ) -> tutti_rt::SplitRw<'a, Line> {
+        tutti_rt::SplitRw::new(&mut self.lines, self.stride, table)
     }
 
     /// Copy slot `src` over slot `dst` (whole stride). Never allocates.

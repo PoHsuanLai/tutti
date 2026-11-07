@@ -332,7 +332,7 @@ impl Pool for GatedPool {
         self.0
             .try_run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)))
     }
-    fn waits(&self) -> tutti_types::BlockWaits {
+    fn waits(&self) -> tutti_rt::BlockWaits {
         self.0.waits()
     }
 }

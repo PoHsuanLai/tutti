@@ -294,6 +294,7 @@ pub mod prelude {
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
+    pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_types::prelude::*;
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 

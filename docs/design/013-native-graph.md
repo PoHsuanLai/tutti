@@ -220,7 +220,7 @@ the interpreter.
   (with wait-free overflow epochs past them, so a stuck overflow reader pins
   only its epoch's values) + a retirement list the audio thread never
   touches. Same API, no call site moved. The reader cannot free;
-  the loom model `tutti-types/tests/rt_publish_loom.rs` checks that against the
+  the loom model `arc-lend/tests/loom.rs` checks that against the
   shipped code (exhaustively under `just loom-full`). The read costs the same as the `ArcSwap::load` it
   replaced uncontended (~3 ns) and less under a hammering publisher (~25 ns vs
   ~41 ns), per `tutti-types/benches/rt_publish_read.rs`. `arc-swap` left
@@ -2431,10 +2431,10 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
   taken off the reader's position) — moves the window there; a jump inside it
   costs nothing, and a reader a little past its end is caught up rather than
   moved.
-- **The no-tear protocol is `tutti_types::PosRing`'s**, beside what was then
+- **The no-tear protocol is `tutti_rt::PosRing`'s**, beside what was then
   `RtPublish` (now the `arc-lend` crate's `ArcLend`),
   and checked the same way: its atomics become loom's under `--cfg loom`, and
-  `tutti-types/tests/pos_ring_loom.rs` models a reader making two claims
+  `tutti-rt/tests/pos_ring_loom.rs` models a reader making two claims
   against a writer that pushes round the ring, retracts then pushes, and
   resets then pushes, every sample tagged with its position and generation.
   (tutti-sampler cannot build under the flag: `event-listener`, under its
@@ -3413,7 +3413,7 @@ What each layer holds:
   workgroup join goes. The engine does not promote threads itself, for the
   reason it does not promote the callback. The helpers must run at the
   callback's priority, not below it (decision 7).
-- **The runtime primitives (`tutti-types`, loom-checked).**
+- **The runtime primitives (`tutti-rt`, loom-checked).**
   `JobGate` lends one borrowed job to helper threads per call (the only
   lifetime erasure, and the reason the pool needs no `std::thread::scope`
   per block); `TaskGraph` runs a DAG of tasks once per block over any
@@ -3445,7 +3445,7 @@ Decisions:
    run exhaustively (`tests/task_graph_loom.rs`, ~8 minutes at
    `LOOM_MAX_PREEMPTIONS=3`). Revisit if profiling shows the head's cache
    line contended.
-2. **The unsafe goes in `tutti-types`**, next to `RtPublish` (which has
+2. **The unsafe goes in `tutti-rt`** (then `tutti-types`'), next to `RtPublish` (which has
    since moved to its own crate, `arc-lend`; these three stay), where the loom
    infrastructure is, and not in `tutti-graph` or `tutti-core`: the three
    primitives are generic (no graph types), and `tutti-graph`'s dependency
@@ -3471,7 +3471,7 @@ Decisions:
    count and the helpers' completion counters; on the gate, `entered`). On
    Linux, after the pool's `caller_yield_after` (250 µs by default) in
    which none of it has moved, it calls `sched_yield` once, then spins
-   again (`tutti_types`' `rt/spin.rs`); elsewhere it only spins. A helper
+   again (`tutti-rt`'s `src/spin.rs`); elsewhere it only spins. A helper
    never yields inside a job; after the pool's `helper_leave_after` (15 µs
    by default) with nothing to take, it leaves. This replaced a caller that
    only spun, which starved a helper queued behind it on its own core under
@@ -3500,9 +3500,9 @@ Evidence:
   helpers' idle loop between jobs is outside the gates (it touches atomics
   and `Thread::park` only).
 - **loom.** `tests/split_loom.rs`, `tests/task_graph_loom.rs` and
-  `tests/job_gate_loom.rs` in `tutti-types` model the three primitives
+  `tests/job_gate_loom.rs` in `tutti-rt` model the three primitives
   against the shipped code (their atomics switch to loom's under the flag);
-  each file lists the mutations it catches. **miri** runs `tutti-types`'
+  each file lists the mutations it catches. **miri** runs `tutti-rt`'s
   lib tests in CI, which include each primitive's threaded unit test
   (fewer iterations under miri); it checks the raw-pointer arithmetic in
   `SplitMut`/`SplitRw` and the lifetime erasure in `JobGate` against Stacked
@@ -4223,7 +4223,7 @@ From the collections and channels audit of `9f397d3d`.
   `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone); a
   `compile_fail` doctest pins that it cannot be cloned.
 - **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
-  `unsafe impl Sync` and no loom model) is now `tutti_types::SeqWriter<T>`
+  `unsafe impl Sync` and no loom model) is now `tutti_rt::SeqWriter<T>`
   and `SeqReader<T>`, typed over a `T: NoUninit + AnyBitPattern` held as
   its bytes in whole atomic `u64` words, so a read racing a write copies
   stale words rather than racing on memory, with no `unsafe` anywhere (the
@@ -4468,7 +4468,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   core could not run: FIFO does not time-slice, even between equal
   priorities. The block then ended only when the kernel migrated the helper,
   and a pinned or unmigratable helper never ran.
-- **Measured** (`tutti-types/tests/spin_starvation.rs`, an ignored probe;
+- **Measured** (`tutti-rt/tests/spin_starvation.rs`, an ignored probe;
   a 4-CPU Firecracker VM, kernel 6.18, `CAP_SYS_NICE`). Caller and helper
   are pinned to one core. The helper holds the only task in flight: 1 ms of
   CPU, a 1 ms block, then 1 ms more.
@@ -4484,7 +4484,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   the helper, so in some runs the helper finishes before the caller runs.
   The probe requires at least one exercised FIFO/FIFO run, and none
   aborted.
-- **The fix.** `SpinThenYield` (`rt/spin.rs`). On Linux and Android, once
+- **The fix.** `SpinThenYield` (`tutti-rt/src/spin.rs`). On Linux and Android, once
   the counter it waits on has not moved for `BlockWaits::caller_yield_after`
   (250 µs by default, a per-pool setting),
   the caller calls `yield_now` once and starts timing again. Progress (the
@@ -4577,7 +4577,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   the new wait, and the ordering is the same, so their mutation records
   stand.
 - **Both in-block budgets are per pool, and both are time.**
-  `tutti_types::BlockWaits` holds the caller's `caller_yield_after`
+  `tutti_rt::BlockWaits` holds the caller's `caller_yield_after`
   (250 µs) and the helper's `helper_leave_after` (15 µs);
   `WorkerPoolBuilder::caller_yield_after` and `::helper_leave_after` set
   them beside `spin_budget` and `idle` (the waits between jobs). The pool's
@@ -7354,10 +7354,10 @@ for the owner" records the current f32 state).
   executor holds one of each; `Op::Node` borrows from the arena of the
   node's format; `Op::Convert` borrows `src` from one arena and `dst` from
   the other. Those are two different `Vec`s, so the borrow checker proves
-  them disjoint with no split at all. In parallel, `tutti_types::SplitRw`
+  them disjoint with no split at all. In parallel, `tutti_rt::SplitRw`
   is already generic over its item, so the f64 arena gets its own
   `SplitRw<Line64>` and claim table, and a conversion claims one slot in
-  each. Nothing new goes in `tutti-types`' `unsafe` code, and
+  each. Nothing new goes in `tutti-rt`'s `unsafe` code, and
   `tutti-graph` stays `#![forbid(unsafe_code)]`.
 - The silence and constant flags are per slot, so there is one flag array
   per arena. A conversion copies its source's flags (a silent f32 slot

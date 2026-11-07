@@ -6,7 +6,7 @@
 //! depending on `tutti-plugin`.
 
 use arrayvec::ArrayVec;
-use tutti_types::RtVec;
+use tutti_rt::RtVec;
 
 use crate::MidiEvent;
 

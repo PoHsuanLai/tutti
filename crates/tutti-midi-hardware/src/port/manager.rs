@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_types::{ArcLend, Reader, SampleRate};
+use tutti_rt::{ArcLend, Reader};
+use tutti_types::SampleRate;
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;

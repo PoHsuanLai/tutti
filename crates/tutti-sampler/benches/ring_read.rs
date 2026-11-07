@@ -17,7 +17,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use tutti_types::{PosReader, PosRing, PosWriter};
+use tutti_rt::{PosReader, PosRing, PosWriter};
 
 /// Frames per block.
 const BLOCK: usize = 64;
@@ -90,7 +90,7 @@ fn block(voices: &mut [Voice], out: &mut [[f32; 2]; BLOCK]) -> f32 {
                 claim.frame(taps[3]),
             ];
             for (c, o) in o.iter_mut().enumerate() {
-                *o = tutti_types::cubic_hermite(
+                *o = tutti_dsp::cubic_hermite(
                     f[0].get(c),
                     f[1].get(c),
                     f[2].get(c),

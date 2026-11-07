@@ -5,7 +5,7 @@ use tutti_plugin_types::{
     AudioBufferMut, Edit, EditDrain, Normalized, NoteExpressionChanges, ParamId, PluginError,
     PluginIo, PluginResult, Processor, SampleFormat, TransportInfo as SharedTransport,
 };
-use tutti_types::Reader;
+use tutti_rt::Reader;
 
 use tutti_clap_ffi::AudioSide;
 

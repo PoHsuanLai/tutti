@@ -31,7 +31,7 @@ use tutti_plugin_types::{
     HARMONY_CAPACITY, MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, StableOrder, SysExAssembler, SysExRef,
     SysExStep,
 };
-use tutti_types::{AudioThreadCell, BorrowGuard};
+use tutti_rt::{AudioThreadCell, BorrowGuard};
 
 /// The room for per-note expression values in one input block: one per MIDI
 /// event. The host enforces it at staging so a dense expression block cannot

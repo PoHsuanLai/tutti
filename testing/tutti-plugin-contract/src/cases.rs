@@ -216,7 +216,8 @@ pub fn note_at_offset<F: Format>() {
 
 /// What the host sent arrives as sent: events by offset, blocks by size.
 // Mutation (run): the host sorts events latest first -> fails; the host hands the plugin one
-//   frame fewer than the block -> fails on the block sizes.
+//   frame fewer than the block -> fails on the block sizes; the plugin not logging
+//   parameter events -> fails on the count.
 pub fn arrival_is_ordered_and_sized<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false), note(30, true)];

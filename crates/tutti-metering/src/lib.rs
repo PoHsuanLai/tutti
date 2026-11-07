@@ -2,21 +2,15 @@
 //! read.
 //!
 //! [`MasterMeter`] holds the output's peak and RMS (the audio thread holds its
-//! [`MeterWriter`]), [`AudioTap`] hands the
-//! callback's output to an analysis consumer, and [`LoadMeter`] reports how
-//! much of each block's time budget the render used (the audio thread holds
-//! its [`LoadRecorder`]). [`meter_output`] feeds
-//! them from one block.
+//! [`MeterWriter`]), and [`LoadMeter`] reports how much of each block's time
+//! budget the render used (the audio thread holds its [`LoadRecorder`]).
+//! `tutti-engine`'s `Engine` feeds both.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod amplitude;
 mod load;
-mod rt;
-mod tap;
 
 pub use amplitude::{MasterMeter, MeterReading, MeterWriter};
 pub use load::{LOAD_MEAN_TIME_CONSTANT, LoadMeter, LoadReading, LoadRecorder};
-pub use rt::meter_output;
-pub use tap::{AudioTap, TapBusy, TapCons};

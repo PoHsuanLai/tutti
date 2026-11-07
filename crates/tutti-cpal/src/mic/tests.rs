@@ -118,13 +118,38 @@ fn a_default_that_already_matches_is_accepted_with_no_ranges() {
 
 /// A `MicIn` over an empty ring and a fresh fault record, with no device.
 fn mic_without_a_device() -> MicIn {
-    let (_prod, cons) = HeapRb::<[f32; 2]>::new(8).split();
-    MicIn {
+    mic_with_ring(8).0
+}
+
+/// [`mic_without_a_device`], and the producer and loss counter its callback
+/// would hold.
+fn mic_with_ring(frames: usize) -> (MicIn, HeapProd<[f32; 2]>, Arc<AtomicU64>) {
+    let (prod, cons) = HeapRb::<[f32; 2]>::new(frames).split();
+    let lost = Arc::new(AtomicU64::new(0));
+    let mic = MicIn {
         cons,
+        lost: Arc::clone(&lost),
         sample_rate: SampleRate(48_000.0),
         faults: Arc::new(StreamFaults::new()),
         _stream: StreamHandle(Owned::spawn("test-input", || Ok(())).expect("spawn")),
+    };
+    (mic, prod, lost)
+}
+
+/// A full ring drops the callback's frames and the source counts them; the
+/// count clears when read. (The callback's push is `push_or_count`; the stream
+/// that calls it needs a device.)
+///
+/// Mutation (run, recorded here): `push_or_count` not counting -> 0 and this
+/// fails.
+#[test]
+fn a_full_ring_counts_the_frames_the_callback_dropped() {
+    let (mut mic, mut prod, lost) = mic_with_ring(2);
+    for i in 0..5 {
+        push_or_count(&mut prod, &lost, [i as f32, 0.0]);
     }
+    assert_eq!(AudioIn::take_lost(&mut mic), Samples(3));
+    assert_eq!(AudioIn::take_lost(&mut mic), Samples(0), "reading clears");
 }
 
 /// A disconnect reported through the shared fault record fails the source, and

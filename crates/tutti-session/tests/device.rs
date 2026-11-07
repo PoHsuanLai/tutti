@@ -25,28 +25,45 @@ fn spec_at(rate: f64) -> OutputSpec {
     )
 }
 
-/// **The session publishes the tap its callback feeds**, not a fresh
-/// disconnected one: a host opens `Session::tap` and sees the frames the
-/// callback renders. (Moved from `bevy-tutti`'s `engine::build`, where it
-/// pinned `AudioTapRes`; its adapter half there now checks the resource is
-/// the session's tap.)
+/// **The session publishes the meter and the taps its callback feeds**, not
+/// disconnected ones: a host opens a tap with `Graph::open_output_tap` and
+/// sees the frames the callback renders, and reads the level they carry from
+/// `Session::master_meter`. (Moved from `bevy-tutti`'s `engine::build`, where
+/// it pinned `AudioTapRes`; its adapter half there now checks the resource is
+/// the session's meter. The tap half was `Session::tap().open()`; the frame
+/// count is the same figure.)
 ///
-/// Mutation (run): `SessionBuilder::build_on` handing the callback state
-/// `AudioTap::new()` instead of the session's → the opened consumer sees
-/// nothing.
+/// Mutation (run, recorded here): `SessionBuilder::build_on` leaving the
+/// session's `meter` at `None` -> `expect` fails; the tap not marking the
+/// graph edited -> no plan is sent and the tap sees nothing.
 #[test]
-fn the_session_publishes_the_tap_its_callback_feeds() {
+fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();
-    let (session, _device) = Session::builder()
+    let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
-    let mut consumer = session.tap().open().expect("a fresh tap opens");
+    let (dc, _) = session
+        .graph()
+        .insert(tutti_nodes::testing::Const::mono(0.5));
+    session
+        .graph()
+        .set_output_source(0, GraphSource::Node(dc, 0));
+    let mut tap = session.graph().open_output_tap(Samples(1_024));
+    session.update();
+    let meter = session.master_meter().expect("a device's engine").clone();
     stream.render_block(64).expect("the stream is open");
     let mut frames = 0;
-    while consumer.try_pop().is_some() {
+    let mut one = [0.0f32; 2];
+    while tap.pop_into(&mut one).get() == 1 {
+        assert_eq!(one, [0.5, 0.0]);
         frames += 1;
     }
     assert_eq!(frames, 64, "the callback's block reached the session's tap");
+    let level = meter.get().peak_left.get();
+    assert!(
+        (level - 0.5).abs() < 1e-6,
+        "the callback's block was measured: {level}"
+    );
 }
 
 /// **The session's load meter is the one its callback's engine feeds**:
@@ -696,4 +713,40 @@ fn indices_after(seen: &Mutex<Vec<usize>>, n: usize) -> Vec<usize> {
     let mut v = seen.lock().unwrap().clone();
     v.sort_unstable();
     v
+}
+
+/// **The heard tap follows a restart onto a device of another width.** A tap
+/// open across the change keeps counting its blocks lost (its width is the old
+/// one's); one opened after it takes the new width and is fed.
+///
+/// Mutation (run, recorded here): delete the width update in `rerate`
+/// (`*layout = spec.channels`) -> the reopen is two lanes wide, every block
+/// counts lost and the width assertion fails.
+#[test]
+fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
+    let (driver, _old) = ManualStreamDriver::new();
+    let (mut s, mut device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device");
+    let across = s.open_heard_tap(Samples(1_024)).expect("opens");
+    assert_eq!(across.width(), 2);
+
+    let six = OutputSpec::new(
+        SampleRate(48_000.0),
+        ChannelLayout::from(6usize),
+        tutti_cpal::cpal::SampleFormat::F32,
+    );
+    let (driver, new) = ManualStreamDriver::new();
+    s.restart_on(&mut device, six, driver, None, |_| {})
+        .expect("restarts");
+    new.render_block(64).expect("open");
+    assert_eq!(across.available(), Samples(0), "the old width gets nothing");
+    assert_eq!(across.take_lost(), Samples(64), "and counts the block lost");
+
+    drop(across);
+    let after = s.open_heard_tap(Samples(1_024)).expect("reopens");
+    assert_eq!(after.width(), 6, "the device's width now");
+    new.render_block(64).expect("open");
+    assert_eq!(after.available(), Samples(64));
+    assert_eq!(after.take_lost(), Samples(0));
 }

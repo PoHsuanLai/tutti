@@ -178,6 +178,19 @@ pub trait AudioIn<S = f32> {
     fn is_failed(&self) -> bool {
         false
     }
+
+    /// The frames this source discarded since the last call, and clears the
+    /// count: a gap in what `poll_into` delivered.
+    ///
+    /// A live source with a bounded buffer (a graph tap's ring, a capture
+    /// ring) drops what a slow consumer does not drain in time. The stream a
+    /// consumer reads then has those frames missing and **closes up over the
+    /// gap**: a recording of it is shorter than the take by the frames lost,
+    /// with no marker in the audio. This is the marker. The default is zero,
+    /// right for a source that never discards.
+    fn take_lost(&mut self) -> Samples {
+        Samples::ZERO
+    }
 }
 
 /// A push destination for audio frames.

@@ -28,6 +28,7 @@
 //! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::{
@@ -90,6 +91,8 @@ pub struct MicIn {
     sample_rate: SampleRate,
     /// What the input stream's error callback reports into.
     faults: Arc<StreamFaults>,
+    /// Frames the callback dropped on a full ring ([`AudioIn::take_lost`]).
+    lost: Arc<AtomicU64>,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
 }
@@ -202,17 +205,35 @@ impl MicIn {
             )));
         }
         let cb_faults = Arc::clone(&faults);
+        let lost = Arc::new(AtomicU64::new(0));
+        let cb_lost = Arc::clone(&lost);
         let owned = Owned::spawn("tutti-input-stream", move || {
             let (d, c, n) = (&device, &cfg, channel_count);
             let stream = match sample_format {
-                cpal::SampleFormat::I8 => build_input::<i8>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::I16 => build_input::<i16>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::I32 => build_input::<i32>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::U8 => build_input::<u8>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::U16 => build_input::<u16>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::U32 => build_input::<u32>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::F32 => build_input::<f32>(d, c, n, prod, mon_prod, cb_faults)?,
-                cpal::SampleFormat::F64 => build_input::<f64>(d, c, n, prod, mon_prod, cb_faults)?,
+                cpal::SampleFormat::I8 => {
+                    build_input::<i8>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::I16 => {
+                    build_input::<i16>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::I32 => {
+                    build_input::<i32>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::U8 => {
+                    build_input::<u8>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::U16 => {
+                    build_input::<u16>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::U32 => {
+                    build_input::<u32>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::F32 => {
+                    build_input::<f32>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
+                cpal::SampleFormat::F64 => {
+                    build_input::<f64>(d, c, n, prod, mon_prod, cb_faults, cb_lost)?
+                }
                 // Checked above, before the thread is spawned.
                 _ => unreachable!("sample format checked before spawn"),
             };
@@ -224,6 +245,7 @@ impl MicIn {
             cons,
             sample_rate,
             faults,
+            lost,
             _stream: StreamHandle(owned),
         })
     }
@@ -309,6 +331,13 @@ impl AudioIn for MicIn {
         self.faults.is_disconnected()
     }
 
+    /// The frames the capture callback dropped on a full ring since the last
+    /// call: the recording closes up over them. (Counted in the callback; not
+    /// exercised without a device.)
+    fn take_lost(&mut self) -> Samples {
+        Samples(usize::try_from(self.lost.swap(0, Ordering::Relaxed)).unwrap_or(usize::MAX))
+    }
+
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         // Pop up to `out.len() / 2` FRAMES the callback has pushed — the return
         // is frames, the slice is samples. A short/zero count is normal for a
@@ -317,6 +346,14 @@ impl AudioIn for MicIn {
         // One copy and one read-index update for the run: the ring's
         // `[f32; 2]` element is one interleaved frame.
         Samples(self.cons.pop_slice(out.as_chunks_mut::<2>().0))
+    }
+}
+
+/// Pushes one frame, or counts it lost when the ring is full.
+#[inline]
+fn push_or_count(prod: &mut HeapProd<[f32; 2]>, lost: &AtomicU64, frame: [f32; 2]) {
+    if prod.try_push(frame).is_err() {
+        lost.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -351,6 +388,7 @@ fn build_input<T>(
     mut prod: HeapProd<[f32; 2]>,
     mut mon_prod: Option<HeapProd<[f32; 2]>>,
     faults: Arc<StreamFaults>,
+    lost: Arc<AtomicU64>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
@@ -378,7 +416,7 @@ where
                 tutti_types::fold_frame(&src[..fold_width], &mut stereo);
                 // Drop on overrun: a full ring means the consumer fell behind.
                 // Never block the RT input thread.
-                let _ = prod.try_push(stereo);
+                push_or_count(&mut prod, &lost, stereo);
                 // Tee into the monitor ring when present. A full monitor ring
                 // drops this frame (the graph consumer briefly fell behind); the
                 // node reads silence for those and catches up on the next block.

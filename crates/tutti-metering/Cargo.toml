@@ -16,11 +16,7 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
-thiserror.workspace = true
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
-
-ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
-parking_lot = { version = "0.12", default-features = false }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

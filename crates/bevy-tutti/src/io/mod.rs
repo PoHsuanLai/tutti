@@ -92,12 +92,16 @@
 //!
 //! # Recording what the graph is playing
 //!
-//! The mic is one source; the *master output* is the other one hosts ask for.
-//! [`AudioTapRes`](crate::graph::AudioTapRes) is the engine's lock-free copy of
-//! that output, and [`TapIn`] adapts its consumer end into an [`AudioIn`] so the
-//! same pump records either:
+//! The mic is one source; what the output sounds like is the other one hosts
+//! ask for. [`AudioGraphRes::open_heard_tap`](crate::graph::AudioGraphRes::open_heard_tap)
+//! is the tap on it: the engine's output at the device's width, after the
+//! declick fader, so a take across a transport stop fades as the engine's output buffer does
+//! (the f32 mix, before the device layer clamps it to its block size and
+//! converts it to the device's sample type).
+//! [`TapIn`] adapts the [`TapReader`](tutti_graph::TapReader) it returns into an
+//! [`AudioIn`] so the same pump records either:
 //!
-//! ```rust
+//! ```rust,no_run
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
 //! use bevy_tutti::graph::AudioConfig;
@@ -108,40 +112,45 @@
 //! struct TakePath(std::path::PathBuf);
 //!
 //! fn record_master(
-//!     tap: Res<AudioTapRes>,
+//!     graph: Res<AudioGraphRes>,
 //!     config: Res<AudioConfig>,
 //!     path: Res<TakePath>,
 //!     mut commands: Commands,
 //! ) {
-//!     let src = TapIn::new(tap.open().expect("tap is free"));
-//!     // The rate is `AudioConfig`'s: a tap has no device to ask.
-//!     let wav = WavOut::create(&path.0, config.sample_rate, ChannelLayout::STEREO, Pcm::Float32)
+//!     // Three seconds of ring: what the pump does not drain in time is
+//!     // counted (`TapReader::take_lost`), not blocked on.
+//!     let reader = graph.open_heard_tap(Samples(144_000)).expect("an engine, and no other reader");
+//!     // The sink is as wide as the tap (the device); the rate is `AudioConfig`'s.
+//!     let wav = WavOut::create(&path.0, config.sample_rate, reader.layout(), Pcm::Float32)
 //!         .expect("a writable path");
-//!     commands.spawn(AudioPump::start(src, wav, Samples(1024)));
+//!     commands.spawn(AudioPump::start(TapIn::new(reader), wav, Samples(1024)));
 //! }
-//!
-//! let dir = tempfile::tempdir().expect("a temp dir");
-//! let mut app = App::new();
-//! app.add_audio_pump::<f32>();
-//! app.insert_resource(AudioTapRes::default());
-//! app.insert_resource(AudioConfig {
-//!     sample_rate: tutti_types::SampleRate(48_000.0),
-//!     channels: ChannelLayout::STEREO,
-//! });
-//! app.insert_resource(TakePath(dir.path().join("master.wav")));
-//! app.add_systems(Startup, record_master);
-//! app.update();
-//!
-//! assert!(app.world().resource::<AudioTapRes>().is_open());
-//! assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
+//! # let mut app = App::new();
+//! # app.add_systems(Startup, record_master);
 //! ```
 //!
-//! Two things this cannot do for you. The tap is **opt-in** — until `open()` is
-//! called the audio thread pays one atomic load and pushes nothing — and it
-//! serves one consumer at a time, so `open()` fails rather than displacing an
-//! analysis reader that got there first. And the rate is yours to match: a tap
-//! has no device to ask, so it is
-//! [`AudioConfig`](crate::graph::AudioConfig) that knows, not this module.
+//! (`no_run`: the heard tap needs the engine a device session builds.) Things
+//! to know:
+//!
+//! - The heard tap flows from the first render that begins after it opens,
+//!   needs no commit, and is fed on every path that renders through the engine
+//!   (the device callback, an offline `render`), silence included when a block
+//!   is refused. An export renders a fork without the engine and never writes
+//!   to it. It keeps **every device channel** (no stereo fold), one reader at a
+//!   time.
+//! - [`Graph::open_output_tap`](tutti_session::Graph::open_output_tap) (through
+//!   [`AudioGraphRes::graph`](crate::graph::AudioGraphRes::graph)) is the
+//!   explicit choice of the graph's own signal, aligned by the compiler, on any
+//!   ports and several at once, but *before* the declick fader: a
+//!   transport-gated source (a clip, the click) steps from full level to
+//!   silence at a stop where the engine's output buffer fades, so a take across a stop
+//!   has a click there (a source that keeps running has none).
+//! - A pump that falls behind loses what the ring could not hold and the file
+//!   closes up over the gap;
+//!   [`PumpFinished::lost`](crate::graph::PumpFinished::lost) says how many
+//!   frames.
+//! - The rate is yours to match: a tap has no device to ask, so it is
+//!   [`AudioConfig`](crate::graph::AudioConfig) that knows, not this module.
 
 // Re-exported, not wrapped — see the module docs. `MicIn` owns a CPAL input
 // stream (the device layer); the other three are device-free and live one crate

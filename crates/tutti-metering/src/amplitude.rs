@@ -57,6 +57,9 @@ impl MasterMeter {
         (
             MeterWriter {
                 cells: Arc::clone(&cells),
+                left: Channel::default(),
+                right: Channel::default(),
+                frames: 0,
             },
             Self { cells },
         )
@@ -99,10 +102,14 @@ impl MasterMeter {
 #[derive(Debug)]
 pub struct MeterWriter {
     cells: Arc<Cells>,
+    /// The pass in progress ([`add`](Self::add)): running levels and frames.
+    left: Channel,
+    right: Channel,
+    frames: usize,
 }
 
 /// Running peak and sum of squares for one channel.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Channel {
     peak: f32,
     sum_sq: f32,
@@ -140,27 +147,72 @@ impl MeterWriter {
     /// it does not vectorize; nothing here relies on whether the peak does.
     #[inline]
     pub fn measure(&mut self, interleaved: &[f32]) {
+        self.begin();
+        self.add(interleaved);
+        self.publish();
+    }
+
+    /// Starts a pass over a block measured in pieces: [`add`](Self::add) each
+    /// piece in order, then [`publish`](Self::publish).
+    #[inline]
+    pub fn begin(&mut self) {
+        self.left = Channel::default();
+        self.right = Channel::default();
+        self.frames = 0;
+    }
+
+    /// Adds one interleaved stereo piece to the pass in progress.
+    #[inline]
+    pub fn add(&mut self, interleaved: &[f32]) {
         let pairs = interleaved.as_chunks::<2>().0;
-        if pairs.is_empty() {
+        (self.left, self.right) = pairs
+            .iter()
+            .fold((self.left, self.right), |(l, r), &[a, b]| {
+                (l.push(a), r.push(b))
+            });
+        self.frames += pairs.len();
+    }
+
+    /// Publishes the pass: peak and RMS over every piece added since
+    /// [`begin`](Self::begin). Publishes nothing if no frame was added.
+    #[inline]
+    pub fn publish(&mut self) {
+        if self.frames == 0 {
             return;
         }
-        let (left, right) = pairs.iter().fold(
-            (Channel::default(), Channel::default()),
-            |(l, r), &[a, b]| (l.push(a), r.push(b)),
-        );
-        let frames = pairs.len();
         let c = &*self.cells;
-        c.peak_left.store(left.peak, Ordering::Release);
-        c.peak_right.store(right.peak, Ordering::Release);
-        c.rms_left.store(left.rms(frames).get(), Ordering::Release);
+        c.peak_left.store(self.left.peak, Ordering::Release);
+        c.peak_right.store(self.right.peak, Ordering::Release);
+        c.rms_left
+            .store(self.left.rms(self.frames).get(), Ordering::Release);
         c.rms_right
-            .store(right.rms(frames).get(), Ordering::Release);
+            .store(self.right.rms(self.frames).get(), Ordering::Release);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A block measured in pieces reads as the block measured whole, whatever
+    /// the cut: the pass accumulates, it does not publish each piece.
+    ///
+    /// Mutation (run, recorded here): `begin` not resetting `frames` -> a
+    /// second pass divides by the first's frames too and the RMS is wrong.
+    #[test]
+    fn a_block_in_pieces_reads_as_the_whole_block() {
+        let block = sine(0.8, 300);
+        let whole = read(&block);
+        let (mut writer, meter) = MasterMeter::pair();
+        for _ in 0..2 {
+            writer.begin();
+            for piece in block.chunks(2 * 77) {
+                writer.add(piece);
+            }
+            writer.publish();
+            assert_eq!(meter.get(), whole);
+        }
+    }
 
     fn read(samples: &[f32]) -> MeterReading {
         let (mut writer, meter) = MasterMeter::pair();

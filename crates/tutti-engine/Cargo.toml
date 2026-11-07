@@ -23,6 +23,9 @@ tutti-rt = { path = "../tutti-rt" }
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 tutti-transport = { path = "../tutti-transport" }
 tutti-metering = { path = "../tutti-metering" }
+# The hand-over queues of the after-the-fader tap (the crate `tutti-graph` uses
+# for its editor queue).
+ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 # The same crate as the dependency above, with the sample-accuracy contract

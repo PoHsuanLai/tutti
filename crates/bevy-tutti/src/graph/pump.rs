@@ -241,6 +241,17 @@ impl<S> AudioPump<S> {
         }
     }
 
+    /// The frames the source discarded so far ([`Recorder::lost`]): zero for
+    /// a pump refused at start. A recording closes up over each gap, so the
+    /// file is shorter than the take by this many frames.
+    #[must_use]
+    pub fn lost(&self) -> Samples {
+        match &self.take {
+            Take::Running(recorder) => recorder.lost(),
+            Take::Refused(_) => Samples::ZERO,
+        }
+    }
+
     /// Stop, join, and return the sink's finalize result (or the start's
     /// refusal).
     ///
@@ -277,6 +288,10 @@ pub struct PumpFinished {
     /// means the sink never closed cleanly — for a WAV, a header that was
     /// never patched.
     pub result: std::io::Result<()>,
+    /// The frames the source discarded during the take ([`AudioPump::lost`]):
+    /// the file is shorter than the take by this many, closed up over the
+    /// gaps.
+    pub lost: Samples,
 }
 
 /// Joins pumps whose thread has finished, and reports what finalizing did.
@@ -295,12 +310,18 @@ pub fn drain_audio_pumps<S: Send + Sync + 'static>(
             continue;
         }
         let Some(result) = pump.join() else { continue };
+        // After the join: the thread's last passes are in the count.
+        let lost = pump.lost();
 
         if let Err(error) = &result {
             bevy_log::error!("audio pump ended with error: {error}");
         }
         commands.entity(entity).remove::<AudioPump<S>>();
-        finished.write(PumpFinished { entity, result });
+        finished.write(PumpFinished {
+            entity,
+            result,
+            lost,
+        });
     }
 }
 

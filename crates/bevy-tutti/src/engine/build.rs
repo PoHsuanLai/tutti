@@ -17,8 +17,7 @@ use tutti_session::{Device, Session, SessionBuilder};
 
 use crate::engine::Result;
 use crate::graph::{
-    AudioConfig, AudioGraphRes, AudioNode, AudioTapRes, EngineNodes, MeteringRes, MetronomeRes,
-    TransportRes,
+    AudioConfig, AudioGraphRes, AudioNode, EngineNodes, MeteringRes, MetronomeRes, TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
@@ -38,7 +37,7 @@ use crate::sampler::DiskStreamerRes;
 /// (`plugin.output_device`, or the system default) through
 /// [`SessionBuilder::build_device`], which builds the graph at the device's
 /// rate, and inserts [`AudioGraphRes`], [`AudioConfig`], [`TransportRes`],
-/// [`MetronomeRes`], [`MeteringRes`] (enabled), [`AudioTapRes`] (closed),
+/// [`MetronomeRes`], [`MeteringRes`] (enabled),
 /// [`EngineNodes`] and the [`Device`] (as a non-send resource), plus the MIDI
 /// and sampler resources when those features are on.
 ///
@@ -156,8 +155,7 @@ pub(crate) fn build_with(
         crate::graph::latency::ChannelCompensation(std::sync::Arc::clone(session.compensation()));
     let transport = session.transport().clone();
     let metronome = std::sync::Arc::clone(session.click_settings());
-    let meter = session.master_meter().clone();
-    let tap = session.tap().clone();
+    let meter = session.master_meter().cloned();
     let click = session.click_node();
     #[cfg(feature = "sampler")]
     let disk_streamer = session.take_disk_streamer();
@@ -184,12 +182,10 @@ pub(crate) fn build_with(
         });
     }
     // Consumers read `MeteringRes::get()` directly; the session enabled it.
-    world.insert_resource(MeteringRes(meter));
-    // Deliberately NOT opened: while closed, `AudioTap::push` on the audio
-    // thread is one atomic load and a return, so a host that never analyses
-    // pays nothing. `AudioTapRes::open()` is the switch, and it hands back a
-    // consumer the caller owns.
-    world.insert_resource(AudioTapRes(tap));
+    // A device session always has an engine, so always a meter.
+    if let Some(meter) = meter {
+        world.insert_resource(MeteringRes(meter));
+    }
 
     #[cfg(feature = "midi")]
     if let Some(nodes) = midi_nodes {
@@ -226,19 +222,20 @@ pub(crate) fn build_with(
 mod tests {
     use tutti_types::ChannelLayout;
 
-    /// **The engine publishes the tap its callback feeds**, not a fresh
-    /// disconnected one: a host opens `AudioTapRes` and sees the frames the
-    /// callback renders. Built device-free (`build_on` over a
-    /// `ManualStreamDriver`), so it runs in CI. The adapter half: the
-    /// session's own (`tutti-session`'s
-    /// `the_session_publishes_the_tap_its_callback_feeds`) pins that
-    /// `Session::tap` is the callback's.
+    /// **The engine publishes the meter its callback feeds**, not a fresh
+    /// disconnected one: `MeteringRes` reads the level the device renders, and
+    /// a tap opened through `AudioGraphRes` sees the frames the callback
+    /// renders. Built device-free (`build_on` over a `ManualStreamDriver`), so
+    /// it runs in CI. The adapter half: the session's own (`tutti-session`'s
+    /// `the_session_publishes_the_meter_and_taps_its_callback_feeds`) pins that
+    /// the meter and taps are the callback's.
     ///
-    /// Mutation (run): `build_on` inserting `AudioTapRes(AudioTap::new())`
-    /// instead of the session's `tap` → the opened consumer sees nothing.
+    /// Mutation (run, recorded here): `build_into` inserting
+    /// `MeteringRes(MasterMeter::default())` instead of the session's meter ->
+    /// the level reads 0.0.
     #[test]
-    fn the_engine_publishes_the_tap_its_callback_feeds() {
-        use crate::graph::AudioTapRes;
+    fn the_engine_publishes_the_meter_and_taps_its_callback_feeds() {
+        use crate::graph::{AudioGraphRes, MeteringRes};
         use tutti_cpal::{ManualStreamDriver, OutputSpec};
         use tutti_types::SampleRate;
 
@@ -255,17 +252,27 @@ mod tests {
             )
         })
         .expect("builds with no device");
-        let mut consumer = app
-            .world()
-            .resource::<AudioTapRes>()
-            .open()
-            .expect("a fresh tap opens");
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
+        let (dc, _) = graph.graph().insert(tutti_nodes::testing::Const::mono(0.5));
+        graph
+            .graph()
+            .set_output_source(0, crate::graph::GraphSource::Node(dc, 0));
+        let mut tap = graph.graph().open_output_tap(tutti_types::Samples(1_024));
+        graph.session().update();
         stream.render_block(64).expect("the stream is open");
-        let mut frames = 0;
-        while consumer.try_pop().is_some() {
-            frames += 1;
-        }
-        assert_eq!(frames, 64, "the callback's block reached the published tap");
+        assert_eq!(
+            tap.available(),
+            tutti_types::Samples(64),
+            "the callback's block reached the tap"
+        );
+        let mut got = [f32::NAN; 128];
+        assert_eq!(tap.pop_into(&mut got), tutti_types::Samples(64));
+        assert!(got.as_chunks::<2>().0.iter().all(|f| *f == [0.5, 0.0]));
+        let level = app.world().resource::<MeteringRes>().get().peak_left.get();
+        assert!(
+            (level - 0.5).abs() < 1e-6,
+            "the callback's block was measured: {level}"
+        );
     }
 
     /// **The resource reads the load its callback's engine measures**: two

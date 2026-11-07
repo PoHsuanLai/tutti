@@ -290,3 +290,103 @@ proptest! {
         prop_assert_eq!(table.list(), before);
     }
 }
+
+// resolve: a saved id against the devices present now.
+//
+// Mutation record, each planted, seen to fail, restored:
+// - the `saved.ordinal() == 0` guard dropped from the `Exact` arm:
+//   `a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present`
+//   fails;
+// - `take_while` removed: `a_neighbouring_identity_is_not_a_candidate` fails
+//   (the next identity's devices are listed);
+// - the `[] =>` arm resolving `Ambiguous(alike)`: `nothing_alike_is_missing`
+//   fails.
+
+fn saved(client: &str, port: &str, ordinal: u32) -> DeviceId {
+    DeviceId::new(Identity::alsa(client, port), ordinal)
+}
+
+fn ordinals(candidates: &[&DeviceInfo]) -> Vec<u32> {
+    candidates.iter().map(|d| d.id.ordinal()).collect()
+}
+
+#[test]
+fn a_one_of_a_kind_identity_resolves_exact() {
+    let mut table = DeviceTable::default();
+    let info = added(table.apply(OsChange::Present(keys(1))));
+    assert_eq!(table.resolve(&info.id), Resolved::Exact(&info));
+}
+
+#[test]
+fn a_saved_zero_with_two_alike_present_is_ambiguous() {
+    let mut table = DeviceTable::default();
+    table.apply(OsChange::Present(keys(1)));
+    table.apply(OsChange::Present(keys(2)));
+    let Resolved::Ambiguous(candidates) = table.resolve(&saved("Keystep", "MIDI 1", 0)) else {
+        panic!("two alike devices are ambiguous");
+    };
+    assert_eq!(ordinals(&candidates), [0, 1]);
+}
+
+#[test]
+fn a_saved_ordinal_above_zero_is_ambiguous_even_with_one_device_present() {
+    let mut table = DeviceTable::default();
+    let only = added(table.apply(OsChange::Present(keys(1))));
+    let Resolved::Ambiguous(candidates) = table.resolve(&saved("Keystep", "MIDI 1", 1)) else {
+        panic!("a saved #1 is not the lone #0");
+    };
+    assert_eq!(candidates, [&only]);
+}
+
+#[test]
+fn nothing_alike_is_missing() {
+    let mut table = DeviceTable::default();
+    assert_eq!(
+        table.resolve(&saved("Keystep", "MIDI 1", 0)),
+        Resolved::Missing
+    );
+    let info = added(table.apply(OsChange::Present(keys(1))));
+    table.apply(OsChange::Gone(handle(1)));
+    assert_eq!(table.resolve(&info.id), Resolved::Missing);
+}
+
+/// `Keystep`/`MIDI 10` sorts right after `Keystep`/`MIDI 1`, and `Keysteo` just
+/// before: only the devices with the saved identity are candidates.
+#[test]
+fn a_neighbouring_identity_is_not_a_candidate() {
+    let mut table = DeviceTable::default();
+    table.apply(OsChange::Present(keys(1)));
+    table.apply(OsChange::Present(keys(2)));
+    table.apply(OsChange::Present(dev(
+        3,
+        "Keystep",
+        "MIDI 10",
+        Direction::Input,
+    )));
+    table.apply(OsChange::Present(dev(
+        4,
+        "Keysteo",
+        "MIDI 1",
+        Direction::Input,
+    )));
+    let Resolved::Ambiguous(candidates) = table.resolve(&saved("Keystep", "MIDI 1", 0)) else {
+        panic!("two alike");
+    };
+    assert_eq!(ordinals(&candidates), [0, 1]);
+    assert!(candidates.iter().all(|d| d.name == "Keystep: MIDI 1"));
+}
+
+/// A saved `#0` whose twin has left resolves to the survivor, which is now
+/// `#1`: an id cannot say it was once one of two, and `resolve`'s doc says so.
+#[test]
+fn a_saved_zero_resolves_to_the_lone_survivor_of_a_pair() {
+    let mut table = DeviceTable::default();
+    table.apply(OsChange::Present(keys(1)));
+    let second = added(table.apply(OsChange::Present(keys(2))));
+    table.apply(OsChange::Gone(handle(1)));
+    assert_eq!(second.id.ordinal(), 1);
+    assert_eq!(
+        table.resolve(&saved("Keystep", "MIDI 1", 0)),
+        Resolved::Exact(&second)
+    );
+}

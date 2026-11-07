@@ -4424,6 +4424,8 @@ name = "tutti-midi-device"
 version = "0.0.1"
 dependencies = [
  "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

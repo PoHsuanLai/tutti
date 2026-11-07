@@ -133,9 +133,9 @@ impl Drop for Draining<'_> {
 }
 
 impl DrainShared {
-    fn new() -> Self {
+    fn new(sample_rate: SampleRate) -> Self {
         Self {
-            sample_rate: AtomicU64::new(SampleRate::SR_44K1.get().to_bits()),
+            sample_rate: AtomicU64::new(sample_rate.get().to_bits()),
             draining: AtomicBool::new(false),
         }
     }
@@ -251,19 +251,25 @@ pub struct HardwareMidiInputs {
 }
 
 impl HardwareMidiInputs {
-    /// A manager with no ports, whose rings will each hold `fifo_size` events.
+    /// The ring size of a manager built for a session, in events.
+    pub const DEFAULT_FIFO: usize = 2048;
+
+    /// A manager with no ports, whose rings will each hold `fifo_size` events
+    /// and whose drains convert arrival times at `sample_rate`.
     ///
     /// `fifo_size` is per port, in events: a driver pushing past it drops the
     /// overflow (`push` returns `false`) rather than blocking its callback.
-    /// [`Default`] uses 2048.
+    /// The rate is the device's: a wrong one places events at the wrong offset
+    /// within a block ([`set_sample_rate`](Self::set_sample_rate) follows a
+    /// device restart).
     #[must_use]
-    pub fn new(fifo_size: usize) -> Self {
+    pub fn new(fifo_size: usize, sample_rate: impl Into<SampleRate>) -> Self {
         Self {
             input_ports: Arc::new(ArcLend::new(PortSlots::new())),
             published: Mutex::new(Published { next_generation: 0 }),
             fifo_size,
             retired_dropped: AtomicU64::new(0),
-            shared: DrainShared::new(),
+            shared: DrainShared::new(sample_rate.into()),
         }
     }
 
@@ -479,12 +485,6 @@ impl HardwareMidiInputs {
     }
 }
 
-impl Default for HardwareMidiInputs {
-    fn default() -> Self {
-        Self::new(2048)
-    }
-}
-
 /// One node's drain of a [`HardwareMidiInputs`]: what the audio thread calls
 /// once per block to take every active port's events.
 ///
@@ -499,7 +499,7 @@ impl Default for HardwareMidiInputs {
 /// ```compile_fail
 /// # use std::sync::Arc;
 /// # use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs};
-/// let mut drain = HardwareMidiDrain::new(Arc::new(HardwareMidiInputs::new(16)));
+/// let mut drain = HardwareMidiDrain::new(Arc::new(HardwareMidiInputs::new(16, 44_100.0)));
 /// drain.cycle_start_read_all_inputs(512, |_, _| {
 ///     drain.cycle_start_read_all_inputs(512, |_, _| {});
 /// });

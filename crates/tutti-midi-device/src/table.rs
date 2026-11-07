@@ -48,6 +48,21 @@ impl DeviceEvent {
     }
 }
 
+/// What a saved [`DeviceId`] names among the devices present now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolved<'a> {
+    /// The one present device with the saved identity, and the saved ordinal
+    /// is 0: the id of a one-of-a-kind device names it again.
+    Exact(&'a DeviceInfo),
+    /// Present devices share the saved identity and the id cannot say which
+    /// the saved one was: the ordinal is above 0, or several devices are alike
+    /// now. These are the candidates, ordered by id. Binding none until the
+    /// user chooses keeps a restored id from reaching another keyboard.
+    Ambiguous(Vec<&'a DeviceInfo>),
+    /// No present device has the saved identity.
+    Missing,
+}
+
 #[derive(Debug)]
 struct Entry {
     handle: EndpointId,
@@ -127,6 +142,29 @@ impl DeviceTable {
     #[must_use]
     pub fn get(&self, id: &DeviceId) -> Option<&DeviceInfo> {
         self.devices.get(id).map(|e| &e.info)
+    }
+
+    /// What `saved`, an id from an earlier run, names now.
+    ///
+    /// An ordinal tells alike devices apart within one run only (see
+    /// [`DeviceId`]), so only the first of a kind, alone, is taken as the same
+    /// device again. A saved `#0` is the one case this cannot tell from a
+    /// device that was once one of two: it resolves to the lone present device
+    /// of its identity.
+    #[must_use]
+    pub fn resolve(&self, saved: &DeviceId) -> Resolved<'_> {
+        let identity = saved.identity();
+        let alike: Vec<&DeviceInfo> = self
+            .devices
+            .range(DeviceId::new(identity.clone(), 0)..)
+            .take_while(|(id, _)| id.identity() == identity)
+            .map(|(_, entry)| &entry.info)
+            .collect();
+        match alike.as_slice() {
+            [] => Resolved::Missing,
+            [only] if saved.ordinal() == 0 => Resolved::Exact(only),
+            _ => Resolved::Ambiguous(alike),
+        }
     }
 
     /// The OS handle to open `id` by, if it is present.

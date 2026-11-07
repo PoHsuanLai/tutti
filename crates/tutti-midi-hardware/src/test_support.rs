@@ -1,6 +1,6 @@
 //! A MIDI backend with no OS behind it, for testing the session layer.
 //!
-//! [`MidiSession::with_backend`](crate::MidiSession::with_backend) is the seam
+//! [`MidiSession::open_over`](crate::MidiSession::open_over) is the seam
 //! this exists for: the session owns no driver code, so a supplied
 //! [`MidiEndpoints`] drives every connect / disconnect / send path
 //! deterministically, on any platform, including one with no MIDI hardware at
@@ -331,7 +331,7 @@ impl MidiEndpoints for FakeBackend {
                         Report::Change(change) => sink.send(change),
                         Report::Fail(why) => {
                             // Like a real watch that has died: nothing more.
-                            sink.fail(why);
+                            sink.fail(Error::MidiPort(why));
                             let _ = done.send(());
                             return;
                         }

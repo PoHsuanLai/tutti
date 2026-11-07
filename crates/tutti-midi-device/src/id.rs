@@ -29,6 +29,7 @@ impl EndpointId {
 
 /// What a device is known by, as far as the OS lets it be known.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Identity {
     /// The UMP Product Instance Id: the device's own, the same across restarts
     /// and across ports.
@@ -69,7 +70,12 @@ impl Identity {
 /// restart or a replug, an id of a device with a one-of-a-kind identity (a
 /// Product Instance Id, a CoreMIDI unique id, or an ALSA name no other device
 /// shares) names the same device again; one with an ordinal above 0 does not.
+///
+/// A saved id is restored with [`DeviceTable::resolve`](crate::DeviceTable::resolve),
+/// never compared with a listed id by hand. Every identity and every ordinal is
+/// a valid id, so the serde form is the plain derive and refuses nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceId {
     identity: Identity,
     ordinal: u32,

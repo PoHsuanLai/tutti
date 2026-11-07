@@ -1,15 +1,16 @@
 //! [`Devices`]: the MIDI devices present, kept current while it lives.
 //!
 //! A backend watches the OS on a thread of its own and reports each change to a
-//! [`ChangeSink`]. The sink feeds the pure [`DeviceTable`] and queues the event
-//! it returns, so `list`, `poll` and `wait` read one table and never an OS call.
-//! Dropping [`Devices`] drops the watch, which stops the backend's thread.
+//! [`ChangeSink`]. The sink feeds the pure [`DeviceTable`] and hands the event
+//! it returns to every [`DeviceEvents`] subscribed, so `list` reads one table
+//! and no read is an OS call. The watch stops, and the backend's thread with
+//! it, when the last [`Devices`] and the last [`DeviceEvents`] are dropped.
 //!
-//! The queue is unbounded: an app that never polls keeps one small event per
-//! hot-plug.
+//! A subscriber's queue is unbounded, and exists only while its
+//! [`DeviceEvents`] does: an app that wants no events subscribes to none.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use tutti_midi_device::{
@@ -18,24 +19,81 @@ use tutti_midi_device::{
 };
 use tutti_midi_types::MidiOut;
 
-use crate::InputProducerHandle;
 use crate::backend;
 use crate::capability::{EndpointInfo, UmpCapability};
 use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use crate::{HardwareMidiInputs, PortId};
+
+/// Why a device watch ended on its own.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum WatchFailure {
+    /// The backend's watch thread panicked.
+    #[error("the MIDI device watch thread panicked")]
+    Panicked,
+    /// The OS refused the watch, or it broke.
+    #[error("the MIDI device watch failed: {0}")]
+    Failed(#[source] Arc<Error>),
+}
+
+impl From<Error> for WatchFailure {
+    fn from(error: Error) -> Self {
+        Self::Failed(Arc::new(error))
+    }
+}
+
+/// Why [`DeviceEvents::recv_timeout`] returned no event.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum RecvTimeoutError {
+    /// No change came in time. The watch is still running.
+    #[error("no MIDI device change before the timeout")]
+    Timeout,
+    /// The watch ended and every event it reported has been taken: nothing
+    /// more will arrive.
+    #[error("the MIDI device watch ended: {0}")]
+    Ended(#[source] WatchFailure),
+}
 
 #[derive(Default)]
 struct State {
     table: DeviceTable,
-    pending: VecDeque<DeviceEvent>,
+    subscribers: Vec<Weak<Queue>>,
     /// Why the watch ended, if it did. The table is then the last it saw.
-    failure: Option<String>,
+    failure: Option<WatchFailure>,
 }
 
 #[derive(Default)]
 struct Shared {
     state: Mutex<State>,
+}
+
+/// One subscriber's inbox.
+#[derive(Default)]
+struct Queue {
+    inbox: Mutex<Inbox>,
     woken: Condvar,
+}
+
+#[derive(Default)]
+struct Inbox {
+    events: VecDeque<DeviceEvent>,
+    ended: Option<WatchFailure>,
+}
+
+impl Queue {
+    fn inbox(&self) -> MutexGuard<'_, Inbox> {
+        self.inbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, event: DeviceEvent) {
+        self.inbox().events.push_back(event);
+        self.woken.notify_all();
+    }
+
+    fn end(&self, failure: WatchFailure) {
+        self.inbox().ended.get_or_insert(failure);
+        self.woken.notify_all();
+    }
 }
 
 impl Shared {
@@ -53,24 +111,37 @@ pub struct ChangeSink {
 
 impl ChangeSink {
     /// Reports one change. A change that alters nothing is dropped; one that
-    /// does wakes a [`Devices::wait`].
+    /// does reaches every subscriber and wakes a waiting
+    /// [`DeviceEvents::recv_timeout`].
     pub fn send(&self, change: OsChange) {
         let mut state = self.shared.state();
         if let Some(event) = state.table.apply(change) {
-            state.pending.push_back(event);
-            self.shared.woken.notify_all();
+            // A subscriber that has dropped leaves the list.
+            state.subscribers.retain(|queue| {
+                queue
+                    .upgrade()
+                    .inspect(|queue| queue.push(event.clone()))
+                    .is_some()
+            });
         }
     }
 }
 
 impl ChangeSink {
     /// Records that the watch has ended without being dropped, with the reason.
-    /// The list is frozen from here; [`Devices::watch_failure`] says so, and so
-    /// does the session's `Phase::Poll`.
-    pub fn fail(&self, reason: String) {
+    /// The list is frozen from here; every subscriber's
+    /// [`recv_timeout`](DeviceEvents::recv_timeout) says so once it has taken
+    /// what was queued, and so does the session's `Phase::Poll`.
+    pub fn fail(&self, reason: impl Into<WatchFailure>) {
+        let reason = reason.into();
         tracing::warn!("MIDI device watch ended: {reason}");
-        self.shared.state().failure.get_or_insert(reason);
-        self.shared.woken.notify_all();
+        let mut state = self.shared.state();
+        let reason = state.failure.get_or_insert(reason).clone();
+        state
+            .subscribers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .for_each(|queue| queue.end(reason.clone()));
     }
 
     /// Lists `devices` as already present: they enter the table and queue no
@@ -158,7 +229,9 @@ impl Reporter {
     }
 }
 
-/// The devices present, and the changes since they were last read.
+/// The devices present now, and a way to open one.
+///
+/// Cheap to clone: every clone is the same list over the same watch.
 ///
 /// ```no_run
 /// # fn main() -> Result<(), tutti_midi_hardware::Error> {
@@ -166,15 +239,21 @@ impl Reporter {
 /// use tutti_midi_hardware::Devices;
 ///
 /// let devices = Devices::open()?;
-/// for device in devices.list() {
+/// let events = devices.subscribe();
+/// for device in events.initial() {
 ///     println!("{}: {}", device.id, device.name);
 /// }
-/// for event in devices.wait(Duration::from_secs(5)) {
+/// while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
 ///     println!("{event:?}");
 /// }
 /// # Ok(()) }
 /// ```
+#[derive(Clone)]
 pub struct Devices {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     // Declared first, so the watch stops before the backend it came from goes.
     _watch: Box<dyn Watch>,
     backend: Box<dyn MidiEndpoints>,
@@ -190,8 +269,8 @@ impl core::fmt::Debug for Devices {
 }
 
 impl Devices {
-    /// Lists this platform's devices and starts watching them; dropping the
-    /// value stops the watch.
+    /// Lists this platform's devices and starts watching them; the watch stops
+    /// when the last `Devices` and [`DeviceEvents`] over it are dropped.
     ///
     /// Where the build has no MIDI backend (Windows, or alsa-lib older than
     /// 1.2.10) the list is empty and stays so, as enumeration is; opening a
@@ -202,7 +281,7 @@ impl Devices {
     /// The platform error from starting the watch, such as a thread that could
     /// not be spawned.
     pub fn open() -> Result<Self> {
-        Self::with_backend(backend::active())
+        Self::open_over(backend::active())
     }
 
     /// As [`open`](Self::open), over a supplied backend: a test's
@@ -211,50 +290,53 @@ impl Devices {
     /// # Errors
     ///
     /// As [`open`](Self::open).
-    pub fn with_backend(backend: Box<dyn MidiEndpoints>) -> Result<Self> {
+    pub fn open_over(backend: Box<dyn MidiEndpoints>) -> Result<Self> {
         let shared = Arc::new(Shared::default());
         let watch = backend.watch(ChangeSink {
             shared: Arc::clone(&shared),
         })?;
         Ok(Self {
-            _watch: watch,
-            backend,
-            shared,
+            inner: Arc::new(Inner {
+                _watch: watch,
+                backend,
+                shared,
+            }),
         })
     }
 
-    /// Why the watch ended on its own, if it did: the list is then the last it
-    /// saw and nothing more arrives. `None` while the watch runs.
-    #[must_use]
-    pub fn watch_failure(&self) -> Option<String> {
-        self.shared.state().failure.clone()
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.inner.shared.state()
     }
 
     /// The devices present now, ordered by id.
     #[must_use]
     pub fn list(&self) -> Vec<DeviceInfo> {
-        self.shared.state().table.list()
+        self.state().table.list()
     }
 
-    /// The changes since the last `poll` or `wait`, oldest first.
-    pub fn poll(&self) -> Vec<DeviceEvent> {
-        self.shared.state().pending.drain(..).collect()
+    /// Subscribes to the changes from now on. Each subscriber has a queue of
+    /// its own, so one that reads does not take another's events.
+    ///
+    /// [`DeviceEvents::initial`] is the list at the same instant, which no
+    /// event of the subscription repeats: there is no gap or overlap between
+    /// reading the list and subscribing, whichever a caller does first.
+    pub fn subscribe(&self) -> DeviceEvents {
+        let mut state = self.state();
+        let queue = Arc::new(Queue::default());
+        if let Some(failure) = &state.failure {
+            queue.end(failure.clone());
+        }
+        state.subscribers.push(Arc::downgrade(&queue));
+        DeviceEvents {
+            initial: state.table.list(),
+            queue,
+            _devices: self.clone(),
+        }
     }
 
-    /// Blocks until there is a change or `timeout` passes, then returns the
-    /// changes as [`poll`](Self::poll) does: empty on a timeout.
-    pub fn wait(&self, timeout: Duration) -> Vec<DeviceEvent> {
-        let state = self.shared.state();
-        let (mut state, _) = self
-            .shared
-            .woken
-            .wait_timeout_while(state, timeout, |s| s.pending.is_empty())
-            .unwrap_or_else(PoisonError::into_inner);
-        state.pending.drain(..).collect()
-    }
-
-    /// Opens `id` for input, delivering events into `producer`; the connection
-    /// must be held, as [`MidiEndpoints::open_input`] says.
+    /// Opens `id` for input. Its events land in a ring of `ports`, drained by
+    /// the audio thread; the returned [`OpenInput`] holds the connection and the
+    /// ring's port, and dropping it closes both.
     ///
     /// The list is not held while the OS opens the handle. A device that left
     /// in between, and whose handle the OS gave to another at once, opens that
@@ -262,53 +344,222 @@ impl Devices {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` is not a present input, or the platform
-    /// error from opening it.
-    pub fn open_input(
-        &self,
-        id: &DeviceId,
-        producer: InputProducerHandle,
-    ) -> Result<Box<dyn InputConnection>> {
-        let handle = self.handle(id, Direction::is_input, "input")?;
-        self.backend.open_input(handle, producer)
+    /// [`Error::NoDevice`] when `id` is not present, [`Error::WrongDirection`]
+    /// when it is not an input, or the platform error from opening it. A failed
+    /// open leaves no port in `ports`.
+    pub fn open_input(&self, id: &DeviceId, ports: &Arc<HardwareMidiInputs>) -> Result<OpenInput> {
+        let (info, handle) = self.present(id, Direction::is_input)?;
+        let producer = ports.open_input_port(info.name.as_str());
+        let mut input = OpenInput {
+            connection: None,
+            port: producer.port_id(),
+            ports: Arc::clone(ports),
+            info,
+        };
+        // On an error `input` drops here, and takes the port with it.
+        input.connection = Some(self.inner.backend.open_input(handle, producer)?);
+        Ok(input)
     }
 
     /// Opens `id` for output.
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` is not a present output, or the platform
-    /// error from opening it.
-    pub fn open_output(&self, id: &DeviceId) -> Result<Box<dyn MidiOut>> {
-        let handle = self.handle(id, Direction::is_output, "output")?;
-        self.backend.open_output(handle)
+    /// [`Error::NoDevice`] when `id` is not present, [`Error::WrongDirection`]
+    /// when it is not an output, or the platform error from opening it.
+    pub fn open_output(&self, id: &DeviceId) -> Result<OpenOutput> {
+        let (info, handle) = self.present(id, Direction::is_output)?;
+        Ok(OpenOutput {
+            info,
+            sink: self.inner.backend.open_output(handle)?,
+        })
     }
 
-    fn handle(
+    /// The listing and OS handle of `id`, if it is present and `wanted` takes
+    /// its direction.
+    fn present(
         &self,
         id: &DeviceId,
         wanted: fn(Direction) -> bool,
-        what: &str,
-    ) -> Result<EndpointId> {
-        let state = self.shared.state();
-        match state.table.get(id) {
-            Some(info) if wanted(info.direction) => state.table.handle(id),
-            _ => None,
-        }
-        .ok_or_else(|| Error::MidiDevice(format!("no MIDI {what} {id}")))
+    ) -> Result<(DeviceInfo, EndpointId)> {
+        let state = self.state();
+        let (info, handle) = state
+            .table
+            .get(id)
+            .zip(state.table.handle(id))
+            .ok_or_else(|| Error::NoDevice(id.clone()))?;
+        wanted(info.direction)
+            .then(|| (info.clone(), handle))
+            .ok_or_else(|| Error::WrongDirection {
+                id: id.clone(),
+                direction: info.direction,
+            })
     }
 
     /// What the OS says `id` can carry, asked of the backend now. `None` when
     /// `id` is not present.
     #[must_use]
     pub fn capability(&self, id: &DeviceId) -> Option<UmpCapability> {
-        let handle = self.shared.state().table.handle(id)?;
-        let (inputs, outputs) = (self.backend.inputs(), self.backend.outputs());
-        inputs
+        let handle = self.state().table.handle(id)?;
+        let backend = &self.inner.backend;
+        backend
+            .inputs()
             .into_iter()
-            .chain(outputs)
+            .chain(backend.outputs())
             .find(|e| e.id == handle)
             .map(|e| e.capability)
+    }
+}
+
+/// The changes to the device list since [`Devices::subscribe`], oldest first.
+///
+/// One consumer's view: it is not `Clone`, and another subscription's reads
+/// leave it alone. Dropping it unsubscribes.
+pub struct DeviceEvents {
+    initial: Vec<DeviceInfo>,
+    queue: Arc<Queue>,
+    // Keeps the watch running while events can still be expected from it.
+    _devices: Devices,
+}
+
+impl core::fmt::Debug for DeviceEvents {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DeviceEvents").finish_non_exhaustive()
+    }
+}
+
+impl DeviceEvents {
+    /// The devices present when this was subscribed to; every later change is
+    /// an event.
+    #[must_use]
+    pub fn initial(&self) -> &[DeviceInfo] {
+        &self.initial
+    }
+
+    /// The changes queued now, oldest first, taking each as it is iterated.
+    /// Never blocks.
+    pub fn try_iter(&self) -> impl Iterator<Item = DeviceEvent> + '_ {
+        std::iter::from_fn(|| self.queue.inbox().events.pop_front())
+    }
+
+    /// The oldest change, waiting up to `timeout` for one.
+    ///
+    /// # Errors
+    ///
+    /// [`RecvTimeoutError::Timeout`] when none came, and
+    /// [`RecvTimeoutError::Ended`] once the watch has ended and everything it
+    /// reported has been taken.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> std::result::Result<DeviceEvent, RecvTimeoutError> {
+        let (mut inbox, _) = self
+            .queue
+            .woken
+            .wait_timeout_while(self.queue.inbox(), timeout, |inbox| {
+                inbox.events.is_empty() && inbox.ended.is_none()
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        inbox.events.pop_front().ok_or_else(|| {
+            inbox
+                .ended
+                .clone()
+                .map_or(RecvTimeoutError::Timeout, RecvTimeoutError::Ended)
+        })
+    }
+
+    /// Why the watch ended on its own, if it did: the list is then the last it
+    /// saw and nothing more arrives. `None` while the watch runs.
+    #[must_use]
+    pub fn failure(&self) -> Option<WatchFailure> {
+        self.queue.inbox().ended.clone()
+    }
+}
+
+/// An input held open: the OS connection to a device, and the ring port its
+/// events land in.
+///
+/// Dropping it closes both, connection first, so nothing is still pushing into
+/// a ring that is being retired. A device that leaves does not close it: the
+/// holder learns from a [`DeviceEvent::Removed`] naming [`id`](Self::id) and
+/// drops it (the session does, in `Phase::Poll`).
+pub struct OpenInput {
+    /// `None` only while [`Devices::open_input`] is still opening it.
+    connection: Option<Box<dyn InputConnection>>,
+    port: PortId,
+    ports: Arc<HardwareMidiInputs>,
+    info: DeviceInfo,
+}
+
+impl core::fmt::Debug for OpenInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpenInput")
+            .field("device", &self.info.id)
+            .field("port", &self.port)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenInput {
+    /// The device this input is open on.
+    #[must_use]
+    pub fn id(&self) -> &DeviceId {
+        &self.info.id
+    }
+
+    /// The device's name when it was opened.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.info.name
+    }
+
+    /// The port its events land in, for the ring manager's
+    /// `set_port_active` and the drain's tag.
+    #[must_use]
+    pub fn port_id(&self) -> PortId {
+        self.port
+    }
+}
+
+/// An output held open: the device, and the sink that sends to it. Dropping it
+/// closes the connection.
+pub struct OpenOutput {
+    info: DeviceInfo,
+    sink: Box<dyn MidiOut>,
+}
+
+impl core::fmt::Debug for OpenOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OpenOutput")
+            .field("device", &self.info.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OpenOutput {
+    /// The device this output is open on.
+    #[must_use]
+    pub fn id(&self) -> &DeviceId {
+        &self.info.id
+    }
+
+    /// The device's name when it was opened.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.info.name
+    }
+}
+
+impl MidiOut for OpenOutput {
+    fn queue(&self, events: &[tutti_midi_types::ump::MidiEvent]) -> usize {
+        self.sink.queue(events)
+    }
+}
+
+impl Drop for OpenInput {
+    fn drop(&mut self) {
+        drop(self.connection.take());
+        self.ports.remove_input_port(self.port);
     }
 }
 

@@ -123,7 +123,7 @@ pub(crate) fn build_with(
     }
     #[cfg(feature = "midi-hardware")]
     {
-        builder = builder.midi_hardware(true);
+        builder = builder.midi_hardware();
     }
     // The hardware input ingests MPE in the app's `MpeModeConfig`, inserted
     // before the engine builds (default `Disabled`).

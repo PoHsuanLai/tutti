@@ -11,8 +11,11 @@ Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 ## Devices
 
 [`Devices`] lists the MIDI devices and keeps the list current while it lives:
-`open()` starts a watch, and dropping the value stops it. Each device has a
-[`DeviceId`] and `open_input` takes that id. An id names a device within a run:
+`open()` starts a watch, which stops when the last `Devices` and [`DeviceEvents`]
+over it are dropped. `subscribe()` gives a [`DeviceEvents`] of its own, so one
+reader never takes another's events. Each device has a [`DeviceId`], and
+`open_input(&id, &ports)` returns an [`OpenInput`] that closes the connection
+and retires its ring when dropped. An id names a device within a run:
 its identity is what the OS lets survive a restart, and the ordinal after it only
 tells alike devices apart (unplug two identical keyboards and plug them back in
 the other order, and their ordinals swap).
@@ -22,11 +25,12 @@ use std::time::Duration;
 use tutti_midi_hardware::{DeviceEvent, Devices};
 
 let devices = Devices::open()?;
-for device in devices.list() {
+let events = devices.subscribe();
+for device in events.initial() {
     println!("{}: {}", device.id, device.name);
 }
 // Blocks until a device comes or goes, or the timeout passes.
-for event in devices.wait(Duration::from_secs(5)) {
+while let Ok(event) = events.recv_timeout(Duration::from_secs(5)) {
     match event {
         DeviceEvent::Added(device) => println!("plugged in: {}", device.name),
         DeviceEvent::Removed(device) => println!("gone: {}", device.name),
@@ -48,7 +52,7 @@ for event in devices.wait(Duration::from_secs(5)) {
   for setup notifications, and each [`Devices`] registers with it. A
   [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author; see
   doc 017.
-- If the watch ends on its own, [`Devices::watch_failure`] says why and the list
+- If the watch ends on its own, [`DeviceEvents::recv_timeout`] says why, once the events the watch reported are taken, and the list
   stays as it was.
 - **Windows (and Linux without alsa-lib 1.2.10):** the list is empty and stays
   so, as enumeration is; opening reports [`Error::Unsupported`].
@@ -74,8 +78,8 @@ use tutti_midi_hardware::HardwareMidiInputs;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 // The rings inbound events land in, then a session over this platform's backend.
-let ports = Arc::new(HardwareMidiInputs::new(1024));
-let session = MidiSession::new(Arc::clone(&ports))?;
+let ports = Arc::new(HardwareMidiInputs::new(1024, 44_100.0));
+let session = MidiSession::open(Arc::clone(&ports))?;
 
 // The devices present now; capability (protocol, function blocks) is read from
 // the OS.
@@ -106,7 +110,7 @@ assert_eq!(session.send(&[note]), 1);
 - [`DeviceInfo`], [`DeviceId`], [`DeviceEvent`]: what the list holds and reports;
   they live in `tutti-midi-device`, with the pure `DeviceTable` behind them.
 - [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what a backend enumerates.
-- [`MidiEndpoints`]: the backend trait; [`MidiSession::new`] picks this
+- [`MidiEndpoints`]: the backend trait; [`MidiSession::open`] picks this
   platform's implementation.
 - [`Error`]: what opening, connecting and sending can fail with.
 - [`prelude`]: the common types in one import, including the graph's MIDI nodes
@@ -132,7 +136,7 @@ an id, or [`MidiSession::disconnect_all_inputs`].
 | Linux | ALSA UMP sequencer | Needs alsa-lib ≥ 1.2.10. Kernel ≥ 6.5 converts UMP↔legacy at the port boundary, so it works against MIDI 1.0 hardware. |
 | Windows | stub | No `windows` crate version binds Windows MIDI Services; WinRT `Devices.Midi` is MIDI 1.0 message types. Enumerates nothing, [`Error::Unsupported`] on open. |
 
-[`MidiSession::new`] picks one, once, at construction; nothing downstream learns
+[`MidiSession::open`] picks one, once, at construction; nothing downstream learns
 which OS it is talking to.
 
 **A build may have no backend, and it is not an error.** On Linux, the
@@ -145,7 +149,7 @@ backend.
 ## Features
 
 - `test-support`: exports `test_support::FakeBackend`, a device list with no OS
-  behind it, for [`MidiSession::with_backend`] in headless tests; its `plug` and
+  behind it, for [`MidiSession::open_over`] in headless tests; its `plug` and
   `unplug` drive hot-plug. Off by default.
 - `sequencer-tests`: the suites that run `Devices` against the real ALSA
   sequencer, with user-space clients as the devices. Linux only; needs the

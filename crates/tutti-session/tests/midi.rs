@@ -518,7 +518,7 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
 #[test]
 fn an_update_frees_a_port_set_a_drain_held_across_a_removal() {
     let mut s = Session::builder()
-        .midi_hardware(true)
+        .midi_hardware()
         .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
         .expect("builds");
     let ports = Arc::clone(s.midi_io().expect("the OS MIDI layer").ports());
@@ -668,14 +668,17 @@ fn a_dead_device_watch_is_reported_once() {
         events
             .iter()
             .filter_map(|e| match e {
-                SessionEvent::MidiWatchFailed(why) => Some(why.clone()),
+                SessionEvent::MidiWatchFailed(why) => Some(why.to_string()),
                 _ => None,
             })
             .collect::<Vec<_>>()
     };
     assert!(failed(&s.update()).is_empty());
     fake.fail_watch("the sequencer went away");
-    assert_eq!(failed(&s.update()), ["the sequencer went away"]);
+    assert_eq!(
+        failed(&s.update()),
+        ["the MIDI device watch failed: MIDI port error: the sequencer went away"]
+    );
     assert!(failed(&s.update()).is_empty(), "once");
 }
 

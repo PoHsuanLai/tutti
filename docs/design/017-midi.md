@@ -290,26 +290,47 @@ emits `Disconnected`, and the input edge flushes (§8.3).
 
 ```rust
 // tutti-midi-hardware
-let devices = Devices::open()?;            // starts watching; drop stops
+let devices = Devices::open()?;            // starts watching
 let all: Vec<DeviceInfo> = devices.list();
-for event in devices.poll() {              // DeviceEvent::{Added, Removed, Changed}
+let events = devices.subscribe();          // its own queue; events.initial() is the list then
+for event in events.try_iter() {           // DeviceEvent::{Added, Removed, Changed}
     /* .. */
 }
-let events = devices.wait(timeout);        // blocks until an event or the timeout
-let input = devices.open_input(id)?;
+let next = events.recv_timeout(timeout);   // an event, Timeout, or Ended(WatchFailure)
+let input = devices.open_input(&id, &ports)?;   // OpenInput: closes its port on drop
 
 // tutti-midi-device: the pure core
 impl DeviceTable {
     pub fn apply(&mut self, change: OsChange) -> Option<DeviceEvent>;
+    pub fn resolve(&self, saved: &DeviceId) -> Resolved<'_>;
 }
 ```
 
-- `Devices::open()` starts the watch and dropping it stops it. `poll` and `wait`
-  give the changes since the last call.
+- `Devices::open()` starts the watch; it stops when the last `Devices` and
+  `DeviceEvents` over it are dropped. Each `subscribe()` has a queue of its own,
+  dropped with it, so an app that wants no events keeps none and one reader never
+  takes another's. `recv_timeout` returns `Ended` once a dead watch's queued
+  events are taken.
 - `DeviceTable` is pure. It takes an `OsChange` from the backend and returns the
   event, if the change alters the table. A repeat of a known state returns `None`.
 - `DeviceId` is stable across a restart where the OS gives something to hold; an
-  ordinal tells alike devices apart within a run ("Built", below).
+  ordinal tells alike devices apart within a run ("Built", below). With the
+  `serde` feature of `tutti-midi-device` it serializes, and `DeviceTable::resolve`
+  restores it: `Exact` for the one present device of a one-of-a-kind identity with
+  a saved ordinal 0, `Ambiguous` (with the candidates) for a saved ordinal above 0
+  or an identity several present devices share, `Missing` otherwise. A saved `#0`
+  cannot tell a device that was once one of two from a one-of-a-kind one, so it
+  resolves to the lone present device of its identity.
+
+  ```rust
+  // Restoring a remembered keyboard.
+  let saved: DeviceId = serde_json::from_str(&settings.keyboard)?;
+  match devices_table.resolve(&saved) {
+      Resolved::Exact(info) => open(info),
+      Resolved::Ambiguous(candidates) => ask_the_user(candidates),
+      Resolved::Missing => wait_for_added(&saved),   // an Added event, then resolve again
+  }
+  ```
 - `FakeBackend` has `plug()` and `unplug()`, so a test drives hot-plug with no
   device.
 
@@ -355,7 +376,7 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   its lock across a CoreMIDI call (with one held across a call, the macOS tests
   hung); a watch's own lock is held across its enumeration, so a `Devices` drop
   can wait for one. A panic in a watch's enumeration is caught, fails that watch
-  (`watch_failure`, as on Linux) and leaves the others; a refused client fails
+  (`DeviceEvents::failure`, as on Linux) and leaves the others; a refused client fails
   the watch the same way and is retried by the next. Compiled and linted for
   `aarch64-apple-darwin` from Linux; its tests run only on macOS CI (one asserts
   the notification callback fired, one that `Devices` sees a virtual endpoint
@@ -406,10 +427,10 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   thread, run only on a developer's machine. CI runs the `Reporter` and
   `Devices` tests over the fake backend and compiles and lints the rest.
 - **A watch that dies says so.** An error or a panic in the watch thread sets
-  `Devices::watch_failure` (and is logged); the list is then the last it saw.
+  the subscribers' `DeviceEvents::failure` and `recv_timeout` (and is logged); the list is then the last it saw.
   The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`
   logs it.
-- **Session.** `Phase::Poll` reads `Devices::poll`, reports each event as
+- **Session.** `Phase::Poll` reads the session's `DeviceEvents`, reports each event as
   `SessionEvent::MidiDevice`, and closes a held input or output whose device was
   removed, reporting `MidiInputLost` or `MidiOutputLost` after it
   (`SessionBuilder::midi_hardware_over` takes a `FakeBackend`). `bevy-tutti` writes
@@ -417,9 +438,10 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
 
 Deviations from the sketch above:
 
-- `open_input` takes the ring's producer: `open_input(&id, producer)`. Input
-  events reach the graph through a ring, and the producer is what the backend
-  feeds.
+- `open_input` takes the ring manager: `open_input(&id, &ports)`. Input events
+  reach the graph through a ring of `ports`; the returned `OpenInput` holds the
+  connection and the ring's port and closes both on drop. A removed device does
+  not close it: the holder does (the session, in `Phase::Poll`).
 - `MidiSession` keys its connections by `DeviceId`, and its `inputs` and `outputs`
   return `DeviceInfo`; `Devices::capability(&id)` answers what `EndpointInfo`
   carried.

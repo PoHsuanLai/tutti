@@ -19,7 +19,9 @@ pub mod session;
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
-pub use devices::{ChangeSink, Devices};
+pub use devices::{
+    ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, RecvTimeoutError, WatchFailure,
+};
 pub use endpoints::{InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};

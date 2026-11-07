@@ -86,7 +86,7 @@ fn look(watcher: &Shared) {
     }));
     if run.is_err() {
         watcher.live = false;
-        watcher.sink.fail("the CoreMIDI watch panicked".into());
+        watcher.sink.fail(crate::WatchFailure::Panicked);
     }
 }
 
@@ -205,7 +205,7 @@ pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result
     let hub = match hub() {
         Ok(hub) => hub,
         Err(why) => {
-            sink.fail(why);
+            sink.fail(crate::Error::MidiPort(why));
             return Ok(Box::new(NoWatch));
         }
     };

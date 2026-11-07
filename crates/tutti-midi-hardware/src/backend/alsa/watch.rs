@@ -280,14 +280,14 @@ pub(super) fn start(
                             });
                         }
                         Ok(Woken::Stopped) => return None,
-                        Err(e) => return Some(e.to_string()),
+                        Err(e) => return Some(e),
                     }
                 }
             }));
             match run {
                 Ok(None) => {}
                 Ok(Some(why)) => failures.fail(why),
-                Err(_) => failures.fail("the watch thread panicked".into()),
+                Err(_) => failures.fail(crate::WatchFailure::Panicked),
             }
         })?;
     Ok(Box::new(AlsaWatch {

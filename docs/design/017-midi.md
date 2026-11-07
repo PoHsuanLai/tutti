@@ -323,8 +323,8 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   enumerates again and reports the difference; it never reads what the event
   says. Dropping `Devices` closes the stop descriptor and joins the thread.
   Tested against the real sequencer: user-space clients appear and exit, and the
-  tests see `Added` and `Removed` (suite `sequencer-tests`). The watch needs no
-  UMP: a kernel without it still announces.
+  tests see `Added` and `Removed` (suite `sequencer-tests`). The watch client is
+  a UMP client like the enumerating one, so it needs the same kernel.
 - **macOS.** A thread creates a CoreMIDI client with a notification block and
   runs its run loop; a setup notification triggers the same re-enumeration.
   Compiled and linted for `aarch64-apple-darwin` from Linux; never run.

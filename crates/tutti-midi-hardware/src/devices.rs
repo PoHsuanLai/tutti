@@ -86,12 +86,26 @@ impl core::fmt::Debug for ChangeSink {
 /// An OS reuses a handle: ALSA hands a new client the number of one that just
 /// exited, and two looks that straddle both see one handle. A handle that now
 /// names another identity is a different device, so it is reported gone first.
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    allow(
+        dead_code,
+        reason = "only the OS backends with a thread report through it"
+    )
+)]
 #[derive(Debug)]
 pub(crate) struct Reporter {
     sink: ChangeSink,
     known: BTreeMap<EndpointId, Identity>,
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    allow(
+        dead_code,
+        reason = "only the OS backends with a thread report through it"
+    )
+)]
 impl Reporter {
     pub(crate) fn new(sink: ChangeSink) -> Self {
         Self {

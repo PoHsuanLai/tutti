@@ -254,10 +254,8 @@ assert_no_alloc = { version = "1", default-features = false }
 # it back with `hound` — same crates the sampler's own capture tests use.
 hound = "3.5"
 tempfile = "3.8"
-# `AudioTap::open` hands back a `ringbuf` consumer. Naming its `Consumer` trait
-# is what lets the tap test pop the frames a simulated callback pushed, rather
-# than asserting only that an `is_open` flag flipped. Same version tutti-metering
-# builds the ring with.
+# The mic-monitor tests build the capture ring by hand (`MicMonitorNode`'s
+# `HeapProd`), in the version the device layer builds it with.
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `tests/plugin_capture.rs` loads the reference CLAP plugin through a real
 # `plugin-server`, to pin that a loaded plugin's shadow is captured and driven.

@@ -2,12 +2,11 @@
 //!
 //! `tutti-nodes`' `engine_render` bench measures `Engine::process`. That is
 //! not what a sound card calls. The real callback also clamps to
-//! `MAX_FRAMES`, zero-fills the mix, folds the device buffer to stereo, calls
-//! `meter_output`, and converts to the device's sample format. [`OutputBlock`]
-//! runs all of that without a live stream, so it can be measured here.
+//! `MAX_FRAMES`, zero-fills the mix and converts to the device's sample
+//! format. [`OutputBlock`] runs all of that without a live stream, so it can be measured here.
 //!
 //! **The case that justifies this file is `callback/vs_render`.** Its delta
-//! against `engine_render` is the metering-and-conversion tax the engine
+//! against `engine_render` is the conversion tax the engine
 //! bench cannot see. If that tax is a large fraction of the block budget,
 //! optimising DSP is the wrong place to look.
 //!

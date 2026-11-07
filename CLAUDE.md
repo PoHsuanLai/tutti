@@ -38,6 +38,12 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
+- Copying audio out of the graph is a **tap**: `Topology.taps`, an `Op::Tap`
+  in the plan (any port, any width, aligned by the compiler or raw), a
+  `ringbuf` ring per lane whose producer rides the commit queue, and a
+  `TapReader` (`TapIn` adapts it to `AudioIn`) with counted drops. A closed
+  tap compiles to no op; a fork carries none. A tap sees the signal before the
+  engine's declick fader and the fold to the device width.
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the
@@ -268,7 +274,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-mod      modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
-  tutti-metering `MasterMeter`, `AudioTap`, `LoadMeter`
+  tutti-metering `MasterMeter`, `LoadMeter`
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-io       I/O edge: live + file decode
@@ -362,7 +368,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-metering` is a dev-dependency only), keeps every
+  rustfft, ebur128, libm and thiserror; `tutti-graph` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
@@ -648,7 +654,7 @@ read the `Cargo.toml`, grep for the type, run the probe.
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
   (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
-  `AudioTap`, `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,

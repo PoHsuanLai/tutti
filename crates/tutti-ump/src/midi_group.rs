@@ -44,16 +44,18 @@
 //!
 //! Like [`MidiChannel`](crate::MidiChannel), it is serializable (feature `serde`).
 
+use crate::OutOfRange;
+
 /// One of the 16 groups (virtual cables) in a UMP Endpoint.
 ///
 /// Always in `0..=15`: [`new`](Self::new) refuses a larger number, and
 /// [`masked`](Self::masked) is the one constructor that masks.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// `transparent` for the same reason `MidiChannel` has it: a `MidiGroup` is `3`
-// on the wire, not `[3]`.
+// Serialized as the bare number, and read back through `TryFrom<u8>`, so a
+// document cannot carry a value the type refuses.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
 pub struct MidiGroup(u8);
 
 impl MidiGroup {
@@ -126,6 +128,19 @@ impl MidiGroup {
 // display decision in the engine that no display has asked for. If a UI wants
 // 1-based groups, it can add the one at its own edge and name it there.
 
+impl TryFrom<u8> for MidiGroup {
+    type Error = OutOfRange;
+
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, OutOfRange> {
+        Self::new(raw).ok_or(OutOfRange {
+            what: "group",
+            value: raw,
+            max: Self::LAST.0,
+        })
+    }
+}
+
 impl From<MidiGroup> for u8 {
     #[inline]
     fn from(g: MidiGroup) -> u8 {
@@ -133,7 +148,7 @@ impl From<MidiGroup> for u8 {
     }
 }
 
-// Deliberately no `From<u8> for MidiGroup`, and no conversion to or from
+// Deliberately no infallible `From<u8> for MidiGroup`, and no conversion to or from
 // `MidiChannel` in either direction. The `u8` case is `MidiChannel`'s
 // reasoning: the conversion would mask or fail, and a lossy conversion inside
 // a trait that promises not to lose data is what `ChannelLayout` refused a
@@ -144,6 +159,21 @@ impl From<MidiGroup> for u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_from_agrees_with_new() {
+        for raw in 0..=255u8 {
+            assert_eq!(MidiGroup::try_from(raw).ok(), MidiGroup::new(raw));
+        }
+        assert_eq!(
+            MidiGroup::try_from(16),
+            Err(OutOfRange {
+                what: "group",
+                value: 16,
+                max: 15
+            })
+        );
+    }
 
     #[test]
     fn a_group_out_of_range_is_refused() {

@@ -308,3 +308,27 @@ fn the_shaped_generator_reaches_the_messages() {
         );
     }
 }
+
+/// The round-trip properties only see a status the generator reaches: all 18
+/// Flex text kinds must turn up.
+///
+/// Mutation: restoring `(w[0] >> 4) % 5` for the status in `common::shape`
+/// fails this test (13 of the 18 kinds are never drawn), and with it a swap of
+/// statuses 0x0A and 0x0B in `decode` alone survives every property again.
+#[test]
+fn the_shaped_generator_reaches_every_flex_text_kind() {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    use std::collections::HashSet;
+    use tutti_ump::Flex;
+    let mut runner = TestRunner::deterministic();
+    let strategy = shaped();
+    let mut kinds = HashSet::new();
+    for _ in 0..20_000 {
+        let w = strategy.new_tree(&mut runner).unwrap().current();
+        if let Ok(Message::Flex(_, Flex::Text { kind, .. })) = decode(Ump(w)) {
+            kinds.insert(format!("{kind:?}"));
+        }
+    }
+    assert_eq!(kinds.len(), 18, "{kinds:?}");
+}

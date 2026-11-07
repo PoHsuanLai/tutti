@@ -182,7 +182,7 @@ fn drops_are_counted_and_a_wrong_width_is_lost_whole() {
 
     // The device now hands a 6-wide block to a 2-wide tap.
     let wide = engine_wide();
-    let mut narrow = wide
+    let narrow = wide
         .heard_taps()
         .open(ChannelLayout::STEREO, Samples(1024))
         .expect("opens");

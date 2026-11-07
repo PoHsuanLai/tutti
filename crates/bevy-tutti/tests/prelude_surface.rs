@@ -130,17 +130,20 @@ fn _surface_compiles() {
     // below were forwarded.
 
     // Recording the graph's output: `io/mod.rs`'s "Recording what the graph is
-    // playing". Needs `TapIn` and `TapReader` (what `open_output_tap` returns,
+    // playing". Needs `TapIn` and `TapReader` (what `open_heard_tap` returns,
     // so a host can write the signature of a function that holds one).
     #[cfg(feature = "audio-io")]
-    fn _record_master(graph: &mut AudioGraphRes, path: std::path::PathBuf) -> AudioPump {
-        let reader: TapReader = graph.graph().open_output_tap(Samples(48_000));
+    fn _record_master(
+        graph: &mut AudioGraphRes,
+        path: std::path::PathBuf,
+    ) -> Result<AudioPump, HeardTapError> {
+        let reader: TapReader = graph.open_heard_tap(Samples(48_000))?;
         // The sink's width must match the source's: the tap's own layout, not a
         // bare `2`. `Recorder::start` rejects a mismatch outright, and `pump`
         // debug-asserts it.
         let wav =
             WavOut::create(&path, 48_000.0, reader.layout(), Pcm::Float32).expect("sink opens");
-        AudioPump::start(TapIn::new(reader), wav, Samples(1024))
+        Ok(AudioPump::start(TapIn::new(reader), wav, Samples(1024)))
     }
 
     // Recording a mic: `io/mod.rs`'s `matching_sink` example.

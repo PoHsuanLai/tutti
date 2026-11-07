@@ -332,7 +332,10 @@ pub enum TapAlign {
     /// As the sources leave their nodes: no delay is added.
     Raw,
     /// Delayed by the compiler to the graph's output time, the compensation an
-    /// output channel of the same sources gets.
+    /// output channel of the same sources gets. The output time is the latest
+    /// any *output* departs: a source that departs later than every output
+    /// (one no output reads) cannot be delayed to it, and is read as it
+    /// leaves its node, as [`Raw`](Self::Raw) would.
     #[default]
     ToOutput,
 }

@@ -332,7 +332,7 @@ the interpreter.
 - **Block size is a `Prepare` parameter**, not `MAX_BUFFER_SIZE = 64`. The live
   path runs at the device quantum; export runs at 1024+.
 
-#### Taps: copy-out as an op in the plan
+#### Taps: copy-out as an op in the plan, and after the fader
 
 A tap copies sources out of the graph for a reader on another thread
 (analysis, a recording). It is **an op in the compiled plan, not a node**, and
@@ -382,7 +382,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   piecewise, never taps; an export opens its own on the fork and, because its
   loop drains between blocks, loses nothing. That is the loop being
   synchronous, not the ring being unbounded.
-- **What a tap sees.** The signal before the engine's declick fader and the
+- **What a plan tap sees.** The signal before the engine's declick fader and the
   fold to the device width: it is the graph's output. At a transport stop a
   transport-gated source ends on the stop's frame, so the tap steps by the
   source's whole level in one frame where the output fades (measured in
@@ -393,6 +393,34 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   interpreter knows no taps, so the differential suite checks that a tap changes
   nothing and that an aligned tap of the outputs is the outputs
   (`an_aligned_tap_of_the_outputs_is_the_output`), serial and parallel.
+- **The heard tap: after the fader.** The other kind, read through the same
+  `TapReader`, written by `Engine` instead of an op: each chunk of the output
+  buffer, device width and after the declick, one lane per device channel (no
+  stereo fold, unlike the `AudioTap` it replaces), whole frames, the torn-frame
+  guarantee of `TapWriter::push_interleaved` (the fewest frames any ring has
+  room for, the rest counted lost once). It is written by `process` and
+  `process_segment`, so a device callback and an offline `Session::render`
+  feed it, and silence is written for a block the engine refuses (a take keeps
+  its timing); an export forks the graph and renders without the engine, so it
+  never writes to it, and a plan tap's op writes nothing for a refused block
+  and counts nothing lost. **The hand-over** is two bounded `ringbuf` queues of
+  boxed writers (installs in, retired writers out; the pattern of the
+  editor-to-executor queue, no new lock-free structure, so nothing in `tutti-rt`
+  and no loom model); the audio thread takes installs at the start of each
+  call and sends the writer it replaces back, so it never frees one (the
+  engine enters `RtScope`, where a `TapWriter` drop is a debug panic). The
+  control ends sit behind a mutex only control threads take. The first frame is
+  the first of the first call that begins after `open` returns. One at a time
+  (`Busy` while a reader lives). A block of another width than the tap's is
+  counted lost whole. The pre-fader step at a stop is therefore the plan tap's,
+  not a recording's default: `Session::open_heard_tap` is the tap for
+  recording what the output sounds like, the plan tap the explicit choice.
+- **Width is fixed at open.** A tap's lanes and its writer's rings are made
+  together; the commit refuses a spec whose `TapSpec::sources` length differs
+  (`CommitError::TapWidth`), and opening the id again replaces the tap at the
+  new width.
+- **`ToOutput` aligns to the outputs' time.** A source that departs later than
+  every output cannot be delayed to it and is read as it leaves, as `Raw`.
 - **The consumers.** `tutti-session`'s `Graph::open_tap` and
   `Graph::open_output_tap` (whose sources follow the outputs when they are
   re-wired), and `TapIn` over a `TapReader`, as wide as the tap. Offline and

@@ -595,7 +595,11 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
     let mut tapped = vec![0.0f32; 6_400 * 2];
     assert_eq!(heard.pop_into(&mut tapped), Samples(6_400));
     let bits = |x: &[f32]| x.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
-    assert_eq!(bits(&tapped), bits(&device), "the tap is what the device got");
+    assert_eq!(
+        bits(&tapped),
+        bits(&device),
+        "the tap is what the device got"
+    );
     let mut unfaded = vec![0.0f32; 6_400 * 2];
     plan.pop_into(&mut unfaded);
     let step = |x: &[f32]| {
@@ -629,7 +633,7 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
     s.graph().set_output_source(1, GraphSource::Node(dc, 0));
     s.update();
-    let mut tap = s.open_heard_tap(Samples(1_024)).expect("an engine");
+    let tap = s.open_heard_tap(Samples(1_024)).expect("an engine");
     assert_eq!(
         s.open_heard_tap(Samples(8)).err(),
         Some(tutti_session::HeardTapError::Busy)

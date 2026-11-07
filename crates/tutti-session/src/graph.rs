@@ -1573,8 +1573,17 @@ impl Graph {
     /// of the same source gets, so it lines up with what the outputs carry;
     /// [`TapAlign::Raw`] reads the source as it leaves its node.
     ///
-    /// **A tap sees the signal before the engine's declick fader, and at a
-    /// transport stop that shows in a recording.** A transport-gated source (a
+    /// This is the **plan tap**: an op of the graph, so it sees the signal
+    /// before the engine's declick fader and the fold to the device width, on
+    /// any ports at any width. To record what the output sounds like, with the
+    /// fade, open [`Session::open_heard_tap`](crate::Session::open_heard_tap)
+    /// instead (the default for a recording); this is the explicit choice of
+    /// the graph's own signal. A block the engine refuses (rendered silent)
+    /// writes no frames here and counts none lost, since the op did not run;
+    /// the heard tap writes the silence.
+    ///
+    /// **Because it is before the declick fader, at a transport stop it shows
+    /// in a recording.** A transport-gated source (a
     /// clip, the click, a sampler voice) ends on the stop's frame, so the tap
     /// steps from the source's whole level to silence in one frame where the
     /// device output has faded over the declick (measured: a 0.5 source gives
@@ -1614,7 +1623,8 @@ impl Graph {
     ///
     /// This is the signal the graph produces, before the engine's declick
     /// fader and the fold to the device's width; see [`open_tap`](Self::open_tap)
-    /// for what that means at a transport stop.
+    /// for what that means at a transport stop. To record what is heard, with
+    /// the fade, use [`Session::open_heard_tap`](crate::Session::open_heard_tap).
     pub fn open_output_tap(&mut self, capacity: Samples) -> TapReader {
         let outputs: Vec<GraphSource> =
             (0..self.outputs()).map(|c| self.output_source(c)).collect();

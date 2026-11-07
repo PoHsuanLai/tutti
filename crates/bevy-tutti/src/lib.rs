@@ -299,6 +299,7 @@ pub mod prelude {
     pub use tutti_graph::{ForkByClone, Unforkable};
     pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_session::HeardTapError;
     pub use tutti_transport::{Timeline, Transport, TransportCommand};
     pub use tutti_types::prelude::*;
     pub use tutti_types::{At, BarNumber, Meter, TapAlign, TapId};

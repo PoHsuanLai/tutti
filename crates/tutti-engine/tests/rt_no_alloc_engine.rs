@@ -268,7 +268,7 @@ fn the_heard_tap_is_allocation_free() {
     drop(first);
     taps.reclaim();
     // The reclaim queued a close; a new open queues a replacement behind it.
-    let mut second = taps
+    let second = taps
         .open(layout, tutti_types::Samples(4096))
         .expect("reopens");
     assert_no_alloc::assert_no_alloc(|| {

@@ -38,12 +38,25 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   (the block's own time), or, behind a latent path, `Cx::transport_at` (the
   transport its input was rendered at): a start or seek inside a block is in
   `Env`, never a split block.
-- Copying audio out of the graph is a **tap**: `Topology.taps`, an `Op::Tap`
-  in the plan (any port, any width, aligned by the compiler or raw), a
-  `ringbuf` ring per lane whose producer rides the commit queue, and a
-  `TapReader` (`TapIn` adapts it to `AudioIn`) with counted drops. A closed
-  tap compiles to no op; a fork carries none. A tap sees the signal before the
-  engine's declick fader and the fold to the device width.
+- Copying audio out of the graph is a **tap**, read through one `TapReader`
+  (`TapIn` adapts it to `AudioIn`), and there are two kinds:
+  - **The plan tap** (`Graph::open_tap`, `open_output_tap`): `Topology.taps`,
+    one `Op::Tap` per tap in the plan, any port and width, aligned by the
+    compiler or raw, a `ringbuf` ring per lane written together (the lanes
+    cannot tear), the writer riding the commit queue. A closed tap compiles to
+    no op; a fork carries none. It sees the graph's signal **before the
+    engine's declick fader** and the fold to the device width, so a
+    transport-gated source steps at a stop.
+  - **The heard tap** (`Session::open_heard_tap`, the default for recording
+    what the output sounds like): `Engine` writes each chunk of its output
+    buffer after the fader, every device channel, from `process` and
+    `process_segment` (a device callback and an offline `render`, silence for
+    a refused block); an export forks without the engine and never writes to
+    it. One at a time; the writer reaches the audio thread over `ringbuf`
+    queues and the one it replaces goes back to the control side
+    (`tutti-engine/src/hearing.rs`).
+  Both count what a slow reader loses (`TapReader::take_lost`, and
+  `AudioIn::take_lost` through `Recorder::lost`).
 - Doc 013 records the defects found and the types that address them. Update
   it when the code it describes or a decision changes.
 - Plugin hosts (VST2, VST3, CLAP, AU) move to a pure `step` core, the

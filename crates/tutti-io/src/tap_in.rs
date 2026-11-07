@@ -38,12 +38,15 @@ use tutti_types::{ChannelLayout, Samples};
 /// with no marker in the audio. A host that cares reads that count when the
 /// take ends (`AudioPump`'s `PumpFinished` carries it too).
 ///
-/// **A tap is the graph's signal before the engine's declick fader.** A
-/// transport-gated source (a clip, the click, a sampler voice) ends on the
-/// stop's frame, so a take across a stop has a step there (measured: the
-/// source's whole level in one frame) where the device output has faded over
-/// the declick; a source that keeps running has none. Start and stop the
-/// recording around transport stops if that matters.
+/// **Which tap.** To record what the output sounds like, give `TapIn` the
+/// reader of `Session::open_heard_tap` (bevy's `AudioGraphRes::open_heard_tap`):
+/// the engine's output after the declick fader, every device channel, so a
+/// take across a transport stop fades as the device does. A plan tap
+/// (`Graph::open_tap`, `Graph::open_output_tap`) is the explicit choice of the
+/// graph's own signal, before the fader: a transport-gated source (a clip, the
+/// click, a sampler voice) ends on the stop's frame, so that take has a step
+/// there (measured: the source's whole level in one frame), and a block the
+/// engine refuses leaves no frames in it.
 ///
 /// Like every [`AudioIn`] it carries no sample rate: the tap runs at the
 /// graph's rate, so build the sink at that rate or the file plays at the wrong

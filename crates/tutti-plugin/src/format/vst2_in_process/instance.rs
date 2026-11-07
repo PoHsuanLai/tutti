@@ -9,7 +9,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
-use tutti_plugin_types::{Loaded, MaxBlock, Prepare, Request, SampleRate, Samples};
+use tutti_plugin_types::{Loaded, MaxBlock, Prepare, RenderMode, Request, SampleRate, Samples};
 use tutti_vst2_host::{
     ChannelLayout, MidiEventVec, ParameterChange, PluginInfo, Vst2Controller, Vst2Loaded,
     Vst2ProcessContext, Vst2Processor,
@@ -128,11 +128,11 @@ impl Instance {
     /// Tells the plugin whether it renders offline, and keeps the mode a rate
     /// change activates it in.
     pub(super) fn set_offline_render(&mut self, offline: bool) {
-        self.prepare.mode = if offline {
+        self.prepare = self.prepare.with_mode(if offline {
             RenderMode::Offline
         } else {
             RenderMode::Realtime
-        };
+        });
         if let Some((_, controller)) = &self.halves {
             controller.set_offline_render(offline);
         } else if let Some(plugin) = &self.lost {
@@ -185,16 +185,14 @@ impl Instance {
     /// already accepted. The figures the plugin recomputes for the new rate are
     /// read by the next [`poll_changes`](Self::poll_changes).
     pub(super) fn set_sample_rate(&mut self, rate: f64) {
-        // The same test `activate` makes, before the plugin is taken apart: a
-        // refusal after the rejoin would leave a plugin to put back.
-        if !(rate.is_finite() && rate > 0.0) {
+        // Before the plugin is taken apart: a refusal after the rejoin would
+        // leave a plugin to put back.
+        let Some(wanted) = self.prepare.with_rate(SampleRate(rate)) else {
             return;
-        }
+        };
         let Some((processor, controller)) = self.halves.take() else {
             return;
         };
-        let mut wanted = self.prepare;
-        wanted.rate = SampleRate(rate);
         let loaded = match Vst2Loaded::deactivate(processor, controller) {
             Ok(loaded) => loaded,
             Err(stuck) => {

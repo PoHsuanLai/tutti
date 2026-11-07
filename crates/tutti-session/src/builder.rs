@@ -328,7 +328,6 @@ impl SessionBuilder {
             graph: parts.graph,
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
-            meter: engine.as_ref().map(master_meter_of),
             heard: None,
             engine,
             click: parts.click,
@@ -494,7 +493,6 @@ impl SessionBuilder {
         let engine = parts.graph.engine(&parts.transport)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
-        session.meter = Some(master_meter_of(&engine));
         session.heard = Some((engine.heard_taps(), spec.channels));
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;
@@ -502,14 +500,6 @@ impl SessionBuilder {
         session.faults = Some((device.faults(), device.faults().count()));
         Ok((session, device))
     }
-}
-
-/// The engine's master meter, enabled: consumers read it directly, so it
-/// measures from the start.
-fn master_meter_of(engine: &tutti_engine::Engine) -> tutti_metering::MasterMeter {
-    let meter = engine.master_meter().clone();
-    meter.enable();
-    meter
 }
 
 /// How wide the graph root is built, given what the project asks for and

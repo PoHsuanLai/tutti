@@ -40,6 +40,9 @@
 //!   sequence lock, for a value whose writer may not allocate or free. The
 //!   writer is not `Clone`, so there is only one; a read that keeps losing
 //!   to writes says so ([`Contended`]) rather than spinning.
+//! - [`level_cell()`] — a peak and an energy the audio thread folds each block
+//!   into and one reader takes whole, since its last take: two slots and a
+//!   flip, so a block lands in one take with its peak and frames together.
 //! - [`RequestWord`] — up to 32 kinds of request a callee raises from any
 //!   thread (one `fetch_or`) and a control thread takes whole.
 //! - [`edit_ring()`] — a bounded single-producer single-consumer queue of small
@@ -67,6 +70,7 @@ mod denormals;
 mod drain_clock;
 mod edits;
 mod job_gate;
+mod level_cell;
 mod packed_atomic;
 mod pos_ring;
 mod request_word;
@@ -82,6 +86,7 @@ pub use denormals::with_no_denormals;
 pub use drain_clock::{DrainBeat, DrainMark, DrainWatch, drain_clock};
 pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
+pub use level_cell::{LevelReader, LevelSpan, LevelWriter, level_cell};
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{
     MAX_POS_RING_FRAMES, MAX_POS_RING_POSITION, PosClaim, PosFrame, PosReader, PosRing, PosWriter,

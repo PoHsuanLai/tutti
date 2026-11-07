@@ -63,8 +63,6 @@ criterion.workspace = true
 # Stimulus nodes (`tutti_nodes::testing`) and a real filter for the fixture
 # graphs. `tutti-nodes` does not depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
-# The master meter type the RT gate reads back.
-tutti-metering = { path = "../tutti-metering" }
 
 [[bench]]
 name = "audio_callback"

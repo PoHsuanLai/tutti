@@ -320,6 +320,73 @@ pub struct Topology {
     /// Copy-out points ("tap these sources"). A closed tap is absent: nothing
     /// is compiled for it.
     pub taps: BTreeMap<TapId, TapSpec>,
+    /// Level meters ("measure these sources"). A closed meter is absent:
+    /// nothing is compiled for it.
+    pub meters: BTreeMap<MeterId, MeterSpec>,
+}
+
+/// The name of one level meter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MeterId(pub u32);
+
+/// What a level meter measures: one lane per source.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MeterSpec {
+    /// The graph's global outputs, one lane per output channel, following
+    /// [`Topology::outputs`] when they change, **aligned**: each lane is the
+    /// signal its output channel carries, at the output's time (before the
+    /// engine's fold and declick).
+    Outputs,
+    /// These sources, any ports, any number.
+    Ports {
+        /// One per lane. A lane naming a port that does not exist (a node
+        /// replaced by one with fewer outputs, a removed node) reads
+        /// silence; it does not fail a commit.
+        sources: Vec<Source>,
+        /// Where the reading sits in time: as the sources leave their nodes
+        /// ([`TapAlign::Raw`]) or delayed by the compiler to the output time
+        /// ([`TapAlign::ToOutput`], with a ring per lane).
+        align: TapAlign,
+    },
+}
+
+impl MeterSpec {
+    /// A meter on `sources` as they leave their nodes: a track's level.
+    #[must_use]
+    pub fn raw(sources: Vec<Source>) -> Self {
+        Self::Ports {
+            sources,
+            align: TapAlign::Raw,
+        }
+    }
+
+    /// A meter on `sources` aligned to the output time, as an output of the
+    /// same sources would carry them.
+    #[must_use]
+    pub fn aligned(sources: Vec<Source>) -> Self {
+        Self::Ports {
+            sources,
+            align: TapAlign::ToOutput,
+        }
+    }
+
+    /// The sources, one per lane; `outputs` is the topology's own.
+    #[must_use]
+    pub fn sources<'a>(&'a self, outputs: &'a [Source]) -> &'a [Source] {
+        match self {
+            Self::Outputs => outputs,
+            Self::Ports { sources, .. } => sources,
+        }
+    }
+
+    /// Where the reading sits in time.
+    #[must_use]
+    pub fn align(&self) -> TapAlign {
+        match self {
+            Self::Outputs => TapAlign::ToOutput,
+            Self::Ports { align, .. } => *align,
+        }
+    }
 }
 
 /// The name of one tap.
@@ -364,6 +431,7 @@ impl Default for Topology {
             outputs: Vec::new(),
             inputs: ChannelLayout::EMPTY,
             taps: BTreeMap::new(),
+            meters: BTreeMap::new(),
         }
     }
 }

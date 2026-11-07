@@ -86,6 +86,16 @@ serial one.
   `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
   models fences exactly; see `tutti-rt/src/job_gate.rs`).
+- **Level metering is an op in the plan** (`Editor::open_meter`, doc 013
+  "Meters"), not an engine pass: per channel, on the outputs or any node
+  port, before the engine's fold and declick; the master is aligned to the
+  outputs' time. Each lane is a `tutti_rt::level_cell` (two slots and a
+  flip, with a loom model), so a block lands in one read, peak and energy
+  together; a read takes what was held since the last read, so a reader is
+  one consumer (`&mut self`, not `Clone`) and a second consumer opens a
+  second meter. A lane naming a port that no longer exists reads silence.
+  Ballistics are the reader's.
+  `LoadMeter` stays in `Engine`: it times the block and is not audio.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
@@ -298,11 +308,11 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-mod      modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
-  tutti-metering `MasterMeter`, `LoadMeter`
+  tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
   tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
                  conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
-                 the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
+                 the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-io       live I/O edge: mic monitor, `TapIn`, `WavOut`, `Recorder`
   tutti-cpal     device
   tutti-export   offline render
@@ -582,7 +592,8 @@ Scalars use `Param<U>`.
   session's sweep is decided in `tutti-session` alone: a node whose
   controls publish returns a `Reclaimer` from `SessionNode::reclaimer`,
   which the graph keeps by node from `add`/`crossfade` until the node goes;
-  the graph sweeps its hosted plugins' meters; the session sweeps its own
+  the graph sweeps its hosted plugins' meters and closes the level meters
+  whose readers were dropped (`Graph::reap_meters`); the session sweeps its own
   cells (project meter, modulation lanes, hardware ports). A
   new cell joins its owner's sweep in the same change. `reclaim()` is a
   lock and a length check when nothing is retired; it is control-thread
@@ -739,8 +750,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
-  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
-  `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
+  the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,

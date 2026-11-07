@@ -182,8 +182,9 @@ impl Ballistics {
     /// How far to move toward a new value over `dt`, in `[0, 1]`.
     ///
     /// Public because ballistics are not stereo-specific: a level meter smooths
-    /// `tutti_metering::MeterReading`'s four amplitudes
-    /// with the same attack and release. [`step_ballistics`] stays the
+    /// the peak and RMS of `tutti_graph::Level`
+    /// with the same attack and release (the meter holds the peak since the
+    /// last read; the decay is the reader's). [`step_ballistics`] stays the
     /// convenience for the stereo case.
     ///
     /// The one-pole coefficient of the attack or release over a step of

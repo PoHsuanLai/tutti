@@ -338,6 +338,10 @@ enum Pre {
         tap: u32,
         srcs: Vec<ARef>,
     },
+    Meter {
+        meter: u32,
+        srcs: Vec<ARef>,
+    },
     Capture {
         feedback: u32,
         src: u32,
@@ -901,9 +905,17 @@ pub fn compile(
         }
     }
 
+    // A master meter reads each output channel as it leaves the alignment
+    // delay, so with one declared the delay is its own op writing a slot that
+    // the `Output` op and the meter both read (one ring, the same key).
+    let master_meter = topology
+        .meters
+        .values()
+        .any(|spec| matches!(spec, tutti_types::MeterSpec::Outputs));
+    let mut output_refs: Vec<ARef> = Vec::with_capacity(topology.outputs.len());
     for (channel, source) in topology.outputs.iter().enumerate() {
         let channel = channel as u16;
-        let src = match *source {
+        let mut src = match *source {
             Source::Node(p) => ARef::Val(audio_out_val[&p]),
             Source::Global(ch) => ARef::Val(global_val[&ch]),
             Source::Zero => ARef::Zero,
@@ -911,7 +923,7 @@ pub fn compile(
         let d = compensation[channel as usize];
         // Delaying silence is silence: a zero channel reports its
         // compensation (as `latency::plan` does) but gets no ring.
-        let delay = (!d.is_zero() && src != ARef::Zero).then(|| {
+        let mut delay = (!d.is_zero() && src != ARef::Zero).then(|| {
             em.delays.push(DelaySpec {
                 key: DelayKey::Output {
                     channel,
@@ -921,6 +933,21 @@ pub fn compile(
             });
             (em.delays.len() - 1) as u32
         });
+        if let (true, Some(ring), ARef::Val(v)) = (master_meter, delay, src) {
+            let op = em.push(Pre::Delay {
+                delay: ring,
+                src: v,
+                dst: 0,
+            });
+            em.read_audio(v, op);
+            let dv = em.audio_value(op);
+            if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+                *dst = dv;
+            }
+            src = ARef::Val(dv);
+            delay = None;
+        }
+        output_refs.push(src);
         let op = em.push(Pre::Output {
             channel,
             src,
@@ -981,6 +1008,73 @@ pub fn compile(
             em.read_aref(src, op);
         }
         tap_ids.push(tap);
+    }
+
+    // Meters: one lane per source. `Outputs` reads what each output channel
+    // carries (after its alignment delay, above); `Ports` reads each source as
+    // it leaves its node, or, aligned, delayed to the output time by a ring of
+    // its own like a tap's. A lane whose port does not exist (a node replaced
+    // by a narrower one, a removed node) reads silence rather than failing the
+    // commit. One op a meter, so its lanes are folded together. A closed meter
+    // is not in the topology.
+    let mut meter_ids: Vec<(tutti_types::MeterId, usize)> = Vec::new();
+    for (&meter, spec) in &topology.meters {
+        let srcs: Vec<ARef> = match spec {
+            tutti_types::MeterSpec::Outputs => output_refs.clone(),
+            tutti_types::MeterSpec::Ports { sources, align } => {
+                let mut srcs = Vec::with_capacity(sources.len());
+                for (lane, source) in sources.iter().enumerate() {
+                    let (mut src, dep) = match *source {
+                        Source::Node(p) => match (audio_out_val.get(&p), dense.get(&p.node)) {
+                            (Some(&v), Some(&n)) => (ARef::Val(v), departure(n)),
+                            _ => (ARef::Zero, Latency::ZERO),
+                        },
+                        Source::Global(ch) => match global_val.get(&ch) {
+                            Some(&v) => (ARef::Val(v), Latency::ZERO),
+                            None => (ARef::Zero, Latency::ZERO),
+                        },
+                        Source::Zero => (ARef::Zero, Latency::ZERO),
+                    };
+                    if *align == tutti_types::TapAlign::ToOutput
+                        && let ARef::Val(v) = src
+                    {
+                        let d = dep.gap_to(total);
+                        if !d.is_zero() {
+                            let delay = em.delays.len() as u32;
+                            em.delays.push(DelaySpec {
+                                key: DelayKey::Meter {
+                                    meter,
+                                    lane,
+                                    from: *source,
+                                },
+                                len: d,
+                            });
+                            let op = em.push(Pre::Delay {
+                                delay,
+                                src: v,
+                                dst: 0,
+                            });
+                            em.read_audio(v, op);
+                            let dv = em.audio_value(op);
+                            if let Pre::Delay { dst, .. } = &mut em.pre[op as usize] {
+                                *dst = dv;
+                            }
+                            src = ARef::Val(dv);
+                        }
+                    }
+                    srcs.push(src);
+                }
+                srcs
+            }
+        };
+        let op = em.push(Pre::Meter {
+            meter: meter_ids.len() as u32,
+            srcs: srcs.clone(),
+        });
+        meter_ids.push((meter, srcs.len()));
+        for src in srcs {
+            em.read_aref(src, op);
+        }
     }
 
     // Captures run last. They feed the feedback delays, which the executor
@@ -1203,6 +1297,10 @@ pub fn compile(
                 tap: *tap,
                 srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
             },
+            Pre::Meter { meter, srcs } => Op::Meter {
+                meter: *meter,
+                srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
+            },
             Pre::Capture { feedback, src } => Op::Capture {
                 feedback: *feedback,
                 src: aslot(*src),
@@ -1351,6 +1449,7 @@ pub fn compile(
             .collect(),
         delays: em.delays,
         taps: tap_ids,
+        meters: meter_ids,
         event_edges: {
             let mut v: Vec<(EventOut, EventIn)> = graph
                 .events()

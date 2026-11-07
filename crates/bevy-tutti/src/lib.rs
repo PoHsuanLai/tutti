@@ -293,11 +293,11 @@ pub mod prelude {
     pub use crate::graph::AudioNode;
     pub use tutti_graph::CrossfadeCurve;
     pub use tutti_graph::MAX_ROOT_CHANNELS;
-    pub use tutti_graph::TapReader;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
-    pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
+    pub use tutti_graph::{Level, MeterReader, TapReader};
+    pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_session::HeardTapError;
     pub use tutti_transport::{Timeline, Transport, TransportCommand};

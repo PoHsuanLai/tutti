@@ -18,6 +18,7 @@
 //! function, block, frame number and stream info).
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::encode::Encoder;
 use crate::error::{Codec, Error, Result};
 use crate::options::BitDepth;
@@ -73,7 +74,8 @@ impl Encoder for FlacEncoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()> {
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>> {
         let bits = bits_for(self.bit_depth);
         let bit_depth = self.bit_depth;
         // Once, at entry: the stride is a runtime value.
@@ -104,34 +106,44 @@ impl Encoder for FlacEncoder {
             let mut pcm: Vec<i32> = Vec::with_capacity(BLOCK_SIZE * ch);
             // Through `pump_blocks`, like every other format: that is what
             // applies the gate, the resample and the dither.
-            let pumped = crate::encode::pump_blocks(src, source_rate, plan, config, |frames| {
-                let mut samples = frames.samples();
-                while !samples.is_empty() {
-                    let take = (BLOCK_SIZE * ch - pcm.len()).min(samples.len());
-                    pcm.extend(samples[..take].iter().map(|&s| f32_to_i32(s, bit_depth)));
-                    samples = &samples[take..];
-                    if pcm.len() == BLOCK_SIZE * ch {
-                        writer.block(&pcm, &mut file)?;
-                        pcm.clear();
+            let pumped =
+                crate::encode::pump_blocks(src, source_rate, plan, config, control, |frames| {
+                    let mut samples = frames.samples();
+                    while !samples.is_empty() {
+                        let take = (BLOCK_SIZE * ch - pcm.len()).min(samples.len());
+                        pcm.extend(samples[..take].iter().map(|&s| f32_to_i32(s, bit_depth)));
+                        samples = &samples[take..];
+                        if pcm.len() == BLOCK_SIZE * ch {
+                            writer.block(&pcm, &mut file)?;
+                            pcm.clear();
+                        }
                     }
-                }
-                Ok(())
-            });
+                    Ok(())
+                });
             // Finish the workers even when the pump failed, so the scope's
             // join does not wait on a worker blocked on a full queue.
             let tail = match pumped {
-                Ok(()) if !pcm.is_empty() => writer.block(&pcm, &mut file),
+                Ok(Outcome::Finished(())) if !pcm.is_empty() => writer
+                    .block(&pcm, &mut file)
+                    .map(|()| Outcome::Finished(())),
                 other => other,
             };
             let finished = writer.finish(&mut file);
-            tail.and(finished)
+            match tail {
+                Ok(Outcome::Finished(())) => finished.map(Outcome::Finished),
+                Ok(Outcome::Cancelled) => Ok(Outcome::Cancelled),
+                Err(e) => Err(e),
+            }
         })?;
+        let Outcome::Finished(info) = info else {
+            return Ok(Outcome::Cancelled);
+        };
 
         let mut file = file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
         file.rewind()?;
         file.write_all(&header_bytes(&info)?)?;
         file.flush()?;
-        Ok(())
+        Ok(Outcome::Finished(()))
     }
 }
 

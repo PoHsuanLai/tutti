@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# The two adapter rules of design 015 §8 (checks 3 and 4), which no compile
-# can make:
+# The adapter rules of design 015 §8 (checks 3 and 4) and a third (5), which
+# no compile can make:
 #
 # 3. `bevy-tutti` holds no engine composition. Its source
 #    (`crates/bevy-tutti/src`), tests and comments excluded, names none of the
@@ -20,6 +20,19 @@
 #    (`pub use {tutti_x as m};`). Single items are allowed: the types its own signatures
 #    take. (This check moved here from `check-bevy-free.sh`; its mutation
 #    records are below.)
+#
+# 5. `bevy-tutti` holds no policy. Its source (tests excluded, as in 3):
+#    - every `Instant::now` is the direct argument of a session phase:
+#      `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
+#      `PhaseCx::at(..)`. The clock is the session's to read; a system that
+#      reads it for itself is deciding something (a throttle, a debounce) the
+#      session should own, and tests with a clock passed as a value.
+#    - there is no `const NAME: usize` or `const NAME: Duration`: a count or a
+#      time limit is a policy. (A const generic parameter, `<const N: usize>`,
+#      is not a const item and is not read.)
+#    Violations that exist today are listed in EXCEPTIONS below, each with the
+#    lane that removes it. An exception that no longer matches a violation
+#    fails the gate, so the list shrinks and cannot rot.
 #
 # A script rather than a test: a test that shells out inside `cargo nextest`
 # contends for the build lock, and this needs no build at all (perl only), so
@@ -111,6 +124,32 @@
 #   `pub(crate) use tutti_mod;`, and `pub use tutti_mod;` in a comment or
 #   a string. Every earlier (4) mutation above still fails.
 #
+# - (5), each appended to `src/graph/commit.rs` (or `midi/hardware/device.rs`)
+#   and removed. These fail: `Instant::now()` in a fn that is no phase
+#   argument, `let now = Instant::now(); g.run_phase(.., now)` (the clock must
+#   be the argument itself), `use std::time::Instant as I; I::now()`,
+#   `type Clk = Instant; Clk::now()`, `SystemTime::now()`,
+#   `run_phase(.., Instant::now().checked_add(d))` and `a + Instant::now()`
+#   in an argument, `const LIMIT: usize`, `static CAP: usize`, a `Duration`
+#   const or static (also through `type Span = Duration`), and a
+#   `LazyLock::new(|| Instant::now())` static after the excepted
+#   `midi_device_poll_system` (reported in `<item>`, not hidden by that fn's
+#   exception). These pass: `g.run_phase(Phase::Poll, Instant::now())`,
+#   `PhaseCx::at(Instant::now())`, a multi-line `run_phase_with_mods(..)`,
+#   `impl<const N: usize> W<N>`, `fn k<A, const M: usize>()`, `const KIND: u32`,
+#   `&'static str`, a trait `fn now(&self)`, the same text in a comment or a
+#   string, a closure inside the excepted fn, and `#[cfg(test)]` items.
+#   Deleting the `midi_device_poll_system` exception fails at `device.rs`, and
+#   an exception for a fn or const that does not exist fails as stale.
+#   Holes that remain, deliberately: an exception is keyed by file and
+#   enclosing fn, so a second clock read in the same excepted fn is not
+#   reported separately; a limit that is not a `const`/`static` item of type
+#   `usize` or a duration (`const N: u32`, `Duration::from_secs(2)` in an
+#   expression, a `2` in a comparison) is not read; a clock or alias reached
+#   through a macro, a glob import renamed in another crate, or a generic
+#   alias with parameters is not seen; the fn that holds a site is found by
+#   braces, not by parsing, so a `fn` in a macro body can mis-name it.
+#
 # Usage:
 #   scripts/check-adapter.sh
 
@@ -140,7 +179,16 @@ Engine|tutti_session::SessionBuilder (the renderer): build_device / build_offlin
 RenderGraph|tutti_session::Session::export (the offline render): ExportRequest, ExportJob, finish_export
 '
 
-# Shared by both checks: strict perl, and `lex`, which blanks comments and
+# EXCEPTIONS: `kind|file|name|the lane that removes it`. Check 5's violations
+# that exist today. `kind` is `instant` (name: the fn holding the
+# `Instant::now`) or `const` (name: the const). One that matches no violation
+# fails the gate, so removing the code must remove its line.
+readonly exceptions='
+instant|crates/bevy-tutti/src/midi/hardware/device.rs|midi_device_poll_system|the MIDI device layer of doc 017 (the session owns the roster poll and its cadence)
+const|crates/bevy-tutti/src/plugin_host/load.rs|MAX_CONCURRENT_LOADS|job admission, with PluginDb for scans (the session admits loads)
+'
+
+# Shared by the perl checks: strict perl, and `lex`, which blanks comments and
 # literal contents (keeping newlines, so offsets and line numbers hold).
 prelude_pl=$(cat <<'PL'
 use strict; use warnings;
@@ -182,78 +230,91 @@ PL
 )
 readonly prelude_pl
 
+# Shared by checks 3 and 5: every adapter file lexed with its test-only items
+# blanked. Returns (\@files, \%code, \%skip_file, \@skip_dir), the last two
+# naming out-of-line test modules (by file and by directory).
+adapter_pl=$(cat <<'PL'
+use File::Find; use File::Basename;
+sub adapter_code {
+  my ($root) = @_;
+  my @files;
+  find({ wanted => sub { push @files, $File::Find::name if /\.rs\z/ }, no_chdir => 1 }, $root);
+  @files = sort @files;
+  
+  
+  # A test-only attribute: `#[cfg(test)]` or `#[cfg(all(test, ...))]`.
+  my $test_attr = qr/\#\[\s*cfg\s*\(\s*(?:test|all\s*\(\s*test\s*,[^\]]*\))\s*\)\s*\]/;
+  
+  my (%code, %skip_file, @skip_dir);
+  for my $f (@files) {
+    open my $fh, "<", $f or die "$f: $!\n";
+    local $/; my $src = <$fh>; close $fh;
+    my $c = lex($src);
+    # Blank every test-only item, and note the out-of-line modules.
+    while ($c =~ /$test_attr/g) {
+      my $start = $-[0];
+      my $i = $+[0];
+      my $path;
+      # Further attributes on the same item.
+      while (substr($c, $i) =~ /\A(\s*\#\[)/) {
+        my $at = $i + length($1) - 2;
+        my $d = 0; my $j = $at;
+        for (; $j < length $c; $j++) {
+          my $ch = substr($c, $j, 1);
+          $d++ if $ch eq "["; $d-- if $ch eq "]";
+          last if $d == 0 && $ch eq "]";
+        }
+        my $attr = substr($src, $at, $j + 1 - $at);
+        $path = $1 if $attr =~ /path\s*=\s*"([^"]*)"/;
+        $i = $j + 1;
+      }
+      if (substr($c, $i) =~ /\A\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/) {
+        my $name = $1;
+        my $dir = dirname($f);
+        my $base = basename($f, ".rs");
+        my $mdir = ($base =~ /\A(?:mod|lib|main)\z/) ? $dir : "$dir/$base";
+        if (defined $path) { $skip_file{"$dir/$path"} = 1 }
+        else { $skip_file{"$mdir/$name.rs"} = 1; push @skip_dir, "$mdir/$name/" }
+      }
+      # What the attribute governs: to the `}` closing its first brace, a `;`
+      # or `,` at depth 0, or (kept) the closer of the enclosing group. Without
+      # the last two, a cfg(test) field or argument ran on past the closer of
+      # its group at depth -1 and blanked the rest of the file.
+      my $d = 0; my $j = $i;
+      for (; $j < length $c; $j++) {
+        my $ch = substr($c, $j, 1);
+        if ($ch eq "{" || $ch eq "(" || $ch eq "[") { $d++ }
+        elsif ($ch eq "}" || $ch eq ")" || $ch eq "]") {
+          $d--;
+          if ($d < 0) { $j--; last }
+          last if $d == 0 && $ch eq "}";
+        }
+        elsif (($ch eq ";" || $ch eq ",") && $d == 0) { last }
+      }
+      my $len = $j + 1 - $start;
+      (my $b = substr($c, $start, $len)) =~ s/[^\n]/ /g;
+      substr($c, $start, $len) = $b;
+      pos($c) = $start + $len;
+    }
+    $code{$f} = $c;
+  }
+  return (\@files, \%code, \%skip_file, \@skip_dir);
+}
+PL
+)
+readonly adapter_pl
+
 fail=0
 
 # 3. The adapter's source. Perl: one pass to collect the out-of-line test
 #    modules, one to blank and scan.
-hits=$(DENY="$deny_list" perl -e "$prelude_pl"'
-use File::Find; use File::Basename;
-
+hits=$(DENY="$deny_list" perl -e "$prelude_pl$adapter_pl"'
 my $root = shift @ARGV;
 my %deny;
 for (split /\n/, $ENV{DENY} // "") { next unless /\S/; my ($t, $o) = split /\|/, $_, 2; $deny{$t} = $o; }
 die "the deny-list is empty\n" unless %deny;
-my @files;
-find({ wanted => sub { push @files, $File::Find::name if /\.rs\z/ }, no_chdir => 1 }, $root);
-@files = sort @files;
-
-
-# A test-only attribute: `#[cfg(test)]` or `#[cfg(all(test, ...))]`.
-my $test_attr = qr/\#\[\s*cfg\s*\(\s*(?:test|all\s*\(\s*test\s*,[^\]]*\))\s*\)\s*\]/;
-
-my (%code, %skip_file, @skip_dir);
-for my $f (@files) {
-  open my $fh, "<", $f or die "$f: $!\n";
-  local $/; my $src = <$fh>; close $fh;
-  my $c = lex($src);
-  # Blank every test-only item, and note the out-of-line modules.
-  while ($c =~ /$test_attr/g) {
-    my $start = $-[0];
-    my $i = $+[0];
-    my $path;
-    # Further attributes on the same item.
-    while (substr($c, $i) =~ /\A(\s*\#\[)/) {
-      my $at = $i + length($1) - 2;
-      my $d = 0; my $j = $at;
-      for (; $j < length $c; $j++) {
-        my $ch = substr($c, $j, 1);
-        $d++ if $ch eq "["; $d-- if $ch eq "]";
-        last if $d == 0 && $ch eq "]";
-      }
-      my $attr = substr($src, $at, $j + 1 - $at);
-      $path = $1 if $attr =~ /path\s*=\s*"([^"]*)"/;
-      $i = $j + 1;
-    }
-    if (substr($c, $i) =~ /\A\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/) {
-      my $name = $1;
-      my $dir = dirname($f);
-      my $base = basename($f, ".rs");
-      my $mdir = ($base =~ /\A(?:mod|lib|main)\z/) ? $dir : "$dir/$base";
-      if (defined $path) { $skip_file{"$dir/$path"} = 1 }
-      else { $skip_file{"$mdir/$name.rs"} = 1; push @skip_dir, "$mdir/$name/" }
-    }
-    # What the attribute governs: to the `}` closing its first brace, a `;`
-    # or `,` at depth 0, or (kept) the closer of the enclosing group. Without
-    # the last two, a cfg(test) field or argument ran on past the closer of
-    # its group at depth -1 and blanked the rest of the file.
-    my $d = 0; my $j = $i;
-    for (; $j < length $c; $j++) {
-      my $ch = substr($c, $j, 1);
-      if ($ch eq "{" || $ch eq "(" || $ch eq "[") { $d++ }
-      elsif ($ch eq "}" || $ch eq ")" || $ch eq "]") {
-        $d--;
-        if ($d < 0) { $j--; last }
-        last if $d == 0 && $ch eq "}";
-      }
-      elsif (($ch eq ";" || $ch eq ",") && $d == 0) { last }
-    }
-    my $len = $j + 1 - $start;
-    (my $b = substr($c, $start, $len)) =~ s/[^\n]/ /g;
-    substr($c, $start, $len) = $b;
-    pos($c) = $start + $len;
-  }
-  $code{$f} = $c;
-}
+my ($files, $code, $skip_file, $skip_dir) = adapter_code($root);
+my @files = @$files; my %code = %$code; my %skip_file = %$skip_file; my @skip_dir = @$skip_dir;
 
 my $words = join "|", map { quotemeta } sort keys %deny;
 for my $f (@files) {
@@ -365,7 +426,140 @@ if [[ -n $hits ]]; then
   fail=1
 fi
 
+# 5. Policy in the adapter. Same lexing and test exclusions as (3).
+hits=$(EXCEPTIONS="$exceptions" perl -e "$prelude_pl$adapter_pl"'
+my $root = shift @ARGV;
+my %exc;
+for (split /\n/, $ENV{EXCEPTIONS} // "") {
+  next unless /\S/;
+  my ($kind, $file, $name, $why) = split /\|/, $_, 4;
+  die "exception without a lane: $_\n" unless defined $why && $why =~ /\S/;
+  $exc{"$kind|$file|$name"} = $why;
+}
+my ($files, $code, $skip_file, $skip_dir) = adapter_code($root);
+my @live = grep { my $f = $_; !$skip_file->{$f} && !(grep { index($f, $_) == 0 } @$skip_dir) } @$files;
+
+# Names that stand for a clock or a duration: the types, and every alias of
+# them in any file (`use .. Instant as I`, `type T = Duration;`).
+my (%clock, %span) = ();
+%clock = map { $_ => 1 } qw(Instant SystemTime);
+%span = map { $_ => 1 } qw(Duration);
+for my $f (@live) {
+  my $c = $code->{$f};
+  while ($c =~ /\b(Instant|SystemTime|Duration)\s+as\s+(\w+)/g) { ($1 eq "Duration" ? \%span : \%clock)->{$2} = 1 }
+  while ($c =~ /\btype\s+(\w+)\s*(?:<[^>]*>)?\s*=\s*(?:\w+\s*::\s*)*(Instant|SystemTime|Duration)\b/g) {
+    ($2 eq "Duration" ? \%span : \%clock)->{$1} = 1;
+  }
+}
+my $clock_re = join "|", map { quotemeta } sort keys %clock;
+my $span_re  = join "|", map { quotemeta } sort keys %span;
+
+# Each fn body as [start, end, name], to name the fn that holds a site. A
+# site in no fn body (a static initialiser) is `<item>`, which no exception
+# names.
+sub fn_bodies {
+  my ($c) = @_;
+  my (@stack, @out);
+  my ($pending, $pend_depth, $paren) = (undef, 0, 0);
+  while ($c =~ /(\bfn\s+(\w+)|[{}()\[\];])/g) {
+    my ($tok, $name, $at) = ($1, $2, $-[0]);
+    if (defined $name) { $pending = $name; $pend_depth = $paren; next }
+    if ($tok eq "(" || $tok eq "[") { $paren++ }
+    elsif ($tok eq ")" || $tok eq "]") { $paren-- }
+    elsif ($tok eq ";") { $pending = undef if defined $pending && $paren == $pend_depth }
+    elsif ($tok eq "{") {
+      if (defined $pending && $paren == $pend_depth) { push @stack, [$at, $pending]; $pending = undef }
+      else { push @stack, [$at, undef] }
+    }
+    elsif ($tok eq "}") {
+      my $top = pop @stack or next;
+      push @out, [$top->[0], $at, $top->[1]] if defined $top->[1];
+    }
+  }
+  return \@out;
+}
+
+my %found;   # key => [line, text, why]
+for my $f (@live) {
+  my $c = $code->{$f};
+  open my $fh, "<", $f or die; my @orig = <$fh>; close $fh;
+  my $line_of = sub { 1 + (substr($c, 0, $_[0]) =~ tr/\n//) };
+  my $text_of = sub { (my $t = $orig[$_[0] - 1]) =~ s/^\s+|\s+$//g; $t };
+  my $bodies = fn_bodies($c);
+  my $fn_at = sub {
+    my ($best, $size) = ("<item>", undef);
+    for my $b (@$bodies) {
+      next unless $b->[0] < $_[0] && $_[0] < $b->[1];
+      my $w = $b->[1] - $b->[0];
+      ($best, $size) = ($b->[2], $w) if !defined $size || $w < $size;
+    }
+    return $best;
+  };
+
+  # A clock read is `Clock::now()` standing alone as an argument of a session
+  # phase: `run_phase(.., Instant::now())`, `run_phase_with_mods(..)` or
+  # `PhaseCx::at(..)`, with nothing chained on it.
+  while ($c =~ /((?:\w+\s*::\s*)*)\b($clock_re)\s*::\s*now\b/g) {
+    my ($at, $end) = ($-[0], $+[0]);
+    my $ok = 0;
+    my $before = substr($c, 0, $at);
+    my $after = substr($c, $end);
+    if ($before =~ /[(,]\s*\z/ && $after =~ /\A\s*\(\s*\)\s*[,)]/) {
+      my $call = "";
+      my $depth = 0;
+      for (my $i = $at - 1; $i >= 0; $i--) {
+        my $ch = substr($c, $i, 1);
+        if ($ch eq ")") { $depth++ }
+        elsif ($ch eq "(") {
+          if ($depth == 0) { $call = substr($c, 0, $i) =~ /([\w:]+)\s*\z/ ? $1 : ""; last }
+          $depth--;
+        }
+        elsif ($depth == 0 && ($ch eq ";" || $ch eq "{" || $ch eq "}")) { last }
+      }
+      $ok = $call =~ /(?:\A|::)(?:run_phase|run_phase_with_mods)\z/ || $call =~ /(?:\A|::)PhaseCx::at\z/;
+    }
+    next if $ok;
+    my $line = $line_of->($at);
+    $found{"instant|$f|" . $fn_at->($at)} //= [$line, $text_of->($line), "reads the clock for itself"];
+  }
+
+  # No `const`/`static` item of type `usize` or a duration. A const generic
+  # parameter (`<const N: usize>`, `, const N: usize`) is not an item.
+  while ($c =~ /(?<![\w\x27])(?:const|static(?:\s+mut)?)\s+([A-Za-z_]\w*)\s*:\s*(?:\w+\s*::\s*)*(?:usize|$span_re)\s*=/g) {
+    my ($name, $at) = ($1, $-[0]);
+    next if substr($c, 0, $at) =~ /[<,]\s*\z/;
+    my $line = $line_of->($at);
+    $found{"const|$f|$name"} //= [$line, $text_of->($line), "a count or time limit is a policy"];
+  }
+}
+for my $key (sort keys %found) {
+  next if exists $exc{$key};
+  my ($kind, $f, $name) = split /\|/, $key;
+  my ($line, $text, $why) = @{ $found{$key} };
+  print "$f:$line: $text\n    new violation (`$kind` in `$name`): $why\n";
+}
+for my $key (sort keys %exc) {
+  next if exists $found{$key};
+  print "STALE exception, no violation matches it: $key\n    (it was to be removed by: $exc{$key})\n";
+}
+' "$ADAPTER_SRC")
+status=$?
+if [[ $status -ne 0 ]]; then
+  echo "$hits"
+  echo "FAIL: the bevy-tutti policy scan did not run (perl exited $status)."
+  exit 1
+fi
+if [[ -n $hits ]]; then
+  echo "$hits"
+  echo "FAIL: bevy-tutti holds policy (check 5). A clock is read by the session's phases"
+  echo "      (Session::run_phase(.., Instant::now())); a count or a time limit"
+  echo "      (const NAME: usize|Duration) is the session's. Move the decision into"
+  echo "      tutti-session. A violation that predates the check goes in EXCEPTIONS with the"
+  echo "      lane that removes it; a stale exception fails here and is deleted."
+  fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
   exit 1
 fi
-echo "OK: bevy-tutti names no engine composition, and tutti-session re-exports no crate whole."
+echo "OK: bevy-tutti names no engine composition or policy, and tutti-session re-exports no crate whole."

@@ -115,14 +115,12 @@ pub fn windowing_ready(
 /// The plugin discovery and loading catalog: the on-disk DB plus the scan-dir
 /// config.
 ///
-/// **Absent while a rescan is running** — [`scan`] moves the catalog onto the
-/// scan thread and re-inserts it on completion, so every reader takes
-/// `Option<Res<PluginsRes>>`.
+/// Present throughout a rescan: [`scan`] works on a snapshot and applies its
+/// deltas to this resource on the main thread, so the world's one catalog stays
+/// readable and every row a system sees is whole.
 ///
-/// `Plugins` is `Send + Sync` (the `PluginCatalog` trait carries those
-/// supertraits, which propagate through `Box<dyn ..>`), so Bevy's
-/// `ResMut<PluginsRes>` exclusivity is the only synchronization needed — no
-/// extra `Mutex`.
+/// `Plugins` is plain data and channels, so Bevy's `ResMut<PluginsRes>`
+/// exclusivity is the only synchronization needed — no extra `Mutex`.
 #[derive(Resource, Debug)]
 pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
 
@@ -149,7 +147,7 @@ impl PluginsRes {
 /// - [`PluginsRes`] containing an empty in-memory plugin catalog (no scan
 ///   dirs configured by default — apps that want disk-backed scanning
 ///   should override the resource at startup with a
-///   `Plugins::with_json_catalog(...)`). The scan systems read their
+///   `Plugins::load(...)`). The scan systems read their
 ///   directories off this one resource, so there is nothing else to keep in
 ///   sync with it.
 ///
@@ -199,12 +197,12 @@ impl Plugin for TuttiHostingPlugin {
 
         // Default plugin catalog: empty in-memory, no scan dirs. Apps that want
         // a real disk-backed catalog overwrite this resource with their own
-        // `PluginsRes::new(Plugins::with_json_catalog(..))` — or any other
-        // `PluginCatalog` impl — after `add_plugins(TuttiHostingPlugin)`.
+        // `PluginsRes::new(Plugins::load(..))` — or a `Plugins::with_db` over
+        // their own store — after `add_plugins(TuttiHostingPlugin)`.
         //
-        // The scan reads its directories off *this* resource (the catalog moves
-        // onto the scan thread and back), so overriding it is the whole
-        // configuration story. There is no second config to keep in sync.
+        // The scan reads its directories off *this* resource, so overriding it
+        // is the whole configuration story. There is no second config to keep
+        // in sync.
         let default_db_path = std::path::PathBuf::from(".tutti-plugins.json");
         let config = tutti_plugin::catalog::CatalogConfig::new(
             default_db_path,

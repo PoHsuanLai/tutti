@@ -1,0 +1,6 @@
+# A `tutti-rt` test that spins (a block counter that was not re-armed, a gate
+# that never closes) fails after a minute instead of hanging the run. The
+# longest healthy test in the crate takes a few seconds.
+[[profile.default.overrides]]
+filter = 'package(tutti-rt)'
+slow-timeout = { period = "30s", terminate-after = 2 }

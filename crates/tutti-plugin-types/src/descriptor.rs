@@ -17,7 +17,7 @@ use crate::{ClapFeature, PluginRole, Vst3SubCategories};
 /// Distinct from [`LoadedPlugin`](crate::LoadedPlugin), which carries the
 /// runtime engine-wiring data (bus widths, latency) produced at *load* time and
 /// never persisted.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PluginDescriptor {
     /// Stable plugin id (also the database/dedup/blacklist key).

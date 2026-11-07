@@ -19,7 +19,12 @@
 //! - **indices are distinct** — each participant index runs at most once per
 //!   call;
 //! - **a busy `try_run` runs nothing** (`a_busy_try_run_runs_nothing`, with
-//!   its own mutation record).
+//!   its own mutation record);
+//! - **two helpers race for indices** (`two_helpers_*`, with their own
+//!   mutation record): the order of conflicting operations on `entered`,
+//!   `next`, `state` and the job cell across two helpers. They do not witness
+//!   two helpers inside the job body at once (measured: at most one, at
+//!   bounds 3, 4 and 5).
 //!
 //! # Mutation record
 //!
@@ -27,8 +32,7 @@
 //! (`LOOM_MAX_PREEMPTIONS=3`):
 //!
 //! - the caller's wait for `entered` in `Close::drop` deleted → a causality
-//!   violation on the job cell (a helper reads after the overwrite). Re-run
-//!   after that wait became `SpinThenYield` (`src/spin.rs`): the same;
+//!   violation on the job cell (a helper reads after the overwrite);
 //! - the helper's re-read of `state` after entering deleted → the same;
 //! - either `SeqCst` fence (the caller's in `Close::drop`, the helper's in
 //!   `help`) removed → the same;
@@ -36,10 +40,6 @@
 //!   to `Relaxed` → the same;
 //! - `help` made not to record the generation it served → "index 1 ran
 //!   twice".
-//!
-//! When the close's budget became the gate's own (`JobGate::with_waits`,
-//! ignored under loom, so no ordering changed), the deleted wait and the
-//! exit's `Release` weakened were re-run: each still fails as recorded.
 //!
 //! The close's spin-then-yield is a scheduling change, not an ordering one:
 //! its progress check is the same `Acquire` load of `entered` the exit test
@@ -58,7 +58,7 @@ use tutti_rt::JobGate;
 
 struct Borrowed {
     value: UnsafeCell<u32>,
-    ran: [AtomicU32; 2],
+    ran: [AtomicU32; 3],
 }
 
 // SAFETY (test): shared only through the gate, which is what loom checks.
@@ -81,7 +81,7 @@ fn a_helper_never_outlives_the_call() {
         for round in 0..2u32 {
             let b = Borrowed {
                 value: UnsafeCell::new(round),
-                ran: [AtomicU32::new(0), AtomicU32::new(0)],
+                ran: [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)],
             };
             // Borrowed whole (not field by field), so the closure is `Sync`
             // through `Borrowed`'s impl.
@@ -165,4 +165,86 @@ fn a_busy_try_run_runs_nothing() {
         other.join().unwrap();
         helper.join().unwrap();
     });
+}
+
+/// One caller and two helpers on a gate of `participants`: the helpers race
+/// `next.fetch_add` for an index. Every index in `1..participants` runs at
+/// most once, none outside it runs, and no helper reads the job cell after
+/// `run` returns. What is explored is the order of conflicting operations
+/// on `entered`, `next`, `state` and the job cell; two helpers are never in
+/// the job body together in any execution.
+fn two_helpers(participants: usize) {
+    loom::model(move || {
+        let gate = Arc::new(JobGate::new(participants));
+        let helpers: Vec<_> = (0..2)
+            .map(|_| {
+                let gate = Arc::clone(&gate);
+                thread::spawn(move || {
+                    let mut served = 0;
+                    for _ in 0..2 {
+                        gate.help(&mut served);
+                        thread::yield_now();
+                    }
+                })
+            })
+            .collect();
+        let b = Borrowed {
+            value: UnsafeCell::new(7),
+            ran: [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)],
+        };
+        let bb = &b;
+        gate.run(
+            &move |i| {
+                assert!(i < participants, "index {i} is outside the gate");
+                // SAFETY (test): a shared read of the borrowed cell.
+                assert_eq!(bb.value.with(|p| unsafe { *p }), 7);
+                assert_eq!(
+                    bb.ran[i].fetch_add(1, Ordering::Relaxed),
+                    0,
+                    "index {i} ran twice"
+                );
+            },
+            || {},
+        );
+        // SAFETY (test): exclusive, and loom checks it against every helper
+        // read.
+        b.value.with_mut(|p| unsafe { *p = u32::MAX });
+        assert_eq!(b.ran[0].load(Ordering::Relaxed), 1);
+        for helper in helpers {
+            helper.join().unwrap();
+        }
+    });
+}
+
+/// Room for both helpers: they take indices 1 and 2 between them, each at
+/// most once.
+///
+/// Mutation record: on `two_helpers_beyond_the_participants_bail_out`.
+#[test]
+fn two_helpers_take_distinct_indices() {
+    two_helpers(3);
+}
+
+/// One helper too many: the second is handed index 2, which is outside a
+/// gate of 2, and must leave without calling the job.
+///
+/// State space at `LOOM_MAX_PREEMPTIONS=3`, the bound CI runs: 24,225
+/// executions for each of the two models, under a second together. The
+/// counts are equal because the third participant's extra operations (the
+/// job body's reads of the cell and its `ran[2]` increment) touch objects
+/// nothing else touches, and loom's partial-order reduction does not branch
+/// on them.
+///
+/// Mutation record (`LOOM_MAX_PREEMPTIONS=3`, applied to `src/job_gate.rs`):
+///
+/// - `help`'s `idx >= self.participants` as `>` -> only
+///   `two_helpers_beyond_the_participants_bail_out` fails ("index 2 is
+///   outside the gate");
+/// - `next.fetch_add(1)` split into a load and a store -> both models here
+///   fail ("index 1 ran twice"); the one-helper models pass;
+/// - the helper's re-read of `state` after entering deleted -> all four models
+///   fail with a causality violation, so these two add no coverage for it.
+#[test]
+fn two_helpers_beyond_the_participants_bail_out() {
+    two_helpers(2);
 }

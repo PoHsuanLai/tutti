@@ -47,8 +47,7 @@
 //!
 //! # Why compare-exchanges
 //!
-//! The first version took the writer bit with `swap(true, Acquire)`, and the
-//! first model failed it with "free once every guard dropped": a refused swap
+//! Taking the writer bit with `swap(true, Acquire)` fails the model with "free once every guard dropped": a refused swap
 //! still *writes*, and loom 0.7 leaves that write unordered against the
 //! holder's later release, so after both threads finish it lets the next
 //! borrow read the refused write. Under the C++ model that read is impossible

@@ -2840,7 +2840,7 @@ mod tests {
             MidiChannel::of(3),
             RPN_BANK_MPE,
             RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+            PitchBendSensitivity::of(12).to_rpn_bits(),
         ));
         list.add_midi(&bend(3)).add_midi(&bend(4));
         near(&tunings(&list), &[(3, 6.0), (4, 24.0)]);

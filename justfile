@@ -104,6 +104,7 @@ check-features:
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
@@ -124,6 +125,10 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
+    # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
+    # dev-dependency turns it on); this step names it so tests/serde.rs still runs
+    # if that edge goes away.
+    cargo nextest run --locked -p tutti-ump --features serde
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support
     cargo nextest run --locked -p tutti-plugin --features clap,vst2,json

@@ -45,10 +45,22 @@ pub(crate) fn block_driven(io: &tutti_graph::Io<'_>, k: usize) -> Option<f32> {
 pub(crate) struct LastGood(f32);
 
 impl LastGood {
-    /// Starts at `initial` (the constructor's value, or `0.0` if even that is
-    /// not finite).
-    pub(crate) fn new(initial: f32) -> Self {
-        Self(if initial.is_finite() { initial } else { 0.0 })
+    /// Starts at `initial`, or at `fallback` if `initial` is not finite.
+    ///
+    /// `fallback` is the control's own default, chosen by the caller: a
+    /// control whose range excludes zero (a ratio, a Q) must not start at
+    /// `0.0`, which is outside it.
+    pub(crate) fn new(initial: f32, fallback: f32) -> Self {
+        Self(if initial.is_finite() {
+            initial
+        } else {
+            fallback
+        })
+    }
+
+    /// Starts at a finite constant.
+    pub(crate) fn fixed(initial: f32) -> Self {
+        Self(initial)
     }
 
     /// `value` if finite (and remembered), otherwise the last finite value.

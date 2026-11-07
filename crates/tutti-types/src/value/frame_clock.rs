@@ -1,8 +1,6 @@
 //! [`FrameClock`]: a playhead whose source of truth is an integer frame
-//! count, the one every transport clock in the engine keeps, and the
-//! [`LoopRange`] it wraps at. One implementation: tutti-core's clocks, and
-//! the graph's `Env::for_each_beat` and `Env::transport_at`, all walk with
-//! it.
+//! count, and the [`LoopRange`] it wraps at. One implementation, so every
+//! clock that walks a transport with it reads the same beats.
 //!
 //! The frame is the source of truth. A clock that adds
 //! `beats_per_sample` to its beat, per frame or per block, drifts: at 90 BPM
@@ -14,9 +12,8 @@
 //! origin of its current [`TimelineSegment`]. The segment restarts, at an
 //! integer frame, on a seek, a tempo or rate change and a loop wrap; a
 //! stopped transport simply does not count. So the beat at a frame is the
-//! same `f64` whether the clock got there one frame at a time (the graph's
-//! `Env::for_each_beat`) or a block at a time (the engine's walk, the offline
-//! timeline): they emit the same beats, bit for bit, by construction rather
+//! same `f64` whether the clock got there one frame at a time or a block at a
+//! time: they emit the same beats, bit for bit, by construction rather
 //! than by agreeing to rounding.
 //!
 //! ```
@@ -90,8 +87,8 @@ impl LoopRange {
     /// (the common DAW behaviour): the loop takes
     /// effect once the playhead is inside it, by a seek or by playing into it
     /// from before `start`. The graph reads a transport the same way
-    /// (`tutti_graph::Env::due` treats a playhead at or past the loop end as
-    /// not looping, and `transport_at` walks with [`FrameClock`]), so the two agree.
+    /// (a playhead at or past the loop end is not looping, and a block walks with
+    /// [`FrameClock`]), so the two agree.
     #[inline]
     pub fn advance(&self, from: Beat, to: Beat) -> Beat {
         if from < self.end { self.wrap(to) } else { to }
@@ -102,8 +99,7 @@ impl LoopRange {
     /// A beat below the end is returned unchanged.
     ///
     /// The remainder needs no zero guard because `len()` is positive by
-    /// construction. `rem_euclid` rather than `%` so a beat below `start` wraps
-    /// *into* the region instead of landing outside it on the negative side.
+    /// construction.
     #[inline]
     pub fn wrap(&self, beat: Beat) -> Beat {
         if beat < self.end {
@@ -247,8 +243,7 @@ impl FrameClock {
     /// a segment, a loop wrap inside [`advance`](Self::advance), and a
     /// [`mark_play_start`](Self::mark_play_start) — and at nothing else.
     ///
-    /// What a timeline publishes as its
-    /// `Timeline::segment_generation` (tutti-core),
+    /// What a timeline publishes as its segment generation,
     /// so a reader that caches a position computed at one beat can tell a
     /// jump that lands on the same beat from no jump at all: comparing
     /// beats cannot (a seek to where the playhead stands, a loop exactly one

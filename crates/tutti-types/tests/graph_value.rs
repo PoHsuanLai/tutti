@@ -4,8 +4,7 @@
 //! and no audio callback — which is the point of the layer.
 //!
 //! The runtime half — that a compiled plan agrees with the value it was
-//! compiled from — is `tutti-graph`'s (`tests/compile_passes.rs`), because it
-//! needs the compiler this crate deliberately cannot name.
+//! compiled from — needs a compiler, which this crate does not have.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

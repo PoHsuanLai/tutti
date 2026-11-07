@@ -395,7 +395,16 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
 - It is removed from the workspace at stage 5, with the old types. Until then, while
   the old types still depend on it anyway, it serves as a test-only oracle: random
   words go through both decoders, and each disagreement is settled by reading the
-  specification and pinned as an analytic test, so its removal loses no coverage.
+  specification and pinned as an analytic test. What survives its removal is what
+  those tests name: a swap of two neighbouring numbers in a number-to-name table, or
+  of two fields or flags, fails a spec-literal test in `tests/spec_words.rs` or
+  `tests/spec_tables.rs` with `tests/midi2_oracle.rs` deleted. The round-trip
+  properties and the fuzz target check the codec only against itself (decode,
+  encode, decode), so a mistake made the same way in both directions passes them;
+  they do not replace the oracle. What stage 5 does lose is independent agreement
+  with a second decoder on words no table or figure pins, and the name-only
+  comparison of the Flex and Stream families. The fuzz target is not run in CI
+  yet; nothing here leans on it.
 
 `midly` stays in `tutti-midi-file`. `tutti-midi-types` uses it only for about 12
 lines of live MIDI 1.0 parsing, which `tutti-midi-protocol` does itself.

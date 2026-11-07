@@ -3,6 +3,8 @@ name = "tutti-types"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
+# The name is an unrelated project's on crates.io; publishing is the owner's call.
+publish = false
 description = "Typed quantities and shapes shared by every engine crate: units, channel layouts, the AudioIn/AudioOut I/O traits, meter and graph values"
 license.workspace = true
 repository.workspace = true
@@ -31,11 +33,10 @@ serde = ["dep:serde"]
 bevy = ["dep:bevy_reflect"]
 
 [dependencies]
-# `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
-atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+# `Param<U>` wraps an `Arc<AtomicF32>`.
+atomic_float = { version = "1.1", default-features = false }
 # `Seconds::one_pole_coeff`'s exponential is `libm`'s pure-Rust `exp`, so the
-# coefficient does not depend on the platform's C math library (the rule
-# `tutti-nodes`' filters follow).
+# coefficient does not depend on the platform's C math library.
 libm = "0.2.15"
 serde = { version = "1", optional = true, features = ["derive"] }
 # Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate

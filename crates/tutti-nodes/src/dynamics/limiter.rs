@@ -196,7 +196,7 @@ impl LimiterNode {
             threshold_db: Param::new(threshold_db.into()),
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
-            good_release: LastGood::new(0.1),
+            good_release: LastGood::fixed(0.1),
             ring: LookaheadRing::new(n, lookahead_samples),
             lookahead: lookahead_secs,
             layout,

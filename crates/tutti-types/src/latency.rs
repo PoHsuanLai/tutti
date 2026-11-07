@@ -28,19 +28,17 @@
 //! [`plan`] measures: use it to report a graph's latency. [`delays`] returns
 //! the same measurement with the delays that realise it — which input port
 //! and which output channel to delay, and by how much — as a value. Nothing
-//! here inserts anything: applying them is the graph compiler's job
-//! (`tutti_graph`'s plan carries a delay per entry). Both return a
+//! here inserts anything: applying them is the graph compiler's job. Both return a
 //! [`Compensation`], whose per-channel figures tell sources *outside* the
 //! graph how far to pre-roll.
 //!
 //! # One solve, the compiler's
 //!
-//! This is the same solve `tutti_graph`'s compiler runs, so the two agree on
-//! every graph:
+//! A graph compiler runs this same solve, so the two agree on every graph:
 //!
 //! - a node's **arrival** is the latest departure among everything that
 //!   feeds it — its audio ports, and any [`other_sources`] (event and param
-//!   sources, in `tutti_graph`'s impl);
+//!   sources, for a graph that has them);
 //! - every audio port fed by a node or from **outside the graph** (a global
 //!   input, arriving at zero) is delayed by its gap to the node's arrival;
 //! - an unconnected port, and a feedback edge, carry nothing to align.

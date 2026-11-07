@@ -427,9 +427,8 @@ impl BarCount {
 // to integral bar-space unchanged — the macros are visible here because `value`
 // is `#[macro_use]`d ahead of this module in lib.rs.
 //
-// The set is complete rather than trimmed to current callers — `tutti` is a
-// library, so the algebra has to be coherent for a host that is not this DAW. A
-// half-implemented affine pair is a worse API than an unused operator.
+// The set is complete rather than trimmed to current callers: a half-implemented
+// affine pair is a worse API than an unused operator.
 //
 // Deliberately absent: `BarNumber + BarNumber`, which `unit_affine!` omits for
 // the same reason it omits `Beat + Beat` — adding two positions needs an origin.
@@ -569,7 +568,23 @@ pub trait Meter: Send + Sync {
 #[inline]
 fn floor_div_rem(value: BeatDuration, unit: BeatDuration) -> (i64, BeatDuration) {
     let quotient = (value / unit).floor();
-    (quotient as i64, value - unit * quotient)
+    let rem = value - unit * quotient;
+    // Rounding can put the remainder of a position a hair off a boundary on
+    // the wrong side of it: `unit` itself (a tiny negative `value`), or just
+    // under zero (a `value / unit` that rounds to a whole number or underflows
+    // to `-0.0`, as the smallest negative subnormal does). Either way the
+    // position belongs to the unit below the boundary, at its last
+    // representable offset.
+    if rem >= unit {
+        (quotient as i64, BeatDuration(unit.get().next_down()))
+    } else if rem < BeatDuration(0.0) {
+        (
+            (quotient - 1.0) as i64,
+            BeatDuration(unit.get().next_down()),
+        )
+    } else {
+        (quotient as i64, rem)
+    }
 }
 
 /// Bar/beat for `beat` under a single signature, measured from `origin`.
@@ -867,6 +882,59 @@ mod tests {
     /// 7/8 — the meter that exposes every "numerator is the bar length" bug.
     fn seven_eight() -> TimeSignature {
         TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH)
+    }
+
+    /// A position a hair before a bar line is in the bar before it, at its
+    /// last beat: the remainder never reaches the unit it is a remainder of.
+    ///
+    /// Mutation (run): drop the `rem >= unit` arm of `floor_div_rem` → the
+    /// remainder rounds up to the whole bar, the beat index is 4 and the
+    /// `debug_assert` in `bar_position_within` fires → fails.
+    ///
+    #[test]
+    fn a_position_just_before_a_bar_line_stays_in_the_bar_before() {
+        let sig = TimeSignature::default();
+        for tiny in [1e-20, 1e-17, 1e-16] {
+            let p = sig.bar_at(Beat(-tiny));
+            assert_eq!(p.bar, BarNumber(0), "{tiny:e}");
+            assert_eq!(p.beat, BeatsPerBar::new(4), "{tiny:e}");
+            assert!(
+                p.fraction >= BeatDuration(0.0) && p.fraction < sig.beat_length(),
+                "{tiny:e}: {:?}",
+                p.fraction
+            );
+        }
+        // The same just before a later bar line, and in a compound meter.
+        let p = seven_eight().bar_at(Beat(3.5 - 1e-15));
+        assert_eq!((p.bar, p.beat), (BarNumber(1), BeatsPerBar::new(7)));
+        assert!(p.fraction < seven_eight().beat_length());
+        // A position a hair under a beat line (a quotient that rounds up).
+        let p = sig.bar_at(Beat(3.0 - 1e-16));
+        assert!(p.fraction >= BeatDuration(0.0) && p.fraction < BeatDuration(1.0));
+    }
+
+    /// The `rem < 0` arm is reached by `-5e-324`: `v / 4` underflows to
+    /// `-0.0`, so the quotient is `-0` and the remainder is `v` itself.
+    ///
+    /// Mutation (run): disable that arm (`else if false`) → the fraction is
+    /// negative and the `debug_assert` fires → fails.
+    #[test]
+    fn the_smallest_negative_position_is_the_last_instant_of_the_bar_before() {
+        let sig = TimeSignature::default();
+        let p = sig.bar_at(Beat(-5e-324));
+        assert_eq!(p.bar, BarNumber(0));
+        assert_eq!(p.beat, BeatsPerBar::new(4));
+        assert!(p.fraction >= BeatDuration(0.0) && p.fraction < sig.beat_length());
+    }
+
+    /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and the clamp share.
+    ///
+    /// Mutation (run): `MAX_BEATS_PER_BAR` 64 → 65 → fails.
+    #[test]
+    fn the_beats_per_bar_ceiling_is_64() {
+        assert_eq!(MAX_BEATS_PER_BAR, 64);
+        assert_eq!(BeatsPerBar::new(64).get(), 64);
+        assert_eq!(BeatsPerBar::new(65).get(), 64);
     }
 
     #[test]

@@ -83,3 +83,29 @@ fn meter_output_is_allocation_free_with_nothing_enabled() {
         "disabled meter published readings"
     );
 }
+
+/// `meter_output` hands the tap the whole block: every frame arrives, in
+/// order, and the last one is the block's last.
+///
+/// Mutation (run): `tap.push(&output[..output.len() / 2])` in `rt.rs` → the
+/// count is 500, not 1000 → fails.
+#[test]
+fn meter_output_taps_the_whole_block() {
+    const FRAMES: usize = 1000;
+    let (mut writer, _meter) = MasterMeter::pair();
+    let tap = AudioTap::new();
+    let mut cons = tap.open().expect("a fresh tap opens");
+    let block: Vec<f32> = (0..FRAMES).flat_map(|i| [i as f32, -(i as f32)]).collect();
+
+    meter_output(&block, &mut writer, &tap);
+
+    assert_eq!(cons.occupied_len(), FRAMES);
+    let mut last = None;
+    let mut n = 0;
+    while let Some(f) = cons.try_pop() {
+        last = Some(f);
+        n += 1;
+    }
+    assert_eq!(n, FRAMES);
+    assert_eq!(last, Some(((FRAMES - 1) as f32, -((FRAMES - 1) as f32))));
+}

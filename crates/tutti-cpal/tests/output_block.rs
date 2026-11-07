@@ -254,3 +254,23 @@ fn an_empty_callback_renders_nothing_and_does_not_panic() {
     block.render(&mut out);
     assert_eq!(block.last_rendered_frames(), 0);
 }
+
+/// **The callback hands the tap every frame it rendered**, not a prefix: a
+/// 64-frame block leaves 64 frames in the ring, the last still the DC level.
+///
+/// Mutation (run): `tap.push(&output[..output.len() / 2])` in
+/// `tutti-metering`'s `meter_output` → 32 frames → fails.
+#[test]
+fn the_callback_taps_the_whole_block() {
+    let (state, mut cons) = support::dc_on_channel(0.5, 0, 2);
+    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; 64 * 2];
+    block.render(&mut out);
+
+    assert_eq!(cons.occupied_len(), 64);
+    let mut last = None;
+    while let Some(f) = cons.try_pop() {
+        last = Some(f);
+    }
+    assert_eq!(last, Some((0.5, 0.0)));
+}

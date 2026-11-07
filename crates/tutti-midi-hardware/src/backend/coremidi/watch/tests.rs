@@ -23,55 +23,54 @@ fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
     );
 }
 
-/// A virtual destination that appears is `Added` and, dropped, `Removed`; the
-/// watch's registration ends with `Devices`.
-#[test]
-fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
+fn diag_flow(settle: Option<Duration>) {
     let name = format!("tutti-test-{}", std::process::id());
-    // DIAG
-    eprintln!("DIAG hub: {:?}", hub().map(|_| ()));
-    eprintln!(
-        "DIAG dest count before: {}",
-        coremidi::Destinations::count()
-    );
-    eprintln!("DIAG src count before: {}", coremidi::Sources::count());
     let devices = Devices::open().unwrap();
-    eprintln!(
-        "DIAG hub after open: {:?}, registered {}",
-        hub().map(|_| ()),
-        registered()
-    );
-    eprintln!("DIAG initial list: {:?}", devices.list());
     assert_eq!(registered(), 1);
-
-    let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
-    // DIAG
-    for i in 0..6 {
-        let direct = crate::backend::coremidi::CoreMidiEndpoints::devices();
-        eprintln!(
-            "DIAG t={i}s dests={} direct_list={:?} notifications={} table={:?}",
-            coremidi::Destinations::count(),
-            direct.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
-            NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
-            devices
-                .list()
-                .iter()
-                .map(|d| d.name.clone())
-                .collect::<Vec<_>>()
-        );
-        devices.wait(Duration::from_secs(1));
+    if let Some(settle) = settle {
+        devices.wait(settle); // DIAG
     }
-    let added = until(
-        &devices,
-        |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
-    );
-    drop(destination);
-    let id = added.info().id.clone();
-    until(
-        &devices,
-        |e| matches!(e, DeviceEvent::Removed(i) if i.id == id),
-    );
-
+    let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let start = Instant::now();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                eprintln!(
+                    "DIAG t={:?} notifications={} table={:?}",
+                    start.elapsed(),
+                    NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
+                    devices
+                        .list()
+                        .iter()
+                        .map(|d| d.name.clone())
+                        .collect::<Vec<_>>()
+                );
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+        let added = until(
+            &devices,
+            |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
+        );
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(destination);
+        let id = added.info().id.clone();
+        until(
+            &devices,
+            |e| matches!(e, DeviceEvent::Removed(i) if i.id == id),
+        );
+    });
     drop(devices);
     assert_eq!(registered(), 0);
+}
+
+#[test]
+fn diag_immediate() {
+    diag_flow(None);
+}
+
+#[test]
+fn diag_settled() {
+    diag_flow(Some(Duration::from_secs(2)));
 }

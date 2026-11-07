@@ -1,0 +1,36 @@
+[package]
+name = "tutti-tempo"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "A tempo map for the Tutti audio engine: step and ramp segments, beat, seconds and frame conversion"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-tempo"
+publish = false
+keywords = ["audio", "tempo", "daw"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# `Serialize`/`Deserialize` on `CellGrid`, read back through its refusing `TryFrom`.
+serde = ["dep:serde"]
+
+[dependencies]
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+# Pure-Rust `log1p`/`expm1`/`exp`, so a ramp's figures do not depend on the
+# platform's C math library.
+libm = "0.2.15"
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+serde_json = "1"
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -110,6 +110,8 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
       - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
+      # And `tutti-tempo`, which keeps its modules private.
+      - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -329,6 +331,7 @@ jobs:
           cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-tempo --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
@@ -358,6 +361,7 @@ jobs:
           # if that edge goes away.
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
+          cargo nextest run --locked -p tutti-tempo --features serde
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json

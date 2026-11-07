@@ -23,7 +23,6 @@ use conformance_support::*;
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn context_requirements_are_read_from_the_plugin() {
-    let _plugins = plugin_guard();
     let checker = require_sample("host-checker.vst3");
 
     let req = checker.context_requirements();
@@ -68,7 +67,6 @@ fn context_requirements_are_read_from_the_plugin() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn note_expression_types_enumerate_per_plugin() {
-    let _plugins = plugin_guard();
     let nes = require_sample("note-expression-synth.vst3");
 
     let count = nes.note_expression_count(0, 0);
@@ -108,7 +106,6 @@ fn note_expression_types_enumerate_per_plugin() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn keyswitches_enumerate_and_bound_check() {
-    let _plugins = plugin_guard();
     let checker = require_sample("host-checker.vst3");
 
     let count = checker.keyswitch_count(0, 0);
@@ -159,7 +156,6 @@ fn keyswitches_enumerate_and_bound_check() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn units_enumerate_with_resolvable_parents() {
-    let _plugins = plugin_guard();
     let checker = require_sample("host-checker.vst3");
 
     let units = checker.units();
@@ -235,7 +231,6 @@ fn units_enumerate_with_resolvable_parents() {
 /// published list, and every program index inside it has a name.
 #[test]
 fn a_resolved_program_list_is_one_the_plugin_publishes() {
-    let _plugins = plugin_guard();
     let mut checked = 0usize;
     let mut resolved = 0usize;
     let mut dangling = Vec::new();
@@ -413,7 +408,6 @@ fn remap_param_id_migrates_a_known_parameter() {
     /// `kMyGainParamTag` in `remapparamidcids.h`.
     const EXPECTED_NEW_ID: u32 = 123;
 
-    let _plugins = plugin_guard();
     let remap = require_sample("remap-paramid.vst3");
     let uid: [i8; 16] = AGAIN_PROCESSOR_UID.map(|b| b as i8);
 
@@ -442,7 +436,6 @@ fn remap_param_id_migrates_a_known_parameter() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn physical_ui_mapping_is_read_per_plugin() {
-    let _plugins = plugin_guard();
     let nes = require_sample("note-expression-synth.vst3");
     let mapping = nes.physical_ui_mapping(0, 0);
     assert!(
@@ -474,7 +467,6 @@ fn physical_ui_mapping_is_read_per_plugin() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn xml_representation_is_fetched_for_a_supported_layout() {
-    let _plugins = plugin_guard();
     let checker = require_sample("host-checker.vst3");
 
     let xml = checker.xml_representation(
@@ -519,7 +511,6 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
 #[ignore = "needs a VST3 SDK sample whose controller inherits from VSTGUI::VST3EditorDelegate; VSTGUI is not one of this repo's pinned submodules. Set VST3_SAMPLE_PLUGIN_DIR to an external SDK build and run with --ignored."]
 #[test]
 fn param_id_for_function_name_resolves_known_functions() {
-    let _plugins = plugin_guard();
     let checker = require_sample("host-checker.vst3");
 
     let dry_wet = checker
@@ -558,7 +549,6 @@ fn the_factory_flag_word_is_read_not_discarded() {
     if !harness_ready() {
         return;
     }
-    let _guard = plugin_guard();
 
     let mut read = 0usize;
     let mut unicode = 0usize;

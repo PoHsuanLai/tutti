@@ -50,6 +50,9 @@ assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true
 proptest = "1.9.0"
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+
 [[bench]]
 name = "graph_render"
 harness = false

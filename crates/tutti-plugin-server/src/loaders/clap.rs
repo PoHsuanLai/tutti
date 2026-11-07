@@ -25,7 +25,7 @@ use crate::plugin::AsyncEvent;
 
 /// The pool this process serves `clap.thread-pool` requests on, built the
 /// first time a plugin that implements the extension loads; `None` on a
-/// machine too small for one (below).
+/// machine too small for one (below) or that refuses a thread.
 ///
 /// The engine's own pool lives in the host process, and a plugin's `process`
 /// runs here, in another: a request cannot reach it. So the server keeps a
@@ -53,18 +53,24 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
         .get_or_init(|| {
             let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
             let participants = pool_participants(cores);
-            (participants >= 2).then(|| {
-                std::sync::Arc::new(
-                    tutti_graph::WorkerPool::builder(participants)
-                        .name("tutti-clap-pool")
-                        .spin_budget(std::time::Duration::from_micros(10))
-                        .idle(std::time::Duration::from_micros(50))
-                        .on_start(std::sync::Arc::new(|_| {
-                            crate::server::raise_to_realtime("a clap.thread-pool helper")
-                        }))
-                        .build(),
-                )
-            })
+            if participants < 2 {
+                return None;
+            }
+            tutti_graph::WorkerPool::builder()
+                .num_threads(participants)
+                .thread_name(|i| format!("tutti-clap-pool-{i}"))
+                .spin_budget(std::time::Duration::from_micros(10))
+                .idle(std::time::Duration::from_micros(50))
+                .start_handler(|_| crate::server::raise_to_realtime("a clap.thread-pool helper"))
+                .build()
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "clap.thread-pool: a {participants}-thread pool was refused, \
+                         requests are refused: {e}"
+                    );
+                })
+                .ok()
+                .map(std::sync::Arc::new)
         })
         .clone()
         .map(|pool| pool as std::sync::Arc<dyn tutti_graph::Pool>)

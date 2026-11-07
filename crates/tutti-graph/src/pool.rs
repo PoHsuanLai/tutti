@@ -49,7 +49,7 @@
 //! A helper runs graph nodes on the audio thread's behalf, so a host that
 //! promotes its audio callback (`SCHED_FIFO`, MMCSS, a macOS audio
 //! workgroup) must promote the helpers the same way, **at the callback's
-//! priority**: give [`WorkerPoolBuilder::on_start`] a hook, which each
+//! priority**: give [`WorkerPoolBuilder::start_handler`] a hook, which each
 //! helper runs once on its own thread before it takes any work. The engine
 //! does not do this itself, for the same reason it does not promote the
 //! callback: the device layer owns the policy (and on Linux the privilege).
@@ -67,6 +67,7 @@
 //! equal-priority real-time threads at a quantum's end). Above it is wrong
 //! too: a helper would then preempt the callback on its core.
 
+use std::io;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Thread};
@@ -75,9 +76,8 @@ use std::time::{Duration, Instant};
 use crate::{BlockWaits, Pool};
 use tutti_rt::JobGate;
 
-/// A hook run once on each helper thread as it starts, with its index
-/// (`1..participants`).
-pub type OnStart = Arc<dyn Fn(usize) + Send + Sync>;
+type StartHandler = Arc<dyn Fn(usize) + Send + Sync>;
+type ThreadName = Box<dyn FnMut(usize) -> String>;
 
 /// One helper's sleep flag, on a cache-line pair of its own.
 #[repr(align(128))]
@@ -156,12 +156,16 @@ impl Shared {
 /// use std::sync::Arc;
 /// use tutti_graph::WorkerPool;
 ///
-/// let pool = Arc::new(WorkerPool::new(4)); // the caller and three helpers
+/// # fn main() -> std::io::Result<()> {
+/// // The caller and three helpers.
+/// let pool = Arc::new(WorkerPool::builder().num_threads(4).build()?);
 /// # let (_editor, mut executor) = tutti_graph::Editor::new(tutti_graph::Prepare::new(
 /// #     tutti_types::SampleRate(48_000.0),
 /// #     tutti_types::Samples(256),
 /// # ));
 /// executor.set_pool(Some(pool)); // before the executor goes to the audio thread
+/// # Ok(())
+/// # }
 /// ```
 pub struct WorkerPool {
     shared: Arc<Shared>,
@@ -170,27 +174,35 @@ pub struct WorkerPool {
 
 /// Configures a [`WorkerPool`].
 pub struct WorkerPoolBuilder {
-    participants: usize,
+    num_threads: usize,
     spin: Duration,
     idle: Duration,
     waits: BlockWaits,
-    on_start: Option<OnStart>,
-    name: String,
+    start_handler: Option<StartHandler>,
+    thread_name: ThreadName,
 }
 
 impl std::fmt::Debug for WorkerPoolBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerPoolBuilder")
-            .field("participants", &self.participants)
+            .field("num_threads", &self.num_threads)
             .field("spin", &self.spin)
             .field("idle", &self.idle)
             .field("waits", &self.waits)
-            .field("name", &self.name)
             .finish_non_exhaustive()
     }
 }
 
 impl WorkerPoolBuilder {
+    /// The threads that run a job: the caller and `n - 1` helpers. `1` is a
+    /// pool of no helpers (every job runs on the caller). Zero, the
+    /// default, is one per available core (`available_parallelism`).
+    #[must_use]
+    pub fn num_threads(mut self, n: usize) -> Self {
+        self.num_threads = n;
+        self
+    }
+
     /// Between jobs, how long a helper spins after its last job before it
     /// starts yielding. Default 50 µs.
     #[must_use]
@@ -233,34 +245,43 @@ impl WorkerPoolBuilder {
     }
 
     /// A hook each helper runs once on its own thread before taking work,
-    /// with its index — where a host raises the thread's priority to the
-    /// audio callback's or joins its audio workgroup. Under a real-time
-    /// callback the helpers must run at its priority (see the module docs,
-    /// "Priority").
+    /// with the helper's index (`1..num_threads`; the caller is 0) — where a
+    /// host raises the thread's priority to the audio callback's or joins its
+    /// audio workgroup. Under a real-time callback the helpers must run at
+    /// its priority (see the module docs, "Priority").
+    ///
+    /// A hook that panics ends only its own helper: `build` still returns
+    /// `Ok`, and jobs run on the remaining threads. A hook that blocks keeps
+    /// its helper from ever taking work and makes dropping the pool wait for
+    /// it; `build` does not wait for hooks.
     #[must_use]
-    pub fn on_start(mut self, hook: OnStart) -> Self {
-        self.on_start = Some(hook);
+    pub fn start_handler(mut self, hook: impl Fn(usize) + Send + Sync + 'static) -> Self {
+        self.start_handler = Some(Arc::new(hook));
         self
     }
 
-    /// The helpers' thread name prefix (`"<name>-<index>"`). Default
-    /// `"tutti-worker"`.
+    /// The name of helper `index` (`1..num_threads`). Default
+    /// `"tutti-worker-<index>"`.
     #[must_use]
-    pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.name = name.into();
+    pub fn thread_name(mut self, name: impl FnMut(usize) -> String + 'static) -> Self {
+        self.thread_name = Box::new(name);
         self
     }
 
     /// Start the helpers. Control thread; spawns threads.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If a thread cannot be spawned.
-    #[must_use]
-    pub fn build(self) -> WorkerPool {
-        let helpers = self.participants - 1;
+    /// If a thread cannot be spawned. The helpers already started are
+    /// stopped and joined first.
+    pub fn build(mut self) -> io::Result<WorkerPool> {
+        let participants = match self.num_threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
+            n => n,
+        };
+        let helpers = participants - 1;
         let shared = Arc::new(Shared {
-            gate: JobGate::with_waits(self.participants, self.waits),
+            gate: JobGate::with_waits(participants, self.waits),
             stop: AtomicBool::new(false),
             sleepers: (0..helpers)
                 .map(|_| Sleeper {
@@ -271,70 +292,41 @@ impl WorkerPoolBuilder {
             spin: self.spin,
             idle: self.idle,
         });
+        // Dropped on an early return: stops and joins the helpers running.
         let mut pool = WorkerPool {
             shared,
             threads: Vec::with_capacity(helpers),
         };
         for i in 1..=helpers {
             let shared = Arc::clone(&pool.shared);
-            let hook = self.on_start.clone();
-            let spawned = std::thread::Builder::new()
-                .name(format!("{}-{i}", self.name))
+            let hook = self.start_handler.clone();
+            let thread = std::thread::Builder::new()
+                .name((self.thread_name)(i))
                 .spawn(move || {
                     let _ = shared.sleepers[i - 1].thread.set(std::thread::current());
                     if let Some(hook) = hook {
                         hook(i);
                     }
                     shared.helper(i);
-                });
-            match spawned {
-                Ok(t) => pool.threads.push(t),
-                Err(e) => {
-                    // Stop and join the helpers already running before
-                    // panicking, rather than leak them spinning.
-                    drop(pool);
-                    panic!("spawn a worker thread: {e}");
-                }
-            }
+                })?;
+            pool.threads.push(thread);
         }
-        pool
+        Ok(pool)
     }
 }
 
 impl WorkerPool {
-    /// A pool running jobs on `participants` threads: the caller and
-    /// `participants - 1` helpers, with the default waits. `1` is a pool of
-    /// no helpers (every job runs on the caller). Control thread; spawns
-    /// threads.
-    ///
-    /// # Panics
-    ///
-    /// If `participants` is zero.
-    #[must_use]
-    pub fn new(participants: usize) -> Self {
-        Self::builder(participants).build()
-    }
-
-    /// A pool of one participant per available core (`available_parallelism`),
-    /// the caller included.
-    pub fn per_core() -> Self {
-        Self::new(std::thread::available_parallelism().map_or(1, |n| n.get()))
-    }
-
-    /// Configure a pool of `participants` (see [`new`](Self::new)).
-    ///
-    /// # Panics
-    ///
-    /// If `participants` is zero.
-    pub fn builder(participants: usize) -> WorkerPoolBuilder {
-        assert!(participants > 0, "a pool needs its caller");
+    /// Configure a pool: one thread per available core, the caller included
+    /// (see [`num_threads`](WorkerPoolBuilder::num_threads)), with the
+    /// default waits.
+    pub fn builder() -> WorkerPoolBuilder {
         WorkerPoolBuilder {
-            participants,
+            num_threads: 0,
             spin: Duration::from_micros(50),
             idle: Duration::from_micros(500),
             waits: BlockWaits::DEFAULT,
-            on_start: None,
-            name: "tutti-worker".into(),
+            start_handler: None,
+            thread_name: Box::new(|i| format!("tutti-worker-{i}")),
         }
     }
 }
@@ -407,10 +399,12 @@ mod tests {
     /// mask stays 0b001 until its deadline → fails (run: after 10 s).
     #[test]
     fn helpers_join_jobs_before_and_after_parking() {
-        let pool = WorkerPool::builder(3)
+        let pool = WorkerPool::builder()
+            .num_threads(3)
             .spin_budget(Duration::from_micros(10))
             .idle(Duration::from_micros(10))
-            .build();
+            .build()
+            .expect("a worker pool");
         // Until both helpers have joined a job, or a deadline. The deadline
         // is for a loaded CI runner, where nextest's other tests can keep a
         // runnable helper off a core for tens of milliseconds; a fixed count
@@ -460,16 +454,18 @@ mod tests {
     fn the_start_hook_runs_on_each_helper() {
         let started = Arc::new(AtomicUsize::new(0));
         let s = Arc::clone(&started);
-        let pool = WorkerPool::builder(4)
-            .on_start(Arc::new(move |i| {
+        let pool = WorkerPool::builder()
+            .num_threads(4)
+            .start_handler(move |i| {
                 assert!(
                     std::thread::current()
                         .name()
                         .is_some_and(|n| n == format!("tutti-worker-{i}"))
                 );
                 s.fetch_add(1, Ordering::Relaxed);
-            }))
-            .build();
+            })
+            .build()
+            .expect("a worker pool");
         let t = Instant::now();
         while started.load(Ordering::Relaxed) < 3 && t.elapsed() < Duration::from_secs(5) {
             std::thread::yield_now();
@@ -485,7 +481,10 @@ mod tests {
     /// the nested call runs and returns `true` → fails.
     #[test]
     fn try_run_inside_a_job_refuses() {
-        let pool = WorkerPool::new(2);
+        let pool = WorkerPool::builder()
+            .num_threads(2)
+            .build()
+            .expect("a worker pool");
         let inner = AtomicUsize::new(0);
         let nested = AtomicUsize::new(0);
         assert!(pool.try_run(1, &|i| {
@@ -512,13 +511,19 @@ mod tests {
             caller_yield_after: Duration::from_micros(400),
             helper_leave_after: Duration::from_micros(3),
         };
-        let pool = WorkerPool::builder(2)
+        let pool = WorkerPool::builder()
+            .num_threads(2)
             .caller_yield_after(waits.caller_yield_after)
             .helper_leave_after(waits.helper_leave_after)
-            .build();
+            .build()
+            .expect("a worker pool");
         assert_eq!(pool.waits(), waits);
         assert_eq!(pool.shared.gate.waits(), waits);
-        assert_eq!(WorkerPool::new(2).waits(), BlockWaits::DEFAULT);
+        let plain = WorkerPool::builder()
+            .num_threads(2)
+            .build()
+            .expect("a worker pool");
+        assert_eq!(plain.waits(), BlockWaits::DEFAULT);
     }
 
     /// A one-participant pool runs every job on the caller.
@@ -527,12 +532,93 @@ mod tests {
     /// count stays 0 → fails.
     #[test]
     fn a_pool_of_one_runs_on_the_caller() {
-        let pool = WorkerPool::new(1);
+        let pool = WorkerPool::builder()
+            .num_threads(1)
+            .build()
+            .expect("a worker pool");
         let n = AtomicUsize::new(0);
         pool.run(4, &|i| {
             assert_eq!(i, 0);
             n.fetch_add(1, Ordering::Relaxed);
         });
         assert_eq!(n.load(Ordering::Relaxed), 1);
+    }
+
+    /// Helpers carry the builder's names.
+    ///
+    /// Mutation: ignore `thread_name` in `build` (always the default) -> the
+    /// custom names are not seen -> fails.
+    #[test]
+    fn helpers_are_named_by_the_builder() {
+        let names = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&names);
+        let pool = WorkerPool::builder()
+            .num_threads(3)
+            .thread_name(|i| format!("custom-{i}"))
+            .start_handler(move |_| {
+                let name = std::thread::current().name().map(str::to_owned);
+                seen.lock().unwrap().push(name.unwrap());
+            })
+            .build()
+            .expect("a worker pool");
+        let t = Instant::now();
+        while names.lock().unwrap().len() < 2 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::yield_now();
+        }
+        drop(pool);
+        let mut names = names.lock().unwrap().clone();
+        names.sort();
+        assert_eq!(names, ["custom-1", "custom-2"]);
+    }
+
+    /// A helper whose start handler panics ends alone: the pool is built, a
+    /// job closes without waiting for it, and the other helper still joins
+    /// (as participant 1: the gate numbers participants by arrival).
+    ///
+    /// Mutation: run the hook in `build` on the caller instead of on the
+    /// helper -> the panic escapes `build` -> fails. Mutation: `Pool::run`
+    /// waiting for every helper to arrive -> the first job never closes ->
+    /// times out (not run: it needs a change to `tutti-rt`'s gate).
+    #[test]
+    fn a_panicking_start_handler_leaves_a_working_pool() {
+        let pool = WorkerPool::builder()
+            .num_threads(3)
+            .start_handler(|i| {
+                if i == 1 {
+                    panic!("start handler of helper 1");
+                }
+            })
+            .spin_budget(Duration::from_micros(10))
+            .idle(Duration::from_micros(10))
+            .build()
+            .expect("a worker pool");
+        let mask = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // The gate hands out participant indices in arrival order, so the one
+        // live helper is participant 1.
+        while mask.load(Ordering::Relaxed) & 0b010 == 0 && Instant::now() < deadline {
+            pool.run(3, &|i| {
+                mask.fetch_or(1 << i, Ordering::Relaxed);
+                if i == 0 {
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_micros(200) {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+        }
+        let mask = mask.load(Ordering::Relaxed);
+        assert_eq!(mask, 0b011, "the caller and the one live helper ran");
+    }
+
+    /// Zero threads, the default, is one per available core.
+    ///
+    /// Mutation: a fixed `2` for the zero arm in `build` -> fails on any
+    /// machine without exactly two cores.
+    #[test]
+    fn the_default_is_one_thread_per_core() {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let pool = WorkerPool::builder().build().expect("a worker pool");
+        assert_eq!(pool.participants(), cores);
     }
 }

@@ -262,8 +262,7 @@ pub(crate) fn with_source<R>(
     Ok((rendered, lost))
 }
 
-/// Fails a render that lost events under [`EventLossPolicy::Fail`]
-/// ([`crate::EventLossPolicy`]).
+/// Fails a render that lost events under `EventLossPolicy::Fail`
 pub(crate) fn check_loss(policy: crate::EventLossPolicy, lost: u64) -> crate::Result<()> {
     if lost > 0 && policy == crate::EventLossPolicy::Fail {
         return Err(crate::Error::EventsDropped { count: lost });

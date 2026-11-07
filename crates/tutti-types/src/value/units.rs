@@ -27,8 +27,8 @@
 //! The wraps ([`Phase::wrapped`], [`Azimuth::wrap`], [`Beat::fract`],
 //! [`SamplePosition::fract`], [`BeatDuration::rem_euclid`]) give their
 //! half-open range for every finite input, and NaN for NaN or an infinite
-//! input, where the range cannot hold. [`Radians::wrapped_signed`] is the
-//! exception: it is exact only to `f32` rounding, as its docs say.
+//! input, where the range cannot hold. [`Radians::wrapped_signed`] is one of
+//! them, with `pi` the `f32` constant.
 //!
 //! # Operators are opt-in, and every omission is deliberate
 //!
@@ -1422,36 +1422,72 @@ impl Radians {
         Phase::wrapped(self.0 / core::f32::consts::TAU)
     }
 
-    /// Wrapped into `[-pi, pi)` — the signed-deviation form.
+    /// Wrapped into `[-pi, pi)` — the signed-deviation form, with `pi` the
+    /// `f32` constant, for every finite input.
     ///
-    /// Meant half-open at `+pi`, which lands on `-pi` (see below for where
-    /// rounding spoils it): the same convention
+    /// Half-open at `+pi`, which lands on `-pi`: the same convention
     /// [`Phase::wrapped`] uses at the top of its cycle, and the same reason —
     /// the two are one point on the circle, and a closed interval at both ends
-    /// would have to pick one arbitrarily per call.
+    /// would have to pick one arbitrarily per call. An input already in the
+    /// range comes back unchanged.
     ///
     /// The counterpart to [`Azimuth::wrap`] for the radian coordinate, and the
     /// answer to "how far apart are these two angles" once the difference has
     /// been taken: a deviation of `+3pi/2` is really `-pi/2`, and keeping the
     /// larger number makes a partial jump the wrong way.
     ///
-    /// Arithmetic rather than a `while` loop, which costs one iteration per
-    /// turn of input: a phase accumulated over minutes of audio would stall the
-    /// audio thread for an unbounded time. Wrapping *before* comparing is also
-    /// why [`Ord`] on this type is a trap — see the omission note below.
-    ///
-    /// **Not exact at the edges.** The result is `x − 2π·k` in `f32`, so it is
-    /// only within rounding of `[-π, π)`: a few ulps below `-π` or at `π` are
-    /// possible (`3π` gives one ulp under `-π`), and the excess grows with
-    /// `|x|`: about `1e-3` rad by `2^14`, `0.1` by `2^20` and a few radians by
-    /// `2^25`, where `f32` can no longer hold the turn count. NaN and the
-    /// infinities give NaN. A consumer that needs the range exactly clamps
-    /// the result.
+    /// Constant time, not a `while` loop with one iteration per turn of input:
+    /// a phase accumulated over minutes of audio would stall the audio thread.
+    /// The reduction is in `f64` modulo the true `2pi`, so it is accurate to
+    /// about `1e-7` rad up to `2^24` and degrades with `|x|` after that
+    /// (`f64` holds `2pi` to `2e-16` relative, and the error is that times the
+    /// turn count); the range holds regardless. NaN and the infinities give
+    /// NaN. Wrapping *before* comparing is also why [`Ord`] on this type is a
+    /// trap — see the omission note above.
     #[inline]
     #[must_use]
     pub fn wrapped_signed(self) -> Radians {
-        let tau = core::f32::consts::TAU;
-        Radians(self.0 - tau * ((self.0 + core::f32::consts::PI) / tau).floor())
+        use core::f32::consts::PI;
+        let x = self.0;
+        if (-PI..PI).contains(&x) {
+            return self;
+        }
+        if x == PI {
+            return Radians(-PI);
+        }
+        if !x.is_finite() {
+            return Radians(f32::NAN);
+        }
+        Radians(Self::wrap_out_of_range(x))
+    }
+
+    /// The reduction for a finite `x` outside `[-pi, pi)`.
+    fn wrap_out_of_range(x: f32) -> f32 {
+        use core::f64::consts::{PI, TAU};
+        let x = f64::from(x);
+        // `2^24` is not a tested accuracy boundary: `f64` holds the quotient to
+        // about `2^53`, and raising this to `1e12` passes every test. It only
+        // picks where `rem_euclid` takes over.
+        // The turn count multiplies by `1 / TAU`: a divide is the longest link
+        // in this chain, and the vocoder's per-bin wraps wait on it. Every
+        // `f32` input gives the same bits as dividing (swept).
+        let s = if x.abs() < 16_777_216.0 {
+            x - TAU * ((x + PI) * (1.0 / TAU)).floor()
+        } else {
+            // `fmod` is exact, so a huge `x` costs one libm call and no
+            // accumulated rounding beyond `TAU`'s own.
+            let r = x.rem_euclid(TAU);
+            if r >= PI { r - TAU } else { r }
+        };
+        // The true `pi` is a hair under the `f32` one, so a value just below
+        // it can round up to the constant; that is the excluded end, and the
+        // same point as `-pi`.
+        let s = s as f32;
+        if s >= core::f32::consts::PI {
+            -core::f32::consts::PI
+        } else {
+            s
+        }
     }
 }
 
@@ -2522,6 +2558,74 @@ mod tests {
             PhaseIncrement::per_sample(Hz(440.0), 0.0),
             PhaseIncrement(0.0)
         );
+    }
+
+    /// `wrapped_signed` holds `[-pi, pi)` exactly for every finite input, with
+    /// `pi` the `f32` constant, and is the identity inside it.
+    ///
+    /// The figures are `x mod 2pi` taken from a 80-digit evaluation, not from
+    /// the code under test. Up to `2^24` the result is within one `f32` ulp of
+    /// it; beyond that only the range is asserted, since the `f64` `2pi` no
+    /// longer holds the turn count.
+    ///
+    /// Mutations (run, each fails this test): the old f32 formula
+    /// `x - TAU * floor((x + PI) / TAU)` in place of the f64 reduction; the
+    /// `s >= PI` fix-up replaced by `if false`; the `x == PI` early return
+    /// removed; the in-range early return removed.
+    #[test]
+    fn wrapped_signed_holds_its_range_exactly() {
+        use core::f32::consts::PI;
+        let in_range = |w: f32| (-PI..PI).contains(&w);
+        let near = |w: f32, want: f64| (f64::from(w) - want).abs() < 3.0e-7;
+
+        // Identity inside, bits and all: both ends of the closed side, the
+        // largest value under `pi`, the zeros and the subnormals.
+        for x in [
+            -PI,
+            PI.next_down(),
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            f32::from_bits(1),
+            -f32::from_bits(1),
+            f32::from_bits(0x007f_ffff),
+        ] {
+            assert_eq!(Radians(x).wrapped_signed().get().to_bits(), x.to_bits());
+        }
+
+        // `+pi` is the excluded end and folds to `-pi`.
+        assert_eq!(Radians(PI).wrapped_signed(), Radians(-PI));
+
+        // `x mod 2pi` into `[-pi, pi)`, exact to 80 digits.
+        for (x, want) in [
+            (3.0 * PI, -3.141_592_629_740_032_3),
+            (16_384.0, -2.547_281_124_361_531_6),
+            (33_554_432.0, -1.787_937_733_360_393_9),
+            (1.0e6, -0.357_564_167_085_735),
+            (-1.0e6, 0.357_564_167_085_735),
+        ] {
+            let w = Radians(x).wrapped_signed().get();
+            assert!(in_range(w) && near(w, want), "{x:e} -> {w:e}, want {want}");
+        }
+        // The value just under `pi` that rounds to `pi` is the excluded end.
+        assert_eq!(Radians(-3.0 * PI).wrapped_signed(), Radians(-PI));
+
+        // Every magnitude, up to the largest finite `f32` and down to the
+        // subnormals, in both signs.
+        for bits in (1..0x7f80_0000_u32).step_by(4099) {
+            let x = f32::from_bits(bits);
+            for v in [x, -x, x.next_up(), x.next_down()] {
+                let w = Radians(v).wrapped_signed().get();
+                assert!(in_range(w), "{v:e} -> {w:e}");
+            }
+        }
+        for v in [f32::MAX, -f32::MAX, f32::MAX.next_down(), f32::MIN] {
+            let w = Radians(v).wrapped_signed().get();
+            assert!(in_range(w), "{v:e} -> {w:e}");
+        }
     }
 
     /// `Radians` wraps through `wrapped_signed`, never a saturating clamp.

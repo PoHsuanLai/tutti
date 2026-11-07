@@ -362,32 +362,29 @@ const, not for it. `tutti-sampler`'s `RegionOut::push_interleaved` /
 convention the traits now generalize —
 flat slice in, runtime `channels` field, frames out.
 
-**That drop was temporary, and half of it has been undone — do not cite it as
-current state.** Once the width went runtime, `RegionOut` **re-adopted
-`AudioOut<f32>`** (`d79f2621`); the impl is live in `butler/prefetch.rs`. So the
-sampler is not an example of a subsystem the traits cannot reach. Two things to
-carry from how that landed:
+**`RegionOut` has no `AudioOut` impl, and nothing needs one.** It re-adopted
+the trait once the width went runtime, but no caller used the ring through it:
+the refill needs the landed frame count to advance `file_position`, which `write`
+(returning `()`) cannot give, so it calls `push_interleaved`, and the impl was
+deleted. `write_interleaved_reversed` / `set_decoder` / `file_position` never had
+a trait counterpart: reverse refill is butler policy, not something every sink
+can do. Forcing those through `AudioOut` would produce trait methods whose
+meaning depends on which tier you are in, which is the failure that got
+`ClipReader` deleted. The sampler is still not an example of a subsystem the
+traits cannot reach; it just does not need this one.
 
-- **The re-adoption is additive.** `write` must return `()`, but the refill path
-  needs the landed frame count to advance `file_position`, so `push_interleaved`
-  stays public and `write` is written in terms of it.
-  `write_interleaved_reversed` / `set_decoder` / `file_position` have no trait
-  counterpart at all — reverse refill is butler policy, not something every sink
-  can do. Forcing those through `AudioOut` would produce trait methods whose
-  meaning depends on which tier you are in, which is the failure that got
-  `ClipReader` deleted.
-- **`WaveIn` stays inherent, and the width is no longer the reason.** Its reason
-  is now `ON_EMPTY`: `fill_interleaved` always fills the whole buffer and returns
-  `out.len() / ch` unconditionally, so it never returns a short count and neither
-  verdict is true of it — `EndOfStream` is a promise about the *first* zero (it
-  pads silence forever past the end, so a consumer would never stop) and
-  `Starved` promises a producer that will catch up (the `Wave` is resident; a
-  retry returns the same silence). A third "unbounded — pads rather than ending"
-  variant would fit it, and is the wrong trade: a case every existing consumer
-  must handle, in `tutti-types`, to describe a source whose count is already
-  constant. A source that never returns a short count is not answering the
-  question `AudioIn` exists to ask. Full argument on the type in
-  `butler/io/wave_io.rs`.
+**`WaveIn` stays inherent, and the width is no longer the reason.** Its reason
+is now `ON_EMPTY`: `fill_interleaved` always fills the whole buffer and returns
+`out.len() / ch` unconditionally, so it never returns a short count and neither
+verdict is true of it — `EndOfStream` is a promise about the *first* zero (it
+pads silence forever past the end, so a consumer would never stop) and
+`Starved` promises a producer that will catch up (the `Wave` is resident; a
+retry returns the same silence). A third "unbounded — pads rather than ending"
+variant would fit it, and is the wrong trade: a case every existing consumer
+must handle, in `tutti-types`, to describe a source whose count is already
+constant. A source that never returns a short count is not answering the
+question `AudioIn` exists to ask. Full argument on the type in
+`butler/io/wave_io.rs`.
 
 **A sampler *voice* is a graph node and not an edge — the split above decides it,
 not the width.** `MemorySource` implements `tutti_graph::Node` (no

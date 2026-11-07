@@ -252,7 +252,7 @@ fn a_voice_plays_in_time(block: usize) {
     let frames = 24_000;
     // The dry voice is pinned to the tone itself; only the pitched one,
     // which has no closed form, carries a digest.
-    for (cents, want) in [(0.0f32, None), (700.0, Some(0x960c_d60d_47df_c691u64))] {
+    for (cents, want) in [(0.0f32, None), (700.0, Some(0xacb2_45f3_a464_4a49u64))] {
         let rendered = render_voice(cents, frames, block);
         let peak = rendered.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         assert!(peak > 0.5, "{block}-frame blocks, {cents} cents: silent");

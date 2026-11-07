@@ -78,7 +78,7 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
     let click = Arc::new(ClickState::new());
     click.set_meter(Arc::new(MeterMap::new([MeterChange::new(
         Beat(0.0),
-        TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+        TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH),
     )])));
     app.insert_resource(MetronomeRes(click));
     app.add_plugins((GraphReconcilePlugin, TuttiHostingPlugin));

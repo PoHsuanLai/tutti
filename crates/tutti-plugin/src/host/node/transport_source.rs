@@ -682,7 +682,7 @@ mod tests {
     /// Mutation: `with_bar(0.0, BarNumber(0))` → fails.
     #[test]
     fn the_snapshot_carries_the_meter_and_bar() {
-        let seven_eight = TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH);
+        let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
         let meter = MeterMap::new([MeterChange::new(Beat(0.0), seven_eight)]);
         // Bar 2 of 7/8 starts at 3.5 quarter notes, not 7.
         let e = env(

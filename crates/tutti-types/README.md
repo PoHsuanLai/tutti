@@ -99,7 +99,8 @@ assert_eq!(Cents(1200.0).to_semitones(), Semitones(12.0));
 A unit is a name on a float, not a validated value: `Pan(5.0)` builds. The
 range a type documents is what its `new_clamped` or wrap produces, and
 `new_clamped` passes NaN through (see the `units` module docs). The types that
-do validate are `LoopRange`, `BeatsPerBar`, `NoteValue` and `MeterMap`.
+do validate are `LoopRange`, `BeatsPerBar`, `NoteValue` and `MeterMap`: the first two
+refuse through `new`, and saturate only through `clamped` and `nearest`.
 
 ## Operators are opt-in, and every omission is deliberate
 

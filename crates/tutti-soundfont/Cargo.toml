@@ -22,6 +22,7 @@ workspace = true
 [dependencies]
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 # `Node`, `ForkSource`: the player as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient`
 # has one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump`.

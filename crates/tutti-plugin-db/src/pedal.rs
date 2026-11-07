@@ -387,7 +387,7 @@ mod tests {
         pedal.arm(alias.join("a.vst3")).unwrap();
         let mut db = PluginDb::new();
         let crashed = pedal.recover(&mut db, |_| Ok(()));
-        assert_eq!(crashed, [canonical.clone()]);
+        assert_eq!(crashed, std::slice::from_ref(&canonical));
         assert!(db.is_blacklisted(&canonical));
         assert_eq!(db.len(), 1);
     }

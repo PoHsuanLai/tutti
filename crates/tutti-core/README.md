@@ -5,7 +5,7 @@ Real-time audio engine core — DSP graph render, transport, metering.
 ## What this is
 
 The engine's runtime kernel: the per-block graph render, playback transport,
-level metering, and the worker pool. Use it directly
+and level metering. Use it directly
 when you drive the audio callback yourself (a custom device layer, an offline
 renderer, a test harness); otherwise take the `tutti` facade, which re-exports
 this crate as `tutti::core`, or `bevy-tutti` for a Bevy app. Sibling crates
@@ -42,9 +42,12 @@ dependencies on these crates.
   A consumer names them from `tutti_types`; this crate re-exports none of
   them. Delay compensation (`latency`) is `tutti-types`' pure pass, applied by
   the graph compiler.
-- **The ECS binding.** The reconcile pipeline, the graph resources and the
-  declarative wiring live in the host adapter, `bevy_tutti::graph`. The optional
-  `bevy` feature here adds exactly one thing — see below.
+- **The ECS binding.** The node component, the reconcile pipeline, the graph
+  resources and the declarative wiring live in the host adapter,
+  `bevy_tutti::graph`.
+- **The worker pool and the pre-roll table.** `tutti-graph`'s
+  (`WorkerPool`, `PrerollTable`).
+- **The metronome.** `ClickNode` is `tutti-nodes`'.
 
 ## Example — a graph, an engine, and a transport
 
@@ -117,24 +120,10 @@ assert!(transport.is_rolling());
 assert!(transport.beat() > Beat(8.0));
 ```
 
-## The one thing `bevy` adds
-
-tutti-core is a std crate whose DSP graph runtime is Bevy-agnostic. The optional
-`bevy` feature is **off by default** and adds exactly one thing: a `Component`
-derive on `AudioNode`, so an entity can *be* a node in the graph. Everything
-that reconciles against it — the set hierarchy, the graph resources, the param
-components, the declarative wiring — lives in `bevy_tutti::graph`. A non-Bevy
-host edits the graph through `tutti_graph::Editor` (or builds one with
-`GraphBuilder`) directly.
-
 ## Features
 
-All are off by default (`default = []`), which is what keeps this crate
-Bevy-free unless a consumer asks:
+All are off by default (`default = []`):
 
-- `bevy` — the `Component` derive on `AudioNode` described above.
-- `bevy_ecs` — an alias for `bevy`.
-- `midi` — gates nothing here; the MIDI subsystems are separate crates.
 - `serde` — `Serialize`/`Deserialize` on the shared value vocabulary (forwards
   to `tutti-types/serde`). Off by default, since the engine itself never
   serializes.

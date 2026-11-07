@@ -7,11 +7,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use std::time::{Duration, Instant};
-use tutti_core::{AudioNode, MotionEvent};
+use tutti_core::MotionEvent;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{
+    Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
+};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -80,7 +82,7 @@ fn offline() -> Session {
 }
 
 /// A tap in `s`'s graph, and what it hears.
-fn tap(s: &mut Session) -> (AudioNode, Seen) {
+fn tap(s: &mut Session) -> (NodeKey, Seen) {
     let seen = Seen::default();
     let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
     (node, seen)
@@ -267,7 +269,7 @@ fn route_rules_wire_the_hardware_input() {
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
     let (b, _) = tap(&mut s);
-    let ports = |s: &Session, n: AudioNode| -> Vec<u16> {
+    let ports = |s: &Session, n: NodeKey| -> Vec<u16> {
         let mut p: Vec<u16> = s
             .graph_ref()
             .feed(n, Feeder::Routes)
@@ -322,7 +324,7 @@ fn the_routes_have_one_declarer() {
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
     let (b, _) = tap(&mut s);
-    let fed = |s: &Session, n: AudioNode| !s.graph_ref().feed(n, Feeder::Routes).is_empty();
+    let fed = |s: &Session, n: NodeKey| !s.graph_ref().feed(n, Feeder::Routes).is_empty();
 
     let own = s.midi().route(MidiRouteRule::any_channel().to(a)).unwrap();
     let host = [MidiRouteRule::<u8>::any_channel().to(1)];
@@ -550,7 +552,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     use tutti_midi_runtime::MidiClipNode;
 
     let sorted = |mut v: Vec<EventSource>| {
-        v.sort_by_key(|e| (e.node.0.0, e.port));
+        v.sort_by_key(|e| (e.node.0, e.port));
         v
     };
     let mut s = offline();

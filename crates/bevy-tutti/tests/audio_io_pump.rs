@@ -665,11 +665,12 @@ mod io_graph_composition {
     use ringbuf::traits::{Producer as _, Split as _};
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::GraphSource;
     use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin, MasterSources, PortSources};
     use bevy_tutti::io::{MicMonitorNode, MicRing};
-    use tutti_core::AudioNode;
     use tutti_nodes::testing::Through;
+    use tutti_types::NodeKey;
 
     /// An app wired the way `build_into` leaves one, minus the audio device.
     /// Same shape as `graph_wire.rs`'s harness — deliberately, so a difference in
@@ -690,8 +691,8 @@ mod io_graph_composition {
         (MicMonitorNode::new(ring), prod)
     }
 
-    fn node_id(app: &App, entity: Entity) -> AudioNode {
-        *app.world().get::<AudioNode>(entity).expect("AudioNode")
+    fn node_id(app: &App, entity: Entity) -> NodeKey {
+        app.world().get::<AudioNode>(entity).expect("AudioNode").0
     }
 
     /// Render `frames` from the graph, per-sample.
@@ -723,7 +724,7 @@ mod io_graph_composition {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(monitor).0
         };
-        let entity = app.world_mut().spawn(id).id();
+        let entity = app.world_mut().spawn(AudioNode(id)).id();
         app.insert_resource(MasterSources::from(entity));
         app.update();
 
@@ -757,8 +758,8 @@ mod io_graph_composition {
                 graph.graph().insert(Through::mono()).0,
             )
         };
-        let mon = app.world_mut().spawn(mon_id).id();
-        let fx = app.world_mut().spawn(fx_id).id();
+        let mon = app.world_mut().spawn(AudioNode(mon_id)).id();
+        let fx = app.world_mut().spawn(AudioNode(fx_id)).id();
 
         app.world_mut()
             .entity_mut(fx)
@@ -792,7 +793,7 @@ mod io_graph_composition {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(monitor).0
         };
-        let entity = app.world_mut().spawn(id).id();
+        let entity = app.world_mut().spawn(AudioNode(id)).id();
         app.insert_resource(MasterSources::from(entity));
         app.update();
 

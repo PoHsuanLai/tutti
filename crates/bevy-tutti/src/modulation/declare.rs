@@ -24,7 +24,7 @@ use tutti_types::{Depth, ParamAddr, Seconds, UnitAddr, UnitParam};
 /// is its own numeric id ([`plugin`](Self::plugin)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ParamRef {
-    /// The entity whose [`AudioNode`](tutti_core::AudioNode) has the param.
+    /// The entity whose [`AudioNode`](crate::graph::AudioNode) has the param.
     pub entity: Entity,
     /// The param's address on that node.
     pub param: ParamAddr,

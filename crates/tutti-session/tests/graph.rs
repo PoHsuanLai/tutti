@@ -541,12 +541,12 @@ fn move_feeds_moves_every_feeders_sources() {
     g.set_feed(old, Feeder::Routes, vec![EventSource::new(route, 0)]);
     let both = {
         let mut v = vec![EventSource::from(clip), EventSource::from(route)];
-        v.sort_by_key(|e| e.node.key().0);
+        v.sort_by_key(|e| e.node.0);
         v
     };
     assert_eq!(g.fed(old), both, "each feeder kept its own entry");
     let mut edges = g.event_sources(old, 0);
-    edges.sort_by_key(|e| e.node.key().0);
+    edges.sort_by_key(|e| e.node.0);
     assert_eq!(edges, both, "the union is the sink's event edges");
 
     g.move_feeds(old, new);
@@ -554,7 +554,7 @@ fn move_feeds_moves_every_feeders_sources() {
     assert_eq!(g.feed(new, Feeder::Routes), [EventSource::from(route)]);
     assert!(g.fed(old).is_empty(), "the old sink is fed by nothing");
     let mut edges = g.event_sources(new, 0);
-    edges.sort_by_key(|e| e.node.key().0);
+    edges.sort_by_key(|e| e.node.0);
     assert_eq!(edges, both, "the new sink's edges are the union");
     assert!(g.event_sources(old, 0).is_empty(), "and the old's are gone");
     assert_eq!(s.update().len(), 0);

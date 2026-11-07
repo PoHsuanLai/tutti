@@ -8,9 +8,9 @@
 //! preview or an all-notes-off a host sends is a [`LiveMidiInput`] on the
 //! entity it plays.
 
+use crate::graph::AudioNode;
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use tutti_core::AudioNode;
 use tutti_midi_runtime::{MidiInputControls, MidiSender};
 
 use crate::graph::{AudioGraphRes, EventWiring, engine_ready};
@@ -135,11 +135,11 @@ pub fn attach_live_midi(
 ) {
     let mut midi = graph.midi();
     for (entity, &sink) in &wanted {
-        match midi.live_input(sink) {
+        match midi.live_input(sink.0) {
             Ok(live) => {
                 commands.entity(entity).insert(LiveMidi {
                     sender: live.sender,
-                    node: live.node,
+                    node: AudioNode(live.node),
                 });
             }
             Err(e) => tracing::warn!("live MIDI for {entity:?}: {e}"),
@@ -148,7 +148,7 @@ pub fn attach_live_midi(
     // Derived at the point of use: an unchanged feed (and the edit flag) is
     // left alone.
     for (entity, &sink, live) in &rebound {
-        if let Err(e) = midi.retarget(live.node, sink) {
+        if let Err(e) = midi.retarget(live.node.0, sink.0) {
             tracing::warn!("live MIDI for {entity:?} not re-aimed: {e}");
         }
     }

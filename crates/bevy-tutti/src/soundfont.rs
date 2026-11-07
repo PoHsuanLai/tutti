@@ -17,7 +17,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use std::sync::Arc;
 
 use crate::graph::{
-    AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems, engine_ready,
+    AudioConfig, AudioGraphRes, AudioNode, CapturedControls, GraphReconcileSystems, engine_ready,
 };
 use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
 use tutti_ump::{MidiChannel, U7};
@@ -105,7 +105,7 @@ const _: () = {
 ///
 /// [`soundfont_playback_system`] takes it from here — an off-thread
 /// `SoundFontUnit` build, then [`PendingSoundFontUnit`], then an
-/// [`AudioNode`](tutti_core::AudioNode) once the build lands.
+/// [`AudioNode`] once the build lands.
 ///
 /// The trigger query is steady-state, not `Added`, so an entity whose `.sf2`
 /// asset has not finished loading is retried each frame until it resolves. An
@@ -170,10 +170,10 @@ pub struct PendingSoundFontUnit {
 
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
 /// but is neither building (`PendingSoundFontUnit`) nor already playing (it has
-/// no [`AudioNode`](tutti_core::AudioNode) yet).
+/// no [`AudioNode`] yet).
 type PlaySoundFontPending = (
     Without<PendingSoundFontUnit>,
-    Without<tutti_core::AudioNode>,
+    Without<crate::graph::AudioNode>,
 );
 
 /// Processes `PlaySoundFont` trigger components: once the `.sf2` asset has
@@ -284,7 +284,7 @@ pub fn promote_pending_soundfonts(
         commands
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
-            .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, id));
+            .queue(move |mut e: EntityWorldMut| controls.bind(&mut e, AudioNode(id)));
     }
 }
 

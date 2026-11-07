@@ -53,7 +53,7 @@ use std::collections::BTreeMap;
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_types::ChannelLayout;
 use tutti_types::{
     NodeKey, Topology,
@@ -156,10 +156,10 @@ pub fn build(
     };
 
     for (entity, node) in nodes.iter() {
-        if !graph.graph_ref().contains(*node) {
+        if !graph.graph_ref().contains(node.0) {
             continue;
         }
-        let spec = spec_of(graph, *node);
+        let spec = spec_of(graph, node.0);
         topology.nodes.insert(key_of(entity), spec);
     }
 
@@ -300,11 +300,11 @@ pub fn apply(
 fn live_ids(
     graph: &AudioGraphRes,
     nodes: &Query<(Entity, &AudioNode)>,
-) -> BTreeMap<NodeKey, AudioNode> {
+) -> BTreeMap<NodeKey, NodeKey> {
     nodes
         .iter()
-        .filter(|(_, n)| graph.graph_ref().contains(**n))
-        .map(|(e, n)| (key_of(e), *n))
+        .filter(|(_, n)| graph.graph_ref().contains(n.0))
+        .map(|(e, n)| (key_of(e), n.0))
         .collect()
 }
 
@@ -315,7 +315,7 @@ fn live_ids(
 /// silently. `None` is "not yet", never "silent": collapsing the two would drive
 /// a port to zero on the frame before its source appears and then never revisit
 /// it, since the declaration would not have changed.
-fn lower(source: Source, ids: &BTreeMap<NodeKey, AudioNode>) -> Option<GraphSource> {
+fn lower(source: Source, ids: &BTreeMap<NodeKey, NodeKey>) -> Option<GraphSource> {
     Some(match source {
         Source::Zero => GraphSource::Silence,
         Source::Global(ch) => GraphSource::Input(ch as usize),
@@ -399,7 +399,7 @@ pub fn disagreements(
 
 /// The spec of one live node, read off the unit through the graph's shape
 /// queries.
-fn spec_of(graph: &AudioGraphRes, node: AudioNode) -> NodeSpec {
+fn spec_of(graph: &AudioGraphRes, node: NodeKey) -> NodeSpec {
     NodeSpec {
         kind: ENTITY_NODE_KIND.to_string(),
         inputs: ChannelLayout::from_count(graph.graph_ref().node_inputs(node) as u16),

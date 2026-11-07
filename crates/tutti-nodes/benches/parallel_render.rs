@@ -23,7 +23,7 @@
 //!   matters. `-undeclared` again for the gains declaring nothing.
 //!
 //! `workers` is the participant count, the calling thread included; `1` is
-//! the serial executor with no pool. The pool is `tutti_core::WorkerPool`
+//! the serial executor with no pool. The pool is `tutti_graph::WorkerPool`
 //! with its default waits, so a block's helpers are usually still spinning
 //! from the last block (criterion runs blocks back to back); the wake cost
 //! of a parked helper is not in these numbers.
@@ -40,7 +40,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::WorkerPool;
+use tutti_graph::WorkerPool;
 use tutti_graph::{Editor, Executor, Prepare, Transport, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{ChannelSumNode, SvfFilterNode, SvfType};

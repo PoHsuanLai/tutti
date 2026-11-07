@@ -92,7 +92,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use crate::graph::{AudioGraphRes, GraphReconcileSystems, engine_ready};
-use tutti_core::PrerollTable;
+use tutti_graph::PrerollTable;
 use tutti_types::{Compensation, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.

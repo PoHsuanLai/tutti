@@ -48,8 +48,8 @@ use std::collections::{HashMap, HashSet};
 
 use tutti_midi_runtime::TimedMidiEvent;
 
+use crate::graph::AudioNode;
 use crate::graph::{AudioGraphRes, EventWiring, GraphReconcileSystems, engine_ready};
-use tutti_core::AudioNode;
 
 /// Declares events for the synth (or plugin) on `target` to play.
 ///
@@ -177,7 +177,7 @@ pub fn rebuild(
         .iter()
         .filter_map(|&t| {
             let &node = nodes.get(t).ok()?;
-            (graph.graph_ref().node_event_inputs(node) > 0).then_some((t, node))
+            (graph.graph_ref().node_event_inputs(node.0) > 0).then_some((t, node))
         })
         .collect();
 
@@ -205,7 +205,7 @@ pub fn rebuild(
         // `AudioNode` was removed and re-inserted lost its old node's feeds
         // with that node (`Graph::remove`), and nothing else would restore
         // them. An unchanged feed (and the edit flag) is left alone.
-        match midi.retarget(clip, sink) {
+        match midi.retarget(clip.0, sink.0) {
             Ok(()) => {
                 clips.failed.remove(target);
             }
@@ -223,7 +223,7 @@ pub fn rebuild(
         // block, ending the notes it left sounding (as new events end the
         // old ones').
         if !by_target.contains_key(target) {
-            midi.stop_clip(sink);
+            midi.stop_clip(sink.0);
         }
     }
 
@@ -235,9 +235,9 @@ pub fn rebuild(
         let Some(&sink) = playable.get(&target) else {
             continue;
         };
-        match midi.play_clip(sink, events) {
+        match midi.play_clip(sink.0, events) {
             Ok(clip) => {
-                clips.clips.insert(target, clip);
+                clips.clips.insert(target, AudioNode(clip));
                 clips.failed.remove(&target);
             }
             Err(e) => {

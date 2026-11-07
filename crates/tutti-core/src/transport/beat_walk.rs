@@ -1,29 +1,10 @@
-//! The beat walk the metronome shares with the graph: every frame's beat,
-//! read from its block's [`Env`](tutti_graph::Env).
-//!
-//! Nodes that follow the beat read it with `Env::for_each_beat`.
-
-use tutti_types::Beat;
-
-/// The beat of every frame of one piece of a block ([`Env::segments`]'s
-/// `(start, piece)`), handed to `emit` with its index in the whole block —
-/// [`Env::for_each_piece_beat`](tutti_graph::Env::for_each_piece_beat),
-/// the walk the metronome (`ClickNode`, which gates each piece on its
-/// transport) takes.
-///
-/// [`Env::segments`]: tutti_graph::Env::segments
-pub(super) fn piece_beats(
-    start: tutti_graph::Offset,
-    piece: &tutti_graph::Env,
-    emit: impl FnMut(usize, Beat),
-) {
-    piece.for_each_piece_beat(start, emit);
-}
+//! Tests of the beat walk a node takes over its block's
+//! [`Env`](tutti_graph::Env), `Env::for_each_beat`.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tutti_graph::{Env, Transport, TransportChanges};
+    use tutti_types::Beat;
     use tutti_types::Frame;
     use tutti_types::{Bpm, FrameClock, SampleRate, Samples};
 

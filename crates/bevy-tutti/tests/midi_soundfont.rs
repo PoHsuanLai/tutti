@@ -32,10 +32,10 @@ mod soundfont_spawn {
     use bevy_asset::{AssetPlugin, Assets, Handle};
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::soundfont::SoundFontAsset;
     use bevy_tutti::soundfont::{PlaySoundFont, TuttiSoundFontPlugin};
-    use tutti_core::AudioNode;
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -161,7 +161,7 @@ mod soundfont_spawn {
             "the off-thread build should land and insert AudioNode"
         );
 
-        let node = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -238,7 +238,7 @@ mod soundfont_spawn {
             .id();
         assert!(run_until_promoted(&mut app, entity));
 
-        let node = *app.world().get::<AudioNode>(entity).expect("AudioNode");
+        let node = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert_eq!(
             app.world()
                 .resource::<bevy_tutti::graph::AudioGraphRes>()
@@ -269,6 +269,7 @@ mod midi_soundfont_audio {
     use bevy_ecs::prelude::Resource;
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{LiveMidi, LiveMidiInput, MidiSourceInstall, TuttiMidiPlugin};
     use tutti_core::transport::Transport;
@@ -394,7 +395,7 @@ mod midi_soundfont_audio {
             graph.graph().set_outputs_from(node);
             node
         };
-        let synth = app.world_mut().spawn(node).id();
+        let synth = app.world_mut().spawn(AudioNode(node)).id();
         (app, synth)
     }
 
@@ -529,6 +530,7 @@ mod midi_route {
     use bevy_app::prelude::*;
 
     use bevy_tutti::AudioEngineState;
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{MidiEngineNodes, MidiRouteRule, TuttiMidiPlugin};
     use tutti_core::transport::Transport;
@@ -613,11 +615,11 @@ mod midi_route {
             bevy_asset::AssetPlugin::default(),
         ));
         app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
-        let input = app.world_mut().spawn(input_node).id();
-        let synth = app.world_mut().spawn(synth_node).id();
+        let input = app.world_mut().spawn(AudioNode(input_node)).id();
+        let synth = app.world_mut().spawn(AudioNode(synth_node)).id();
         app.insert_resource(MidiEngineNodes {
             input,
-            input_node,
+            input_node: AudioNode(input_node),
             clock: input,
             hardware_out: input,
         });

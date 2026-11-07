@@ -707,8 +707,7 @@ pub fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 /// A pool of `participants - 1` helper threads over `tutti_rt::JobGate`,
 /// for tests: helpers spin (yielding) for work and never sleep, so every
 /// job gets its helpers promptly and the parallel paths are exercised hard.
-/// `tutti_core::WorkerPool` is the production pool (it cannot be named here:
-/// `tutti-core` depends on this crate).
+/// `WorkerPool` is the production pool; this one never parks.
 ///
 /// With `no_alloc`, every participant runs its share of the job inside
 /// `assert_no_alloc::assert_no_alloc` — the helpers included, which a gate

@@ -21,7 +21,7 @@
 use super::plan::ChannelPlan;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tutti_core::PrerollTable;
+use tutti_graph::PrerollTable;
 
 /// The butler's handle on the published compensation table, if any.
 ///

@@ -19,15 +19,15 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, EventSource, GraphReconcilePlugin, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiEngineNodes, MidiRouteFallback, MidiRouteRule, TuttiMidiPlugin};
-use tutti_core::AudioNode;
 use tutti_core::transport::Transport;
 use tutti_midi_runtime::{CHANNELLESS_PORT, MIDI_INPUT_PORTS, MidiInputNode};
 use tutti_polysynth::{PolySynth, SynthConfig};
-use tutti_types::SampleRate;
+use tutti_types::{NodeKey, SampleRate};
 use tutti_ump::MidiChannel;
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -53,10 +53,10 @@ fn app() -> App {
         bevy_asset::AssetPlugin::default(),
     ));
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
-    let input = app.world_mut().spawn(input_node).id();
+    let input = app.world_mut().spawn(AudioNode(input_node)).id();
     app.insert_resource(MidiEngineNodes {
         input,
-        input_node,
+        input_node: AudioNode(input_node),
         clock: input,
         hardware_out: input,
     });
@@ -71,10 +71,11 @@ fn synth(app: &mut App) -> Entity {
     entity
 }
 
-fn node_of(app: &App, entity: Entity) -> AudioNode {
-    *app.world()
+fn node_of(app: &App, entity: Entity) -> NodeKey {
+    app.world()
         .get::<AudioNode>(entity)
         .expect("bound to a node")
+        .0
 }
 
 mod routes {
@@ -88,7 +89,7 @@ mod routes {
             .graph_ref()
             .event_sources(node_of(app, entity), 0)
             .into_iter()
-            .filter(|s| s.node == input)
+            .filter(|s| s.node == input.0)
             .map(|s: EventSource| s.port)
             .collect()
     }
@@ -186,7 +187,7 @@ mod routes {
             let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
             graph.graph().insert(synth).0
         };
-        app.world_mut().entity_mut(lead).insert(node);
+        app.world_mut().entity_mut(lead).insert(AudioNode(node));
         app.update();
         assert_eq!(ports(&app, lead), BTreeSet::from([0, channelless()]));
     }
@@ -211,7 +212,8 @@ mod keyboard {
             .world()
             .get::<LiveMidi>(lead)
             .expect("the keyboard is attached")
-            .node();
+            .node()
+            .0;
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -232,7 +234,7 @@ mod keyboard {
 
         app.world_mut().entity_mut(lead).insert(LiveMidiInput);
         app.update();
-        let queue = app.world().get::<LiveMidi>(lead).unwrap().node();
+        let queue = app.world().get::<LiveMidi>(lead).unwrap().node().0;
         app.world_mut().despawn(lead);
         app.update();
         assert!(
@@ -260,7 +262,7 @@ mod keyboard {
         let lead = synth(&mut app);
         app.world_mut().entity_mut(lead).insert(LiveMidiInput);
         app.update();
-        let queue = app.world().get::<LiveMidi>(lead).unwrap().node();
+        let queue = app.world().get::<LiveMidi>(lead).unwrap().node().0;
         let old = node_of(&app, lead);
 
         app.world_mut().entity_mut(lead).remove::<AudioNode>();
@@ -276,7 +278,7 @@ mod keyboard {
         let new = node_of(&app, lead);
         assert_ne!(new, old, "the entity is bound to a new node");
         assert_eq!(
-            app.world().get::<LiveMidi>(lead).unwrap().node(),
+            app.world().get::<LiveMidi>(lead).unwrap().node().0,
             queue,
             "the same keyboard"
         );
@@ -319,7 +321,8 @@ mod keyboard {
             .world()
             .get::<LiveMidi>(lead)
             .expect("attached once the graph is back")
-            .node();
+            .node()
+            .0;
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -369,7 +372,8 @@ mod keyboard {
             .world()
             .get::<LiveMidi>(lead)
             .expect("attached after the rebind")
-            .node();
+            .node()
+            .0;
         assert_eq!(
             app.world()
                 .resource::<AudioGraphRes>()
@@ -412,7 +416,7 @@ mod keyboard {
 mod unwire {
     use super::*;
 
-    fn graph_has(app: &App, node: AudioNode) -> bool {
+    fn graph_has(app: &App, node: NodeKey) -> bool {
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()

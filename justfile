@@ -302,7 +302,6 @@ plugin-server-release:
 # sides.
 check-bevy-free:
     cargo check --locked -p tutti-core
-    cargo check --locked -p tutti-core --features bevy
     cargo check --locked -p tutti-types
     cargo check --locked -p tutti-types --features bevy
     # The facade, and the assertion the two `cargo check`s above cannot make.

@@ -19,7 +19,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use support::{clap_probe, plugin_server};
-use tutti_core::AudioNode;
 use tutti_export::{ExportConfig, RenderConfig};
 use tutti_graph::ForkByClone;
 use tutti_plugin::RenderMode;
@@ -29,6 +28,7 @@ use tutti_session::{
     ExportClock, ExportRequest, ExportSource, ExportTarget, Phase, PhaseCx, PluginLiveness,
     PluginLoadRequest, Session, SessionEvent,
 };
+use tutti_types::NodeKey;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate(48_000.0);
@@ -69,7 +69,7 @@ fn session_built(
 }
 
 /// Loads the probe into `s` (blocking), unwired.
-fn add_probe(s: &mut Session) -> AudioNode {
+fn add_probe(s: &mut Session) -> NodeKey {
     s.add_plugin_blocking(PluginLoadRequest {
         id: PluginId::from_path(clap_probe()),
         state: None,
@@ -79,7 +79,7 @@ fn add_probe(s: &mut Session) -> AudioNode {
 
 /// The probe's own latency (without the pipeline's chunk), as its node's
 /// latency cell holds it.
-fn latency(s: &Session, node: AudioNode) -> Samples {
+fn latency(s: &Session, node: NodeKey) -> Samples {
     s.plugin(node)
         .expect("hosted")
         .controls()
@@ -92,7 +92,7 @@ fn latency(s: &Session, node: AudioNode) -> Samples {
 /// bridge thread reads it off the socket only while it waits for the next
 /// reply; live, any later control call (a snapshot, a parameter read) carries
 /// it, and here this one does.
-fn round_trip(s: &Session, node: AudioNode) {
+fn round_trip(s: &Session, node: NodeKey) {
     let handle = s.plugin(node).expect("hosted").handle();
     let _ = handle
         .presets()
@@ -102,7 +102,7 @@ fn round_trip(s: &Session, node: AudioNode) {
 
 /// Waits (up to 10 s) for the probe's latency to read `want`: the
 /// `clap.latency` callback reaches the cell from the server's bridge thread.
-fn await_latency(s: &Session, node: AudioNode, want: Samples, why: &str) {
+fn await_latency(s: &Session, node: NodeKey, want: Samples, why: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while {
         round_trip(s, node);
@@ -119,7 +119,7 @@ fn await_latency(s: &Session, node: AudioNode, want: Samples, why: &str) {
 
 /// Holds for 200 ms that the probe's latency reads `want`: what an
 /// announcement that did not happen looks like.
-fn stays_latency(s: &Session, node: AudioNode, want: Samples, why: &str) {
+fn stays_latency(s: &Session, node: NodeKey, want: Samples, why: &str) {
     let until = Instant::now() + Duration::from_millis(200);
     while Instant::now() < until {
         round_trip(s, node);
@@ -143,7 +143,7 @@ fn request(source: ExportSource) -> ExportRequest {
 
 /// The probe on the outputs, its render mode announced (Realtime) by an
 /// update: returns its node and its realtime latency.
-fn wired_probe(s: &mut Session) -> (AudioNode, Samples) {
+fn wired_probe(s: &mut Session) -> (NodeKey, Samples) {
     let node = add_probe(s);
     s.graph().set_outputs_from(node);
     s.update();
@@ -449,11 +449,11 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
 // --- Recovery ---------------------------------------------------------------
 
 /// The reference plugin's applied `Gain` parameter.
-fn gain_param(_s: &Session, _node: AudioNode) -> tutti_plugin::handles::ParamId {
+fn gain_param(_s: &Session, _node: NodeKey) -> tutti_plugin::handles::ParamId {
     tutti_plugin::handles::ParamId::new(tutti_clap_test_plugin::params_state::GAIN_PARAM_ID)
 }
 
-fn param(s: &Session, node: AudioNode, id: tutti_plugin::handles::ParamId) -> Option<f64> {
+fn param(s: &Session, node: NodeKey, id: tutti_plugin::handles::ParamId) -> Option<f64> {
     s.plugin(node)
         .expect("hosted")
         .handle()
@@ -1013,7 +1013,7 @@ fn a_replacement_with_other_ports_is_refused_and_the_graph_stays_editable() {
 
 /// Captures a snapshot of `node` at once, as a host's worker would (the
 /// session's snapshot cadence is 1 s here, driven by the virtual clock).
-fn snapshot_now(s: &mut Session, node: AudioNode) {
+fn snapshot_now(s: &mut Session, node: NodeKey) {
     let t0 = Instant::now();
     for at in [0, 2_000] {
         let mut out = Vec::new();

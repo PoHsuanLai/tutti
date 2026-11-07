@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::AllocDisabler;
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions};
 use tutti_clap_test_plugin::ThreadPoolCapture;
-use tutti_core::WorkerPool;
 use tutti_graph::Pool;
+use tutti_graph::WorkerPool;
 
 mod support;
 use support::active::{Activate, Active};

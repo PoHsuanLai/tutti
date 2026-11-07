@@ -1,0 +1,18 @@
+[package]
+name = "tutti-shared-plugin"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "One test plugin: a format-free core and a shell per plugin format, in one library"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The `cdylib` is the loadable plugin; the `rlib` lets a test crate depend on
+# it so cargo builds the cdylib in the same invocation (one target-dir lock, no
+# nested `cargo`). It names no tutti crate: the plugin is an independent
+# witness of what a host does.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clap-sys = "0.5"

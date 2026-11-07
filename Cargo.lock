@@ -4580,6 +4580,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-plugin-contract"
+version = "0.1.0"
+dependencies = [
+ "assert_no_alloc",
+ "tutti-clap-host",
+ "tutti-fixtures",
+ "tutti-midi-types",
+ "tutti-plugin",
+ "tutti-plugin-types",
+ "tutti-shared-plugin",
+ "tutti-ump",
+]
+
+[[package]]
 name = "tutti-plugin-db"
 version = "0.0.1"
 dependencies = [
@@ -4746,6 +4760,13 @@ dependencies = [
  "tutti-transport",
  "tutti-types",
  "tutti-ump",
+]
+
+[[package]]
+name = "tutti-shared-plugin"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
 ]
 
 [[package]]

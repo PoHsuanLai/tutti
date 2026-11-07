@@ -255,10 +255,9 @@ fn frames(blocks: usize) -> impl Iterator<Item = u64> {
 /// outputs themselves are untouched by all four taps being open.
 ///
 /// Mutation (run, recorded here): skip the `DelayKey::Tap` delay in
-/// `compile` (emit the tap unaligned) -> the aligned lanes of chains 0 to 4
-/// and the single lane fail, the raw lanes and the outputs still pass.
-/// Mutation (run): `TapAlign::Raw` treated as `ToOutput` -> the raw lane 0
-/// fails.
+/// `compile` (`if false && spec.align == ToOutput ...`) -> the aligned lanes
+/// fail. Mutation (run): align every tap, `Raw` included (drop the `align`
+/// test from the same condition) -> the raw lane of chain 0 fails.
 #[test]
 fn a_tap_is_aligned_by_the_compiler_and_any_width() {
     let mut r = rig(1, false);
@@ -291,8 +290,9 @@ fn a_tap_is_aligned_by_the_compiler_and_any_width() {
 /// one at several worker counts, with every participant inside
 /// `assert_no_alloc`, and the serial render itself is the analytic one.
 ///
-/// Mutation (run, recorded here): drop the `Op::Tap` arm in `par.rs` (a
-/// `todo`-free no-op) -> the parallel taps are empty and the comparison fails.
+/// Mutation (run, recorded here): make the `Op::Tap` arm in `par.rs` a no-op
+/// -> the parallel taps are empty and the comparison with the serial run
+/// fails.
 #[test]
 fn the_parallel_taps_are_bit_identical_and_allocation_free() {
     let mut s = rig(1, false);
@@ -311,10 +311,9 @@ fn the_parallel_taps_are_bit_identical_and_allocation_free() {
 /// The plan's tap ops: one per lane while open, none once closed, and a closed
 /// plan has the ops of a graph that never had a tap.
 ///
-/// Mutation (run, recorded here): emit the `Op::Tap` loop over every spec ever
-/// opened (keep closed taps in a side list) -> the closed count is nonzero.
-/// Mutation (run): skip the aligned delay's removal on a `Raw` tap (always
-/// emit a `Delay`) -> the raw plan has more ops than `base + lanes`.
+/// Mutation (run, recorded here): `Editor::close_tap` drops the pending lanes
+/// but leaves the spec's `TapSpec` -> the closed plan still has tap ops. The
+/// aligned-delay mutations of the test above fail the op counts here too.
 #[test]
 fn a_closed_tap_leaves_no_op() {
     let ops = |r: &Rig| {
@@ -393,8 +392,8 @@ fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
 /// A read is whole frames: a buffer that ends mid-frame leaves its tail as it
 /// was, and the reader says how wide it is.
 ///
-/// Mutation (run, recorded here): `out.len() / width` -> `out.len()` -> the
-/// read overruns the buffer's whole frames and the sentinel tail changes.
+/// Mutation (run, recorded here): `.min(out.len() / width)` -> `.min(out.len())`
+/// in `pop_into` -> the read runs past the buffer and the test fails.
 #[test]
 fn a_read_is_whole_frames() {
     let mut r = rig(1, false);
@@ -417,9 +416,9 @@ fn a_read_is_whole_frames() {
 /// its producer are freed at the editor's collect, never in a block (a lane's
 /// drop is a debug panic inside one).
 ///
-/// Mutation (run, recorded here): in `Executor::rebuild`, `old.taps.clear()`
-/// -> the commit's apply drops the lanes on the audio side and the test
-/// panics with "a tap lane dropped on the audio thread".
+/// Mutation (run, recorded here): `old.taps.clear()` in `Executor::rebuild` ->
+/// the commit's apply drops the lanes on the audio side and the test panics
+/// with "a tap lane dropped on the audio thread".
 #[test]
 fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
     let mut r = rig(1, true);
@@ -470,12 +469,13 @@ fn a_reader_dropped_on_the_audio_thread_panics() {
 ///
 /// The fork carries no tap by construction: `fork_gather` copies the live
 /// topology's inputs, outputs and edges piecewise into the fork's editor, never
-/// its taps, so the `taps: BTreeMap::new()` in the fork's spec literal is only
-/// what the struct needs.
+/// its taps.
 ///
-/// Mutation (run, recorded here): copy `live.topology.taps` into the fork's
-/// literal in `fork.rs` -> the fork's spec is not empty and the first
-/// assertion fails.
+/// Mutation (run, recorded here): copy the live taps into the fork's spec
+/// literal *and* into the editor `fork_gather` builds
+/// (`fork.topology.taps = spec.topology.taps`) -> the first assertion fails.
+/// Copying them into the literal alone passes: nothing reads that field,
+/// which is why the empty map there is only what the struct needs.
 #[test]
 fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
     let mut r = rig(1, false);

@@ -20,8 +20,9 @@ workspace = true
 # build pulls no `serde_json` and no format FFI.
 default = []
 
-# Opt-in JSON-file-backed `JsonCatalog` (in `tutti-plugin-db`) behind
-# `Plugins::with_json_catalog`. Leave it off and bring your own `PluginCatalog`.
+# Opt-in versioned JSON database file (`tutti-plugin-db`'s `save` and `load`)
+# behind `Plugins::load` and `Plugins::save`. Leave it off and build a
+# `PluginDb` from your own store.
 json = ["tutti-plugin-db/json"]
 
 # In-process GUI support (loads plugin library in host for editor only)

@@ -234,7 +234,7 @@ pub fn plugin_load_start(
     pending: Query<&PendingPlugin>,
     requests: Query<(Entity, &PluginRequest), LoadNotStarted>,
 ) {
-    // Absent while a rescan owns the catalog, and until a host inserts one.
+    // Absent until a host inserts one.
     // Requests simply wait — that is what the steady-state query buys.
     let Some(plugins) = plugins else {
         return;

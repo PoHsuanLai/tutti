@@ -19,8 +19,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `src/seq_cell.rs` (re-run against the typed
-//! `SeqWriter<T>`) and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
+//! Each was applied to `src/seq_cell.rs` and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
 //! unbounded (the pair runs in about four seconds):
 //!
 //! - the writer's `Release` fence deleted → "a mixed copy: [1, 1, 2]" (the
@@ -99,7 +98,7 @@ fn two_reads(reader: &SeqReader<Value>) {
 // order. A spawned thread doing `load` then `store`, against a main thread
 // doing one `load`, runs one execution; with the roles swapped, six. With
 // that writer spawned, this model ran once and every mutation below passed.
-// The writer now only stores (it keeps its own sequence), so either
+// The writer only stores (it keeps its own sequence), so either
 // placement explores; both run, so a writer that loads again cannot hide
 // behind one of them. (The same limit under-explores `job_gate`,
 // `arc-lend`'s `two_publishers_and_a_reader` and several `pos_ring` models

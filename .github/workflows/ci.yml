@@ -96,7 +96,7 @@ jobs:
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
+      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_midi_protocol scale voice
       # And `tutti-dsp`: its modules are private, the root names every item.

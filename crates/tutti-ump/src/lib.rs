@@ -41,6 +41,7 @@ mod decode;
 mod encode;
 mod field;
 mod message;
+mod midi1;
 mod midi_channel;
 mod midi_group;
 mod ump;
@@ -61,4 +62,5 @@ pub use message::{
 };
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
+pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
 pub use ump::Ump;

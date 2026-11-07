@@ -232,12 +232,7 @@ pub fn plugin_health_poll(
         let Some(done) = block_on(future::poll_once(task)) else {
             return true; // still loading
         };
-        landed.extend(
-            graph
-                .bypass_change_detection()
-                .session()
-                .land_reload(done, Instant::now()),
-        );
+        landed.extend(graph.bypass_change_detection().session().land_reload(done));
         false
     });
     let mut events = graph

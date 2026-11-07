@@ -527,6 +527,10 @@ pub struct Session {
     /// What a hosted plugin's death or hang does; `None`: it is removed.
     #[cfg(feature = "plugin")]
     pub(crate) recovery: Option<crate::RecoveryPolicy>,
+    /// The `now` of the last `Phase::Plugins`: the time a landing reload is
+    /// measured at.
+    #[cfg(feature = "plugin")]
+    pub(crate) plugins_now: Instant,
     /// The render mode last announced.
     #[cfg(feature = "plugin")]
     pub(crate) render_mode: crate::plugin::RenderModeState,

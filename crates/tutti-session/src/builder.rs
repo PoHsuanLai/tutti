@@ -290,6 +290,8 @@ impl SessionBuilder {
             #[cfg(feature = "plugin")]
             recovery: self.recovery,
             #[cfg(feature = "plugin")]
+            plugins_now: std::time::Instant::now(),
+            #[cfg(feature = "plugin")]
             render_mode: Default::default(),
             #[cfg(feature = "export")]
             export: Default::default(),

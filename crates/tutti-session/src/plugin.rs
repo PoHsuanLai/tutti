@@ -982,7 +982,7 @@ impl Session {
         }
     }
 
-    /// Lands a finished reload at `now`: the replacement takes the dead
+    /// Lands a finished reload, at the time of the last `Phase::Plugins`: the replacement takes the dead
     /// plugin's node, with its wiring (`Graph::replace_plugin`), its snapshot
     /// and failure history. Returns what happened, as the events
     /// `Phase::Plugins` would have reported.
@@ -994,8 +994,9 @@ impl Session {
     /// [`SessionEvent::PluginGaveUp`] and the node's removal.
     ///
     /// A main-thread call.
-    pub fn land_reload(&mut self, done: PluginReloaded, now: Instant) -> Vec<SessionEvent> {
+    pub fn land_reload(&mut self, done: PluginReloaded) -> Vec<SessionEvent> {
         crate::main_thread();
+        let now = self.plugins_now;
         let PluginReloaded {
             node,
             loaded,
@@ -1374,6 +1375,7 @@ impl Session {
         // it collects may be a plugin whose drop tears down an editor.
         crate::main_thread();
         let now = cx.now;
+        self.plugins_now = now;
         let interval = self.snapshot_interval;
         let mut dead = Vec::new();
         let mut gave_up = Vec::new();

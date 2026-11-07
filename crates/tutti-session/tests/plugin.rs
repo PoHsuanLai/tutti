@@ -523,7 +523,7 @@ impl Drive {
                 if let Some(check) = &self.on_reload_due {
                     check();
                 }
-                let landed = s.land_reload(job.run(), self.now);
+                let landed = s.land_reload(job.run());
                 self.events.extend(landed);
             } else {
                 self.events.push(event);

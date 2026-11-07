@@ -257,9 +257,12 @@ mod tests {
             )));
         }
         // A node that publishes nothing keeps none.
-        assert!(!keeps_one(tutti_nodes::DownmixNode::new(
-            tutti_types::ChannelLayout::STEREO,
-            tutti_types::ChannelLayout::MONO,
-        )));
+        assert!(!keeps_one(
+            tutti_nodes::DownmixNode::assuming_smpte(
+                tutti_types::ChannelLayout::STEREO,
+                tutti_types::ChannelLayout::MONO,
+            )
+            .unwrap()
+        ));
     }
 }

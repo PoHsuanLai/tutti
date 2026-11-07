@@ -99,6 +99,9 @@ fn channel_of(speaker: Speaker) -> Option<SurroundChannel> {
         // `from_position` then decides whether it is a position CLAP names or
         // an `Unknown` of its own — either way the slot is kept.
         Speaker::Unknown(raw) => SurroundChannel::from_position(u8::try_from(raw).ok()?),
+        // CLAP's surround extension places speakers; a discrete channel has no
+        // position to send, so the whole map is refused like any other.
+        Speaker::Discrete => return None,
     })
 }
 
@@ -209,6 +212,16 @@ mod tests {
             None,
             "a payload that cannot be a CLAP position must not be coerced into one"
         );
+    }
+
+    /// A discrete channel has no CLAP position, so a map holding one is refused.
+    ///
+    /// Mutation (run): `Discrete` mapped to `SurroundChannel::FrontCenter`
+    /// returns a map and fails this.
+    #[test]
+    fn a_discrete_channel_refuses_the_map() {
+        let topology = ChannelTopology::new([Speaker::FrontLeft, Speaker::Discrete]);
+        assert_eq!(channel_map_of(&topology), None);
     }
 
     /// Refusal is all-or-nothing, not a shortened map.

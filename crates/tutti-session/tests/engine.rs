@@ -23,7 +23,7 @@ use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::{Const, assert_golden};
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples, TapAlign};
 
 const RATE: f64 = 48_000.0;
 
@@ -390,9 +390,10 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     // The meters are the only edit of the second update.
     s.update();
     let mut track = s.graph().open_node_meter(a);
-    let mut other = s
-        .graph()
-        .open_meter(&[GraphSource::Node(a, 0), GraphSource::Node(b, 0)]);
+    let mut other = s.graph().open_meter(
+        &[GraphSource::Node(a, 0), GraphSource::Node(b, 0)],
+        TapAlign::Raw,
+    );
     track.enable();
     other.enable();
     s.update();

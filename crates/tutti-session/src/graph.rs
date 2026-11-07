@@ -1698,25 +1698,30 @@ impl Graph {
     /// still sees a spike; ballistics are the reader's. One reader per meter:
     /// a second consumer opens a second meter.
     ///
-    /// Removing a node a meter reads leaves that channel on silence. Dropping
-    /// the reader leaves the meter open until [`close_meter`](Self::close_meter)
-    /// or the session's next [`Reclaim`](crate::Phase::Reclaim) phase, which
-    /// closes it and frees its cells. A source that does not exist (a node
-    /// port past its width) fails every commit until the meter is closed;
-    /// nothing is validated here.
-    pub fn open_meter(&mut self, sources: &[GraphSource]) -> MeterReader {
+    /// `align` is the tap's choice: [`TapAlign::Raw`] reads each source as it
+    /// leaves its node (a track's level), [`TapAlign::ToOutput`] delays each
+    /// lane by the compensation an output of the same source gets (a ring per
+    /// lane), so it lines up with what the outputs carry.
+    ///
+    /// Removing a node a meter reads leaves that channel on silence, and so
+    /// does replacing it with a node that has fewer outputs (the lanes past
+    /// the new width); the commit succeeds either way. Dropping the reader
+    /// leaves the meter open until [`close_meter`](Self::close_meter) or the
+    /// session's next [`Reclaim`](crate::Phase::Reclaim) phase, which closes
+    /// it and frees its cells.
+    pub fn open_meter(&mut self, sources: &[GraphSource], align: TapAlign) -> MeterReader {
         let sources = sources.iter().copied().map(Self::lower).collect();
-        self.declare_meter(MeterSpec::Ports(sources))
+        self.declare_meter(MeterSpec::Ports { sources, align })
     }
 
-    /// A meter on every output port of `node`: a track's level. Its width is
+    /// A raw meter on every output port of `node`: a track's level. Its width is
     /// the node's output count now; a later re-shape of the node does not
     /// widen it.
     pub fn open_node_meter(&mut self, node: NodeKey) -> MeterReader {
         let sources: Vec<GraphSource> = (0..self.node_outputs(node))
             .map(|port| GraphSource::Node(node, port))
             .collect();
-        self.open_meter(&sources)
+        self.open_meter(&sources, TapAlign::Raw)
     }
 
     fn declare_meter(&mut self, spec: MeterSpec) -> MeterReader {

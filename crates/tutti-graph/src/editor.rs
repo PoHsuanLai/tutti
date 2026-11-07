@@ -574,14 +574,13 @@ impl Editor {
     /// one gets nothing more. A closed meter is not compiled, so it costs the
     /// audio thread nothing.
     ///
-    /// Nothing is validated here. A lane naming a node port or global input
-    /// that does not exist ([`Invalid::MeterOutOfRange`](tutti_types::graph::Invalid))
-    /// makes **every** commit fail until the meter is closed or the source
-    /// exists.
+    /// A lane naming a node port or global input that does not exist (a node
+    /// replaced by one with fewer outputs, a removed node) reads silence; it
+    /// never fails a commit, because a display must not wedge the graph.
     pub fn open_meter(&mut self, id: MeterId, spec: MeterSpec) -> MeterReader {
         let (lanes, width) = match &spec {
             MeterSpec::Outputs => (MAX_ROOT_CHANNELS, 0),
-            MeterSpec::Ports(sources) => (sources.len(), sources.len()),
+            MeterSpec::Ports { sources, .. } => (sources.len(), sources.len()),
         };
         let (reader, writer) = MeterReader::pair(id, lanes, width);
         self.pending_meters.retain(|(k, _)| *k != id);
@@ -614,7 +613,7 @@ impl Editor {
                     });
                 }
                 Some(&(capacity, _))
-                    if matches!(spec, MeterSpec::Ports(_)) && sources != capacity =>
+                    if matches!(spec, MeterSpec::Ports { .. }) && sources != capacity =>
                 {
                     return Err(CommitError::MeterWidth {
                         meter,
@@ -1284,15 +1283,6 @@ impl Editor {
             for s in &mut spec.sources {
                 if matches!(s, Source::Node(p) if p.node == key) {
                     *s = Source::Zero;
-                }
-            }
-        }
-        for spec in t.meters.values_mut() {
-            if let MeterSpec::Ports(sources) = spec {
-                for s in sources {
-                    if matches!(s, Source::Node(p) if p.node == key) {
-                        *s = Source::Zero;
-                    }
                 }
             }
         }

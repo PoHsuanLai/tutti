@@ -145,7 +145,7 @@ fn a_constant_reads_exactly_per_channel() {
     constants(&mut r, &values);
     let mut master = r.ed.open_meter(MeterId(1), MeterSpec::Outputs);
     let mut track =
-        r.ed.open_meter(MeterId(2), MeterSpec::Ports(vec![out(3), out(1)]));
+        r.ed.open_meter(MeterId(2), MeterSpec::raw(vec![out(3), out(1)]));
     master.enable();
     track.enable();
     commit(&mut r);
@@ -337,7 +337,7 @@ fn a_closed_meter_leaves_no_op() {
 
     let a = r.ed.open_meter(MeterId(1), MeterSpec::Outputs);
     let _b =
-        r.ed.open_meter(MeterId(2), MeterSpec::Ports(vec![out(1), out(2), out(3)]));
+        r.ed.open_meter(MeterId(2), MeterSpec::raw(vec![out(1), out(2), out(3)]));
     commit(&mut r);
     assert_eq!(meter_ops(&r), (never + 2, 2), "one op a meter, any width");
 
@@ -385,7 +385,7 @@ fn a_reader_dropped_is_reaped_and_its_cells_freed_off_the_audio_thread() {
 fn a_reader_dropped_on_the_audio_thread_panics() {
     let mut r = rig(1, false);
     let m =
-        r.ed.open_meter(MeterId(1), MeterSpec::Ports(vec![Source::Zero]));
+        r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![Source::Zero]));
     let _inside = tutti_rt::RtScope::enter();
     drop(m);
 }
@@ -399,7 +399,7 @@ fn removing_a_metered_node_silences_its_lane() {
     let mut r = rig(1, false);
     constants(&mut r, &[0.5, 0.25]);
     let mut m =
-        r.ed.open_meter(MeterId(1), MeterSpec::Ports(vec![out(1), out(2)]));
+        r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![out(1), out(2)]));
     m.enable();
     commit(&mut r);
     block(&mut r, 32);
@@ -409,6 +409,141 @@ fn removing_a_metered_node_silences_its_lane() {
     commit(&mut r);
     block(&mut r, 32);
     assert_eq!(level(&mut m), vec![(0.5, 0.5, 32), (0.0, 0.0, 32)]);
+}
+
+/// A node replaced by one with fewer outputs leaves the meter's lanes past the
+/// new width on silence, and the commit succeeds: a display must not wedge the
+/// graph. (A tap naming such a port still fails every commit; that is the
+/// tap's, not changed here.)
+///
+/// Mutation (run, recorded here): see the list at the end of this file.
+#[test]
+fn a_narrowed_node_silences_the_lanes_past_its_width_and_commits() {
+    let mut r = rig(1, false);
+    r.ed.insert(
+        NodeKey(1),
+        "wide",
+        Forkable(Kind::Const {
+            value: 0.5,
+            width: 2,
+        }),
+    );
+    let port = |p| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port: p,
+        })
+    };
+    r.ed.spec_mut().topology.outputs = vec![port(0)];
+    let mut m =
+        r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![port(0), port(1)]));
+    m.enable();
+    commit(&mut r);
+    block(&mut r, 32);
+    assert_eq!(level(&mut m), vec![(0.5, 0.5, 32), (0.5, 0.5, 32)]);
+
+    // The same key, now one output wide: the meter's second lane names a port
+    // that no longer exists.
+    r.ed.insert(
+        NodeKey(1),
+        "narrow",
+        Forkable(Kind::Const {
+            value: 0.25,
+            width: 1,
+        }),
+    );
+    commit(&mut r);
+    block(&mut r, 32);
+    assert_eq!(level(&mut m), vec![(0.25, 0.25, 32), (0.0, 0.0, 32)]);
+}
+
+/// The pulse source: 1.0 for its first `len` frames, then silence.
+struct Pulse {
+    len: usize,
+    done: usize,
+}
+
+impl Node for Pulse {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        for (k, s) in io.output(0).iter_mut().enumerate() {
+            *s = if self.done + k < self.len { 1.0 } else { 0.0 };
+        }
+        self.done += io.output(0).len();
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **The master reads what the outputs carry, at the outputs' time.** With a
+/// latent node on one path the compiler delays the other output to meet it;
+/// the master meter reads each channel after that delay, so a pulse that the
+/// output carries at frames 30..80 reads at 30..80, not 0..50 (a meter that
+/// ran ahead of the audio would go quiet while delayed audio still plays).
+/// A raw track meter on the same source reads the pulse where it leaves the
+/// node, and an aligned one reads it with the output.
+///
+/// 40-frame block, 50-frame pulse, 30 frames of latency: the aligned lane has
+/// 10 ones in the first block (RMS 0.5), the raw one 40 (RMS 1.0).
+///
+/// Mutation (run, recorded here): see the list at the end of this file.
+#[test]
+fn the_master_reads_at_the_outputs_time() {
+    let mut r = rig(1, false);
+    r.ed.insert(NodeKey(1), "pulse", Unforkable(Pulse { len: 50, done: 0 }));
+    r.ed.insert(NodeKey(2), "pulse", Unforkable(Pulse { len: 50, done: 0 }));
+    r.ed.insert(NodeKey(3), "lag", Forkable(Kind::Lag { latency: 30 }));
+    r.ed.spec_mut().topology.edges.insert(
+        InPort {
+            node: NodeKey(3),
+            port: 0,
+        },
+        Edge::Direct(out(2)),
+    );
+    // Output 0 is the latent path, output 1 the bare pulse (delayed to meet it).
+    r.ed.spec_mut().topology.outputs = vec![out(3), out(1)];
+    let mut master = r.ed.open_meter(MeterId(1), MeterSpec::Outputs);
+    let mut raw = r.ed.open_meter(MeterId(2), MeterSpec::raw(vec![out(1)]));
+    let mut aligned =
+        r.ed.open_meter(MeterId(3), MeterSpec::aligned(vec![out(1)]));
+    for m in [&master, &raw, &aligned] {
+        m.enable();
+    }
+    commit(&mut r);
+    let outs = block(&mut r, 40);
+    // What the output carries: the pulse from frame 30.
+    assert!(outs[1][..30].iter().all(|&s| s == 0.0));
+    assert!(outs[1][30..].iter().all(|&s| s == 1.0));
+    let tenth = (10.0f64 / 40.0).sqrt() as f32;
+    assert_eq!(
+        level(&mut master),
+        vec![(1.0, tenth, 40), (1.0, tenth, 40)],
+        "both outputs at the outputs' time"
+    );
+    assert_eq!(
+        level(&mut raw),
+        vec![(1.0, 1.0, 40)],
+        "raw: as it leaves the node"
+    );
+    assert_eq!(
+        level(&mut aligned),
+        vec![(1.0, tenth, 40)],
+        "aligned: with the output"
+    );
+    // The pulse ends at frame 50 at the node and at 80 on the output.
+    block(&mut r, 40);
+    assert_eq!(
+        level(&mut raw),
+        vec![(1.0, (10.0f64 / 40.0).sqrt() as f32, 40)]
+    );
+    assert_eq!(
+        level(&mut master)[1],
+        (1.0, 1.0, 40),
+        "still playing at frame 79"
+    );
 }
 
 /// Closing, then declaring the same id again, makes a fresh meter: the new
@@ -438,7 +573,7 @@ fn a_meter_can_be_redeclared() {
 
     r.ed.close_meter(MeterId(1));
     commit(&mut r);
-    let mut third = r.ed.open_meter(MeterId(1), MeterSpec::Ports(vec![out(1)]));
+    let mut third = r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![out(1)]));
     third.enable();
     commit(&mut r);
     block(&mut r, 32);
@@ -456,9 +591,10 @@ fn a_meter_cannot_change_its_width_under_its_cells() {
     let mut r = rig(1, false);
     constants(&mut r, &[0.5, 0.25]);
     let _ports =
-        r.ed.open_meter(MeterId(1), MeterSpec::Ports(vec![out(1), out(2)]));
+        r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![out(1), out(2)]));
     commit(&mut r);
-    let Some(MeterSpec::Ports(sources)) = r.ed.spec_mut().topology.meters.get_mut(&MeterId(1))
+    let Some(MeterSpec::Ports { sources, .. }) =
+        r.ed.spec_mut().topology.meters.get_mut(&MeterId(1))
     else {
         panic!("open");
     };
@@ -545,7 +681,7 @@ fn run(r: &mut Rig, blocks: usize) -> Vec<Vec<Level>> {
     r.ed.spec_mut().topology.outputs[5] = out(20);
     let mut master = r.ed.open_meter(MeterId(1), MeterSpec::Outputs);
     let mut track =
-        r.ed.open_meter(MeterId(2), MeterSpec::Ports(vec![out(2), out(20)]));
+        r.ed.open_meter(MeterId(2), MeterSpec::raw(vec![out(2), out(20)]));
     master.enable();
     track.enable();
     commit(r);
@@ -595,8 +731,9 @@ fn the_parallel_meters_are_bit_identical_and_allocation_free() {
 // - `Editor::reap_meters` returning 0 always: the reaped-reader test.
 // - deleting `check_outside` from `MeterReader::drop`:
 //   `a_reader_dropped_on_the_audio_thread_panics`.
-// - deleting the `meters` loop in `Editor::remove`: the commit is refused
-//   (`MeterOutOfRange`) in `removing_a_metered_node_silences_its_lane`.
+// - `compile` indexing `audio_out_val[&p]` for a meter lane instead of
+//   `.get`: `removing_a_metered_node_silences_its_lane` and
+//   `a_narrowed_node_silences_the_lanes_past_its_width_and_commits` panic.
 // - letting the carried writer win over the one just opened in `rebuild`:
 //   `a_meter_can_be_redeclared`.
 // - `check_meter_widths` returning `Ok(())` at once:
@@ -604,3 +741,8 @@ fn the_parallel_meters_are_bit_identical_and_allocation_free() {
 // - copying the live meters into the fork's editor in `fork_gather`:
 //   `a_fork_meters_its_own_render_and_leaves_the_live_meter_alone`.
 // - making the `Op::Meter` arm of `par.rs` a no-op: the parallel test.
+// - the master's lanes taken from the pre-delay sources (`output_refs.push`
+//   the undelayed `src`, no `Delay` op for the master): `the_master_reads_at_the_outputs_time`
+//   (the master reads 40 ones, RMS 1.0).
+// - an aligned `Ports` lane without its `Delay` (`align` treated as `Raw`):
+//   `the_master_reads_at_the_outputs_time` (the aligned meter reads RMS 1.0).

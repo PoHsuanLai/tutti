@@ -128,6 +128,15 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+    /// One lane of an aligned meter, delayed like an output channel.
+    Meter {
+        /// The meter.
+        meter: tutti_types::MeterId,
+        /// The lane within it.
+        lane: usize,
+        /// What feeds it.
+        from: Source,
+    },
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
         /// The tap.

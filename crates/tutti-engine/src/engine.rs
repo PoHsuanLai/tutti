@@ -1078,9 +1078,8 @@ mod tests {
     /// that one's motion machine, which is where the one claim is held: an
     /// engine over it while the other's runs is refused.
     ///
-    /// Mutation (run): `Transport::audio` taking its claim on a flag of the
-    /// transport instead of the motion machine's home → the second engine
-    /// is built → fails.
+    /// Mutation (run): `MotionFsm::audio` building a fresh machine instead
+    /// of popping the home → the second engine is built → fails.
     #[test]
     fn a_shared_motion_handle_is_refused_as_held() {
         let first = Transport::new(48_000.0);

@@ -1411,10 +1411,10 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
 /// hands the claim out again. Two engines would both consume every seek
 /// and both write the playhead.
 ///
-/// Mutation (run): `Transport::audio` popping the motion machine's home
-/// without leaving it empty → the second engine builds → fails. Mutation
-/// (run): `MotionAudio`'s `Drop` not handing the home back → the engine
-/// after the drop is refused → fails.
+/// Mutation (run): `MotionFsm::audio` building a fresh machine instead of
+/// popping the home → the second engine builds → fails. Mutation (run):
+/// `MotionAudio`'s `hand_back` not pushing the home back → the engine after
+/// the drop is refused → fails.
 #[test]
 fn a_transport_has_one_playhead_writer() {
     use tutti_engine::GraphEngineError;

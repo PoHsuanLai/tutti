@@ -157,6 +157,19 @@ impl TransportAudio {
     /// Jumps the published playhead to `beat`, for a host that drives no
     /// engine (a headless tool, a test): a jump to a reader, so the segment
     /// generation moves on first.
+    ///
+    /// ```
+    /// use tutti_types::Beat;
+    /// use tutti_transport::{Timeline, Transport};
+    /// let transport = Transport::new(48_000.0);
+    /// let mut audio = transport.audio(48_000.0).expect("the only audio side");
+    /// audio.set_playhead(Beat(4.0));
+    /// assert_eq!(transport.beat(), Beat(4.0));
+    /// // A jump: a reader keyed on the segment re-seats.
+    /// assert_eq!(transport.segment_generation(), 1);
+    /// // The audio side is held: nobody else may store.
+    /// assert!(transport.audio(48_000.0).is_err());
+    /// ```
     pub fn set_playhead(&mut self, beat: impl Into<Beat>) {
         self.clock.set_playhead(beat.into());
     }

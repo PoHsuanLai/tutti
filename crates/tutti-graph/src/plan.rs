@@ -397,7 +397,7 @@ pub enum Op {
     },
     /// Push an audio slot's block into a tap lane's ring.
     Tap {
-        /// Index into [`Plan::taps`].
+        /// Index into `Plan::taps`.
         lane: u32,
         /// Audio slot read.
         src: u32,

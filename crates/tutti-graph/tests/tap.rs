@@ -552,3 +552,22 @@ fn removing_a_tapped_node_silences_its_lane() {
         "the removed node's lane is silent"
     );
 }
+
+/// Closing a tap twice, or one that never opened, is a no-op: the plan stays
+/// the graph's own.
+///
+/// Mutation (run, recorded here): `Editor::close_tap` panicking on a missing
+/// id (`.expect` on the `taps.remove`) -> this fails.
+#[test]
+fn closing_a_tap_twice_is_a_no_op() {
+    let mut r = rig(1, false);
+    let tap =
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8));
+    commit(&mut r);
+    r.ed.close_tap(tap.id());
+    r.ed.close_tap(tap.id());
+    r.ed.close_tap(TapId(99));
+    commit(&mut r);
+    let plan = r.ed.base().expect("plan");
+    assert!(!plan.ops().iter().any(|o| matches!(o, Op::Tap { .. })));
+}

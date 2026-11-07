@@ -58,20 +58,34 @@ pub struct FakeBackend {
 struct FakeDevices {
     inputs: Vec<EndpointInfo>,
     outputs: Vec<EndpointInfo>,
-    watches: Vec<(u64, Sender<OsChange>)>,
+    watches: Vec<(u64, Sender<Delivery>)>,
     next_watch: u64,
 }
 
+/// One change on its way to a watch thread, and the signal that the thread
+/// has applied it.
+type Delivery = (OsChange, Sender<()>);
+
 impl FakeDevices {
-    /// Tells every watch what the fake OS now says about `id`.
+    /// Tells every watch what the fake OS now says about `id`, and returns once
+    /// each watch thread has reported it to its sink.
     fn announce(&self, id: EndpointId) {
         let change = os_devices(&self.inputs, &self.outputs)
             .into_iter()
             .find(|d| d.handle == id)
             .map_or(OsChange::Gone(id), OsChange::Present);
-        for (_, watch) in &self.watches {
-            // A watch whose thread has ended has nothing to tell.
-            let _ = watch.send(change.clone());
+        let acks: Vec<_> = self
+            .watches
+            .iter()
+            .map(|(_, watch)| {
+                let (done, ack) = mpsc::channel();
+                // A watch whose thread has ended has nothing to tell.
+                let _ = watch.send((change.clone(), done));
+                ack
+            })
+            .collect();
+        for ack in acks {
+            let _ = ack.recv();
         }
     }
 }
@@ -118,8 +132,8 @@ impl FakeCounters {
 
     /// Plugs `endpoint` in, as `direction` says, and tells every running
     /// watch. A device already plugged in under that id is replaced, which a
-    /// watch sees as a change. The watch thread delivers it: wait for it with
-    /// `Devices::wait`.
+    /// watch sees as a change. The watch thread delivers it, and this returns
+    /// once it has: the event is waiting for the next `Devices::poll`.
     pub fn plug(&self, endpoint: EndpointInfo, direction: Direction) {
         let mut devices = self.devices();
         let id = endpoint.id;
@@ -135,7 +149,7 @@ impl FakeCounters {
     }
 
     /// Unplugs the device with `id` from both lists and tells every running
-    /// watch. A held connection to it stays open, as an OS leaves one.
+    /// watch, returning once each has reported it. A held connection to it stays open, as an OS leaves one.
     pub fn unplug(&self, id: EndpointId) {
         let mut devices = self.devices();
         devices.inputs.retain(|e| e.id != id);
@@ -291,8 +305,9 @@ impl MidiEndpoints for FakeBackend {
             .name("tutti-fake-watch".to_string())
             .spawn(move || {
                 let _running = running;
-                for change in incoming {
+                for (change, done) in incoming {
                     sink.send(change);
+                    let _ = done.send(());
                 }
             })?;
         Ok(Box::new(FakeWatch {

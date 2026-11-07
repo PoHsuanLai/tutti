@@ -400,9 +400,10 @@ impl MidiState {
         self.routed.remove(&node);
     }
 
-    /// `Phase::Poll`: reports the events the hardware input's rings dropped
-    /// when their total rose, at most once per [`MIDI_INPUT_DROP_REPORT`] of
-    /// `now`.
+    /// `Phase::Poll`: reports the devices that came and went, retires a held
+    /// input or output whose device vanished, and reports the events the
+    /// hardware input's rings dropped when their total rose, at most once per
+    /// [`MIDI_INPUT_DROP_REPORT`] of `now`.
     #[cfg(feature = "midi-hardware")]
     pub(crate) fn midi_input_phase(
         &mut self,
@@ -411,6 +412,24 @@ impl MidiState {
         out: &mut Vec<crate::SessionEvent>,
     ) {
         let Some(io) = io else { return };
+        for event in io.devices().poll() {
+            if let tutti_midi_hardware::DeviceEvent::Removed(device) = &event {
+                // Held ones are closed here, not left to fail on a dead
+                // handle: the port goes and the lists agree.
+                let lost_input = io.disconnect_input(&device.id);
+                let lost_output =
+                    io.output_device().as_ref() == Some(&device.id) && io.disconnect_output();
+                out.push(crate::SessionEvent::MidiDevice(event.clone()));
+                if lost_input {
+                    out.push(crate::SessionEvent::MidiInputLost(device.clone()));
+                }
+                if lost_output {
+                    out.push(crate::SessionEvent::MidiOutputLost(device.clone()));
+                }
+            } else {
+                out.push(crate::SessionEvent::MidiDevice(event));
+            }
+        }
         let total = io.ports().dropped_events();
         let due = self
             .input_reported_at

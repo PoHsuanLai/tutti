@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::synthesizer_settings::SynthesizerSettings;
 
 #[derive(Debug, Clone)]
@@ -20,8 +18,8 @@ pub(crate) struct Lfo {
 impl Lfo {
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
-            sample_rate: settings.sample_rate,
-            block_size: settings.block_size,
+            sample_rate: settings.hz(),
+            block_size: settings.block_len(),
             active: false,
             delay: 0_f64,
             period: 0_f64,

@@ -156,7 +156,7 @@ just test-all                      # both
   finds in the test binary's own profile directory (no build script or env
   var, so it holds under `CARGO_TARGET_DIR` and `--target`). It is a
   dev-dependency and absence is a failure, never a skip. A crate-local file
-  (`tutti-rustysynth`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
+  (`tutti-sf2`'s `samples/`) is `CARGO_MANIFEST_DIR.join(..)` without
   `..`.
 - **Build `plugin-server` first:** `cargo build -p tutti-plugin-server`.
   Without it, `tutti-plugin`'s `clap_pdc_alignment`, `clap_crash_recovery` and
@@ -313,7 +313,8 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
-  tutti-soundfont, tutti-rustysynth (our fork of rustysynth)
+  tutti-soundfont, tutti-sf2 (the SoundFont 2 file as data), tutti-rustysynth
+                 (the synthesizer over it; a port of rustysynth)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
@@ -332,11 +333,11 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
+0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`
-3. `tutti-transport`, `tutti-plugin-types`
+3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
    `tutti-plugin-db`
@@ -352,7 +353,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   dependency on `testing/`; a test reaches `testing/` through a
   dev-dependency.
 - `vendor/` holds third-party code we never edit and no workspace member.
-  Our own forks (`tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
+  Our own forks (`tutti-sf2`, `tutti-rustysynth`, `vst-tutti`) are crates, not vendored.
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
@@ -483,7 +484,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   name its types from it, not through `tutti-plugin`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
-- `tutti-rustysynth` (our fork) is excluded from clippy and rustdoc.
+- `tutti-sf2` is the SoundFont 2 file as data (parse, presets, instruments,
+  sample headers, sample data, raw generators) and holds nothing that plays.
+  It depends on `tutti-ump` alone, keeps every module private
+  (`tutti_sf2::SoundFont`; CI runs the per-module path gate on it) and is
+  `#![forbid(unsafe_code)]`. `tutti-rustysynth` is the synthesizer over it
+  (`Synthesizer`, typed over `MidiChannel`, `NoteNumber`, `U7`, `U14` and
+  `SampleRate`), with the same rules. It sits in layer 3 so that it may take
+  `tutti-dsp` (layer 2) later; it names nothing of it today. Both keep the
+  original author's MIT license and copyright (`LICENSE.txt`).
 - A Bevy app depends on `bevy-tutti`; a headless consumer depends on `tutti`.
   `bevy-tutti` does not depend on `tutti`. Both use `tutti-session`. It
   holds only code that names two or more engine crates, or the order they

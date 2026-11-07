@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::f32::consts;
 
 use crate::synthesizer_settings::SynthesizerSettings;
@@ -28,7 +26,7 @@ impl BiQuadFilter {
 
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
-            sample_rate: settings.sample_rate,
+            sample_rate: settings.hz(),
             active: false,
             a0: 0_f32,
             a1: 0_f32,

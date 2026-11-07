@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 
 #[non_exhaustive]
@@ -14,8 +12,8 @@ pub(crate) struct InstrumentInfo {
 
 impl InstrumentInfo {
     fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let name = BinaryReader::read_fixed_length_string(reader, 20)?;
-        let zone_start_index = BinaryReader::read_u16(reader)? as i32;
+        let name = reader.read_fixed_length_string(20)?;
+        let zone_start_index = reader.read_u16()? as i32;
 
         Ok(Self {
             name,

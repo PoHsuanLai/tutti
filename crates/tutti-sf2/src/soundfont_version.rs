@@ -1,9 +1,7 @@
-#![allow(dead_code)]
-
 use std::io;
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 
 /// Reperesents the version of a SoundFont.
 #[derive(Debug)]
@@ -19,19 +17,19 @@ impl SoundFontVersion {
     }
 
     pub(crate) fn new<R: Read>(reader: &mut R) -> Result<Self, io::Error> {
-        let major = BinaryReader::read_i16(reader)?;
-        let minor = BinaryReader::read_i16(reader)?;
+        let major = reader.read_i16()?;
+        let minor = reader.read_i16()?;
 
         Ok(Self { major, minor })
     }
 
     /// Gets the major version.
-    pub fn get_major(&self) -> i32 {
+    pub fn major(&self) -> i32 {
         self.major as i32
     }
 
     /// Gets the minor version.
-    pub fn get_minor(&self) -> i32 {
+    pub fn minor(&self) -> i32 {
         self.minor as i32
     }
 }

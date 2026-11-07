@@ -121,8 +121,8 @@ crates/             everything shipped, directory name = package name
   tutti-sampler     # Sample playback (streaming, audition)
   tutti-polysynth   # Polyphonic subtractive/wavetable synth
   tutti-soundfont   # SoundFont (.sf2) playback
-  tutti-rustysynth  # Our fork of rustysynth (SoundFont synth). Excluded from
-                    #   clippy and rustdoc in CI.
+  tutti-sf2         # A SoundFont 2 file as data (no synth).
+  tutti-rustysynth  # The SoundFont synthesizer over it (a port of rustysynth).
   tutti-midi-types / -runtime / -hardware / -file, tutti-alsa-ump-sys
   tutti-plugin / -types / -server
   tutti-{vst2,vst3,clap,au}-host, tutti-clap-ffi, tutti-vst3-ffi
@@ -138,9 +138,6 @@ testing/            never shipped
 vendor/             third-party code we never edit
   vst3-sdk          # The three Steinberg submodules
 ```
-
-`tutti-rustysynth` is excluded from clippy and rustdoc in CI: it carries
-pre-existing lint debt that is not ours to pay yet.
 
 ## Unit Types (MANDATORY)
 

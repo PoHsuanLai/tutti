@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::SoundFontError;
 use crate::instrument::Instrument;
 use crate::preset_info::PresetInfo;
@@ -70,37 +68,37 @@ impl Preset {
     }
 
     /// Gets the name of the preset.
-    pub fn get_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Gets the patch number of the preset.
-    pub fn get_patch_number(&self) -> i32 {
+    pub fn patch_number(&self) -> i32 {
         self.patch_number
     }
 
     /// Gets the bank number of the preset.
-    pub fn get_bank_number(&self) -> i32 {
+    pub fn bank_number(&self) -> i32 {
         self.bank_number
     }
 
     /// Gets the library info.
-    pub fn get_library(&self) -> i32 {
+    pub fn library(&self) -> i32 {
         self.library
     }
 
     /// Gets the genre info.
-    pub fn get_genre(&self) -> i32 {
+    pub fn genre(&self) -> i32 {
         self.genre
     }
 
     /// Gets the morphology info.
-    pub fn get_morphology(&self) -> i32 {
+    pub fn morphology(&self) -> i32 {
         self.morphology
     }
 
     /// Gets the regions of the preset.
-    pub fn get_regions(&self) -> &[PresetRegion] {
+    pub fn regions(&self) -> &[PresetRegion] {
         &self.regions[..]
     }
 }

@@ -298,7 +298,7 @@ field. It is now carried raw, with `classes_discardable()` / `component_non_disc
 / `unicode_strings()` decoding by mask.
 
 **Nothing consumes it yet, and that is a separate gap.** The scan cache
-(`tutti_plugin::host::discovery`) is keyed on mtime alone (`catalog.rs:105-110`) and
+(`tutti_plugin_db`) is keyed on mtime alone (`tutti-plugin-db`'s `catalog.rs`) and
 stores **one** `PluginDescriptor` per bundle path, while `find_audio_class`
 (`loaded.rs:2047`) is a `find_map` taking the first audio class — `mda-vst3`'s 34 classes
 already collapse to a single record. So a bundle's class *list* is not something the

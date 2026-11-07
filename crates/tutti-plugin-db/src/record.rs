@@ -1,13 +1,12 @@
 //! One row in the plugin catalog, plus the catalog-identity types it carries.
 
-use crate::error::BridgeError;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The catalog record for one discovered plugin.
 ///
-/// Produced by [`probe`](Self::probe) or by a scan, and stored by a
-/// [`PluginCatalog`](crate::catalog::PluginCatalog).
+/// Produced by a probe or by a scan, and stored by a
+/// [`PluginCatalog`](crate::PluginCatalog).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginRecord {
     /// Where the plugin lives on disk.
@@ -133,40 +132,5 @@ impl PluginRecord {
     #[must_use]
     pub fn is_instrument(&self) -> bool {
         self.role() == PluginRole::Instrument
-    }
-
-    /// Probes a plugin file into a full record.
-    ///
-    /// Spawns a short-lived `plugin-server` subprocess to read the plugin's
-    /// metadata, so a plugin that crashes while being probed does not take the
-    /// caller down. Blocks for up to a few seconds; call it off the audio and
-    /// UI threads. Yields the same record a
-    /// [`PluginCatalog`](crate::catalog::PluginCatalog) stores.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BridgeError::LoadFailed`] for an unrecognized extension or a
-    /// plugin the server cannot load,
-    /// [`BridgeError::ServerNotFound`] when the `plugin-server` binary cannot
-    /// be located, and a timeout, I/O or protocol variant when the subprocess
-    /// cannot be reached.
-    pub fn probe(path: impl AsRef<Path>) -> Result<Self, BridgeError> {
-        let path = path.as_ref();
-        let facts = super::facts::FileFacts::read(path);
-        let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: crate::error::LoadStage::Opening,
-            reason: "unrecognized plugin extension".to_string(),
-        })?;
-
-        let descriptor = crate::host::subprocess::probe_metadata(path)?;
-
-        Ok(PluginRecord {
-            path: path.to_path_buf(),
-            format,
-            descriptor,
-            modification_time: facts.mtime.unwrap_or(0),
-            blacklist: Blacklist::Ok,
-        })
     }
 }

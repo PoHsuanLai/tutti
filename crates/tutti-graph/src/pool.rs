@@ -53,6 +53,8 @@
 //! helper runs once on its own thread before it takes any work. The engine
 //! does not do this itself, for the same reason it does not promote the
 //! callback: the device layer owns the policy (and on Linux the privilege).
+//! `tutti-session`'s `SessionBuilder::render_worker_start` passes a hook to
+//! the live pool.
 //!
 //! If they run below it (the default when the hook is not given: `SCHED_OTHER`
 //! helpers under a `SCHED_FIFO` callback), a helper that holds a task and
@@ -61,7 +63,7 @@
 //! The block then lasts until the kernel moves the helper to another core,
 //! or until RT throttling takes the core from the callback (950 ms in every
 //! second by default on Linux): a dropout. At the callback's priority, the
-//! yield lets the helper finish its task (`tutti-types`'
+//! yield lets the helper finish its task (`tutti-rt`'s
 //! `tests/spin_starvation.rs` measures both on Linux; on Windows and macOS,
 //! where the caller does not yield, the scheduler round-robins
 //! equal-priority real-time threads at a quantum's end). Above it is wrong

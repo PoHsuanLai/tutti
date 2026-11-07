@@ -327,6 +327,8 @@ pub struct Graph {
     commits: u64,
     /// Threads per block, the caller included (`0` for one per core).
     render_workers: usize,
+    /// Run by each live helper on its own thread, before it takes work.
+    render_worker_start: Option<RenderWorkerStart>,
     /// Each sink's event input 0, by feeder: the sources each feeder feeds
     /// it. Written into the spec as their union.
     feeds: BTreeMap<NodeKey, BTreeMap<Feeder, Vec<EventSource>>>,
@@ -342,6 +344,30 @@ pub struct Graph {
     /// happen.
     #[cfg(feature = "plugin")]
     pub(crate) plugins: BTreeMap<NodeKey, crate::HostedPlugin>,
+}
+
+/// A hook each live render helper runs once on its own thread, with its
+/// index (`1..`), before it takes work: see
+/// [`SessionBuilder::render_worker_start`](crate::SessionBuilder::render_worker_start).
+#[derive(Clone)]
+pub struct RenderWorkerStart(Arc<dyn Fn(usize) + Send + Sync>);
+
+impl RenderWorkerStart {
+    /// Wrap `hook`.
+    pub fn new(hook: impl Fn(usize) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(hook))
+    }
+
+    /// Run the hook for helper `index`.
+    pub fn call(&self, index: usize) {
+        (self.0)(index);
+    }
+}
+
+impl std::fmt::Debug for RenderWorkerStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderWorkerStart").finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Graph {
@@ -431,6 +457,7 @@ impl Graph {
             edited: true,
             commits: 0,
             render_workers: 1,
+            render_worker_start: None,
             feeds: BTreeMap::new(),
             fed_edges: BTreeMap::new(),
             parked: VecDeque::new(),
@@ -450,10 +477,18 @@ impl Graph {
         self.render_workers = workers;
     }
 
+    pub(crate) fn set_render_worker_start(&mut self, start: Option<RenderWorkerStart>) {
+        self.render_worker_start = start;
+    }
+
     /// A fresh pool of the configured size, its threads named `name-<i>`, or
     /// `None` for one participant or when the system refuses a thread
-    /// (render on the caller alone).
-    pub(crate) fn render_pool(&self, name: &str) -> Option<Arc<dyn tutti_graph::Pool>> {
+    /// (render on the caller alone). Each helper runs `start` first.
+    pub(crate) fn render_pool(
+        &self,
+        name: &str,
+        start: Option<&RenderWorkerStart>,
+    ) -> Option<Arc<dyn tutti_graph::Pool>> {
         let n = match self.render_workers {
             0 => std::thread::available_parallelism().map_or(1, |n| n.get()),
             n => n,
@@ -462,9 +497,14 @@ impl Graph {
             return None;
         }
         let name = name.to_owned();
-        let pool = tutti_graph::WorkerPool::builder()
+        let mut builder = tutti_graph::WorkerPool::builder()
             .num_threads(n)
-            .thread_name(move |i| format!("{name}-{i}"))
+            .thread_name(move |i| format!("{name}-{i}"));
+        if let Some(start) = start {
+            let start = start.clone();
+            builder = builder.start_handler(move |i| start.call(i));
+        }
+        let pool = builder
             .build()
             .inspect_err(|e| {
                 tracing::warn!("graph: a {n}-thread worker pool was refused, rendering alone: {e}");
@@ -500,7 +540,7 @@ impl Graph {
         transport: &tutti_transport::Transport,
     ) -> Result<tutti_engine::Engine, tutti_engine::GraphEngineError> {
         let mut exec = self.take_executor();
-        exec.set_pool(self.render_pool("tutti-worker"));
+        exec.set_pool(self.render_pool("tutti-worker", self.render_worker_start.as_ref()));
         tutti_engine::Engine::new(transport, &mut self.editor, exec)
     }
 
@@ -765,7 +805,9 @@ impl Graph {
             fork,
             // Its own pool, not the live engine's: the live callback would
             // find a shared one busy with the export's job and render alone.
-            pool: self.render_pool("tutti-export"),
+            // No start hook: an export's threads are not the callback's, and
+            // promoting them would take cores from it.
+            pool: self.render_pool("tutti-export", None),
         })
     }
 

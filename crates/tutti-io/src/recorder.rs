@@ -75,6 +75,8 @@ pub struct Recorder {
     /// `finish`, `wait`, `finish_in_place` and `drop` runs first leaves `None`.
     /// Boxed so the driver choice does not leak into `Recorder`'s type.
     handle: Option<Box<dyn RunningPump>>,
+    /// Raised by the pump on its first failed pass; see [`failed`](Self::failed).
+    failed: Arc<AtomicBool>,
     /// Written only by `drop`; every other shutdown returns its result.
     status: Arc<FinalizeStatus>,
 }
@@ -206,13 +208,20 @@ impl Recorder {
         let scratch_samples = frames.interleaved_len(layout);
 
         let running = Arc::new(AtomicBool::new(true));
-        let pump_loop = PumpLoop::new(src, sink, vec![S::default(); scratch_samples]);
+        let failed = Arc::new(AtomicBool::new(false));
+        let pump_loop = PumpLoop::new(
+            src,
+            sink,
+            vec![S::default(); scratch_samples],
+            Arc::clone(&failed),
+        );
 
         let handle = driver.drive(pump_loop, Arc::clone(&running));
 
         Ok(Self {
             running,
             handle: Some(Box::new(handle)),
+            failed,
             status: Arc::new(FinalizeStatus::default()),
         })
     }
@@ -229,10 +238,14 @@ impl Recorder {
     ///
     /// # Errors
     ///
+    /// [`Error::SourceFailed`] if the source broke mid-take; the sink was
+    /// finalized, so the file is valid and holds what was delivered.
     /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
     /// unpatched and the file is unreadable) or the pump thread panicked.
     pub fn finish(mut self) -> Result<()> {
-        Ok(self.finish_in_place().unwrap_or(Ok(()))?)
+        self.finish_in_place()
+            .unwrap_or(Ok(()))
+            .map_err(Error::from_take)
     }
 
     /// Waits for a **finite** take to reach its own end, then finalizes.
@@ -244,17 +257,19 @@ impl Recorder {
     /// returns the finalize result as `finish` does.
     ///
     /// **On a [`Starved`](tutti_types::OnEmpty::Starved) source this blocks
-    /// forever**, and every microphone capture is one — the pump parks and
-    /// re-polls rather than ending. Choose the method that matches your
+    /// until the source fails**, and every microphone capture is one — the pump
+    /// parks and re-polls rather than ending, and only a failure
+    /// ([`failed`](Self::failed)) or a stop ends it. Choose the method that matches your
     /// source's `ON_EMPTY`. After [`finish_in_place`](Self::finish_in_place) has already
     /// returned the result, this returns `Ok(())` without blocking.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] if finalizing failed or the pump thread panicked.
+    /// [`Error::SourceFailed`] as for [`finish`](Self::finish); [`Error::Io`] if
+    /// finalizing failed or the pump thread panicked.
     pub fn wait(mut self) -> Result<()> {
         // Not `finish_in_place`: that clears the stop flag and truncates the take.
-        Ok(self.join_pump().unwrap_or(Ok(()))?)
+        self.join_pump().unwrap_or(Ok(())).map_err(Error::from_take)
     }
 
     /// Signals the pump to stop, without waiting for it. Idempotent.
@@ -277,6 +292,19 @@ impl Recorder {
         self.running.load(Ordering::Acquire)
     }
 
+    /// Whether the take failed: the source broke ([`AudioIn::is_failed`], for a
+    /// microphone its device went away) or the sink did ([`AudioOut::is_failed`],
+    /// for a WAV a write error such as a full disk).
+    ///
+    /// The pump stops and finalizes the frames already written, so the file
+    /// stays readable up to the failure and [`is_finished`](Self::is_finished)
+    /// turns `true` under a [`ThreadDriver`]. The sink's own error, if any,
+    /// comes from [`finish_in_place`](Self::finish_in_place).
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
+    }
+
     /// Whether the pump has stopped running passes, so
     /// [`finish_in_place`](Self::finish_in_place) will not block.
     ///
@@ -295,7 +323,8 @@ impl Recorder {
     /// [`finish`](Self::finish) for a host that stores the take where it cannot be
     /// moved out (a component, a field). `None` once the result was already collected,
     /// which is what makes a second finalize unrepresentable rather than a
-    /// panic. Blocks for at most one pass (or one park); after
+    /// panic. A failed source comes back as [`Error::SourceFailed`] inside the
+    /// `io::Error` (see [`PumpLoop::finalize`]). Blocks for at most one pass (or one park); after
     /// [`is_finished`](Self::is_finished) it does not block at all.
     ///
     /// Clearing the stop flag is the half that matters for a **live** source.

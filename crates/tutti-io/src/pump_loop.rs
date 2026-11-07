@@ -35,6 +35,13 @@ pub enum PumpPass {
     Starved,
     /// The source has nothing more, ever ([`OnEmpty::EndOfStream`]). Stop.
     Ended,
+    /// The source broke ([`AudioIn::is_failed`]) after its buffered frames were
+    /// drained, or the sink failed ([`AudioOut::is_failed`]). Stop and
+    /// finalize what was written.
+    ///
+    /// Outranks [`Ended`](Self::Ended): a finite source that failed and is
+    /// drained is a failure, not a clean end.
+    Failed,
 }
 
 /// One source→sink pump, with no thread and no clock.
@@ -53,12 +60,21 @@ pub struct PumpLoop<I, O, S = f32> {
     sink: O,
     /// Allocated once at construction; `pump_once` never grows it.
     scratch: Vec<S>,
+    /// Set by the first [`PumpPass::Failed`]; the [`Recorder`] holds the other
+    /// end.
+    failed: Arc<AtomicBool>,
 }
 
 impl<I, O, S> PumpLoop<I, O, S> {
-    /// A loop over `src` and `sink` moving at most `scratch.len()` samples per pass.
-    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>) -> Self {
-        Self { src, sink, scratch }
+    /// A loop over `src` and `sink` moving at most `scratch.len()` samples per
+    /// pass, raising `failed` when a pass fails.
+    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>, failed: Arc<AtomicBool>) -> Self {
+        Self {
+            src,
+            sink,
+            scratch,
+            failed,
+        }
     }
 }
 
@@ -81,9 +97,25 @@ where
     ///
     /// A zero-frame poll is reported as [`Starved`](PumpPass::Starved) or
     /// [`Ended`](PumpPass::Ended) according to the source's own
-    /// [`ON_EMPTY`](AudioIn::ON_EMPTY).
+    /// [`ON_EMPTY`](AudioIn::ON_EMPTY), unless the sink has failed or the
+    /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
     pub fn pump_once(&mut self) -> PumpPass {
-        let n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        let mut n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        // A source can push its last frames and then fail between the poll that
+        // came back empty and this check. The failure flag is read after the
+        // empty poll, so every frame pushed before it is visible to a second
+        // poll; only an empty second poll is a drained, failed source.
+        if n.is_zero() && self.src.is_failed() {
+            n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+            if n.is_zero() {
+                self.failed.store(true, Ordering::Release);
+                return PumpPass::Failed;
+            }
+        }
+        if self.sink.is_failed() {
+            self.failed.store(true, Ordering::Release);
+            return PumpPass::Failed;
+        }
         if !n.is_zero() {
             return PumpPass::Wrote(n);
         }
@@ -102,9 +134,16 @@ where
     /// # Errors
     ///
     /// The sink's [`finalize`](AudioOut::finalize) error; for a WAV, the file
-    /// is then unreadable.
+    /// is then unreadable. If the sink closed cleanly but the source had failed,
+    /// [`Error::SourceFailed`](crate::Error::SourceFailed) as an `io::Error`:
+    /// the file is valid and holds the frames delivered before the failure.
     pub fn finalize(self) -> std::io::Result<()> {
-        self.sink.finalize()
+        let source_failed = self.src.is_failed();
+        self.sink.finalize()?;
+        if source_failed {
+            return Err(crate::Error::SourceFailed.into());
+        }
+        Ok(())
     }
 }
 
@@ -215,6 +254,8 @@ impl PumpDriver for ThreadDriver {
                     PumpPass::Starved => std::thread::sleep(park),
                     // Finite source: there is no more to read.
                     PumpPass::Ended => break,
+                    // Broken source or sink: nothing more will come.
+                    PumpPass::Failed => break,
                 }
             }
             // Finalize exactly once, here, where the loop is owned. The result

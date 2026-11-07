@@ -490,6 +490,32 @@ mod tests {
         }
     }
 
+    /// A rear-only 7.1 frame, which a front-pair truncation would fold to
+    /// silence, survives the mono fold.
+    ///
+    /// Mutation (run): folding only `src[..2]` to mono fails.
+    #[test]
+    fn fold_frame_to_mono_keeps_the_surround_rears() {
+        let rears_only = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
+        let mut mono = [0.0; 1];
+        fold_frame(&rears_only, &mut mono);
+        assert!((mono[0] - 2.0 * M3DB * M3DB).abs() < 1e-6, "{}", mono[0]);
+    }
+
+    /// Every channel of `dst` is written, whatever the widths, so a caller
+    /// that emits `dst` as a frame never emits a short or stale one.
+    ///
+    /// Mutation (run): the wide branch skipping its copy fails.
+    #[test]
+    fn fold_frame_writes_every_destination_channel() {
+        for (src_w, dst_w) in [(2usize, 6usize), (6, 2), (1, 4), (6, 1), (2, 12)] {
+            let src = vec![0.25f32; src_w];
+            let mut dst = vec![9.9f32; dst_w];
+            fold_frame(&src, &mut dst);
+            assert!(dst.iter().all(|&s| s != 9.9), "{src_w} -> {dst_w}: {dst:?}");
+        }
+    }
+
     #[test]
     fn fold_frame_equal_width_is_a_straight_copy() {
         let src = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];

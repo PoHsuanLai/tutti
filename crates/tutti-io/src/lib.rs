@@ -22,9 +22,7 @@ pub use pump_loop::{
 };
 pub use recorder::{FinalizeStatus, Recorder};
 pub use tap_in::TapIn;
-// `MAX_WAV_FOLD_CHANNELS` is the widest input `WavOut` will fold, so a caller
-// sizing a buffer for it has to name the same ceiling.
-pub use wav_out::{MAX_WAV_FOLD_CHANNELS, WavOut};
+pub use wav_out::WavOut;
 
 // The file-reading half of the edge. `Wave` is the resident buffer and needs no codec; decoding
 // into it, probing a header and streaming (`FileIn`) exist only when a codec

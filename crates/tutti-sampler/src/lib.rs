@@ -20,7 +20,7 @@
 //! - [`voice::interp`]: the block interpolation and transport-placement
 //!   helpers the voices share.
 //! - [`AudioIn`], [`AudioOut`], [`pump`]: the engine's I/O edge vocabulary,
-//!   re-exported from `tutti-types` because the butler's refill path speaks it.
+//!   re-exported from `tutti-types`; the butler's refill path polls a `FileIn`.
 //!
 //! ## License
 //!
@@ -67,8 +67,7 @@ pub(crate) fn nonempty(layout: tutti_types::ChannelLayout) -> tutti_types::Chann
 pub mod testing;
 
 // The I/O edge vocabulary is defined once in `tutti-types`. Re-exported here
-// because the butler's refill path speaks it: `FileIn` is the `AudioIn` it polls, and the region ring (`RegionOut`) is
-// itself an `AudioOut`, both carrying their width as a runtime `ChannelLayout`.
+// because the butler's refill path speaks it: `FileIn` is the `AudioIn` it polls.
 pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 
 // The resident buffer every voice constructor takes (`MemorySource::new`,

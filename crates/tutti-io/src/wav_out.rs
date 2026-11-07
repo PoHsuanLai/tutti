@@ -39,21 +39,12 @@ use tutti_types::pcm::{BitDepth, Sample};
 use tutti_types::wav::{self, DataLimitExceeded};
 use tutti_types::{ChannelLayout, ChannelTopology};
 
-/// Widest frame [`WavOut::write_folding`] folds *into* without allocating.
-///
-/// Aliases `tutti_core::MAX_ROOT_CHANNELS` (8, mono through 7.1) so the
-/// fold ceiling on the capture edge matches the render root's. A sink declared
-/// wider still writes whole frames — the channels past this are silence — so
-/// this bounds fidelity, never alignment.
-pub const MAX_WAV_FOLD_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
-
 /// A WAV file sink: the [`AudioOut`] a recording writes into.
 ///
 /// Writes incrementally through a buffered file writer, so a take of any
 /// length is never held in memory, at any [`BitDepth`] (integer depths are
 /// quantized without dither). Frames are written at the header's width with
-/// [`write_interleaved`](Self::write_interleaved) (or [`AudioOut::write`]), or
-/// folded from another width with [`write_folding`](Self::write_folding).
+/// [`write_interleaved`](Self::write_interleaved) (or [`AudioOut::write`]).
 ///
 /// Writes do blocking file I/O: drive the sink from a pump thread such as
 /// [`Recorder`](crate::Recorder)'s, never from the audio thread. A write
@@ -362,55 +353,6 @@ impl WavOut {
         }
         true
     }
-
-    /// Writes flat interleaved frames of some **other** width, folding each
-    /// one to this sink's declared width on the way in.
-    ///
-    /// `src` is a flat interleaved buffer at `src_layout`'s width; the fold runs
-    /// once per `src` FRAME and emits one whole destination frame. A trailing
-    /// partial `src` frame is ignored.
-    ///
-    /// The fold is [`fold_frame`](tutti_types::fold_frame), the engine's single
-    /// ITU/Dolby implementation, so a mono sink **averages** `(l + r) * 0.5` and
-    /// a 5.1 source keeps its centre and surrounds instead of being truncated to
-    /// the front pair.
-    ///
-    /// Allocation-free: the destination frame is a fixed stack scratch.
-    ///
-    /// The scratch caps the width this can *fold into* at
-    /// [`MAX_WAV_FOLD_CHANNELS`]. A sink declared wider than that still gets a
-    /// full, correctly-aligned frame every time — the channels past the ceiling
-    /// are written as silence. Emitting a short frame instead would misalign
-    /// the interleave for the whole rest of the file, which is a far worse
-    /// failure than a few silent channels on an implausibly wide sink.
-    pub fn write_folding(&mut self, src: &[f32], src_layout: ChannelLayout) {
-        if self.first_error.is_some() {
-            return;
-        }
-        // Both strides derived ONCE, above the loop.
-        let src_ch = src_layout.count().max(1) as usize;
-        let dst_ch = self.stride();
-        let folded = dst_ch.min(MAX_WAV_FOLD_CHANNELS);
-
-        let mut frame = [0.0f32; MAX_WAV_FOLD_CHANNELS];
-        for chunk in src.chunks_exact(src_ch) {
-            if !self.begin_frame() {
-                return;
-            }
-            tutti_types::fold_frame(chunk, &mut frame[..folded]);
-            for &s in &frame[..folded] {
-                if !self.emit(s) {
-                    return;
-                }
-            }
-            // Pad out to the declared width so every frame stays whole.
-            for _ in folded..dst_ch {
-                if !self.emit(0.0) {
-                    return;
-                }
-            }
-        }
-    }
 }
 
 impl AudioOut for WavOut {
@@ -423,11 +365,9 @@ impl AudioOut for WavOut {
     /// `frames` holds `frames * layout().count()` samples; the trait speaks a
     /// runtime [`ChannelLayout`] and the sink's layout is the header's, so this
     /// and [`write_interleaved`](WavOut::write_interleaved) are the same
-    /// operation. A caller feeding some *other* width folds first — see
-    /// [`write_folding`](WavOut::write_folding).
+    /// operation. A caller feeding some *other* width folds first, through
+    /// [`tutti_types::fold_frame`].
     fn write(&mut self, frames: &[f32]) {
-        // Straight delegation, deliberately: any width adaptation belongs in
-        // `write_folding`, over the engine's single `fold_frame`.
         self.write_interleaved(frames);
     }
 

@@ -1,0 +1,33 @@
+[package]
+name = "tutti-plugin-contract"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The host contract: the same cases against every plugin format through Loaded"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A format's tests are `tests/<format>.rs`: one `contract!` line over a
+# `Format`. The plugin they load is `tutti-shared-plugin`, a normal dependency
+# so cargo builds its cdylib in the same invocation.
+[dependencies]
+tutti-plugin-types = { path = "../../crates/tutti-plugin-types" }
+tutti-fixtures = { path = "../tutti-fixtures" }
+tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
+tutti-midi-types = { path = "../../crates/tutti-midi-types" }
+tutti-clap-host = { path = "../../crates/tutti-clap-host" }
+assert_no_alloc = { version = "1", default-features = false }
+tutti-shared-plugin = { path = "../tutti-shared-plugin" }
+
+# Needs `cargo build -p tutti-plugin-server --no-default-features --features clap`
+# first: the server cannot be a dependency (it depends on `tutti-plugin`).
+tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap"], optional = true }
+
+[features]
+# `tests/server.rs`: the same configuration and transcript through a real
+# `plugin-server` process.
+server = ["dep:tutti-plugin"]
+
+[[test]]
+name = "server"
+required-features = ["server"]

@@ -240,9 +240,10 @@ pub struct SynthConfig {
     /// every global pitch-bend update; defaults to 12-tone equal temperament
     /// with A4 = 440 Hz.
     pub tuning: Tuning,
-    /// How far a full-scale global (channel) pitch bend sweeps, in
-    /// [`Semitones`], applied symmetrically either side of the note. Default
-    /// 2.0 — the MIDI convention of a whole tone. Applied as a frequency ratio,
+    /// How far a full-scale channel pitch bend sweeps, in [`Semitones`],
+    /// applied symmetrically either side of the note: each channel's default,
+    /// which its Pitch Bend Sensitivity RPN (0) sets. Default 2.0, the MIDI
+    /// convention of a whole tone. Applied as a frequency ratio,
     /// so it bends by the same interval in every [`tuning`](Self::tuning).
     pub pitch_bend_range: Semitones,
     /// Cutoff modulation sources. All depths default to zero, which skips the

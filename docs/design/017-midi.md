@@ -524,21 +524,22 @@ holds the second borrow of the port).
   plugin's MIDI output and `MpeIngest::set_mode` still send without a ledger, so
   audit #14 still holds for them (a note-off lost at the reserve, 8 stuck notes in
   the scenario that measured it) until stage 4 moves them.
-- **Audit #7 stays open.** A debt that crosses an edge change cannot be paid by a
-  value inside its source. `MidiClipControls::release_held` returns a `Releasing`
-  ticket that belongs to its clip; `Releasing::drained` returns `Drained` once a block
-  has answered and no off is still owed (a port that takes 296 offs a block answers
-  for 600 held notes in the third block). Both are `#[must_use]`. A ticket is a
-  snapshot, not a stop: a clip that keeps rolling starts its next note after the
-  answer, so the caller stops the clip first (`a_ticket_does_not_stop_the_clip`).
-  Nothing in `tutti-session` takes them yet,
-  and `Midi::retarget`, `set_routes`, `unroute` and the declared `PortSources` still
-  cut at a commit: a clip that holds a key when its edge moves leaves the note on the
-  old sink and an orphan off on the new one (pinned by
-  `a_rewire_without_the_handshake_strands_the_note`). The fix is at the edge: the
-  executor already delivers the events in flight on a delay that vanishes, and a
-  held-key set per source output port could inject the offs for a removed edge in
-  the same way, with no node's cooperation. That is not built.
+- **Audit #7 is closed at the executor's edges, not in the ledger.** A debt that
+  crosses an edge change cannot be paid by a value inside its source, so the
+  executor keeps the keys each note-carrying event output port holds (`tutti-graph`'s
+  `held.rs`: a bitset over `tutti_ump::Key`, plus the sustain pedals down) and, when
+  a commit removes an edge, sends the sink that loses it the pedal-ups and
+  note-offs, after the events a vanished delay flushed to it. It needs no node's
+  cooperation, so it covers a clip, a relay and a plugin's MIDI output alike. A
+  replaced or removed source closes its sinks too. A node whose event outputs never
+  carry a note says so with `Shape::with_no_note_events`, and keeps no table.
+  The ledger still owes its own port the offs it refused; the edge table owes the
+  sink the offs of what crossed the edge.
+- **What the close does not do.** An off for a key the sink never saw begin still
+  reaches it (a conforming receiver ignores it). A sink fed by several sources cannot
+  tell whose note a key is, so one source's close or off ends another's note on the
+  same key. A fork starts with empty tables and closes what it has seen itself.
+  Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked.
 
 ## 9. Missing capabilities, in the order a DAW needs them
 

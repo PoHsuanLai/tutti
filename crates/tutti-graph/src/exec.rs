@@ -145,6 +145,15 @@
 //! at that sink — a note-off for a note-on its predecessor saw — which a
 //! unit must tolerate (a note-off for a note that is not sounding is a
 //! no-op in MIDI).
+//!
+//! # Held keys
+//!
+//! A unit whose event outputs carry notes ([`Shape::note_events`]) has the keys
+//! each port holds tracked after its op (`src/held.rs`). When a commit removes
+//! an event edge, or its source is replaced or removed, the sink that survives
+//! is sent the pedal-ups and note-offs of what the source held, after the
+//! events flushed to it. A new edge sends nothing: the off of a note its sink
+//! never saw begin reaches it, which ends nothing.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -1335,11 +1344,13 @@ impl Executor {
         }
         // A port that carries notes is tracked from its unit's first block, so
         // an edge added later knows what the port already holds.
-        for pu in plan.units.iter().filter(|u| u.shape.note_events) {
+        for pu in plan.units.iter().filter(|u| u.shape.event_out > 0) {
             if let Some(u) = self.store[pu.idx.0 as usize].as_mut() {
                 u.held.resize_with(pu.shape.event_out as usize, || None);
-                for h in &mut u.held {
-                    h.get_or_insert_with(Held::new);
+                if pu.shape.note_events {
+                    for h in &mut u.held {
+                        h.get_or_insert_with(Held::new);
+                    }
                 }
             }
         }

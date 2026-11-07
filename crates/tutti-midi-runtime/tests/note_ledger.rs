@@ -1,7 +1,6 @@
 //! `NoteLedger` through real graphs: a refused note-off is paid, no note is
 //! left sounding whatever the port refused, a full table counts what it
-//! cannot keep, and the clip node's reset, fork and release handshake leave
-//! its notes ended.
+//! cannot keep, and the clip node's reset and fork leave its notes ended.
 //!
 //! Every figure is counted by hand from the scenario or is an invariant of
 //! the run (nothing sounds after a stop, every note-on has its note-off); no
@@ -21,13 +20,8 @@
 //! - `Sending::on` not ending a sounding note that a new note takes the key
 //!   from, or `Sending::off` writing the off of a note whose on the port
 //!   refused: `a_clip_leaves_nothing_sounding_after_a_stop` fails.
-//! - `MidiClipNode::process` not storing `answered`: the three drain tests
-//!   fail. Not releasing for a request: the rewire after the drain strands
-//!   the note on A.
-//! - `ClipFork` building its node over the live `Shared`:
-//!   `a_fork_does_not_answer_the_lives_ticket` fails.
 //! - `Sending::off` writing a tagged off that has no row: the fork test, the
-//!   rewire after the drain, the full-table test and the clip property fail.
+//!   full-table test and the clip property fail.
 //! - Counting (each run, the tests that fail):
 //!   - `forget_if_idle` ignoring the mark: the first counting test, the
 //!     overlapping-refusals test and the exact-loss property.
@@ -49,9 +43,6 @@
 //!   not settling a refused row, or leaving the mark of a held one:
 //!   `an_untagged_off_settles_the_row_of_a_refused_on` and
 //!   `an_untagged_off_of_a_held_key_settles_a_refused_on_too`.
-//! - The node answering a ticket while offs are owed:
-//!   `a_ticket_is_drained_only_when_every_off_is_on_the_port`. Judging that
-//!   before the walk instead of after: `a_ticket_counts_the_offs_the_walk_leaves_owed`.
 //! - Equivalent, so no test: `release_all` not setting `full` (a later push is
 //!   refused too and counts as the withheld one would, and an owed off's
 //!   refusal is given back either way) and `pay` not clearing `owner` (a row
@@ -609,7 +600,7 @@ fn a_full_table_withholds_what_it_cannot_keep() {
 }
 
 // ---------------------------------------------------------------------------
-// The release handshake.
+// A clip re-aimed while it holds a note.
 // ---------------------------------------------------------------------------
 
 /// A clip holds note 60 from frame 0 to frame 100,000 and feeds sink A.
@@ -641,60 +632,29 @@ fn rewire(ed: &mut Editor, exec: &mut Executor, from: u64) {
     run(exec, from, 400, 256);
 }
 
-/// A ticket is not drained before a block has run, and is after one.
+/// Re-aiming a clip that holds a note ends it on A, which the clip can no
+/// longer reach; B hears the clip's own off at frame 100,000 for a note it
+/// never started.
+///
+/// Mutation (run): `Held::observe` in `tutti-graph` doing nothing -> A is left
+/// holding the note -> fails.
 #[test]
-fn a_ticket_drains_once_a_block_has_answered() {
-    let (_ed, mut exec, controls, a, _b) = holding_clip();
-    let f = run(&mut exec, 0, 2, 256);
-    assert_eq!(a.lock().unwrap().held.len(), 1);
-    let ticket = controls.release_held();
-    let ticket = ticket.drained().expect_err("no block has run");
-    run(&mut exec, f, 1, 256);
-    let _proof = ticket.drained().expect("a block answered");
-    assert!(
-        a.lock().unwrap().held.is_empty(),
-        "the answer ended the note"
-    );
-}
-
-/// Without the handshake, re-aiming a clip that holds a note strands it on
-/// A, and B hears one off for a note it never started. This is the open
-/// part of the audit's item 7: the source cannot reach an edge that is gone.
-/// The edge-level fix will change this test.
-#[test]
-fn a_rewire_without_the_handshake_strands_the_note() {
+fn a_rewire_ends_the_held_note_at_the_old_sink() {
     let (mut ed, mut exec, _controls, a, b) = holding_clip();
     let f = run(&mut exec, 0, 2, 256);
     rewire(&mut ed, &mut exec, f);
-    assert_eq!(a.lock().unwrap().held.len(), 1);
-    assert_eq!(b.lock().unwrap().orphans, 1);
-}
-
-/// With the handshake, nothing is stranded and B hears nothing: the clip's
-/// own off at frame 100,000 is swallowed, its note having been ended.
-#[test]
-fn a_rewire_after_the_drain_leaves_nothing() {
-    let (mut ed, mut exec, controls, a, b) = holding_clip();
-    let f = run(&mut exec, 0, 2, 256);
-    let ticket = controls.release_held();
-    let f = run(&mut exec, f, 1, 256);
-    let _proof = ticket.drained().expect("a block answered");
-    rewire(&mut ed, &mut exec, f);
     assert!(a.lock().unwrap().held.is_empty());
-    let b = b.lock().unwrap();
-    assert_eq!((b.ons, b.offs, b.orphans), (0, 0, 0));
+    assert_eq!(b.lock().unwrap().orphans, 1);
 }
 
 /// Sink A also takes audio from a node of 1,024 frames of latency, so the
 /// compiler delays the event edge into A by 1,024 frames (4 blocks of 256).
-/// The off the drain put on the edge has not reached A when the ticket is
-/// drained; cutting the edge then still delivers it, because the graph
-/// flushes the events in flight on a delay that goes away. It arrives at the
-/// cut, frame 2,304 here, instead of at 3,072.
+/// The note reached A through the delay; cutting the edge sends the close at
+/// the cut, frame 2,304 here.
 #[test]
-fn the_graph_delivers_the_drained_off_on_a_delayed_edge() {
+fn the_close_reaches_a_sink_behind_a_delayed_edge() {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    let controls = ed.insert(
+    ed.insert(
         NodeKey(1),
         "clip",
         MidiClipNode::new([at(0, on(60)), at(100_000, off(60))]),
@@ -724,9 +684,7 @@ fn the_graph_delivers_the_drained_off_on_a_delayed_edge() {
     ed.commit().unwrap();
     let f = run(&mut exec, 0, 8, 256);
     assert_eq!(a.lock().unwrap().held.len(), 1, "the note reached A");
-    let ticket = controls.release_held();
     let f = run(&mut exec, f, 1, 256);
-    let _proof = ticket.drained().expect("a block answered");
     assert_eq!(f, 2_304);
     rewire(&mut ed, &mut exec, f);
     let a = a.lock().unwrap();
@@ -801,23 +759,6 @@ fn a_fork_starts_with_an_empty_table() {
     let live = live.lock().unwrap();
     assert_eq!((live.ons, live.offs), (1, 1));
     assert!(live.held.is_empty());
-}
-
-/// A fork's clip answers its own requests only. A ticket asked of the live
-/// clip is not drained by rendering the fork, and is when the live graph runs
-/// a block.
-#[test]
-fn a_fork_does_not_answer_the_lives_ticket() {
-    let (ed, mut exec, controls, live, _forks) = forkable_rig();
-    let f = run_out(&mut exec, 0, 1);
-    let ticket = controls.release_held();
-    let (_fed, mut fexec) = fork_of(&ed);
-    run_out(&mut fexec, f, 3);
-    let ticket = ticket.drained().expect_err("the fork is another node");
-    assert_eq!(live.lock().unwrap().held.len(), 1);
-    run_out(&mut exec, f, 1);
-    let _proof = ticket.drained().expect("the live block answered");
-    assert!(live.lock().unwrap().held.is_empty());
 }
 
 /// A reset node has forgotten what it held: stopping the transport ends
@@ -1063,127 +1004,6 @@ fn an_untagged_off_of_a_held_key_settles_a_refused_on_too() {
 }
 
 // ---------------------------------------------------------------------------
-// The release ticket.
-// ---------------------------------------------------------------------------
-
-/// 600 notes sound; the port takes 296 note-offs a block (256 and its room).
-/// A ticket asked then is not drained while offs are owed, so a caller that
-/// cuts at the first answer cannot strand them: it is drained in the block
-/// that puts the last one on the port.
-///
-/// Mutation (run): the node answering right after `release_all`, owed offs or
-/// not → `drained` is `Ok` after the first block with 304 notes still held →
-/// fails.
-#[test]
-fn a_ticket_is_drained_only_when_every_off_is_on_the_port() {
-    let key = |i: u32| (MidiChannel::of((i / 128) as u8), (i % 128) as u8);
-    let events: Vec<TimedMidiEvent> = (0..600u32)
-        .flat_map(|i| {
-            let (c, n) = key(i);
-            [
-                at(
-                    u64::from(i),
-                    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF),
-                ),
-                at(100_000, MidiEvent::note_off(MidiGroup::FIRST, c, n, 0)),
-            ]
-        })
-        .collect();
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
-    let controls = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
-    let a = sink(&mut ed, 2);
-    connect(&mut ed, 1, 2);
-    ed.commit().unwrap();
-    let mut f = run(&mut exec, 0, 10, 64);
-    assert_eq!(a.lock().unwrap().held.len(), 600);
-    let mut ticket = Some(controls.release_held());
-    for (held, last) in [(304, false), (8, false), (0, true)] {
-        f = run(&mut exec, f, 1, 64);
-        assert_eq!(a.lock().unwrap().held.len(), held);
-        match ticket.take().expect("kept until drained").drained() {
-            Ok(_) => assert!(last, "drained with {held} notes still held"),
-            Err(t) => {
-                assert!(!last, "not drained with every off sent");
-                ticket = Some(t);
-            }
-        }
-    }
-}
-
-/// A ticket is judged after the block's walk. 200 notes start and end in one
-/// 256-frame block (an on a frame, then the offs), asked for at its first
-/// frame when nothing is held yet: the port takes 296 of the 400 events, so
-/// 104 offs are refused and owed once the walk is done. The first block does
-/// not answer, though the release at its first frame owed nothing; the next
-/// pays them and does.
-///
-/// Mutation (run): judging `owed()` right after the release, before the
-/// walk → `Ok` with 104 notes held on the sink → fails.
-#[test]
-fn a_ticket_counts_the_offs_the_walk_leaves_owed() {
-    let events: Vec<TimedMidiEvent> = (0..200u32)
-        .flat_map(|i| {
-            let (c, n) = (MidiChannel::of((i / 128) as u8), (i % 128) as u8);
-            [
-                at(
-                    u64::from(i),
-                    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF),
-                ),
-                at(
-                    200 + u64::from(i) / 4,
-                    MidiEvent::note_off(MidiGroup::FIRST, c, n, 0),
-                ),
-            ]
-        })
-        .collect();
-    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    let controls = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
-    let a = sink(&mut ed, 2);
-    connect(&mut ed, 1, 2);
-    ed.commit().unwrap();
-    let ticket = controls.release_held();
-    let f = run(&mut exec, 0, 1, 256);
-    assert_eq!(a.lock().unwrap().held.len(), 104);
-    let ticket = ticket.drained().expect_err("104 offs are owed");
-    run(&mut exec, f, 1, 256);
-    assert!(a.lock().unwrap().held.is_empty());
-    let _proof = ticket.drained().expect("every off is on the port");
-}
-
-/// A ticket is a snapshot. The clip is not stopped: a second note starts at
-/// frame 700, after the block that answers (frames 512 to 767 here, the
-/// answer on its first frame), and re-aiming the clip then leaves it on A,
-/// with B hearing an off for a note it never started. A caller stops the
-/// clip first.
-#[test]
-fn a_ticket_does_not_stop_the_clip() {
-    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
-    let controls = ed.insert(
-        NodeKey(1),
-        "clip",
-        MidiClipNode::new([
-            at(0, on(60)),
-            at(700, on(61)),
-            at(100_000, off(60)),
-            at(100_001, off(61)),
-        ]),
-    );
-    let a = sink(&mut ed, 2);
-    let b = sink(&mut ed, 3);
-    connect(&mut ed, 1, 2);
-    ed.commit().unwrap();
-    let mut exec = exec;
-    let f = run(&mut exec, 0, 2, 256);
-    let ticket = controls.release_held();
-    let f = run(&mut exec, f, 1, 256);
-    let _proof = ticket.drained().expect("answered on frame 512");
-    let f = run(&mut exec, f, 1, 256);
-    rewire(&mut ed, &mut exec, f);
-    assert_eq!(a.lock().unwrap().held.len(), 1, "note 61 is stranded on A");
-    assert_eq!(b.lock().unwrap().orphans, 1);
-}
-
-// ---------------------------------------------------------------------------
 // Exact loss counts, whatever the clip does.
 // ---------------------------------------------------------------------------
 
@@ -1258,15 +1078,14 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
 /// sink did not hear is one loss, and so is its note-off (withheld, counted
 /// once), and every controller it did not hear is one. Offs the port refused
 /// are given back when they go out. After the stop nothing sounds, every
-/// note-on has its note-off, no off is orphaned, and a release ticket is
-/// drained.
+/// note-on has its note-off, and no off is orphaned.
 ///
 /// Mutation (run): `pay` or `owe` without `recovered()`, `pay` dropping a
 /// marked row, `Sending::on` not marking the key, the mark a flag instead of a
 /// count (overlapping notes), `forget_if_idle` ignoring the mark, and a tagged
 /// off of a marked row not withheld each change the total → fails.
 #[test]
-fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
+fn the_loss_count_is_exact_through_loops_and_replacements() {
     let (mut refused, mut recovered) = (0, 0);
     for seed in 1..=300u64 {
         let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
@@ -1289,9 +1108,7 @@ fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
             ons += ons2;
             ccs += ccs2;
         }
-        let ticket = controls.release_held();
         exec.process(64, &stopped(0), &[], &mut []);
-        let _proof = ticket.drained().expect("nothing is held, nothing owed");
         let t = tally.lock().unwrap();
         assert!(t.held.is_empty(), "seed {seed}");
         assert_eq!(t.ons, t.offs, "seed {seed}");

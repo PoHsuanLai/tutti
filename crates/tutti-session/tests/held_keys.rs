@@ -1,7 +1,7 @@
-//! A held key and a rewire through the session (finding #7): `Midi::retarget`
-//! and `Midi::set_routes` (whose compile `unroute` shares) change a sink's
-//! feed in a commit; the sink that loses the feed must hear the note end, and
-//! the one that gains it must not hear an off for a note it never started.
+//! A held key and a rewire through the session: `Midi::retarget` and
+//! `Midi::set_routes` (whose compile `unroute` shares) change a sink's feed in
+//! a commit, and the sink that loses the feed hears the note end. The one that
+//! gains it hears the later off of a note it never started, which ends nothing.
 
 use std::sync::{Arc, Mutex};
 
@@ -141,7 +141,11 @@ fn retarget_with_a_held_clip_note() {
     blocks(&s, 400);
     assert_eq!(offs(&a_seen), 1, "A is told once");
     assert_eq!(ons(&b_seen), 0, "B never started it");
-    assert_eq!(offs(&b_seen), 0, "B hears no orphan off");
+    assert_eq!(
+        offs(&b_seen),
+        1,
+        "B hears the clip's off for a note it never saw"
+    );
 }
 
 /// The host's routes move a held key from one sink to another, then to none.
@@ -171,7 +175,7 @@ fn set_routes_with_a_held_key() {
 
     mail.lock().unwrap().push([0x2080_3c00, 0, 0, 0]);
     blocks(&s, 2);
-    assert_eq!(offs(&b_seen), 0, "B hears no orphan off");
+    assert_eq!(offs(&b_seen), 1, "B hears the orphan off");
 
     // And a key held across the unrouting.
     mail.lock().unwrap().push([0x2090_3d64, 0, 0, 0]);
@@ -182,5 +186,5 @@ fn set_routes_with_a_held_key() {
         .unwrap();
     s.update();
     blocks(&s, 2);
-    assert_eq!(offs(&b_seen), 1, "B is told when the routes go");
+    assert_eq!(offs(&b_seen), 2, "B is told when the routes go");
 }

@@ -5158,6 +5158,15 @@ the one place that says what a ported node can rely on:
   recompile flushes its pending events to the sink (a note-off is never
   lost). With the event source nodes ported, this aligns plugin automation
   behind a latent path.
+- **Held keys.** The executor tracks the notes and sustain pedals each
+  event output of a note-carrying node holds (`Shape::note_events`, on unless
+  `with_no_note_events`; `held.rs`, a bitset over `tutti_ump::Key`, written by
+  the node's own op). A commit that removes an event edge, or replaces or
+  removes its source, sends the surviving sink the closing pedal-ups and
+  note-offs after the events a vanished delay flushed (through the delay when
+  the edge and its delay go on). A new edge sends nothing; a sink fed by
+  several sources cannot tell whose note a key is. A re-prepare parks the
+  tables with the executor; a fork starts with empty ones.
 - **Declared capacity.** `Shape::event_capacity` is the most events
   a node writes to each event output per block (`with_event_capacity(n)`;
   `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every

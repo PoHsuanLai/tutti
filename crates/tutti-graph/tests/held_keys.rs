@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use common::TestPool;
 use tutti_graph::{
-    Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, Io, Node, Offset,
-    Prepare, Reference, Shape, Shapes, Status, Transport, Unforkable,
+    Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, ForkByClone,
+    ForkMode, ForkTarget, Io, Node, Offset, Prepare, Reference, Shape, Shapes, Status, Transport,
+    Unforkable,
 };
 use tutti_types::graph::NodeSpec;
 use tutti_types::{ChannelLayout, NodeKey, Samples, Topology};
@@ -814,6 +815,246 @@ fn a_crossfaded_source_closes_its_sinks() {
     r.block();
     r.block();
     assert_eq!(r.words(2), vec![ON60, OFF60, ON61]);
+}
+
+/// Two sources hold the same key into one sink and one is cut: the sink
+/// cannot tell whose note a key is, so the close ends the other's note too.
+/// The limit is documented in `held.rs`; this pins it.
+///
+/// Mutation (run): `Held::close_into` writing nothing -> the sink hears no
+/// `OFF60` -> fails.
+#[test]
+fn fan_in_on_one_key_is_closed_by_either_source() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    let mail2: Mail = Arc::default();
+    r.ed.as_mut().unwrap().insert(
+        NodeKey(5),
+        "src2",
+        Unforkable(Src {
+            mail: mail2.clone(),
+        }),
+    );
+    let wire = |r: &mut Rig, edges: &[(u64, u64)]| {
+        let ed = r.ed.as_mut().unwrap();
+        ed.spec_mut().events.clear();
+        for &(f, to) in edges {
+            ed.spec_mut()
+                .connect_events(at(to), EventEdge::Direct(out(f)));
+        }
+        ed.commit().unwrap();
+        r.exec.as_mut().unwrap().apply_pending();
+        ed.collect();
+    };
+    wire(&mut r, &[(1, 2), (5, 2)]);
+    r.send(ON60);
+    mail2.lock().unwrap().push((0, ON60));
+    r.block();
+    wire(&mut r, &[(5, 2)]);
+    r.block();
+    assert_eq!(r.words(2), vec![ON60, ON60, OFF60]);
+}
+
+/// A re-prepare checks the units out and back; the tables go with them, so a
+/// key held across it is still closed.
+///
+/// Mutation (run): drop the parked tables in `Executor::apply` instead of
+/// handing them back -> the sink hears no `OFF60` -> fails.
+#[test]
+fn a_key_held_across_a_reprepare_is_closed() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.send(ON60);
+    r.block();
+    let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
+    ed.reprepare(common::prepare(MAX * 2)).expect("reprepares");
+    exec.apply_pending();
+    ed.collect();
+    exec.apply_pending();
+    ed.collect();
+    r.block();
+    r.wire(&[]);
+    r.block();
+    assert_eq!(r.words(2), vec![ON60, OFF60]);
+}
+
+/// A feedback edge that is cut: the event in flight is delivered, and the close
+/// follows it. Serial executor only.
+///
+/// Mutation (run): skip the feedback FIFO's `flushed()` -> the sink hears
+/// `OFF60` with no `ON60` before it -> fails.
+#[test]
+fn a_cut_feedback_edge_delivers_what_is_in_flight_then_closes() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    let feedback = |r: &mut Rig, on: bool| {
+        let ed = r.ed.as_mut().unwrap();
+        ed.spec_mut().events.clear();
+        if on {
+            ed.spec_mut()
+                .connect_events(at(2), EventEdge::feedback(out(1), Samples(MAX * 4)));
+        }
+        ed.commit().unwrap();
+        r.exec.as_mut().unwrap().apply_pending();
+        ed.collect();
+    };
+    feedback(&mut r, true);
+    r.send(ON60);
+    r.block();
+    assert!(r.words(2).is_empty(), "the note is still in the FIFO");
+    feedback(&mut r, false);
+    r.block();
+    assert_eq!(r.words(2), vec![ON60, OFF60]);
+}
+
+/// A source that declares no note events keeps no table and closes nothing.
+#[test]
+fn a_source_without_note_events_closes_nothing() {
+    struct Clock;
+    impl Node for Clock {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+                .with_events(0, 1)
+                .with_no_note_events()
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            let _ = io
+                .event_out(0)
+                .push(Event::midi(Offset::ZERO, [0x20b0_0764, 0, 0, 0]));
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    let edit = |r: &mut Rig, wired: bool| {
+        let ed = r.ed.as_mut().unwrap();
+        if wired {
+            ed.insert(NodeKey(6), "clock", Unforkable(Clock));
+            ed.spec_mut()
+                .connect_events(at(2), EventEdge::Direct(out(6)));
+        } else {
+            ed.spec_mut().events.clear();
+        }
+        ed.commit().unwrap();
+        r.exec.as_mut().unwrap().apply_pending();
+        ed.collect();
+    };
+    edit(&mut r, true);
+    r.block();
+    edit(&mut r, false);
+    r.block();
+    assert_eq!(r.words(2), vec![[0x20b0_0764, 0, 0, 0]]);
+}
+
+/// A node that declared no note events and writes one breaks its declaration:
+/// a debug build says so, instead of leaving the note unclosed.
+///
+/// Mutation (run): remove the `debug_assert!` in `node_op_with` -> no panic ->
+/// fails.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "declared no note events")]
+fn a_note_from_a_source_that_declared_none_is_caught() {
+    struct Liar;
+    impl Node for Liar {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+                .with_events(0, 1)
+                .with_no_note_events()
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+    let (mut ed, mut exec) = Editor::new(common::prepare(MAX));
+    ed.insert(NodeKey(1), "liar", Unforkable(Liar));
+    ed.commit().unwrap();
+    exec.apply_pending();
+    exec.process(MAX, &Transport::default(), &[], &mut []);
+}
+
+/// A shape claims note events unless it says otherwise, so a node that
+/// forgets the declaration is tracked, not left unclosed.
+///
+/// Mutation (run): `note_events: false` in `Shape::audio` -> fails.
+#[test]
+fn a_shape_carries_note_events_by_default() {
+    let shape = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1);
+    assert!(shape.note_events);
+    assert!(!shape.with_no_note_events().note_events);
+}
+
+/// A fork starts with empty tables: it closes what it has seen itself, and
+/// knows nothing of the live graph's held keys.
+#[test]
+fn a_fork_closes_what_it_has_seen() {
+    #[derive(Clone)]
+    struct Once(bool);
+    impl Node for Once {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(0, 1)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+            if !std::mem::replace(&mut self.0, true) {
+                let _ = io.event_out(0).push(Event::midi(Offset::ZERO, ON60));
+            }
+            Status::Modified
+        }
+        fn reset(&mut self) {}
+    }
+    #[derive(Clone)]
+    struct Hear(Log, u64);
+    impl Node for Hear {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO).with_events(1, 0)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            for e in io.events(0) {
+                if let EventKind::Midi(Ump(w)) = e.kind {
+                    self.0
+                        .lock()
+                        .unwrap()
+                        .push((self.1, cx.env.frame_at(e.offset).get(), w));
+                }
+            }
+            io.output(0).fill(0.0);
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+    let log: Log = Arc::default();
+    let prep = common::prepare(MAX);
+    let (mut ed, mut exec) = Editor::new(prep);
+    ed.insert(NodeKey(1), "once", ForkByClone(Once(false)));
+    ed.insert(NodeKey(2), "hear", ForkByClone(Hear(log.clone(), 2)));
+    ed.spec_mut()
+        .connect_events(at(2), EventEdge::Direct(out(1)));
+    ed.spec_mut().topology.outputs = vec![tutti_types::graph::Source::Node(
+        tutti_types::graph::OutPort {
+            node: NodeKey(2),
+            port: 0,
+        },
+    )];
+    ed.commit().unwrap();
+    exec.apply_pending();
+    ed.collect();
+    let (mut fed, mut fexec) = ed
+        .fork(ForkTarget::Master, ForkMode::Offline, prep)
+        .expect("forks");
+    let mut out_buf = [0.0f32; MAX];
+    let t = Transport::default();
+    fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
+    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![ON60]);
+    fed.spec_mut().events.clear();
+    fed.commit().unwrap();
+    fexec.apply_pending();
+    fed.collect();
+    fexec.process(MAX, &t, &[], &mut [&mut out_buf[..]]);
+    assert_eq!(sink_words(&log.lock().unwrap(), 2), vec![ON60, OFF60]);
 }
 
 mod random {

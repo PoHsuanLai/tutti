@@ -397,7 +397,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         ]
     });
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
-    let clip = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
+    ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
     let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
     ed.spec_mut().connect_events(
         EventIn {
@@ -425,21 +425,11 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
             f += 512;
             polled += block(&mut exec, true, f);
         }
-        // A release asked while offs are owed is answered when the last is
-        // paid.
-        let mut ticket = Some(clip.release_held());
-        let mut drained = false;
+        // The refused offs are paid over the next blocks.
         for _ in 0..8 {
             f += 512;
             polled += block(&mut exec, true, f);
-            if let Some(t) = ticket.take() {
-                match t.drained() {
-                    Ok(_) => drained = true,
-                    Err(t) => ticket = Some(t),
-                }
-            }
         }
-        assert!(drained);
         // A seek back: the table is empty, the notes start again.
         for k in 0..8 {
             polled += block(&mut exec, true, 512 * k);

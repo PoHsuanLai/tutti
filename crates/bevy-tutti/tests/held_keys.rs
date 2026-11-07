@@ -1,7 +1,7 @@
 //! A held key and a declared rewire (`EventSources`, the event twin of
 //! `PortSources`): moving the declaration from one sink to another while a key
-//! is held must end the note on the sink that loses the feed, and must not
-//! send the new sink an off for a note it never started.
+//! is held ends the note on the sink that loses the feed. The new sink hears
+//! the later off of a note it never started, which ends nothing.
 
 #![cfg(all(feature = "midi", feature = "synth"))]
 
@@ -143,7 +143,7 @@ fn moving_an_event_declaration_with_a_held_key() {
 
     mail.lock().unwrap().push([0x2080_3c00, 0, 0, 0]);
     roll(&mut app, 4);
-    assert_eq!(count(&b_seen, true), 0, "B hears no orphan off");
+    assert_eq!(count(&b_seen, true), 1, "B hears the orphan off");
     assert_eq!(count(&a_seen, true), 1, "A is told once");
 
     // A key held across the declaration's removal.
@@ -155,7 +155,7 @@ fn moving_an_event_declaration_with_a_held_key() {
     roll(&mut app, 4);
     assert_eq!(
         count(&b_seen, true),
-        1,
+        2,
         "B is told when the declaration goes"
     );
 }

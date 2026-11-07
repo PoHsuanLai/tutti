@@ -364,11 +364,6 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
         self.out.withhold();
     }
 
-    /// Note-offs the port refused that this ledger still owes.
-    pub(crate) fn owed(&self) -> usize {
-        self.ledger.owing
-    }
-
     /// The off of held entry `i` was written (`taken`) or refused.
     fn finish(&mut self, i: usize, taken: bool) {
         if !taken {

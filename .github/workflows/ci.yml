@@ -92,7 +92,7 @@ jobs:
       # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
       # or a *.md naming a module path compiles fine and goes stale the moment
       # a module is renamed. The per-module gate covers it.
-      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile editor event exec fade fork io kernels legacy node param plan reference spec time
+      - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile controls cost editor event exec fade fork held history io kernels loss meter node par param plan play pool preroll reference slots spec tap time
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
@@ -108,7 +108,7 @@ jobs:
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
       # private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
-      - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
+      - run: scripts/check-canonical-paths.sh tutti_metering load
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
@@ -118,7 +118,7 @@ jobs:
       # And `tutti-tempo`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -867,6 +867,9 @@ jobs:
       # slot), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test request_word_loom
       - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom
+      # `level_cell` (a block lands whole in one take, none lost or twice),
+      # against the shipped code.
+      - run: cargo test --locked -p tutti-rt --release --test level_cell_loom
       # `drain_clock` (a write leaves the record only after a drain that must
       # have seen it has begun), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture

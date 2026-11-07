@@ -85,7 +85,7 @@ fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) -> Result {
 | `AudioConfig` | always | Sample rate and channel layout |
 | `TransportRes` | always | Play, stop, seek, tempo and loop |
 | `MetronomeRes` | always | The metronome click state |
-| `MeteringRes` | always | Master peak and RMS meters |
+| `MeteringRes` | always | The master meter: peak (held since the last read) and RMS of each output channel |
 | `MasterSources` | always | What feeds each output channel |
 | `AudioDeviceState`, `AudioEngineState`, `AudioDeviceFault` (message) | always | The output device, whether the engine is running, and the device's faults |
 | `GraphLatency`, `ChannelCompensation` | always | Latency compensation figures |

@@ -128,6 +128,15 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+    /// One lane of an aligned meter, delayed like an output channel.
+    Meter {
+        /// The meter.
+        meter: tutti_types::MeterId,
+        /// The lane within it.
+        lane: usize,
+        /// What feeds it.
+        from: Source,
+    },
     /// One lane of an aligned tap, delayed like an output channel.
     Tap {
         /// The tap.
@@ -389,6 +398,13 @@ pub enum Op {
     Tap {
         /// Index into `Plan::taps`.
         tap: u32,
+        /// Audio slot per lane (into [`Plan::audio_list`]).
+        srcs: Span,
+    },
+    /// Fold a block of every lane of a meter into its cells.
+    Meter {
+        /// Index into `Plan::meters`.
+        meter: u32,
         /// Audio slot per lane (into [`Plan::audio_list`]).
         srcs: Span,
     },
@@ -852,6 +868,8 @@ pub struct Plan {
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
     pub(crate) taps: Vec<tutti_types::TapId>,
+    /// The meters the plan measures, with their lane counts.
+    pub(crate) meters: Vec<(tutti_types::MeterId, usize)>,
     pub(crate) units: Vec<PlanUnit>,
     pub(crate) store_len: u32,
     pub(crate) order: Vec<NodeKey>,

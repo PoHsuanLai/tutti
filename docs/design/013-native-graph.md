@@ -426,9 +426,104 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   re-wired), and `TapIn` over a `TapReader`, as wide as the tap. Offline and
   headless sessions feed them: the op runs wherever the plan runs.
 
-The engine, not the device callback, feeds the master meter: `Engine::process`
-and `process_segment` measure the output buffer after the declick, on a stereo
-fold, so an offline session's meter reads what its blocks carry.
+#### Meters: level metering as an op in the plan
+
+A level meter reduces a block to a peak and an energy per channel. It is **an
+op in the compiled plan**, declared like a tap and read by a thread of the
+caller's; it replaced the engine's `Heard` (a stereo fold into a scratch
+buffer, measured after the declick, `MasterMeter` in `tutti-metering`). `Heard`
+and its fold scratch left `Engine`; `LoadMeter` stayed, because it times the
+block and is not audio.
+
+- **Shares with the tap, and stops where they differ.** A declared reader on
+  sources: `Topology.meters: BTreeMap<MeterId, MeterSpec>`, `MeterSpec::Ports {
+  sources, align }` (any ports, any width) or `MeterSpec::Outputs` (the global
+  outputs, following `Topology.outputs` as they change); one `Op::Meter {
+  meter, srcs }` per meter, scheduled after all its sources and before any
+  in-place overwrite of them, as `Op::Tap` is; the writer rides the next
+  `Commit` and is carried or replaced by id (`Executor::rebuild`); a closed
+  meter emits nothing and leaves the ops of a graph that never had one
+  (`tests/meter.rs`); a fork carries none; `Editor::open_meter` / `close_meter`
+  / `reap_meters`; a removed node or a narrowed one turns its lanes to silence;
+  `CommitError::MeterWidth` for a width that no longer fits the cells. A tap
+  moves samples out through a ring and can lose them; a meter keeps two
+  scalars a lane and cannot. They are two ops with two readers, not one op with
+  a mode.
+- **One op per meter.** Its lanes are folded in one op, so a reader sees
+  each block's lanes together and the claim is one decision. A track is a
+  meter on a node's output ports (`Graph::open_node_meter`); the master is
+  `MeterSpec::Outputs`, a lane per output channel, **per channel and before
+  the engine's fold to the device and its declick**. The fader is declick
+  only; there is no master volume and no stereo fold in the meter (a reader
+  that wants a display fold takes it through the channel `Fold`).
+- **Aligned or raw, as the tap.** `MeterSpec::Outputs` is aligned: it reads
+  what each output channel carries, after the compensation delay. With one
+  declared the compiler makes that delay its own `Delay` op (the output's
+  `DelayKey::Output` ring, so no second ring and the state carries across
+  plans) writing a slot that the `Output` op and the meter both read; a
+  graph without a master meter keeps the delay inside the `Output` op. A
+  meter that ran ahead of the audio by the full compensation would go quiet at
+  a stop while the delayed audio still plays (`the_master_reads_at_the_outputs_time`).
+  `MeterSpec::Ports { sources, align }` takes `TapAlign::Raw` (a track's
+  level as it leaves its node) or `ToOutput` (a ring per lane, `DelayKey::Meter`).
+- **A lane naming a port that is not there reads silence.** A node replaced
+  by one with fewer outputs, or removed, leaves the lanes past its width on
+  `Zero`; there is no `Invalid` for it, so a display never wedges a commit
+  (`a_narrowed_node_silences_the_lanes_past_its_width_and_commits`). The plan
+  tap still fails every commit in the same case; that is a separate follow-up.
+- **The cell is `tutti-rt`'s `level_cell`, with a loom model.** A lane is two
+  slots (peak, frames, an `f64` sum of squares) and a flip. The op folds into
+  the active slot (wait-free); a read stores the other index, fences, waits
+  for a writer still announced on the slot it left, then takes and clears
+  it. The announce, `SeqCst` fence, re-check on the writer and the flip,
+  fence, wait on the reader are a store-load pair, so both sides use
+  fences, not `SeqCst` accesses. **A block lands whole in one read**: a read
+  with no frames has no peak and no energy. The model
+  (`tutti-rt/tests/level_cell_loom.rs`) found that the writer's re-check must
+  be `Acquire`: with `Relaxed`, a flip back to a slot (ABA) let the writer fold
+  into a view of it from before the reader cleared it, and a block was lost. The
+  `f64` sum keeps an hour of offline render exact where an `f32` stalls past
+  2^24. The reader waits only for a block in flight (a control thread's wait),
+  and nothing grows while it never reads: a peak is a maximum and the frame
+  count saturates. The op is `meter_op`, written once over `AudioSlots` and
+  called from `exec.rs` and `par.rs`; a lane has one writer by construction,
+  so the parallel executor shares the cells without a claim, and the serial
+  and parallel readings are equal bit for bit
+  (`the_parallel_meters_are_bit_identical_and_allocation_free`). The block
+  statistic is a fixed shape (eight running figures, combined in lane order),
+  which vectorizes and is the same on every executor. A slot the executor
+  knows is silent is not scanned. A block the engine refuses (rendered
+  silent because the control side held the graph) runs no op, so the meter is
+  not touched.
+- **Peak held since the last read.** `MeterReader::read` returns a `Level`
+  per channel: the peak and RMS over the frames measured since the previous
+  read, and that frame count (zero means nothing new, and then the peak and
+  RMS are zero too). **One consumer per reader**: `MeterReader` is not
+  `Clone` and reads through `&mut self`, because a take would steal the other
+  reader's peak; a second consumer declares a second meter. Lanes are taken
+  one after another, so one read may straddle a block between two lanes.
+- **Ballistics are the reader's.** The audio side holds no clock and no decay:
+  an offline render runs faster than any clock, and the reader knows its own
+  refresh rate. `tutti-dsp`'s `Ballistics` and `step_ballistics` smooth a
+  `Level` on read.
+- **Off until enabled.** The reader's switch makes the op skip its pass, so
+  an unwatched meter costs a load a block. `Graph` declares the session's master
+  meter at construction and enables it, so `Session::take_master_meter` readers
+  measure from the start; `Session::master_meter` / `take_master_meter` hand
+  out the one reader. A track meter is opened off.
+- **Reclaim.** A dropped reader leaves its meter in the plan measuring for
+  nobody; `Graph::reap_meters` (the session's `Reclaim` phase) closes it and the
+  cells are freed with the old plan's state on the control side (a writer and a
+  reader both `RtScope::check_outside` in their `Drop`). A fork's export opens
+  its own meter on the fork; the live meter never sees it.
+- **The reference interpreter knows no meters**, as it knows no taps: a meter
+  reads and changes nothing, so the differential suite has nothing to compare.
+  The properties are analytic (`tests/meter.rs`), and the serial render
+  against the parallel one.
+
+The master meter is an op in the plan (see "Meters" above): a device callback,
+`Engine::process_segment`, an offline `Session::render` and a detached
+`Session::render_frame` all feed it, because the op runs wherever the plan runs.
 
 ### 5. Types that make the footguns unrepresentable
 
@@ -4122,8 +4217,8 @@ What they show:
   `DistortionNode` hard clip at six channels 1.5 → 0.18 / 22.1 → 1.2
   (tanh, bound by its libm call, 1.2×); `BrickwallLimiterNode` at six
   channels 1.1 → 0.19 / 16.8 → 1.1; `DownmixNode` 6 → 2 1.3 → 0.30 /
-  18.9 → 2.5, through a planar `tutti_types::fold_planar_channel` beside
-  `fold_frame`. Every one renders the same bits as before. A recurrence
+  18.9 → 2.5, through a planar kernel in `tutti-types` (then
+  `fold_planar_channel`, now `Fold::planar_channel`). Every one renders the same bits as before. A recurrence
   is the exception: the phaser's stages are one dependent chain a
   sample, and running it channel-outer measured 1.3–2× slower than the
   sample-outer loop, which keeps one chain per channel in flight at once.
@@ -4883,11 +4978,11 @@ slices are ignored on every path, and fewer is a caller bug (a
 |---|---|
 | `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar_channel` kernel in `tutti-types` |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
-| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and the master meter is the engine's |
+| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and so is the engine's master meter: a meter is an op too (`Op::Meter`, see "Meters" in the runtime), per channel, on the outputs or any port |
 | `MidiInPort`, `MidiPostBlock`/`MidiOutSink`, bevy `MidiTargetRegistry` | Events ports. Event edges join the one topological order, so arp → synth delivers **in the same block**. The uniform `MIDI_OUT_LATENCY_BLOCKS = 1` is paid only on actual `Feedback` edges. Addressing becomes `(NodeKey, InPort::Events(n))` |
 | `plugin_host/bind.rs` and `latency.rs` (the 3 production `node_as_mut` sites, the latency poll, the `CompensatedLatency` shadow) | Binding is a typestate transition at insert. A latency change is a `Shape` change in the next `Delta` (the poll that feeds `Editor::set_latency` stays, reading the plugin's controls) |
 
@@ -7799,6 +7894,39 @@ the budget. The 32-vocoder scenes (0.55–0.76 mean) are dominated by the
 phase vocoder, which stays f32, so f64 moves them by the interpolation's
 share at most. Neither is a reason not to build the path; neither shows
 it is needed.
+
+## Channel placement: `Fold`
+
+Graph ports stay plain counts; placement belongs to the edges. An edge (a
+file, a device, a plugin bus) states the `ChannelTopology` it has, and
+`tutti_types::Fold::between(&src, &dst)`, built on the control side, is the one
+way two topologies meet. It replaces the `fold_*` family, which chose a matrix
+by width alone.
+
+- **`Speaker::Discrete`** is a channel known to feed no speaker (a numbered
+  interface input, a track, B-format), distinct from `Speaker::Unknown` (a
+  position a format named and the vocabulary cannot). Discrete channels are
+  never matrixed: a discrete destination takes any source by index and
+  zero-fills; a discrete source against a named destination relabels at equal
+  width only. `Fold::select` takes chosen source channels onto a discrete
+  destination (the mic and the meter, in their ports).
+- **`ChannelTopology::smpte`** now has 12 (7.1.4). A width of 4 stays without an
+  order (quad or B-format); `Fold::assuming_smpte` is the named assumption and
+  refuses a width with none.
+- **Rules.** The same speakers in another order are a bit-exact permutation.
+  A speaker the destination lacks folds into its nearest speakers at -3 dB
+  (stereo destination: the ITU-R BS.775 / Dolby set, unchanged and
+  bit-identical to `fold_frame` for widths 1, 2, 4 (quad), 6, 8 and 12). For
+  every other destination the table, the choice of nearest speaker and the
+  -3 dB are tutti's own; the table is pinned in `fold/tests.rs`. A channel
+  that cannot be placed is a `FoldError`, never a silent drop.
+- **Pairs whose output changed** from the width folds: 1 to {4, 6, 8, 12} (the
+  mono feeds the centre, or both fronts, not channel 0), 4 to {6, 8, 12} (a
+  quad's rears no longer land in the centre and LFE), 6 to 4, 8 to {4, 6} and
+  12 to {4, 6, 8} (placed by position, not the first channels). Widths with no
+  SMPTE order (3, 5, 7, 9 to 11, 13 and up) refuse under `assuming_smpte`.
+- **Application** does not allocate: `frame` (mic, sampler), `planar_channel`
+  (`DownmixNode`) and `planar_to_interleaved` (engine, export).
 
 ## Decisions for the owner
 

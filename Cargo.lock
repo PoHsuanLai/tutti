@@ -4327,7 +4327,6 @@ dependencies = [
  "tutti-engine",
  "tutti-graph",
  "tutti-io",
- "tutti-metering",
  "tutti-nodes",
  "tutti-rt",
  "tutti-transport",
@@ -4428,7 +4427,6 @@ dependencies = [
 name = "tutti-metering"
 version = "0.0.1"
 dependencies = [
- "assert_no_alloc",
  "tutti-types",
 ]
 
@@ -4879,8 +4877,10 @@ dependencies = [
 name = "tutti-types"
 version = "0.0.1"
 dependencies = [
+ "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
+ "criterion",
  "libm",
  "serde",
  "serde_json",

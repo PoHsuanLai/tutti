@@ -232,6 +232,7 @@ mod history;
 mod io;
 mod kernels;
 mod loss;
+mod meter;
 mod node;
 mod par;
 mod param;
@@ -284,6 +285,7 @@ pub use pool::{WorkerPool, WorkerPoolBuilder};
 pub use preroll::PrerollTable;
 // The reading is a value type, `tutti-types`' (the modulation compiler
 // carries one without naming the graph); the clock that keeps it is here.
+pub use meter::{Level, MeterReader, MeterWriter};
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use tap::{TapReader, TapWriter};

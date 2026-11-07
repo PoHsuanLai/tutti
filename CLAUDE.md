@@ -86,6 +86,16 @@ serial one.
   `arc-lend/tests/loom.rs`). It names nothing of tutti's; keep it that way.
 - **Store-load pairs use `SeqCst` fences**, not `SeqCst` accesses (loom
   models fences exactly; see `tutti-rt/src/job_gate.rs`).
+- **Level metering is an op in the plan** (`Editor::open_meter`, doc 013
+  "Meters"), not an engine pass: per channel, on the outputs or any node
+  port, before the engine's fold and declick; the master is aligned to the
+  outputs' time. Each lane is a `tutti_rt::level_cell` (two slots and a
+  flip, with a loom model), so a block lands in one read, peak and energy
+  together; a read takes what was held since the last read, so a reader is
+  one consumer (`&mut self`, not `Clone`) and a second consumer opens a
+  second meter. A lane naming a port that no longer exists reads silence.
+  Ballistics are the reader's.
+  `LoadMeter` stays in `Engine`: it times the block and is not audio.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).
 - A parallel test compares against the **serial render, bit for bit**
@@ -280,8 +290,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
                  the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
-                 Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
-                 Downmix and sample conversion stay until a follow-up moves them
+                 Topology; no FFT and no new algorithms but `Fold` (topology to
+                 topology, built on the control side). `#![forbid(unsafe_code)]`.
+                 The width folds (`fold_frame`, `fold_frame_to_*`) and sample
+                 conversion stay until the edges move off them
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink; the `Pcm` widths and their one
@@ -296,11 +308,11 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-mod      modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
-  tutti-metering `MasterMeter`, `LoadMeter`
+  tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
   tutti-tempo    `TempoMap`: step and ramp tempo segments, beat <-> seconds <-> frame
                  conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
-                 the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
+                 the load meter (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-io       live I/O edge: mic monitor, `TapIn`, `WavOut`, `Recorder`
   tutti-cpal     device
   tutti-export   offline render
@@ -580,7 +592,8 @@ Scalars use `Param<U>`.
   session's sweep is decided in `tutti-session` alone: a node whose
   controls publish returns a `Reclaimer` from `SessionNode::reclaimer`,
   which the graph keeps by node from `add`/`crossfade` until the node goes;
-  the graph sweeps its hosted plugins' meters; the session sweeps its own
+  the graph sweeps its hosted plugins' meters and closes the level meters
+  whose readers were dropped (`Graph::reap_meters`); the session sweeps its own
   cells (project meter, modulation lanes, hardware ports). A
   new cell joins its owner's sweep in the same change. `reclaim()` is a
   lock and a length check when nothing is retired; it is control-thread
@@ -606,6 +619,12 @@ Scalars use `Param<U>`.
 - **`tutti_graph::Node::process`** is for anything that is a node in the
   graph (including sampler voices): planar `f32` through `Io`, any block
   length up to `Prepare::max_block`, the transport from `Env`.
+- **A channel fold goes through `tutti_types::Fold`**, built by `Fold::between`
+  from two `ChannelTopology` values on the control side and applied without
+  allocating. A width is not a placement: an edge reports a topology (a channel
+  with no speaker is `Speaker::Discrete`), and `Fold::assuming_smpte` is the
+  named assumption for the edge that cannot. A new caller of `fold_frame` is a
+  bug; the edges still on it move in their own PRs.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.
@@ -731,8 +750,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
   crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
-  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
-  `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`LoadMeter`;
+  the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,

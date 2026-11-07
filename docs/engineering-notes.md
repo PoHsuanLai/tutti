@@ -106,7 +106,7 @@ crates/             everything shipped, directory name = package name
   tutti-graph       # The graph: `Node` contract, Topology->Plan compiler (PDC),
                     #   executor. Design doc 013.
   tutti-transport   # Transport: tempo, loop, motion state machine, timed commands
-  tutti-metering    # MasterMeter, LoadMeter
+  tutti-metering    # LoadMeter (level meters are plan ops in tutti-graph)
   tutti-engine      # Engine: the per-block graph render over a transport
   tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
   tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.

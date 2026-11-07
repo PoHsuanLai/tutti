@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use tutti_graph::PrerollTable;
 use tutti_graph::TapReader;
-use tutti_metering::MasterMeter;
 use tutti_nodes::ClickSettings;
 use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, NodeKey, Samples};
@@ -605,8 +604,6 @@ pub struct Session {
     pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
     pub(crate) load: Option<tutti_metering::LoadMeter>,
-    /// The engine's master meter, offline or on a device; `None` detached.
-    pub(crate) meter: Option<MasterMeter>,
     /// The engine's tap after the fader and the device width it was built
     /// for; `None` detached.
     pub(crate) heard: Option<(tutti_engine::HeardTaps, ChannelLayout)>,
@@ -782,8 +779,9 @@ impl Session {
             Phase::Reclaim => {
                 // Any thread that owns the session: what it frees is
                 // tables, meters, programs and clips, never a unit. A tap
-                // whose reader was dropped goes out of the next plan.
+                // or meter whose reader was dropped goes out of the next plan.
                 self.graph.reap_taps();
+                self.graph.reap_meters();
                 if let Some((taps, _)) = &self.heard {
                     taps.reclaim();
                 }
@@ -1032,13 +1030,27 @@ impl Session {
         }
     }
 
-    /// The master meter: the peak and RMS of each block the engine renders,
-    /// after the declick, on a stereo fold of the output buffer. Fed by every
-    /// block the device callback (or, offline, [`render`](Self::render))
-    /// renders, and enabled from the build; `None` on a detached session,
-    /// which has no engine.
-    pub fn master_meter(&self) -> Option<&MasterMeter> {
-        self.meter.as_ref()
+    /// The master meter: the level of each graph output channel, one
+    /// [`Level`](tutti_graph::Level) per channel, with the peak held since
+    /// the last read. It is an op of the plan on the outputs (see
+    /// [`Graph::master_meter`](crate::Graph::master_meter)), declared and on
+    /// from the build, so every render feeds it: a device callback,
+    /// [`render`](Self::render), and a detached session's
+    /// [`render_frame`](Self::render_frame). It reads before the engine's fold
+    /// to the device and its declick, aligned to the outputs' time. A block
+    /// the engine refuses (rendered silent because the control side held the
+    /// graph for that callback) runs no op, so it does not touch the meter:
+    /// the meter holds what it held and counts no frames for it. `None` once
+    /// a host has taken it.
+    pub fn master_meter(&mut self) -> Option<&mut tutti_graph::MeterReader> {
+        self.graph.master_meter()
+    }
+
+    /// Hands the master meter's reader to its one consumer; see
+    /// [`master_meter`](Self::master_meter) and
+    /// [`Graph::take_master_meter`](crate::Graph::take_master_meter).
+    pub fn take_master_meter(&mut self) -> Option<tutti_graph::MeterReader> {
+        self.graph.take_master_meter()
     }
 
     /// The engine's DSP-load meter: each block's render time against its

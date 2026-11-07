@@ -1,16 +1,14 @@
-//! Level monitoring: what the audio callback measures and what other threads
-//! read.
+//! Load monitoring: how much of each block's time budget the render used.
 //!
-//! [`MasterMeter`] holds the output's peak and RMS (the audio thread holds its
-//! [`MeterWriter`]), and [`LoadMeter`] reports how much of each block's time
-//! budget the render used (the audio thread holds its [`LoadRecorder`]).
-//! `tutti-engine`'s `Engine` feeds both.
+//! [`LoadMeter`] reports the render time against the budget (the audio thread
+//! holds its [`LoadRecorder`]); `tutti-engine`'s `Engine` feeds it. Level
+//! metering is not here: it is an op in the compiled plan
+//! (`tutti_graph::MeterReader`, declared with `Editor::open_meter`), so it
+//! meters any port of the graph, offline too.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod amplitude;
 mod load;
 
-pub use amplitude::{MasterMeter, MeterReading, MeterWriter};
 pub use load::{LOAD_MEAN_TIME_CONSTANT, LoadMeter, LoadReading, LoadRecorder};

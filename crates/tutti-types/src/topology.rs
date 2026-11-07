@@ -103,6 +103,14 @@ pub enum Speaker {
     /// its channel's slot. The payload is the *format's* raw value and is only
     /// meaningful to the format that produced it.
     Unknown(u16),
+    /// A channel that feeds no speaker: one input of an interface, one
+    /// channel of a multitrack file, an effect's numbered output. It is
+    /// *known* to be unplaced, which is what separates it from
+    /// [`Unknown`](Self::Unknown) (a position the format named and this
+    /// vocabulary cannot). A fold maps discrete channels one to one by index
+    /// and never passes them through a surround matrix. Declared last so the
+    /// wire index of every other variant is unchanged.
+    Discrete,
 }
 
 impl Speaker {
@@ -115,6 +123,13 @@ impl Speaker {
     #[must_use]
     pub const fn is_lfe(self) -> bool {
         matches!(self, Self::LowFrequency)
+    }
+
+    /// Returns whether this channel is deliberately speaker-less
+    /// ([`Discrete`](Self::Discrete)).
+    #[must_use]
+    pub const fn is_discrete(self) -> bool {
+        matches!(self, Self::Discrete)
     }
 }
 
@@ -139,6 +154,16 @@ impl Speaker {
 ///
 /// B-format `W X Y Z` is a spherical-harmonic encoding, not four speaker feeds,
 /// and is not modelled here as four invented [`Speaker`]s.
+///
+/// # A width alone is not a placement
+///
+/// A [`ChannelLayout`] says how many channels, and nothing about what they
+/// are: 4 is quad or B-format, 6 is 5.1 or six interface inputs, 12 is 7.1.4
+/// or twelve tracks. Only an edge knows, so an edge states a topology:
+/// [`smpte`](Self::smpte) when the width really is the engine's own order,
+/// [`quad`](Self::quad) for four speaker feeds, [`discrete`](Self::discrete)
+/// for channels that feed no speaker. [`Fold::between`](crate::Fold::between)
+/// is the one place two topologies meet.
 ///
 /// # Examples
 ///
@@ -189,7 +214,7 @@ impl ChannelTopology {
     /// The bridge back to the count-only vocabulary, for a signature that
     /// takes a width.
     pub fn layout(&self) -> ChannelLayout {
-        ChannelLayout::from(self.positions.len() as u16)
+        ChannelLayout::from_count(u16::try_from(self.positions.len()).unwrap_or(u16::MAX))
     }
 
     /// Returns which channel feeds `speaker`, or `None` if this bus has none.
@@ -209,11 +234,13 @@ impl ChannelTopology {
         self.positions.iter().position(|p| p.is_lfe())
     }
 
-    /// Returns whether every position is one this vocabulary names.
+    /// Returns whether no position is [`Unknown`](Speaker::Unknown).
     ///
     /// A caller that intends to *route* by speaker needs this: an
     /// [`Unknown`](Speaker::Unknown) channel keeps its slot, but nothing can be
-    /// said about where it should go.
+    /// said about where it should go. A [`Discrete`](Speaker::Discrete) channel
+    /// counts as named: it is known to feed no speaker. The plugin hosts decode
+    /// only named speakers and `Unknown`, so their use of this is unchanged.
     #[must_use]
     pub fn is_fully_named(&self) -> bool {
         !self
@@ -228,7 +255,8 @@ impl ChannelTopology {
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
     /// [`crate::fold_frame`] folds by and that the spatial panner maps to:
     /// `FC` for mono, `FL FR` for stereo, `FL FR C LFE SL SR [BL BR]` for 5.1
-    /// and 7.1.
+    /// and 7.1, and 7.1.4 at 12: the 7.1 bed then `TFL TFR TBL TBR`. These are
+    /// the widths [`Fold`](crate::Fold) has an order for.
     ///
     /// `None` for a width the engine has no order for — including **4**, which
     /// is genuinely ambiguous: quad `FL FR BL BR` and ambisonic B-format
@@ -260,6 +288,20 @@ impl ChannelTopology {
                 BackLeft,
                 BackRight,
             ],
+            12 => &[
+                FrontLeft,
+                FrontRight,
+                FrontCenter,
+                LowFrequency,
+                SideLeft,
+                SideRight,
+                BackLeft,
+                BackRight,
+                TopFrontLeft,
+                TopFrontRight,
+                TopBackLeft,
+                TopBackRight,
+            ],
             _ => return None,
         };
         Some(Self::new(positions.iter().copied()))
@@ -273,6 +315,25 @@ impl ChannelTopology {
     pub fn quad() -> Self {
         use Speaker::*;
         Self::new([FrontLeft, FrontRight, BackLeft, BackRight])
+    }
+
+    /// Returns `width` channels that feed no speaker.
+    ///
+    /// For an edge whose channels are numbered rather than placed (a 16-input
+    /// interface, a multitrack file, B-format, which is not speaker feeds
+    /// either). A fold maps them one to one and never through a surround matrix.
+    pub fn discrete(width: ChannelLayout) -> Self {
+        Self::new(core::iter::repeat_n(
+            Speaker::Discrete,
+            usize::from(width.count()),
+        ))
+    }
+
+    /// Returns whether the bus is not empty and every channel is
+    /// [`Discrete`](Speaker::Discrete).
+    #[must_use]
+    pub fn is_discrete(&self) -> bool {
+        !self.positions.is_empty() && self.positions.iter().all(|p| p.is_discrete())
     }
 }
 
@@ -350,13 +411,55 @@ mod tests {
     /// Widths the engine has no order for decline rather than guessing.
     #[test]
     fn an_unhandled_width_has_no_smpte_order() {
-        for width in [3u16, 5, 7, 9, 12] {
+        for width in [3u16, 5, 7, 9, 10, 11, 13] {
             assert_eq!(
                 ChannelTopology::smpte(ChannelLayout::from(width)),
                 None,
                 "width {width} should have no inferred order"
             );
         }
+    }
+
+    /// 7.1.4 is the 7.1 bed with the four heights after it, so the order
+    /// extends 7.1 as 7.1 extends 5.1.
+    ///
+    /// Mutation (run): `TopFrontRight` written `TopFrontLeft` in the 12 arm
+    /// fails.
+    #[test]
+    fn the_smpte_714_order_extends_71() {
+        let seven_one = ChannelTopology::smpte(ChannelLayout::from(8u16)).expect("8 has an order");
+        let bed = ChannelTopology::smpte(ChannelLayout::from(12u16)).expect("12 has an order");
+        assert_eq!(&bed.positions()[..8], seven_one.positions());
+        assert_eq!(
+            &bed.positions()[8..],
+            &[
+                Speaker::TopFrontLeft,
+                Speaker::TopFrontRight,
+                Speaker::TopBackLeft,
+                Speaker::TopBackRight
+            ]
+        );
+    }
+
+    /// Discrete channels are explicit: the right count, named, and not any
+    /// placed speaker.
+    ///
+    /// Mutation (run): `is_discrete` testing `any` instead of `all` fails the
+    /// mixed topology.
+    #[test]
+    fn discrete_channels_are_counted_named_and_unplaced() {
+        let d = ChannelTopology::discrete(ChannelLayout::from(6u16));
+        assert_eq!(d.layout().count(), 6);
+        assert!(d.is_discrete() && d.is_fully_named());
+        assert_eq!(d.index_of(Speaker::FrontCenter), None);
+        assert!(
+            !ChannelTopology::smpte(ChannelLayout::from(6u16))
+                .unwrap()
+                .is_discrete()
+        );
+        assert!(!ChannelTopology::discrete(ChannelLayout::EMPTY).is_discrete());
+        assert!(!ChannelTopology::new([Speaker::Discrete, Speaker::Unknown(1)]).is_discrete());
+        assert!(!ChannelTopology::new([Speaker::Discrete, Speaker::Unknown(1)]).is_fully_named());
     }
 
     /// An unknown position keeps its slot instead of collapsing the list.

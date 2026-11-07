@@ -79,7 +79,7 @@ use tutti_graph::{
 };
 
 use std::time::Instant;
-use tutti_metering::{LoadMeter, LoadRecorder, MasterMeter, MeterWriter};
+use tutti_metering::{LoadMeter, LoadRecorder};
 use tutti_rt::{AudioThreadCell, RtScope};
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
@@ -165,52 +165,10 @@ pub struct Engine {
     load: AudioThreadCell<LoadRecorder>,
     /// The reading half of `load`.
     meter: LoadMeter,
-    /// The master meter's audio half, and the stereo fold it measures.
-    heard: AudioThreadCell<Heard>,
-    /// The reading half of `heard`'s writer.
-    master: MasterMeter,
     /// The tap after the fader, the audio thread's ends.
     hearing: AudioThreadCell<crate::hearing::Hearing>,
     /// Its control side.
     heard_taps: crate::HeardTaps,
-}
-
-/// What the engine measures of the block it just rendered, after the fader.
-struct Heard {
-    writer: MeterWriter,
-    /// A block folded to stereo, for a device that is not: `capacity`
-    /// frames.
-    fold: Vec<f32>,
-}
-
-impl Heard {
-    /// Measures `output`, an interleaved block `channels` wide, as stereo.
-    /// A device wider or narrower than stereo is folded first
-    /// ([`tutti_types::fold_frame`]), `fold.len() / 2` frames at a time, and
-    /// the pieces are one pass: the reading covers the whole block.
-    #[inline]
-    fn measure(&mut self, output: &[f32], channels: usize) {
-        if !self.writer.is_enabled() {
-            return;
-        }
-        if channels == 2 {
-            self.writer.measure(output);
-            return;
-        }
-        self.writer.begin();
-        let piece = self.fold.len() / 2;
-        for block in output.chunks(piece * channels) {
-            let stereo = &mut self.fold[..block.len() / channels * 2];
-            for (frame, out) in block
-                .chunks_exact(channels)
-                .zip(stereo.as_chunks_mut::<2>().0)
-            {
-                tutti_types::fold_frame(frame, out);
-            }
-            self.writer.add(stereo);
-        }
-        self.writer.publish();
-    }
 }
 
 impl std::fmt::Debug for Engine {
@@ -220,7 +178,6 @@ impl std::fmt::Debug for Engine {
             .field("fader", &self.fader)
             .field("capacity", &self.capacity)
             .field("meter", &self.meter)
-            .field("master", &self.master)
             .finish_non_exhaustive()
     }
 }
@@ -343,7 +300,6 @@ impl Engine {
         // executor is always fresh at `Engine::new`.
         let dropped_seen = executor.dropped_event_count();
         let (recorder, meter) = LoadMeter::pair();
-        let (writer, master) = MasterMeter::pair();
         let (heard_taps, hearing) = crate::hearing::link();
         Ok(Self {
             graph: AudioThreadCell::new(GraphRender {
@@ -358,11 +314,6 @@ impl Engine {
             capacity: Samples(stride),
             load: AudioThreadCell::new(recorder),
             meter,
-            heard: AudioThreadCell::new(Heard {
-                writer,
-                fold: vec![0.0; 2 * stride],
-            }),
-            master,
             hearing: AudioThreadCell::new(hearing),
             heard_taps,
         })
@@ -380,7 +331,7 @@ impl Engine {
     /// another thread.
     ///
     /// What it times is the whole call, which is what a device deadline
-    /// counts, the master meter's pass included; a driver's own work around
+    /// counts, the plan's meter ops included; a driver's own work around
     /// it (tutti-cpal's sample-format conversion, one linear pass) is not in
     /// it. The
     /// budget is each graph block's frames at the rate that block ran at,
@@ -392,16 +343,6 @@ impl Engine {
     /// [`LoadReading::dropped_events`](tutti_metering::LoadReading::dropped_events).
     pub fn load_meter(&self) -> &LoadMeter {
         &self.meter
-    }
-
-    /// The master meter: the peak and RMS of what [`process`](Self::process)
-    /// and [`process_segment`](Self::process_segment) last rendered, measured
-    /// on a stereo fold of the output buffer after the declick, whatever
-    /// renders it (a device callback, or a host pulling blocks offline).
-    /// Disabled until [`enable`](MasterMeter::enable)d, and then one pass
-    /// over each block. Clone it to read from another thread.
-    pub fn master_meter(&self) -> &MasterMeter {
-        &self.master
     }
 
     /// The control side of the tap after the fader ("what I'm hearing"): the
@@ -455,7 +396,6 @@ impl Engine {
         // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.heard.borrow_mut().measure(output, out_ch);
             self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
@@ -487,7 +427,6 @@ impl Engine {
                 .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
-        self.heard.borrow_mut().measure(output, out_ch);
         let mut load = self.load.borrow_mut();
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
@@ -524,7 +463,6 @@ impl Engine {
         // reached only under the graph borrow (here, or `apply_pending`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.heard.borrow_mut().measure(output, out_ch);
             self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
                 load.record_silenced();
@@ -564,7 +502,6 @@ impl Engine {
                 .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
-        self.heard.borrow_mut().measure(output, out_ch);
         let mut load = self.load.borrow_mut();
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);

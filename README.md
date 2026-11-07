@@ -44,7 +44,8 @@ never frees. `tutti-graph` is
 the graph: the `Node` contract, a compiler from a `Topology` to an immutable
 plan (latency compensation included), and the executor. `tutti-engine` builds the
 runtime on both: the `Engine` that renders the graph, over the `Transport` of
-`tutti-transport` and the meters of `tutti-metering`.
+`tutti-transport` and the load meter of `tutti-metering` (level meters are
+ops in the graph's plan).
 
 **The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
 live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its

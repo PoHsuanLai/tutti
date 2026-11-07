@@ -33,10 +33,12 @@ fn the_file_has_presets_instruments_and_samples() {
 fn a_region_contains_exactly_the_keys_and_velocities_of_its_ranges() {
     let soundfont = timgm6mb();
     let mut checked = 0;
+    let mut widest = 0;
     for instrument in soundfont.instruments() {
         for region in instrument.regions() {
             let (keys, velocities) = (region.key_range(), region.velocity_range());
             assert!(keys.start() <= keys.end() && *keys.end() < 128);
+            widest = widest.max(keys.end() - keys.start());
             for key in (0..=127).filter_map(NoteNumber::new) {
                 for velocity in [1, 64, 127] {
                     let velocity = U7::new(velocity).unwrap();
@@ -50,6 +52,7 @@ fn a_region_contains_exactly_the_keys_and_velocities_of_its_ranges() {
         }
     }
     assert!(checked > 1000);
+    assert!(widest >= 12, "a sample spans an octave of keys, not one");
 }
 
 #[test]

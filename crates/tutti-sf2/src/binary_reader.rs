@@ -108,8 +108,9 @@ mod tests {
         assert_eq!(bytes.position(), 5, "the odd byte is consumed");
     }
 
-    // Mutation (run): advancing `remaining` by a fixed `CHUNK` instead of the
-    // chunk read repeats or drops samples past the first chunk, and fails here.
+    // Mutation (run): slicing `buffer[..CHUNK]` instead of
+    // `buffer[..remaining.min(CHUNK)]` reads past the end of the stream, and
+    // fails here.
     #[test]
     fn wave_data_longer_than_one_read_chunk_keeps_every_sample() {
         let count = 8192 + 100;
@@ -130,8 +131,8 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
     }
 
-    // Mutation (run): not stopping at the NUL (dropping `take_while`) returns
-    // "a?bx" and fails.
+    // Mutation (run): `take_while(|&&byte| byte != 0)` -> `!= 7` does not stop
+    // at the NUL, returns "a?b?x" and fails.
     #[test]
     fn a_fixed_length_string_stops_at_the_nul_and_masks_control_bytes() {
         let mut bytes = Cursor::new([b'a', 0x01, b'b', 0, b'x']);

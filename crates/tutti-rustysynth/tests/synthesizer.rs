@@ -128,13 +128,20 @@ fn a_channel_cut_leaves_the_other_channels_sounding() {
     assert_eq!(energy(&mut synthesizer, 512), 0.0);
 }
 
+// Mutation (run): deleting the velocity-0 early return in `note_on` starts a
+// second voice instead of releasing the first, which sustains for the whole
+// render and fails the last assertion.
 #[test]
 fn a_note_on_at_velocity_zero_is_a_note_off() {
     let mut synthesizer = dry();
-    synthesizer.note_on(channel(0), key(60), velocity(100));
-    energy(&mut synthesizer, 512);
-    synthesizer.note_on(channel(0), key(60), velocity(0));
-    // Released, not cut: the tail dies down within the envelope's release.
+    // The violin loops its sustain: only a release ends it.
+    synthesizer.program_change(channel(0), velocity(40));
+    synthesizer.note_on(channel(0), key(69), velocity(100));
+    energy(&mut synthesizer, 44_100 * 3);
+    assert!(energy(&mut synthesizer, 512) > 1.0, "the note sustains");
+
+    synthesizer.note_on(channel(0), key(69), velocity(0));
+    // Released, not cut: the tail is still there in the next block.
     assert!(energy(&mut synthesizer, 64) > 0.0);
     energy(&mut synthesizer, 44_100 * 20);
     assert_eq!(

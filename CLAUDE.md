@@ -145,6 +145,12 @@ just test-all                      # both
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
   `dark features` job and `just test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
+  **`tutti-midi-hardware --features sequencer-tests` is the exception:** it runs
+  `Devices` against the real ALSA sequencer, which needs the kernel's `snd-seq`
+  module and a readable `/dev/snd/seq`. CI's runner kernel (Azure) ships
+  neither the module nor a package for it, so CI only lints the feature and the
+  suite runs locally (`just test-features`). It fails, never skips, where the
+  sequencer is missing. Run it before changing `backend/alsa`.
 - **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
   on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
   skipped with a printed note on any other libm or architecture (nextest shows

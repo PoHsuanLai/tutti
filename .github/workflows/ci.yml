@@ -262,9 +262,12 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
-      #   tutti-midi-hardware/sequencer-tests — compiled and linted here; run in
-      #                         the `alsa-sequencer` job, which needs the kernel's
-      #                         `snd-seq` module
+      #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
+      #                         only locally (`just test-features`): the suite
+      #                         needs the kernel's `snd-seq` module, which the
+      #                         runner's Azure kernel does not ship (no
+      #                         `linux-modules-extra` package either). It fails,
+      #                         never skips, without `/dev/snd/seq`
       #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
@@ -389,49 +392,6 @@ jobs:
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
 
-  # `tutti-midi-hardware/sequencer-tests`: `Devices` against the real ALSA
-  # sequencer (`backend/alsa/tests.rs`), with user-space clients as the devices.
-  # A job of its own, so a runner image without the `snd-seq` module fails here
-  # by name and takes no other suite with it. The suite fails, never skips, when
-  # `/dev/snd/seq` is missing.
-  alsa-sequencer:
-    name: alsa sequencer
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux audio deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libasound2-dev libdbus-1-dev pkg-config
-      # The Azure kernel keeps its sound modules in the extra modules package.
-      - name: Load the ALSA sequencer
-        run: |
-          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
-          sudo modprobe snd-seq
-          sudo chmod a+rw /dev/snd/seq
-          ls -l /dev/snd/seq
-      - run: rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests
-
-  # Benchmarks: proved to RUN, never compared.
-  #
-  # GitHub's runners are shared and swing 30-50% on this workload, and the
-  # engine's own profile_stretch_clone harness (deleted with `Net`; its
-  # figures are in doc 013) measured an 81x spread on a QUIET
-  # machine. A timing threshold here would flap, and a flapping gate gets
-  # `continue-on-error: true` within a month and then tests nothing — the same
-  # death the pre-extraction workflow died. So this job runs every benchmark
-  # exactly once (`--test`) to prove the harnesses still work against the
-  # current API, and compares nothing.
-  #
-  # The real perf gate is `tutti-core/tests/alloc_budget.rs`, which runs in the
-  # ordinary test job: allocation counts are machine-independent, so a budget
-  # on them survives a noisy vCPU.
-  #
-  # Not on `pull_request`: this is a full release build of the workspace.
   bench-smoke:
     name: bench smoke
     if: github.event_name != 'pull_request'

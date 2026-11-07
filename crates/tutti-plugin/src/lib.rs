@@ -59,34 +59,36 @@ pub use format::vst2_in_process::{
 ///
 /// **Bring your own store.** [`discover`](tutti_plugin_db::discover) walks
 /// directories and returns paths; [`probe_record`](catalog::probe_record)
-/// turns one path into one record. Two functions, no state, no feature
-/// flags — put the results wherever you like:
+/// turns one path into the [`Delta`](tutti_plugin_db::Delta) that records it.
+/// Two functions and a plain table, no feature flags:
 ///
 /// ```no_run
 /// use tutti_plugin::catalog::probe_record;
-/// use tutti_plugin_db::{PluginRecord, discover};
+/// use tutti_plugin_db::{PluginDb, discover};
 /// # let dirs = vec![std::path::PathBuf::from("/Library/Audio/Plug-Ins/VST3")];
-/// let records: Vec<PluginRecord> = discover(&dirs)
-///     .iter()
-///     .filter_map(|(path, _format)| probe_record(path).ok())
-///     .collect();
+/// let mut db = PluginDb::new();
+/// for (path, _format) in discover(&dirs) {
+///     if let Ok(delta) = probe_record(path) {
+///         db.apply(delta);
+///     }
+/// }
 /// ```
 ///
 /// **Or let the library manage it.** [`Plugins`](catalog::Plugins) wraps a
-/// [`PluginCatalog`](tutti_plugin_db::PluginCatalog) — a pluggable record
-/// store — and adds the two things the pure path cannot give you: incremental
-/// rescan (probe only what changed, via stored mtimes — the difference between a
-/// multi-minute startup and an instant one) and crash recovery (a plugin that
-/// hard-crashes the scanner is auto-blacklisted on the next run).
+/// [`PluginDb`](tutti_plugin_db::PluginDb) and adds the two things the pure path
+/// cannot give you: incremental rescan (probe only what changed, via stored
+/// mtimes, on a worker thread while the catalog stays readable: the difference
+/// between a multi-minute startup and an instant one) and crash recovery (a
+/// plugin that hard-crashes the scanner is auto-blacklisted on the next run).
 ///
-/// `JsonCatalog` is one such store, behind the opt-in `json` feature.
-/// Implement [`PluginCatalog`](tutti_plugin_db::PluginCatalog) yourself for
-/// SQLite, a CRDT, or an in-memory map.
+/// With the opt-in `json` feature, `Plugins::load` and `Plugins::save` keep the
+/// table in a versioned JSON file. Without it, build the `PluginDb` from your
+/// own store and pass it to `Plugins::with_db`.
 pub mod catalog {
     pub use crate::host::db_probe::probe_record;
     // Named in `Plugin::role` and `Plugins::iter`.
     pub use crate::host::plugin::Plugin;
-    pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
+    pub use crate::host::plugins::{PluginId, Plugins};
     pub use crate::util::config::{AudioConfig, CatalogConfig, NO_SCAN_DIRS};
     pub use tutti_plugin_types::{PluginDescriptor, PluginRole};
 }

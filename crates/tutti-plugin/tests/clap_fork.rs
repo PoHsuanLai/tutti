@@ -693,8 +693,9 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
 fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) {
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let events = (0..n).flat_map(|k| {
         // Notes 0..100 on channel 0, 100..200 on channel 1.

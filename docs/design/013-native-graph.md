@@ -332,6 +332,61 @@ the interpreter.
 - **Block size is a `Prepare` parameter**, not `MAX_BUFFER_SIZE = 64`. The live
   path runs at the device quantum; export runs at 1024+.
 
+#### Taps: copy-out as an op in the plan
+
+A tap copies sources out of the graph for a reader on another thread
+(analysis, a recording). It is **an op in the compiled plan, not a node**, and
+it replaced `AudioTap`, a stereo ring the device callback pushed into under a
+`Mutex<Option<_>>` it `try_lock`ed.
+
+- **The value.** `Topology.taps: BTreeMap<TapId, TapSpec>`; `TapSpec { sources:
+  Vec<Source>, align: TapAlign }`, one lane a source, any ports, any width.
+  `Topology::validate` refuses a lane naming a node port or global input that
+  does not exist (`Invalid::TapOutOfRange`); `Editor::remove` turns a lane on a
+  removed node into silence, as it does an output.
+- **The compiler.** One `Op::Tap { lane, src }` per source, beside
+  `Op::Output`, plus, for `TapAlign::ToOutput`, a `Delay` (`DelayKey::Tap`)
+  with the compensation an output of the same source gets, so an aligned tap
+  of the outputs' sources is the output channels sample for sample. `Raw` reads
+  the source as it leaves its node. A tap absent from the topology emits
+  nothing: a closed tap costs the audio thread nothing, and the closed plan has
+  exactly the ops of a graph that never had a tap (`tests/tap.rs`).
+- **The op.** `tap_op` is written once over `AudioSlots` and called from
+  `exec.rs` and `par.rs`; `tutti-graph` stays `#![forbid(unsafe_code)]`. It
+  pushes the slot into the lane's `ringbuf` ring (the crate already depends on
+  it for the editor queue; no new lock-free structure, so no `tutti-rt`
+  addition and no loom model). What the ring refuses is counted, once for the
+  tap whatever its width (lane 0 holds the counter, the lanes fill and drain in
+  step), and read with `TapReader::take_lost`.
+- **The hand-over.** `Editor::open_tap` makes the reader and the producers; the
+  producers ride the next `Commit` into the executor like a unit, and a lane
+  the new plan no longer names stays in the old `State`, retired to the control
+  side with it. Nothing on the audio thread allocates, locks or frees: a
+  `TapLane` and a `TapReader` both `RtScope::check_outside` in their `Drop`.
+  A tap flows from the commit that carries it; `open_tap` returns at once.
+- **The reader dropped first.** The lane then finds no reader (`read_is_held`)
+  and writes nothing; the tap stays in the plan until `Editor::close_tap` or
+  `Editor::reap_taps`, which `tutti-session` runs in its `Reclaim` phase. The
+  ring is freed with the producer, at the editor's collect. Dropped last, the
+  reader frees the ring on its own thread.
+- **A fork carries no tap.** `Editor::fork` copies inputs, outputs and edges
+  piecewise, never taps; an export opens its own on the fork and, because its
+  loop drains between blocks, loses nothing. That is the loop being
+  synchronous, not the ring being unbounded.
+- **What a tap sees.** The signal before the engine's declick fader and the
+  fold to the device width: it is the graph's output. The reference
+  interpreter knows no taps, so the differential suite checks that a tap changes
+  nothing and that an aligned tap of the outputs is the outputs
+  (`an_aligned_tap_of_the_outputs_is_the_output`), serial and parallel.
+- **The consumers.** `tutti-session`'s `Graph::open_tap` and
+  `Graph::open_output_tap` (whose sources follow the outputs when they are
+  re-wired), and `TapIn` over a `TapReader`, as wide as the tap. Offline and
+  headless sessions feed them: the op runs wherever the plan runs.
+
+The engine, not the device callback, feeds the master meter: `Engine::process`
+and `process_segment` measure the output buffer after the declick, on a stereo
+fold, so an offline session's meter reads what its blocks carry.
+
 ### 5. Types that make the footguns unrepresentable
 
 This is the same move `RtPublish`/`RtRef` made: when a rule keeps getting
@@ -4229,7 +4284,7 @@ From the collections and channels audit of `9f397d3d`.
 - **`MicRing`** was an `Arc<AudioThreadCell<HeapCons>>` and `Clone`, though
   nothing cloned it and its node is neither `Clone` nor forkable. It is a
   plain newtype over `HeapCons` that pops through `&mut self`, as
-  `TapCons` is, built with `MicRing::new` (`share_mic_ring` is gone); a
+  the old `TapCons` was, built with `MicRing::new` (`share_mic_ring` is gone); a
   `compile_fail` doctest pins that it cannot be cloned.
 - **The VST2 transport seqlock** (`TransportCell`, an `UnsafeCell` with
   `unsafe impl Sync` and no loom model) is now `tutti_rt::SeqWriter<T>`
@@ -4789,7 +4844,7 @@ slices are ignored on every path, and fewer is a caller bug (a
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
-| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass |
+| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and the master meter is the engine's |
 | `MidiInPort`, `MidiPostBlock`/`MidiOutSink`, bevy `MidiTargetRegistry` | Events ports. Event edges join the one topological order, so arp → synth delivers **in the same block**. The uniform `MIDI_OUT_LATENCY_BLOCKS = 1` is paid only on actual `Feedback` edges. Addressing becomes `(NodeKey, InPort::Events(n))` |
 | `plugin_host/bind.rs` and `latency.rs` (the 3 production `node_as_mut` sites, the latency poll, the `CompensatedLatency` shadow) | Binding is a typestate transition at insert. A latency change is a `Shape` change in the next `Delta` (the poll that feeds `Editor::set_latency` stays, reading the plugin's controls) |
 
@@ -7506,7 +7561,7 @@ The graph's f32 is converted in the node's batcher today. The changes:
   would), it accumulates in f64 in both formats.
 - **Meters** are readings: computed from the slot in its format, stored
   as f32 (`Amplitude`, `Db`). No change to what they publish.
-- **The analysis tap** (`AudioTap`, `TapIn`) stays an f32 ring: analysis
+- **The analysis tap** (`TapReader`, `TapIn`) stays an f32 ring: analysis
   does not need f64, and the master is narrowed at `Output` anyway. A
   recording that must keep f64 takes an f64 `TapIn` (its ring generic over
   the sample, as `AudioIn<S>` already is).

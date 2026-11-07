@@ -196,7 +196,7 @@ fn from_mcm_rejects_out_of_range_configurations() {
     // ordinary parameter traffic and must not be read as configuration.
     let on_ch5 = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         crate::ump::RPN_BANK_MPE,
         crate::ump::RPN_INDEX_MCM,
         3u32 << 25,

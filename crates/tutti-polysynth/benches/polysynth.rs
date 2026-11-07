@@ -244,14 +244,14 @@ fn bench_events(c: &mut Criterion) {
         Message::Midi1(
             address,
             Voice1::ControlChange {
-                controller: CCNumber::new(1),
+                controller: CCNumber::of(1),
                 value: U7::new(64).expect("7 bits"),
             },
         ),
         Message::Midi2(
             address,
             Voice2::ControlChange {
-                controller: CCNumber::new(1),
+                controller: CCNumber::of(1),
                 value: 0x8000_0000,
             },
         ),

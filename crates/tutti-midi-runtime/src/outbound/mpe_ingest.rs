@@ -125,7 +125,7 @@ impl Iterator for Translated {
                 Some(
                     MidiEvent::registered_controller(
                         *group,
-                        MidiChannel::new(channel),
+                        MidiChannel::masked(channel),
                         RPN_BANK_MPE,
                         run.index,
                         run.data,
@@ -445,7 +445,7 @@ impl MpeIngest {
                     Some(
                         MidiEvent::per_note_pitch_bend(
                             MidiGroup::FIRST,
-                            MidiChannel::new(ch),
+                            MidiChannel::masked(ch),
                             note,
                             m.pitch_bend_data(),
                         )
@@ -465,7 +465,7 @@ impl MpeIngest {
                     Some(
                         MidiEvent::poly_pressure(
                             MidiGroup::FIRST,
-                            MidiChannel::new(ch),
+                            MidiChannel::masked(ch),
                             note,
                             m.channel_pressure_data(),
                         )
@@ -476,7 +476,7 @@ impl MpeIngest {
                 }
             }
             ChannelVoice2::ControlChange(m)
-                if CCNumber::new(u8::from(m.control())) == tutti_midi_types::cc::BRIGHTNESS =>
+                if CCNumber::masked(u8::from(m.control())) == tutti_midi_types::cc::BRIGHTNESS =>
             {
                 let ch = u8::from(m.channel());
                 let zone = self.get_zone_info(ch)?;
@@ -486,7 +486,7 @@ impl MpeIngest {
                     Some(
                         MidiEvent::per_note_controller(
                             MidiGroup::FIRST,
-                            MidiChannel::new(ch),
+                            MidiChannel::masked(ch),
                             note,
                             74,
                             m.control_change_data(),

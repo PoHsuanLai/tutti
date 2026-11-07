@@ -569,7 +569,7 @@ mod tests {
     fn a_single_beside_an_open_run() {
         let body = payload(25);
         let pkts = packets(MidiGroup::FIRST, &body);
-        let other = MidiGroup::new(3);
+        let other = MidiGroup::of(3);
         let mut asm = SysExAssembler::reserved();
         assert!(feed(&mut asm, &pkts[..2]).is_empty());
         assert_eq!(
@@ -598,7 +598,7 @@ mod tests {
         use tutti_ump::MidiChannel;
         let body = payload(20);
         let pkts = packets(MidiGroup::FIRST, &body);
-        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(0), 60, 0x8000);
+        let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(0), 60, 0x8000);
         let mut asm = SysExAssembler::reserved();
         assert!(feed(&mut asm, &pkts[..2]).is_empty());
         assert_eq!(asm.push(&note), SysExStep::NotSysEx);
@@ -632,7 +632,7 @@ mod tests {
         let mut asm = SysExAssembler::reserved();
         let base = asm.bytes().as_ptr();
         let singles: Vec<MidiEvent> = (0..MIDI_STACK_CAPACITY)
-            .flat_map(|_| packets(MidiGroup::new(1), &[1, 2, 3, 4, 5, 6]))
+            .flat_map(|_| packets(MidiGroup::of(1), &[1, 2, 3, 4, 5, 6]))
             .collect();
         let mut done = 0usize;
         assert_no_alloc::assert_no_alloc(|| {

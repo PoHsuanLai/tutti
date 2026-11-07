@@ -157,15 +157,31 @@ Rules:
   out-of-range values and a private one masked off the wire. A note of 200 cannot
   be built, where today it silently becomes 72 in release. There is no `Velocity`
   type: MIDI 2.0 velocities stay `u16`, and their scaling is M2-115's. The refusal
-  holds for the new types' public constructors. The three moved types
-  (`MidiGroup`, `MidiChannel`, `CCNumber`) mask for now. Types are added under the
-  rules in CLAUDE.md: a distinct range or a distinct algebra.
+  holds for every public `new`, the three moved types (`MidiGroup`,
+  `MidiChannel`, `CCNumber`) included. `of` builds one from a literal or a
+  constant and panics out of range, and `masked` is the one constructor that
+  masks, for bits a decoder has just framed. Types are added under the rules in
+  CLAUDE.md: a distinct range or a distinct algebra. `Pitch` (Q7.25, widened from
+  the Note On attribute's Q7.9 by zero extension) is one: the two pitch fields
+  share it, and `Attribute::pitch` reads it.
+- **A per-note controller number is typed where Appendix A defines it.**
+  `RegisteredPerNoteController` names each defined number and keeps any other as
+  `Reserved(u8)`, so every raw value re-encodes; build one from a wire number with
+  `From<u8>`, because a hand-built `Reserved` of a named number does not match its
+  named variant. `AssignablePerNote.controller`
+  stays a byte: there are 256 assignable controllers, so it is not a `CCNumber`
+  (7 bits), and masking it would alias controllers 128 to 255 onto 0 to 127.
 - **Flex addressing follows the specification.** Set Tempo, Set Time Signature and
   Set Metronome are Group messages: §7.5.3 to §7.5.5 fix Format 0 and Address 1,
   so they carry no `FlexAddress`. Key signature, chord name and text do, and carry
   it in their variant.
 - **Reserved bits** are ignored on decode and zero on encode. A reserved value in
-  a field decodes as `Unknown`.
+  an enumerated field is kept raw (`Letter::Reserved`, `FlexAddress::Reserved`,
+  `Attribute::Reserved`, `RegisteredPerNoteController::Reserved`, the field types'
+  out-of-range `wire`), so the message still decodes and re-encodes exactly.
+  `Unknown` is for a packet that cannot be framed: a reserved message type, or a
+  defined type with an undefined status. A consumer that forwards forwards
+  `Unknown` unchanged and never drops it; one that is a sink says so in its arm.
 - **Name limits are not in the codec.** They apply to a reassembled string, so
   they are checked where strings are reassembled.
 
@@ -187,6 +203,8 @@ impl Translator {
 ```
 
 - It runs once, at the input edge. Nothing else calls it, and no read translates.
+  Its stateless part exists first as `widen(Voice1) -> Voice2` (§10, stage 1.5);
+  the `Translator` calls it for the cases that need no state and adds the rest.
 - State is keyed by group and channel, and the group is kept.
 - It follows M2-104 App. D, which fixes several current defects: a MIDI 1.0 Note
   On at velocity 0 becomes a Note Off with velocity `0x8000` (D.3.1 in v1.1.2); a
@@ -485,10 +503,20 @@ a behaviour change.
 1. **`tutti-ump`.** First `Ump` and the moved vocabulary, with every caller updated
    and no behaviour change. Then `Message`, the codec, tests and benchmarks,
    alongside the old types.
+1.5. **Stateless widening,** before SoundFont and the hosts move:
+   `tutti_midi_protocol::widen` turns a `Voice1` into a `Voice2` (M2-115 scaling,
+   App. D.3, a MIDI 1.0 Note On at velocity 0 as a Note Off at `0x8000`), so a
+   consumer matches `Voice2` once instead of writing each message twice. A
+   Control Change that needs per-channel state (RPN and NRPN data, Bank Select)
+   stays a plain Control Change there. A consumer's call is transitional: stage 3
+   moves the call to the input edge and consumers drop it with their `Voice1`
+   arm. Behaviour change: a MIDI 1.0 Note On at velocity 0 reaches the consumer
+   as a Note Off with release velocity `0x8000`, not `0`.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
    host.
-3. **`tutti-midi-protocol`.** Translation to the edge. Behaviour change: §4's spec
-   fixes.
+3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
+   state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
+   remaining spec fixes.
 4. **`tutti-midi-device` and the `-ffi` crates.** Device detection comes first
    (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1.
    Then model, connection, identity, device loss, timing (§5), and the backends

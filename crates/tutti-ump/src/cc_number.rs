@@ -32,10 +32,8 @@
 
 /// One of the 128 MIDI Control Change controllers.
 ///
-/// Always in `0..=127`: [`new`](Self::new) masks rather than rejects, matching
-/// what [`MidiEvent::cc`] already does with `cc & 0x7F`.
-///
-/// [`MidiEvent::cc`]: https://docs.rs/tutti-midi-types
+/// Always in `0..=127`: [`new`](Self::new) refuses a larger number, and
+/// [`masked`](Self::masked) is the one constructor that masks.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // `transparent` for the same reason `MidiChannel` has it: a `CCNumber` is `74`
@@ -129,22 +127,46 @@ impl CCNumber {
     /// CC 101.
     pub const RPN_MSB: CCNumber = CCNumber(101);
 
-    /// Wraps a raw controller number, masking it into `0..=127`.
-    ///
-    /// Masks rather than returning an error because that is what the wire does:
-    /// the UMP control field is 7 bits, so a larger value cannot be
-    /// represented. Rejecting here would make this type stricter than the
-    /// format it addresses.
+    /// The controller, or `None` when `raw` is above 127.
     ///
     /// ```
     /// use tutti_ump::CCNumber;
     ///
-    /// assert_eq!(CCNumber::new(74), CCNumber::BRIGHTNESS);
-    /// assert_eq!(CCNumber::new(128).get(), 0); // masked, like the wire
+    /// assert_eq!(CCNumber::new(74), Some(CCNumber::BRIGHTNESS));
+    /// assert_eq!(CCNumber::new(128), None);
     /// ```
     #[inline]
     #[must_use]
-    pub const fn new(raw: u8) -> CCNumber {
+    pub const fn new(raw: u8) -> Option<CCNumber> {
+        if raw < Self::COUNT {
+            Some(CCNumber(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The controller for a literal or a constant.
+    /// For a value that arrives from outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is above 127; in a `const` that is a compile error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: u8) -> CCNumber {
+        match Self::new(raw) {
+            Some(controller) => controller,
+            None => panic!("a controller is 0 to 127"),
+        }
+    }
+
+    /// The low seven bits of `raw`: the one place that masks. Use it where the
+    /// bits are known to be a controller field, as the decoder does; a value
+    /// from outside the wire is checked with [`new`](Self::new).
+    #[inline]
+    #[must_use]
+    pub const fn masked(raw: u8) -> CCNumber {
         CCNumber(raw & 0x7F)
     }
 
@@ -165,22 +187,39 @@ impl From<CCNumber> for u8 {
 }
 
 // Deliberately no `From<u8> for CCNumber`, for the same reason `MidiChannel`
-// refuses one: the conversion masks, and a lossy conversion inside a trait that
-// promises not to lose data is exactly what `ChannelLayout` refused a reverse
-// `From` for. `CCNumber::new` names the masking.
+// refuses one: the conversion would mask or fail, and a lossy conversion inside
+// a trait that promises not to lose data is exactly what `ChannelLayout`
+// refused a reverse `From` for.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_cc_number_is_masked_into_range() {
-        assert_eq!(CCNumber::new(0).get(), 0);
-        assert_eq!(CCNumber::new(127).get(), 127);
-        // 128 wraps to 0 — the same thing `MidiEvent::cc` does, rather than a
-        // silently different answer one layer up.
-        assert_eq!(CCNumber::new(128).get(), 0);
-        assert_eq!(CCNumber::new(255).get(), 127);
+    fn a_cc_number_out_of_range_is_refused() {
+        for raw in 0..=255u8 {
+            match CCNumber::new(raw) {
+                Some(controller) => {
+                    assert!(raw < 128);
+                    assert_eq!(controller.get(), raw);
+                    assert_eq!(CCNumber::of(raw), controller);
+                }
+                None => assert!(raw >= 128),
+            }
+        }
+    }
+
+    #[test]
+    fn masking_is_only_through_masked() {
+        assert_eq!(CCNumber::masked(128).get(), 0);
+        assert_eq!(CCNumber::masked(255).get(), 127);
+        assert_eq!(CCNumber::masked(74), CCNumber::BRIGHTNESS);
+    }
+
+    #[test]
+    #[should_panic(expected = "a controller is 0 to 127")]
+    fn of_panics_out_of_range() {
+        let _ = CCNumber::of(128);
     }
 
     /// The named roster against the MIDI 1.0 Control Change table. A wrong

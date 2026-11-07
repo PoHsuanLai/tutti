@@ -64,7 +64,7 @@ impl NoteId {
     #[inline]
     #[must_use]
     pub const fn channel(self) -> MidiChannel {
-        MidiChannel::new(((self.0 >> 8) & 0x0f) as u8)
+        MidiChannel::masked(((self.0 >> 8) & 0x0f) as u8)
     }
 
     /// The opaque backing value.

@@ -58,7 +58,7 @@ fn reclaim_frees_a_request_a_block_held_across_the_next() {
 /// Mutation: leave out the channelless port for a channel → fails.
 #[test]
 fn a_listener_takes_its_channel_and_the_channelless_port() {
-    let one: Vec<usize> = input_ports(Some(MidiChannel::new(3))).collect();
+    let one: Vec<usize> = input_ports(Some(MidiChannel::of(3))).collect();
     assert_eq!(one, vec![3, CHANNELLESS_PORT]);
     let all: Vec<usize> = input_ports(None).collect();
     assert_eq!(all, (0..MIDI_INPUT_PORTS).collect::<Vec<_>>());
@@ -68,7 +68,7 @@ fn a_listener_takes_its_channel_and_the_channelless_port() {
 /// the channelless one.
 #[test]
 fn events_leave_on_their_channels_port() {
-    let on = MidiEvent::note_on_7bit(tutti_ump::MidiGroup::FIRST, MidiChannel::new(9), 60, 100);
+    let on = MidiEvent::note_on_7bit(tutti_ump::MidiGroup::FIRST, MidiChannel::of(9), 60, 100);
     assert_eq!(input_port_of(&on), 9);
     let clock = MidiEvent::timing_clock(tutti_ump::MidiGroup::FIRST);
     assert_eq!(input_port_of(&clock), CHANNELLESS_PORT);

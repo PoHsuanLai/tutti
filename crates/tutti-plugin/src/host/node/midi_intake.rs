@@ -294,7 +294,7 @@ mod tests {
         let mut intake = MidiIntake::default();
         let mut dropped = 0usize;
         let cut = packets(MidiGroup::FIRST, 6 * 20);
-        let other = packets(MidiGroup::new(2), 30);
+        let other = packets(MidiGroup::of(2), 30);
         let next = packets(MidiGroup::FIRST, 30);
 
         // The first chunk fills up with notes, then takes the first three
@@ -459,7 +459,7 @@ mod tests {
     #[test]
     fn a_cut_on_one_group_survives_a_message_on_another() {
         let cut = packets(MidiGroup::FIRST, 30);
-        let single = packets(MidiGroup::new(1), 4);
+        let single = packets(MidiGroup::of(1), 4);
         assert_eq!(single.len(), 1, "a SINGLE");
         assert_ne!(single[0].group(), cut[0].group());
         let mut intake = MidiIntake::default();

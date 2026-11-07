@@ -55,13 +55,13 @@ pub fn decode(ump: Ump) -> Result<Message, Unknown> {
 }
 
 fn group(w0: u32) -> MidiGroup {
-    MidiGroup::new(((w0 >> 24) & 0xf) as u8)
+    MidiGroup::masked(((w0 >> 24) & 0xf) as u8)
 }
 
 fn address(w0: u32) -> Address {
     Address {
         group: group(w0),
-        channel: MidiChannel::new(((w0 >> 16) & 0xf) as u8),
+        channel: MidiChannel::masked(((w0 >> 16) & 0xf) as u8),
     }
 }
 
@@ -151,7 +151,7 @@ fn voice1(w0: u32) -> Option<Voice1> {
             pressure: d2,
         }),
         0xB => Some(Voice1::ControlChange {
-            controller: CCNumber::new(d1.get()),
+            controller: CCNumber::masked(d1.get()),
             value: d2,
         }),
         0xC => Some(Voice1::ProgramChange(d1)),
@@ -266,7 +266,7 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
     match (w0 >> 20) & 0xf {
         0x0 => Some(Voice2::RegisteredPerNote {
             note: note(w0, 1),
-            controller: index,
+            controller: index.into(),
             value: data,
         }),
         0x1 => Some(Voice2::AssignablePerNote {
@@ -313,7 +313,7 @@ fn voice2(w: [u32; 4]) -> Option<Voice2> {
             value: data,
         }),
         0xB => Some(Voice2::ControlChange {
-            controller: CCNumber::new(byte(w0, 1)),
+            controller: CCNumber::masked(byte(w0, 1)),
             value: data,
         }),
         0xC => Some(Voice2::ProgramChange {
@@ -407,7 +407,7 @@ fn flex(w: [u32; 4]) -> Option<Flex> {
     let w0 = w[0];
     let (bank, status) = (byte(w0, 1), byte(w0, 0));
     let address = match (w0 >> 20) & 0x3 {
-        0 => FlexAddress::Channel(MidiChannel::new(((w0 >> 16) & 0xf) as u8)),
+        0 => FlexAddress::Channel(MidiChannel::masked(((w0 >> 16) & 0xf) as u8)),
         1 => FlexAddress::Group,
         n => FlexAddress::Reserved(n as u8),
     };

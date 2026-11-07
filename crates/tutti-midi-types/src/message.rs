@@ -472,7 +472,7 @@ impl MidiEvent {
             // Preserve the *original* event verbatim so a re-encode is exact.
             _ => return MidiMessage::Other(*self),
         };
-        let channel = MidiChannel::new(u8::from(cv2.channel()));
+        let channel = MidiChannel::masked(u8::from(cv2.channel()));
         let note_id = |note: u8| NoteId::from_channel_note(channel, note);
 
         match cv2 {
@@ -683,7 +683,7 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 index,
                 value,
                 ..
-            } => MidiEvent::cc(MidiGroup::FIRST, channel, CCNumber::new(index), value),
+            } => MidiEvent::cc(MidiGroup::FIRST, channel, CCNumber::masked(index), value),
             MidiMessage::ProgramChange {
                 channel,
                 program,

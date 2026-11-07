@@ -4444,6 +4444,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-midi-protocol"
+version = "0.0.1"
+dependencies = [
+ "tutti-ump",
+]
+
+[[package]]
 name = "tutti-midi-runtime"
 version = "0.0.1"
 dependencies = [
@@ -4611,6 +4618,7 @@ dependencies = [
  "tutti-core",
  "tutti-dsp",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-mod",

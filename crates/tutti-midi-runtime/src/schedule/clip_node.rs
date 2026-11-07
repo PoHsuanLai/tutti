@@ -510,8 +510,8 @@ fn note_of(e: &MidiEvent) -> Option<(usize, usize, u32, bool)> {
 /// A note-off of `(group, channel, note)` on `at`.
 fn off_event(at: Offset, g: usize, c: usize, n: u32) -> Event {
     let off = MidiEvent::note_off(
-        MidiGroup::new(g as u8),
-        MidiChannel::new(c as u8),
+        MidiGroup::masked(g as u8),
+        MidiChannel::masked(c as u8),
         n as u8,
         0,
     );

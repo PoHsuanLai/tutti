@@ -12,8 +12,9 @@
 //! which is exactly why they need separate types — nothing about their shape
 //! distinguishes them, only their meaning does.
 //!
-//! Per MIDI 2.0 (M2-104-UM §2.1.2), the **Group** field is present in *every*
-//! UMP packet header. It identifies one of the 16 virtual cables multiplexed
+//! Per MIDI 2.0 (M2-104-UM §2.1.2), the **Group** field is present in every
+//! UMP packet except Utility (type `0x0`) and Stream (type `0xF`), which have
+//! none. It identifies one of the 16 virtual cables multiplexed
 //! onto a single UMP Endpoint, and it is carried by messages that have no
 //! channel at all: System Real-Time, SysEx7/SysEx8, Flex Data, and UMP Stream.
 //! A group is the transport lane — the moral equivalent of "which of the 16
@@ -38,15 +39,15 @@
 //! # use tutti_ump::{MidiChannel, MidiGroup};
 //! fn takes(_group: MidiGroup, _channel: MidiChannel) {}
 //! // Transposed — the compiler rejects it, which is the entire point.
-//! takes(MidiChannel::new(3), MidiGroup::new(1));
+//! takes(MidiChannel::of(3), MidiGroup::of(1));
 //! ```
 //!
 //! Like [`MidiChannel`](crate::MidiChannel), it is serializable (feature `serde`).
 
 /// One of the 16 groups (virtual cables) in a UMP Endpoint.
 ///
-/// Always in `0..=15`: [`new`](Self::new) masks rather than rejects, matching
-/// what the UMP constructors already do with `group & 0x0F`.
+/// Always in `0..=15`: [`new`](Self::new) refuses a larger number, and
+/// [`masked`](Self::masked) is the one constructor that masks.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // `transparent` for the same reason `MidiChannel` has it: a `MidiGroup` is `3`
@@ -67,15 +68,46 @@ impl MidiGroup {
     /// How many groups a UMP Endpoint carries.
     pub const COUNT: u8 = 16;
 
-    /// Wraps a raw group number, masking it into `0..=15`.
+    /// The group, or `None` when `raw` is above 15.
     ///
-    /// Masks rather than returning an error because that is what the wire does:
-    /// the UMP field is 4 bits, so a larger value cannot be represented.
-    /// Rejecting here would make this type stricter than the format it
-    /// addresses.
+    /// ```
+    /// use tutti_ump::MidiGroup;
+    ///
+    /// assert_eq!(MidiGroup::new(15), Some(MidiGroup::LAST));
+    /// assert_eq!(MidiGroup::new(16), None);
+    /// ```
     #[inline]
     #[must_use]
-    pub const fn new(raw: u8) -> MidiGroup {
+    pub const fn new(raw: u8) -> Option<MidiGroup> {
+        if raw < Self::COUNT {
+            Some(MidiGroup(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The group for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is above 15; in a `const` that is a compile error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: u8) -> MidiGroup {
+        match Self::new(raw) {
+            Some(group) => group,
+            None => panic!("a group is 0 to 15"),
+        }
+    }
+
+    /// The low four bits of `raw`: the one place that masks. Use it where the
+    /// bits are known to be a Group field, as the decoder does; a value from
+    /// outside the wire is checked with [`new`](Self::new).
+    #[inline]
+    #[must_use]
+    pub const fn masked(raw: u8) -> MidiGroup {
         MidiGroup(raw & 0x0F)
     }
 
@@ -103,9 +135,9 @@ impl From<MidiGroup> for u8 {
 
 // Deliberately no `From<u8> for MidiGroup`, and no conversion to or from
 // `MidiChannel` in either direction. The `u8` case is `MidiChannel`'s
-// reasoning — the conversion masks, and a lossy conversion inside a trait that
-// promises not to lose data is what `ChannelLayout` refused a reverse `From`
-// for. The `MidiChannel` case is stronger: a total, lossless `From` between
+// reasoning: the conversion would mask or fail, and a lossy conversion inside
+// a trait that promises not to lose data is what `ChannelLayout` refused a
+// reverse `From` for. The `MidiChannel` case is stronger: a total, lossless `From` between
 // them would compile, and would silently reinstate exactly the transposition
 // this type exists to reject.
 
@@ -114,13 +146,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_group_is_masked_into_range() {
-        assert_eq!(MidiGroup::new(0).get(), 0);
-        assert_eq!(MidiGroup::new(15).get(), 15);
-        // 16 wraps to 0 — the same thing the UMP constructors do, rather than a
-        // silently different answer one layer up.
-        assert_eq!(MidiGroup::new(16).get(), 0);
-        assert_eq!(MidiGroup::new(255).get(), 15);
+    fn a_group_out_of_range_is_refused() {
+        for raw in 0..=255u8 {
+            match MidiGroup::new(raw) {
+                Some(group) => {
+                    assert!(raw < 16);
+                    assert_eq!(group.get(), raw);
+                    assert_eq!(MidiGroup::of(raw), group);
+                }
+                None => assert!(raw >= 16),
+            }
+        }
+    }
+
+    #[test]
+    fn masking_is_only_through_masked() {
+        assert_eq!(MidiGroup::masked(16).get(), 0);
+        assert_eq!(MidiGroup::masked(255).get(), 15);
+        assert_eq!(MidiGroup::masked(7), MidiGroup::of(7));
+    }
+
+    #[test]
+    #[should_panic(expected = "a group is 0 to 15")]
+    fn of_panics_out_of_range() {
+        let _ = MidiGroup::of(16);
     }
 
     #[test]
@@ -132,8 +181,9 @@ mod tests {
         // transposed argument from a correct one. Only the type system can.
         // The compile-time half of this is the `compile_fail` doctest in the
         // module docs above, which a `#[test]` cannot express.
-        assert_eq!(MidiGroup::new(7).get(), MidiChannel::new(7).get());
-        assert_eq!(MidiGroup::new(16).get(), MidiChannel::new(16).get());
+        assert_eq!(MidiGroup::of(7).get(), MidiChannel::of(7).get());
+        assert_eq!(MidiGroup::new(16), None);
+        assert_eq!(MidiChannel::new(16), None);
         assert_eq!(MidiGroup::COUNT, MidiChannel::COUNT);
     }
 }

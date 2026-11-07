@@ -41,7 +41,7 @@ fn cc_decodes_to_controller_and_normalized_value() {
     // CC 74 (brightness) = 64 on channel 2.
     let (ch, ctrl, value) = mapped(&MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(2),
+        MidiChannel::of(2),
         CCNumber::BRIGHTNESS,
         midi1_cc_to_midi2(64),
     ))
@@ -70,7 +70,7 @@ fn pitch_bend_center_is_half() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     let (ch, ctrl, value) = mapped(&MidiEvent::pitch_bend(
         MidiGroup::FIRST,
-        MidiChannel::new(4),
+        MidiChannel::of(4),
         midi1_pitch_bend_to_midi2(8192),
     ))
     .unwrap();

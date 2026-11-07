@@ -29,8 +29,8 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::{Hz, Q, SampleRate};
 use tutti_ump::{
-    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
-    Voice1, Voice2,
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, U7, U14, Ump, Voice1, Voice2,
 };
 
 #[global_allocator]
@@ -39,14 +39,14 @@ static A: AllocDisabler = AllocDisabler;
 fn note_on(channel: u8, note: u8, vel: u8) -> MidiEvent {
     MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(channel),
+        MidiChannel::of(channel),
         note,
         midi1_velocity_to_midi2(vel),
     )
 }
 
 fn note_off(channel: u8, note: u8) -> MidiEvent {
-    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(channel), note, 0)
+    MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
     );
     let address = Address {
         group: MidiGroup::FIRST,
-        channel: MidiChannel::new(1),
+        channel: MidiChannel::of(1),
     };
     let note = NoteNumber::new(60).unwrap();
     let u7 = |v| U7::new(v).unwrap();
@@ -219,11 +219,11 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             pressure: u7(50),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::new(1),
+            controller: CCNumber::of(1),
             value: u7(20),
         }),
         m1(Voice1::ControlChange {
-            controller: CCNumber::new(64),
+            controller: CCNumber::of(64),
             value: u7(127),
         }),
         m1(Voice1::PitchBend(U14::new(9000).unwrap())),
@@ -257,7 +257,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::RegisteredPerNote {
             note,
-            controller: 3,
+            controller: RegisteredPerNoteController::Pitch,
             value: 69 << 25,
         }),
         m2(Voice2::AssignablePerNote {
@@ -281,7 +281,7 @@ fn polysynth_every_decoded_message_is_allocation_free() {
             value: 3,
         }),
         m2(Voice2::ControlChange {
-            controller: CCNumber::new(7),
+            controller: CCNumber::of(7),
             value: 1 << 31,
         }),
         m2(Voice2::PitchBend(0x9000_0000)),

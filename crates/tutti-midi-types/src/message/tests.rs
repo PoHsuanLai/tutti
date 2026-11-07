@@ -2,10 +2,10 @@ use super::*;
 
 #[test]
 fn note_on_decodes_full_width() {
-    let msg = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0xC000).message();
+    let msg = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0xC000).message();
     assert!(msg.is_note_on());
     assert_eq!(msg.note(), Some(60));
-    assert_eq!(msg.channel(), Some(MidiChannel::new(3)));
+    assert_eq!(msg.channel(), Some(MidiChannel::of(3)));
     assert_eq!(msg.velocity(), Some(0xC000)); // full 16-bit, not narrowed
 }
 
@@ -15,7 +15,7 @@ fn midi1_note_on_promotes_and_decodes() {
     let ev = MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap();
     let msg = ev.message();
     assert!(msg.is_note_on());
-    assert_eq!(msg.channel(), Some(MidiChannel::new(3)));
+    assert_eq!(msg.channel(), Some(MidiChannel::of(3)));
     assert_eq!(msg.note(), Some(60));
 }
 
@@ -31,7 +31,7 @@ fn velocity_zero_note_on_reads_as_note_off() {
 fn control_change_carries_32bit_value() {
     let msg = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         CCNumber::BRIGHTNESS,
         0xDEAD_BEEF,
     )
@@ -43,7 +43,7 @@ fn control_change_carries_32bit_value() {
             value,
             ..
         } => {
-            assert_eq!(channel, MidiChannel::new(5));
+            assert_eq!(channel, MidiChannel::of(5));
             assert_eq!(index, 74);
             assert_eq!(value, 0xDEAD_BEEF);
         }
@@ -53,11 +53,11 @@ fn control_change_carries_32bit_value() {
 
 #[test]
 fn same_pitch_different_channel_have_distinct_ids() {
-    let a = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60, 0x8000)
+    let a = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 0x8000)
         .message()
         .id()
         .unwrap();
-    let b = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(2), 60, 0x8000)
+    let b = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(2), 60, 0x8000)
         .message()
         .id()
         .unwrap();
@@ -134,7 +134,7 @@ fn absolute_channel_controllers_decode_structured() {
     // RPN and NRPN differ only in namespace; both carry bank/index/data.
     let rpn = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         0x12,
         0x34,
         0xDEAD_BEEF,
@@ -143,7 +143,7 @@ fn absolute_channel_controllers_decode_structured() {
         rpn.message(),
         MidiMessage::RegisteredController {
             frame_offset: 0,
-            channel: MidiChannel::new(3),
+            channel: MidiChannel::of(3),
             namespace: ControllerNamespace::Registered,
             bank: 0x12,
             index: 0x34,
@@ -153,7 +153,7 @@ fn absolute_channel_controllers_decode_structured() {
 
     let nrpn = MidiEvent::assignable_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(9),
+        MidiChannel::of(9),
         0x01,
         0x02,
         0x0000_1000,
@@ -162,7 +162,7 @@ fn absolute_channel_controllers_decode_structured() {
         nrpn.message(),
         MidiMessage::RegisteredController {
             frame_offset: 0,
-            channel: MidiChannel::new(9),
+            channel: MidiChannel::of(9),
             namespace: ControllerNamespace::Assignable,
             bank: 0x01,
             index: 0x02,
@@ -175,7 +175,7 @@ fn absolute_channel_controllers_decode_structured() {
 fn relative_channel_controllers_decode_structured() {
     let rpn = MidiEvent::relative_registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         0x40,
         0x07,
         42,
@@ -184,7 +184,7 @@ fn relative_channel_controllers_decode_structured() {
         rpn.message(),
         MidiMessage::RelativeController {
             frame_offset: 0,
-            channel: MidiChannel::new(5),
+            channel: MidiChannel::of(5),
             namespace: ControllerNamespace::Registered,
             bank: 0x40,
             index: 0x07,
@@ -194,7 +194,7 @@ fn relative_channel_controllers_decode_structured() {
 
     let nrpn = MidiEvent::relative_assignable_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(0),
+        MidiChannel::of(0),
         0x7F,
         0x7E,
         7,
@@ -203,7 +203,7 @@ fn relative_channel_controllers_decode_structured() {
         nrpn.message(),
         MidiMessage::RelativeController {
             frame_offset: 0,
-            channel: MidiChannel::new(0),
+            channel: MidiChannel::of(0),
             namespace: ControllerNamespace::Assignable,
             bank: 0x7F,
             index: 0x7E,
@@ -229,7 +229,7 @@ fn relative_controller_delta_stays_signed() {
                 ControllerNamespace::Assignable,
             ),
         ] {
-            let ev = build(MidiGroup::FIRST, MidiChannel::new(3), 0x12, 0x34, delta);
+            let ev = build(MidiGroup::FIRST, MidiChannel::of(3), 0x12, 0x34, delta);
             match ev.message() {
                 MidiMessage::RelativeController {
                     delta: decoded,
@@ -249,7 +249,7 @@ fn relative_controller_delta_stays_signed() {
 fn bank_and_index_are_not_transposed() {
     // Distinct bank/index values, so a swap in either the decode or the
     // re-encode shows up rather than cancelling out.
-    let ev = MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(3), 0x11, 0x22, 1);
+    let ev = MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::of(3), 0x11, 0x22, 1);
     match ev.message() {
         MidiMessage::RegisteredController { bank, index, .. } => {
             assert_eq!(bank, 0x11);
@@ -266,28 +266,28 @@ fn channel_controllers_round_trip_to_identical_wire_bytes() {
     for ev in [
         MidiEvent::registered_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(3),
+            MidiChannel::of(3),
             0x12,
             0x34,
             0xDEAD_BEEF,
         ),
         MidiEvent::assignable_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(9),
+            MidiChannel::of(9),
             0x01,
             0x02,
             0x0000_1000,
         ),
         MidiEvent::relative_registered_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(5),
+            MidiChannel::of(5),
             0x40,
             0x07,
             -1234,
         ),
         MidiEvent::relative_assignable_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(15),
+            MidiChannel::of(15),
             0x7F,
             0x00,
             i32::MIN,
@@ -315,16 +315,16 @@ fn channel_controllers_report_their_channel() {
     // The `channel()` accessor's `|`-chain must cover the new variants —
     // otherwise they read as channel-less system messages.
     assert_eq!(
-        MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::new(11), 0, 6, 0)
+        MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::of(11), 0, 6, 0)
             .message()
             .channel(),
-        Some(MidiChannel::new(11))
+        Some(MidiChannel::of(11))
     );
     assert_eq!(
-        MidiEvent::relative_assignable_controller(MidiGroup::FIRST, MidiChannel::new(4), 0, 6, 0)
+        MidiEvent::relative_assignable_controller(MidiGroup::FIRST, MidiChannel::of(4), 0, 6, 0)
             .message()
             .channel(),
-        Some(MidiChannel::new(4))
+        Some(MidiChannel::of(4))
     );
 }
 
@@ -335,7 +335,7 @@ fn absolute_and_relative_are_different_variants() {
     // down. The variant split is what keeps a consumer from confusing them.
     let absolute = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         0x12,
         0x34,
         0xFFFF_FFFF,
@@ -343,7 +343,7 @@ fn absolute_and_relative_are_different_variants() {
     .message();
     let relative = MidiEvent::relative_registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         0x12,
         0x34,
         -1,
@@ -368,7 +368,7 @@ fn round_trip_preserves_frame_offset() {
     // The view must not drop sample-accurate timing (project round-trip invariant).
     let ev = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         CCNumber::BRIGHTNESS,
         0xABCD_1234,
     )

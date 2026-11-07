@@ -28,7 +28,7 @@ fn function_block_info_decodes_via_midi2() {
     let ev = MidiEvent::function_block_info(
         true,
         2,
-        MidiGroup::new(4),
+        MidiGroup::of(4),
         1,
         FunctionBlockDirection::Output,
     );

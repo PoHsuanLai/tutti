@@ -2,7 +2,7 @@
 //! no lifetime.
 
 use crate::field::{
-    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, SharpsFlats, U4, U7, U14,
+    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
 };
 use crate::{CCNumber, MidiChannel, MidiGroup, Ump};
 
@@ -300,6 +300,142 @@ pub enum Attribute {
     },
 }
 
+/// A Registered Per-Note Controller number (Appendix A, Table 22). A number
+/// the table leaves reserved is kept in [`Reserved`](Self::Reserved), so its
+/// message re-encodes exactly. Build one from a wire number with [`From<u8>`],
+/// which names every number the table defines and only then falls back to
+/// `Reserved`. A hand-built `Reserved(7)` encodes as 7 but does not compare
+/// equal to, or match, [`Volume`](Self::Volume).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisteredPerNoteController {
+    /// 1: Modulation.
+    Modulation,
+    /// 2: Breath.
+    Breath,
+    /// 3: Pitch 7.25 (§7.4.15.2); the value is a [`Pitch`] in Q7.25.
+    Pitch,
+    /// 7: Volume.
+    Volume,
+    /// 8: Balance.
+    Balance,
+    /// 10: Pan.
+    Pan,
+    /// 11: Expression.
+    Expression,
+    /// 70: Sound Controller 1, Sound Variation.
+    SoundVariation,
+    /// 71: Sound Controller 2, Timbre / Harmonic Intensity.
+    Timbre,
+    /// 72: Sound Controller 3, Release Time.
+    ReleaseTime,
+    /// 73: Sound Controller 4, Attack Time.
+    AttackTime,
+    /// 74: Sound Controller 5, Brightness.
+    Brightness,
+    /// 75: Sound Controller 6, Decay Time.
+    DecayTime,
+    /// 76: Sound Controller 7, Vibrato Rate.
+    VibratoRate,
+    /// 77: Sound Controller 8, Vibrato Depth.
+    VibratoDepth,
+    /// 78: Sound Controller 9, Vibrato Delay.
+    VibratoDelay,
+    /// 79: Sound Controller 10, undefined.
+    SoundController10,
+    /// 91: Effects 1 Depth, Reverb Send Level.
+    ReverbSend,
+    /// 92: Effects 2 Depth (formerly Tremolo Depth).
+    Effects2Depth,
+    /// 93: Effects 3 Depth, Chorus Send Level.
+    ChorusSend,
+    /// 94: Effects 4 Depth (formerly Celeste Depth).
+    Effects4Depth,
+    /// 95: Effects 5 Depth (formerly Phaser Depth).
+    Effects5Depth,
+    /// A number the table reserves.
+    Reserved(u8),
+}
+
+impl RegisteredPerNoteController {
+    /// The controller number on the wire.
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Modulation => 1,
+            Self::Breath => 2,
+            Self::Pitch => 3,
+            Self::Volume => 7,
+            Self::Balance => 8,
+            Self::Pan => 10,
+            Self::Expression => 11,
+            Self::SoundVariation => 70,
+            Self::Timbre => 71,
+            Self::ReleaseTime => 72,
+            Self::AttackTime => 73,
+            Self::Brightness => 74,
+            Self::DecayTime => 75,
+            Self::VibratoRate => 76,
+            Self::VibratoDepth => 77,
+            Self::VibratoDelay => 78,
+            Self::SoundController10 => 79,
+            Self::ReverbSend => 91,
+            Self::Effects2Depth => 92,
+            Self::ChorusSend => 93,
+            Self::Effects4Depth => 94,
+            Self::Effects5Depth => 95,
+            Self::Reserved(n) => n,
+        }
+    }
+}
+
+impl From<u8> for RegisteredPerNoteController {
+    fn from(number: u8) -> Self {
+        match number {
+            1 => Self::Modulation,
+            2 => Self::Breath,
+            3 => Self::Pitch,
+            7 => Self::Volume,
+            8 => Self::Balance,
+            10 => Self::Pan,
+            11 => Self::Expression,
+            70 => Self::SoundVariation,
+            71 => Self::Timbre,
+            72 => Self::ReleaseTime,
+            73 => Self::AttackTime,
+            74 => Self::Brightness,
+            75 => Self::DecayTime,
+            76 => Self::VibratoRate,
+            77 => Self::VibratoDepth,
+            78 => Self::VibratoDelay,
+            79 => Self::SoundController10,
+            91 => Self::ReverbSend,
+            92 => Self::Effects2Depth,
+            93 => Self::ChorusSend,
+            94 => Self::Effects4Depth,
+            95 => Self::Effects5Depth,
+            n => Self::Reserved(n),
+        }
+    }
+}
+
+impl From<RegisteredPerNoteController> for u8 {
+    fn from(controller: RegisteredPerNoteController) -> u8 {
+        controller.number()
+    }
+}
+
+impl Attribute {
+    /// The pitch of an [`Attribute::Pitch`] (§7.4.15.3), or `None` for any other
+    /// attribute.
+    #[must_use]
+    pub const fn pitch(self) -> Option<Pitch> {
+        match self {
+            Self::Pitch(q7_9) => Some(Pitch::from_q7_9(q7_9)),
+            _ => None,
+        }
+    }
+}
+
 /// A Program Change's bank (§7.4.9), present when the Bank Valid bit is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bank {
@@ -318,7 +454,7 @@ pub enum Voice2 {
         /// The note.
         note: NoteNumber,
         /// The controller.
-        controller: u8,
+        controller: RegisteredPerNoteController,
         /// Its value.
         value: u32,
     },
@@ -326,7 +462,9 @@ pub enum Voice2 {
     AssignablePerNote {
         /// The note.
         note: NoteNumber,
-        /// The controller.
+        /// The controller, `0..=255`. Not a [`CCNumber`]: a Control Change
+        /// index is 7 bits, and this field is a full byte with 256
+        /// controllers (§7.4.4), so a `CCNumber` could not hold one above 127.
         controller: u8,
         /// Its value.
         value: u32,

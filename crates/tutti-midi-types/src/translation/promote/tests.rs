@@ -39,7 +39,7 @@ fn cv1_note_on_velocity_zero_folds_to_note_off() {
 fn cv2_note_on_velocity_zero_folds_to_note_off() {
     let norm = normalize(&MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         60,
         0,
     ));
@@ -49,7 +49,7 @@ fn cv2_note_on_velocity_zero_folds_to_note_off() {
 #[test]
 fn cv2_passthrough_preserves_frame_offset() {
     let norm = normalize(
-        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 64, 0x8000)
+        &MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 64, 0x8000)
             .with_frame_offset(128),
     );
     assert_eq!(norm.frame_offset, 128);

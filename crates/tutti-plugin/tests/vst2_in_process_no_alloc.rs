@@ -110,13 +110,13 @@ fn process_with_midi_does_not_allocate() {
     // allocations inside vst2-host's MidiSendBuffer.
     let warm_event = MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         midi1_velocity_to_midi2(100),
     );
     unit.events(0, &[at_start(warm_event)]);
     unit.block();
-    let warm_off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60, 0);
+    let warm_off = MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0);
     unit.events(0, &[at_start(warm_off)]);
     unit.block();
 
@@ -126,7 +126,7 @@ fn process_with_midi_does_not_allocate() {
             if i % 16 == 0 {
                 let ev = MidiEvent::note_on(
                     MidiGroup::FIRST,
-                    MidiChannel::new(1),
+                    MidiChannel::of(1),
                     60 + (i as u8 % 12),
                     midi1_velocity_to_midi2(100),
                 );
@@ -135,7 +135,7 @@ fn process_with_midi_does_not_allocate() {
             if i % 16 == 8 {
                 let ev = MidiEvent::note_off(
                     MidiGroup::FIRST,
-                    MidiChannel::new(1),
+                    MidiChannel::of(1),
                     60 + (i as u8 % 12),
                     0,
                 );

@@ -22,7 +22,7 @@ fn inbound_generic_data_cc_promotes_to_cv2() {
 
     let event = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         CCNumber::BRIGHTNESS,
         midi1_cc_to_midi2(100),
     );
@@ -60,7 +60,7 @@ fn inbound_system_message_passes_through() {
 #[test]
 fn note_on_lands_in_note_on_variant() {
     let event =
-        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000).with_frame_offset(5);
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000).with_frame_offset(5);
     let vst3 = encode(&event).expect("NoteOn should convert");
     match &vst3.payload {
         Payload::NoteOn(e) => {
@@ -130,7 +130,7 @@ fn poly_pressure_lands_in_poly_pressure_variant() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = MidiEvent::poly_pressure(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         midi1_cc_to_midi2(100),
     )
@@ -146,7 +146,7 @@ fn cc_falls_through_to_data_event() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(2),
+        MidiChannel::of(2),
         CCNumber::BRIGHTNESS,
         midi1_cc_to_midi2(100),
     );
@@ -184,7 +184,7 @@ fn pitch_bend_falls_through_to_data_event() {
 
 #[test]
 fn program_change_falls_through_to_data_event() {
-    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(9), 42, None);
+    let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None);
     let vst3 = encode(&event).expect("ProgramChange should convert");
     match &vst3.payload {
         Payload::Data(e) => {
@@ -444,14 +444,14 @@ fn note_on_and_off_share_a_derived_note_id() {
     // same VST3 noteId so per-note events bind to the same voice.
     let on = encode(&MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         67,
         0x8000,
     ))
     .unwrap();
     let off = encode(&MidiEvent::note_off(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         67,
         0,
     ))
@@ -476,7 +476,7 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
     // bound to the same noteId the note-on for (5, 67) would carry.
     let event = MidiEvent::per_note_pitch_bend(
         MidiGroup::FIRST,
-        MidiChannel::new(5),
+        MidiChannel::of(5),
         67,
         midi1_pitch_bend_to_midi2(8192),
     )
@@ -510,7 +510,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
     let bend = |channel: u8, amount: f32| {
         MidiEvent::per_note_pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(channel),
+            MidiChannel::of(channel),
             60,
             signed_f32_to_bend_u32(amount),
         )
@@ -539,7 +539,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
 
     let sensitivity = MidiEvent::registered_controller(
         MidiGroup::FIRST,
-        MidiChannel::new(3),
+        MidiChannel::of(3),
         RPN_BANK_MPE,
         RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::from_semitones(24).to_rpn_bits(),

@@ -50,7 +50,7 @@ fn plain_cc_promotes_straight_through() {
         .expect("plain CC promotes");
     match UmpMessage::try_from(out.data_words()).unwrap() {
         UmpMessage::ChannelVoice2(ChannelVoice2::ControlChange(m)) => {
-            assert_eq!(CCNumber::new(u8::from(m.control())), cc::MOD_WHEEL);
+            assert_eq!(CCNumber::of(u8::from(m.control())), cc::MOD_WHEEL);
         }
         other => panic!("expected CV2 ControlChange, got {other:?}"),
     }
@@ -214,13 +214,13 @@ fn bank_select_attaches_to_the_next_program_change_only() {
     // The values are kept: a lone LSB pairs with the earlier MSB
     // (`ump_convert.c` clears only the flag). Mutation: clear the
     // values on a Program Change and this reads bank 6.
-    assert!(t.translate(&cc_ev(5, CCNumber::new(32), 6)).is_none());
+    assert!(t.translate(&cc_ev(5, CCNumber::of(32), 6)).is_none());
     let again = t.translate(&pc(5, 10)).unwrap();
     assert_eq!(again.data_words(), pc_words(5, 10, Some((3 << 7) | 6)));
 }
 
 fn pc_words(ch: u8, p: u8, bank: Option<u16>) -> Vec<u32> {
-    MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(ch), p, bank)
+    MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(ch), p, bank)
         .data_words()
         .to_vec()
 }

@@ -17,8 +17,7 @@
 //! same type. This is a real newtype, serializable (feature `serde`) so a document can persist a channel.
 //!
 //! See [`MidiGroup`](crate::MidiGroup) for the other half: typing a channel
-//! alone still leaves `(group, channel)` transposable, since both are 4-bit and
-//! both mask silently.
+//! alone still leaves `(group, channel)` transposable, since both are 4-bit.
 //!
 //! # Channel is voice identity
 //!
@@ -30,8 +29,8 @@
 
 /// One of the 16 channels within a MIDI group.
 ///
-/// Always in `0..=15`: [`new`](Self::new) masks rather than rejects, matching
-/// what the UMP constructors already do with `channel & 0x0F`.
+/// Always in `0..=15`: [`new`](Self::new) refuses a larger number, and
+/// [`masked`](Self::masked) is the one constructor that masks.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // `transparent` for the same reason `Samples` has it: a `MidiChannel` is `3` on
@@ -48,23 +47,46 @@ impl MidiChannel {
     /// How many channels a MIDI group carries.
     pub const COUNT: u8 = 16;
 
-    /// Wraps a raw channel number, masking it into `0..=15`.
-    ///
-    /// Masks rather than returning an error because that is what the wire does:
-    /// the UMP field is 4 bits, so a larger value cannot be represented.
-    /// Rejecting here would make this type stricter than the format it
-    /// addresses.
+    /// The channel, or `None` when `raw` is above 15.
     ///
     /// ```
     /// use tutti_ump::MidiChannel;
     ///
-    /// assert_eq!(MidiChannel::new(9).get(), 9);
-    /// assert_eq!(MidiChannel::new(16).get(), 0); // masked, like the wire
-    /// assert_eq!(MidiChannel::new(9).display_number(), 10);
+    /// assert_eq!(MidiChannel::new(9).map(MidiChannel::display_number), Some(10));
+    /// assert_eq!(MidiChannel::new(16), None);
     /// ```
     #[inline]
     #[must_use]
-    pub const fn new(raw: u8) -> MidiChannel {
+    pub const fn new(raw: u8) -> Option<MidiChannel> {
+        if raw < Self::COUNT {
+            Some(MidiChannel(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The channel for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is above 15; in a `const` that is a compile error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: u8) -> MidiChannel {
+        match Self::new(raw) {
+            Some(channel) => channel,
+            None => panic!("a channel is 0 to 15"),
+        }
+    }
+
+    /// The low four bits of `raw`: the one place that masks. Use it where the
+    /// bits are known to be a Channel field, as the decoder does; a value from
+    /// outside the wire is checked with [`new`](Self::new).
+    #[inline]
+    #[must_use]
+    pub const fn masked(raw: u8) -> MidiChannel {
         MidiChannel(raw & 0x0F)
     }
 
@@ -94,23 +116,39 @@ impl From<MidiChannel> for u8 {
     }
 }
 
-// Deliberately no `From<u8> for MidiChannel`: the conversion masks, and a
-// lossy conversion inside a trait that promises not to lose data is exactly
-// what `ChannelLayout` refused a reverse `From` for. `MidiChannel::new` names
-// the masking.
+// Deliberately no `From<u8> for MidiChannel`: the conversion would mask or
+// fail, and a lossy conversion inside a trait that promises not to lose data
+// is exactly what `ChannelLayout` refused a reverse `From` for.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_channel_is_masked_into_range() {
-        assert_eq!(MidiChannel::new(0).get(), 0);
-        assert_eq!(MidiChannel::new(15).get(), 15);
-        // 16 wraps to 0 — the same thing the UMP constructors do, rather than a
-        // silently different answer one layer up.
-        assert_eq!(MidiChannel::new(16).get(), 0);
-        assert_eq!(MidiChannel::new(255).get(), 15);
+    fn a_channel_out_of_range_is_refused() {
+        for raw in 0..=255u8 {
+            match MidiChannel::new(raw) {
+                Some(channel) => {
+                    assert!(raw < 16);
+                    assert_eq!(channel.get(), raw);
+                    assert_eq!(MidiChannel::of(raw), channel);
+                }
+                None => assert!(raw >= 16),
+            }
+        }
+    }
+
+    #[test]
+    fn masking_is_only_through_masked() {
+        assert_eq!(MidiChannel::masked(16).get(), 0);
+        assert_eq!(MidiChannel::masked(255).get(), 15);
+        assert_eq!(MidiChannel::masked(9), MidiChannel::of(9));
+    }
+
+    #[test]
+    #[should_panic(expected = "a channel is 0 to 15")]
+    fn of_panics_out_of_range() {
+        let _ = MidiChannel::of(16);
     }
 
     #[test]

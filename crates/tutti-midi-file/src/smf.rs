@@ -181,7 +181,7 @@ fn parse_track(track: &Track, ticks_per_beat: u16) -> Vec<SmfTimedEvent> {
         if let TrackEventKind::Midi { channel, message } = &event.kind {
             events.push(SmfTimedEvent {
                 time_beats: Beat(tick as f64 / f64::from(ticks_per_beat)),
-                channel: MidiChannel::new(channel.as_int()),
+                channel: MidiChannel::masked(channel.as_int()),
                 msg: *message,
             });
         }
@@ -345,7 +345,7 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
         now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));
         let beat = Beat(now_ticks as f64 / ticks_per_beat);
         if let TrackEventKind::Midi { channel, message } = event.kind {
-            let channel = MidiChannel::new(channel.as_int());
+            let channel = MidiChannel::masked(channel.as_int());
             match message {
                 SmfMessage::NoteOn { key, vel } => {
                     let (key, vel) = (key.as_int(), vel.as_int());

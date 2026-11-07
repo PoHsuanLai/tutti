@@ -530,7 +530,7 @@ mod tests {
     fn note_on_off_roundtrip() {
         let event = MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             midi1_velocity_to_midi2(127),
         )
@@ -543,7 +543,7 @@ mod tests {
 
         let event = MidiEvent::note_off(
             MidiGroup::FIRST,
-            MidiChannel::new(9),
+            MidiChannel::of(9),
             48,
             midi1_velocity_to_midi2(64),
         );
@@ -597,7 +597,7 @@ mod tests {
     fn cc_roundtrip() {
         let event = MidiEvent::cc(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             CCNumber::BRIGHTNESS,
             midi1_cc_to_midi2(100),
         );
@@ -611,7 +611,7 @@ mod tests {
     fn pitch_bend_roundtrip() {
         let event = MidiEvent::pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             midi1_pitch_bend_to_midi2(8192),
         );
         let api = from_midi(&event).expect("PitchBend should convert");
@@ -625,7 +625,7 @@ mod tests {
 
         let event = MidiEvent::pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             midi1_pitch_bend_to_midi2(0),
         );
         let api = from_midi(&event).expect("PitchBend min should convert");
@@ -634,7 +634,7 @@ mod tests {
 
         let event = MidiEvent::pitch_bend(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             midi1_pitch_bend_to_midi2(16383),
         );
         let api = from_midi(&event).expect("PitchBend max should convert");
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn program_change_roundtrip() {
-        let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 42, None);
+        let event = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 42, None);
         let api = from_midi(&event).expect("ProgramChange should convert");
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
@@ -655,7 +655,7 @@ mod tests {
     fn channel_pressure_roundtrip() {
         let event = MidiEvent::channel_pressure(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             midi1_cc_to_midi2(100),
         );
         let api = from_midi(&event).expect("ChannelPressure should convert");
@@ -668,7 +668,7 @@ mod tests {
     fn poly_pressure_roundtrip() {
         let event = MidiEvent::poly_pressure(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             midi1_cc_to_midi2(80),
         );
@@ -744,7 +744,7 @@ mod tests {
             .map(|i| {
                 MidiEvent::note_on(
                     MidiGroup::FIRST,
-                    MidiChannel::new(1),
+                    MidiChannel::of(1),
                     60 + i as u8,
                     midi1_velocity_to_midi2(100),
                 )
@@ -927,7 +927,7 @@ mod tests {
     /// check (the old per-message loop) → a partial bank → fails.
     #[test]
     fn a_banked_program_change_stages_as_three_events() {
-        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(1), 9, Some(0x0085))
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
             .with_frame_offset(5);
         let mut buf = MidiSendBuffer::new();
         let staged = read_staged(buf.stage_piece(&[pc], 0, 64, 64).expect("events staged"));
@@ -946,7 +946,7 @@ mod tests {
         // Room for the note and one more: the note stays, the bank does not.
         let note = MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             midi1_velocity_to_midi2(100),
         );
@@ -980,7 +980,7 @@ mod tests {
         let body: Vec<u8> = (0..40).collect();
         let note = MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(0),
+            MidiChannel::of(0),
             60,
             midi1_velocity_to_midi2(100),
         );
@@ -1028,7 +1028,7 @@ mod tests {
     fn staging_the_whole_cap_does_not_allocate() {
         let note = MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(0),
+            MidiChannel::of(0),
             60,
             midi1_velocity_to_midi2(100),
         );
@@ -1059,7 +1059,7 @@ mod tests {
     fn the_staged_events_pointer_is_8_aligned() {
         let note = MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(0),
+            MidiChannel::of(0),
             60,
             midi1_velocity_to_midi2(100),
         );

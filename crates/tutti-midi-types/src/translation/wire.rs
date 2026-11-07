@@ -49,7 +49,7 @@ impl MidiEvent {
         let ev = LiveEvent::parse(bytes).ok()?;
         let out = match ev {
             LiveEvent::Midi { channel, message } => {
-                midi1_channel_voice_to_ump(MidiChannel::new(channel.as_int()), message)
+                midi1_channel_voice_to_ump(MidiChannel::masked(channel.as_int()), message)
             }
             LiveEvent::Realtime(rt) => match rt {
                 SystemRealtime::TimingClock => Self::timing_clock(MidiGroup::FIRST),

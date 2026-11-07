@@ -166,11 +166,11 @@ fn a_note_off_does_not_close_another_channels_note() {
     assert_eq!(notes.len(), 2, "one note per channel");
     let ch0 = notes
         .iter()
-        .find(|n| n.channel == MidiChannel::new(0))
+        .find(|n| n.channel == MidiChannel::of(0))
         .expect("channel 0");
     let ch1 = notes
         .iter()
-        .find(|n| n.channel == MidiChannel::new(1))
+        .find(|n| n.channel == MidiChannel::of(1))
         .expect("channel 1");
 
     assert!(

@@ -2,7 +2,7 @@ use super::*;
 use crate::CHANNELLESS_PORT;
 
 fn ch(c: u8) -> Option<MidiChannel> {
-    Some(MidiChannel::new(c))
+    Some(MidiChannel::of(c))
 }
 
 /// **A channel rule gives its channel's port and the channelless one; an

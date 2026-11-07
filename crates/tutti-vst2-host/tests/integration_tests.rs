@@ -1130,7 +1130,7 @@ fn process_forwards_midi_without_panicking() {
 
     let note_on = [MidiEvent::note_on(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         100,
     )];
@@ -1138,7 +1138,7 @@ fn process_forwards_midi_without_panicking() {
 
     let note_off = [MidiEvent::note_off(
         MidiGroup::FIRST,
-        MidiChannel::new(1),
+        MidiChannel::of(1),
         60,
         0,
     )];
@@ -1186,14 +1186,14 @@ fn many_midi_events_in_one_block() {
 
     let events: Vec<MidiEvent> = (0..10u32)
         .map(|i| {
-            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(1), 60 + i as u8, 100)
+            MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100)
                 .with_frame_offset(i)
         })
         .collect();
     render_block(&mut instance, &events);
 
     let note_offs: Vec<MidiEvent> = (0..10)
-        .map(|i| MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::new(1), 60 + i as u8, 0))
+        .map(|i| MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 0))
         .collect();
     render_block(&mut instance, &note_offs);
 }

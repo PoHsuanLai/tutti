@@ -56,7 +56,7 @@ impl MidiEvent {
     }
 
     /// Builder-style setter used in chain form, e.g.
-    /// `MidiEvent::note_on(MidiGroup::new(...)).with_frame_offset(128)`.
+    /// `MidiEvent::note_on(MidiGroup::masked(...)).with_frame_offset(128)`.
     #[inline]
     #[must_use]
     pub fn with_frame_offset(mut self, frame_offset: u32) -> Self {
@@ -85,7 +85,7 @@ impl MidiEvent {
     /// (Utility, UMP Stream) ignore it.
     #[inline]
     pub fn group(&self) -> MidiGroup {
-        MidiGroup::new(((self.data[0] >> 24) & 0x0F) as u8)
+        MidiGroup::masked(((self.data[0] >> 24) & 0x0F) as u8)
     }
 }
 
@@ -243,7 +243,7 @@ impl MidiEvent {
         let type_nibble = (self.data[0] >> 28) & 0x0F;
         // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
         if type_nibble == 0x2 || type_nibble == 0x4 {
-            Some(MidiChannel::new(((self.data[0] >> 16) & 0x0F) as u8))
+            Some(MidiChannel::masked(((self.data[0] >> 16) & 0x0F) as u8))
         } else {
             None
         }

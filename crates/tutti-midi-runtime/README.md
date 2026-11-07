@@ -62,7 +62,7 @@ use tutti_midi_runtime::{input_ports, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
 use tutti_ump::MidiChannel;
 
 // A synth on channel 3 hears port 3 and the channelless port...
-let on_three: Vec<usize> = input_ports(Some(MidiChannel::new(3))).collect();
+let on_three: Vec<usize> = input_ports(Some(MidiChannel::of(3))).collect();
 assert_eq!(on_three, vec![3, CHANNELLESS_PORT]);
 // ...one on every channel hears all of them.
 assert_eq!(input_ports(None).count(), MIDI_INPUT_PORTS);
@@ -106,7 +106,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 
 // A note-on claims member channel 1; the map now resolves that channel.
-let member = MidiChannel::new(1);
+let member = MidiChannel::of(1);
 ingest
     .translate(&MidiEvent::note_on_7bit(MidiGroup::FIRST, member, 60, 100))
     .next()

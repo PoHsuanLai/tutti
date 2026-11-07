@@ -44,7 +44,7 @@ fn sysex7_single_payload_round_trips() {
 fn sysex7_packets_match_the_midi2_fragmenter() {
     let data: Vec<u8> = (0..200u32).map(|i| (i * 7 % 128) as u8).collect();
     for len in (0..=40).chain([199, 200]) {
-        for group in [MidiGroup::FIRST, MidiGroup::new(5)] {
+        for group in [MidiGroup::FIRST, MidiGroup::of(5)] {
             let mut expected = Vec::new();
             MidiEvent::sysex7_fragments(group, &data[..len], &mut expected);
             let got: Vec<MidiEvent> = MidiEvent::sysex7_packets(group, &data[..len]).collect();

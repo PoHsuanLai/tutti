@@ -34,7 +34,7 @@ use crate::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIV
 /// assert_eq!(ranges.semitones(3), 48.0);
 /// let rpn = MidiEvent::registered_controller(
 ///     MidiGroup::FIRST,
-///     MidiChannel::new(3),
+///     MidiChannel::of(3),
 ///     RPN_BANK_MPE,
 ///     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 ///     PitchBendSensitivity::from_semitones(24).to_rpn_bits(),

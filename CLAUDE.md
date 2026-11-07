@@ -237,6 +237,8 @@ crates/          everything shipped; directory name = package name; no nesting
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs); no dependencies but `bytemuck` (and optional `serde`)
+  tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
+                 stateless `widen` and the M2-115 scaling; depends on `tutti-ump` alone
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
@@ -268,7 +270,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
 3. `tutti-core`, `tutti-plugin-types`
 4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
@@ -296,6 +298,15 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
+  `MidiGroup::new`, `MidiChannel::new` and `CCNumber::new` return `Option` and
+  refuse out of range, like the field types. `of` is for a literal or a
+  constant (it panics out of range), and `masked` is the one constructor that
+  masks, for bits the wire has just framed.
+- `tutti-midi-protocol` depends on `tutti-ump` alone, keeps every module
+  private (`tutti_midi_protocol::widen`; CI runs the per-module path gate on
+  it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
+  nothing. A consumer's call to `widen` is transitional: the stage 3 translator
+  calls it at the input edge and consumers drop theirs.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is

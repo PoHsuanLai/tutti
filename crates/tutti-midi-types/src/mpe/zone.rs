@@ -200,7 +200,7 @@ impl MpeZoneConfig {
     pub fn to_mcm(&self) -> crate::ump::MidiEvent {
         crate::ump::MidiEvent::registered_controller(
             MidiGroup::FIRST,
-            MidiChannel::new(self.master_channel),
+            MidiChannel::masked(self.master_channel),
             crate::ump::RPN_BANK_MPE,
             crate::ump::RPN_INDEX_MCM,
             (self.member_count as u32) << 25,

@@ -287,7 +287,7 @@ fn route_rules_wire_the_hardware_input() {
         (0..MIDI_INPUT_PORTS as u16).collect::<Vec<_>>()
     );
 
-    let ch2 = MidiChannel::new(2);
+    let ch2 = MidiChannel::of(2);
     s.midi()
         .route(MidiRouteRule::for_channel(ch2).to(b))
         .unwrap();
@@ -610,7 +610,7 @@ fn a_port_that_loses_events_is_reported() {
             Beat(0.0),
             MidiEvent::note_on(
                 MidiGroup::FIRST,
-                MidiChannel::new(((i / 128) % 16) as u8),
+                MidiChannel::of(((i / 128) % 16) as u8),
                 (i % 128) as u8,
                 MF,
             ),

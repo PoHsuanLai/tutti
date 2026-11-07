@@ -624,7 +624,7 @@ fn the_decode_covers_exactly_what_send_midi_encodes() {
         );
         // The channel must survive: it is in the low nibble of the status byte, and
         // a decoder that masked it off would still produce the right message *type*.
-        let expected_channel = MidiChannel::new(bytes[0] & 0x0F);
+        let expected_channel = MidiChannel::of(bytes[0] & 0x0F);
         assert_eq!(
             events[0].channel(),
             Some(expected_channel),

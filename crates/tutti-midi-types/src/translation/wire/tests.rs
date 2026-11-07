@@ -17,7 +17,7 @@ fn try_from_bytes_parses_and_errors() {
 // messages vanish.
 #[test]
 fn program_change_with_a_bank_is_three_midi1_messages() {
-    let ev = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(2), 5, Some(0x0123));
+    let ev = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(2), 5, Some(0x0123));
     let msgs: Vec<_> = ev.to_midi1_messages().collect();
     assert_eq!(
         msgs,
@@ -30,7 +30,7 @@ fn program_change_with_a_bank_is_three_midi1_messages() {
     // The single-message view stays the Program Change.
     assert_eq!(ev.to_midi1_bytes(), Some(([0xC2, 5, 0], 2)));
     // No bank: one message. No 1.0 form: none.
-    let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::new(2), 5, None);
+    let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(2), 5, None);
     assert_eq!(plain.to_midi1_messages().count(), 1);
     let rpn = MidiEvent::registered_controller(MidiGroup::FIRST, MidiChannel::FIRST, 0, 0, 0);
     assert_eq!(rpn.to_midi1_messages().count(), 0);

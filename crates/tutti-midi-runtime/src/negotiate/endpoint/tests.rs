@@ -107,7 +107,7 @@ fn partial_discovery_only_returns_requested_plus_blocks() {
 fn multi_block_negotiator() -> EndpointNegotiator {
     let block = |n: u8, name: &str| FunctionBlock {
         block_number: n,
-        first_group: MidiGroup::new(n),
+        first_group: MidiGroup::of(n),
         num_groups: 1,
         direction: FunctionBlockDirection::Bidirectional,
         name: name.into(),
@@ -249,7 +249,7 @@ fn a_name_arriving_before_its_info_is_not_lost() {
     inq.ingest(&MidiEvent::function_block_info(
         true,
         1,
-        MidiGroup::new(3),
+        MidiGroup::of(3),
         2,
         FunctionBlockDirection::Input,
     ));
@@ -258,7 +258,7 @@ fn a_name_arriving_before_its_info_is_not_lost() {
     assert_eq!(blocks[0].name, "Drums", "the name survived the Info");
     assert_eq!(
         blocks[0].first_group,
-        MidiGroup::new(3),
+        MidiGroup::of(3),
         "and topology filled in"
     );
     assert_eq!(blocks[0].direction, FunctionBlockDirection::Input);
@@ -279,13 +279,13 @@ fn re_queried_block_info_replaces_rather_than_duplicates() {
     inq.ingest(&MidiEvent::function_block_info(
         true,
         0,
-        MidiGroup::new(5),
+        MidiGroup::of(5),
         2,
         FunctionBlockDirection::Output,
     ));
     let blocks = &inq.discovered.function_blocks;
     assert_eq!(blocks.len(), 1, "one block, updated in place");
-    assert_eq!(blocks[0].first_group, MidiGroup::new(5));
+    assert_eq!(blocks[0].first_group, MidiGroup::of(5));
     assert_eq!(blocks[0].direction, FunctionBlockDirection::Output);
 }
 

@@ -20,6 +20,7 @@
 # - `tutti-dsp` and `tutti-mod` depend on `tutti-types` alone,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
+# - `tutti-midi-protocol` depends on `tutti-ump` alone;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -46,7 +47,11 @@
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
 #   (normal) points up" and "tutti-ump may depend on no workspace crate";
 # - `tutti-core` as a `[dependencies]` entry of `tutti-graph`: "tutti-graph may
-#   depend on ['tutti-rt', 'tutti-types', 'tutti-ump'] only".
+#   depend on ['tutti-rt', 'tutti-types', 'tutti-ump'] only";
+# - `tutti-types` as a `[dependencies]` entry of `tutti-midi-protocol`:
+#   "tutti-midi-protocol may depend on ['tutti-ump'] only";
+# - `tutti-midi-protocol` deleted from LAYERS: "tutti-midi-protocol is not in
+#   LAYERS".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -90,7 +95,7 @@ def rel(p):
 LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
-    ["tutti-types", "tutti-rt"],
+    ["tutti-types", "tutti-rt", "tutti-midi-protocol"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types"],
     ["tutti-core", "tutti-plugin-types"],
     ["tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
@@ -174,6 +179,8 @@ if "tutti-types" in pkgs:
     only("tutti-types", [])
 if "tutti-rt" in pkgs:
     only("tutti-rt", ["arc-lend"])
+if "tutti-midi-protocol" in pkgs:
+    only("tutti-midi-protocol", ["tutti-ump"])
 for n in ("tutti-dsp", "tutti-mod"):
     if n in pkgs:
         only(n, ["tutti-types"])

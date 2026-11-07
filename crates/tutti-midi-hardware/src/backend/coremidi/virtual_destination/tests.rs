@@ -26,7 +26,7 @@ fn packet_words_decode_to_ump_stream_and_channel_voice() {
     use tutti_midi_types::ump::UmpMessageType;
 
     let discovery = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::all());
-    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(3), 60, 0x8000);
+    let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, 0x8000);
 
     // One packet carrying both, concatenated exactly as CoreMIDI delivers.
     let mut packet_words = Vec::new();

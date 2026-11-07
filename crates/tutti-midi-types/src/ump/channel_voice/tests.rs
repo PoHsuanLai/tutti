@@ -3,7 +3,7 @@ use midi2::{UmpMessage, channel_voice2};
 
 #[test]
 fn note_on_decodes_via_midi2() {
-    let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::new(5), 60, 0x8000);
+    let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::of(5), 60, 0x8000);
     let msg = UmpMessage::try_from(ev.data_words()).unwrap();
     match msg {
         UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::NoteOn(m)) => {
@@ -19,7 +19,7 @@ fn note_on_decodes_via_midi2() {
 fn cc_decodes_via_midi2() {
     let ev = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(2),
+        MidiChannel::of(2),
         CCNumber::BRIGHTNESS,
         0xDEAD_BEEF,
     );
@@ -33,19 +33,19 @@ fn cc_decodes_via_midi2() {
 }
 
 /// Every CC number survives the trip out to the wire and back. The mask
-/// happens once, at `CCNumber::new`, and nothing downstream can change the
+/// happens once, at `CCNumber::of`, and nothing downstream can change the
 /// number (a debug-only assert plus a mask at the wire would let a release
 /// build silently emit a *different* controller).
 #[test]
 fn every_cc_number_round_trips_through_the_wire() {
     for raw in 0u8..128 {
-        let n = CCNumber::new(raw);
-        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::new(2), n, 0);
+        let n = CCNumber::of(raw);
+        let ev = MidiEvent::cc(MidiGroup::FIRST, MidiChannel::of(2), n, 0);
         let msg = UmpMessage::try_from(ev.data_words()).unwrap();
         let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::ControlChange(m)) = msg else {
             panic!("expected CV2 ControlChange");
         };
-        assert_eq!(CCNumber::new(u8::from(m.control())), n, "CC {raw}");
+        assert_eq!(CCNumber::of(u8::from(m.control())), n, "CC {raw}");
     }
 }
 
@@ -60,8 +60,8 @@ fn the_channel_and_the_cc_number_land_in_different_fields() {
     // one of them: only ordering distinguishes correct from swapped.
     let ev = MidiEvent::cc(
         MidiGroup::FIRST,
-        MidiChannel::new(7),
-        CCNumber::new(3),
+        MidiChannel::of(7),
+        CCNumber::of(3),
         0x1234_5678,
     );
     let msg = UmpMessage::try_from(ev.data_words()).unwrap();
@@ -79,10 +79,10 @@ fn the_channel_and_the_cc_number_land_in_different_fields() {
 #[test]
 fn per_note_management_writes_the_spec_bits() {
     let detach =
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::new(4), 60, true, false);
+        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, true, false);
     assert_eq!(detach.data[0], 0x40F4_3C02);
     let reset =
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::new(4), 60, false, true);
+        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, false, true);
     assert_eq!(reset.data[0], 0x40F4_3C01);
 }
 
@@ -92,7 +92,7 @@ fn per_note_management_writes_the_spec_bits() {
 fn per_note_management_message_reads_the_spec_bits() {
     use crate::MidiMessage;
     let msg = |detach, reset| {
-        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::new(4), 60, detach, reset)
+        MidiEvent::per_note_management(MidiGroup::FIRST, MidiChannel::of(4), 60, detach, reset)
             .message()
     };
     assert!(matches!(

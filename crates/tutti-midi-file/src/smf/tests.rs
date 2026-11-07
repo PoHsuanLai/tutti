@@ -277,7 +277,7 @@ fn tracks_pair_notes_per_channel() {
     // and 2 — i.e. the wrong note gets the wrong length.
     let note = |time_beats: f64, channel: u8, on: bool| SmfTimedEvent {
         time_beats: Beat(time_beats),
-        channel: MidiChannel::new(channel),
+        channel: MidiChannel::of(channel),
         msg: if on {
             SmfMessage::NoteOn {
                 key: 60.into(),
@@ -311,12 +311,12 @@ fn tracks_pair_notes_per_channel() {
     let ch0 = parsed[0]
         .notes
         .iter()
-        .find(|n| n.channel == MidiChannel::new(0))
+        .find(|n| n.channel == MidiChannel::of(0))
         .expect("channel 0 note");
     let ch1 = parsed[0]
         .notes
         .iter()
-        .find(|n| n.channel == MidiChannel::new(1))
+        .find(|n| n.channel == MidiChannel::of(1))
         .expect("channel 1 note");
 
     assert!(

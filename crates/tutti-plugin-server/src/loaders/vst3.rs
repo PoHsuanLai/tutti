@@ -1196,7 +1196,7 @@ mod tests {
         let num_samples = 512;
         let note_on = [MidiEvent::note_on(
             MidiGroup::FIRST,
-            MidiChannel::new(1),
+            MidiChannel::of(1),
             60,
             tutti_midi_types::convert::midi1_velocity_to_midi2(100),
         )];

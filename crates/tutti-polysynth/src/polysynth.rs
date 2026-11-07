@@ -16,23 +16,17 @@ use crate::bank::{CONTROL_BLOCK, VoiceBank};
 use crate::mpe::MpeControl;
 use crate::synth_voice::SynthVoice;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
+use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
-use tutti_midi_types::convert::{
-    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
-    u16_to_unit_f32, u32_to_unit_f32,
-};
+use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::mpe::PitchBendSensitivity;
 use tutti_midi_types::ump::{MidiEvent, RPN_BANK_MPE, RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY};
-use tutti_midi_types::{NoteId, cc, q7_9_to_f32, q7_25_to_f32};
+use tutti_midi_types::{NoteId, cc};
 use tutti_types::{Amplitude, Param, Tail};
 use tutti_ump::{
-    Attribute, CCNumber, Message, MidiChannel, NoteNumber, Ump, Unknown, Voice1, Voice2, decode,
+    CCNumber, Message, MidiChannel, NoteNumber, Pitch, RegisteredPerNoteController, Ump, Unknown,
+    Voice1, Voice2, decode,
 };
-
-// Registered Per-Note Controller indices (M2-104 §7.4.15.2) the synth applies.
-const REGISTERED_PER_NOTE_PITCH: u8 = 3;
-const REGISTERED_PER_NOTE_VOLUME: u8 = 7;
-const REGISTERED_PER_NOTE_BRIGHTNESS: u8 = 74;
 
 use std::sync::Arc;
 
@@ -358,49 +352,19 @@ impl PolySynth {
         }
     }
 
-    /// A MIDI 1.0 channel voice message, scaled the way translation widens it
-    /// to MIDI 2.0 so a note sounds the same on either wire.
+    /// A MIDI 1.0 channel voice message, widened to the MIDI 2.0 message that
+    /// means the same (M2-104 App. D.3), so a note sounds the same on either wire.
     fn voice1(&mut self, channel: MidiChannel, voice: Voice1) {
-        match voice {
-            // A Note On at velocity 0 is a Note Off (M2-104 App. D.3.1).
-            Voice1::NoteOn { note, velocity } if velocity.get() == 0 => {
-                self.handle_note_off(note, channel);
-            }
-            Voice1::NoteOn { note, velocity } => {
-                let velocity = u16_to_unit_f32(midi1_velocity_to_midi2(velocity.get()));
-                self.handle_note_on(note, velocity, channel);
-            }
-            Voice1::NoteOff { note, .. } => self.handle_note_off(note, channel),
-            Voice1::ControlChange { controller, value } => {
-                self.handle_cc(
-                    controller,
-                    u32_to_unit_f32(midi1_cc_to_midi2(value.get())),
-                    channel,
-                );
-            }
-            Voice1::PitchBend(bend) => {
-                self.set_pitch_bend(bend_u32_to_signed_f32(midi1_pitch_bend_to_midi2(
-                    bend.get(),
-                )));
-            }
-            Voice1::PolyPressure { note, pressure } => {
-                let pressure = u32_to_unit_f32(midi1_cc_to_midi2(pressure.get()));
-                self.set_voice_mpe(
-                    NoteId::from_channel_note(channel, note.get()),
-                    MpeControl::Pressure(pressure),
-                );
-            }
-            // The synth has no programs, and channel pressure has no target:
-            // only a per-note pressure moves a voice.
-            Voice1::ProgramChange(_) | Voice1::ChannelPressure(_) => {}
-        }
+        self.voice2(channel, widen(voice));
     }
 
     /// A MIDI 2.0 channel voice message.
     fn voice2(&mut self, channel: MidiChannel, voice: Voice2) {
         match voice {
-            // Velocity 0 is a Note Off here, as it always has been. M2-104
-            // §7.4.2 keeps it a Note On; that is for the translation stage.
+            // Native MIDI 2.0 velocity 0 is a Note Off here, as it always has
+            // been (M2-104 §7.4.2 keeps it a Note On; that is for the
+            // translation stage). A widened MIDI 1.0 Note On at velocity 0
+            // never gets here: it arrives as a `NoteOff`.
             Voice2::NoteOn {
                 note, velocity: 0, ..
             } => self.handle_note_off(note, channel),
@@ -413,9 +377,9 @@ impl PolySynth {
                 // Attribute Pitch 7.9 (M2-104 §7.4.15.3) is an absolute
                 // per-note tuning override delivered at note start. Applied
                 // after allocation so it lands on the voice this note claimed.
-                if let Attribute::Pitch(bits) = attribute {
+                if let Some(pitch) = attribute.pitch() {
                     let id = NoteId::from_channel_note(channel, note.get());
-                    self.set_voice_tuning(id, q7_9_to_f32(bits));
+                    self.set_voice_tuning(id, pitch.note_number());
                 }
             }
             Voice2::NoteOff { note, .. } => self.handle_note_off(note, channel),
@@ -462,16 +426,16 @@ impl PolySynth {
             } => {
                 let id = NoteId::from_channel_note(channel, note.get());
                 match controller {
-                    REGISTERED_PER_NOTE_VOLUME => {
+                    RegisteredPerNoteController::Volume => {
                         self.set_voice_mpe(id, MpeControl::Gain(u32_to_unit_f32(value)));
                     }
-                    REGISTERED_PER_NOTE_BRIGHTNESS => {
+                    RegisteredPerNoteController::Brightness => {
                         self.set_voice_mpe(id, MpeControl::Slide(u32_to_unit_f32(value)));
                     }
                     // Pitch 7.25 (M2-104 §7.4.15.2): an absolute per-note
                     // tuning override; the pitch bend offsets from it.
-                    REGISTERED_PER_NOTE_PITCH => {
-                        self.set_voice_tuning(id, q7_25_to_f32(value));
+                    RegisteredPerNoteController::Pitch => {
+                        self.set_voice_tuning(id, Pitch::from_q7_25(value).note_number());
                     }
                     // Pan and the rest have no per-note DSP yet.
                     _ => {}

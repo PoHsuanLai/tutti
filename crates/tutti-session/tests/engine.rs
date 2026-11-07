@@ -655,13 +655,18 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
     );
 }
 
-/// A dropped heard reader is closed by the `Reclaim` phase, so the tap can be
-/// opened again.
+/// A dropped heard reader frees the tap for another open, with the session's
+/// update (and its `Reclaim` phase, which sends the close to the engine)
+/// between. Opening itself sees a dead reader, so the phase's close is not
+/// observable here; it keeps the engine from writing for nobody, which the
+/// writer also checks (`read_is_held`).
 ///
-/// Mutation (run, recorded here): delete `taps.reclaim()` from the `Reclaim`
-/// arm -> the reopen is refused as `Busy`.
+/// Mutation (run, recorded here): either alone passes (`open` and the phase
+/// each notice the dead reader); both removed (`open` treating any recorded
+/// reader as alive, and the `reclaim` call out of the `Reclaim` arm) -> the
+/// reopen is refused `Busy`.
 #[test]
-fn a_dropped_heard_reader_is_closed_by_the_reclaim_phase() {
+fn a_dropped_heard_reader_frees_the_tap() {
     let mut s = offline();
     let tap = s.open_heard_tap(Samples(64)).expect("an engine");
     drop(tap);

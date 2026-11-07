@@ -30,11 +30,11 @@
 //! consumer such as a SoundFont synth works at MIDI 1.0 resolution and nothing
 //! upstream of it translates down, so it narrows for as long as it exists.
 //!
-//! [`narrow`] does the same for a whole [`Voice2`](tutti_ump::Voice2): the
+//! [`narrow()`](fn@narrow) does the same for a whole [`Voice2`](tutti_ump::Voice2): the
 //! [`Voice1`](tutti_ump::Voice1) that means it, or `None` for a message MIDI 1.0
 //! has no single message for. A Note On that narrows to velocity 0 becomes 1
 //! (M2-104 section 7.4.2), and a note's attribute is not read, whatever its type.
-//! [`midi1`] is the step before the wire: the MIDI 1.0 bytes of a
+//! [`midi1()`](fn@midi1) is the step before the wire: the MIDI 1.0 bytes of a
 //! [`Message`](tutti_ump::Message), three messages for a Program Change with a
 //! bank.
 //!

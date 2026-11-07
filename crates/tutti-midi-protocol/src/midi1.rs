@@ -17,7 +17,7 @@ const NOTE_ON_FLOOR: U7 = match U7::new(1) {
 ///
 /// A Note On whose velocity narrows to 0 becomes velocity 1, because a MIDI 1.0
 /// Note On at velocity 0 is a Note Off (M2-104 section 7.4.2). A Program Change
-/// keeps its program and loses its bank; [`midi1`] has the bank. A reserved
+/// keeps its program and loses its bank; [`midi1()`](fn@midi1) has the bank. A reserved
 /// attribute type is not read: MIDI 1.0 has no attribute.
 #[must_use]
 pub fn narrow(voice: Voice2) -> Option<Voice1> {

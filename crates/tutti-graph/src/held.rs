@@ -87,6 +87,13 @@ impl Held {
             .any(|e| matches!(e.kind, EventKind::Midi(u) if u.key_event().is_some()))
     }
 
+    /// Forget everything held.
+    fn clear(&mut self) {
+        self.keys.fill(0);
+        self.live = 0;
+        self.pedals = [0; PEDALS / 64];
+    }
+
     /// Add what `other` holds.
     pub(crate) fn merge(&mut self, other: &Held) {
         for (a, b) in self.keys.iter_mut().zip(other.keys.iter()) {
@@ -160,5 +167,143 @@ impl Held {
                 f(event(Ump::note_off(Key::from_index((w * 64 + b) as u16))));
             }
         }
+    }
+}
+
+/// One table per event output port of a unit; `None` for a port that carries
+/// no notes.
+pub(crate) type Tables = Vec<Option<Held>>;
+
+/// Add every table of `from` to the matching table of `into`, and empty
+/// `from` (its tables stay allocated).
+fn absorb(into: &mut Tables, from: &mut Tables) {
+    for (a, b) in into.iter_mut().zip(from.iter_mut()) {
+        if let (Some(a), Some(b)) = (a, b) {
+            a.merge(b);
+            b.clear();
+        }
+    }
+}
+
+/// A unit's held-key tables, in one of these shapes:
+///
+/// - running: `held` is the unit now writing the port; the others are empty.
+/// - waiting: a replace with a fade is queued behind a running one. `held`
+///   is still the running unit's, and `staged` (empty) is for the waiting
+///   one.
+/// - closing: a unit stopped writing and `owed` holds what it left; the next
+///   blocks write the closes ahead of the port's events. Independent of the
+///   other two: `owed` is only ever added to and drained.
+///
+/// Every way out closes or hands over the keys, none drops them:
+///
+/// | event | `held` | `staged` | `owed` |
+/// |---|---|---|---|
+/// | the waiting unit takes over (`promote`) | becomes `staged`, emptied | becomes `held` | gains the old `held` |
+/// | the unit is retired or hard-replaced (`depart`) | closed at the commit | freed | closed with it |
+/// | a cut displaces the running unit (`displace`) | the waiting unit's | taken | closed at the commit |
+/// | a re-prepare checks the unit out (`park`) | kept | taken | gains the displaced unit's |
+/// | the unit comes back (`restore`) | as parked | re-made if one waits | as parked |
+/// | it does not come back | closed (`depart`) | freed | closed with it |
+/// | an edge is cut with keys owed | closed on that edge | | closed on that edge too; the rest still drain to the other sinks |
+#[derive(Default)]
+pub(crate) struct Keys {
+    held: Tables,
+    staged: Tables,
+    owed: Tables,
+    closing: bool,
+}
+
+impl Keys {
+    /// Size the tables for a unit with `ports` event outputs. A unit that
+    /// carries notes gets a table per port, and while a replace waits, its
+    /// `staged` and `owed` too. Allocates: control side, or applying a commit.
+    pub(crate) fn size(&mut self, ports: usize, notes: bool, waiting: bool) {
+        let fill = |t: &mut Tables| {
+            t.resize_with(ports, || None);
+            if notes {
+                t.iter_mut().for_each(|h| {
+                    h.get_or_insert_with(Held::new);
+                });
+            }
+        };
+        fill(&mut self.held);
+        if waiting {
+            fill(&mut self.staged);
+            fill(&mut self.owed);
+        }
+    }
+
+    pub(crate) fn held(&self) -> &Tables {
+        &self.held
+    }
+
+    /// Fold in what the running unit wrote to `port`.
+    #[inline]
+    pub(crate) fn observe(&mut self, port: usize, events: &[Event]) {
+        match self.held.get_mut(port) {
+            Some(Some(h)) => h.observe(events),
+            Some(None) => debug_assert!(
+                !Held::any_key(events),
+                "a node that declared no note events wrote one"
+            ),
+            None => {}
+        }
+    }
+
+    /// What `port` owes and has not yet been sent.
+    pub(crate) fn owed(&self, port: u16) -> Option<&Held> {
+        self.owed.get(usize::from(port))?.as_ref()
+    }
+
+    pub(crate) fn is_closing(&self) -> bool {
+        self.closing
+    }
+
+    /// Write what `port` owes ahead of `events`, as far as they take.
+    pub(crate) fn close_port(&mut self, port: usize, events: &mut Vec<Event>) {
+        if let Some(Some(h)) = self.owed.get_mut(port) {
+            h.close_ahead(events);
+        }
+    }
+
+    /// After a block's closes: whether any are still owed.
+    pub(crate) fn settle(&mut self) {
+        self.closing = self.owed.iter().flatten().any(|h| !h.is_empty());
+    }
+
+    /// The waiting unit takes over; the unit that stopped leaves its keys owed.
+    pub(crate) fn promote(&mut self) {
+        std::mem::swap(&mut self.held, &mut self.staged);
+        absorb(&mut self.owed, &mut self.staged);
+        self.closing = true;
+    }
+
+    /// The running unit is displaced by the waiting one at once (a cut):
+    /// returns what it held and owed, to close at the commit.
+    pub(crate) fn displace(&mut self) -> Tables {
+        let mut stale = std::mem::replace(&mut self.held, std::mem::take(&mut self.staged));
+        absorb(&mut stale, &mut self.owed);
+        self.closing = false;
+        stale
+    }
+
+    /// A displaced unit's keys are owed from the next block: a re-prepare
+    /// cannot close them at the commit, the units are out.
+    pub(crate) fn park(&mut self, mut stale: Tables) -> Tables {
+        absorb(&mut self.owed, &mut stale);
+        self.closing = true;
+        stale
+    }
+
+    /// The unit is gone: returns every key it held or owed, to close at the
+    /// commit, and pushes the emptied tables to `spare`.
+    pub(crate) fn depart(&mut self, spare: &mut Vec<Tables>) -> Tables {
+        let mut gone = std::mem::take(&mut self.held);
+        absorb(&mut gone, &mut self.owed);
+        spare.push(std::mem::take(&mut self.staged));
+        spare.push(std::mem::take(&mut self.owed));
+        self.closing = false;
+        gone
     }
 }

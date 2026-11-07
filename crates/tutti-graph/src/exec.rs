@@ -175,7 +175,7 @@ use crate::cost::Schedule;
 use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::fade::CrossfadeCurve;
-use crate::held::Held;
+use crate::held::{Held, Keys, Tables};
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
@@ -335,7 +335,7 @@ pub(crate) struct Commit {
     /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
     /// Held-key tables the executor let go of, freed on the control side.
-    spare_held: Vec<Vec<Option<Held>>>,
+    spare_held: Vec<Tables>,
     old_state: Option<State>,
 }
 
@@ -489,18 +489,15 @@ fn retire_fade(fade_back: &mut HeapProd<Box<Crossfade>>, x: Box<Crossfade>) {
 /// any — the one the plan's generation names) becomes `u`'s unit, and the
 /// others go back on the fade-return ring with their crossfades.
 ///
-/// Returns the held keys of the unit that stopped writing, if the cut
-/// displaced one that was.
-fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) -> Option<Vec<Option<Held>>> {
+/// Returns the keys of the unit that stopped writing, if the cut displaced
+/// one (`Keys::displace`).
+fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) -> Option<Tables> {
     let mut stale = None;
     if let Some(mut q) = u.queued.take() {
         let newest = q.waiting.take().expect("a queued fade holds its unit");
         q.out = Some(std::mem::replace(&mut u.node, newest));
         retire_fade(fade_back, q);
-        stale = Some(std::mem::replace(
-            &mut u.held,
-            std::mem::take(&mut u.next_held),
-        ));
+        stale = Some(u.keys.displace());
     }
     if let Some(f) = u.fade.take() {
         retire_fade(fade_back, f);
@@ -580,15 +577,8 @@ pub(crate) struct Unit {
     queued: Option<Box<Crossfade>>,
     /// Its declared params' modulation state and per-frame buffers.
     params: ParamState,
-    /// Per event output port, the keys it started and has not ended
-    /// (`held.rs`); `None` for a port that carries no notes.
-    held: Vec<Option<Held>>,
-    /// While a replace waits in `queued`: the tables for its unit (empty).
-    /// When it takes over, they swap with `held`, and this holds the keys
-    /// of the unit that stopped writing, to close ahead of the next block.
-    next_held: Vec<Option<Held>>,
-    /// `next_held` holds keys still to close.
-    closing: bool,
+    /// The keys its event outputs hold or owe (`held.rs`).
+    keys: Keys,
 }
 
 impl Unit {
@@ -602,9 +592,7 @@ impl Unit {
             fade: None,
             queued: None,
             params,
-            held: Vec::new(),
-            next_held: Vec::new(),
-            closing: false,
+            keys: Keys::default(),
         }
     }
 }
@@ -613,7 +601,9 @@ impl Unit {
 /// keys retired or replaced, and the keys replaced.
 #[derive(Default)]
 struct Gone {
-    held: Vec<(NodeKey, Vec<Option<Held>>)>,
+    held: Vec<(NodeKey, Tables)>,
+    /// Emptied tables to free on the control side.
+    spare: Vec<Tables>,
     replaced: Vec<NodeKey>,
 }
 
@@ -725,7 +715,7 @@ pub struct Executor {
     next_prepare: Option<Prepare>,
     /// The held-key tables of the units a re-prepare checked out, for the
     /// resume commit to hand back.
-    parked: Vec<(NodeKey, Vec<Option<Held>>, Vec<Option<Held>>)>,
+    parked: Vec<(NodeKey, Keys)>,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -994,15 +984,14 @@ impl Executor {
                     else {
                         continue;
                     };
-                    // The unit a cut displaced still owes its keys: they wait
-                    // in `next_held` for the first block after the resume.
+                    // The unit a cut displaced still owes its keys: they close
+                    // in the first block after the resume.
                     if let Some(stale) = cut_fades(&mut unit, &mut self.fade_back) {
-                        c.spare_held
-                            .push(std::mem::replace(&mut unit.next_held, stale));
+                        c.spare_held.push(unit.keys.park(stale));
                     }
                     c.retired.push((u.key, unit.node));
                     c.spare_params.push(unit.params);
-                    self.parked.push((u.key, unit.held, unit.next_held));
+                    self.parked.push((u.key, unit.keys));
                 }
             }
             let (old, new) = (
@@ -1067,8 +1056,9 @@ impl Executor {
                 .get_mut(p.idx.0 as usize)
                 .and_then(Option::as_mut)
             {
-                departed.held.push((p.key, std::mem::take(&mut u.held)));
-                c.spare_held.push(std::mem::take(&mut u.next_held));
+                departed
+                    .held
+                    .push((p.key, u.keys.depart(&mut departed.spare)));
             }
         }
         departed.replaced = c.delta.replace.iter().map(|(_, new)| new.key).collect();
@@ -1159,6 +1149,7 @@ impl Executor {
         let old_plan = self.plan.take();
         let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed);
         c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
+        c.spare_held.append(&mut departed.spare);
         self.suspended = false;
         self.reset_time = false;
         let old_state = std::mem::replace(&mut self.state, new_state);
@@ -1317,7 +1308,7 @@ impl Executor {
         }
         // A re-prepare's tables go back to the units that come back; the
         // others are as retired.
-        for (key, held, closing) in std::mem::take(&mut self.parked) {
+        for (key, mut keys) in std::mem::take(&mut self.parked) {
             let same = |a: Option<&Plan>| a.and_then(|p| p.unit(key)).map(|u| u.generation);
             let back = (same(old_plan) == same(Some(plan)))
                 .then(|| plan.units.binary_search_by_key(&key, |u| u.key).ok())
@@ -1325,21 +1316,10 @@ impl Executor {
                 .and_then(|i| self.store[plan.units[i].idx.0 as usize].as_mut());
             match back {
                 Some(u) => {
-                    u.closing = closing.iter().flatten().any(|h| !h.is_empty());
-                    u.held = held;
-                    u.next_held = closing;
+                    keys.settle();
+                    u.keys = keys;
                 }
-                None => {
-                    // The unit is gone: what it owed closes with the rest.
-                    let mut held = held;
-                    for (h, owed) in held.iter_mut().zip(&closing) {
-                        if let (Some(h), Some(owed)) = (h, owed) {
-                            h.merge(owed);
-                        }
-                    }
-                    departed.held.push((key, held));
-                    departed.held.push((key, closing));
-                }
+                None => departed.held.push((key, keys.depart(&mut departed.spare))),
             }
         }
         // Keys held on an edge that ended go to the sink that lost it, after
@@ -1347,18 +1327,24 @@ impl Executor {
         // flight). See `held.rs`.
         if let Some(op) = old_plan {
             let source_gone = |n: NodeKey| departed.held.iter().any(|(k, _)| *k == n);
-            let held_of = |from: EventOut| -> Option<&Held> {
-                let held = match departed.held.iter().find(|(k, _)| *k == from.node) {
-                    Some((_, held)) => held,
-                    None => {
-                        let i = plan
-                            .units
-                            .binary_search_by_key(&from.node, |u| u.key)
-                            .ok()?;
-                        &self.store[plan.units[i].idx.0 as usize].as_ref()?.held
-                    }
-                };
-                held.get(from.port as usize)?.as_ref()
+            // What a port holds, and what it owes and has not yet sent.
+            let held_of = |from: EventOut| -> (Option<&Held>, Option<&Held>) {
+                let port = usize::from(from.port);
+                if let Some((_, tables)) = departed.held.iter().find(|(k, _)| *k == from.node) {
+                    return (tables.get(port).and_then(Option::as_ref), None);
+                }
+                let unit = plan
+                    .units
+                    .binary_search_by_key(&from.node, |u| u.key)
+                    .ok()
+                    .and_then(|i| self.store[plan.units[i].idx.0 as usize].as_ref());
+                match unit {
+                    Some(u) => (
+                        u.keys.held().get(port).and_then(Option::as_ref),
+                        u.keys.owed(from.port),
+                    ),
+                    None => (None, None),
+                }
             };
             let mut closing: BTreeMap<(u32, u16), Vec<Event>> = BTreeMap::new();
             for e in &op.event_edges {
@@ -1367,10 +1353,16 @@ impl Executor {
                 if (in_plan && !source_gone(from.node)) || departed.replaced.contains(&at.node) {
                     continue;
                 }
-                let (Some(u), Some(h)) = (sink_of(at), held_of(from)) else {
+                let Some(u) = sink_of(at) else {
                     continue;
                 };
-                if h.is_empty() {
+                let (held, owed) = held_of(from);
+                let owing = [held, owed]
+                    .into_iter()
+                    .flatten()
+                    .filter(|h| !h.is_empty())
+                    .collect::<Vec<_>>();
+                if owing.is_empty() {
                     continue;
                 }
                 // A replaced source whose edge (and its delay) goes on: the
@@ -1381,11 +1373,12 @@ impl Executor {
                     .position(|d| d.key == DelayKey::Event { at, from });
                 if in_plan && let Some(Some(Ring::Event(f))) = delay.map(|i| &mut rings[i]) {
                     let mut offs = Vec::new();
-                    h.close_into(&mut offs);
+                    owing.iter().for_each(|h| h.close_into(&mut offs));
                     let lost = f.push(&offs);
                     self.dropped.charge_source(from, lost);
                 } else {
-                    h.close_into(closing.entry((u, at.port)).or_default());
+                    let offs = closing.entry((u, at.port)).or_default();
+                    owing.iter().for_each(|h| h.close_into(offs));
                 }
             }
             for (k, mut offs) in closing {
@@ -1403,21 +1396,9 @@ impl Executor {
         // an edge added later knows what the port already holds.
         for pu in plan.units.iter().filter(|u| u.shape.event_out > 0) {
             if let Some(u) = self.store[pu.idx.0 as usize].as_mut() {
-                u.held.resize_with(pu.shape.event_out as usize, || None);
-                if pu.shape.note_events {
-                    for h in &mut u.held {
-                        h.get_or_insert_with(Held::new);
-                    }
-                }
-                if u.queued.is_some() {
-                    u.next_held
-                        .resize_with(pu.shape.event_out as usize, || None);
-                    if pu.shape.note_events {
-                        for h in &mut u.next_held {
-                            h.get_or_insert_with(Held::new);
-                        }
-                    }
-                }
+                let waiting = u.queued.is_some();
+                u.keys
+                    .size(pu.shape.event_out as usize, pu.shape.note_events, waiting);
             }
         }
 
@@ -1910,8 +1891,7 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
         if let Some(mut next) = u.queued.take() {
             let incoming = next.waiting.take().expect("a queued fade holds its unit");
             next.out = Some(std::mem::replace(&mut u.node, incoming));
-            std::mem::swap(&mut u.held, &mut u.next_held);
-            u.closing = true;
+            u.keys.promote();
             u.fade = Some(next);
             u.quiet = 0;
             u.last_quiet = false;
@@ -2522,26 +2502,17 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u.last_quiet = !(aout.is_empty() && eout.is_empty())
         && aout.iter().all(|&s| st.flags.get(s) & SILENT != 0)
         && eout.iter().all(|&s| st.events.ev(s).is_empty());
-    if u.closing {
+    if u.keys.is_closing() {
         // A replace took over from a unit that held keys: close them ahead
         // of this block's events, as many as the slot takes; the rest next
         // block.
-        for (stale, &s) in u.next_held.iter_mut().zip(eout) {
-            if let Some(h) = stale.as_mut().filter(|h| !h.is_empty()) {
-                h.close_ahead(st.events.ev_mut(s));
-            }
+        for (port, &s) in eout.iter().enumerate() {
+            u.keys.close_port(port, st.events.ev_mut(s));
         }
-        u.closing = u.next_held.iter().flatten().any(|h| !h.is_empty());
+        u.keys.settle();
     }
-    for (held, &s) in u.held.iter_mut().zip(eout) {
-        let events = st.events.ev(s);
-        match held {
-            Some(h) => h.observe(events),
-            None => debug_assert!(
-                !Held::any_key(events),
-                "a node that declared no note events wrote one"
-            ),
-        }
+    for (port, &s) in eout.iter().enumerate() {
+        u.keys.observe(port, st.events.ev(s));
     }
 }
 

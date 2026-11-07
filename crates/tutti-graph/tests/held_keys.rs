@@ -1118,6 +1118,65 @@ fn closes_that_do_not_fit_a_block_follow_in_the_next() {
     assert_eq!(offs, 200, "every held key is closed");
 }
 
+/// A third fade queues while closes are still owed: the owed keys stay
+/// owed, the new unit's table starts empty, and every key is closed exactly
+/// once.
+///
+/// Mutation (run): `Keys::promote` swapping `held` with `owed` instead of
+/// merging into it -> a remainder lands in the running unit's table and is
+/// closed twice, or the old unit's keys are lost -> fails.
+#[test]
+fn a_third_fade_leaves_the_owed_remainder_owed() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.block();
+    let (m2, m3, m4): (Mail, Mail, Mail) = Default::default();
+    swap_with_fade(&mut r, &m2, MAX * 8);
+    for block in 0..4u32 {
+        for note in 0..50u32 {
+            let w = [0x2090_0000 | (block << 16) | (note << 8) | 100, 0, 0, 0];
+            m2.lock().unwrap().push((0, w));
+        }
+        r.block();
+        if block == 0 {
+            swap_with_fade(&mut r, &m3, MAX * 8);
+        }
+    }
+    let dense = [0x20b0_0764, 0, 0, 0];
+    let offs = |r: &Rig| {
+        r.words(2)
+            .into_iter()
+            .filter(|w| (w[0] >> 20) & 0xf == 0x8)
+            .collect::<Vec<_>>()
+    };
+    let mut blocks = 0;
+    while offs(&r).is_empty() {
+        for _ in 0..64 {
+            m3.lock().unwrap().push((0, dense));
+        }
+        r.block();
+        blocks += 1;
+        assert!(blocks < 20, "the first fade ends");
+    }
+    // The remainder is still owed; the running unit holds a key of its own,
+    // and a third fade queues behind it.
+    assert!(offs(&r).len() < 200, "a remainder is pending");
+    m3.lock().unwrap().push((0, [0x2097_6364, 0, 0, 0]));
+    swap_with_fade(&mut r, &m4, MAX * 8);
+    for _ in 0..40 {
+        for _ in 0..64 {
+            m3.lock().unwrap().push((0, dense));
+        }
+        r.block();
+    }
+    let closed = offs(&r);
+    let mut distinct = closed.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(closed.len(), 201, "200 owed keys and the running unit's");
+    assert_eq!(distinct.len(), 201, "each closed once");
+}
+
 /// A replace with a fade whose old unit holds a key, then a hard replace of
 /// the same key: the running unit's keys are closed at the hard replace.
 #[test]
@@ -1154,6 +1213,83 @@ fn a_hard_replace_during_a_fade_closes_the_running_units_keys() {
     }
     r.block();
     assert_eq!(r.words(2), vec![ON60, OFF60]);
+}
+
+/// The first replacement holds `ON60` under a 3-block fade; a second waits
+/// behind it. `then` runs `j` blocks after the second is queued (the first
+/// fade ends, and the second takes over, in the course of these), with the
+/// sinks `sinks` fed by the source.
+fn around_promotion(sinks: &[u64], j: usize, then: impl FnOnce(&mut Rig)) -> Rig {
+    let mut r = Rig::new(Mode::Serial, sinks);
+    let edges: Vec<(u64, u64)> = sinks.iter().map(|&s| (1, s)).collect();
+    r.wire(&edges);
+    r.block();
+    let (m2, m3): (Mail, Mail) = Default::default();
+    swap_with_fade(&mut r, &m2, MAX * 3);
+    m2.lock().unwrap().push((0, ON60));
+    r.block();
+    swap_with_fade(&mut r, &m3, MAX * 3);
+    for _ in 0..j {
+        r.block();
+    }
+    then(&mut r);
+    for _ in 0..4 {
+        r.block();
+    }
+    r
+}
+
+/// Removing the source at every block offset around the promotion: the
+/// sink hears the note end exactly once. Before the promotion the running
+/// unit's table closes at the commit; after it, what the unit owed does.
+///
+/// Mutation (run): `Keys::depart` not merging `owed` into what it returns
+/// -> the offsets just after the promotion leave the note on -> fails.
+#[test]
+fn removing_the_source_around_a_promotion_closes_once() {
+    for j in 0..8 {
+        let r = around_promotion(&[2], j, |r| r.remove_source());
+        assert_eq!(r.words(2), vec![ON60, OFF60], "removed {j} blocks on");
+    }
+}
+
+/// A hard replace at every offset around the promotion.
+#[test]
+fn a_hard_replace_around_a_promotion_closes_once() {
+    for j in 0..8 {
+        let r = around_promotion(&[2], j, |r| {
+            let ed = r.ed.as_mut().unwrap();
+            ed.replace(
+                NodeKey(1),
+                Unforkable(Src {
+                    mail: Arc::default(),
+                }),
+                Fade::new(Samples(0), Default::default()),
+            )
+            .unwrap();
+            ed.commit().unwrap();
+            r.exec.as_mut().unwrap().apply_pending();
+            ed.collect();
+        });
+        assert_eq!(r.words(2), vec![ON60, OFF60], "replaced {j} blocks on");
+    }
+}
+
+/// One of two sinks is cut at every offset around the promotion: it hears
+/// the note end once, whether the cut or the owed close reaches it, and the
+/// other, still wired, hears it once too.
+///
+/// Mutation (run): not closing `Keys::owed` on a cut edge in
+/// `Executor::rebuild` -> the cut sink keeps the note when the cut falls just
+/// after the promotion -> fails.
+#[test]
+fn cutting_an_edge_around_a_promotion_closes_once() {
+    for j in 0..8 {
+        let r = around_promotion(&[2, 3], j, |r| r.wire(&[(1, 3)]));
+        for sink in [2, 3] {
+            assert_eq!(r.words(sink), vec![ON60, OFF60], "sink {sink}, cut {j} on");
+        }
+    }
 }
 
 /// The resume commit of a re-prepare replaces the held source: the old

@@ -1,7 +1,8 @@
 use super::*;
 use crate::MidiFile;
+use tutti_midi_types::Bpm;
 use tutti_midi_types::MidiEvent;
-use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 #[test]
 fn round_trips_a_clip_through_a_file() {

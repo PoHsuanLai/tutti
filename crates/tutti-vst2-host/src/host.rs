@@ -52,9 +52,9 @@ use crate::types::MidiEvent;
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tutti_midi_types::MidiGroup;
 use tutti_plugin_types::{Request, RescanScope, unframed};
 use tutti_types::RequestWord;
+use tutti_ump::MidiGroup;
 use vst::api::Supported;
 use vst::host::Host;
 
@@ -669,8 +669,8 @@ mod tests {
     fn midi_out_drops_are_counted_apart_from_param_drops() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let ev = MidiEvent::note_on(
-            tutti_midi_types::MidiGroup::FIRST,
-            tutti_midi_types::MidiChannel::FIRST,
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
             60,
             0x8000,
         );
@@ -777,8 +777,8 @@ mod tests {
         deliver(&host, &mut sysex);
 
         let note = tutti_midi_types::MidiEvent::note_on(
-            tutti_midi_types::MidiGroup::FIRST,
-            tutti_midi_types::MidiChannel::FIRST,
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
             60,
             0x8000,
         );
@@ -860,8 +860,8 @@ mod tests {
     fn both_audio_thread_callbacks_are_allocation_free() {
         let host = make_host(TransportWriter::new().reader(), 48_000.0);
         let ev = MidiEvent::note_on(
-            tutti_midi_types::MidiGroup::FIRST,
-            tutti_midi_types::MidiChannel::FIRST,
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
             60,
             0x8000,
         );

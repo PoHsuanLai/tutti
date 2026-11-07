@@ -65,7 +65,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Counts what reached the wire.
     struct CountingSink(Arc<AtomicUsize>);

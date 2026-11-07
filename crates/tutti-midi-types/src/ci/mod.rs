@@ -20,7 +20,7 @@
 //! [`discovery`] (the mandatory core), [`profile`], [`property`].
 
 use std::vec::Vec;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use crate::MidiEvent;
 

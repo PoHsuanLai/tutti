@@ -181,7 +181,7 @@ impl Plugin for MidiOutPlugin {
 mod tests {
     use super::*;
     use tutti_midi_types::MidiOut;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Drain the resource's receiver fully into a `Vec`.
     fn drain(out: &MidiOutRes) -> Vec<MidiEvent> {

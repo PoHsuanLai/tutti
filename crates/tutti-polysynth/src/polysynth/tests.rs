@@ -7,8 +7,8 @@ use tutti_midi_types::convert::{
     midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
 use tutti_midi_types::midi2::num::u7;
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with

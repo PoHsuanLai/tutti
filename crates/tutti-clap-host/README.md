@@ -62,7 +62,7 @@ Load, activate, render one block. `no_run`: the load needs a real `.clap` bundle
 on disk.
 
 ```rust,no_run
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
 };

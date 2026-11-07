@@ -1,6 +1,6 @@
 use super::*;
-use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::flex_data::FlexData;
+use tutti_ump::MidiChannel;
 
 fn negotiator() -> EndpointNegotiator {
     EndpointNegotiator::new(

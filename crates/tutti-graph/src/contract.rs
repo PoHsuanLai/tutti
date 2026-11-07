@@ -19,7 +19,8 @@
 //!
 //! ```
 //! use tutti_graph::contract::{Detect, Excite, Path, Pulse, Row};
-//! use tutti_graph::{EventKind, Ump};
+//! use tutti_graph::EventKind;
+//! use tutti_ump::Ump;
 //! use tutti_types::{Latency, Samples};
 //!
 //! let row = Row::new(
@@ -1452,7 +1453,8 @@ impl Node for Sum {
 ///
 /// ```
 /// use tutti_graph::contract::{Detect, Excite, Lookahead, Pulse, Row};
-/// use tutti_graph::{EventKind, Ump};
+/// use tutti_graph::EventKind;
+/// use tutti_ump::Ump;
 /// use tutti_types::{Latency, Samples};
 ///
 /// fn pulse_row() -> Row {

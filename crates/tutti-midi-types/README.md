@@ -30,6 +30,7 @@ consumer matching this crate's version needs no dependency entry of its own.
 
 ```rust
 use tutti_midi_types::prelude::*;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 // Build a note, decode it back — no midi2 imports, no width juggling.
 let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
@@ -63,6 +64,7 @@ downstream matches a single protocol and never needs a Channel-Voice-1 arm.
 ```rust
 use tutti_midi_types::prelude::*;
 use tutti_midi_types::{convert, UmpMessageType};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 // From the wire: a MIDI 1.0 note-on, 7-bit velocity 100.
 let from_din = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100])
@@ -125,8 +127,9 @@ scaling module — stay explicit imports so a glob does not flood scope.
 
 ## Where it sits
 
-Depends only on `tutti-types` (for `ArcLend`, and the `MidiGroup` /
-`MidiChannel` newtypes, re-exported here) plus `midi2` and `midly`. Everything
+Depends on `tutti-types` (for `ArcLend`) and `tutti-ump` (the `MidiGroup`,
+`MidiChannel` and `CCNumber` newtypes, which callers import from there) plus
+`midi2` and `midly`. Everything
 MIDI-shaped in the engine builds on it: `tutti-core`, the other `tutti-midi-*`
 crates, the synths and the plugin hosts.
 

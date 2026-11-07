@@ -28,7 +28,7 @@ mod support;
 use support::{Change, Segment, model_beats};
 use tutti_core::{Engine, FadeOut, LoopEdit, MotionEvent, Then, Transport, TransportCommand};
 use tutti_graph::{
-    Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status, Ump,
+    Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status,
     Unforkable,
 };
 use tutti_types::NodeKey;
@@ -36,6 +36,7 @@ use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
 };
+use tutti_ump::Ump;
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.

@@ -7,7 +7,7 @@
 //! of (channel, note), so behaviour is identical to keying on the raw pair; under
 //! Note Number Rotation an allocator mints distinct ids via [`NoteId::from_raw`].
 
-use tutti_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 /// Stable per-note identity.
 ///

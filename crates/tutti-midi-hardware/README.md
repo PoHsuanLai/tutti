@@ -23,6 +23,7 @@ accumulate rings.
 use std::sync::Arc;
 use tutti_midi_hardware::prelude::*;
 use tutti_midi_hardware::HardwareMidiInputs;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 // The rings inbound events land in, then a session over this platform's backend.
 let ports = Arc::new(HardwareMidiInputs::new(1024));

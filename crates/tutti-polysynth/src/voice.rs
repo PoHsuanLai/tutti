@@ -9,7 +9,8 @@
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
 use tutti_midi_types::midi2::num::u7;
-use tutti_midi_types::{MidiChannel, NoteId, PerNoteMap};
+use tutti_midi_types::{NoteId, PerNoteMap};
+use tutti_ump::MidiChannel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct VoiceId(u64);

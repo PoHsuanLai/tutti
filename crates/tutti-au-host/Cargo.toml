@@ -49,6 +49,7 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
 [dev-dependencies]
+tutti-ump = { path = "../tutti-ump", default-features = false }
 assert_no_alloc = { version = "1", default-features = false }
 
 # The Cocoa editor-lifecycle tests, run on the main thread. `harness = false` so

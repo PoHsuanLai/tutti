@@ -427,7 +427,7 @@ mod tests {
         let tags: Vec<u32> = out
             .iter()
             .map(|e| match e.kind {
-                crate::event::EventKind::Midi(crate::event::Ump(w)) => (w[0] >> 8) & 0x7f,
+                crate::event::EventKind::Midi(tutti_ump::Ump(w)) => (w[0] >> 8) & 0x7f,
                 _ => unreachable!("notes only"),
             })
             .collect();
@@ -548,7 +548,7 @@ mod tests {
         let tags: Vec<u32> = got
             .iter()
             .map(|e| match e.kind {
-                crate::event::EventKind::Midi(crate::event::Ump(w)) => w[0],
+                crate::event::EventKind::Midi(tutti_ump::Ump(w)) => w[0],
                 _ => unreachable!(),
             })
             .collect();

@@ -11,7 +11,7 @@ use tutti_plugin_types::Control;
 use tutti_vst2_host::{MidiEvent, Samples, TransportInfo, Vst2ProcessContext};
 // From the probe's rlib, not a hand-written mirror that can drift out of
 // layout agreement with the cdylib the host loads.
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_test_plugin::{PROBE_UNIQUE_ID, ProcessCapture, ProcessEntry, channel_tag};
 
 #[path = "support/active.rs"]

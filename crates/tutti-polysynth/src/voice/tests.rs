@@ -1,6 +1,6 @@
 use super::*;
-use tutti_midi_types::MidiChannel;
 use tutti_midi_types::midi2::num::u7;
+use tutti_ump::MidiChannel;
 
 #[test]
 fn test_basic_allocation() {

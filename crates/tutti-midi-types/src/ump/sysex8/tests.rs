@@ -1,5 +1,5 @@
 use super::*;
-use tutti_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 #[test]
 fn sysex8_single_packet_round_trips() {

@@ -1548,8 +1548,8 @@ impl super::batcher::Chunks for LossProbe {
 
     fn payload(&mut self, _frames: usize) -> BlockPayload {
         let note = crate::protocol::MidiEvent::note_on(
-            tutti_midi_types::MidiGroup::FIRST,
-            tutti_midi_types::MidiChannel::FIRST,
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
             60,
             0x8000,
         );
@@ -1662,7 +1662,7 @@ fn a_refused_chunk_reports_its_midi_lost() {
 /// MIDI not counted → the count is short by six → fails.
 #[test]
 fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
     let cut = sysex_fragments(60); // 10 packets
@@ -1698,7 +1698,7 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
 /// admitting the payload's events → the `END` is sent → fails.
 #[test]
 fn a_stale_block_holding_only_a_start_cuts_its_message() {
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
     let lost = sysex_fragments(12); // a START and an END
@@ -1721,11 +1721,7 @@ fn a_stale_block_holding_only_a_start_cuts_its_message() {
 fn sysex_fragments(len: usize) -> Vec<crate::protocol::MidiEvent> {
     let payload: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
     let mut out = Vec::new();
-    crate::protocol::MidiEvent::sysex7_fragments(
-        tutti_midi_types::MidiGroup::FIRST,
-        &payload,
-        &mut out,
-    );
+    crate::protocol::MidiEvent::sysex7_fragments(tutti_ump::MidiGroup::FIRST, &payload, &mut out);
     out
 }
 

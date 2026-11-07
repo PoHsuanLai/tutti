@@ -12,10 +12,10 @@ mod support;
 use support::Hand;
 use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_nodes::testing::assert_golden;
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 use tutti_types::SampleRate;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Path to the committed test SoundFont.
 fn test_soundfont_path() -> PathBuf {

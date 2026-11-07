@@ -20,7 +20,7 @@
 //! [`NoteAttribute`](crate::NoteAttribute) extends for note attributes.
 
 use midi2::prelude::*;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use super::MidiEvent;
 

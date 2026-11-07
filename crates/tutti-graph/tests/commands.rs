@@ -10,10 +10,11 @@ use std::sync::{Arc, Mutex};
 use common::prepare;
 use tutti_graph::{
     COMMAND_CAPACITY, Cx, Editor, EventIn, EventKind, Executor, Io, Node, ParamRamp, Prepare,
-    Reference, ScheduleError, Shape, Status, Transport, Ump, Unforkable,
+    Reference, ScheduleError, Shape, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, NodeKey, Samples, Tail};
+use tutti_ump::Ump;
 
 /// `(absolute frame, block start, offset, tag)` per event received.
 type Log = Arc<Mutex<Vec<(u64, u64, u32, u32)>>>;

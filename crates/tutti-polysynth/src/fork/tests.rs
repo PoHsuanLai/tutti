@@ -1,7 +1,8 @@
 use tutti_graph::contract::{Direct, assert_param_fork};
 use tutti_graph::{Event, Offset, ParamFork};
-use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_midi_types::MidiEvent;
 use tutti_types::{SampleRate, Seconds, UnitParam};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig};
 

@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Test helper: collect one cycle's visits into a `Vec`, so the assertions
 /// below can index and count without threading a closure through each.

@@ -59,7 +59,7 @@ names them.
 
 ```rust
 use tutti_midi_runtime::{input_ports, CHANNELLESS_PORT, MIDI_INPUT_PORTS};
-use tutti_midi_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 // A synth on channel 3 hears port 3 and the channelless port...
 let on_three: Vec<usize> = input_ports(Some(MidiChannel::new(3))).collect();
@@ -80,7 +80,8 @@ allocates or locks, which is what lets either half sit on the audio thread.
 
 ```rust
 use tutti_midi_runtime::MidiMailbox;
-use tutti_midi_types::{MidiChannel, MidiEvent};
+use tutti_midi_types::MidiEvent;
+use tutti_ump::MidiChannel;
 
 let (tx, rx) = MidiMailbox::pair();
 assert!(tx.note_on(MidiChannel::FIRST, 60, 100));
@@ -100,7 +101,7 @@ has to know what MPE is.
 use tutti_midi_runtime::MpeIngest;
 use tutti_midi_types::mpe::{MpeMode, MpeZoneConfig};
 use tutti_midi_types::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
 

@@ -165,9 +165,9 @@ just test-all                      # both
   `alsa-sys`'s build script.
 - **Bevy-free floor:** five engine crates have an optional, off-by-default
   `bevy` feature (`tutti-core`, `tutti-types`, `tutti-io`, `tutti-mod`,
-  `tutti-sampler`); the rest have none, and `tutti-session` and `tutti-graph`
-  must never grow one. `bevy-tutti` is the only crate that requires Bevy.
-  Check a crate that has the feature with `cargo check -p <crate>` and
+  `tutti-sampler`); the rest have none, and `tutti-session`, `tutti-graph`
+  and `tutti-ump` must never grow one. `bevy-tutti` is the only crate that
+  requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
   through its modules. Only `check-canonical-paths.sh` enforces this.
@@ -226,6 +226,9 @@ crates/          everything shipped; directory name = package name; no nesting
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
                  no dependencies, `publish = false`, re-exported by tutti-types.
+  tutti-ump      the Universal MIDI Packet (`Ump`) and the `MidiGroup`, `MidiChannel`
+                 and `CCNumber` addresses it carries; no dependencies but `bytemuck`
+                 (and optional `serde`)
   tutti-types    vocabulary only: units, channel layouts, io edge traits, rt
                  primitives, Topology; no FFT and no new algorithms. Downmix, interp
                  and sample conversion stay until a follow-up moves them
@@ -256,7 +259,7 @@ vendor/          third-party code we never edit
 list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
-0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`
+0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
 3. `tutti-core`, `tutti-plugin-types`
@@ -278,6 +281,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - Only `tutti` and `bevy-tutti` depend on `tutti-session`; nothing depends on
   them.
 
+- `tutti-ump` depends on no workspace crate, keeps every module private
+  (`tutti_ump::Ump`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]` and has no `bevy` feature. A consumer names
+  `tutti_ump::{MidiGroup, MidiChannel, CCNumber}`, never `tutti_types::`. The
+  `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
+  exports `MidiChannel` behind `midi`. A consumer that persists one with serde
+  depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
 - `tutti-types` names no other tutti crate. Its one workspace-member
   dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
   at all, and nothing audio-specific belongs in it.
@@ -301,7 +311,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
   A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
   stays in the node.
-- `tutti-graph` depends on no tutti crate but `tutti-types` (its outside
+- `tutti-graph` depends on no tutti crate but `tutti-types` and `tutti-ump` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.

@@ -730,9 +730,9 @@ mod plugin {
     use tutti_core::transport::{ClickState, OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_nodes::testing::Const;
     use tutti_plugin::catalog::PluginId;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// The probe's render modes this file drives (`tutti-clap-test-plugin`'s
     /// `RenderMode`): `out = in + tag(port, ch)`; `out = in` delayed by the
@@ -1081,10 +1081,10 @@ mod synths {
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::midi2::num::u7;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
     use tutti_types::{Beat, Bpm, Seconds};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
     const BEAT_48K: usize = 32_000;

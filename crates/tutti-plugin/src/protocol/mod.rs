@@ -151,8 +151,8 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
     use tutti_types::SampleRate;
+    use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     /// Every preset frame survives the wire in both directions.
     ///

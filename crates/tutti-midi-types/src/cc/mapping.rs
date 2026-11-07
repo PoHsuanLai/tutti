@@ -7,15 +7,15 @@
 //! incoming CC, and applies [`map_value`](CCMapping::map_value) to whatever the
 //! [`CCTarget`] names.
 
+use tutti_ump::{CCNumber, MidiChannel};
+
 /// Stable identifier for one [`CCMapping`] in a host's list, so a UI can address
 /// a binding without holding its index (which shifts as bindings are removed).
 pub type MappingId = u64;
 
-// `CCNumber` and `MidiChannel` are `tutti-types`' newtypes rather than aliases
+// `CCNumber` and `MidiChannel` are `tutti-ump`'s newtypes rather than aliases
 // declared here: a document has to persist a channel and key a CC automation
-// lane by a CC number, and this crate carries no serde. Re-exported so the names
-// resolve from `cc::` as well as from the vocabulary crate.
-pub use tutti_types::{CCNumber, MidiChannel};
+// lane by a CC number, and this crate carries no serde.
 
 /// What a CC binding drives.
 ///

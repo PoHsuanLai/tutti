@@ -12,9 +12,10 @@ use tutti_midi_runtime::{
     ClockNode, HarmonyNode, MidiClipNode, MidiInputNode, MidiMailbox, MidiOutNode, MidiQueueNode,
     TimedHarmony, TimedMidiEvent,
 };
+use tutti_midi_types::MidiIn;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
 use tutti_types::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

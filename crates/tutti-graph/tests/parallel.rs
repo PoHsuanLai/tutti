@@ -16,12 +16,13 @@ use common::{Kind, TestNode, WORKERS, bits, test_pool};
 use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode, ForkSource,
     ForkTarget, Forked, IntoNode, Io, Node, NodeParts, ParamIn, ParamRamp, ParamRange,
-    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport, Ump,
+    ParamSegment, Prepare, Schedule, SegmentShape, Shape, Status, Transport,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{
     At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitParam,
 };
+use tutti_ump::Ump;
 
 const MAX_BLOCK: usize = 128;
 

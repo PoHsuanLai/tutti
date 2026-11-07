@@ -10,7 +10,7 @@ mod conformance_support;
 
 use std::ffi::CStr;
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, Library, MidiEvent, ParameterChanges, TransportInfo,
 };

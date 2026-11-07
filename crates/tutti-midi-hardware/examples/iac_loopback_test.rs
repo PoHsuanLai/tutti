@@ -15,7 +15,7 @@ use std::time::Duration;
 use tutti_midi_hardware::{
     HardwareMidiDrain, HardwareMidiInputs, MidiEvent, MidiMessage, MidiSession, NoteId,
 };
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));

@@ -12,9 +12,10 @@ use std::sync::{Arc, Mutex};
 use common::test_pool;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventLoss, EventOut, Executor, Io, Node,
-    Prepare, Shape, Status, Transport, Ump, note_off_room,
+    Prepare, Shape, Status, Transport, note_off_room,
 };
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_ump::Ump;
 
 const BLOCK: usize = 64;
 

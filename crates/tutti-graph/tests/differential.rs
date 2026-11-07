@@ -582,7 +582,7 @@ proptest! {
                                 (t.beat().get() + (rng.below(3000) as f64 - 500.0) / 10_000.0).max(0.0),
                             )),
                         };
-                        let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
+                        let kind = tutti_graph::EventKind::Midi(tutti_ump::Ump([rng.below(1000) as u32, 0, 0, 0]));
                         // Pending beats hold credit: when it runs out, neither
                         // side gets the command.
                         match pair.editor.schedule(at, to, kind) {
@@ -695,7 +695,7 @@ fn transport_case(seed: u64, which: usize) -> Result<(), TestCaseError> {
                             ))
                         }
                     };
-                    let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([
+                    let kind = tutti_graph::EventKind::Midi(tutti_ump::Ump([
                         rng.below(1000) as u32,
                         0,
                         0,
@@ -1801,7 +1801,7 @@ proptest! {
             for _ in 0..rng.below(12) {
                 let Some(to) = rng.pick(&ports) else { break };
                 let at = tutti_types::At::Frame(tutti_types::Frame(frame + rng.below(300)));
-                let kind = tutti_graph::EventKind::Midi(tutti_graph::Ump([rng.below(1000) as u32, 0, 0, 0]));
+                let kind = tutti_graph::EventKind::Midi(tutti_ump::Ump([rng.below(1000) as u32, 0, 0, 0]));
                 pair.schedule(at, to, kind);
             }
             let rest: Vec<usize> = rest

@@ -22,10 +22,11 @@ use tutti_graph::contract::{
     SAMPLE_RATE,
 };
 use tutti_graph::{
-    Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Ump, Unforkable,
+    Cx, EventKind, GraphBuilder, Io, Node, Prepare, Resolution, Shape, Status, Unforkable,
     contract_tests,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
+use tutti_ump::Ump;
 
 /// A MIDI 1.0 note-on, middle C: the event every event row is excited by.
 const NOTE_ON: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));

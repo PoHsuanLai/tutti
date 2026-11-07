@@ -1,6 +1,6 @@
 use super::*;
-use tutti_types::MidiChannel;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiChannel;
+use tutti_ump::MidiGroup;
 
 #[test]
 fn tempo_conversion_kernels_round_trip() {

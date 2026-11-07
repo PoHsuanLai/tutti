@@ -15,11 +15,11 @@
 //! SysEx7. It keeps one in-flight buffer per UMP group, so interleaved streams
 //! on different groups don't corrupt each other.
 
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{
     MidiEvent, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
     SYSEX7_STATUS_START, UmpMessageType,
 };
+use tutti_ump::MidiGroup;
 
 /// Whether `event` may appear between a SysEx7 Start and its End without
 /// terminating the message (M2-104 §7.7.1).

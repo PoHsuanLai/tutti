@@ -94,7 +94,7 @@ impl BlockSplitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     fn at(offset: u32, note: u8) -> MidiEvent {
         let mut e = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xFFFF);

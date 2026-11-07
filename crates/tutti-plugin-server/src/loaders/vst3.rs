@@ -566,8 +566,8 @@ impl Vst3Instance {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features, MidiEvent};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     /// Sets `TUTTI_PROBE_MISBEHAVIOUR` for the life of the guard and restores
     /// the previous value on drop, a panic included. Take it while holding

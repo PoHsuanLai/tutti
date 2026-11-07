@@ -2,8 +2,8 @@ use super::*;
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 use tutti_vst3_ffi::EventList;
 
 /// Encodes one event on a fresh stream (every per-note bend range at the

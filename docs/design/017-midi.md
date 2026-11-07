@@ -514,6 +514,9 @@ a behaviour change.
    as a Note Off with release velocity `0x8000`, not `0`.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
    host.
+   A consumer with MIDI 1.0 resolution only (SoundFont, the hosts) narrows with
+   `tutti_midi_protocol::{narrow_velocity, narrow_value, narrow_bend}` (M2-115
+   section 3.4, a right shift).
 3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.

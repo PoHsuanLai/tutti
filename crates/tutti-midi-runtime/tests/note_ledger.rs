@@ -26,6 +26,8 @@
 //!   the note on A.
 //! - `ClipFork` building its node over the live `Shared`:
 //!   `a_fork_does_not_answer_the_lives_ticket` fails.
+//! - `Sending::off` writing a tagged off that has no row: the fork test, the
+//!   rewire after the drain, the full-table test and the clip property fail.
 //! - `MidiClipNode::reset` without `forget`:
 //!   `a_reset_node_forgets_the_notes_it_held` fails.
 

@@ -953,6 +953,26 @@ fn an_off_refused_twice_is_one_loss() {
     assert_eq!((dropped, lost), (4, 2));
 }
 
+/// Two notes on one key are both refused by a full port, and both offs come:
+/// each on is a loss and each off is withheld and counted: 4, none given back.
+///
+/// Mutation (run): the key's refused mark a flag, not a count → the second
+/// off finds no mark and goes uncounted, 3 lost → fails.
+#[test]
+fn overlapping_refused_ons_on_one_key_are_each_counted_with_their_offs() {
+    let (tally, dropped, lost) = probe(
+        8,
+        vec![filled(vec![
+            send(60, true, 2),
+            send(60, true, 3),
+            send(60, false, 2),
+            send(60, false, 3),
+        ])],
+    );
+    assert_eq!(tally.lock().unwrap().ons, 0);
+    assert_eq!((dropped, lost), (4, 4));
+}
+
 /// A table of one key. Note 2 takes key 60 in a full port (note 1's off owed,
 /// the key marked refused) and a release then finds the port still full: the
 /// row stays for the owed off but loses its mark. Once the off is paid the
@@ -1080,6 +1100,46 @@ fn a_ticket_is_drained_only_when_every_off_is_on_the_port() {
     }
 }
 
+/// A ticket is judged after the block's walk. 200 notes start and end in one
+/// 256-frame block (an on a frame, then the offs), asked for at its first
+/// frame when nothing is held yet: the port takes 296 of the 400 events, so
+/// 104 offs are refused and owed once the walk is done. The first block does
+/// not answer, though the release at its first frame owed nothing; the next
+/// pays them and does.
+///
+/// Mutation (run): judging `owed()` right after the release, before the
+/// walk → `Ok` with 104 notes held on the sink → fails.
+#[test]
+fn a_ticket_counts_the_offs_the_walk_leaves_owed() {
+    let events: Vec<TimedMidiEvent> = (0..200u32)
+        .flat_map(|i| {
+            let (c, n) = (MidiChannel::of((i / 128) as u8), (i % 128) as u8);
+            [
+                at(
+                    u64::from(i),
+                    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF),
+                ),
+                at(
+                    200 + u64::from(i) / 4,
+                    MidiEvent::note_off(MidiGroup::FIRST, c, n, 0),
+                ),
+            ]
+        })
+        .collect();
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let controls = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
+    let a = sink(&mut ed, 2);
+    connect(&mut ed, 1, 2);
+    ed.commit().unwrap();
+    let ticket = controls.release_held();
+    let f = run(&mut exec, 0, 1, 256);
+    assert_eq!(a.lock().unwrap().held.len(), 104);
+    let ticket = ticket.drained().expect_err("104 offs are owed");
+    run(&mut exec, f, 1, 256);
+    assert!(a.lock().unwrap().held.is_empty());
+    let _proof = ticket.drained().expect("every off is on the port");
+}
+
 /// A ticket is a snapshot. The clip is not stopped: a second note starts at
 /// frame 700, after the block that answers (frames 512 to 767 here, the
 /// answer on its first frame), and re-aiming the clip then leaves it on A,
@@ -1117,10 +1177,11 @@ fn a_ticket_does_not_stop_the_clip() {
 // Exact loss counts, whatever the clip does.
 // ---------------------------------------------------------------------------
 
-/// Notes that never overlap on a key, with controllers among them, bunched on
-/// a few frames so that a block holds more than the port takes. Returns the
-/// events, the note-ons and the controllers.
-fn spread_clip(r: &mut Rng) -> (Vec<TimedMidiEvent>, usize, usize) {
+/// Notes with controllers among them, bunched on a few frames so that a block
+/// holds more than the port takes. The notes of a key follow one another, or
+/// (`overlap`) start wherever they like and overlap. Returns the events, the
+/// note-ons and the controllers.
+fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize) {
     let bunches = [0u64, 10, 70, 500];
     let mut free = std::collections::HashMap::new();
     let mut events = Vec::new();
@@ -1128,7 +1189,8 @@ fn spread_clip(r: &mut Rng) -> (Vec<TimedMidiEvent>, usize, usize) {
     for _ in 0..notes {
         let key = (r.below(4) as u8, r.below(4) as u8, r.below(24) as u8);
         let next = free.entry(key).or_insert(0u64);
-        let start = (*next).max(bunches[r.below(4) as usize]);
+        let bunch = bunches[r.below(4) as usize];
+        let start = if overlap { bunch } else { (*next).max(bunch) };
         let end = if r.below(2) == 0 {
             // Many notes end on one frame, past the port's room for offs.
             start.max([100u64, 110, 600][r.below(3) as usize]) + 1
@@ -1197,9 +1259,10 @@ fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
     let (mut refused, mut recovered) = (0, 0);
     for seed in 1..=300u64 {
         let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let (first, ons1, ccs1) = spread_clip(&mut r);
+        let overlap = r.below(2) == 0;
+        let (first, ons1, ccs1) = spread_clip(&mut r, overlap);
         let passes = 1 + r.below(2);
-        let (second, ons2, ccs2) = spread_clip(&mut r);
+        let (second, ons2, ccs2) = spread_clip(&mut r, overlap);
         let replace = r.below(2) == 0;
         let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let controls: MidiClipControls =

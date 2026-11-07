@@ -480,14 +480,15 @@ impl Node for MidiClipNode {
         if replaced || asking {
             playing.sending.release_all(first);
         }
-        // Answered once no note-off is owed: until then the next block asks
-        // again.
+        for (start, seg) in cx.env.segments() {
+            walk.segment(&clip.events, cx.env, start, &seg, &mut playing);
+        }
+        // Answered once no note-off is owed, judged after the walk: a note the
+        // walk ended and the port refused is owed too. Until then the next
+        // block asks again.
         if asking && playing.sending.owed() == 0 {
             self.answered = asked;
             self.shared.answered.store(asked, Ordering::Release);
-        }
-        for (start, seg) in cx.env.segments() {
-            walk.segment(&clip.events, cx.env, start, &seg, &mut playing);
         }
         Status::Modified
     }

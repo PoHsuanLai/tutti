@@ -16,8 +16,8 @@
 //!
 //! A held key is in one of two states, `Sounding` or `Owing` (the port
 //! refused the off, so it goes out at the first frame of a later block).
-//! Independently, a key can be `refused`: the port refused a note-on of it,
-//! so that note's off is withheld and counted rather than written.
+//! Independently, a key counts the note-ons the port refused: each such
+//! note's off is withheld and counted rather than written.
 //!
 //! The table holds at most its capacity in keys, held or refused. A note-on
 //! that finds it full is withheld and counted ([`EventWriter::withhold`])
@@ -117,9 +117,10 @@ enum Held {
 struct Entry<T> {
     key: NoteKey,
     held: Option<Held>,
-    /// The port refused a note-on of this key, so the next off of that note
-    /// is withheld.
-    refused: bool,
+    /// How many note-ons of this key the port refused and whose offs have not
+    /// come by: each such off is withheld and counted. Saturates, so more than
+    /// 255 refused ons on one key with no off between them undercount.
+    refused: u8,
     /// The note that owns the held key; `None` for an untagged source.
     owner: Option<T>,
 }
@@ -198,13 +199,18 @@ impl<T: Copy + PartialEq> NoteLedger<T> {
                     Entry {
                         key,
                         held: None,
-                        refused: false,
+                        refused: 0,
                         owner: None,
                     },
                 );
                 Some(at)
             }
         }
+    }
+
+    fn refuse(&mut self, i: usize) {
+        let e = &mut self.entries[i];
+        e.refused = e.refused.saturating_add(1);
     }
 
     fn set_held(&mut self, i: usize, held: Option<Held>) {
@@ -256,7 +262,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
                 e.held = None;
                 e.owner = None;
             }
-            !taken || e.refused
+            !taken || e.refused > 0
         });
         self.ledger.recount();
     }
@@ -289,7 +295,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
                 // The old note stays, its off owed, and the new one does not
                 // start.
                 self.owe(i);
-                self.ledger.entries[i].refused = true;
+                self.ledger.refuse(i);
                 self.out.withhold();
                 return;
             }
@@ -302,7 +308,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
             self.ledger.set_held(i, Some(Held::Sounding));
             self.ledger.entries[i].owner = owner;
         } else {
-            self.ledger.entries[i].refused = true;
+            self.ledger.refuse(i);
         }
     }
 
@@ -321,11 +327,9 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
         if e.held.is_some() && e.owner == owner {
             let taken = self.write(at, ump);
             self.finish(i, taken);
-        } else if e.refused {
+        } else if e.refused > 0 {
             // The off of a note whose on the port refused.
-            self.ledger.entries[i].refused = false;
-            self.forget_if_idle(i);
-            self.out.withhold();
+            self.settle(i);
         }
     }
 
@@ -344,15 +348,20 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
         let e = self.ledger.entries[i];
         if e.held.is_some() {
             let taken = self.write(at, ump);
-            self.ledger.entries[i].refused = false;
+            self.ledger.entries[i].refused = 0;
             self.finish(i, taken);
-        } else if e.refused {
-            self.ledger.entries[i].refused = false;
-            self.forget_if_idle(i);
-            self.out.withhold();
+        } else if e.refused > 0 {
+            self.settle(i);
         } else {
             self.write(at, ump);
         }
+    }
+
+    /// The off of a note whose on the port refused: swallowed and counted.
+    fn settle(&mut self, i: usize) {
+        self.ledger.entries[i].refused -= 1;
+        self.forget_if_idle(i);
+        self.out.withhold();
     }
 
     /// Note-offs the port refused that this ledger still owes.
@@ -377,7 +386,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     /// Drops entry `i` when it holds nothing.
     fn forget_if_idle(&mut self, i: usize) {
         let e = &self.ledger.entries[i];
-        if e.held.is_none() && !e.refused {
+        if e.held.is_none() && e.refused == 0 {
             self.ledger.entries.remove(i);
         }
     }
@@ -401,7 +410,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
         let mut full = false;
         self.ledger.entries.retain_mut(|e| {
             // What was refused belongs to the pass that is ending.
-            e.refused = false;
+            e.refused = 0;
             let Some(held) = e.held else { return false };
             if !full && self.out.push(e.key.off(at)).is_ok() {
                 if held == Held::Owing {

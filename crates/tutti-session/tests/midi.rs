@@ -656,6 +656,29 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
     assert!(!io.is_output_connected());
 }
 
+/// **A watch that dies is reported once**, with its reason: the list is frozen
+/// and the host is told so instead of seeing a quiet table. Mutation:
+/// `midi_input_phase` not asking `watch_failure` → no event; not remembering
+/// that it reported → the event repeats every update.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_dead_device_watch_is_reported_once() {
+    let (mut s, fake) = hot_plug_session();
+    let failed = |events: &[SessionEvent]| {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::MidiWatchFailed(why) => Some(why.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(failed(&s.update()).is_empty());
+    fake.fail_watch("the sequencer went away");
+    assert_eq!(failed(&s.update()), ["the sequencer went away"]);
+    assert!(failed(&s.update()).is_empty(), "once");
+}
+
 /// **Another device's removal leaves a held input and output alone.**
 #[cfg(feature = "midi-hardware")]
 #[test]

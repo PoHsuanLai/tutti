@@ -130,6 +130,9 @@ pub(crate) fn translate(event: &tutti_session::SessionEvent, commands: &mut Comm
                 world.write_message(message);
             });
         }
+        SessionEvent::MidiWatchFailed(why) => {
+            warn!("the MIDI device watch ended, hot-plug is no longer reported: {why}");
+        }
         SessionEvent::MidiInputLost(_) | SessionEvent::MidiOutputLost(_) => {
             commands.queue(|world: &mut World| {
                 if let Some(mut state) = world.get_resource_mut::<MidiDeviceState>() {

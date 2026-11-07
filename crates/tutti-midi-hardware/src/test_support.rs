@@ -64,23 +64,37 @@ struct FakeDevices {
 
 /// One change on its way to a watch thread, and the signal that the thread
 /// has applied it.
-type Delivery = (OsChange, Sender<()>);
+type Delivery = (Report, Sender<()>);
+
+/// What the fake OS tells a watch thread.
+#[derive(Clone)]
+enum Report {
+    Change(OsChange),
+    Fail(String),
+}
 
 impl FakeDevices {
     /// Tells every watch what the fake OS now says about `id`, and returns once
     /// each watch thread has reported it to its sink.
     fn announce(&self, id: EndpointId) {
-        let change = os_devices(&self.inputs, &self.outputs)
-            .into_iter()
-            .find(|d| d.handle == id)
-            .map_or(OsChange::Gone(id), OsChange::Present);
+        let change = Report::Change(
+            os_devices(&self.inputs, &self.outputs)
+                .into_iter()
+                .find(|d| d.handle == id)
+                .map_or(OsChange::Gone(id), OsChange::Present),
+        );
+        self.deliver(&change);
+    }
+
+    /// Hands `report` to every watch thread and waits for each to take it.
+    fn deliver(&self, report: &Report) {
         let acks: Vec<_> = self
             .watches
             .iter()
             .map(|(_, watch)| {
                 let (done, ack) = mpsc::channel();
                 // A watch whose thread has ended has nothing to tell.
-                let _ = watch.send((change.clone(), done));
+                let _ = watch.send((report.clone(), done));
                 ack
             })
             .collect();
@@ -146,6 +160,13 @@ impl FakeCounters {
             devices.outputs.push(endpoint);
         }
         devices.announce(id);
+    }
+
+    /// Makes every running watch fail with `reason`, as a real one does when
+    /// the OS call it blocks in fails: the list freezes and
+    /// `Devices::watch_failure` says why.
+    pub fn fail_watch(&self, reason: &str) {
+        self.devices().deliver(&Report::Fail(reason.to_string()));
     }
 
     /// Unplugs the device with `id` from both lists and tells every running
@@ -305,8 +326,16 @@ impl MidiEndpoints for FakeBackend {
             .name("tutti-fake-watch".to_string())
             .spawn(move || {
                 let _running = running;
-                for (change, done) in incoming {
-                    sink.send(change);
+                for (report, done) in incoming {
+                    match report {
+                        Report::Change(change) => sink.send(change),
+                        Report::Fail(why) => {
+                            // Like a real watch that has died: nothing more.
+                            sink.fail(why);
+                            let _ = done.send(());
+                            return;
+                        }
+                    }
                     let _ = done.send(());
                 }
             })?;

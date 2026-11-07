@@ -119,6 +119,23 @@ fn poll_gives_the_changes_since_the_last_call_once() {
     assert!(got.is_empty(), "wait consumed it");
 }
 
+/// Mutation: `ChangeSink::fail` not recording the reason leaves
+/// `watch_failure` `None` and the first assertion fails.
+#[test]
+fn a_watch_that_fails_says_so_and_the_list_freezes() {
+    let (devices, fake) = fake();
+    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    assert_eq!(devices.watch_failure(), None);
+    fake.fail_watch("the sequencer went away");
+    assert_eq!(
+        devices.watch_failure().as_deref(),
+        Some("the sequencer went away")
+    );
+    // The thread has ended: a later plug is not reported.
+    fake.plug(endpoint(2, "Pads"), Direction::Input);
+    assert_eq!(devices.list().len(), 1);
+}
+
 #[test]
 fn wait_times_out_empty() {
     let (devices, _fake) = fake();

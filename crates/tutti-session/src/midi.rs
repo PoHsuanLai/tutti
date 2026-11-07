@@ -357,6 +357,9 @@ pub(crate) struct MidiState {
     /// when.
     #[cfg(feature = "midi-hardware")]
     input_drops_seen: u64,
+    /// Whether the device watch's failure has been reported.
+    #[cfg(feature = "midi-hardware")]
+    watch_failure_reported: bool,
     #[cfg(feature = "midi-hardware")]
     input_reported_at: Option<Instant>,
 }
@@ -429,6 +432,12 @@ impl MidiState {
             } else {
                 out.push(crate::SessionEvent::MidiDevice(event));
             }
+        }
+        if !self.watch_failure_reported
+            && let Some(why) = io.devices().watch_failure()
+        {
+            self.watch_failure_reported = true;
+            out.push(crate::SessionEvent::MidiWatchFailed(why));
         }
         let total = io.ports().dropped_events();
         let due = self

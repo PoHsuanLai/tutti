@@ -285,6 +285,11 @@ pub enum SessionEvent {
     /// host connects another.
     #[cfg(feature = "midi-hardware")]
     MidiOutputLost(tutti_midi_hardware::DeviceInfo),
+    /// The OS watch for MIDI devices ended on its own (the reason is the
+    /// message): the device list is frozen at what it last saw and no further
+    /// hot-plug is reported. Reported once.
+    #[cfg(feature = "midi-hardware")]
+    MidiWatchFailed(String),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
@@ -425,6 +430,8 @@ impl std::fmt::Debug for SessionEvent {
             Self::MidiDevice(event) => f.debug_tuple("MidiDevice").field(event).finish(),
             #[cfg(feature = "midi-hardware")]
             Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
             #[cfg(feature = "midi-hardware")]
             Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
             Self::EventsDropped {

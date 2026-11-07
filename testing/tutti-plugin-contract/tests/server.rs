@@ -10,6 +10,7 @@ use tutti_plugin::handles::{ParamId, PluginClient, PluginHandle};
 use tutti_plugin_contract::spec::{Mode, Param};
 use tutti_plugin_contract::{Transcript, clap_path};
 
+// Mutation (run): the plugin saving a mode word of 0 fails it.
 #[test]
 fn clap_mode_and_transcript_cross_the_process_boundary() {
     // SAFETY: set before any thread of this test reads it.

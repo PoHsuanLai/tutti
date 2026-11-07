@@ -63,6 +63,8 @@ fn changes(points: &[(Param, i32, f64)]) -> ParameterChanges {
 }
 
 /// Each input channel lands in its own output slot: `out = in + tag`.
+// Mutation (run): the host binds the input channels in reverse order -> fails (and
+//   `f64_carries_same_audio`).
 pub fn routing_tag_oracle<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let ins = [ramp(BLOCK, 0.25), ramp(BLOCK, 0.5)];
@@ -75,6 +77,8 @@ pub fn routing_tag_oracle<F: Format>() {
 }
 
 /// A rate and block change reaches the plugin and rendering goes on.
+// Mutation (run): the host activates at a fixed 48 kHz -> fails on the rate the plugin was
+//   told.
 pub fn reconfigure_keeps_rendering<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     a.silent(BLOCK);
@@ -88,6 +92,7 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
 }
 
 /// Reported latency follows the plugin's mode.
+// Mutation (run): the host reports the latency plus one -> fails.
 pub fn latency_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Delay).controller().latency(),
@@ -97,6 +102,7 @@ pub fn latency_reported<F: Format>() {
 }
 
 /// The reported latency is the delay the plugin applies, across blocks.
+// Mutation (run): the plugin's delay line one frame short -> fails at the impulse.
 pub fn latency_applied<F: Format>() {
     let mut a = active_with::<F>(Mode::Delay, 128, SampleFormat::Float32);
     let frames = 100;
@@ -118,6 +124,7 @@ pub fn latency_applied<F: Format>() {
 }
 
 /// The tail the plugin reports.
+// Mutation (run): the host reports the tail plus one -> fails.
 pub fn tail_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Tag).controller().tail(),
@@ -126,6 +133,7 @@ pub fn tail_reported<F: Format>() {
 }
 
 /// The plugin lists its parameters with their defaults.
+// Mutation (run): the host lists every parameter but the last -> fails.
 pub fn parameters_listed<F: Format>() {
     let mut got: Vec<(u32, f64)> = F::load()
         .parameters()
@@ -141,6 +149,7 @@ pub fn parameters_listed<F: Format>() {
 }
 
 /// A parameter written loaded reads back, loaded and active.
+// Mutation (run): the host's loaded `set_parameter` writes nothing -> fails.
 pub fn parameter_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Aux, 0.75);
@@ -150,6 +159,7 @@ pub fn parameter_round_trip<F: Format>() {
 }
 
 /// An id the plugin lacks reads `None`.
+// Mutation (run): the host answers 0.0 for an id the plugin lacks -> fails.
 pub fn unlisted_parameter_is_none<F: Format>() {
     let loaded = F::load();
     assert_eq!(loaded.parameter(spec::UNLISTED), None, "loaded");
@@ -158,6 +168,7 @@ pub fn unlisted_parameter_is_none<F: Format>() {
 }
 
 /// A write to an active plugin is applied at the head of its next block.
+// Mutation (run): the controller drops a queued edit -> fails.
 pub fn active_write_applied<F: Format>() {
     let mut a = active_in::<F>(Mode::Level);
     assert!(
@@ -171,30 +182,34 @@ pub fn active_write_applied<F: Format>() {
 
 /// A parameter point lands at its sample offset, or at the block head where
 /// the format cannot place it.
+// Mutation (run): the host sends every parameter point at offset 0 -> fails.
 pub fn automation_point_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Level);
     let points = changes(&[(Param::Level, 32, 0.75)]);
     let ctx = ProcessContext::new().params(&points);
     let out = a.render(&silence(BLOCK), BLOCK, &ctx);
-    for i in 0..BLOCK {
+    for (i, &v) in out[0].iter().enumerate() {
         let moved = i >= 32 || F::PARAM_TIMING == ParamTiming::BlockHead;
-        assert_eq!(out[0][i], if moved { 0.75 } else { 0.5 }, "frame {i}");
+        assert_eq!(v, if moved { 0.75 } else { 0.5 }, "frame {i}");
     }
 }
 
 /// A note starts and stops at its sample offset.
+// Mutation (run): the host moves every note one frame later -> fails.
 pub fn note_at_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(10, true), note(40, false)];
     let out = a.render(&silence(BLOCK), BLOCK, &ProcessContext::new().midi(&events));
-    for i in 0..BLOCK {
+    for (i, (&c0, &c1)) in out[0].iter().zip(&out[1]).enumerate() {
         let held = (10..40).contains(&i);
-        assert_eq!(out[0][i], if held { 60.0 } else { 0.0 }, "ch0 frame {i}");
-        assert_eq!(out[1][i], if held { 1060.0 } else { 0.0 }, "ch1 frame {i}");
+        assert_eq!(c0, if held { 60.0 } else { 0.0 }, "ch0 frame {i}");
+        assert_eq!(c1, if held { 1060.0 } else { 0.0 }, "ch1 frame {i}");
     }
 }
 
 /// What the host sent arrives as sent: events by offset, blocks by size.
+// Mutation (run): the host sorts events latest first -> fails; the host hands the plugin one
+//   frame fewer than the block -> fails on the block sizes.
 pub fn arrival_is_ordered_and_sized<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false), note(30, true)];
@@ -222,6 +237,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
 }
 
 /// State round-trips what the plugin persists.
+// Mutation (run): the host's `load_state` loads nothing -> fails.
 pub fn state_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
@@ -235,6 +251,7 @@ pub fn state_round_trip<F: Format>() {
 }
 
 /// A parameter written to a loaded plugin reaches its audio at the first block.
+// Mutation (run): the plugin resets its level on activation -> fails.
 pub fn loaded_write_reaches_the_audio<F: Format>() {
     let mut loaded = F::load();
     set_mode(&mut loaded, Mode::Level);
@@ -245,6 +262,7 @@ pub fn loaded_write_reaches_the_audio<F: Format>() {
 
 /// A parameter written to a loaded plugin and saved before it ever renders is
 /// in the state; a restore of that state reads it back and renders it.
+// Mutation (run): the plugin saves the default level -> fails.
 pub fn loaded_write_survives_a_save<F: Format>() {
     let mut loaded = F::load();
     set_mode(&mut loaded, Mode::Level);
@@ -258,6 +276,7 @@ pub fn loaded_write_survives_a_save<F: Format>() {
 }
 
 /// Bytes that are not the plugin's state leave it working.
+// Mutation (run): the plugin resets its level before it refuses a state -> fails.
 pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
@@ -268,6 +287,7 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
 }
 
 /// Halves of two activations do not rejoin.
+// Mutation (run): the host skips the check that the halves belong together -> fails.
 pub fn halves_of_two_activations_are_stuck<F: Format>() {
     let p = prepare(RATE, BLOCK, SampleFormat::Float32);
     let (pa, ca) = F::load().activate(p).map_err(|r| r.reason).expect("first");
@@ -278,6 +298,7 @@ pub fn halves_of_two_activations_are_stuck<F: Format>() {
 }
 
 /// 64-bit audio carries the same arithmetic.
+// Mutation (run): the host's 64-bit port table declares one channel -> fails.
 pub fn f64_carries_same_audio<F: Format>() {
     let mut a = active_with::<F>(Mode::Tag, BLOCK, SampleFormat::Float64);
     let ins = [vec![0.25f64; BLOCK], vec![0.5f64; BLOCK]];
@@ -287,6 +308,7 @@ pub fn f64_carries_same_audio<F: Format>() {
 }
 
 /// Rendering a block allocates nothing (run under `AllocDisabler`).
+// Mutation (run): the host allocates once per block -> aborts under `AllocDisabler`.
 pub fn process_does_not_allocate<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false)];

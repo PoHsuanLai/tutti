@@ -55,6 +55,7 @@ macro_rules! contract {
 
         $( #[test] fn $case() { $crate::run::<$fmt>(stringify!($case), $crate::$case::<$fmt>) } )*
 
+        // Mutation (run): `gaps = 1` over an empty `GAPS` fails.
         #[test]
         fn the_gaps_are_the_declared_ones() {
             use $crate::Format as _;

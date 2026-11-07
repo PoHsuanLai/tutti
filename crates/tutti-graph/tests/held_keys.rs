@@ -4,6 +4,19 @@
 //!
 //! Each scenario runs on the serial executor, on the parallel one and on the
 //! reference interpreter, and the three must log the same events.
+//!
+//! Mutations (each run, then restored):
+//! - `Held::observe` doing nothing: every close test fails.
+//! - `Held::close_into` writing nothing: every close test, the fork test and
+//!   the random property fail.
+//! - Not handing the parked tables back after a re-prepare:
+//!   `a_key_held_across_a_reprepare_is_closed`.
+//! - Not taking an event feedback FIFO's flush:
+//!   `a_cut_feedback_edge_delivers_what_is_in_flight_then_closes`.
+//! - `Shape::audio` setting `note_events: false`: the close tests and
+//!   `a_shape_carries_note_events_by_default`.
+//! - Allocating in `Held::observe`: `no_alloc::serial` and `no_alloc::parallel`
+//!   abort.
 
 mod common;
 

@@ -441,6 +441,12 @@ verify-audio OUT="/tmp/tutti-verify":
 # RustSec advisories, yanked and unmaintained crates (`deny.toml`).
 #   cargo install cargo-deny --version 0.20.2 --locked
 deny:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! cargo deny --version >/dev/null 2>&1; then
+        echo "cargo-deny is not installed; run: cargo install cargo-deny --version 0.20.2 --locked" >&2
+        exit 1
+    fi
     cargo deny --locked check advisories
 
 # Everything CI runs, in CI's order.

@@ -18,6 +18,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# No job writes to the repository, issues or checks.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

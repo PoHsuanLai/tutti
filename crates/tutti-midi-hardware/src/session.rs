@@ -52,22 +52,21 @@ pub struct MidiSession {
 ///
 /// # Drop order
 ///
-/// Stated, not left to field order alone: [`Drop`] closes every input first
-/// (each connection, then its port), and only then do the fields drop, in
-/// declaration order: what is left open (the output), then the ring manager
-/// handle, then the backend whose client every connection was opened on.
-/// Closing a connection stops its driver: the ALSA backend joins its pump
-/// thread, which drops the producer handle before the port is retired. On
-/// macOS the handle lives in the input callback, which CoreMIDI retains and
-/// may release (and so drop the handle) after the port is disposed; a push
-/// in that window lands in a ring nobody drains, which is harmless. The order
-/// is about not leaving ports behind, not about soundness: each handle owns
-/// its half of the ring and cannot outlive the memory it pushes into.
+/// Fields drop in declaration order: the open endpoints first (each
+/// [`OpenInput`] closes its connection, then retires its port; the output
+/// closes), then the ring manager handle, then the devices and the backend
+/// whose client every connection was opened on. Closing a connection stops its
+/// driver: the ALSA backend joins its pump thread, which drops the producer
+/// handle before the port is retired. On macOS the handle lives in the input
+/// callback, which CoreMIDI retains and may release (and so drop the handle)
+/// after the port is disposed; a push in that window lands in a ring nobody
+/// drains, which is harmless. The order is about not leaving ports behind, not
+/// about soundness: each handle owns its half of the ring and cannot outlive
+/// the memory it pushes into.
 struct Inner {
     open: Mutex<Open>,
-    /// Ring manager the backend pushes inbound events into. Held so
-    /// `connect_input` can mint a producer handle per connection, and
-    /// `disconnect_input` can retire the port it fed.
+    /// Ring manager the backend pushes inbound events into: each open input
+    /// takes a port from it and retires the port on close.
     ports: Arc<HardwareMidiInputs>,
     /// The devices present, and the backend that opens them.
     devices: Devices,
@@ -188,9 +187,10 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no present input — the shape a
-    /// stale id takes after a hot-plug. Otherwise whatever the backend raises
-    /// while opening the port.
+    /// [`Error::NoDevice`] when `id` names no present device — the shape a
+    /// stale id takes after a hot-plug — and [`Error::WrongDirection`] when it
+    /// is not an input. Otherwise whatever the backend raises while opening the
+    /// port.
     pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
         let mut open = self.inner.open();
         if open.inputs.contains_key(id) {
@@ -215,8 +215,8 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when nothing matches. A device that is absent is an
-    /// error here, never a silent no-op.
+    /// [`Error::NoDeviceNamed`] when nothing matches. A device that is absent is
+    /// an error here, never a silent no-op.
     pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
         let info =
             Self::find(self.inputs(), name).ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;
@@ -295,8 +295,9 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no present output, plus whatever
-    /// the backend raises while opening.
+    /// [`Error::NoDevice`] when `id` names no present device,
+    /// [`Error::WrongDirection`] when it is not an output, plus whatever the
+    /// backend raises while opening.
     pub fn connect_output(&self, id: &DeviceId) -> Result<()> {
         let output = self.inner.devices.open_output(id)?;
         self.inner.open().output = Some(output);
@@ -313,7 +314,7 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when nothing matches.
+    /// [`Error::NoDeviceNamed`] when nothing matches.
     pub fn connect_output_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.outputs(), name)
             .ok_or_else(|| Error::NoDeviceNamed(name.to_owned()))?;

@@ -316,17 +316,24 @@ impl DeviceTable {
 - `DeviceId` is stable across a restart where the OS gives something to hold; an
   ordinal tells alike devices apart within a run ("Built", below). With the
   `serde` feature of `tutti-midi-device` it serializes, and `DeviceTable::resolve`
-  restores it: `Exact` for the one present device of a one-of-a-kind identity with
-  a saved ordinal 0, `Ambiguous` (with the candidates) for a saved ordinal above 0
-  or an identity several present devices share, `Missing` otherwise. A saved `#0`
-  cannot tell a device that was once one of two from a one-of-a-kind one, so it
-  resolves to the lone present device of its identity.
+  restores it from the saved `DeviceInfo` (`Devices::resolve`, reached through
+  `MidiSession::devices`). Only `Exact` is safe to bind unasked, and what an
+  identity can promise differs by backend: a CoreMIDI unique id names one
+  endpoint and a Product Instance Id one unit (its ports share the id, so the
+  saved name and direction pick the port): both `Exact`. An ALSA identity is the
+  client and port name, so another keyboard of the same model answers to it: a
+  lone present device with the saved name and a saved ordinal of 0 is
+  `SameName`. A saved ordinal above 0, or several alike devices, is `Ambiguous`
+  with the candidates; no device with the identity is `Missing`. A saved `#0`
+  cannot tell a device that was once one of two from a one-of-a-kind one, which
+  is why ALSA never answers `Exact`.
 
   ```rust
   // Restoring a remembered keyboard.
-  let saved: DeviceId = serde_json::from_str(&settings.keyboard)?;
-  match devices_table.resolve(&saved) {
+  let saved: DeviceInfo = serde_json::from_str(&settings.keyboard)?;
+  match session.devices().resolve(&saved) {
       Resolved::Exact(info) => open(info),
+      Resolved::SameName(info) => open_or_confirm(info),
       Resolved::Ambiguous(candidates) => ask_the_user(candidates),
       Resolved::Missing => wait_for_added(&saved),   // an Added event, then resolve again
   }

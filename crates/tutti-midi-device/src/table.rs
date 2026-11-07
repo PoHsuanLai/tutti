@@ -48,17 +48,26 @@ impl DeviceEvent {
     }
 }
 
-/// What a saved [`DeviceId`] names among the devices present now.
+/// What a saved device names among the devices present now.
+///
+/// Only [`Exact`](Self::Exact) is safe to bind without asking. What an
+/// identity can promise differs: CoreMIDI's unique id names one endpoint and a
+/// Product Instance Id names one unit, but an ALSA identity is only a name, so
+/// another keyboard of the same model answers to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Resolved<'a> {
-    /// The one present device with the saved identity, and the saved ordinal
-    /// is 0: the id of a one-of-a-kind device names it again.
-    Exact(&'a DeviceInfo),
-    /// Present devices share the saved identity and the id cannot say which
-    /// the saved one was: the ordinal is above 0, or several devices are alike
-    /// now. These are the candidates, ordered by id. Binding none until the
-    /// user chooses keeps a restored id from reaching another keyboard.
-    Ambiguous(Vec<&'a DeviceInfo>),
+pub enum Resolved {
+    /// The identity names a unit and exactly one present device is the saved
+    /// one: a CoreMIDI endpoint with the saved unique id, or the port of a
+    /// Product Instance Id with the saved name and direction.
+    Exact(DeviceInfo),
+    /// Exactly one present device answers to the saved identity, and the
+    /// identity is only a name (ALSA): it may be the saved device or another
+    /// of the same name. An app can bind it or ask.
+    SameName(DeviceInfo),
+    /// Several present devices could be the saved one, or the saved ordinal is
+    /// above 0 and cannot be trusted across a restart. These are the
+    /// candidates, ordered by id; an app asks.
+    Ambiguous(Vec<DeviceInfo>),
     /// No present device has the saved identity.
     Missing,
 }
@@ -144,26 +153,50 @@ impl DeviceTable {
         self.devices.get(id).map(|e| &e.info)
     }
 
-    /// What `saved`, an id from an earlier run, names now.
+    /// What `saved`, a device listed in an earlier run, names now.
     ///
     /// An ordinal tells alike devices apart within one run only (see
-    /// [`DeviceId`]), so only the first of a kind, alone, is taken as the same
-    /// device again. A saved `#0` is the one case this cannot tell from a
-    /// device that was once one of two: it resolves to the lone present device
-    /// of its identity.
+    /// [`DeviceId`]), so it is trusted only as 0, and only where nothing else
+    /// answers to the identity.
+    ///
+    /// - A CoreMIDI identity names one endpoint: `Exact` when it is present.
+    /// - A Product Instance Id names a unit, and all its ports share it, so the
+    ///   port is told by its name and direction: `Exact` for the one present
+    ///   port with both, `Ambiguous` (the unit's ports) when none or several
+    ///   have.
+    /// - An ALSA identity is the client and port name: `SameName` for the lone
+    ///   present device when the saved ordinal is 0 (it cannot be told from
+    ///   another unit of the same name), `Ambiguous` for a saved ordinal above
+    ///   0 or several present devices.
+    /// - No present device with the identity is `Missing`.
     #[must_use]
-    pub fn resolve(&self, saved: &DeviceId) -> Resolved<'_> {
-        let identity = saved.identity();
+    pub fn resolve(&self, saved: &DeviceInfo) -> Resolved {
+        let identity = saved.id.identity();
         let alike: Vec<&DeviceInfo> = self
             .devices
             .range(DeviceId::new(identity.clone(), 0)..)
             .take_while(|(id, _)| id.identity() == identity)
             .map(|(_, entry)| &entry.info)
             .collect();
-        match alike.as_slice() {
-            [] => Resolved::Missing,
-            [only] if saved.ordinal() == 0 => Resolved::Exact(only),
-            _ => Resolved::Ambiguous(alike),
+        let owned = |infos: &[&DeviceInfo]| infos.iter().copied().cloned().collect::<Vec<_>>();
+        match (identity, alike.as_slice()) {
+            (_, []) => Resolved::Missing,
+            (Identity::CoreMidi(_), [only]) => Resolved::Exact((*only).clone()),
+            (Identity::Product(_), _) => {
+                let port: Vec<&DeviceInfo> = alike
+                    .iter()
+                    .copied()
+                    .filter(|d| d.name == saved.name && d.direction == saved.direction)
+                    .collect();
+                match port.as_slice() {
+                    [only] => Resolved::Exact((*only).clone()),
+                    _ => Resolved::Ambiguous(owned(if port.is_empty() { &alike } else { &port })),
+                }
+            }
+            (Identity::Alsa { .. }, [only]) if saved.id.ordinal() == 0 => {
+                Resolved::SameName((*only).clone())
+            }
+            _ => Resolved::Ambiguous(owned(&alike)),
         }
     }
 

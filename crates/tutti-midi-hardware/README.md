@@ -15,7 +15,10 @@ Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 over it are dropped. `subscribe()` gives a [`DeviceEvents`] of its own, so one
 reader never takes another's events. Each device has a [`DeviceId`], and
 `open_input(&id, &ports)` returns an [`OpenInput`] that closes the connection
-and retires its ring when dropped. An id names a device within a run:
+and retires its ring when dropped.
+`resolve(&saved)` restores a remembered [`DeviceInfo`] (see `tutti-midi-device`'s
+`serde` feature): `Exact` is safe to bind, `SameName` is a lone device that
+matches only by name (ALSA), `Ambiguous` lists candidates. An id names a device within a run:
 its identity is what the OS lets survive a restart, and the ordinal after it only
 tells alike devices apart (unplug two identical keyboards and plug them back in
 the other order, and their ordinals swap).

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use tutti_midi_device::{
     DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
-    OsDevice,
+    OsDevice, Resolved,
 };
 use tutti_midi_types::MidiOut;
 
@@ -31,9 +31,10 @@ pub enum WatchFailure {
     /// The backend's watch thread panicked.
     #[error("the MIDI device watch thread panicked")]
     Panicked,
-    /// The OS refused the watch, or it broke.
-    #[error("the MIDI device watch failed: {0}")]
-    Failed(#[source] Arc<Error>),
+    /// The OS refused the watch, or it broke: the error is the OS's own, and
+    /// its text is shown as it is.
+    #[error(transparent)]
+    Failed(Arc<Error>),
 }
 
 impl From<Error> for WatchFailure {
@@ -320,6 +321,10 @@ impl Devices {
     /// [`DeviceEvents::initial`] is the list at the same instant, which no
     /// event of the subscription repeats: there is no gap or overlap between
     /// reading the list and subscribing, whichever a caller does first.
+    ///
+    /// The queue is unbounded and a subscriber that never reads keeps one small
+    /// event per change until it is dropped. Drop a `DeviceEvents` that is no
+    /// longer read.
     pub fn subscribe(&self) -> DeviceEvents {
         let mut state = self.state();
         let queue = Arc::new(Queue::default());
@@ -337,6 +342,13 @@ impl Devices {
     /// Opens `id` for input. Its events land in a ring of `ports`, drained by
     /// the audio thread; the returned [`OpenInput`] holds the connection and the
     /// ring's port, and dropping it closes both.
+    ///
+    /// Control thread only: it takes a ring from `ports` (which publishes) and
+    /// the backend may start a thread.
+    ///
+    /// Opening an id that is already open opens a second connection to the
+    /// device, and every event arrives twice. `Devices` does not track what is
+    /// open; the session does, and its `connect_input` is idempotent.
     ///
     /// The list is not held while the OS opens the handle. A device that left
     /// in between, and whose handle the OS gave to another at once, opens that
@@ -396,6 +408,18 @@ impl Devices {
             })
     }
 
+    /// What `saved`, a device from an earlier run, names among the devices
+    /// present now. Bind a [`Resolved::Exact`] without asking; a
+    /// [`Resolved::SameName`] may be another unit of the same name (ALSA
+    /// identifies a device by its name only). See
+    /// [`DeviceTable::resolve`](tutti_midi_device::DeviceTable::resolve) for the
+    /// rule. A host that holds a session reaches this through
+    /// `MidiSession::devices`.
+    #[must_use]
+    pub fn resolve(&self, saved: &DeviceInfo) -> Resolved {
+        self.state().table.resolve(saved)
+    }
+
     /// What the OS says `id` can carry, asked of the backend now. `None` when
     /// `id` is not present.
     #[must_use]
@@ -414,12 +438,22 @@ impl Devices {
 /// The changes to the device list since [`Devices::subscribe`], oldest first.
 ///
 /// One consumer's view: it is not `Clone`, and another subscription's reads
-/// leave it alone. Dropping it unsubscribes.
+/// leave it alone. Dropping it unsubscribes at once.
 pub struct DeviceEvents {
     initial: Vec<DeviceInfo>,
     queue: Arc<Queue>,
     // Keeps the watch running while events can still be expected from it.
     _devices: Devices,
+}
+
+impl Drop for DeviceEvents {
+    fn drop(&mut self) {
+        let mine = Arc::as_ptr(&self.queue);
+        self._devices
+            .state()
+            .subscribers
+            .retain(|queue| queue.as_ptr() != mine);
+    }
 }
 
 impl core::fmt::Debug for DeviceEvents {
@@ -480,7 +514,8 @@ impl DeviceEvents {
 /// events land in.
 ///
 /// Dropping it closes both, connection first, so nothing is still pushing into
-/// a ring that is being retired. A device that leaves does not close it: the
+/// a ring that is being retired. Drop it on a control thread only: closing the
+/// connection joins the backend's thread and retiring the port publishes. A device that leaves does not close it: the
 /// holder learns from a [`DeviceEvent::Removed`] naming [`id`](Self::id) and
 /// drops it (the session does, in `Phase::Poll`).
 pub struct OpenInput {

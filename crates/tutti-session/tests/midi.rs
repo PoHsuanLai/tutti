@@ -677,9 +677,31 @@ fn a_dead_device_watch_is_reported_once() {
     fake.fail_watch("the sequencer went away");
     assert_eq!(
         failed(&s.update()),
-        ["the MIDI device watch failed: MIDI port error: the sequencer went away"]
+        ["MIDI port error: the sequencer went away"]
     );
     assert!(failed(&s.update()).is_empty(), "once");
+}
+
+/// **An app holding a session restores a remembered device through it.** The
+/// fake OS names devices as ALSA does, so the saved device comes back as a
+/// same-name match, and as `Missing` once it is gone. Mutation: `Devices::resolve`
+/// answering `Missing` fails the first assertion.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_remembered_device_resolves_through_the_session() {
+    use tutti_midi_hardware::Resolved;
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", Direction::Input);
+    s.update();
+    let io = s.midi_io().expect("the OS MIDI layer").clone();
+    let saved = io.devices().list().remove(0);
+    assert_eq!(
+        io.devices().resolve(&saved),
+        Resolved::SameName(saved.clone())
+    );
+    fake.unplug(EndpointId::from_raw(1));
+    s.update();
+    assert_eq!(io.devices().resolve(&saved), Resolved::Missing);
 }
 
 /// **Another device's removal leaves a held input and output alone.**

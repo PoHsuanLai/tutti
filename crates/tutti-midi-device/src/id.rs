@@ -28,6 +28,9 @@ impl EndpointId {
 }
 
 /// What a device is known by, as far as the OS lets it be known.
+///
+/// With the `serde` feature the document names the variant, so renaming one
+/// breaks saved files.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Identity {
@@ -72,8 +75,12 @@ impl Identity {
 /// shares) names the same device again; one with an ordinal above 0 does not.
 ///
 /// A saved id is restored with [`DeviceTable::resolve`](crate::DeviceTable::resolve),
-/// never compared with a listed id by hand. Every identity and every ordinal is
-/// a valid id, so the serde form is the plain derive and refuses nothing.
+/// never compared with a listed id by hand.
+///
+/// The serde form is the plain derive. The fields are private, but there is no
+/// raw to refuse: any identity string and any `u32` ordinal is an id the table
+/// could have minted, so `new` has no check for a `try_from` to share. The
+/// document names the `Identity` variants, so renaming one breaks saved files.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceId {
@@ -112,6 +119,7 @@ impl fmt::Display for DeviceId {
 
 /// Which way MIDI flows through a device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Direction {
     /// It sends MIDI to this engine.
     Input,
@@ -135,8 +143,12 @@ impl Direction {
     }
 }
 
-/// One device as the table lists it.
+/// One device as the table lists it. An app that remembers a device keeps
+/// this whole (with the `serde` feature) and restores it with
+/// [`DeviceTable::resolve`](crate::DeviceTable::resolve): the name and direction
+/// tell the ports of one unit apart.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeviceInfo {
     /// How to open it.
     pub id: DeviceId,

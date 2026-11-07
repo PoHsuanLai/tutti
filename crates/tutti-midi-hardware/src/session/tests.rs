@@ -306,11 +306,9 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
 /// Dropping the session closes its inputs before the backend they were
 /// opened on, and retires their ports from a manager that outlives it.
 ///
-/// Mutations: deleting `impl Drop for Inner` and declaring `backend`
-/// before `open` (the old field order) → the log reads
-/// `["backend", "connection"]`; deleting only the `Drop` impl → the
-/// order holds by field order, but the shared manager still lists the
-/// session's port.
+/// Mutations: declaring `devices` before `open` in `Inner` → the log reads
+/// `["backend", "connection"]`; `OpenInput::drop` not retiring its port → the
+/// shared manager still lists the session's port.
 #[test]
 fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
     let (s, log) = logging_session(false);
@@ -328,8 +326,9 @@ fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
 
 /// An open the backend refuses leaves no port behind.
 ///
-/// Mutation: dropping the `remove_input_port` in `connect_input`'s error
-/// arm → the manager lists one dead port per failed attempt.
+/// Mutation: `Devices::open_input` opening the backend connection before it
+/// builds the `OpenInput` that owns the port (an error then returns with the
+/// port still listed) → the manager lists one dead port per failed attempt.
 #[test]
 fn a_refused_open_leaves_no_port() {
     let (s, _log) = logging_session(true);

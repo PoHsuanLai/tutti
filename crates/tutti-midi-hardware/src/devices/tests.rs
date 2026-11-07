@@ -8,12 +8,11 @@ use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 /// Long enough to be a failure, not a race: a wake returns at once.
 const PATIENCE: Duration = Duration::from_secs(5);
 
-/// `wait` with a long timeout, which must come back before it. A change
-/// that does not notify the waiter returns only at the timeout, with its
-/// events, and the elapsed time is what shows it.
+/// `recv_timeout` with a long timeout, which must come back before it. A
+/// change that does not notify the waiter returns only at the timeout, and the
+/// elapsed time is what shows it.
 ///
-/// Returns the event that woke it and any queued behind it, as the old
-/// batch `wait` did.
+/// Returns the event that woke it and any queued behind it.
 fn wake(events: &DeviceEvents) -> Vec<DeviceEvent> {
     let start = std::time::Instant::now();
     let first = events.recv_timeout(PATIENCE).expect("an event");
@@ -31,8 +30,8 @@ fn fake() -> (Devices, DeviceEvents, FakeCounters) {
 // Mutation record, each seen to fail, then restored:
 // - `ChangeSink::send` without `notify_all`: every test that waits fails with
 //   "wait slept to its timeout" (nine of them);
-// - `wait_timeout_while` with a predicate that is never true (`wait` returns
-//   at once): the tests that expect an event fail;
+// - `wait_timeout_while` in `recv_timeout` with a predicate that is never
+//   true (it returns at once): the tests that expect an event fail;
 // - `FakeWatch::drop` without the join: `dropping_devices_stops_the_watch_thread`
 //   fails;
 // - `Reporter::report` ignoring `departed`:
@@ -118,7 +117,7 @@ fn a_rename_is_changed_and_keeps_the_id() {
 }
 
 #[test]
-fn poll_gives_the_changes_since_the_last_call_once() {
+fn a_wake_takes_the_change_off_the_queue() {
     let (_devices, events, fake) = fake();
     assert!(events.try_iter().next().is_none());
     fake.plug(endpoint(1, "Keys"), Direction::Input);
@@ -128,7 +127,7 @@ fn poll_gives_the_changes_since_the_last_call_once() {
 }
 
 /// Mutation: `ChangeSink::fail` not recording the reason leaves
-/// `watch_failure` `None` and the first assertion fails.
+/// `failure()` `None` and the second assertion fails.
 #[test]
 fn a_watch_that_fails_says_so_and_the_list_freezes() {
     let (devices, events, fake) = fake();
@@ -137,7 +136,7 @@ fn a_watch_that_fails_says_so_and_the_list_freezes() {
     fake.fail_watch("the sequencer went away");
     assert_eq!(
         events.failure().map(|f| f.to_string()),
-        Some("the MIDI device watch failed: MIDI port error: the sequencer went away".into())
+        Some("MIDI port error: the sequencer went away".into())
     );
     // The thread has ended: a later plug is not reported.
     fake.plug(endpoint(2, "Pads"), Direction::Input);
@@ -145,7 +144,7 @@ fn a_watch_that_fails_says_so_and_the_list_freezes() {
 }
 
 #[test]
-fn wait_times_out_empty() {
+fn recv_times_out_empty() {
     let (_devices, events, _fake) = fake();
     assert!(matches!(
         events.recv_timeout(Duration::from_millis(20)),
@@ -154,7 +153,7 @@ fn wait_times_out_empty() {
 }
 
 #[test]
-fn wait_wakes_for_a_change_made_on_another_thread() {
+fn recv_wakes_for_a_change_made_on_another_thread() {
     let (_devices, events, fake) = fake();
     let plugger = std::thread::spawn(move || fake.plug(endpoint(1, "Keys"), Direction::Input));
     let events = wake(&events);
@@ -191,13 +190,17 @@ fn initial_and_stream_split_at_the_subscription() {
     assert!(matches!(&streamed[..], [DeviceEvent::Added(i)] if i.name == "Pads"));
 }
 
-/// A dropped subscriber leaves the list, so an app that wants no events keeps
-/// none. Mutation: `ChangeSink::send` not pruning (`retain` -> `iter`) leaves 1.
+/// A dropped subscriber leaves the list at once, with no later change to prune
+/// it, so an app that wants no events keeps none. Mutation: `DeviceEvents`
+/// without its `Drop` leaves 1.
 #[test]
 fn a_dropped_subscriber_is_forgotten() {
-    let (devices, events, fake) = fake();
+    let (devices, events, _fake) = fake();
+    let other = devices.subscribe();
+    assert_eq!(devices.state().subscribers.len(), 2);
     drop(events);
-    fake.plug(endpoint(1, "Keys"), Direction::Input);
+    assert_eq!(devices.state().subscribers.len(), 1);
+    drop(other);
     assert!(devices.state().subscribers.is_empty());
 }
 
@@ -223,26 +226,14 @@ fn a_failed_watch_ends_the_stream_after_what_it_reported() {
     ));
 }
 
-/// A failed open leaves no port behind, and a dropped `OpenInput` retires its
-/// port. Mutation: `OpenInput::drop` without `remove_input_port` leaves 1 in
-/// the second assertion; building `OpenInput` after the open instead of before
-/// leaves 1 in the first.
+/// A dropped `OpenInput` retires its port. Mutation: `OpenInput::drop`
+/// without `remove_input_port` leaves 1 in the last assertion.
 #[test]
-fn an_input_owns_its_port_and_a_failed_open_leaves_none() {
+fn a_dropped_input_retires_its_port() {
     let (devices, events, fake) = fake();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    fake.plug(endpoint(10, "Synth"), Direction::Output);
-    let mut seen = 0;
-    while seen < 2 {
-        seen += wake(&events).len();
-    }
+    wake(&events);
     let ports = ports();
-    assert!(
-        devices
-            .open_input(&id_of(&devices, "Synth"), &ports)
-            .is_err()
-    );
-    assert!(ports.list_input_ports().is_empty());
     let input = devices
         .open_input(&id_of(&devices, "Keys"), &ports)
         .unwrap();
@@ -250,6 +241,139 @@ fn an_input_owns_its_port_and_a_failed_open_leaves_none() {
     assert_eq!(input.name(), "Keys");
     drop(input);
     assert!(ports.list_input_ports().is_empty());
+}
+
+/// A backend that lists one input and refuses to open it.
+struct Refuses;
+
+impl MidiEndpoints for Refuses {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        sink.seed(os_devices(&self.inputs(), &[]));
+        Ok(Box::new(crate::endpoints::NoWatch))
+    }
+    fn inputs(&self) -> Vec<EndpointInfo> {
+        vec![endpoint(1, "Keys")]
+    }
+    fn outputs(&self) -> Vec<EndpointInfo> {
+        Vec::new()
+    }
+    fn open_input(
+        &self,
+        _: EndpointId,
+        _: crate::InputProducerHandle,
+    ) -> Result<Box<dyn InputConnection>> {
+        Err(Error::MidiDevice("refused".into()))
+    }
+    fn open_output(&self, _: EndpointId) -> Result<Box<dyn tutti_midi_types::MidiOut>> {
+        Err(Error::MidiDevice("refused".into()))
+    }
+}
+
+/// An open the backend refuses leaves no port behind, however many times it
+/// is tried. Mutation: `Devices::open_input` opening the backend connection
+/// before it builds the `OpenInput` that owns the port (`?` on the backend
+/// call ahead of the struct) leaves 3 ports listed.
+#[test]
+fn a_backend_failure_leaves_no_port() {
+    let devices = Devices::open_over(Box::new(Refuses)).unwrap();
+    let ports = ports();
+    let keys = id_of(&devices, "Keys");
+    for _ in 0..3 {
+        assert!(matches!(
+            devices.open_input(&keys, &ports),
+            Err(Error::MidiDevice(_))
+        ));
+    }
+    assert!(ports.list_input_ports().is_empty());
+}
+
+/// A change that lands while `subscribe` runs is in `initial` or in the
+/// stream, never both and never neither. A sender reports 2000 distinct
+/// devices on one thread while another subscribes; every device must be
+/// accounted for once.
+///
+/// Mutation: `subscribe` taking the list under one lock and registering the
+/// queue under a second, with a 200 us sleep between, loses the devices that
+/// arrive in the gap (the sum falls short of 2000).
+#[test]
+fn a_change_during_subscribe_is_in_initial_or_in_the_stream_once() {
+    const DEVICES: i32 = 2000;
+    for _ in 0..10 {
+        let devices = Devices::open_over(Box::new(Refuses)).unwrap();
+        let sink = ChangeSink {
+            shared: Arc::clone(&devices.inner.shared),
+        };
+        let sender = std::thread::spawn(move || {
+            for n in 0..DEVICES {
+                sink.send(OsChange::Present(OsDevice {
+                    handle: EndpointId::from_raw(1_000 + u64::try_from(n).unwrap()),
+                    identity: Identity::CoreMidi(n),
+                    name: format!("d{n}"),
+                    direction: Direction::Input,
+                }));
+            }
+        });
+        // `Refuses` seeds one device; wait for the sender to be under way.
+        while devices.list().len() < 20 {
+            std::thread::yield_now();
+        }
+        let events = devices.subscribe();
+        sender.join().unwrap();
+        let mut seen: Vec<String> = events.initial().iter().map(|d| d.name.clone()).collect();
+        seen.extend(events.try_iter().map(|e| e.info().name.clone()));
+        seen.retain(|name| name != "Keys");
+        let total = seen.len();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            total,
+            "a device is in both initial and the stream"
+        );
+        assert_eq!(
+            total,
+            usize::try_from(DEVICES).unwrap(),
+            "a device is in neither"
+        );
+    }
+}
+
+/// A saved device resolves through the real `Devices`: a unit's ports by name
+/// and direction, and a lone same-named device only by name. Mutation:
+/// `Devices::resolve` returning `Resolved::Missing` fails the first assertion.
+#[test]
+fn a_saved_device_resolves_through_devices() {
+    let (devices, events, fake) = fake();
+    let mut port = |raw, name: &str, direction| {
+        let mut e = endpoint(raw, name);
+        e.identity = Identity::Product("unit-1".into());
+        fake.plug(e, direction);
+    };
+    port(1, "Pad In", Direction::Input);
+    port(2, "Pad Out", Direction::Output);
+    fake.plug(endpoint(3, "Keys"), Direction::Input);
+    let mut seen = 0;
+    while seen < 3 {
+        seen += wake(&events).len();
+    }
+    let by_name = |name: &str| devices.list().into_iter().find(|d| d.name == name).unwrap();
+    let (pad_out, keys) = (by_name("Pad Out"), by_name("Keys"));
+    assert_eq!(devices.resolve(&pad_out), Resolved::Exact(pad_out.clone()));
+    assert_eq!(devices.resolve(&keys), Resolved::SameName(keys.clone()));
+
+    // Unplugged and plugged back: the same answers.
+    fake.unplug(EndpointId::from_raw(2));
+    assert_eq!(
+        devices.resolve(&pad_out),
+        Resolved::Ambiguous(vec![by_name("Pad In")])
+    );
+    let mut again = endpoint(7, "Pad Out");
+    again.identity = Identity::Product("unit-1".into());
+    fake.plug(again, Direction::Output);
+    assert_eq!(
+        devices.resolve(&pad_out),
+        Resolved::Exact(by_name("Pad Out"))
+    );
 }
 
 /// Mutation: `FakeWatch::drop` without the join, or a sender kept in

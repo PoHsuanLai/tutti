@@ -232,6 +232,30 @@ fn a_client_that_exits_is_removed_and_unlisted() {
     assert!(devices.list().iter().all(|d| d.id != id));
 }
 
+/// On ALSA the identity is the name, so a saved device comes back as a
+/// same-name match and never as exact, whether it is the same client or
+/// another of that name. Mutation: the ALSA arm of `DeviceTable::resolve`
+/// answering `Exact` fails the last assertion.
+#[test]
+fn a_saved_alsa_device_resolves_by_name_only() {
+    let devices = Watched::open();
+    let name = unique("saved");
+    let first = plug(&name);
+    let saved = info(until(&devices, added(&name)));
+    assert_eq!(
+        devices.resolve(&saved),
+        crate::Resolved::SameName(saved.clone())
+    );
+
+    drop(first);
+    until(&devices, removed(saved.id.clone()));
+    assert_eq!(devices.resolve(&saved), crate::Resolved::Missing);
+
+    let _second = plug(&name);
+    let again = info(until(&devices, added(&name)));
+    assert_eq!(devices.resolve(&saved), crate::Resolved::SameName(again));
+}
+
 #[test]
 fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     let devices = Watched::open();

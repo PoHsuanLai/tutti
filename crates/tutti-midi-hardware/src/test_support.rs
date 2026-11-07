@@ -164,7 +164,7 @@ impl FakeCounters {
 
     /// Makes every running watch fail with `reason`, as a real one does when
     /// the OS call it blocks in fails: the list freezes and
-    /// `Devices::watch_failure` says why.
+    /// every subscriber's `DeviceEvents::failure` says why.
     pub fn fail_watch(&self, reason: &str) {
         self.devices().deliver(&Report::Fail(reason.to_string()));
     }

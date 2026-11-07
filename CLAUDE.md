@@ -335,10 +335,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
   feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
-  threads and the OS. A consumer that persists a `DeviceId` depends on it with
-  its `serde` feature (no umbrella forwards it) and restores one with
-  `DeviceTable::resolve`, which binds only an `Exact` answer; comparing a saved
-  id with a listed one by hand can bind another keyboard of the same model.
+  threads and the OS. A consumer that persists a `DeviceInfo` depends on it with
+  its `serde` feature (no umbrella forwards it; renaming an `Identity` variant
+  breaks saved files) and restores it with `Devices::resolve`. Only `Exact`
+  is safe to bind unasked: an ALSA identity is a name, so a lone device with
+  the saved name is `SameName` (bind or ask), and an ordinal above 0 or several
+  alike devices are `Ambiguous`. Comparing a saved id with a listed one by hand
+  can bind another keyboard of the same model.
 - `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
   private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
   CI runs the per-module path gate on each), are `publish = false`,

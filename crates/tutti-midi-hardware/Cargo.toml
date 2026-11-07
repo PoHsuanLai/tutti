@@ -18,7 +18,7 @@ categories = ["multimedia::audio", "hardware-support"]
 
 [features]
 # Export `test_support::FakeBackend` — a device list with no OS behind it, for
-# `MidiSession::with_backend`. Off by default: a host has no use for a fake
+# `MidiSession::open_over`. Off by default: a host has no use for a fake
 # device list, and shipping one invites it into production wiring by accident.
 #
 # It exists because the fixture is the only thing standing between a session

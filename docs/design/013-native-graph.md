@@ -4122,8 +4122,8 @@ What they show:
   `DistortionNode` hard clip at six channels 1.5 → 0.18 / 22.1 → 1.2
   (tanh, bound by its libm call, 1.2×); `BrickwallLimiterNode` at six
   channels 1.1 → 0.19 / 16.8 → 1.1; `DownmixNode` 6 → 2 1.3 → 0.30 /
-  18.9 → 2.5, through a planar `tutti_types::fold_planar_channel` beside
-  `fold_frame`. Every one renders the same bits as before. A recurrence
+  18.9 → 2.5, through a planar kernel in `tutti-types` (then
+  `fold_planar_channel`, now `Fold::planar_channel`). Every one renders the same bits as before. A recurrence
   is the exception: the phaser's stages are one dependent chain a
   sample, and running it channel-outer measured 1.3–2× slower than the
   sample-outer loop, which keeps one chain per channel in flight at once.
@@ -4883,7 +4883,7 @@ slices are ignored on every path, and fewer is a caller bug (a
 |---|---|
 | `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar_channel` kernel in `tutti-types` |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
@@ -7799,6 +7799,39 @@ the budget. The 32-vocoder scenes (0.55–0.76 mean) are dominated by the
 phase vocoder, which stays f32, so f64 moves them by the interpolation's
 share at most. Neither is a reason not to build the path; neither shows
 it is needed.
+
+## Channel placement: `Fold`
+
+Graph ports stay plain counts; placement belongs to the edges. An edge (a
+file, a device, a plugin bus) states the `ChannelTopology` it has, and
+`tutti_types::Fold::between(&src, &dst)`, built on the control side, is the one
+way two topologies meet. It replaces the `fold_*` family, which chose a matrix
+by width alone.
+
+- **`Speaker::Discrete`** is a channel known to feed no speaker (a numbered
+  interface input, a track, B-format), distinct from `Speaker::Unknown` (a
+  position a format named and the vocabulary cannot). Discrete channels are
+  never matrixed: a discrete destination takes any source by index and
+  zero-fills; a discrete source against a named destination relabels at equal
+  width only. `Fold::select` takes chosen source channels onto a discrete
+  destination (the mic and the meter, in their ports).
+- **`ChannelTopology::smpte`** now has 12 (7.1.4). A width of 4 stays without an
+  order (quad or B-format); `Fold::assuming_smpte` is the named assumption and
+  refuses a width with none.
+- **Rules.** The same speakers in another order are a bit-exact permutation.
+  A speaker the destination lacks folds into its nearest speakers at -3 dB
+  (stereo destination: the ITU-R BS.775 / Dolby set, unchanged and
+  bit-identical to `fold_frame` for widths 1, 2, 4 (quad), 6, 8 and 12). For
+  every other destination the table, the choice of nearest speaker and the
+  -3 dB are tutti's own; the table is pinned in `fold/tests.rs`. A channel
+  that cannot be placed is a `FoldError`, never a silent drop.
+- **Pairs whose output changed** from the width folds: 1 to {4, 6, 8, 12} (the
+  mono feeds the centre, or both fronts, not channel 0), 4 to {6, 8, 12} (a
+  quad's rears no longer land in the centre and LFE), 6 to 4, 8 to {4, 6} and
+  12 to {4, 6, 8} (placed by position, not the first channels). Widths with no
+  SMPTE order (3, 5, 7, 9 to 11, 13 and up) refuse under `assuming_smpte`.
+- **Application** does not allocate: `frame` (mic, sampler), `planar_channel`
+  (`DownmixNode`) and `planar_to_interleaved` (engine, export).
 
 ## Decisions for the owner
 

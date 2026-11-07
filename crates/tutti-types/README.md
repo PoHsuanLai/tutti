@@ -20,9 +20,11 @@ Use it directly when you need only the vocabulary (a crate that implements
   questions, so distinct types.
 - **Buffers** — `Interleaved` / `InterleavedMut`, a flat buffer that carries its
   own frame width, so a frame index and a sample index stop being the same type.
-  The `fold_frame` family folds a wider signal into a narrower sink (ITU-R
-  BS.775 / Dolby) rather than dropping the extra channels; only the common
-  widths fold, and the matrix is not normalised (see `fold_frame`).
+  `Fold::between(&src, &dst)` turns one `ChannelTopology` into another by
+  speaker (ITU-R BS.775 / Dolby coefficients, a pure permutation for the same
+  speakers in another order, discrete channels one to one) and refuses a channel
+  it cannot place; the matrix is not normalised. The `fold_frame` family folds by
+  width alone and is what `Fold` replaces.
 - **`io`** — `AudioIn` / `AudioOut` and `pump`: the two traits every audio source
   and sink in the engine speaks (mic, file, disk, plugin boundary).
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
@@ -39,10 +41,10 @@ Use it directly when you need only the vocabulary (a crate that implements
 
 **The root is the API.** The common names are re-exported there, so
 `tutti_types::Bpm` and `tutti_types::AudioIn` resolve directly — import from the
-root, or from `prelude` for the common subset. Six of the ten modules are
+root, or from `prelude` for the common subset. Six of the eleven modules are
 public (`value`, `graph`, `io`, `latency`, `meter`, `tail`), because each holds
-items the root does not re-export (`graph::Source`); the other four (`channels`,
-`downmix`, `interleaved`, `topology`) are private and fully re-exported.
+items the root does not re-export (`graph::Source`); the other five (`channels`,
+`downmix`, `fold`, `interleaved`, `topology`) are private and fully re-exported.
 
 ## What this crate does not own
 

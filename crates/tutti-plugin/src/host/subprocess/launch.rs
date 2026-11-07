@@ -436,8 +436,8 @@ mod tests {
     /// reason. The server answers the load; it does not exit, which the host
     /// would report as `ProcessCrashed`.
     ///
-    /// The reference CLAP plugin's cdylib, which carries a `.so` name, is a real
-    /// library the server reads as VST2 and the VST2 loader refuses.
+    /// The reference CLAP plugin's cdylib under a `.vst` name is a real library
+    /// the server reads as VST2 and the VST2 loader refuses.
     ///
     /// Needs `cargo build -p tutti-plugin-server` first (`CLAUDE.md`).
     ///
@@ -469,6 +469,11 @@ mod tests {
         };
         match err {
             BridgeError::LoadFailed { reason, .. } => {
+                assert!(
+                    !reason.contains("Unsupported plugin format"),
+                    "reason: {reason}"
+                );
+                #[cfg(target_os = "linux")]
                 assert!(reason.contains("NotAPlugin"), "reason: {reason}");
             }
             other => panic!("expected LoadFailed, got {other:?}"),

@@ -61,13 +61,15 @@ fn load(stream: &mut Stream, path: &Path) -> BridgeMessage {
     read_frame(stream).expect("the server answers a load; it did not exit")
 }
 
-/// The reference CLAP plugin's library under its `.so` name, which the server
-/// reads as VST2 and the library is not (`NotAPlugin`), and under its `.clap`
-/// name, which loads.
+/// The reference CLAP plugin's library under a `.vst` name, which the server
+/// reads as VST2 and the library is not, and under its `.clap` name, which
+/// loads. The library's own name is `.so`, `.dylib` or `.dll` by platform, and
+/// the server dispatches on the extension, so both names are links.
 fn fixtures() -> (PathBuf, PathBuf) {
     let real = tutti_fixtures::cdylib("tutti_clap_test_plugin", "tutti-clap-test-plugin");
+    let not_a_plugin = tutti_fixtures::publish_with_extension(&real, "vst");
     let good = tutti_fixtures::publish_with_extension(&real, "clap");
-    (real, good)
+    (not_a_plugin, good)
 }
 
 /// A load that fails gets the loader's reason and leaves the server serving.
@@ -96,10 +98,17 @@ fn a_failed_load_is_answered_and_the_server_still_loads_a_good_plugin() {
     ));
 
     match load(&mut stream, &not_a_plugin) {
-        BridgeMessage::Error { message } => assert!(
-            message.contains("NotAPlugin"),
-            "the reply names the loader's reason: {message}"
-        ),
+        BridgeMessage::Error { message } => {
+            assert!(
+                !message.contains("Unsupported plugin format"),
+                "the library reached a VST2 loader: {message}"
+            );
+            #[cfg(target_os = "linux")]
+            assert!(
+                message.contains("NotAPlugin"),
+                "the reply names the loader's reason: {message}"
+            );
+        }
         other => panic!("expected an Error reply, got {other:?}"),
     }
     assert!(

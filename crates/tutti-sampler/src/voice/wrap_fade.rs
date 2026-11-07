@@ -75,6 +75,17 @@ impl Rig {
     /// A voice placed at `start` beats for `duration` (to the end of the wave
     /// when `None`).
     fn place(&mut self, id: u128, wave: &Arc<Wave>, start: f64, duration: Option<f64>) {
+        self.place_with(id, wave, start, duration, Playback::default());
+    }
+
+    fn place_with(
+        &mut self,
+        id: u128,
+        wave: &Arc<Wave>,
+        start: f64,
+        duration: Option<f64>,
+        play: Playback,
+    ) {
         let mut source = MemorySource::placed(
             Arc::clone(wave),
             Beat::new(start),
@@ -85,7 +96,7 @@ impl Rig {
             SlotId(id),
             Voice {
                 source: VoiceSource::Memory(source),
-                play: Playback::default(),
+                play,
                 channel_index: None,
             },
         );
@@ -427,9 +438,14 @@ fn a_seek_or_a_stop_during_the_fade_ends_it() {
 /// A mono wave of a constant that steps at the wrap: `before` below `WRAP`,
 /// `after` from it, per channel `c` offset by `0.1 * c`. Every read is exact.
 fn steps(channels: usize, before: f32, after: f32) -> Arc<Wave> {
+    steps_at(channels, before, after, WRAP)
+}
+
+/// [`steps`] with the step at frame `split`.
+fn steps_at(channels: usize, before: f32, after: f32, split: usize) -> Arc<Wave> {
     let mut w = Wave::new(channels, SR);
     for i in 0..4 * FPB {
-        let v = if i < WRAP { before } else { after };
+        let v = if i < split { before } else { after };
         let frame: Vec<f32> = (0..channels).map(|c| v + 0.1 * c as f32).collect();
         w.push_frame(&frame);
     }
@@ -623,4 +639,74 @@ fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded() {
             "tempo {tempo}, edit {edit:?}"
         );
     }
+}
+
+/// The unity rule is decided to the frame at the loop's start: a voice one
+/// frame before it is mid-sound (equal power), on it or one frame after it
+/// is the clip's own start (unity). The source steps from 0.25 to 0.5 so the
+/// head is 0.25 and the tail 0.5 whichever way the voice is placed.
+///
+/// Not covered: a tempo change inside the fade can flip the rule for a voice
+/// within about a frame of the loop's start (the frame it is judged on is
+/// re-derived at the new tempo), and the head's gain then jumps by up to the
+/// gap between the two curves, 1 - g_in, for the rest of the fade. It is
+/// accepted: the voice is already on the edge of the rule, and a tempo change
+/// inside a 5 ms window is a glitch of its own.
+///
+/// Mutation (run): `begins_with_loop` testing the loop's start frame itself
+/// (no `- 1 / fpb`) → the voice a frame before it reads as unity → fails.
+#[test]
+fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start() {
+    for (lag, own) in [(-1i32, false), (0, true), (1, true)] {
+        let w = steps_at(1, 0.25, 0.5, LS - 100);
+        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        rig.place(1, &w, LOOP_START_BEATS + f64::from(lag) / FPB as f64, None);
+        let out = rig.run(WRAP + FADE, 1000);
+        for k in 0..FADE {
+            let (g_in, g_out) = equal_power(k);
+            let head = if lag > 0 && k < lag as usize {
+                0.0
+            } else {
+                0.25
+            };
+            let head = if own { head } else { g_in * head };
+            let want = head + g_out * 0.5;
+            assert!(
+                (out[0][WRAP + k] - want).abs() < 1e-6,
+                "lag {lag}, frame {k}: {} vs {want}",
+                out[0][WRAP + k]
+            );
+        }
+    }
+}
+
+/// A voice with a loop of its own, under a transport wrap, is judged by its
+/// window like any other: placed before the loop's start it is mid-sound, so
+/// the equal-power rule, and the output stays inside the sum of the two
+/// levels. The voice's loop ends 100 frames into the fade, so the tail
+/// crosses the voice's own wrap there; only the frames before its crossfade
+/// are pinned.
+///
+/// Mutation (run): `begins_with_loop` always `true` → the head is unity →
+/// fails.
+#[test]
+fn a_voice_with_its_own_loop_is_judged_by_its_window() {
+    let w = steps(1, 0.25, 0.5);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let play = Playback {
+        loop_: super::memory_source::LoopSetting::On {
+            start: tutti_types::SamplePosition(20_000.0),
+            end: tutti_types::SamplePosition((WRAP + 100) as f64),
+            crossfade_frames: 64,
+        },
+        ..Playback::default()
+    };
+    rig.place_with(1, &w, 0.0, None, play);
+    let out = rig.run(WRAP + FADE, 1000);
+    for k in 0..30 {
+        let (g_in, g_out) = equal_power(k);
+        let want = g_in * 0.25 + g_out * 0.5;
+        assert!((out[0][WRAP + k] - want).abs() < 1e-6, "frame {k}");
+    }
+    assert!(out[0][WRAP..].iter().all(|s| s.is_finite() && *s <= 0.75));
 }

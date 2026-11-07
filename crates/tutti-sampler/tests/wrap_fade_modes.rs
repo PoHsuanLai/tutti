@@ -7,23 +7,26 @@
 //! both, and a fork shares nothing else with it; `tutti-export`'s render is
 //! a different crate's gate.
 //!
-//! No mutation applies: the test holds a property of the executor (the same
-//! bits on every schedule), and a crossfade that read shared state would
-//! show only under a race. The loop is checked live by asserting that the
-//! render wraps inside the run.
+//! Voices go through a `VoicePool` (a bare `MemorySource` node has its own
+//! read, with no crossfade). The fade is asserted to have run: the voice placed before the loop start
+//! steps across the wrap by less than a cut's step, which the wave gives
+//! analytically.
+//!
+//! Mutation (run): `Wrap::new` always `None` (no fade) → the step at the wrap
+//! is the cut's → fails.
 
 use std::sync::Arc;
 
 use tutti_graph::{Editor, Executor, LoopRange, Prepare, Transport, WorkerPool};
-use tutti_sampler::{MemorySource, Wave};
+use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource, Wave};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, FrameClock, NodeKey, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const MAX_BLOCK: usize = 64;
 const READS: u64 = 12;
-/// Beats 0.1 to 0.35 at 120 BPM: a wrap every 6 000 frames.
-const LOOP: (f64, f64) = (0.125, 0.375);
+/// Beats 0.125 to 0.376 at 120 BPM: a wrap every 6 024 frames.
+const LOOP: (f64, f64) = (0.125, 0.376);
 
 fn tone() -> Arc<Wave> {
     let mut w = Wave::new(2, SR);
@@ -44,11 +47,16 @@ fn graph(wave: &Arc<Wave>, workers: usize) -> Executor {
         let key = NodeKey(k + 1);
         // Placed before the loop's start, on it, and inside the fade.
         let at = [0.0, LOOP.0, LOOP.0 + 0.002][k as usize % 3] + k as f64 * 0.0001;
-        ed.insert(
-            key,
-            "read",
-            MemorySource::placed(Arc::clone(wave), Beat(at), None),
+        let mut pool = VoicePool::new();
+        pool.insert_voice(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Memory(MemorySource::placed(Arc::clone(wave), Beat(at), None)),
+                play: Playback::default(),
+                channel_index: None,
+            },
         );
+        ed.insert(key, "pool", pool);
         for port in 0..2u16 {
             outputs.push(Source::Node(OutPort { node: key, port }));
         }
@@ -86,6 +94,19 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
         }
     }
     assert!(wraps >= 2, "the run wraps ({wraps})");
+    // Voice 0 is placed before the loop's start. At the first wrap (the
+    // loop's end, 9 000 frames) a cut steps from the source at the end to
+    // the one at the start; the crossfade steps by a tone's own step and
+    // the fade's, far below it.
+    let wave = tone();
+    let at = |i: usize| wave.at(0, i);
+    let cut = (at(3_000) - at(9_023)).abs();
+    assert!(cut > 0.2, "the wave makes a cut a real step ({cut})");
+    let lane: Vec<f32> = all[0].iter().map(|&b| f32::from_bits(b)).collect();
+    let step = (9_014..9_034)
+        .map(|i| (lane[i] - lane[i - 1]).abs())
+        .fold(0.0, f32::max);
+    assert!(step < 0.05, "step {step} at the wrap, a cut is {cut}");
     all
 }
 

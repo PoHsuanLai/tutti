@@ -934,7 +934,7 @@ fn every_fallback_rule_is_pinned() {
                         .map_or(0.0, |&(_, _, g)| g)
                 })
                 .collect();
-            assert_eq!(response(&f, o), row, "{name}: output {o} ({:?})", dst[o]);
+            assert_eq!(response(&f, o), row, "{name}: output {o} ({speaker:?})");
         }
     }
 }

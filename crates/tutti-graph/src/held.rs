@@ -87,25 +87,55 @@ impl Held {
             .any(|e| matches!(e.kind, EventKind::Midi(u) if u.key_event().is_some()))
     }
 
-    /// Write the close of everything held ahead of `events` (at offset 0, so
-    /// the block stays sorted) as far as `events`' capacity allows, and
-    /// forget it all. Returns how many closes did not fit. Allocates nothing.
-    pub(crate) fn close_ahead(&mut self, events: &mut Vec<Event>) -> usize {
+    /// Add what `other` holds.
+    pub(crate) fn merge(&mut self, other: &Held) {
+        for (a, b) in self.keys.iter_mut().zip(other.keys.iter()) {
+            *a |= b;
+        }
+        self.live = self.keys.iter().map(|w| w.count_ones()).sum();
+        for (a, b) in self.pedals.iter_mut().zip(other.pedals.iter()) {
+            *a |= b;
+        }
+    }
+
+    /// Write the close of what is held ahead of `events` (at offset 0, so the
+    /// block stays sorted), as many as `events`' capacity takes, and forget
+    /// those: the rest stays held for the next call. Allocates nothing.
+    pub(crate) fn close_ahead(&mut self, events: &mut Vec<Event>) {
         let start = events.len();
-        let mut lost = 0;
-        self.for_each_close(|e| {
-            if events.len() < events.capacity() {
-                events.push(e);
-            } else {
-                lost += 1;
+        let room = |e: &Vec<Event>| e.len() < e.capacity();
+        for i in 0..PEDALS {
+            let (w, b) = (i >> 6, 1u64 << (i & 63));
+            if self.pedals[w] & b != 0 {
+                if !room(events) {
+                    break;
+                }
+                events.push(Self::event(Ump::sustain_up(i >= 256, (i & 255) as u8)));
+                self.pedals[w] &= !b;
             }
-        });
+        }
+        'keys: for w in 0..WORDS {
+            while self.keys[w] != 0 {
+                if !room(events) {
+                    break 'keys;
+                }
+                let b = self.keys[w].trailing_zeros() as usize;
+                self.keys[w] &= self.keys[w] - 1;
+                self.live -= 1;
+                events.push(Self::event(Ump::note_off(Key::from_index(
+                    (w * 64 + b) as u16,
+                ))));
+            }
+        }
         let added = events.len() - start;
         events.rotate_right(added);
-        self.keys.fill(0);
-        self.live = 0;
-        self.pedals = [0; PEDALS / 64];
-        lost
+    }
+
+    fn event(ump: Ump) -> Event {
+        Event {
+            offset: Offset::ZERO,
+            kind: EventKind::Midi(ump),
+        }
     }
 
     /// The messages that close everything held: pedals up, then every note

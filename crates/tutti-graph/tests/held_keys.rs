@@ -1030,6 +1030,94 @@ fn a_third_fade_supersedes_the_waiting_one() {
     }
 }
 
+fn swap_with_fade(r: &mut Rig, mail: &Mail, frames: usize) {
+    let ed = r.ed.as_mut().unwrap();
+    ed.replace(
+        NodeKey(1),
+        Unforkable(Src { mail: mail.clone() }),
+        Fade::new(Samples(frames), Default::default()),
+    )
+    .expect("replaces");
+    ed.commit().unwrap();
+    r.exec.as_mut().unwrap().apply_pending();
+    ed.collect();
+}
+
+/// A re-prepare with a fade queued: the running replacement is cut, the
+/// queued unit takes over, and the keys of the one that stopped are still
+/// closed, in the first block after the resume.
+///
+/// Mutation (run): hand the stale table to `spare_held` in the suspend branch
+/// of `Executor::apply` instead of keeping it in `next_held` -> the sink hears
+/// no `OFF60` -> fails.
+#[test]
+fn a_reprepare_with_a_fade_queued_closes_the_stopped_units_keys() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.block();
+    let (m2, m3): (Mail, Mail) = Default::default();
+    swap_with_fade(&mut r, &m2, MAX * 8);
+    m2.lock().unwrap().push((0, ON60));
+    r.block();
+    swap_with_fade(&mut r, &m3, MAX * 8);
+    r.block();
+    assert_eq!(r.words(2), vec![ON60], "still sounding");
+    let (ed, exec) = (r.ed.as_mut().unwrap(), r.exec.as_mut().unwrap());
+    ed.reprepare(common::prepare(MAX * 2)).expect("reprepares");
+    exec.apply_pending();
+    ed.collect();
+    exec.apply_pending();
+    ed.collect();
+    for _ in 0..6 {
+        r.block();
+    }
+    assert_eq!(r.words(2), vec![ON60, OFF60], "closed after the resume");
+    r.wire(&[]);
+    r.block();
+    assert_eq!(r.words(2), vec![ON60, OFF60], "and nothing more is owed");
+}
+
+/// More keys to close than a block's slot takes: the rest close in the
+/// following blocks and none is lost. (The sink's own merge sheds controllers
+/// first when the block is dense.)
+///
+/// Mutation (run): `Held::close_ahead` forgetting every key, written or not
+/// -> the sink hears fewer than 200 offs -> fails.
+#[test]
+fn closes_that_do_not_fit_a_block_follow_in_the_next() {
+    let mut r = Rig::new(Mode::Serial, &[2]);
+    r.wire(&[(1, 2)]);
+    r.block();
+    let (m2, m3): (Mail, Mail) = Default::default();
+    swap_with_fade(&mut r, &m2, MAX * 8);
+    // 200 keys held by the running replacement, 50 a block.
+    for block in 0..4u32 {
+        for note in 0..50u32 {
+            let w = [0x2090_0000 | (block << 16) | (note << 8) | 100, 0, 0, 0];
+            m2.lock().unwrap().push((0, w));
+        }
+        r.block();
+        if block == 0 {
+            swap_with_fade(&mut r, &m3, MAX * 8);
+        }
+    }
+    // The queued unit takes over; it writes a dense block of controllers
+    // every block, leaving the slot little room for closes.
+    let dense = [0x20b0_0764, 0, 0, 0];
+    for _ in 0..20 {
+        for _ in 0..64 {
+            m3.lock().unwrap().push((0, dense));
+        }
+        r.block();
+    }
+    let offs = r
+        .words(2)
+        .iter()
+        .filter(|w| (w[0] >> 20) & 0xf == 0x8)
+        .count();
+    assert_eq!(offs, 200, "every held key is closed");
+}
+
 /// A replace with a fade whose old unit holds a key, then a hard replace of
 /// the same key: the running unit's keys are closed at the hard replace.
 #[test]

@@ -28,7 +28,7 @@ use tutti_types::{
     fold_frame, snap_to_whole_frame,
 };
 
-use super::clock::{BlockClock, Run};
+use super::clock::{BlockClock, Run, Wrap};
 use super::loop_span::{LoopSpan, blend};
 use super::memory_source::VoiceWindow;
 use crate::MAX_SAMPLER_CHANNELS;
@@ -163,6 +163,36 @@ impl Gate {
         SamplePosition(snap_to_whole_frame(position))
     }
 
+    /// Whether the voice was sounding on the loop's last frame, so that a
+    /// wrap has a tail to fade out: one that begins at or after the loop's
+    /// end never played in the loop, one that ended before it has nothing
+    /// to fade.
+    pub(crate) fn tail_sounds(&self, run: &Run, wrap: &Wrap) -> bool {
+        let Some(fpb) = run.frames_per_beat() else {
+            return false;
+        };
+        let last =
+            run.beat_at(run.start) + wrap.back - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
+        let tempo = run.tempo();
+        self.reached(last, tempo, self.window.start)
+            && self
+                .window
+                .duration
+                .is_none_or(|d| !self.reached(last, tempo, self.window.start + d))
+    }
+
+    /// Whether the voice begins on or after the loop's start, so that at a
+    /// wrap its head is the clip's own start rather than the middle of a
+    /// sound. Decided from the window alone: a voice that began on the
+    /// loop's last frame or before it is mid-sound.
+    pub(crate) fn begins_with_loop(&self, run: &Run, wrap: &Wrap) -> bool {
+        let Some(fpb) = run.frames_per_beat() else {
+            return false;
+        };
+        let before = run.beat_at(run.start) - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
+        !self.reached(before, run.tempo(), self.window.start)
+    }
+
     /// The first block frame in `from..to` of `run` whose beat has reached
     /// `target`, or `to` when none has. The beat never falls inside a run,
     /// so the answer is found from the closed-form estimate by stepping.
@@ -250,6 +280,50 @@ pub(crate) fn place(
         }
     }
     sounds
+}
+
+/// The positions a placed read would play over the wrap crossfades of
+/// `range` had the playhead run on past the loop's end, one per frame into
+/// `out` (`out.len() == range.len()`): the tail the voice fades out as the
+/// loop's start fades in. `None` outside a crossfade and where the tail is
+/// outside the window, so a voice that was not sounding there has none.
+///
+/// Seated and stepped as [`place`] does, a loop's length ahead of the
+/// playhead. Returns the frames (relative to `range`) the tail sounds over,
+/// `None` when it sounds nowhere.
+pub(crate) fn place_tail(
+    clock: &BlockClock<'_>,
+    range: Range<usize>,
+    gate: Gate,
+    step: ReadRate,
+    out: &mut [Option<SamplePosition>],
+) -> Option<Range<usize>> {
+    debug_assert_eq!(out.len(), range.len(), "one position per frame");
+    out.fill(None);
+    let base = range.start;
+    let mut span: Option<Range<usize>> = None;
+    for run in clock.runs_in(range) {
+        let Some(wrap) = run.wrap else { continue };
+        let (a, b) = (run.start, run.end.min(run.start + wrap.left()));
+        let (window, tempo) = (gate.window, run.tempo());
+        if !gate.tail_sounds(&run, &wrap) {
+            continue;
+        }
+        let x = match window.duration {
+            Some(d) => gate.first_reaching(&run, a, b, window.start + d - wrap.back),
+            None => b,
+        };
+        if a < x {
+            let origin = gate.origin(run.beat_at(a) + wrap.back, tempo);
+            for (k, p) in out[a - base..x - base].iter_mut().enumerate() {
+                *p = Some(origin + step.advance(Samples(k)));
+            }
+            let seen = span.get_or_insert(a - base..x - base);
+            seen.start = seen.start.min(a - base);
+            seen.end = seen.end.max(x - base);
+        }
+    }
+    span
 }
 
 /// Whether the playhead has left `window` for good by the last frame of

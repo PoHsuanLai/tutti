@@ -30,6 +30,14 @@
 //! consumer such as a SoundFont synth works at MIDI 1.0 resolution and nothing
 //! upstream of it translates down, so it narrows for as long as it exists.
 //!
+//! [`narrow`] does the same for a whole [`Voice2`](tutti_ump::Voice2): the
+//! [`Voice1`](tutti_ump::Voice1) that means it, or `None` for a message MIDI 1.0
+//! has no single message for. A Note On that narrows to velocity 0 becomes 1
+//! (M2-104 section 7.4.2), and a note's attribute is not read, whatever its type.
+//! [`midi1`] is the step before the wire: the MIDI 1.0 bytes of a
+//! [`Message`](tutti_ump::Message), three messages for a Program Change with a
+//! bank.
+//!
 //! What the widening does and does not do:
 //!
 //! - **Scaling** is Min-Center-Max (M2-115 section 3): minimum, centre and
@@ -56,9 +64,11 @@
 
 #![forbid(unsafe_code)]
 
+mod midi1;
 mod narrow;
 mod scale;
 mod voice;
 
+pub use midi1::{midi1, narrow};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use voice::widen;

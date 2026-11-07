@@ -98,7 +98,7 @@ jobs:
       # And `tutti-ump`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_protocol scale voice
+      - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
       # And `tutti-rt`, which keeps its modules private: the root names every item.

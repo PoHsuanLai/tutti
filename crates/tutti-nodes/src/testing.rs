@@ -233,14 +233,7 @@ impl Osc {
     /// off the end of its range, until the first wrap.
     #[must_use]
     pub fn with_phase(mut self, phase: Phase) -> Self {
-        let wrapped = Phase::wrapped(phase.get());
-        // `rem_euclid` in f32 can round a tiny negative up to exactly 1.0,
-        // which is outside the half-open range; that is the start of a cycle.
-        self.start = if wrapped.get() >= 1.0 {
-            Phase::START
-        } else {
-            wrapped
-        };
+        self.start = Phase::wrapped(phase.get());
         self.phase = f64::from(self.start.get());
         self
     }
@@ -528,10 +521,13 @@ mod tests {
     /// A saw shows it, because its closed form is only a ramp on `0..1`: from
     /// an unwrapped `1.25` it would emit `2·1.25 − 1 = 1.5`.
     ///
-    /// Mutation: skipping `Phase::wrapped` fails the `1.25` row (the guard then
-    /// sends it to 0, so the saw emits −1.0; with no guard either it emits 1.5);
-    /// relaxing the guard to `> 1.0` makes the `-1e-9` start emit +1.0 rather
-    /// than −1.0.
+    /// A tiny negative start (`-1e-9`) is the last instant of a cycle, so the
+    /// saw starts at the top of its ramp, +1.0, rather than at −1.0.
+    ///
+    /// Mutation: skipping `Phase::wrapped` fails the `1.25` row (the saw emits
+    /// 1.5). The edge row does not tell a start of `1.0 - ε` from `1.0`, which
+    /// the saw also emits as +1.0; that `Phase::wrapped` stays under 1.0 is
+    /// pinned in `tutti-types`.
     #[test]
     fn with_phase_wraps_into_one_cycle_and_reset_restores_it() {
         let quarter = 2.0 * 0.25 - 1.0; // the saw's value at 0.25 turns
@@ -545,8 +541,8 @@ mod tests {
             let again = osc.next();
             assert!((again - quarter).abs() < 1e-6, "reset {start}: {again}");
         }
-        // The f32 edge: a tiny negative rounds to 1.0 in `rem_euclid`.
+        // The f32 edge: a tiny negative is just under a whole cycle, not at 1.0.
         let mut edge = Osc::saw(Hz(1_000.0)).with_phase(Phase(-1e-9));
-        assert_eq!(edge.next(), -1.0);
+        assert!((edge.next() - 1.0).abs() < 1e-6);
     }
 }

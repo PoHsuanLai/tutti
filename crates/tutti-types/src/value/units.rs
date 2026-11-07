@@ -24,10 +24,11 @@
 //! NaN and can do so. Where no finite value must reach a cell, the caller
 //! guards before the constructor.
 //!
-//! The wraps ([`Phase::wrapped`], [`Azimuth::wrap`], [`Radians::wrapped_signed`],
-//! [`Beat::fract`], [`SamplePosition::fract`], [`BeatDuration::rem_euclid`]) give
-//! their half-open range for every finite input, and NaN for NaN or an infinite
-//! input, where the range cannot hold.
+//! The wraps ([`Phase::wrapped`], [`Azimuth::wrap`], [`Beat::fract`],
+//! [`SamplePosition::fract`], [`BeatDuration::rem_euclid`]) give their
+//! half-open range for every finite input, and NaN for NaN or an infinite
+//! input, where the range cannot hold. [`Radians::wrapped_signed`] is the
+//! exception: it is exact only to `f32` rounding, as its docs say.
 //!
 //! # Operators are opt-in, and every omission is deliberate
 //!
@@ -1422,7 +1423,8 @@ impl Radians {
 
     /// Wrapped into `[-pi, pi)` — the signed-deviation form.
     ///
-    /// Half-open at `+pi`, which lands on `-pi`: the same convention
+    /// Meant half-open at `+pi`, which lands on `-pi` (see below for where
+    /// rounding spoils it): the same convention
     /// [`Phase::wrapped`] uses at the top of its cycle, and the same reason —
     /// the two are one point on the circle, and a closed interval at both ends
     /// would have to pick one arbitrarily per call.
@@ -1437,22 +1439,18 @@ impl Radians {
     /// audio thread for an unbounded time. Wrapping *before* comparing is also
     /// why [`Ord`] on this type is a trap — see the omission note below.
     ///
-    /// Holds for every finite input; NaN and the infinities give NaN. Within a
-    /// few turns of zero the arithmetic above is the answer; where it would
-    /// leave the range (rounding at the seam, or a turn count too large for
-    /// `f32` to subtract exactly) the wrap is redone in `f64`.
+    /// **Not exact at the edges.** The result is `x − 2π·k` in `f32`, so it is
+    /// only within rounding of `[-π, π)`: a few ulps below `-π` or at `π` are
+    /// possible (`3π` gives one ulp under `-π`), and the excess grows with
+    /// `|x|`: about `1e-3` rad by `2^14`, `0.1` by `2^20` and a few radians by
+    /// `2^25`, where `f32` can no longer hold the turn count. NaN and the
+    /// infinities give NaN. A consumer that needs the range exactly clamps
+    /// the result.
     #[inline]
     #[must_use]
     pub fn wrapped_signed(self) -> Radians {
-        use core::f32::consts::{PI, TAU};
-        let w = self.0 - TAU * ((self.0 + PI) / TAU).floor();
-        if (-PI..PI).contains(&w) || !self.0.is_finite() {
-            return Radians(w);
-        }
-        let r = (f64::from(self.0) + core::f64::consts::PI).rem_euclid(core::f64::consts::TAU)
-            - core::f64::consts::PI;
-        let w = r as f32;
-        Radians(if w >= PI { PI.next_down() } else { w.max(-PI) })
+        let tau = core::f32::consts::TAU;
+        Radians(self.0 - tau * ((self.0 + core::f32::consts::PI) / tau).floor())
     }
 }
 
@@ -3405,24 +3403,6 @@ mod tests {
         assert!(Azimuth(f32::NAN).wrap().get().is_nan());
         assert!(Azimuth(f32::INFINITY).wrap().get().is_nan());
 
-        let pi = core::f32::consts::PI;
-        for v in [
-            -pi - 1e-6,
-            -pi - 1e-7,
-            pi,
-            pi + 1e-6,
-            1e10,
-            -1e10,
-            f32::MAX,
-            f32::MIN,
-        ] {
-            let w = Radians(v).wrapped_signed().get();
-            assert!((-pi..pi).contains(&w), "{v:e} wrapped to {w}");
-        }
-        assert_eq!(
-            Radians(3.0 * pi / 2.0).wrapped_signed().get().signum(),
-            -1.0
-        );
         assert!(Radians(f32::NAN).wrapped_signed().get().is_nan());
         assert!(Radians(f32::INFINITY).wrapped_signed().get().is_nan());
 
@@ -3452,21 +3432,6 @@ mod tests {
                 .get()
                 .is_nan()
         );
-    }
-
-    /// Mutation (run): drop the `f64` fallback in `wrapped_signed` → `1e10`
-    /// leaves the range → fails.
-    #[test]
-    fn wrapped_signed_stays_in_range_far_from_zero() {
-        let pi = core::f32::consts::PI;
-        let mut v = 1.0f32;
-        while v.is_finite() {
-            for x in [v, -v] {
-                let w = Radians(x).wrapped_signed().get();
-                assert!((-pi..pi).contains(&w), "{x:e} wrapped to {w}");
-            }
-            v *= 1.7;
-        }
     }
 
     /// An `f32` second count stops naming a frame past 256 s at 48 kHz, where

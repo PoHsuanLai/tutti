@@ -29,8 +29,8 @@ use std::sync::Arc;
 
 use std::sync::atomic::Ordering;
 
+use tutti_codec::Wave;
 use tutti_graph::{EventOut, ForkMode, ForkTarget, ParamIn, ParamRange, Prepare, Solo, Transport};
-use tutti_io::Wave;
 use tutti_mod::{Amount, Clock, ControlProgram, CurveType, Layer, LayerId, Polarity};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceNodeHandle, VoiceSource};

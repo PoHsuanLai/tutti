@@ -8,8 +8,8 @@
 use std::time::{Duration, Instant};
 
 use tutti_cpal::{
-    AudioHost, DeviceChange, DeviceId, DevicePoller, DeviceRoster, DeviceSelector, Snapshot,
-    SnapshotSource,
+    AudioHost, DeviceChange, DeviceId, DeviceListing, DevicePoller, DeviceRoster, DeviceSelector,
+    Listed, Snapshot, SnapshotSource,
 };
 
 use crate::{DeviceRestart, SessionEvent};
@@ -403,6 +403,51 @@ impl DeviceWatch {
             && let Some(request) = self.note(FollowEvent::Look, now)
         {
             out.push(SessionEvent::RestartWanted(request));
+        }
+    }
+}
+
+/// How long a listing of the output devices may wait before the session
+/// reports it slow ([`SessionEvent::OutputsListSlow`]): a healthy host
+/// answers in milliseconds, and one that has not in this long is likely stuck.
+pub const LISTING_WARNING: Duration = Duration::from_secs(5);
+
+/// A [`DeviceListing`] being waited for: the policy around the thread. The
+/// time is a value, as in [`Follow::step`].
+#[derive(Debug)]
+pub(crate) struct OutputListing {
+    listing: DeviceListing,
+    /// The `now` of the first poll.
+    since: Option<Instant>,
+    warned: bool,
+}
+
+impl OutputListing {
+    pub(crate) fn new(listing: DeviceListing) -> Self {
+        Self {
+            listing,
+            since: None,
+            warned: false,
+        }
+    }
+
+    /// The event this poll has, and whether the listing is over.
+    pub(crate) fn poll(&mut self, now: Instant) -> (Option<SessionEvent>, bool) {
+        match self.listing.poll() {
+            Listed::Devices(devices) => (
+                Some(SessionEvent::OutputsListed(
+                    devices.into_iter().map(|d| d.id).collect(),
+                )),
+                true,
+            ),
+            Listed::Failed(why) => (Some(SessionEvent::OutputsListFailed(why)), true),
+            Listed::Pending => {
+                let since = *self.since.get_or_insert(now);
+                let waited = now.saturating_duration_since(since);
+                let slow = waited >= LISTING_WARNING && !self.warned;
+                self.warned |= slow;
+                (slow.then_some(SessionEvent::OutputsListSlow(waited)), false)
+            }
         }
     }
 }

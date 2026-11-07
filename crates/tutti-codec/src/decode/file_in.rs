@@ -1,4 +1,4 @@
-//! Incremental disk streaming on top of symphonia's public API.
+//! Streaming decode over symphonia.
 //!
 //! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
@@ -8,7 +8,7 @@
 //! width, so a caller sizes its buffer from the trait and never has to ask the
 //! concrete type.
 //!
-//! It is this crate's read edge, the counterpart of [`WavOut`](crate::WavOut).
+//! It is the read edge, the counterpart of `tutti-io`'s `WavOut`.
 //!
 //! **It does not downmix.** A caller wanting stereo folds the frames itself
 //! through [`tutti_types::fold_frame`], as every other engine edge does.
@@ -22,9 +22,9 @@
 //! [`poll_into`]: FileIn::poll_into
 //! [`seek`]: FileIn::seek
 //!
-//! It shares [`decode`](crate::Wave::read)'s codec feature gates, its probe
-//! head and its one-packet helper. All decode/seek/file I/O runs on the butler
-//! thread; the audio thread never touches this type.
+//! It shares [`Wave::read`](crate::Wave::read)'s probe head and its one-packet
+//! helper. All decode/seek/file I/O runs on the butler thread; the audio
+//! thread never touches this type.
 
 use std::path::Path;
 
@@ -35,24 +35,12 @@ use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
-use crate::WaveError;
-use crate::decode::{decode_packet_into, first_audio_track, probe_path};
+use super::error::{DecodeError, convert};
+use super::read::{decode_packet_into, first_audio_track, probe_path};
 
 /// A frame count from the file's `u64`, saturating where `usize` is narrower.
 fn frames(n: u64) -> Samples {
     Samples(usize::try_from(n).unwrap_or(usize::MAX))
-}
-
-/// A copy of `error` for a call that reports a fault the stream already
-/// holds: symphonia's error is not `Clone`.
-fn repeat(error: &WaveError) -> WaveError {
-    match error {
-        Error::IoError(io) => Error::IoError(std::io::Error::new(io.kind(), error.to_string())),
-        Error::DecodeError(msg) => Error::DecodeError(msg),
-        Error::Unsupported(msg) => Error::Unsupported(msg),
-        Error::LimitError(msg) => Error::LimitError(msg),
-        _ => Error::DecodeError("the stream failed earlier; see FileIn::error"),
-    }
 }
 
 /// What [`FileIn::error`] reports when the stream ends before the container's
@@ -72,13 +60,13 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// [`seek`](Self::seek) positions it at an exact frame. Decoding, seeking and
 /// file I/O all block, so use it from a loader or streaming thread, never the
 /// audio thread. Sequential reads reuse their decode buffers across calls.
-/// Requires a codec feature.
+/// Requires a decode feature.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// use tutti_io::{AudioIn, FileIn};
-/// use tutti_types::Samples;
+/// use tutti_codec::FileIn;
+/// use tutti_types::{AudioIn, Samples};
 ///
 /// let mut file = FileIn::open("take.flac")?;
 /// let width = usize::from(file.layout().count());
@@ -86,7 +74,7 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// file.seek(Samples(48_000))?; // start one second in, at 48 kHz
 /// let frames = file.poll_into(&mut buf);
 /// println!("read {} frames of {width} channels", frames.get());
-/// # Ok::<(), tutti_io::WaveError>(())
+/// # Ok::<(), tutti_codec::DecodeError>(())
 /// ```
 pub struct FileIn {
     reader: Box<dyn FormatReader>,
@@ -114,7 +102,7 @@ pub struct FileIn {
     /// The decode error that ended a [`poll_into`](AudioIn::poll_into) stream
     /// early, kept for [`error`](Self::error). Sticky until a
     /// [`seek`](Self::seek) succeeds.
-    fault: Option<WaveError>,
+    fault: Option<DecodeError>,
     /// Whether `total_frames` is exact, so a stream that ends short of it is
     /// damaged. Only FLAC's is (its STREAMINFO count); MP3 delay and padding,
     /// Vorbis priming and a WAV header's data length can all disagree with
@@ -170,10 +158,10 @@ impl FileIn {
     ///
     /// # Errors
     ///
-    /// A [`WaveError`] if the file cannot be opened, its container is not one
+    /// A [`DecodeError`] if the file cannot be opened, its container is not one
     /// this build reads, or it has no audio track this build can decode.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WaveError> {
-        let reader = probe_path(path.as_ref())?;
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DecodeError> {
+        let reader = probe_path(path.as_ref()).map_err(convert)?;
         let track = first_audio_track(&*reader)?;
         let track_id = track.id;
 
@@ -191,7 +179,9 @@ impl FileIn {
         );
 
         let decode_opts = DecoderOptions::default();
-        let decoder = symphonia::default::get_codecs().make(&track.codec_params, &decode_opts)?;
+        let decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params, &decode_opts)
+            .map_err(convert)?;
 
         // Seekable only when the container reports a frame count. Formats
         // without n_frames (some VBR/streamed) fall back to whole-file load.
@@ -241,7 +231,7 @@ impl FileIn {
     /// the frames in `leftover` start at the returned packet's `ts`, not at
     /// the first packet read, and [`seek`](Self::seek) must count its preroll
     /// from there.
-    fn decode_next_packet(&mut self) -> Result<(usize, u64), WaveError> {
+    fn decode_next_packet(&mut self) -> Result<(usize, u64), DecodeError> {
         self.skipped_primer = None;
         loop {
             let packet = match self.reader.next_packet() {
@@ -249,14 +239,15 @@ impl FileIn {
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok((0, 0));
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(convert(e)),
             };
             if packet.track_id() != self.track_id {
                 continue;
             }
 
             let (buf, frames) =
-                decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)?;
+                decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)
+                    .map_err(convert)?;
             if frames == 0 {
                 self.skipped_primer.get_or_insert(packet.ts());
                 continue;
@@ -284,14 +275,14 @@ impl FileIn {
     /// The fault that cut a sequential read short, if one did: a packet that
     /// failed to decode, or (FLAC only, whose frame count is exact) a stream
     /// that ended before that count, where a damaged frame can read as a
-    /// clean end of file. A [`WaveError`] is symphonia's error type.
+    /// clean end of file.
     ///
     /// [`poll_into`](AudioIn::poll_into) has no error channel: a failed read
     /// returns the frames decoded before it and then `0`, the same as
     /// end-of-file, so a consumer that sees `0` asks here to tell a corrupt
     /// file from a finished one. The fault is sticky (later reads return it
     /// without decoding on) and cleared by a successful [`seek`](Self::seek).
-    pub fn error(&self) -> Option<&WaveError> {
+    pub fn error(&self) -> Option<&DecodeError> {
         self.fault.as_ref()
     }
 
@@ -310,20 +301,20 @@ impl FileIn {
     ///
     /// # Errors
     ///
-    /// A [`WaveError`] if reading or decoding a packet fails. Frames filled
+    /// A [`DecodeError`] if reading or decoding a packet fails. Frames filled
     /// before the failure are returned as `Ok` first, and the failure comes
     /// with the next call (and stays, see [`error`](Self::error)). The same
     /// goes for a FLAC stream that ends before its frame count.
-    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<Samples, WaveError> {
+    pub fn fill_sequential_interleaved(&mut self, out: &mut [f32]) -> Result<Samples, DecodeError> {
         if let Some(fault) = &self.fault {
-            return Err(repeat(fault));
+            return Err(fault.clone());
         }
         let (filled, fault) = self.fill(out);
         self.fault = fault;
         match &self.fault {
             // The frames before the fault are the caller's; the fault is
             // reported by the next call, which finds nothing more to read.
-            Some(fault) if filled == 0 => Err(repeat(fault)),
+            Some(fault) if filled == 0 => Err(fault.clone()),
             _ => Ok(Samples(filled)),
         }
     }
@@ -338,7 +329,7 @@ impl FileIn {
 
     /// [`fill_sequential_interleaved`](Self::fill_sequential_interleaved),
     /// keeping the frames filled before a decode error.
-    fn fill(&mut self, out: &mut [f32]) -> (usize, Option<WaveError>) {
+    fn fill(&mut self, out: &mut [f32]) -> (usize, Option<DecodeError>) {
         let ch = self.width();
         let capacity_frames = out.len() / ch;
         let mut filled = 0usize;
@@ -361,7 +352,9 @@ impl FileIn {
             match self.decode_next_packet() {
                 // End-of-stream: leave the untouched tail for the caller.
                 Ok((0, _)) => {
-                    let fault = self.truncation().then_some(Error::DecodeError(TRUNCATED));
+                    let fault = self
+                        .truncation()
+                        .then_some(DecodeError::Malformed(TRUNCATED.into()));
                     return (filled, fault);
                 }
                 Ok(_) => {}
@@ -380,9 +373,9 @@ impl FileIn {
     ///
     /// # Errors
     ///
-    /// A [`WaveError`] if the container cannot seek or a packet fails to
+    /// A [`DecodeError`] if the container cannot seek or a packet fails to
     /// decode.
-    pub fn seek(&mut self, start: Samples) -> Result<(), WaveError> {
+    pub fn seek(&mut self, start: Samples) -> Result<(), DecodeError> {
         let start = start.get() as u64;
         // Accurate seek lands on the packet containing `target`; decoding then
         // discards the preroll up to `start`. Two things make that subtler
@@ -408,13 +401,15 @@ impl FileIn {
         loop {
             self.leftover.clear();
             self.leftover_pos = 0;
-            self.reader.seek(
-                SeekMode::Accurate,
-                SeekTo::TimeStamp {
-                    ts: target,
-                    track_id: self.track_id,
-                },
-            )?;
+            self.reader
+                .seek(
+                    SeekMode::Accurate,
+                    SeekTo::TimeStamp {
+                        ts: target,
+                        track_id: self.track_id,
+                    },
+                )
+                .map_err(convert)?;
             self.decoder.reset();
 
             let (decoded, ts) = self.decode_next_packet()?;
@@ -479,7 +474,14 @@ impl AudioIn for FileIn {
     /// A trailing partial frame is not filled: a short frame desynchronises the
     /// interleave for everything after it.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.fill_sequential_interleaved(out).unwrap_or(Samples(0))
+        // Not through `fill_sequential_interleaved`, whose `Err` is a copy of
+        // the fault: here it would be dropped.
+        if self.fault.is_some() {
+            return Samples::ZERO;
+        }
+        let (filled, fault) = self.fill(out);
+        self.fault = fault;
+        Samples(filled)
     }
 
     /// Whether a decode fault ended the stream: [`FileIn::error`] is `Some`.
@@ -488,5 +490,5 @@ impl AudioIn for FileIn {
     }
 }
 
-#[cfg(all(test, feature = "wav"))]
+#[cfg(all(test, feature = "decode-wav"))]
 mod tests;

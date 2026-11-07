@@ -91,7 +91,7 @@ tutti-rt = { path = "../tutti-rt" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The in-memory tone a sampler voice test plays (`Wave`).
-tutti-io = { path = "../tutti-io" }
+tutti-codec = { path = "../tutti-codec" }
 # `test-support`'s hand-stepped streamer.
 tutti-sampler = { path = "../tutti-sampler", default-features = false, features = ["test-support"] }
 # `ManualStreamDriver`, `OutputSpec`: the device-free device tests.

@@ -35,8 +35,8 @@ use ringbuf::{
     traits::{Consumer, Producer, Split},
 };
 
+use tutti_codec::Pcm;
 use tutti_graph::MAX_ROOT_CHANNELS;
-use tutti_io::Pcm;
 use tutti_io::{MicMonitorNode, MicRing, WavOut};
 use tutti_types::ChannelLayout;
 use tutti_types::SampleRate;

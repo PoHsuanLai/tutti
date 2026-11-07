@@ -244,7 +244,7 @@ mod tests {
         {
             use std::sync::Arc;
             let source = tutti_sampler::MemorySource::placed(
-                Arc::new(tutti_io::Wave::new(1, 48_000.0)),
+                Arc::new(tutti_codec::Wave::new(1, 48_000.0)),
                 tutti_types::Beat(0.0),
                 None,
             );

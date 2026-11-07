@@ -148,7 +148,11 @@ impl std::fmt::Display for Codec {
 
 impl Error {
     #[cfg_attr(
-        not(any(feature = "flac", feature = "aiff", feature = "vorbis")),
+        not(any(
+            feature = "encode-flac",
+            feature = "encode-aiff",
+            feature = "encode-vorbis"
+        )),
         expect(
             dead_code,
             reason = "only the flac, aiff and vorbis encoders report this"

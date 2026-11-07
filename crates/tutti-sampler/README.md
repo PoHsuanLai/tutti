@@ -91,7 +91,7 @@ here instead (`VoicePool::with_channels` returns `PoolTooWide`).
 `default = ["wav"]`.
 
 - `wav`, `flac`, `mp3`, `ogg`: decoder support for that format, forwarded to
-  `tutti-io`, which owns the decoder. `files` turns on all four. With none of
+  `tutti-codec`, which owns the decoder. `files` turns on all four. With none of
   them, `probe` and `SampleFacts` are absent: no header can be read.
 - `bevy`: derives `Component` on the voice-pool markers `VoicePoolRef` and
   `VoicePoolNode`. The plugin and asset loader are `bevy-tutti`'s; everything

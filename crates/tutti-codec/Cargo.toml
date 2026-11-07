@@ -4,7 +4,7 @@ version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Tutti's audio file encoders: WAV, AIFF, FLAC and Ogg Vorbis behind one Encoder, over any Write + Seek sink"
+description = "Tutti's audio file codecs: WAV, AIFF, FLAC and Ogg Vorbis out behind one Encoder, and WAV, FLAC, MP3 and Ogg in as a Wave or a FileIn"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-codec"
@@ -17,14 +17,25 @@ workspace = true
 
 [features]
 # No format by default, as on every engine crate: a build names the containers
-# it writes. A `Format` variant exists only with its feature on.
+# it writes (`encode-*`) and the ones it reads (`decode-*`), and a feature of
+# one side pulls nothing of the other. A `Format` variant exists only with its
+# `encode-*` feature on.
 default = []
-wav = []
-flac = ["dep:flacenc", "dep:md-5"]
-aiff = ["dep:aifc"]
+encode-wav = []
+encode-flac = ["dep:flacenc", "dep:md-5"]
+encode-aiff = ["dep:aifc"]
 # Ogg Vorbis. Its C library (`ogg_next_sys`) does not cross-compile to Windows
-# MSVC from Linux, so `just check-windows` leaves it out of the lint run.
-vorbis = ["dep:vorbis_rs"]
+# MSVC from Linux, so `just check-windows` leaves it out of the lint run. A
+# decode-only build never reaches it.
+encode-vorbis = ["dep:vorbis_rs"]
+# Each `decode-*` feature pulls exactly one symphonia container (and its codec)
+# for `Wave::read`, `Wave::read_metadata` and `FileIn`: a build lists exactly
+# what it can read. `decode-wav` needs `pcm`: WAV is only the container. AIFF
+# is not here: symphonia's `aiff` is not enabled by any feature.
+decode-wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
+decode-flac = ["dep:symphonia", "symphonia/flac"]
+decode-mp3 = ["dep:symphonia", "symphonia/mp3"]
+decode-ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
 # `Serialize`/`Deserialize` on the range-checked `Quality`.
 serde = ["dep:serde"]
 
@@ -43,6 +54,10 @@ flacenc = { version = "0.4", optional = true, default-features = false }
 # same crate and version flacenc already pulls in.
 md-5 = { version = "0.10", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
+# File decode for `Wave::read` / `FileIn`. No default features: each codec is a
+# `decode-*` feature above. Used by the `decode` module alone, and named in no
+# public signature.
+symphonia = { version = "0.5.5", optional = true, default-features = false }
 # AIFF/AIFF-C: its I16/I24/F32 formats match our three depths exactly and it
 # back-patches sizes on finalize, so AIFF streams like the others.
 aifc = { version = "0.7", optional = true }
@@ -52,11 +67,13 @@ aifc = { version = "0.7", optional = true }
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # `check_range_contract` for `Quality`.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-# `serde` on, so `Quality`'s contract test runs on every plain run. A
-# dev-dependency on self is how a feature reaches the test targets; the format
-# features are not named here (Ogg's C library cannot cross-compile to
-# Windows), and are on in a workspace run through `tutti-export`.
-tutti-codec = { path = ".", features = ["serde"] }
+# `serde` and every decoder on, so `Quality`'s contract test and the decode
+# suites run on every plain run: a dev-dependency on self is how a feature
+# reaches the test targets, where `required-features` would *skip* a suite on a
+# plain run and report green having decoded nothing. The encoder features are
+# not named here (Ogg's C library cannot cross-compile to Windows), and are on
+# in a workspace run through `tutti-export`.
+tutti-codec = { path = ".", features = ["serde", "decode-wav", "decode-flac", "decode-mp3", "decode-ogg"] }
 tempfile = "3.10"
 # An independent reader for what the WAV writer emits.
 hound = "3.5"

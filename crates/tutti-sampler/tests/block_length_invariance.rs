@@ -59,9 +59,9 @@ use std::f32::consts::TAU;
 use std::path::Path;
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::contract::{self, Direct};
 use tutti_graph::{Env, Node, Transport, TransportChanges};
-use tutti_io::Wave;
 use tutti_sampler::{
     Command, Direction, DiskStreamer, DiskStreamerConfig, LoopSetting, MemorySource, Playback,
     SlotId, StepOutcome, Voice, VoiceNode, VoicePool, VoiceSource,

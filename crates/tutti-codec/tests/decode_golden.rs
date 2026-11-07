@@ -5,14 +5,14 @@
 //! digest over its `f32` bit pattern — a tolerance would let a changed
 //! conversion or a dropped packet through.
 //!
-//! Not feature-gated: the crate's dev-dependency on itself turns every codec
+//! Not feature-gated: the crate's dev-dependency on itself turns every decoder
 //! on for its tests, so this fails to compile rather than silently vanishing
 //! if that ever stops being true.
 
 use std::path::PathBuf;
 
-use tutti_io::{AudioIn, FileIn, Wave};
-use tutti_types::Samples;
+use tutti_codec::{FileIn, Wave};
+use tutti_types::{AudioIn, Samples};
 
 fn asset(name: &str) -> PathBuf {
     tutti_fixtures::asset(&format!("audio/{name}"))
@@ -382,18 +382,13 @@ fn seek_lands_on_the_whole_file_load_frames() {
     }
 }
 
-/// `WaveAsset::from_bytes` — the Bevy loader's path, which probes from the
+/// `Wave::from_bytes` — the Bevy loader's path, which probes from the
 /// bytes alone with no extension hint — decodes to the same samples as the
 /// path-based load, for every fixture.
-///
-/// Compiled only with `bevy` (the CI "dark features" job runs
-/// `cargo nextest run -p tutti-io --features bevy`), because `WaveAsset` is
-/// the Asset derive and exists only there.
 ///
 /// Mutation: have `from_bytes` decode only the first half of its bytes and
 /// every row fails (checked). (A wrong extension hint does not: symphonia
 /// probes the bytes regardless.)
-#[cfg(feature = "bevy")]
 #[test]
 fn from_bytes_decodes_what_load_decodes() {
     // Against this platform's own `Wave::read`, not the recorded golden: both
@@ -401,7 +396,7 @@ fn from_bytes_decodes_what_load_decodes() {
     for &(name, _, _) in GOLDEN {
         let want = wave_digest(&Wave::read(asset(name)).expect("load"));
         let bytes = std::fs::read(asset(name)).expect("read fixture");
-        let asset = tutti_io::WaveAsset::from_bytes(&bytes).expect("decode bytes");
-        assert_eq!(wave_digest(&asset), want, "{name}: from_bytes digest");
+        let decoded = Wave::from_bytes(bytes).expect("decode bytes");
+        assert_eq!(wave_digest(&decoded), want, "{name}: from_bytes digest");
     }
 }

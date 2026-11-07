@@ -41,9 +41,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::fault::FaultLatch;
+use tutti_codec::Wave;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_io::AudioIn;
-use tutti_io::Wave;
+use tutti_types::AudioIn;
 use tutti_types::SamplePosition;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 use tutti_types::Samples;
@@ -83,7 +83,7 @@ pub(crate) enum ReadFault {
     #[error("seek to frame {frame}: {source}")]
     Seek {
         frame: usize,
-        source: tutti_io::WaveError,
+        source: tutti_codec::DecodeError,
     },
     #[cfg(codec)]
     #[error("decode at frame {frame}: {message}")]
@@ -94,7 +94,7 @@ pub(crate) enum ReadFault {
     },
     #[cfg(codec)]
     #[error(transparent)]
-    Open(#[from] tutti_io::WaveError),
+    Open(#[from] tutti_codec::DecodeError),
 }
 
 /// The file a forked disk voice plays: the butler's description of it, and
@@ -282,7 +282,7 @@ impl Open {
 
     #[cfg(codec)]
     fn open_path(file: &StreamFile, fault: Arc<FaultLatch>) -> Result<Self, ReadFault> {
-        let decoder = tutti_io::FileIn::open(&file.path)?;
+        let decoder = tutti_codec::FileIn::open(&file.path)?;
         let channels = usize::from(decoder.layout().count());
         match decoder.total_frames().filter(|_| decoder.seekable()) {
             Some(len) => Ok(Self::Paged(Box::new(Pages {
@@ -363,7 +363,7 @@ impl Open {
 #[cfg_attr(not(codec), allow(dead_code))]
 struct Pages {
     #[cfg(codec)]
-    decoder: tutti_io::FileIn,
+    decoder: tutti_codec::FileIn,
     path: PathBuf,
     fault: Arc<FaultLatch>,
     /// The file's width. Every page is interleaved at it.

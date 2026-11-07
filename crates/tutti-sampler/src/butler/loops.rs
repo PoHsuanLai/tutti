@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use super::io::wave_io::WaveIn;
 use super::prefetch::RegionOut;
-use tutti_io::Wave;
+use tutti_codec::Wave;
 use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::nonempty;

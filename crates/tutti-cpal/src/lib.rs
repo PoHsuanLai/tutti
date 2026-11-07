@@ -8,6 +8,7 @@ mod driver_seam;
 mod error;
 mod faults;
 mod host;
+mod listing;
 mod output;
 mod owner;
 mod poller;
@@ -25,6 +26,7 @@ pub use driver_seam::{
 pub use error::{Error, Result};
 pub use faults::{StreamFault, StreamFaultKind, StreamFaults};
 pub use host::{AudioHost, DeviceHost, DeviceSelector, available_hosts};
+pub use listing::{DeviceListing, Listed};
 pub use output::{AudioCallbackState, AudioEngine, MAX_FRAMES, process_audio};
 pub use poller::{DevicePoller, MIN_POLL_INTERVAL};
 pub use roster::{DeviceChange, DeviceId, DeviceRoster, Direction, Snapshot, SnapshotSource};

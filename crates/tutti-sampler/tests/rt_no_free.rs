@@ -11,8 +11,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::contract::Direct;
-use tutti_io::Wave;
 use tutti_sampler::testing::MockTransport;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource};
 use tutti_types::{Beat, Bpm, SampleRate, StretchFactor};

@@ -9,8 +9,8 @@
 
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
-use tutti_io::Wave;
 use tutti_types::{
     Beat, BeatDuration, Bpm, ChannelLayout, Frame, FrameClock, LoopRange, SampleRate, Samples,
 };

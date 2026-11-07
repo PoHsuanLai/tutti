@@ -6,12 +6,32 @@ use crate::HardwareMidiInputs;
 use crate::test_support::{FakeBackend, FakeCounters, endpoint};
 
 /// Long enough to be a failure, not a race: a wake returns at once.
-const PATIENCE: Duration = Duration::from_secs(30);
+const PATIENCE: Duration = Duration::from_secs(5);
+
+/// `wait` with a long timeout, which must come back before it. A change
+/// that does not notify the waiter returns only at the timeout, with its
+/// events, and the elapsed time is what shows it.
+fn wake(devices: &Devices) -> Vec<DeviceEvent> {
+    let start = std::time::Instant::now();
+    let events = devices.wait(PATIENCE);
+    assert!(start.elapsed() < PATIENCE, "wait slept to its timeout");
+    events
+}
 
 fn fake() -> (Devices, FakeCounters) {
     let (backend, counters) = FakeBackend::build_with(Vec::new(), Vec::new(), usize::MAX);
     (Devices::with_backend(backend).unwrap(), counters)
 }
+
+// Mutation record, each seen to fail, then restored:
+// - `ChangeSink::send` without `notify_all`: every test that waits fails with
+//   "wait slept to its timeout" (nine of them);
+// - `wait_timeout_while` with a predicate that is never true (`wait` returns
+//   at once): the tests that expect an event fail;
+// - `FakeWatch::drop` without the join: `dropping_devices_stops_the_watch_thread`
+//   fails;
+// - `Reporter::report` comparing handles only:
+//   `the_reporter_tells_a_reused_handle_from_the_device_it_replaced` fails.
 
 fn id_of(devices: &Devices, name: &str) -> DeviceId {
     devices
@@ -40,7 +60,7 @@ fn open_lists_what_is_plugged_in_and_reports_no_event_for_it() {
 fn plug_is_added_and_unplug_is_removed() {
     let (devices, fake) = fake();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    let events = devices.wait(PATIENCE);
+    let events = wake(&devices);
     let [DeviceEvent::Added(info)] = &events[..] else {
         panic!("one Added, got {events:?}");
     };
@@ -48,7 +68,7 @@ fn plug_is_added_and_unplug_is_removed() {
     assert_eq!(devices.list(), std::slice::from_ref(info));
 
     fake.unplug(EndpointId::from_raw(1));
-    assert_eq!(devices.wait(PATIENCE), [DeviceEvent::Removed(info.clone())]);
+    assert_eq!(wake(&devices), [DeviceEvent::Removed(info.clone())]);
     assert!(devices.list().is_empty());
 }
 
@@ -62,7 +82,7 @@ fn a_replug_of_a_known_state_and_an_unknown_unplug_are_silent() {
     fake.plug(endpoint(2, "Pads"), Direction::Input);
     let mut seen = Vec::new();
     while seen.len() < 2 {
-        seen.extend(devices.wait(PATIENCE));
+        seen.extend(wake(&devices));
     }
     let names: Vec<_> = seen.iter().map(|e| e.info().name.as_str()).collect();
     assert_eq!(names, ["Keys", "Pads"]);
@@ -73,13 +93,13 @@ fn a_replug_of_a_known_state_and_an_unknown_unplug_are_silent() {
 fn a_rename_is_changed_and_keeps_the_id() {
     let (devices, fake) = fake();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    let [DeviceEvent::Added(before)] = &devices.wait(PATIENCE)[..] else {
+    let [DeviceEvent::Added(before)] = &wake(&devices)[..] else {
         panic!("Added");
     };
     let mut renamed = endpoint(1, "Keys");
     renamed.name = "Keys II".into();
     fake.plug(renamed, Direction::Input);
-    let events = devices.wait(PATIENCE);
+    let events = wake(&devices);
     let [DeviceEvent::Changed(after)] = &events[..] else {
         panic!("Changed, got {events:?}");
     };
@@ -91,7 +111,7 @@ fn poll_gives_the_changes_since_the_last_call_once() {
     let (devices, fake) = fake();
     assert!(devices.poll().is_empty());
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    let mut got = devices.wait(PATIENCE);
+    let mut got = wake(&devices);
     assert_eq!(got.len(), 1);
     got = devices.poll();
     assert!(got.is_empty(), "wait consumed it");
@@ -107,7 +127,7 @@ fn wait_times_out_empty() {
 fn wait_wakes_for_a_change_made_on_another_thread() {
     let (devices, fake) = fake();
     let plugger = std::thread::spawn(move || fake.plug(endpoint(1, "Keys"), Direction::Input));
-    let events = devices.wait(PATIENCE);
+    let events = wake(&devices);
     plugger.join().unwrap();
     assert!(matches!(&events[..], [DeviceEvent::Added(_)]));
 }
@@ -135,7 +155,7 @@ fn open_input_takes_a_present_input_only() {
     fake.plug(endpoint(10, "Synth"), Direction::Output);
     let mut seen = 0;
     while seen < 2 {
-        seen += devices.wait(PATIENCE).len();
+        seen += wake(&devices).len();
     }
     assert!(
         devices
@@ -155,10 +175,10 @@ fn open_input_takes_a_present_input_only() {
 fn open_input_refuses_a_device_that_was_unplugged() {
     let (devices, fake) = fake();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    devices.wait(PATIENCE);
+    wake(&devices);
     let keys = id_of(&devices, "Keys");
     fake.unplug(EndpointId::from_raw(1));
-    devices.wait(PATIENCE);
+    wake(&devices);
     assert!(devices.open_input(&keys, producer()).is_err());
 }
 
@@ -166,7 +186,7 @@ fn open_input_refuses_a_device_that_was_unplugged() {
 fn a_duplex_device_opens_both_ways() {
     let (devices, fake) = fake();
     fake.plug(endpoint(1, "Box"), Direction::Duplex);
-    devices.wait(PATIENCE);
+    wake(&devices);
     let id = id_of(&devices, "Box");
     assert_eq!(devices.list()[0].direction, Direction::Duplex);
     assert!(devices.open_input(&id, producer()).is_ok());
@@ -177,7 +197,7 @@ fn a_duplex_device_opens_both_ways() {
 fn capability_is_the_backends_for_a_present_device() {
     let (devices, fake) = fake();
     fake.plug(endpoint(1, "Keys"), Direction::Input);
-    devices.wait(PATIENCE);
+    wake(&devices);
     let caps = devices.capability(&id_of(&devices, "Keys")).unwrap();
     assert!(caps.carries_midi2_only());
 }

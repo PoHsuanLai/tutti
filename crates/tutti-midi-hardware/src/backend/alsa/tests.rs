@@ -90,10 +90,19 @@ fn watch_threads() -> usize {
         .count()
 }
 
-/// Mutation: with the `poll` loop in `Announce::wait` returning
-/// `Woken::Stopped` instead of `Announced`, the added event never comes and
-/// this times out; the audit's defect (a vanished device stays listed) is the
-/// removal half, below.
+// Mutation record for this file, each seen to fail, then restored:
+// - `watch::start` returning `NoWatch` first: six of the seven fail (the
+//   added and removed waits time out, and the thread count stays 0);
+// - `AlsaWatch::drop` forgetting the stop descriptor and not joining:
+//   `dropping_devices_ends_the_watch_thread` fails;
+// - `Reporter::report` comparing handles only: nothing here fails, because
+//   it needs two clients to swap a handle between two enumerations;
+//   `devices::tests::the_reporter_tells_a_reused_handle_from_the_device_it_replaced`
+//   covers it. Parallel runs of these tests hit that swap on their own
+//   (a client number freed by one test is taken by the next).
+//
+
+/// A client that appears is listed with its identity.
 #[test]
 fn a_client_that_appears_is_added_and_listed() {
     let devices = Devices::open().unwrap();
@@ -106,8 +115,7 @@ fn a_client_that_appears_is_added_and_listed() {
 }
 
 /// The audit's defect (#4): a device that vanished stayed listed and nothing
-/// fired. Mutation: `watch::start` returning `NoWatch` leaves it listed
-/// forever and the wait times out.
+/// fired.
 #[test]
 fn a_client_that_exits_is_removed_and_unlisted() {
     let devices = Devices::open().unwrap();
@@ -141,9 +149,6 @@ fn an_input_held_when_its_device_vanishes_is_reported_removed() {
     drop(connection);
 }
 
-/// Mutation: `Reporter::report` skipping the ordinal-bearing `Present` for a
-/// second device with the same identity (or the table choosing ordinal 0 for
-/// both) makes the second `Added` never arrive or collide.
 #[test]
 fn two_identical_clients_are_two_devices() {
     let devices = Devices::open().unwrap();
@@ -158,8 +163,6 @@ fn two_identical_clients_are_two_devices() {
     drop((first, second));
 }
 
-/// Mutation: `AlsaWatch::drop` without dropping `stop` before the join hangs
-/// the test; without the join the count is still 1 at the assert.
 #[test]
 fn dropping_devices_ends_the_watch_thread() {
     assert_eq!(watch_threads(), 0);

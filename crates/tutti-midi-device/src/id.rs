@@ -6,8 +6,9 @@ use core::fmt;
 /// The OS's handle to one endpoint, opaque and backend-owned.
 ///
 /// Not an index: ALSA's `(client, port)` pair and CoreMIDI's unique id differ in
-/// shape, and an index is only good until the next hot-plug. A stale handle
-/// fails to open rather than opening the wrong device.
+/// shape, and an index is only good until the next hot-plug. A handle the OS
+/// has since given to another device opens that device, so a holder watches for
+/// the `Removed` that retires it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EndpointId(u64);
 
@@ -61,6 +62,13 @@ impl Identity {
 /// Two identical keyboards share an identity; the table gives the first to
 /// appear ordinal 0 and the next 1. An ordinal is free again once its device is
 /// gone.
+///
+/// An id names a device within one run. The ordinal says which of several alike
+/// devices this is *now*, in the order they appeared, and not which physical
+/// unit: unplug A (#0) and B (#1) and plug B back first, and B is #0. Across a
+/// restart or a replug, an id of a device with a one-of-a-kind identity (a
+/// Product Instance Id, a CoreMIDI unique id, or an ALSA name no other device
+/// shares) names the same device again; one with an ordinal above 0 does not.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeviceId {
     identity: Identity,

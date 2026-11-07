@@ -30,8 +30,10 @@ fn fake() -> (Devices, FakeCounters) {
 //   at once): the tests that expect an event fail;
 // - `FakeWatch::drop` without the join: `dropping_devices_stops_the_watch_thread`
 //   fails;
-// - `Reporter::report` comparing handles only:
-//   `the_reporter_tells_a_reused_handle_from_the_device_it_replaced` fails.
+// - `Reporter::report` ignoring `departed`:
+//   `a_handle_the_os_says_departed_is_a_new_device` fails;
+// - `Reporter::report` sending `Gone` when only the name changed:
+//   `a_handle_that_stays_under_a_new_name_is_a_rename` fails.
 
 fn id_of(devices: &Devices, name: &str) -> DeviceId {
     devices
@@ -211,28 +213,59 @@ fn os_devices_merges_an_endpoint_listed_both_ways_into_a_duplex() {
     assert_eq!(directions, [Direction::Duplex, Direction::Output]);
 }
 
-/// Mutation: `report` comparing handles only (dropping the identity test) makes
-/// the new device a `Changed` of the old one, and this fails.
-#[test]
-fn the_reporter_tells_a_reused_handle_from_the_device_it_replaced() {
-    let shared = Arc::new(Shared::default());
-    let mut reporter = Reporter::new(ChangeSink {
-        shared: Arc::clone(&shared),
-    });
-    reporter.report(os_devices(&[endpoint(7, "Old")], &[]));
-    reporter.report(os_devices(&[endpoint(7, "New")], &[]));
-    let events: Vec<_> = shared.state().pending.iter().cloned().collect();
-    let shape: Vec<_> = events
+fn shape(shared: &Shared) -> Vec<(&'static str, String)> {
+    shared
+        .state()
+        .pending
         .iter()
         .map(|e| match e {
-            DeviceEvent::Added(i) => ("added", i.name.as_str()),
-            DeviceEvent::Removed(i) => ("removed", i.name.as_str()),
-            DeviceEvent::Changed(i) => ("changed", i.name.as_str()),
+            DeviceEvent::Added(i) => ("added", i.name.clone()),
+            DeviceEvent::Removed(i) => ("removed", i.name.clone()),
+            DeviceEvent::Changed(i) => ("changed", i.name.clone()),
         })
-        .collect();
+        .collect()
+}
+
+fn reporter() -> (Arc<Shared>, Reporter) {
+    let shared = Arc::new(Shared::default());
+    let reporter = Reporter::new(ChangeSink {
+        shared: Arc::clone(&shared),
+    });
+    (shared, reporter)
+}
+
+/// A handle the OS says departed is a new device when it is present again, even
+/// under the same name. Mutation: `report` ignoring `departed` leaves only the
+/// first `added` here.
+#[test]
+fn a_handle_the_os_says_departed_is_a_new_device() {
+    let (shared, mut reporter) = reporter();
+    let same = os_devices(&[endpoint(7, "Twin")], &[]);
+    reporter.report(same.clone(), |_| false);
+    reporter.report(same, |h| h == EndpointId::from_raw(7));
     assert_eq!(
-        shape,
-        [("added", "Old"), ("removed", "Old"), ("added", "New")]
+        shape(&shared),
+        [
+            ("added", "Twin".into()),
+            ("removed", "Twin".into()),
+            ("added", "Twin".into())
+        ]
+    );
+}
+
+/// A handle that stays and whose name changes is the same device renamed.
+/// Mutation: `report` sending `Gone` for a changed name makes this
+/// `removed`, `added`.
+#[test]
+fn a_handle_that_stays_under_a_new_name_is_a_rename() {
+    let (shared, mut reporter) = reporter();
+    reporter.report(os_devices(&[endpoint(7, "Old")], &[]), |_| false);
+    let mut renamed = endpoint(7, "Old");
+    renamed.name = "New".into();
+    reporter.report(os_devices(&[renamed], &[]), |_| false);
+    assert_eq!(
+        shape(&shared),
+        [("added", "Old".into()), ("changed", "New".into())]
     );
 }
 
@@ -244,10 +277,10 @@ fn the_reporter_reports_a_departure_a_re_enumeration_omits() {
     };
     let mut reporter = Reporter::new(sink);
     let both = os_devices(&[endpoint(1, "A"), endpoint(2, "B")], &[]);
-    reporter.report(both.clone());
-    reporter.report(both.clone());
+    reporter.report(both.clone(), |_| false);
+    reporter.report(both.clone(), |_| false);
     assert_eq!(shared.state().pending.len(), 2, "a repeat adds nothing");
-    reporter.report(both[..1].to_vec());
+    reporter.report(both[..1].to_vec(), |_| false);
     let pending: Vec<_> = shared.state().pending.iter().cloned().collect();
     assert!(matches!(
         pending.last(),

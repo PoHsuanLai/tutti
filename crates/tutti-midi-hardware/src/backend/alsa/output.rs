@@ -128,7 +128,10 @@ pub fn open(id: EndpointId) -> Result<Box<dyn MidiOut>> {
     let seq = SeqClient::open("tutti-out", false)?;
     let port = seq.open_port(
         "tutti-out",
-        sys::SND_SEQ_PORT_CAP_READ | sys::SND_SEQ_PORT_CAP_SUBS_READ,
+        // Not subscribable by others, so never listed as a device (see
+        // `input::open`); this client subscribes its own port to the
+        // destination.
+        sys::SND_SEQ_PORT_CAP_READ,
         sys::SND_SEQ_PORT_TYPE_MIDI_GENERIC | sys::SND_SEQ_PORT_TYPE_APPLICATION,
     )?;
     let own_client = seq_addr_byte(seq.id()?, "snd_seq_client_id")?;

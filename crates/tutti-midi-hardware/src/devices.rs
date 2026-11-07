@@ -8,13 +8,12 @@
 //! The queue is unbounded: an app that never polls keeps one small event per
 //! hot-plug.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
-    OsDevice,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, OsChange, OsDevice,
 };
 use tutti_midi_types::MidiOut;
 
@@ -28,6 +27,8 @@ use crate::error::{Error, Result};
 struct State {
     table: DeviceTable,
     pending: VecDeque<DeviceEvent>,
+    /// Why the watch ended, if it did. The table is then the last it saw.
+    failure: Option<String>,
 }
 
 #[derive(Default)]
@@ -62,6 +63,15 @@ impl ChangeSink {
 }
 
 impl ChangeSink {
+    /// Records that the watch has ended without being dropped, with the reason.
+    /// The list is frozen from here; [`Devices::watch_failure`] says so, and so
+    /// does the session's `Phase::Poll`.
+    pub fn fail(&self, reason: String) {
+        tracing::warn!("MIDI device watch ended: {reason}");
+        self.shared.state().failure.get_or_insert(reason);
+        self.shared.woken.notify_all();
+    }
+
     /// Lists `devices` as already present: they enter the table and queue no
     /// event, so a `Devices` that has just opened has nothing to poll. A backend
     /// seeds once, before any [`send`](Self::send).
@@ -80,12 +90,14 @@ impl core::fmt::Debug for ChangeSink {
 }
 
 /// What a backend's thread keeps between looks at the OS: the handles it has
-/// reported and what each was, so a handle that has dropped out of a fresh
-/// enumeration is reported gone.
+/// reported, so a handle that has dropped out of a fresh enumeration is
+/// reported gone.
 ///
 /// An OS reuses a handle: ALSA hands a new client the number of one that just
-/// exited, and two looks that straddle both see one handle. A handle that now
-/// names another identity is a different device, so it is reported gone first.
+/// exited, so two looks that straddle both see one handle. The OS says when a
+/// handle's device left (`departed`), and the handle is then reported gone
+/// before it is reported present again, as a new device. A handle that stays
+/// and whose name changes is the same device, renamed.
 #[cfg_attr(
     not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
     allow(
@@ -96,7 +108,7 @@ impl core::fmt::Debug for ChangeSink {
 #[derive(Debug)]
 pub(crate) struct Reporter {
     sink: ChangeSink,
-    known: BTreeMap<EndpointId, Identity>,
+    known: BTreeSet<EndpointId>,
 }
 
 #[cfg_attr(
@@ -110,28 +122,23 @@ impl Reporter {
     pub(crate) fn new(sink: ChangeSink) -> Self {
         Self {
             sink,
-            known: BTreeMap::new(),
+            known: BTreeSet::new(),
         }
     }
 
     /// Lists `present` as the devices there already were.
     pub(crate) fn seed(&mut self, present: Vec<OsDevice>) {
-        self.known = present
-            .iter()
-            .map(|d| (d.handle, d.identity.clone()))
-            .collect();
+        self.known = present.iter().map(|d| d.handle).collect();
         self.sink.seed(present);
     }
 
     /// Reports `present` as the whole device list: every device in it, and the
-    /// departure of each known one that is not. The table drops what repeats.
-    pub(crate) fn report(&mut self, present: Vec<OsDevice>) {
-        let now: BTreeMap<EndpointId, Identity> = present
-            .iter()
-            .map(|d| (d.handle, d.identity.clone()))
-            .collect();
-        for (handle, identity) in &self.known {
-            if now.get(handle) != Some(identity) {
+    /// departure of each known one that is not, or that `departed` names. The
+    /// table drops what repeats.
+    pub(crate) fn report(&mut self, present: Vec<OsDevice>, departed: impl Fn(EndpointId) -> bool) {
+        let now: BTreeSet<EndpointId> = present.iter().map(|d| d.handle).collect();
+        for handle in &self.known {
+            if !now.contains(handle) || departed(*handle) {
                 self.sink.send(OsChange::Gone(*handle));
             }
         }
@@ -207,6 +214,13 @@ impl Devices {
         })
     }
 
+    /// Why the watch ended on its own, if it did: the list is then the last it
+    /// saw and nothing more arrives. `None` while the watch runs.
+    #[must_use]
+    pub fn watch_failure(&self) -> Option<String> {
+        self.shared.state().failure.clone()
+    }
+
     /// The devices present now, ordered by id.
     #[must_use]
     pub fn list(&self) -> Vec<DeviceInfo> {
@@ -232,6 +246,10 @@ impl Devices {
 
     /// Opens `id` for input, delivering events into `producer`; the connection
     /// must be held, as [`MidiEndpoints::open_input`] says.
+    ///
+    /// The list is not held while the OS opens the handle. A device that left
+    /// in between, and whose handle the OS gave to another at once, opens that
+    /// other one; the `Removed` that follows is how a holder finds out.
     ///
     /// # Errors
     ///

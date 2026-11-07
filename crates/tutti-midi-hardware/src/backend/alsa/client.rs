@@ -95,6 +95,13 @@ impl SeqClient {
         )
     }
 
+    /// Renames this client; the sequencer announces the change.
+    pub fn rename(&self, name: &str) {
+        let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());
+        // SAFETY: `self.seq` is open; `cname` outlives the call.
+        unsafe { sys::snd_seq_set_client_name(self.seq, cname.as_ptr()) };
+    }
+
     /// Creates a port on this client.
     pub fn open_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());

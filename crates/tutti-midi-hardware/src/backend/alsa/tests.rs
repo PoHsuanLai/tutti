@@ -13,7 +13,13 @@ use tutti_midi_device::{DeviceEvent, DeviceId, DeviceInfo, Identity};
 const PATIENCE: Duration = Duration::from_secs(20);
 
 /// A device named `name` until dropped.
-struct Virtual(#[expect(dead_code, reason = "closing the client on drop is the point")] SeqClient);
+struct Virtual(SeqClient);
+
+impl Virtual {
+    fn rename(&self, name: &str) {
+        self.0.rename(name);
+    }
+}
 
 fn plug(name: &str) -> Virtual {
     let seq = SeqClient::open(name, true).expect("a sequencer to open (modprobe snd-seq)");
@@ -38,11 +44,25 @@ fn unique(tag: &str) -> String {
 /// Waits until an event satisfies `want`, and returns it. Events about other
 /// clients (the machine has its own) pass by.
 fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent {
+    until_in(devices, &mut Vec::new(), want)
+}
+
+/// As [`until`], keeping in `backlog` the events that arrived with the wanted
+/// one, and taking from it first: the next wait finds them.
+fn until_in(
+    devices: &Devices,
+    backlog: &mut Vec<DeviceEvent>,
+    want: impl Fn(&DeviceEvent) -> bool,
+) -> DeviceEvent {
     let deadline = Instant::now() + PATIENCE;
-    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-        if let Some(event) = devices.wait(left).into_iter().find(&want) {
-            return event;
+    loop {
+        if let Some(i) = backlog.iter().position(&want) {
+            return backlog.remove(i);
         }
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        backlog.extend(devices.wait(left));
     }
     panic!(
         "no matching event within {PATIENCE:?}; list: {:?}",
@@ -180,4 +200,152 @@ fn opening_twice_gives_each_its_own_watch() {
     let _device = plug(&name);
     until(&a, added(&name));
     until(&b, added(&name));
+}
+
+/// An idle `Devices` is quiet: enumerating must not announce, or the watch
+/// wakes itself forever (every enumeration's own client start, port and exit
+/// are announced to it).
+#[test]
+fn an_idle_devices_does_not_wake_itself() {
+    let devices = Devices::open().unwrap();
+    // Anything real that happens on the machine is allowed to wake it a few
+    // times; a loop is thousands.
+    devices.wait(Duration::from_secs(1));
+    let wakes = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(wakes <= 5, "{wakes} wakes in one idle second");
+}
+
+/// Opening an input and an output on a device makes the engine's own clients
+/// (`tutti-in`, `tutti-out`); they are not devices, in this process or another.
+/// Mutation: restoring `SND_SEQ_PORT_CAP_SUBS_WRITE` on the pump's port lists
+/// `tutti-in` as an `Added` output, and `SND_SEQ_PORT_CAP_SUBS_READ` on the
+/// output's lists `tutti-out` as an input.
+#[test]
+fn the_engines_own_clients_are_not_listed() {
+    let devices = Devices::open().unwrap();
+    let ports = HardwareMidiInputs::new(16);
+    let name = unique("own");
+    let device = plug(&name);
+    let mut backlog = Vec::new();
+    let id = info(until_in(&devices, &mut backlog, added(&name))).id;
+
+    let input = devices
+        .open_input(&id, ports.open_input_port("own"))
+        .unwrap();
+    let output = devices.open_output(&id).unwrap();
+    drop(device);
+    // Announcements are in order: whatever the opens announced is before this.
+    until_in(&devices, &mut backlog, removed(id));
+    // The engine's ports are named like their clients; the stand-in devices of
+    // other tests are not.
+    let engine = |i: &DeviceInfo| match i.id.identity() {
+        Identity::Alsa { client, port } => client.starts_with("tutti-") && client == port,
+        _ => false,
+    };
+    assert!(!backlog.iter().any(|e| engine(e.info())), "{backlog:?}");
+    assert!(!devices.list().iter().any(engine), "{:?}", devices.list());
+    drop((input, output));
+}
+
+/// The engine's clients are told by their ports, not their names: a device may
+/// be called `tutti-in`. Mutation: skipping clients whose name starts with
+/// `tutti-` hides it.
+#[test]
+fn a_device_called_like_an_engine_client_is_listed() {
+    let devices = Devices::open().unwrap();
+    let _device = plug("tutti-in");
+    let device = info(until(
+        &devices,
+        |e| matches!(e, DeviceEvent::Added(i) if i.id.identity() == &Identity::alsa("tutti-in", "port")),
+    ));
+    assert!(devices.list().contains(&device));
+}
+
+/// A device replaced at once by an identical one is two devices: the client
+/// exited and the next took its number before the watch looked. The
+/// announcement of the exit is what tells. Mutation: `Reporter::report` with
+/// `departed` always false never reports the removal when the two coalesce
+/// (this loop hits it within a few cycles; a miss only passes).
+#[test]
+fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
+    let devices = Devices::open().unwrap();
+    let name = unique("swap");
+    let mut backlog = Vec::new();
+    let mut device = plug(&name);
+    let mut id = info(until_in(&devices, &mut backlog, added(&name))).id;
+    for _ in 0..30 {
+        drop(device);
+        device = plug(&name);
+        until_in(&devices, &mut backlog, removed(id.clone()));
+        id = info(until_in(&devices, &mut backlog, added(&name))).id;
+    }
+    drop(device);
+}
+
+/// A rename is the same device: the handle stayed. (A client renamed through
+/// `snd_seq_set_client_name` announces a change.)
+#[test]
+fn a_client_renamed_in_place_is_changed_and_keeps_its_id() {
+    let devices = Devices::open().unwrap();
+    let name = unique("rename");
+    let device = plug(&name);
+    let before = info(until(&devices, added(&name)));
+    let renamed = format!("{name}-two");
+    device.rename(&renamed);
+    let after = info(until(
+        &devices,
+        |e| matches!(e, DeviceEvent::Changed(i) if i.name == format!("{renamed}: port")),
+    ));
+    assert_eq!(after.id, before.id);
+}
+
+/// A backend whose enumeration panics the second time it is asked.
+struct Panicky;
+
+impl crate::MidiEndpoints for Panicky {
+    fn watch(&self, sink: crate::ChangeSink) -> crate::Result<Box<dyn crate::Watch>> {
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        super::watch::start(sink, move |_| {
+            assert!(
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0,
+                "enumeration panics"
+            );
+            Vec::new()
+        })
+    }
+    fn inputs(&self) -> Vec<crate::EndpointInfo> {
+        Vec::new()
+    }
+    fn outputs(&self) -> Vec<crate::EndpointInfo> {
+        Vec::new()
+    }
+    fn open_input(
+        &self,
+        _: tutti_midi_device::EndpointId,
+        _: crate::InputProducerHandle,
+    ) -> crate::Result<Box<dyn crate::InputConnection>> {
+        Err(crate::Error::MidiDevice("none".into()))
+    }
+    fn open_output(
+        &self,
+        _: tutti_midi_device::EndpointId,
+    ) -> crate::Result<Box<dyn tutti_midi_types::MidiOut>> {
+        Err(crate::Error::MidiDevice("none".into()))
+    }
+}
+
+/// A watch that dies says so: `watch_failure` is set, not a frozen table with
+/// no word. Mutation: dropping the `catch_unwind` (the thread's panic is then
+/// only joined) leaves `watch_failure` `None`.
+#[test]
+fn a_watch_that_panics_reports_its_failure() {
+    let devices = Devices::with_backend(Box::new(Panicky)).unwrap();
+    assert_eq!(devices.watch_failure(), None);
+    let _device = plug(&unique("panic"));
+    let deadline = Instant::now() + PATIENCE;
+    while devices.watch_failure().is_none() {
+        assert!(Instant::now() < deadline, "no failure reported");
+        devices.wait(Duration::from_millis(50));
+    }
+    assert!(devices.watch_failure().unwrap().contains("panicked"));
 }

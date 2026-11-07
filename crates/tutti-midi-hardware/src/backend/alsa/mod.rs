@@ -39,21 +39,31 @@ use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use client::SeqClient;
 use enumerate::Direction;
+use std::sync::{Mutex, PoisonError};
 use tutti_midi_device::{EndpointId, OsDevice};
 use tutti_midi_types::MidiOut;
 
 /// The Linux [`MidiEndpoints`] implementation.
 ///
-/// Holds no client of its own: enumeration opens a short-lived one per call, and
-/// each connection owns the client it pumps or sends through. A shared handle
-/// would serialise a blocking read against every other operation.
-#[derive(Debug, Default)]
-pub struct AlsaEndpoints;
+/// Holds one client for enumerating, opened on first use and kept: a client
+/// opened per call would announce its own start, port and exit each time, and
+/// every watch on the machine would wake for it. Each connection owns the client
+/// it pumps or sends through, and the watch enumerates on its own.
+#[derive(Default)]
+pub struct AlsaEndpoints {
+    enumerator: Mutex<Option<SeqClient>>,
+}
+
+impl core::fmt::Debug for AlsaEndpoints {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AlsaEndpoints").finish_non_exhaustive()
+    }
+}
 
 impl AlsaEndpoints {
-    /// The ALSA backend. Stateless — clients are opened per operation, not held.
+    /// The ALSA backend. No client is open until one is needed.
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// A fresh snapshot in `direction`.
@@ -61,41 +71,40 @@ impl AlsaEndpoints {
     /// An unopenable sequencer means no endpoints, not a panic — the same shape
     /// CoreMIDI's failed-client path takes. Callers see an empty list and the
     /// reason lands in `debug!`.
-    fn list(direction: Direction) -> Vec<EndpointInfo> {
-        match SeqClient::open("tutti-enum", true) {
-            Ok(seq) => enumerate::endpoints(&seq, direction),
-            Err(e) => {
-                tracing::debug!("ALSA enumeration: {e}");
-                Vec::new()
-            }
+    fn list(&self, direction: Direction) -> Vec<EndpointInfo> {
+        let mut held = self
+            .enumerator
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if held.is_none() {
+            *held = SeqClient::open("tutti-enum", true)
+                .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
+                .ok();
         }
+        held.as_ref()
+            .map(|seq| enumerate::endpoints(seq, direction))
+            .unwrap_or_default()
     }
 }
 
-impl AlsaEndpoints {
-    /// Every device now, from one client; `None` when the sequencer will not
-    /// open, which is not the same as no devices.
-    fn devices() -> Option<Vec<OsDevice>> {
-        let seq = SeqClient::open("tutti-enum", true)
-            .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
-            .ok()?;
-        let inputs = enumerate::endpoints(&seq, Direction::Input);
-        let outputs = enumerate::endpoints(&seq, Direction::Output);
-        Some(os_devices(&inputs, &outputs))
-    }
+/// Every device now, enumerated on `seq`.
+fn devices(seq: &SeqClient) -> Vec<OsDevice> {
+    let inputs = enumerate::endpoints(seq, Direction::Input);
+    let outputs = enumerate::endpoints(seq, Direction::Output);
+    os_devices(&inputs, &outputs)
 }
 
 impl MidiEndpoints for AlsaEndpoints {
     fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
-        watch::start(sink, Self::devices)
+        watch::start(sink, devices)
     }
 
     fn inputs(&self) -> Vec<EndpointInfo> {
-        Self::list(Direction::Input)
+        self.list(Direction::Input)
     }
 
     fn outputs(&self) -> Vec<EndpointInfo> {
-        Self::list(Direction::Output)
+        self.list(Direction::Output)
     }
 
     fn open_input(

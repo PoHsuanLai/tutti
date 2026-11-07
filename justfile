@@ -347,6 +347,11 @@ check-plugin-ffi:
 check-layout:
     scripts/check-layout.sh
 
+# A tuple struct with a private field must not derive `Deserialize` plainly:
+# the derive skips `new`. Python over the source, no build.
+check-range-types:
+    scripts/check-range-types.sh
+
 # Import-path gate. Engine types are imported from a crate's root or prelude,
 # never through its modules. Neither rustc nor clippy has a lint for a redundant
 # path, and doc comments in ```text / ```ignore blocks are never compiled — so
@@ -459,4 +464,4 @@ deny:
     cargo deny --locked check advisories
 
 # Everything CI runs, in CI's order.
-ci: lint deny check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-features check-loom test test-features test-editor test-doc test-release doc
+ci: lint deny check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-range-types check-features check-loom test test-features test-editor test-doc test-release doc

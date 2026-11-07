@@ -1,5 +1,6 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
-//! cdylibs and the `plugin-server` binary.
+//! cdylibs and the `plugin-server` binary; and [`check_range_contract`], the one
+//! check a range-checked type keeps its contract.
 //!
 //! A test finds a repo file through [`repo_root`] and [`asset`], never through
 //! a relative `..` path, so moving a crate never changes what a test reads.
@@ -31,6 +32,10 @@
 //! mutation-verification result.
 
 #![forbid(unsafe_code)]
+
+mod range_contract;
+
+pub use range_contract::{RangeContract, check_range_contract};
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

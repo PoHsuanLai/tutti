@@ -132,6 +132,9 @@ jobs:
       # the layers in CLAUDE.md (`cargo metadata`, no build).
       - run: rustup toolchain install
       - run: scripts/check-layout.sh
+      # A tuple struct with a private field does not derive `Deserialize`
+      # plainly: the derive skips `new` (python3 over the source, no build).
+      - run: scripts/check-range-types.sh
 
   clippy:
     name: clippy

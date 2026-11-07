@@ -55,6 +55,8 @@ serde_json = "1"
 tempfile = "3"
 # Property tests over `step`: arbitrary event sequences, no plugin loaded.
 proptest = "1.9.0"
+# `check_range_contract` on `ContentScale`.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 [package.metadata.docs.rs]
 all-features = true

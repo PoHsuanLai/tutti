@@ -38,11 +38,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tutti_cpal::{
-    DeviceInfo, DeviceSelector, OutputSpec, StreamDriver, StreamFault, StreamFaults, TuttiDriver,
+    DeviceInfo, DeviceSelector, OutputSpec, SnapshotSource, StreamDriver, StreamFault,
+    StreamFaults, TuttiDriver,
 };
 use tutti_types::{SampleRate, Samples};
 
-use crate::{Error, Result, Session};
+use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, SessionEvent};
 
 /// The sound card: owns the `TuttiDriver`. `!Send`, so it stays on the
 /// thread that opened it.
@@ -88,6 +89,17 @@ impl Device {
         self.driver.engine().is_running()
     }
 
+    /// The identity of the device `selector` opened: the id it names, or for
+    /// the default the device's name (cpal names the default and nothing
+    /// else, so ordinal 0). `None` if the host cannot name it.
+    #[must_use]
+    pub fn opened_id(&self, selector: &DeviceSelector) -> Option<tutti_cpal::DeviceId> {
+        match selector {
+            DeviceSelector::Id(id) => Some(id.clone()),
+            DeviceSelector::Default => self.device_name().ok().map(tutti_cpal::DeviceId::new),
+        }
+    }
+
     /// The name of the selected output device.
     ///
     /// # Errors
@@ -99,7 +111,7 @@ impl Device {
 
     /// The backend fault record, which survives stop and restart.
     /// [`Session::update`] reports each new fault as
-    /// [`SessionEvent::DeviceFault`](crate::SessionEvent::DeviceFault).
+    /// [`SessionEvent::DeviceFault`].
     pub fn faults(&self) -> Arc<StreamFaults> {
         self.driver.engine().faults()
     }
@@ -154,6 +166,24 @@ impl Device {
     }
 }
 
+/// A restart that moved the stream ([`SessionEvent::DeviceRestarted`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeviceRestarted {
+    /// The rate the graph ran at before.
+    pub previous_rate: SampleRate,
+    /// The rate it runs at now.
+    pub rate: SampleRate,
+}
+
+impl DeviceRestarted {
+    /// Whether the rate moved: a capture stream opened at the old rate now
+    /// feeds the graph frames of the wrong rate until it is reopened.
+    #[must_use]
+    pub fn rate_changed(&self) -> bool {
+        self.previous_rate != self.rate
+    }
+}
+
 /// What [`Session::restart`] asks for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceRestart {
@@ -205,11 +235,79 @@ impl Session {
         request: DeviceRestart,
         follow: impl FnOnce(&OutputSpec),
     ) -> Result<()> {
-        self.check_restart(request.max_block)?;
-        let max_block = request.max_block;
-        device.driver.restart_with(request.device, |spec, stopped| {
-            self.rerate(spec, stopped, max_block, follow)
-        })
+        self.note_chosen(request.device.clone());
+        self.run_restart(device, request, follow)
+    }
+
+    /// Runs a restart the device policy asked for
+    /// ([`SessionEvent::RestartWanted`]), with `follow` as in
+    /// [`restart_following`](Self::restart_following). Unlike a restart of
+    /// the host's, it is not a choice: it never changes what the policy
+    /// follows. It is dropped, returning `Ok(false)`, when the host has chosen
+    /// something else since it was asked for (the request is stale), or
+    /// there is no watch.
+    ///
+    /// # Errors
+    ///
+    /// As [`restart`](Self::restart).
+    pub fn restart_wanted(
+        &mut self,
+        device: &mut Device,
+        request: DeviceRestart,
+        follow: impl FnOnce(&OutputSpec),
+    ) -> Result<bool> {
+        if self
+            .device_watch
+            .as_ref()
+            .is_none_or(|w| *w.follow().want() != request.device)
+        {
+            return Ok(false);
+        }
+        self.run_restart(device, request, follow).map(|()| true)
+    }
+
+    /// While held, the device policy asks for no restart (the watch still
+    /// reports devices). For a host that must not have the stream moved
+    /// under it, a take being recorded: a restart can change the rate.
+    pub fn hold_device_restarts(&mut self, held: bool) {
+        if let Some(watch) = &mut self.device_watch {
+            watch.hold(held);
+        }
+    }
+
+    /// The selector the device policy follows, if a watch runs.
+    #[must_use]
+    pub fn watch_devices_want(&self) -> Option<DeviceSelector> {
+        self.device_watch
+            .as_ref()
+            .map(|w| w.follow().want().clone())
+    }
+
+    /// The devices the watch last saw, `None` before its first look or
+    /// without a watch.
+    #[must_use]
+    pub fn watched_devices(&self) -> Option<&tutti_cpal::Snapshot> {
+        self.device_watch.as_ref().and_then(|w| w.snapshot())
+    }
+
+    fn run_restart(
+        &mut self,
+        device: &mut Device,
+        request: DeviceRestart,
+        follow: impl FnOnce(&OutputSpec),
+    ) -> Result<()> {
+        let selector = request.device.clone();
+        let outcome = self.check_restart(request.max_block).and_then(|()| {
+            let max_block = request.max_block;
+            let previous = device.graph_rate();
+            device
+                .driver
+                .restart_with(request.device, |spec, stopped| {
+                    self.rerate(spec, stopped, max_block, follow)
+                })
+                .map(|()| previous)
+        });
+        self.note_restart(device, Some(&selector), outcome)
     }
 
     /// [`restart_following`](Self::restart_following) on a driver of the
@@ -231,10 +329,113 @@ impl Session {
     where
         D::Running: 'static,
     {
-        self.check_restart(max_block)?;
-        device.driver.restart_on(spec, driver, |spec, stopped| {
-            self.rerate(spec, stopped, max_block, follow)
-        })
+        let outcome = self.check_restart(max_block).and_then(|()| {
+            let previous = device.graph_rate();
+            device
+                .driver
+                .restart_on(spec, driver, |spec, stopped| {
+                    self.rerate(spec, stopped, max_block, follow)
+                })
+                .map(|()| previous)
+        });
+        self.note_restart(device, None, outcome)
+    }
+
+    /// Records a restart's outcome: the policy is told, and the next poll
+    /// reports it ([`SessionEvent::DeviceRestarted`] or
+    /// [`SessionEvent::RestartFailed`]). A failure that left the stream
+    /// stopped keeps the old spec and graph rate, as the module docs say.
+    fn note_restart(
+        &mut self,
+        device: &Device,
+        selector: Option<&DeviceSelector>,
+        outcome: Result<SampleRate>,
+    ) -> Result<()> {
+        let now = std::time::Instant::now();
+        match outcome {
+            Ok(previous_rate) => {
+                // A custom driver (`restart_on`) names no device: unknown.
+                let name = selector.and_then(|s| device.opened_id(s));
+                // The restart cleared the fault record; its count restarts.
+                if let Some((faults, seen)) = &mut self.faults {
+                    *seen = faults.count();
+                }
+                self.device_events
+                    .push(SessionEvent::DeviceRestarted(DeviceRestarted {
+                        previous_rate,
+                        rate: device.graph_rate(),
+                    }));
+                self.note_device(FollowEvent::Opened(name), now);
+                Ok(())
+            }
+            Err(e) => {
+                self.device_events
+                    .push(SessionEvent::RestartFailed(e.to_string()));
+                self.note_device(
+                    FollowEvent::RestartFailed {
+                        running: device.is_running(),
+                    },
+                    now,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    fn note_chosen(&mut self, selector: DeviceSelector) {
+        self.note_device(FollowEvent::Chose(selector), std::time::Instant::now());
+    }
+
+    /// Feeds the policy and queues a restart it asks for.
+    fn note_device(&mut self, event: FollowEvent, now: std::time::Instant) {
+        if let Some(watch) = &mut self.device_watch
+            && let Some(request) = watch.note(event, now)
+        {
+            self.device_events
+                .push(SessionEvent::RestartWanted(request));
+        }
+    }
+
+    /// Starts watching the host's devices (design 018): `source` is polled on
+    /// every [`Phase::Poll`](crate::Phase::Poll), its changes are reported as events, and
+    /// `policy` decides which of them restart the stream. `want` is the
+    /// selector the stream was started with, which the policy never
+    /// overrides, and `running_on` the device it opened ([`Device::opened_id`];
+    /// `None`: unknown, which is never taken for a different device). Replaces a watch already running.
+    pub fn watch_devices(
+        &mut self,
+        source: impl SnapshotSource + Send + 'static,
+        policy: DevicePolicy,
+        want: DeviceSelector,
+        running_on: Option<tutti_cpal::DeviceId>,
+    ) {
+        self.device_watch = Some(DeviceWatch::new(source, policy, want, running_on));
+    }
+
+    /// The [`Phase::Poll`](crate::Phase::Poll) body: what restarts reported, the stream's own
+    /// faults, then the watch.
+    pub(crate) fn device_poll(&mut self, now: std::time::Instant, out: &mut Vec<SessionEvent>) {
+        out.append(&mut self.device_events);
+        let mut lost = false;
+        if let Some((faults, seen)) = &mut self.faults {
+            let count = faults.count();
+            if count != *seen {
+                *seen = count;
+                if let Some(fault) = faults.last() {
+                    lost = fault.kind == tutti_cpal::StreamFaultKind::Disconnected;
+                    out.push(SessionEvent::DeviceFault(fault));
+                }
+            }
+        }
+        if let Some(watch) = &mut self.device_watch {
+            // The loss is taken in first and decided on with the devices this
+            // poll finds: a stream lost as its device left must not be sent
+            // back to the device the last look still listed.
+            if lost {
+                watch.observe(FollowEvent::Lost);
+            }
+            watch.poll(now, out);
+        }
     }
 
     /// The checks that must pass before the stream stops.

@@ -60,10 +60,12 @@ mod node;
 #[cfg(feature = "plugin")]
 mod plugin;
 mod session;
+#[cfg(feature = "device")]
+mod watch;
 
 pub use builder::{SessionBuilder, root_width};
 #[cfg(feature = "device")]
-pub use device::{Device, DeviceRestart};
+pub use device::{Device, DeviceRestart, DeviceRestarted};
 pub use error::{Error, Result};
 #[cfg(feature = "export")]
 pub use export::{
@@ -98,3 +100,5 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, Session, SessionEvent};
+#[cfg(feature = "device")]
+pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent};

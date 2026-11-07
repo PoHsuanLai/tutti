@@ -2,8 +2,9 @@
 //! `GetPluginFactory`, the class list and `createInstance`.
 
 use std::ffi::c_void;
+use std::mem::ManuallyDrop;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use libloading::Library;
 use vst3::Steinberg::{
@@ -61,6 +62,12 @@ pub enum CreateError {
 /// classes, and each [`Plugin`] keeps its originating module alive for the
 /// plugin's lifetime.
 pub struct Module {
+    /// Dropped by hand in `Drop`, under [`MODULE_LOCK`].
+    parts: ManuallyDrop<Parts>,
+}
+
+/// What a [`Module`] owns.
+struct Parts {
     // Declaration order IS teardown order. Rust drops fields top-to-bottom, and
     // the module contract is: release the factory (and everything it can call
     // back into), then run the module exit point, then unload the DSO. So the
@@ -90,7 +97,7 @@ pub struct Module {
 impl std::fmt::Debug for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Module")
-            .field("_library", &self._library)
+            .field("_library", &self.parts._library)
             .finish_non_exhaustive()
     }
 }
@@ -98,13 +105,44 @@ impl std::fmt::Debug for Module {
 // SAFETY: `ComPtr` is a raw pointer, so neither trait is inferred. One module
 // backs several `Plugin`s, and `countClasses`, `getClassInfo` and
 // `createInstance` may be called concurrently (the SDK's own hosts scan from
-// worker threads). The factory is stateless towards the host (`setHostContext`,
-// its one mutating call, runs once in `open`, before the `Arc` exists), and the other fields never move
+// worker threads). Towards the host the factory is read-only once built:
+// `setHostContext`, its one mutating call, runs inside `open` under `MODULE_LOCK`,
+// before the `Arc` exists. The other fields never move
 // under a shared reference: `_library` unloads only in `Drop`, which `Arc`
-// serialises, and `run_loop` is `Mutex`-guarded (see `com/run_loop.rs`).
+// serialises (and `MODULE_LOCK` orders against every other open and drop), and `run_loop` is `Mutex`-guarded (see `com/run_loop.rs`).
 unsafe impl Send for Module {}
 // SAFETY: see `Send` above.
 unsafe impl Sync for Module {}
+
+/// Held across the whole of [`Module::open`] and the whole of a [`Module`]'s
+/// teardown (factory release, module exit, unload).
+///
+/// The SDK's plugin side keeps process-global state that both mutate with no
+/// lock of its own: `LinuxPlatformTimer::runLoop`, `gPluginFactory` and
+/// `moduleCounter`, shared by every open of one image. `GetPluginFactory` adds
+/// a reference to `gPluginFactory` while it is set, and `~CPluginFactory`
+/// clears it, so an open can race a dying factory; `moduleCounter` is a plain
+/// `int`. Locking `setHostContext` alone still raced, and so did an open
+/// without the drop.
+///
+/// A plain mutex, so the holder must never drop a `Module`: `open` builds one
+/// only as its last step, after which it returns. Cost: a plugin that hangs in
+/// its module entry, `GetPluginFactory` or module exit blocks every other VST3
+/// open and close in the process.
+static MODULE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_modules() -> std::sync::MutexGuard<'static, ()> {
+    MODULE_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        let _one_at_a_time = lock_modules();
+        // SAFETY: `parts` is dropped here and nowhere else, and never used
+        // again. Dropping it by hand is what lets the guard outlive the fields.
+        unsafe { ManuallyDrop::drop(&mut self.parts) };
+    }
+}
 
 impl Module {
     /// The run loop this module lends the plugin. Shared with every
@@ -112,7 +150,7 @@ impl Module {
     /// by one loop. Linux only.
     #[cfg(target_os = "linux")]
     pub(crate) fn run_loop(&self) -> Arc<crate::com::RunLoop> {
-        self.run_loop.clone()
+        self.parts.run_loop.clone()
     }
 
     /// The host application a plugin created from this module is handed, with
@@ -121,7 +159,7 @@ impl Module {
         HostApplication::new(
             HOST_NAME,
             #[cfg(target_os = "linux")]
-            self.run_loop.clone(),
+            self.parts.run_loop.clone(),
         )
     }
 
@@ -133,7 +171,10 @@ impl Module {
     /// [`LoadError`] if the OS cannot open the library, if the module's entry
     /// point refuses initialization, if the `GetPluginFactory` symbol is
     /// missing, or if the factory function returns null.
+    ///
+    /// Opens and teardowns are serialised process-wide; see `MODULE_LOCK`.
     pub fn open(lib_path: &Path) -> Result<Arc<Self>, LoadError> {
+        let _one_at_a_time = lock_modules();
         // SAFETY: loading a plugin runs its static initializers, which is what
         // the caller asked for by naming a plugin module; `Library::new`'s
         // contract is that the path is a library the process may run.
@@ -198,13 +239,15 @@ impl Module {
         }
 
         Ok(Arc::new(Self {
-            factory,
-            factory3,
-            _host_context: host_context,
-            #[cfg(target_os = "linux")]
-            run_loop,
-            _entry: entry,
-            _library: library,
+            parts: ManuallyDrop::new(Parts {
+                factory,
+                factory3,
+                _host_context: host_context,
+                #[cfg(target_os = "linux")]
+                run_loop,
+                _entry: entry,
+                _library: library,
+            }),
         }))
     }
 
@@ -214,7 +257,7 @@ impl Module {
     pub fn factory_info(&self) -> Option<FactoryInfo> {
         let mut info: PFactoryInfo = zeroed();
         // SAFETY: `info` is a valid out-parameter for the call.
-        let result = unsafe { self.factory.getFactoryInfo(&mut info) };
+        let result = unsafe { self.parts.factory.getFactoryInfo(&mut info) };
         check(result).ok().map(|()| FactoryInfo {
             vendor: c_str_to_string(&info.vendor),
             url: c_str_to_string(&info.url),
@@ -228,7 +271,7 @@ impl Module {
     #[must_use]
     pub fn class_count(&self) -> i32 {
         // SAFETY: a plain getter on a live factory.
-        unsafe { self.factory.countClasses() }
+        unsafe { self.parts.factory.countClasses() }
     }
 
     /// Every class the factory describes, in index order.
@@ -259,7 +302,7 @@ impl Module {
 
         let mut info: PClassInfo = zeroed();
         // SAFETY: `info` is a valid out-parameter for the call.
-        check(unsafe { self.factory.getClassInfo(index, &mut info) })?;
+        check(unsafe { self.parts.factory.getClassInfo(index, &mut info) })?;
         Ok(ClassInfo {
             cid: info.cid,
             cid_bytes: info.cid.map(|b| b as u8),
@@ -283,7 +326,7 @@ impl Module {
     /// of ASCII spec constants ("Audio Module Class", "Component Controller
     /// Class"), so `c_str_to_string` is correct there.
     fn class_info_unicode(&self, index: i32) -> Option<ClassInfo> {
-        let f3 = self.factory3.as_ref()?;
+        let f3 = self.parts.factory3.as_ref()?;
         let mut info: PClassInfoW = zeroed();
         // SAFETY: `info` is a valid out-parameter for the call.
         check(unsafe { f3.getClassInfoUnicode(index, &mut info) }).ok()?;
@@ -318,7 +361,7 @@ impl Module {
         // SAFETY: both ids are 16-byte arrays alive for the call, and `obj` is
         // a valid out-parameter.
         let result = unsafe {
-            self.factory.createInstance(
+            self.parts.factory.createInstance(
                 cid.as_ptr() as FIDString,
                 iid_tuid.as_ptr() as FIDString,
                 &mut obj,

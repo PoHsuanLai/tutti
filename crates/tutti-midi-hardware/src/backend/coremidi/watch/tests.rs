@@ -32,7 +32,14 @@ fn diag_flow(settle: Option<Duration>) {
     }
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
     let stop = std::sync::atomic::AtomicBool::new(false);
+    struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     std::thread::scope(|scope| {
+        let _stop = Stop(&stop); // DIAG: a failure must not hang the scope
         scope.spawn(|| {
             let start = Instant::now();
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {

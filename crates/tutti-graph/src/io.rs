@@ -18,9 +18,10 @@
 use tutti_types::Samples;
 
 use crate::event::{EventWriter, SortedEvents, SubBlocks};
-use crate::node::{ConstantMask, InPlaceMask, MaxBlock, SilenceMask};
+use crate::node::{ConstantMask, InPlaceMask, SilenceMask};
 use crate::param::ParamInput;
 use crate::time::Offset;
+use tutti_types::MaxBlock;
 
 /// What a port carries.
 ///

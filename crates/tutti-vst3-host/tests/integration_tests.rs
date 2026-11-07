@@ -655,7 +655,7 @@ fn test_set_parameter() {
             .first()
             .expect("a nonzero count lists a parameter");
         println!("Setting ParamID {id:?} to 0.5");
-        Control::set_parameter(&mut *plugin, id, Normalized::new(0.5));
+        Control::set_parameter(&mut *plugin, id, Normalized::of(0.5));
         let value = Control::parameter(&*plugin, id)
             .expect("a listed parameter reads back")
             .get();
@@ -677,7 +677,7 @@ fn test_set_parameter() {
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
             .collect();
-        Control::set_parameter(&mut *plugin, unlisted, Normalized::new(0.25));
+        Control::set_parameter(&mut *plugin, unlisted, Normalized::of(0.25));
         assert_eq!(Control::parameter(&*plugin, unlisted), None);
         let after: Vec<_> = listed
             .iter()

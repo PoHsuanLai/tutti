@@ -111,7 +111,7 @@ impl Edit {
         match raw[0] >> 32 {
             PARAM_TAG => Some(Self::Param {
                 id: ParamId::new(raw[0] as u32),
-                value: Normalized::new(f64::from_bits(raw[1])),
+                value: Normalized::clamped(f64::from_bits(raw[1])),
             }),
             RESET_TAG => Some(Self::Reset),
             _ => None,
@@ -228,11 +228,11 @@ mod tests {
         let (mut sink, mut drain) = edits(2);
         let a = Edit::Param {
             id: ParamId::new(7),
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         let b = Edit::Param {
             id: ParamId::new(u32::MAX),
-            value: Normalized::new(1.0),
+            value: Normalized::of(1.0),
         };
         sink.send(a).unwrap();
         sink.send(b).unwrap();
@@ -258,7 +258,7 @@ mod tests {
         let (mut sink, mut drain) = edits(4);
         let a = Edit::Param {
             id: ParamId::new(1),
-            value: Normalized::new(0.5),
+            value: Normalized::of(0.5),
         };
         sink.send(a).unwrap();
         sink.send(Edit::Reset).unwrap();
@@ -275,7 +275,7 @@ mod tests {
         let (mut writer, reader) = edit_ring::<[u64; 2]>(4);
         let good = Edit::Param {
             id: ParamId::new(1),
-            value: Normalized::new(0.5),
+            value: Normalized::of(0.5),
         };
         writer.push(good.encode()).unwrap();
         writer.push([99 << 32, 0]).unwrap();
@@ -300,7 +300,7 @@ mod tests {
         let (mut sink, mut drain) = edits(8);
         let edit = Edit::Param {
             id: ParamId::new(1),
-            value: Normalized::new(0.5),
+            value: Normalized::of(0.5),
         };
         sink.send(edit).unwrap();
         sink.send(edit).unwrap();

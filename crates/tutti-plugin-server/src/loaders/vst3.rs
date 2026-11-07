@@ -15,12 +15,12 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
-use crate::loaders::common::Meta;
+use crate::loaders::common::{Meta, standing};
 use crate::plugin::AsyncEvent;
 
 pub use tutti_vst3_host;
@@ -99,12 +99,16 @@ impl Vst3Instance {
         } else {
             SampleFormat::Float32
         };
-        let prepare = Prepare {
-            rate: SampleRate(sample_rate),
-            max_block: Samples(block_size),
-            format,
-            mode: RenderMode::Realtime,
-        };
+        let prepare = MaxBlock::new(Samples(block_size))
+            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+            .ok_or_else(|| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Activation,
+                reason: format!(
+                    "activate failed: the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                ),
+            })?
+            .with_format(format);
 
         let mut instance = Self {
             lifecycle: Lifecycle::new(loaded),
@@ -381,17 +385,21 @@ impl PluginAudio for Vst3Instance {
                 "VST3 plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        let mut wanted = previous;
-        wanted.rate = SampleRate(rate);
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate} ({}): not a positive finite rate",
+                standing(self.is_active(), previous.rate())
+            )));
+        };
         self.reconfigure(previous, wanted)
             .map_err(|(reason, rolled_back)| {
                 PluginError::Other(format!(
                     "VST3 plugin refused sample rate {rate} ({}): {reason}",
                     if rolled_back {
-                        format!("running at {}", previous.rate.0)
+                        format!("running at {}", previous.rate().0)
                     } else {
                         "deactivated".to_string()
                     }
@@ -419,12 +427,10 @@ impl PluginAudio for Vst3Instance {
         let Some(previous) = self.state.prepare() else {
             return false;
         };
-        if previous.mode == mode && self.is_active() {
+        if previous.mode() == mode && self.is_active() {
             return true;
         }
-        let mut wanted = previous;
-        wanted.mode = mode;
-        self.reconfigure(previous, wanted).is_ok()
+        self.reconfigure(previous, previous.with_mode(mode)).is_ok()
     }
 }
 
@@ -453,7 +459,7 @@ impl PluginParams for Vst3Instance {
     }
 
     /// The inverse. `getParamValueByString` answers normalized too, so the
-    /// result passes through `Normalized::new`'s clamp only.
+    /// result passes through `Normalized::clamped` only.
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
@@ -633,7 +639,7 @@ mod tests {
     fn activations_seen_by_the_plugin(instance: &mut Vst3Instance) -> u32 {
         instance.set_parameter(
             tutti_plugin_types::ParamId::new(PARAM_MODE),
-            Normalized::new(MODE_ACTIVATION_COUNT),
+            Normalized::clamped(MODE_ACTIVATION_COUNT),
         );
         let frames = 128;
         let input = vec![vec![0.0f32; frames]; 3];
@@ -872,6 +878,73 @@ mod tests {
         assert!(instance.is_active());
     }
 
+    /// **A rate that is no rate is refused before the plugin is touched**: the
+    /// instance runs on at the configuration it has, the plugin sees no second
+    /// activation, the host is told nothing, and the error says where the plugin
+    /// runs.
+    ///
+    /// Mutation (run): `valid_rate` in `tutti-plugin-types` accepting every rate
+    /// -> the zero rate reaches the reconfigure -> the `expect_err` fails (or the
+    /// activation count moves).
+    #[test]
+    fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("the vendored VST3 probe loads");
+        assert!(instance.poll().is_empty());
+        let layout = instance.meta.loaded.clone();
+        let prepare = instance.state.prepare();
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = instance
+                .set_sample_rate(rate)
+                .expect_err("a rate that is no rate is refused");
+            assert!(error.to_string().contains("running at 48000"), "{error}");
+            assert!(instance.is_active(), "{rate}");
+        }
+        assert_eq!(instance.state.prepare(), prepare);
+        assert!(instance.poll().is_empty(), "the host is told nothing");
+        assert_eq!(instance.meta.loaded.inputs, layout.inputs);
+        assert_eq!(instance.meta.loaded.outputs, layout.outputs);
+        assert_eq!(
+            activations_seen_by_the_plugin(&mut instance),
+            1,
+            "the plugin was never activated again"
+        );
+        instance.set_sample_rate(44_100.0).expect("a real rate");
+    }
+
+    /// **A load at no rate or no block is refused** at the activation stage:
+    /// zero, negative and non-finite rates, and a block of no frames. A real load
+    /// afterwards activates once.
+    ///
+    /// Mutation (run): `valid_rate` accepting every rate, and `MaxBlock::new`
+    /// accepting zero, each -> the matching case loads -> fails.
+    #[test]
+    fn a_load_at_no_rate_or_no_block_is_refused() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        for (rate, block) in [
+            (0.0, 128),
+            (-48_000.0, 128),
+            (f64::NAN, 128),
+            (f64::INFINITY, 128),
+            (f64::NEG_INFINITY, 128),
+            (48_000.0, 0),
+        ] {
+            match Vst3Instance::load(Path::new(vst3_plugin()), rate, block, false) {
+                Err(BridgeError::LoadFailed {
+                    stage: LoadStage::Activation,
+                    reason,
+                    ..
+                }) => assert!(reason.contains("cannot run at"), "{reason}"),
+                Err(other) => panic!("{rate} Hz in {block} frames: {other:?}"),
+                Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
+            }
+        }
+        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
+            .expect("a real load");
+        assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
+    }
+
     /// **A render mode is the activation's: changing it activates the plugin
     /// again in the new mode**, keeping the instance, and a mode the plugin
     /// refuses is rolled back and answered `false`. VST3 delivers the mode in
@@ -898,7 +971,7 @@ mod tests {
         );
         assert!(instance.is_active(), "the refusal was rolled back");
         assert_eq!(
-            instance.state.prepare().map(|p| p.mode),
+            instance.state.prepare().map(|p| p.mode()),
             Some(RenderMode::Realtime),
             "and the mode the core holds is the one that runs"
         );

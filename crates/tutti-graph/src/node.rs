@@ -20,8 +20,8 @@
 use std::num::NonZeroU32;
 
 use tutti_types::{
-    Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, SampleRate, Samples, SegmentOrigin, Tail,
-    UnitAddr, UnitParam,
+    Beat, Bpm, ChannelLayout, Frame, FrameClock, Latency, MaxBlock, SampleRate, Samples,
+    SegmentOrigin, Tail, UnitAddr, UnitParam,
 };
 
 use crate::cost::Cost;
@@ -369,28 +369,6 @@ impl Shape {
     }
 }
 
-/// The longest block a node will ever be handed.
-///
-/// Obtainable **only** from [`Prepare`], so a node's scratch is always sized
-/// from the same number the executor enforces on every [`Io`] — a node never
-/// needs a truncating clamp, and never has one to get wrong.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MaxBlock(usize);
-
-impl MaxBlock {
-    /// The bound, in frames.
-    #[must_use]
-    pub const fn get(self) -> usize {
-        self.0
-    }
-
-    /// The bound as a frame count.
-    #[must_use]
-    pub const fn samples(self) -> Samples {
-        Samples(self.0)
-    }
-}
-
 /// What a node is prepared for. Handed to [`Node::prepare`] on the control
 /// thread, before the node first processes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -408,10 +386,9 @@ impl Prepare {
     /// If `max_block` is zero.
     #[must_use]
     pub fn new(sample_rate: SampleRate, max_block: Samples) -> Self {
-        assert!(!max_block.is_zero(), "a block holds at least one frame");
         Self {
             sample_rate,
-            max_block: MaxBlock(max_block.get()),
+            max_block: MaxBlock::new(max_block).expect("a block holds at least one frame"),
             quantum: None,
         }
     }
@@ -460,9 +437,11 @@ impl Prepare {
 
 /// Planar per-channel scratch a node sizes in [`Node::prepare`].
 ///
-/// Built from a [`MaxBlock`], so every block the executor can hand the node
-/// fits by construction: [`channel`](Self::channel) takes the block's own
-/// length and never needs to be clamped.
+/// Built from the [`MaxBlock`] the node was prepared with
+/// ([`Prepare::max_block`]), so every block the executor can hand the node fits:
+/// [`channel`](Self::channel) takes the block's own length and never needs to be
+/// clamped. A `MaxBlock` is a plain value anyone can build, so a scratch built
+/// from another one is only as long as that, and a longer block panics.
 #[derive(Clone, Debug, Default)]
 pub struct Scratch {
     data: Vec<f32>,

@@ -13,17 +13,15 @@
 use super::*;
 use crate::fake::{Call, FakeLoaded, FakePlugin};
 use crate::{
-    AudioBuffer, AudioBufferMut, HostOp, PluginIo, PluginTail, ProcessContext, ProcessOutput,
-    RenderMode, Request, RequestWord, SampleFormat, Samples, Stage, taken,
+    AudioBuffer, AudioBufferMut, HostOp, MaxBlock, PluginIo, PluginTail, ProcessContext,
+    ProcessOutput, RenderMode, Request, RequestWord, SampleFormat, Samples, Stage, taken,
 };
 
 fn prepare(rate: f64) -> Prepare {
-    Prepare {
-        rate: SampleRate(rate),
-        max_block: Samples(64),
-        format: SampleFormat::Float32,
-        mode: RenderMode::Realtime,
-    }
+    Prepare::new(SampleRate(rate), MaxBlock::of(Samples(64)))
+        .expect("the tests use real rates")
+        .with_format(SampleFormat::Float32)
+        .with_mode(RenderMode::Realtime)
 }
 
 struct Rig {
@@ -73,7 +71,7 @@ impl Rig {
 
     /// Renders one block of `frames` through the held Processor.
     fn render(&mut self, frames: usize) -> PluginResult<()> {
-        let rate = self.state.prepare().map_or(48_000.0, |p| p.rate.0);
+        let rate = self.state.prepare().map_or(48_000.0, |p| p.rate().0);
         let input = vec![0.0f32; frames];
         let mut left = vec![1.0f32; frames];
         let mut right = vec![1.0f32; frames];
@@ -367,7 +365,7 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     rig.lifecycle
         .control()
         .unwrap()
-        .set_parameter(a, Normalized::new(0.5));
+        .set_parameter(a, Normalized::of(0.5));
     assert_eq!(rig.plugin.calls(), [Call::SetParameter(a)]);
     rig.plugin.clear_calls();
 
@@ -378,8 +376,8 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
         "values survive the split"
     );
     rig.plugin.clear_calls();
-    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::new(0.25));
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::new(0.75));
+    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::of(0.25));
+    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.75));
     rig.render(64).unwrap();
     rig.render(64).unwrap();
     assert_eq!(
@@ -387,8 +385,8 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
         [
             Call::SetParameter(a),
             Call::SetParameter(b),
-            Call::Edit(a, Normalized::new(0.25)),
-            Call::Edit(b, Normalized::new(0.75)),
+            Call::Edit(a, Normalized::of(0.25)),
+            Call::Edit(b, Normalized::of(0.75)),
             Call::Process(64),
             Call::Process(64),
         ]
@@ -569,13 +567,13 @@ fn stuck_then_reconfigure_settles_at_the_new_rate() {
     rig.op(HostOp::Reconfigure(prepare(96_000.0)));
     assert_eq!(rig.state.stage(), Stage::Active);
     assert_eq!(
-        rig.state.prepare().map(|p| p.rate),
+        rig.state.prepare().map(|p| p.rate()),
         Some(SampleRate(48_000.0))
     );
     rig.op(HostOp::Reconfigure(prepare(96_000.0)));
     assert_eq!(rig.state.stage(), Stage::Active);
     assert_eq!(
-        rig.state.prepare().map(|p| p.rate),
+        rig.state.prepare().map(|p| p.rate()),
         Some(SampleRate(96_000.0))
     );
     rig.render(64).unwrap();
@@ -615,15 +613,15 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     rig.plugin.edit_capacity(1);
     rig.op(HostOp::Activate(prepare(48_000.0)));
     let (a, b) = (ParamId::new(1), ParamId::new(2));
-    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::new(0.1));
+    Hosted::set_parameter(&mut rig.lifecycle, a, Normalized::of(0.1));
     // The ring holds one: these are refused, `b` twice.
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::new(0.2));
-    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::new(0.9));
+    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.2));
+    Hosted::set_parameter(&mut rig.lifecycle, b, Normalized::of(0.9));
     rig.plugin.clear_calls();
     rig.render(64).unwrap();
     assert_eq!(
         rig.plugin.calls(),
-        [Call::Edit(a, Normalized::new(0.1)), Call::Process(64)]
+        [Call::Edit(a, Normalized::of(0.1)), Call::Process(64)]
     );
 
     rig.plugin.clear_calls();
@@ -631,7 +629,7 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     rig.render(64).unwrap();
     assert_eq!(
         rig.plugin.calls(),
-        [Call::Edit(b, Normalized::new(0.9)), Call::Process(64)]
+        [Call::Edit(b, Normalized::of(0.9)), Call::Process(64)]
     );
     assert_eq!(
         Hosted::parameter(&rig.lifecycle, b).map(Normalized::get),

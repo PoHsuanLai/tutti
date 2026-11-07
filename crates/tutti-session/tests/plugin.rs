@@ -592,7 +592,7 @@ fn a_crashed_plugin_comes_back_at_its_node_with_its_last_state() {
         .unwrap()
         .handle()
         .params()
-        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(
@@ -1081,7 +1081,7 @@ fn a_snapshot_that_kills_the_load_is_withheld_from_the_next_attempt() {
         .unwrap()
         .handle()
         .params()
-        .set_parameter_value(id, tutti_plugin::handles::Normalized::new(0.25));
+        .set_parameter_value(id, tutti_plugin::handles::Normalized::of(0.25));
     let deadline = Instant::now() + Duration::from_secs(10);
     while !is_quarter(param(&s, node, id)) {
         assert!(Instant::now() < deadline, "the probe never took the value");

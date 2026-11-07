@@ -200,8 +200,8 @@ mod tests {
             max,
             default: min,
         };
-        assert_eq!(range.to_plain(Normalized::new(1.0).get()), max);
-        assert_eq!(range.to_plain(Normalized::new(0.0).get()), min);
+        assert_eq!(range.to_plain(Normalized::of(1.0).get()), max);
+        assert_eq!(range.to_plain(Normalized::of(0.0).get()), min);
         assert_eq!(lookup_range(&gui.param_ranges, id), Some((min, max)));
 
         // The table is sorted, which `lookup_range`'s binary search requires.

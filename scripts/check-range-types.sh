@@ -36,8 +36,6 @@ import os, re, sys
 EXCEPTIONS = {
     ("crates/tutti-midi-types/src/mpe/sensitivity.rs", "PitchBendSensitivity"):
         "permanent: every u32 is a valid RPN word",
-    ("crates/tutti-plugin-types/src/parameters.rs", "Normalized"):
-        "R2b: serde through try_from",
     ("crates/tutti-plugin-types/src/parameters.rs", "ParamId"):
         "permanent: every u32 is a valid id",
     ("crates/tutti-types/src/value/latency.rs", "Latency"):

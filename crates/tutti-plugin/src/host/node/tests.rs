@@ -284,12 +284,12 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
                 },
                 BridgeMessage::ParameterChanged {
                     index: ParamId::new(7),
-                    value: Normalized::new(0.42),
+                    value: Normalized::of(0.42),
                 },
             ],
             HostMessage::GetParameter { param_id } if param_id == ParamId::new(0) => {
                 vec![BridgeMessage::ParameterValue {
-                    value: Some(Normalized::new(0.5)),
+                    value: Some(Normalized::of(0.5)),
                 }]
             }
             HostMessage::GetParameter { .. } => vec![BridgeMessage::ParameterValue { value: None }],
@@ -331,7 +331,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
     // before returning the real `ParameterValue` reply.
     assert_eq!(
         handle.params().parameter_value(ParamId::new(0)),
-        Some(Normalized::new(0.5))
+        Some(Normalized::of(0.5))
     );
 
     // Give the bridge thread a moment to fire the listener after the
@@ -368,7 +368,7 @@ fn a_tail_change_reaches_the_listener() {
             ],
             HostMessage::GetParameter { .. } => {
                 vec![BridgeMessage::ParameterValue {
-                    value: Some(Normalized::new(0.5)),
+                    value: Some(Normalized::of(0.5)),
                 }]
             }
             _ => vec![],
@@ -389,7 +389,7 @@ fn a_tail_change_reaches_the_listener() {
     assert_eq!(handle.params().parameter_descriptors().unwrap().len(), 1);
     assert_eq!(
         handle.params().parameter_value(ParamId::new(0)),
-        Some(Normalized::new(0.5))
+        Some(Normalized::of(0.5))
     );
 
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -443,7 +443,7 @@ fn handle_get_parameter_value() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|msg| match msg {
         HostMessage::GetParameter { param_id } if param_id == ParamId::new(42) => {
             Some(BridgeMessage::ParameterValue {
-                value: Some(Normalized::new(0.75)),
+                value: Some(Normalized::of(0.75)),
             })
         }
         HostMessage::GetParameter { .. } => Some(BridgeMessage::ParameterValue { value: None }),
@@ -452,7 +452,7 @@ fn handle_get_parameter_value() {
 
     assert_eq!(
         handle.params().parameter_value(ParamId::new(42)),
-        Some(Normalized::new(0.75))
+        Some(Normalized::of(0.75))
     );
 }
 

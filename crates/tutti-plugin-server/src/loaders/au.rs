@@ -931,7 +931,7 @@ impl PluginParams for AuInstance {
             Some(bounds) => bounds.to_normalized(plain),
             None => f64::from(plain),
         };
-        Some(Normalized::new(normalized))
+        Some(Normalized::clamped(normalized))
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
@@ -1715,7 +1715,7 @@ mod tests {
         };
         let addr = cutoff_id.into();
 
-        au.set_parameter(addr, Normalized::new(1.0));
+        au.set_parameter(addr, Normalized::of(1.0));
         let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1729,7 +1729,7 @@ mod tests {
         );
         assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, Normalized::new(0.0));
+        au.set_parameter(addr, Normalized::of(0.0));
         assert!((au.get_parameter(addr)).abs() < 1e-3);
     }
 
@@ -2050,7 +2050,7 @@ mod tests {
 
         // And that is the same value `set_parameter` writes, so the string a
         // third-party AU returns describes the value the parameter is at.
-        au.set_parameter(target.id, Normalized::new(1.0));
+        au.set_parameter(target.id, Normalized::of(1.0));
         let after = parameters::get(au.inner.raw_unit(), opaque).expect("param is readable");
         assert!(
             (after - plain_at_full).abs() <= tolerance,
@@ -2060,7 +2060,7 @@ mod tests {
 
         // The AU is asked, and declines — see the doc comment.
         assert_eq!(
-            au.parameter_text(target.id, Normalized::new(1.0)),
+            au.parameter_text(target.id, Normalized::of(1.0)),
             None,
             "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
              A Some() here means macOS gained the property — re-measure and \

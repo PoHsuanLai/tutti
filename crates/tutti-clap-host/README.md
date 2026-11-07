@@ -66,7 +66,7 @@ use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_clap_host::{
     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, MidiEvent, TransportInfo,
 };
-use tutti_plugin_types::{AudioBufferMut, Loaded, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{AudioBufferMut, Loaded, MaxBlock, Prepare, SampleRate, Samples};
 
 // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 // length are not load parameters: they are the activation's.
@@ -75,12 +75,8 @@ println!("{} by {}", loaded.info().name, loaded.info().vendor);
 
 // A refusal hands the plugin back in the error, so a plugin that declines f64
 // can be retried at f32 without reloading.
-let prepare = Prepare {
-    rate: SampleRate(48_000.0),
-    max_block: Samples(512),
-    format: SampleFormat::Float32,
-    mode: RenderMode::Realtime,
-};
+let prepare = Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+    .expect("a real rate");
 let (mut processor, controller) = loaded
     .activate(prepare)
     .map_err(|refused| tutti_clap_host::ClapError::ProcessError(refused.reason.to_string()))?;
@@ -128,8 +124,8 @@ for info in plugin.parameters() {
 // Values are normalized `0..=1` at the trait. A loaded plugin takes the write
 // now; a controller queues it to the Processor, which applies it at the head
 // of its next block.
-plugin.set_parameter(ParamId::new(0), Normalized::new(0.75));
-plugin.set_parameter(ParamId::new(1), Normalized::new(0.5));
+plugin.set_parameter(ParamId::new(0), Normalized::of(0.75));
+plugin.set_parameter(ParamId::new(1), Normalized::of(0.5));
 
 // State save/restore is legal before any buffer exists.
 let saved = plugin.save_state()?;

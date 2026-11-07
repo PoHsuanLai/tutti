@@ -46,7 +46,7 @@ pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
 /// above is here for the same reason.
-pub use tutti_types::{SampleRate, Samples};
+pub use tutti_types::{MaxBlock, SampleRate, Samples};
 
 mod layout_support;
 pub use layout_support::LayoutSupport;
@@ -101,7 +101,9 @@ pub use note_expression::{
     NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
 };
 pub use note_id::{MAX_HOST_NOTE_ID, note_id_for, note_id_to_channel_note};
-pub use parameters::{Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo};
+pub use parameters::{
+    InvalidNormalized, Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo,
+};
 pub use presets::{Preset, PresetId, PresetSupport};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use render_mode::RenderMode;

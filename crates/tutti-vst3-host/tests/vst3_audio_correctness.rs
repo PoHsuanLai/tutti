@@ -1511,7 +1511,7 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
         .map(|i| loaded.get_parameter(i.get()))
         .collect();
     let saved_before = Control::save_state(&mut loaded).expect("the probe saves");
-    Control::set_parameter(&mut loaded, unlisted, Normalized::new(0.25));
+    Control::set_parameter(&mut loaded, unlisted, Normalized::of(0.25));
     assert_eq!(Control::parameter(&loaded, unlisted), None);
     let after: Vec<_> = listed
         .iter()
@@ -1544,7 +1544,7 @@ mod loaded_writes {
     }
 
     fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {
-        Control::set_parameter(loaded, ParamId::new(id), Normalized::new(value));
+        Control::set_parameter(loaded, ParamId::new(id), Normalized::clamped(value));
     }
 
     fn read(plugin: &impl Control, id: u32) -> Option<f64> {
@@ -1636,7 +1636,7 @@ mod loaded_writes {
         assert_eq!(pending[VERSION_AT], 2, "a loaded write is stored");
 
         let mut inst = activated(load());
-        Control::set_parameter(&mut *inst, ParamId::new(PARAM_RAMP), Normalized::new(0.5));
+        Control::set_parameter(&mut *inst, ParamId::new(PARAM_RAMP), Normalized::of(0.5));
         for _ in 0..3 {
             render(&mut inst, 64, &[], None, |_, _, _| 0.0);
         }
@@ -1697,7 +1697,7 @@ mod loaded_writes {
     }
 
     fn write_active(inst: &mut Active, id: u32, value: f64) {
-        Control::set_parameter(&mut **inst, ParamId::new(id), Normalized::new(value));
+        Control::set_parameter(&mut **inst, ParamId::new(id), Normalized::clamped(value));
     }
 
     /// A version 2 blob loaded into an active plugin reaches its next block: the
@@ -1855,10 +1855,10 @@ mod loaded_writes {
     }
 
     /// A NaN or infinite value in a blob's table reaches the plugin as a value
-    /// in `0..=1` (`Normalized::new` maps NaN to 0 and saturates), never as a
+    /// in `0..=1` (`Normalized::clamped` maps NaN to 0 and saturates), never as a
     /// non-finite number.
     ///
-    /// Mutation (run): reading the table value as `Normalized::new(1.0)`
+    /// Mutation (run): reading the table value as `Normalized::of(1.0)`
     /// regardless of the bytes fails both assertions.
     #[test]
     fn a_non_finite_write_in_a_blob_reaches_the_plugin_in_range() {

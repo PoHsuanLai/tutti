@@ -412,7 +412,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
             // what makes this "died mid-session" rather than "never worked".
             if SEEN.fetch_add(1, Ordering::SeqCst) == 0 {
                 Action::Reply(Box::new(BridgeMessage::ParameterValue {
-                    value: Some(Normalized::new(0.5)),
+                    value: Some(Normalized::of(0.5)),
                 }))
             } else {
                 Action::Die
@@ -424,7 +424,7 @@ fn a_server_that_dies_mid_session_marks_the_bridge_crashed() {
     let first = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         first,
-        Some(Normalized::new(0.5)),
+        Some(Normalized::of(0.5)),
         "the mock must answer the first request, or this test is just \
          `bridge_with_no_server` under another name"
     );
@@ -951,7 +951,7 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
         },
         HostMessage::GetParameter { .. } => {
             Action::Reply(Box::new(BridgeMessage::ParameterValue {
-                value: Some(Normalized::new(0.5)),
+                value: Some(Normalized::of(0.5)),
             }))
         }
         _ => Action::Silent,
@@ -973,7 +973,7 @@ fn an_unanswered_rate_change_is_a_refusal_and_its_late_answer_clears_it() {
     let value = mock.bridge.parameter(ParamId::new(1));
     assert_eq!(
         value,
-        Some(Normalized::new(0.5)),
+        Some(Normalized::of(0.5)),
         "the reply is its own, not the late one"
     );
     assert!(
@@ -1019,7 +1019,7 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
         }
         HostMessage::GetParameter { .. } => {
             Action::Reply(Box::new(BridgeMessage::ParameterValue {
-                value: Some(Normalized::new(0.5)),
+                value: Some(Normalized::of(0.5)),
             }))
         }
         _ => Action::Silent,
@@ -1039,7 +1039,7 @@ fn a_late_rate_answer_does_not_override_a_later_one() {
     // Barrier: B's command has ended, with everything it applies.
     assert_eq!(
         mock.bridge.parameter(ParamId::new(1)),
-        Some(Normalized::new(0.5))
+        Some(Normalized::of(0.5))
     );
     assert_eq!(
         mock.bridge.rate_refusal(),

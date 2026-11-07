@@ -79,7 +79,8 @@ pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{
-    MAX_POS_RING_FRAMES, PosClaim, PosFrame, PosReader, PosRing, PosWriter, RingWindow,
+    MAX_POS_RING_FRAMES, MAX_POS_RING_POSITION, PosClaim, PosFrame, PosReader, PosRing, PosWriter,
+    RingWindow,
 };
 pub use request_word::{REQUEST_BITS, RequestBit, RequestBits, RequestWord};
 pub use scope::{RtScope, RtScopeGuard};

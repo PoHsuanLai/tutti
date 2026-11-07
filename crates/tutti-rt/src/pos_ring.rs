@@ -101,18 +101,17 @@ mod sync {
 const LEN_BITS: u32 = 24;
 
 /// The most frames a [`PosRing`] holds.
-///
-/// The window's length is packed in 24 bits. Its end takes the other 40, so a
-/// position must stay below `2^40` (about 290 days of frames at 44.1 kHz).
-/// The writer enforces it in every build: [`PosWriter::push`] stops short of
-/// it, and [`retract_to`](PosWriter::retract_to),
-/// [`raise_from`](PosWriter::raise_from) and [`reset`](PosWriter::reset)
-/// panic on a position at or past it. The reader packs nothing, so the check
-/// costs the audio thread nothing.
 pub const MAX_POS_RING_FRAMES: usize = (1 << LEN_BITS) - 1;
 
-/// The exclusive end of the largest window the packed word can hold.
-const MAX_POS_END: u64 = (1 << (64 - LEN_BITS)) - 1;
+/// The largest window end a [`PosRing`] holds.
+///
+/// The window's length is packed in 24 bits and its end takes the other 40,
+/// so a position must stay below `2^40` (about 290 days of frames at
+/// 44.1 kHz). The writer enforces it in every build: [`PosWriter::push`]
+/// stops short of it and [`PosWriter::reset`] saturates at it, so a window
+/// never passes it and no caller can make the writer panic with a position.
+/// The reader packs nothing, so the check costs the audio thread nothing.
+pub const MAX_POS_RING_POSITION: u64 = (1 << (64 - LEN_BITS)) - 1;
 
 /// A window of ring positions `[from, to)`: the positions a [`PosRing`]'s
 /// slots hold.
@@ -126,7 +125,7 @@ pub struct RingWindow {
 
 impl RingWindow {
     fn pack(self) -> u64 {
-        assert!(self.to <= MAX_POS_END, "a position past 2^40");
+        assert!(self.to <= MAX_POS_RING_POSITION, "a position past 2^40");
         debug_assert!(self.to - self.from <= MAX_POS_RING_FRAMES as u64);
         (self.to << LEN_BITS) | (self.to - self.from)
     }
@@ -429,10 +428,10 @@ impl PosWriter {
     /// Empties the window and restarts it at `start`, for a reader that moved
     /// outside the current one.
     ///
-    /// # Panics
-    ///
-    /// If `start` is `2^40` or more, in every build.
+    /// A `start` past [`MAX_POS_RING_POSITION`] saturates there: the window
+    /// is empty at the limit and [`push`](Self::push) lands nothing.
     pub fn reset(&mut self, start: u64) {
+        let start = start.min(MAX_POS_RING_POSITION);
         let w = self.window();
         self.shrink(
             RingWindow {
@@ -458,8 +457,12 @@ impl PosWriter {
         let frames = ring.frames as u64;
         let RingWindow { from, to } = self.window();
         // Never reuse the slot of a position the reader still stands on.
-        let room = (ring.play().saturating_sub(ring.keep_behind) + frames).saturating_sub(to);
-        let mut end = (to + n.min(room)).min(MAX_POS_END);
+        let room = ring
+            .play()
+            .saturating_sub(ring.keep_behind)
+            .saturating_add(frames)
+            .saturating_sub(to);
+        let mut end = (to + n.min(room)).min(MAX_POS_RING_POSITION);
         // A first cap from the ranges as they stand, so the raise below is
         // not needlessly high. Not the check: that is after the fence.
         for (a, e) in ring.in_flight() {

@@ -484,13 +484,19 @@ impl<'v, T> RwView<'v, T> {
             .position(|e| (e.get() & !HELD_WRITE) as usize == i)
     }
 
-    fn record(&self, entry: u32) {
-        let n = self.held.len.get();
+    /// Panic unless the view has room for one more claim. Called before a
+    /// claim is taken, so a full `Held` never leaves a claim with no entry.
+    fn ensure_room(&self) {
         assert!(
-            n < self.held.entries.len(),
+            self.held.len.get() < self.held.entries.len(),
             "a view holding more than its {} claims",
             self.held.entries.len()
         );
+    }
+
+    fn record(&self, entry: u32) {
+        let n = self.held.len.get();
+        self.ensure_room();
         self.held.entries[n].set(entry);
         self.held.len.set(n + 1);
     }
@@ -504,6 +510,7 @@ impl<'v, T> RwView<'v, T> {
     fn acquire_read(&self, i: usize) -> Result<(), ClaimConflict> {
         self.check(i);
         if self.find(i).is_none() {
+            self.ensure_room();
             claim_shared(&self.split.words[i], i)?;
             self.record(i as u32);
         }
@@ -522,6 +529,7 @@ impl<'v, T> RwView<'v, T> {
                 }
             }
             None => {
+                self.ensure_room();
                 claim_exclusive(&self.split.words[i], i)?;
                 self.record(i as u32 | HELD_WRITE);
             }
@@ -641,12 +649,14 @@ impl<'v, T> RwView<'v, T> {
                 panic!("{e}");
             }
             // SAFETY: chunk `i` is in range and this view holds a claim on it
-            // in the mode `write_it` (just taken). The pair check above and
-            // the one before every earlier request mean a written chunk is
-            // named by no other request of this call, so no reference made
-            // here overlaps another; `&'s mut self` keeps every other
-            // reference from this view dead for `'s`. `write_it` is the one
-            // answer from `is_write`, used for all three decisions.
+            // in the mode `write_it` (just taken). Requests before this one
+            // were checked pairwise in sorted order, and this one against its
+            // predecessor, so no reference already made in this call overlaps
+            // this one: a written chunk is named by no request before it, and
+            // a later duplicate is refused before it makes a second
+            // reference. `&'s mut self` keeps every other reference from this
+            // view dead for `'s`. `write_it` is the one answer from
+            // `is_write`, used for all three decisions.
             let p = unsafe { split.chunk_ptr(i as usize) };
             if write_it {
                 write(tag, unsafe {
@@ -818,6 +828,29 @@ mod tests {
             "{writes} writes, {reads} reads of one chunk"
         );
         assert_eq!(calls.get(), 2, "one answer per request");
+    }
+
+    /// A full `Held` refuses a claim before taking it, so the panic leaves
+    /// no claim behind with no entry to release it.
+    ///
+    /// Mutation (run): drop the `ensure_room` call in `acquire_read` -> the
+    /// read of chunk 1 claims it, then `record` panics, and chunk 1 keeps a
+    /// shared count after the view drops -> the last `try_get_mut` conflicts
+    /// -> fails.
+    #[test]
+    fn a_full_held_leaves_no_claim_behind() {
+        let mut v = [0u8; 2];
+        let mut t = ClaimTable::new(2);
+        let s = SplitRw::new(&mut v, 1, &mut t);
+        let h = Held::new(1);
+        let mut view = s.view(&h);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.split(&[(0, ()), (1, ())], |()| false, |_, _| {}, |_, _| {});
+        }));
+        assert!(r.is_err(), "the second claim does not fit");
+        drop(view);
+        let mut view = s.view(&h);
+        assert_eq!(view.try_get_mut(1).map(|c| c.len()), Ok(1));
     }
 
     /// `split`'s reads and writes land on the right chunks.

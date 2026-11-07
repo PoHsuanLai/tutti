@@ -451,3 +451,39 @@ fn a_writer_and_a_reader_thread_never_tear() {
         "the reader checked only {checked} frames in 120 s"
     );
 }
+
+/// **A window never passes 2^40**: `push` stops at the limit and lands the
+/// short count, and `reset` saturates there, whatever the start or the play
+/// position (an unbounded one included).
+///
+/// Mutation (run, debug and release): `pack`'s `assert!` back to
+/// `debug_assert!` and the `.min(MAX_POS_RING_POSITION)` cap dropped from
+/// `push` -> the first push of 100 lands 100 (release wraps the window; debug
+/// trips the assertion) -> fails. Mutation (run): `reset` without its `.min`
+/// -> the `u64::MAX` start panics -> fails.
+#[test]
+fn a_window_never_passes_the_position_limit() {
+    let near = MAX_POS_RING_POSITION - 10;
+    let (mut w, mut r) = ring(256, 1, 0);
+    w.reset(near);
+    drop(r.claim(near, [(0, 0), (0, 0)]));
+    assert_eq!(w.push(&[1.0; 100]), 10, "stops at the limit");
+    assert_eq!(w.window().to, MAX_POS_RING_POSITION);
+    assert_eq!(w.push(&[1.0; 100]), 0);
+    assert_eq!(w.window().to, MAX_POS_RING_POSITION);
+
+    w.reset(u64::MAX);
+    assert_eq!(
+        w.window(),
+        RingWindow {
+            from: MAX_POS_RING_POSITION,
+            to: MAX_POS_RING_POSITION
+        }
+    );
+    drop(r.claim(u64::MAX, [(u64::MAX - 5, u64::MAX), (0, 0)]));
+    assert_eq!(
+        w.push(&[1.0; 8]),
+        0,
+        "an unbounded play position lands nothing"
+    );
+}

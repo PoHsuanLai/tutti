@@ -43,9 +43,9 @@ serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true
 
 # midi2's feature set is fully specified at the workspace level (this is its
-# only consumer). midly's alloc feature gives it owned event buffers.
+# only consumer). midly is only the `pub use midly` re-export.
 midi2 = { workspace = true }
-midly = { workspace = true, features = ["alloc"] }
+midly = { workspace = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

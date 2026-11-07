@@ -12,7 +12,7 @@ use tutti_midi_types::ump::{
     SYSEX7_MAX_PAYLOAD, SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE,
     SYSEX7_STATUS_START, UmpMessageType,
 };
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiGroup, frame};
 
 use crate::{MIDI_STACK_CAPACITY, MidiEvent, MidiEventVec, RtMidiEvents};
 
@@ -421,9 +421,7 @@ impl SysExAssembler {
             Run::Assembling { start, .. } => start,
             Run::Idle | Run::Discarding { .. } => self.buf.len(),
         };
-        self.buf.push(0xF0);
-        self.buf.extend_from_slice(payload);
-        self.buf.push(0xF7);
+        self.buf.extend(frame(payload));
         // Rotate the message in front of the open run. The run has no
         // pointer handed out yet, so moving it is free of hazard.
         self.buf[at..].rotate_right(len);
@@ -459,10 +457,7 @@ mod tests {
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
-        let mut v = vec![0xF0];
-        v.extend_from_slice(payload);
-        v.push(0xF7);
-        v
+        frame(payload).collect()
     }
 
     /// Feed `events`, collecting each completed message's bytes.

@@ -53,11 +53,11 @@ Three ways of reading a message compete. `MidiMessage` has 22 variants and almos
 no production consumer outside its crate; it has no group, mints a `NoteId` on
 decode, and repeats `frame_offset` in each variant. The polysynth, SoundFont,
 the CLAP host and the VST3 host now read `tutti_ump::Message` (stage 2); the VST3
-host still reaches `midi2` through `tutti-midi-types`' `PerNoteBendRanges::observe`
-and `MidiEvent::from_midi1_bytes`.
+host still reaches `midi2` through `tutti-midi-types`' `PerNoteBendRanges::observe`.
 `tutti-graph` reads through
 `Ump::is_note_off` (one test kernel takes a data byte by hand); `clip_node`,
-`clip_file` and `tutti-midi-types`' `wire.rs` shift bits by hand. `MidiEvent::frame_offset`
+`clip_file` and `tutti-midi-types`' `wire.rs` (`to_midi1_bytes` and `to_midi1_messages`,
+which the VST2 host still calls) shift bits by hand. `MidiEvent::frame_offset`
 has three meanings: a block offset, an absolute frame, and meaningless in storage.
 
 ### 1.2 What is solid and stays
@@ -116,6 +116,37 @@ Message types `0xB` and `0xC` are 96 bits (Table 4), so a packet is 1, 2, 3 or 4
 words. The graph's `EventKind::Midi` holds this `Ump`. Its doc says the graph never
 inspects the words, and `Event` does: `is_note_off` makes that the one place.
 `Pod` lets plugin IPC copy a block of events as one memory copy.
+
+MIDI 1.0 on the wire is `tutti-ump`'s too, so every status byte and bit position is
+in one crate:
+
+```rust
+// tutti-ump
+impl Voice1 { pub fn bytes(self, channel: MidiChannel) -> Midi1Bytes }  // also System, Bank
+pub struct Midi1Bytes;                       // padded() for a fixed 3-byte field, len(), as_slice()
+pub fn frame<B: Copy + Into<u8>>(payload: &[B]) -> Framed<'_, B>;      // F0 .. F7, ExactSizeIterator
+impl Sysex7Packet { pub fn framed(&self) -> Option<Framed<'_, U7>> }    // Complete only
+
+pub struct Midi1Parser;                      // 9 bytes of state, no allocation
+impl Midi1Parser {
+    pub const fn new(group: MidiGroup) -> Self;   // MIDI 1.0 has no group: the port's
+    pub fn feed(&mut self, byte: u8) -> Option<Message>;
+    pub fn feed_all<'a>(&'a mut self, bytes: &'a [u8]) -> impl Iterator<Item = Message> + 'a;
+    pub fn end_of_message(&mut self);        // packet transports: ends a short message, keeps SysEx
+    pub fn message(group: MidiGroup, bytes: &[u8]) -> Option<Message>;  // one message at the start of a fixed field
+}
+```
+
+The parser is per byte, so a state that survives a buffer boundary is the same
+struct. Running status survives data and real-time bytes and ends at any other status
+byte; real-time bytes come out at once wherever they sit; SysEx comes out as
+`Sysex7Packet`s as its bytes arrive, and a status byte other than real-time or `0xF7`
+ends it with no `End` packet (M2-104 §7.7.1), so the receiver of the packets drops
+the open run. A Note On at velocity 0 stays a Note On; reading it as a Note Off is
+translation's. `message` exists because a fixed field cannot be fed to a parser:
+`[0xC0, 5, 0]` would read the padding as running-status data. SMF does not share the
+parser: it has delta times, a running status that meta and SysEx events cancel, no
+real-time bytes and length-prefixed SysEx.
 
 `tutti-ump`'s only normal dependency is `bytemuck`, because the graph and everything
 above it compile it. `tutti-types` has no MIDI vocabulary: `MidiGroup`, `MidiChannel`
@@ -338,7 +369,7 @@ no code with MIDI.
 
 | Crate | Layer | Holds | Depends on |
 |---|---|---|---|
-| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types | No tutti crate |
+| `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
 | `tutti-midi-hardware` | Transport | OS backends, no graph, `#![forbid(unsafe_code)]` | `tutti-midi-device`, the two `-ffi` crates |
@@ -371,8 +402,8 @@ names the owner. So does its vocabulary: one crate says port, endpoint, connecti
 and device for overlapping things, and `MidiSession` reads as if it were
 `tutti_session::Session`. It becomes `Endpoint` from `tutti-midi-device`, with `Port`
 only for an OS's handle to a connection, and `async_port` (an SPSC ring, not async)
-is named for what it is. `Sysex7ByteAssembler` consumes bytes no current backend
-produces, and moves to `tutti-midi-protocol` with the MIDI-CI path that wants it.
+is named for what it is. A byte-stream source is read by `tutti_ump::Midi1Parser`;
+`Sysex7ByteAssembler` had no product caller and is deleted.
 
 MIDI follows the plugin hosts' FFI rule (design 016 §2.9): `unsafe` lives only in the
 `-ffi` crates, and `scripts/check-plugin-ffi.sh` or a sibling gate enforces it.
@@ -408,8 +439,10 @@ design's model, and it does not enforce the name limits in M2-104 §7.1.
   comparison of the Flex and Stream families. The fuzz target is not run in CI
   yet; nothing here leans on it.
 
-`midly` stays in `tutti-midi-file`. `tutti-midi-types` uses it only for about 12
-lines of live MIDI 1.0 parsing, which `tutti-midi-protocol` does itself.
+`midly` stays in `tutti-midi-file`. `tutti-midi-types` no longer parses with it:
+`MidiEvent::from_midi1_bytes` goes through `tutti_ump::Midi1Parser::message`, and only
+the re-export is left. The `midly` parse error allocates, so a plugin's stray status
+byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
 
 ## 8. Not losing events
 
@@ -530,7 +563,15 @@ a behaviour change.
    `CLAP_EVENT_MIDI2`).
    A consumer with MIDI 1.0 resolution only (SoundFont, the hosts) narrows with
    `tutti_midi_protocol::{narrow_velocity, narrow_value, narrow_bend}` (M2-115
-   section 3.4, a right shift).
+   section 3.4, a right shift), or `narrow(Voice2) -> Option<Voice1>` for a whole
+   message, which keeps the Note On velocity 0 to 1 rule (§7.4.2). A host that sends
+   MIDI 1.0 bytes writes them with `Voice1::bytes`, `System::bytes` and
+   `tutti_midi_protocol::midi1(Message)` (a Program Change with a bank is three
+   messages), and reads a fixed field with `Midi1Parser::message`; the CLAP and
+   VST3 hosts do. `midi1` sends bytes for a Note On or Note Off with a reserved
+   attribute type (MIDI 1.0 has no attribute; Table 8 gives a receiver no rule for
+   it), where `to_midi1_messages` drops it. Its only caller, the VST2 host, still
+   does until it moves to `Message`; no shipped path changes.
 3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.

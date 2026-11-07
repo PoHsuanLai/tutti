@@ -12,4 +12,8 @@ The Universal MIDI Packet (M2-104) for the Tutti engine.
   never panics and ignores reserved bits; a packet no definition covers is
   `Unknown` and keeps its words.
 
+- `Midi1Parser`, `Voice1::bytes`, `System::bytes`, `Bank::bytes`, `frame`: MIDI
+  1.0 on the wire. The parser reads a byte stream one byte at a time into
+  `Message`s with no allocation, SysEx as `Sysex7Packet`s; the rest write bytes.
+
 The crate depends on no other tutti crate. Licensed under MIT or Apache-2.0.

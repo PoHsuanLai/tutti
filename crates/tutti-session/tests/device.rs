@@ -618,3 +618,50 @@ fn a_host_can_hold_restarts() {
     session.hold_device_restarts(false);
     assert_eq!(wants(&poll(&mut session, base, 200)).len(), 1);
 }
+
+/// **A run of backend errors that stalls the stream is a lost stream.** The
+/// first error is a `Backend` fault (reported, not a loss); errors still
+/// arriving after the stall grace (500 ms, `tutti-cpal`'s `STALL_GRACE`) are
+/// promoted to `Disconnected`, reported again, and the policy answers it.
+/// This is how ALSA, which says `DeviceNotAvailable` rarely, loses a stream.
+/// The one real wait is the grace itself, which the faults record reads from
+/// the clock.
+///
+/// Mutation (run): `device_poll` treating a `Backend` fault as lost → the
+/// first assertion fails; `lost = false` → the last fails.
+#[test]
+fn a_stalled_backend_run_becomes_a_lost_stream() {
+    let (driver, stream) = ManualStreamDriver::new();
+    let (mut session, _device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    let fake = Fake::default();
+    session.watch_devices(
+        fake.clone(),
+        policy(),
+        DeviceSelector::Default,
+        Some(id("A")),
+    );
+    let base = Instant::now();
+    fake.show(&["A", "B"], Some("A"));
+    poll(&mut session, base, 0);
+
+    let backend = || StreamError::BackendSpecific {
+        err: tutti_cpal::cpal::BackendSpecificError {
+            description: "POLLERR".into(),
+        },
+    };
+    stream.fail(backend());
+    let events = poll(&mut session, base, 10);
+    assert!(events.iter().any(|e| matches!(e, SessionEvent::DeviceFault(f) if f.kind == tutti_cpal::StreamFaultKind::Backend)));
+    assert!(
+        wants(&events).is_empty(),
+        "a backend error alone is not a loss"
+    );
+
+    std::thread::sleep(Duration::from_millis(600));
+    stream.fail(backend());
+    let events = poll(&mut session, base, 700);
+    assert!(events.iter().any(|e| matches!(e, SessionEvent::DeviceFault(f) if f.kind == tutti_cpal::StreamFaultKind::Disconnected)), "{events:?}");
+    assert_eq!(wants(&events), [DeviceSelector::Default]);
+}

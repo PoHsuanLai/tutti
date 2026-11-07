@@ -13,6 +13,20 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// How long backend errors may arrive with no audio delivered before the
+/// stream counts as gone.
+///
+/// Only `CoreAudio` and `WASAPI` report [`cpal::StreamError::DeviceNotAvailable`].
+/// cpal's ALSA worker wraps every error as `BackendSpecific`, and on an
+/// unplugged device it polls `POLLERR` again at once, so the same error repeats
+/// at spin rate and the worker never reaches an `ENODEV` read. `POLLERR` is
+/// also what an xrun raises, so neither the message nor an errno separates the
+/// two. What does is time: an xrun is followed by data within a few periods,
+/// a lost device is not. 500 ms is many periods at any usual buffer size and
+/// still short enough to end a take promptly.
+pub(crate) const STALL_GRACE: Duration = Duration::from_millis(500);
 
 /// What kind of fault the backend reported.
 ///
@@ -46,18 +60,42 @@ pub struct StreamFault {
 /// [`AudioEngine::faults`](crate::AudioEngine::faults). The same handle
 /// survives stop and restart, so a host can take it once at startup. Starting
 /// a stream clears it, so a restart after a disconnect reads healthy again.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StreamFaults {
     count: AtomicU64,
     disconnected: AtomicBool,
     last: Mutex<Option<StreamFault>>,
+    /// Zero point of `run_start`.
+    pub(crate) epoch: Instant,
+    /// Nanoseconds after `epoch`, plus one, at which the current run of
+    /// backend errors with no delivered audio began; zero when there is none.
+    run_start: AtomicU64,
+}
+
+impl Default for StreamFaults {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StreamFaults {
     /// Creates an empty fault record.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            count: AtomicU64::new(0),
+            disconnected: AtomicBool::new(false),
+            last: Mutex::new(None),
+            epoch: Instant::now(),
+            run_start: AtomicU64::new(0),
+        }
+    }
+
+    /// Notes that the stream delivered audio, which ends any run of backend
+    /// errors: they were transient. Lock-free; the data callback calls it once
+    /// per callback.
+    pub(crate) fn delivered(&self) {
+        self.run_start.store(0, Ordering::Relaxed);
     }
 
     fn last_guard(&self) -> MutexGuard<'_, Option<StreamFault>> {
@@ -101,15 +139,46 @@ impl StreamFaults {
     /// another thread holds `last`, the message is dropped and the count still
     /// moves. Written message, then `disconnected`, then `count`, so a reader
     /// that sees the count also sees the message.
+    ///
+    /// [`DeviceNotAvailable`](cpal::StreamError::DeviceNotAvailable) is a
+    /// disconnect at once. Any other error starts a run, counted and
+    /// described once; the run becomes a disconnect when errors still arrive
+    /// [`STALL_GRACE`] later with no [`delivered`](Self::delivered) between.
+    /// Errors repeated inside a run, and every backend error after the
+    /// disconnect, only cost two atomic loads: no string, no count, so a
+    /// backend that spins on `POLLERR` neither allocates nor floods a host
+    /// that reports each new count.
     pub(crate) fn record(&self, err: &cpal::StreamError) {
-        let kind = match err {
-            cpal::StreamError::DeviceNotAvailable => StreamFaultKind::Disconnected,
-            _ => StreamFaultKind::Backend,
-        };
-        let fault = StreamFault {
-            kind,
-            message: err.to_string(),
-        };
+        self.record_at(err, Instant::now());
+    }
+
+    /// [`record`](Self::record) at a given time, for tests.
+    pub(crate) fn record_at(&self, err: &cpal::StreamError, now: Instant) {
+        if matches!(err, cpal::StreamError::DeviceNotAvailable) {
+            self.publish(StreamFaultKind::Disconnected, err.to_string());
+            return;
+        }
+        if self.is_disconnected() {
+            return;
+        }
+        let at = now.saturating_duration_since(self.epoch).as_nanos() as u64 + 1;
+        let started = self.run_start.load(Ordering::Relaxed);
+        if started == 0 {
+            self.run_start.store(at, Ordering::Relaxed);
+            self.publish(StreamFaultKind::Backend, err.to_string());
+        } else if Duration::from_nanos(at.saturating_sub(started)) >= STALL_GRACE {
+            self.publish(
+                StreamFaultKind::Disconnected,
+                format!(
+                    "no audio for {} ms while the backend kept failing: {err}",
+                    STALL_GRACE.as_millis()
+                ),
+            );
+        }
+    }
+
+    fn publish(&self, kind: StreamFaultKind, message: String) {
+        let fault = StreamFault { kind, message };
         match self.last.try_lock() {
             Ok(mut last) => *last = Some(fault),
             Err(std::sync::TryLockError::Poisoned(p)) => *p.into_inner() = Some(fault),
@@ -126,6 +195,7 @@ impl StreamFaults {
         *self.last_guard() = None;
         self.disconnected.store(false, Ordering::Release);
         self.count.store(0, Ordering::Release);
+        self.run_start.store(0, Ordering::Relaxed);
     }
 }
 

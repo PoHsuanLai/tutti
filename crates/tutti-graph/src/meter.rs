@@ -2,10 +2,14 @@
 //!
 //! A meter is declared on the [`Topology`](tutti_types::Topology) as "measure
 //! these sources" ([`MeterSpec`](tutti_types::MeterSpec)): the global outputs
-//! for a master meter, any node's output ports for a track. The compiler emits
-//! one [`Op::Meter`](crate::Op::Meter) per meter, which reads every lane's
-//! source once per block and folds it into that lane's cells. A meter that is
-//! not in the topology compiles to nothing.
+//! for a master meter (`Outputs`, aligned: each lane is what its output
+//! channel carries, at the output's time), any node's output ports for a track
+//! (`Ports { sources, align }`, as they leave their nodes or aligned to the
+//! output time). The compiler emits one [`Op::Meter`](crate::Op::Meter) per
+//! meter, which reads every lane's source once per block and folds it into
+//! that lane's cell. A lane whose port does not exist reads silence. A meter
+//! that is not in the topology compiles to nothing, and a meter never changes
+//! an output sample.
 //!
 //! # What a lane holds
 //!

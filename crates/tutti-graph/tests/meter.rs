@@ -411,6 +411,136 @@ fn removing_a_metered_node_silences_its_lane() {
     assert_eq!(level(&mut m), vec![(0.5, 0.5, 32), (0.0, 0.0, 32)]);
 }
 
+/// A key is the author's and can be inserted again after a removal: a meter
+/// left naming the removed node must not start reading the new one.
+///
+/// Mutation (run, recorded here): see the list at the end of this file.
+#[test]
+fn a_reused_key_is_not_read_by_the_old_meter() {
+    let mut r = rig(1, false);
+    constants(&mut r, &[0.5, 0.25]);
+    let mut m = r.ed.open_meter(MeterId(1), MeterSpec::raw(vec![out(2)]));
+    m.enable();
+    commit(&mut r);
+    block(&mut r, 32);
+    assert_eq!(level(&mut m), vec![(0.25, 0.25, 32)]);
+
+    r.ed.remove(NodeKey(2));
+    r.ed.insert(
+        NodeKey(2),
+        "again",
+        Forkable(Kind::Const {
+            value: 0.125,
+            width: 1,
+        }),
+    );
+    commit(&mut r);
+    block(&mut r, 32);
+    assert_eq!(
+        level(&mut m),
+        vec![(0.0, 0.0, 32)],
+        "the meter followed the removal, not the key"
+    );
+}
+
+/// What a run of `blocks` blocks puts on the outputs, as bits, with the
+/// meters `mode` asks for declared and enabled. Three paths from one varying
+/// input: latent by 30 and by 11 frames, and bare (delayed to meet the
+/// slowest), ragged block sizes, stopped blocks and a seek.
+fn output_bits(workers: usize, master: bool, track: bool) -> Vec<u32> {
+    let mut r = rig(workers, workers > 1);
+    r.ed.spec_mut().topology.inputs = ChannelLayout::MONO;
+    let mut outputs = Vec::new();
+    for (k, latency) in [30usize, 11, 0].into_iter().enumerate() {
+        let (lag, gain) = (10 + k as u64, 20 + k as u64);
+        r.ed.insert(NodeKey(lag), "lag", Forkable(Kind::Lag { latency }));
+        r.ed.insert(
+            NodeKey(gain),
+            "gain",
+            Forkable(Kind::Gain {
+                gain: 0.5 + k as f32 / 10.0,
+                width: 1,
+            }),
+        );
+        let t = &mut r.ed.spec_mut().topology;
+        t.edges.insert(
+            InPort {
+                node: NodeKey(lag),
+                port: 0,
+            },
+            Edge::Direct(Source::Global(0)),
+        );
+        t.edges.insert(
+            InPort {
+                node: NodeKey(gain),
+                port: 0,
+            },
+            Edge::Direct(out(lag)),
+        );
+        outputs.push(out(gain));
+    }
+    r.ed.spec_mut().topology.outputs = outputs.clone();
+    let mut readers = Vec::new();
+    if master {
+        readers.push(r.ed.open_meter(MeterId(1), MeterSpec::Outputs));
+    }
+    if track {
+        readers.push(r.ed.open_meter(MeterId(2), MeterSpec::aligned(outputs)));
+    }
+    for m in &readers {
+        m.enable();
+    }
+    commit(&mut r);
+    let mut bits = Vec::new();
+    let mut frame = 0u64;
+    let sizes = [64usize, 100, 37, 128, 1, 90, 50, 128, 64, 13];
+    for (i, &n) in sizes.iter().enumerate() {
+        let input: Vec<f32> = (0..n as u64)
+            .map(|k| (((frame + k) * 7919) % 20_011) as f32 / 20_011.0 - 0.5)
+            .collect();
+        frame += n as u64;
+        let mut chans = vec![vec![0.0f32; n]; 3];
+        let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
+        // Stopped for blocks 2, 3 and 9; a seek at block 5.
+        let playing = !matches!(i, 2 | 3 | 9);
+        let beat = if i >= 5 { 64.0 } else { 0.0 };
+        let t = Transport::new(playing, Bpm(120.0), Beat(beat), None);
+        let ins = [&input[..]];
+        if r.gated {
+            assert_no_alloc::assert_no_alloc(|| r.exec.process(n, &t, &ins, &mut outs));
+        } else {
+            r.exec.process(n, &t, &ins, &mut outs);
+        }
+        bits.extend(chans.iter().flatten().map(|s| s.to_bits()));
+        for m in &mut readers {
+            let _ = m.read();
+        }
+        r.ed.collect();
+    }
+    bits
+}
+
+/// **A meter changes no output bit.** With latency on two of three master
+/// paths, ragged blocks, stopped blocks and a seek, the outputs are identical
+/// with no meter, a master meter, an aligned track meter and both, serial and
+/// on a pool of three inside `assert_no_alloc`.
+///
+/// Mutation (run, recorded here): see the list at the end of this file.
+#[test]
+fn a_meter_changes_no_output_bit() {
+    let bare = output_bits(1, false, false);
+    assert!(bare.iter().any(|&b| f32::from_bits(b) != 0.0), "signal");
+    for (master, track) in [(true, false), (false, true), (true, true)] {
+        assert_eq!(
+            output_bits(1, master, track),
+            bare,
+            "serial {master} {track}"
+        );
+        assert_eq!(output_bits(3, master, track), bare, "pool {master} {track}");
+    }
+    assert_eq!(output_bits(3, false, false), bare, "pool, no meter");
+}
+
 /// A node replaced by one with fewer outputs leaves the meter's lanes past the
 /// new width on silence, and the commit succeeds: a display must not wedge the
 /// graph. (A tap naming such a port still fails every commit; that is the
@@ -741,6 +871,11 @@ fn the_parallel_meters_are_bit_identical_and_allocation_free() {
 // - copying the live meters into the fork's editor in `fork_gather`:
 //   `a_fork_meters_its_own_render_and_leaves_the_live_meter_alone`.
 // - making the `Op::Meter` arm of `par.rs` a no-op: the parallel test.
+// - deleting the meters loop in `Editor::remove`: `a_reused_key_is_not_read_by_the_old_meter`
+//   (the meter reads the new node, 0.125).
+// - the master's `Output` reading the undelayed source when a meter is
+//   declared (`src` left at the pre-delay slot, `delay` dropped):
+//   `a_meter_changes_no_output_bit`.
 // - the master's lanes taken from the pre-delay sources (`output_refs.push`
 //   the undelayed `src`, no `Delay` op for the master): `the_master_reads_at_the_outputs_time`
 //   (the master reads 40 ones, RMS 1.0).

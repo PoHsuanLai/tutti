@@ -1288,6 +1288,17 @@ impl Editor {
                 }
             }
         }
+        // A key is the author's and can be inserted again after a removal, so
+        // a meter left naming it would read the new node.
+        for spec in t.meters.values_mut() {
+            if let MeterSpec::Ports { sources, .. } = spec {
+                for s in sources {
+                    if matches!(s, Source::Node(p) if p.node == key) {
+                        *s = Source::Zero;
+                    }
+                }
+            }
+        }
         self.spec.events.retain(|at, _| at.node != key);
         for sources in self.spec.events.values_mut() {
             sources.retain(|e: &EventEdge| e.from().node != key);

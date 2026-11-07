@@ -239,7 +239,7 @@ fn a_spike_is_held_until_read_and_read_once() {
         "the spike survives three later blocks"
     );
     assert_eq!(l[0].frames, Samples(4000));
-    assert_eq!(l[0].rms.get(), (1.0f32 / 4000.0).sqrt());
+    assert_eq!(l[0].rms.get(), (1.0f64 / 4000.0).sqrt() as f32);
     assert_eq!(
         m.read(),
         vec![Level::default()],

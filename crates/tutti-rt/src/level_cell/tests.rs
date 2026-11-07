@@ -57,3 +57,35 @@ fn the_count_saturates() {
     w.fold(1.0, 1.0, 5);
     assert_eq!(r.take().frames, u64::MAX);
 }
+
+/// A writer thread and a taking thread conserve the total, and every take is
+/// whole (its energy and frames agree): the std-thread twin of the loom model.
+///
+/// Mutation (run, recorded here): `fold` storing the frames before the energy
+/// is added, then `busy` cleared early (the `Release` store moved above the
+/// sum) -> a take sees the frames without the energy and this fails (a
+/// scheduling-dependent failure; the loom model is the exhaustive check).
+#[test]
+fn concurrent_takes_lose_nothing_and_stay_whole() {
+    const BLOCKS: u64 = 50_000;
+    let (w, mut r) = level_cell();
+    let writer = std::thread::spawn(move || {
+        for _ in 0..BLOCKS {
+            w.fold(0.5, 4.0, 16);
+        }
+    });
+    let (mut frames, mut sum) = (0u64, 0.0f64);
+    while !writer.is_finished() {
+        let span = r.take();
+        assert_eq!(span.sum_sq, span.frames as f64 / 4.0, "{span:?}");
+        assert_eq!(span.peak > 0.0, span.frames > 0, "{span:?}");
+        frames += span.frames;
+        sum += span.sum_sq;
+    }
+    writer.join().expect("the writer finished");
+    let span = r.take();
+    frames += span.frames;
+    sum += span.sum_sq;
+    assert_eq!(frames, BLOCKS * 16);
+    assert_eq!(sum, BLOCKS as f64 * 4.0);
+}

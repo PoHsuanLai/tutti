@@ -1,4 +1,5 @@
 use super::*;
+use tutti_midi_types::MidiEvent;
 use tutti_types::Beat;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -23,4 +24,13 @@ fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
     assert!(gone.upgrade().is_some(), "retired, pinned until a scan");
     assert_eq!(controls.reclaim(), 0);
     assert!(gone.upgrade().is_none(), "freed by the reclaim");
+}
+
+/// **A clip node's held-note table is 24 KiB**, allocated with the node.
+///
+/// Mutation (run): `LEDGER_CAPACITY` of 16,384 → 196 KB, fails.
+#[test]
+fn a_clip_nodes_table_is_24_kib() {
+    let node = MidiClipNode::new([]);
+    assert_eq!(node.play.held.heap_bytes(), 2_048 * 12);
 }

@@ -446,15 +446,17 @@ byte (`[0xF7, 1, 2]`) aborted a debug build under `assert_no_alloc`.
 
 ## 8. Not losing events
 
-### 8.1 What happens today
+### 8.1 What stage 0 fixed
 
-A dense clip into a slow reader loses events at a fixed block capacity
+A dense clip into a slow reader lost events at a fixed block capacity
 (`CLIP_EVENT_CAPACITY`, 256). Measured at 32,000 events per second: 25% lost at
 512 frames, 62% at 1,024. A real `render_to_buffers` export (1,024-frame blocks)
 returned `Ok` while losing 62%, and a chord clip left 144 of 200 notes sounding to
-the end of the file. The executor's drop counter reports about half of the loss,
+the end of the file. The executor's drop counter reported about half of the loss,
 because a refused note-on's later note-off is swallowed uncounted. A refused
-note-off is not retried on ordinary playback (`owed` is set only in `release`).
+note-off was not retried on ordinary playback (`owed` was set only in `release`).
+Stage 0 (#261) fixed both: a withheld note-off is counted and a refused one goes
+out at a later block's first frame.
 
 ### 8.2 The change
 
@@ -475,6 +477,68 @@ channel. On a route change, device loss, node removal or replacement they send
 Note Offs, then reset what they changed (sustain, bend). Today a held key plus
 `retarget` or `unroute` leaves a stuck note on the old target and an orphan off on
 the new one.
+
+### 8.4 The note ledger
+
+`NoteLedger<T>` (`tutti-midi-runtime`) is the table of notes a node has started and
+not ended, and the only way such a node puts a MIDI event on its port.
+`NoteLedger::block(out, first)` pays every note-off the port refused earlier,
+at `first`, and returns a `Sending`; `Sending::send(at, ump, owner)` is the only
+door to the port, and `release_all(at)` ends every note. A node that writes
+around the `Sending` does not compile (a `compile_fail` doctest on the module
+holds the second borrow of the port).
+
+- **The key is (group, channel, note).** M2-104 §7.4 and Appendix C name a note by
+  that triple and give no other identity. `T` is an optional owner tag for a source
+  that pairs its own messages; the clip's is `ClipNote`, a relay's would be `()`.
+- **One held note per key.** A note-on of a key that sounds ends the sounding note
+  first on the same frame and takes the key, as the clip did before. Appendix C.2
+  allows several notes on one key, told apart by a Detach, which the clip does not
+  carry, so the ledger does not model it.
+- **Two states per held key,** `Sounding` and `Owing` (the port refused the off).
+  Independently a key can be `refused` (the port refused a note-on of it), so that
+  note's off is withheld and counted. Both can hold at once.
+- **Full table.** The clip's table holds 2,048 keys, one group's 16 channels of 128
+  notes; it is a chosen bound, not a measured one. A note-on that finds it full is
+  withheld and counted as a refusal is (`EventWriter::withhold`, in
+  `Executor::dropped_event_count` and `Editor::take_event_losses` against the
+  clip's port). The note does not start, so no off is owed; its tagged off is
+  swallowed and not counted again. A note whose on went out always has its row.
+  An untagged source's off for a withheld note passes through to the port.
+- **A refused on is counted at the on and again at its off.** The off of a note
+  whose on the port refused is withheld and counted, tagged or not, and clears the
+  row, so a note lost entire is two losses (the 44 + 44 of
+  `a_loss_is_counted_exactly_and_leaves_no_orphan`). An off the port refused is a
+  loss that is given back when the off goes out. A key counts its refused ons (to
+  255), so notes that overlap on a key are counted one by one. A relay's table is therefore
+  freed by its sender's offs without a `release_all`.
+- **Memory and cost.** 12 bytes a key with the clip's tag, 24 KiB per clip node,
+  allocated with the node. Per 512-frame block, against the bitsets it replaced
+  (six alternated release runs): a dense clip 4.76 to 5.86 µs, a chord churn over
+  128 held notes 0.31 to 0.41 µs, 1,500 held notes with 4 changing a block 0.39 to
+  1.06 µs. The table is a sorted `Vec`, so a change to a large table is a
+  `memmove`.
+- **Fork and reset.** The table is not `Clone`; a fork builds a fresh node over a
+  snapshot of the clip and starts with an empty table, and `Node::reset` clears it.
+- **The clip node uses it; the relays do not yet.** The input and queue nodes, a
+  plugin's MIDI output and `MpeIngest::set_mode` still send without a ledger, so
+  audit #14 still holds for them (a note-off lost at the reserve, 8 stuck notes in
+  the scenario that measured it) until stage 4 moves them.
+- **Audit #7 stays open.** A debt that crosses an edge change cannot be paid by a
+  value inside its source. `MidiClipControls::release_held` returns a `Releasing`
+  ticket that belongs to its clip; `Releasing::drained` returns `Drained` once a block
+  has answered and no off is still owed (a port that takes 296 offs a block answers
+  for 600 held notes in the third block). Both are `#[must_use]`. A ticket is a
+  snapshot, not a stop: a clip that keeps rolling starts its next note after the
+  answer, so the caller stops the clip first (`a_ticket_does_not_stop_the_clip`).
+  Nothing in `tutti-session` takes them yet,
+  and `Midi::retarget`, `set_routes`, `unroute` and the declared `PortSources` still
+  cut at a commit: a clip that holds a key when its edge moves leaves the note on the
+  old sink and an orphan off on the new one (pinned by
+  `a_rewire_without_the_handshake_strands_the_note`). The fix is at the edge: the
+  executor already delivers the events in flight on a delay that vanishes, and a
+  held-key set per source output port could inject the offs for a removed edge in
+  the same way, with no node's cooperation. That is not built.
 
 ## 9. Missing capabilities, in the order a DAW needs them
 
@@ -606,13 +670,15 @@ a behaviour change.
 ## 12. Optimization
 
 No layout change is justified by measured CPU. These come at no cost with the
-design, or remove a measured user-visible problem:
+design, or remove a measured user-visible problem, except item 3, whose small
+measured cost is in §8.4:
 
 1. Decode once per consumer, instead of the 3 to 6 decodes per event today.
 2. Fewer conversions: a note takes up to 9 steps from key to CLAP synth, and its
    value changes in two. One `Ump` removes most of them, and `Pod` makes plugin
    IPC one memory copy (gain unmeasured).
-3. `HeldNotes` allocates about 132 KB per clip node, and can shrink.
+3. The clip node's held notes are a `NoteLedger` of 24 KiB per node (§8.4), which
+   costs 0.1 to 1.1 µs more per 512-frame block than the 143 KB of arrays before it.
 4. Clips can store variable-length word streams as M2-116 does, a memory saving
    for very large clips only.
 

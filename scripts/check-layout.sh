@@ -26,6 +26,7 @@
 # - `tutti-metering` depends on `tutti-types` alone, and `tutti-transport` on
 #   `tutti-types`, `tutti-rt` and `tutti-graph`;
 # - `tutti-tempo` depends on `tutti-types` alone;
+# - `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types` only;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
 # - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
 #   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
@@ -154,7 +155,7 @@ LAYERS = [
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
-     "tutti-codec", "tutti-tempo"],
+     "tutti-codec", "tutti-tempo", "tutti-voicing"],
     ["tutti-transport", "tutti-plugin-types"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
@@ -346,6 +347,8 @@ if "tutti-codec" in pkgs:
     only("tutti-codec", ["tutti-types"])
 if "tutti-tempo" in pkgs:
     only("tutti-tempo", ["tutti-types"])
+if "tutti-voicing" in pkgs:
+    only("tutti-voicing", ["tutti-ump", "tutti-midi-protocol", "tutti-types"])
 if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:

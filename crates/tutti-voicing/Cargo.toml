@@ -1,0 +1,17 @@
+[package]
+name = "tutti-voicing"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "What a note-driven instrument decides before it makes sound, as one pure step"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
+tutti-types = { path = "../tutti-types", default-features = false }

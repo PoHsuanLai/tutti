@@ -9,20 +9,14 @@
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
 use tutti_midi_types::{NoteId, PerNoteMap};
+use tutti_types::{Amplitude, Samples, Semitones};
+use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteNumber};
+use tutti_voicing::{
+    Command, Holds, Mode, Order, Patch, Retrigger, Rules, Steal, VoiceSpec, VoiceView, Voicing,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct VoiceId(u64);
-
-impl VoiceId {
-    pub const fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}
+pub use tutti_voicing::VoiceId;
 
 /// Which sounding voice gets taken when every slot is busy and another note
 /// arrives.
@@ -77,14 +71,6 @@ pub enum VoiceMode {
     Legato,
 }
 
-/// What holds a sounding slot open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Holds {
-    key: bool,
-    sustain: bool,
-    sostenuto: bool,
-}
-
 /// Where a slot is in its life. Holds exist only while it is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum VoiceState {
@@ -110,7 +96,7 @@ pub(crate) struct VoiceSlot {
 impl Default for VoiceSlot {
     fn default() -> Self {
         Self {
-            voice_id: VoiceId::default(),
+            voice_id: VoiceId(0),
             id: NoteId::default(),
             note: NoteNumber::default(),
             channel: MidiChannel::FIRST,
@@ -154,57 +140,53 @@ impl VoiceSlot {
     }
 
     #[inline]
-    pub(crate) fn start_time(&self) -> u64 {
-        self.start_time
-    }
-
-    #[inline]
-    pub(crate) fn state(&self) -> VoiceState {
-        self.state
-    }
-
-    #[inline]
     pub(crate) fn is_idle(&self) -> bool {
         self.state == VoiceState::Idle
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_releasing(&self) -> bool {
         self.state == VoiceState::Releasing
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_active(&self) -> bool {
         matches!(self.state, VoiceState::Active(_))
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_key_held(&self) -> bool {
-        self.holds().is_some_and(|h| h.key)
+        self.holds().is_some_and(|h| h.key())
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_sustained(&self) -> bool {
-        self.holds().is_some_and(|h| h.sustain)
+        self.holds().is_some_and(|h| h.sustained())
     }
 
+    #[cfg(test)]
     #[inline]
     pub(crate) fn is_sostenuto_held(&self) -> bool {
-        self.holds().is_some_and(|h| h.sostenuto)
+        self.holds().is_some_and(|h| h.sostenuto())
     }
 
-    fn holds(&self) -> Option<Holds> {
+    pub(crate) fn holds(&self) -> Option<Holds> {
         match self.state {
             VoiceState::Active(h) => Some(h),
             _ => None,
         }
     }
 
-    /// Edits the holds of an active slot; any other slot has none.
-    fn hold(&mut self, f: impl FnOnce(&mut Holds)) {
-        if let VoiceState::Active(h) = &mut self.state {
-            f(h);
-        }
+    /// Follows the core's word on this voice: released, or held by `holds`.
+    pub(crate) fn mirror(&mut self, holds: Holds, phase: Option<tutti_voicing::Phase>) {
+        self.state = match phase {
+            Some(tutti_voicing::Phase::Releasing) => VoiceState::Releasing,
+            _ => VoiceState::Active(holds),
+        };
     }
 
     /// Starts a new voice in this slot, key held and nothing else.
@@ -224,11 +206,7 @@ impl VoiceSlot {
         self.velocity = velocity;
         self.envelope_level = 0.0;
         self.start_time = time;
-        self.state = VoiceState::Active(Holds {
-            key: true,
-            sustain: false,
-            sostenuto: false,
-        });
+        self.state = VoiceState::Active(Holds::struck());
     }
 
     pub(crate) fn release(&mut self) {
@@ -237,18 +215,6 @@ impl VoiceSlot {
 
     pub(crate) fn silence(&mut self) {
         self.state = VoiceState::Idle;
-    }
-
-    pub(crate) fn set_key_held(&mut self, held: bool) {
-        self.hold(|h| h.key = held);
-    }
-
-    pub(crate) fn set_sustained(&mut self, sustained: bool) {
-        self.hold(|h| h.sustain = sustained);
-    }
-
-    pub(crate) fn set_sostenuto_held(&mut self, held: bool) {
-        self.hold(|h| h.sostenuto = held);
     }
 
     pub(crate) fn set_envelope_level(&mut self, level: f32) {
@@ -269,6 +235,8 @@ pub struct VoiceAllocatorConfig {
     pub max_voices: usize,
     pub strategy: AllocationStrategy,
     pub mode: VoiceMode,
+    /// What a full pitch bend spans on a channel until RPN 0 says otherwise.
+    pub bend_range: Semitones,
 }
 
 impl Default for VoiceAllocatorConfig {
@@ -277,6 +245,33 @@ impl Default for VoiceAllocatorConfig {
             max_voices: 16,
             strategy: AllocationStrategy::Oldest,
             mode: VoiceMode::Poly,
+            bend_range: Semitones(2.0),
+        }
+    }
+}
+
+impl VoiceAllocatorConfig {
+    /// This synth's rules: a value of the shared note logic.
+    fn rules(&self) -> Rules {
+        Rules {
+            mode: match self.mode {
+                VoiceMode::Poly => Mode::Poly,
+                VoiceMode::Mono => Mode::Mono,
+                VoiceMode::Legato => Mode::Legato,
+            },
+            retrigger: Retrigger::Replace,
+            polyphony: self.max_voices,
+            steal: match self.strategy {
+                AllocationStrategy::NoSteal => Steal::Never,
+                AllocationStrategy::Oldest => Steal::By(Order::Oldest),
+                AllocationStrategy::Newest => Steal::By(Order::Newest),
+                AllocationStrategy::Quietest => Steal::By(Order::Quietest),
+                AllocationStrategy::HighestNote => Steal::By(Order::HighestNote),
+                AllocationStrategy::LowestNote => Steal::By(Order::LowestNote),
+            },
+            exclusive_groups: false,
+            sostenuto: true,
+            bend_range: self.bend_range,
         }
     }
 }
@@ -301,60 +296,180 @@ impl AllocationResult {
     }
 }
 
-/// Score a voice slot for stealing. Lower score = better steal candidate.
-/// Returns (priority, tiebreaker) where priority 0 = releasing, 1 = active.
-/// The tiebreaker depends on the allocation strategy.
-fn steal_score(slot: &VoiceSlot, strategy: AllocationStrategy) -> Option<(u8, u64)> {
-    match slot.state() {
-        VoiceState::Releasing => {
-            // Priority 0: prefer releasing. Tiebreak by lowest envelope.
-            Some((0, slot.envelope_level().to_bits() as u64))
-        }
-        VoiceState::Active(_) => {
-            let tiebreaker = match strategy {
-                AllocationStrategy::Oldest => slot.start_time(),
-                AllocationStrategy::Newest => u64::MAX - slot.start_time(),
-                AllocationStrategy::Quietest => slot.envelope_level().to_bits() as u64,
-                AllocationStrategy::HighestNote => u64::MAX - u64::from(slot.note().get()),
-                AllocationStrategy::LowestNote => u64::from(slot.note().get()),
-                AllocationStrategy::NoSteal => return None,
-            };
-            Some((1, tiebreaker))
-        }
-        VoiceState::Idle => None,
+/// A note is one voice here (its unison copies are lanes of that voice).
+struct OneVoice;
+
+impl Patch for OneVoice {
+    fn voices(&self, _: MidiChannel, _: NoteNumber, _: u16, spec: &mut dyn FnMut(VoiceSpec)) {
+        spec(VoiceSpec { group: 0, tag: 0 });
     }
 }
 
+/// What a command asks the synth to do to a voice, after the slot table has
+/// followed it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Gate {
+    /// Let the voice at this slot go into its release.
+    Off(usize),
+    /// Silence the voice at this slot at once.
+    Cut(usize),
+    /// The channel's pitch moved: its notes sound this far from their keys.
+    Retune(MidiChannel, Semitones),
+}
+
+/// The synth's half of the note logic: the slot table. The decisions are
+/// `tutti_voicing::Voicing`'s; this carries out its commands on slots and keeps
+/// what only the synth knows (the per-note identity, the envelope level).
 #[derive(Debug)]
 pub struct VoiceAllocator {
     config: VoiceAllocatorConfig,
+    core: Voicing,
     slots: Vec<VoiceSlot>,
-    next_voice_id: VoiceId,
-    current_time: u64,
     /// [`NoteId`] → active slot index. Keyed by full per-note identity, so two
     /// notes sharing a note number map to distinct slots.
     id_to_slot: PerNoteMap<usize, 128>,
-    sustain_pedal: [bool; 16],
-    sostenuto_pedal: [bool; 16],
-    legato_last_note: Option<NoteNumber>,
+    current_time: u64,
+    views: Vec<VoiceView>,
+    commands: Vec<Command>,
+    gates: Vec<Gate>,
 }
 
 impl VoiceAllocator {
     pub fn new(config: VoiceAllocatorConfig) -> Self {
+        let rules = config.rules();
         let slots = (0..config.max_voices)
             .map(|_| VoiceSlot::default())
             .collect();
-
         Self {
+            core: Voicing::new(rules),
+            views: Vec::with_capacity(config.max_voices),
+            commands: Vec::with_capacity(2 * config.max_voices + 64),
+            gates: Vec::with_capacity(2 * config.max_voices + 64),
             config,
             slots,
-            next_voice_id: VoiceId::new(1),
-            current_time: 0,
             id_to_slot: PerNoteMap::new(),
-            sustain_pedal: [false; 16],
-            sostenuto_pedal: [false; 16],
-            legato_last_note: None,
+            current_time: 0,
         }
+    }
+
+    /// Runs `message` through the core and carries out what it returns.
+    /// `strike` is the note being started, if the message starts one.
+    fn run(
+        &mut self,
+        channel: MidiChannel,
+        message: &Voice2,
+        strike: Option<(NoteId, f32)>,
+    ) -> AllocationResult {
+        self.views.clear();
+        for s in self.slots.iter().filter(|s| !s.is_idle()) {
+            self.views.push(VoiceView {
+                id: s.voice_id(),
+                level: Amplitude(s.envelope_level()),
+            });
+        }
+        let cmds = self.core.step(channel, message, &OneVoice, &self.views);
+        self.commands.clear();
+        self.commands.extend_from_slice(cmds);
+        let mut result = AllocationResult::Unavailable;
+        for i in 0..self.commands.len() {
+            match self.commands[i] {
+                Command::Start {
+                    id,
+                    channel,
+                    key,
+                    steal,
+                    ..
+                } => {
+                    let Some((note_id, velocity)) = strike else {
+                        continue;
+                    };
+                    let stolen = steal.and_then(|v| self.slot_of_voice(v));
+                    let Some(slot_index) =
+                        stolen.or_else(|| self.slots.iter().position(VoiceSlot::is_idle))
+                    else {
+                        continue;
+                    };
+                    if stolen.is_some() {
+                        self.unmap(slot_index);
+                    }
+                    self.slots[slot_index].activate(
+                        id,
+                        note_id,
+                        key,
+                        channel,
+                        velocity,
+                        self.current_time,
+                    );
+                    self.id_to_slot.insert(note_id, slot_index);
+                    result = if stolen.is_some() && self.config.mode == VoiceMode::Poly {
+                        AllocationResult::Stolen { slot_index }
+                    } else {
+                        AllocationResult::Allocated { slot_index }
+                    };
+                }
+                Command::Retarget {
+                    id,
+                    key,
+                    velocity: _,
+                } => {
+                    let Some((note_id, velocity)) = strike else {
+                        continue;
+                    };
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.unmap(slot_index);
+                        self.slots[slot_index].update_note(note_id, key, velocity);
+                        self.id_to_slot.insert(note_id, slot_index);
+                        result = AllocationResult::LegatoRetrigger { slot_index };
+                    }
+                }
+                Command::Retune { channel, bend } => {
+                    self.gates.push(Gate::Retune(channel, bend));
+                }
+                Command::Release(id) => {
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.unmap(slot_index);
+                        self.slots[slot_index].release();
+                        self.gates.push(Gate::Off(slot_index));
+                    }
+                }
+                Command::Cut(id) => {
+                    if let Some(slot_index) = self.slot_of_voice(id) {
+                        self.unmap(slot_index);
+                        self.slots[slot_index].silence();
+                        self.gates.push(Gate::Cut(slot_index));
+                    }
+                }
+            }
+        }
+        // The holds the core keeps, mirrored where the slots expose them.
+        for s in self.slots.iter_mut().filter(|s| !s.is_idle()) {
+            if let Some(h) = self.core.holds(s.voice_id()) {
+                s.mirror(h, self.core.phase(s.voice_id()));
+            }
+        }
+        result
+    }
+
+    /// Forgets the per-note id the slot is reached by, if it is still the one
+    /// that names this slot: a later voice of the same key may have the id by
+    /// now, and a stolen releasing voice must not take it with it.
+    fn unmap(&mut self, slot_index: usize) {
+        let id = self.slots[slot_index].id();
+        if self.id_to_slot.get(id).copied() == Some(slot_index) {
+            self.id_to_slot.remove(id);
+        }
+    }
+
+    fn slot_of_voice(&self, id: VoiceId) -> Option<usize> {
+        self.slots
+            .iter()
+            .position(|s| !s.is_idle() && s.voice_id() == id)
+    }
+
+    /// What to do to voices now (the commands' effect on the synth's voices),
+    /// taken in order.
+    pub(crate) fn take_gates(&mut self) -> impl Iterator<Item = Gate> + '_ {
+        self.gates.drain(..)
     }
 
     pub fn allocate(
@@ -364,137 +479,72 @@ impl VoiceAllocator {
         channel: MidiChannel,
         velocity: f32,
     ) -> AllocationResult {
-        if self.config.mode != VoiceMode::Poly {
-            return self.allocate_mono_legato(id, note, channel, velocity);
-        }
-
-        // Same identity retriggering: release the prior voice for this exact id.
-        if let Some(existing_slot) = self.id_to_slot.get(id).copied() {
-            self.slots[existing_slot].release();
-            self.id_to_slot.remove(id);
-        }
-
-        if let Some(slot_index) = self.find_idle_slot() {
-            return self.activate_slot(slot_index, id, note, channel, velocity);
-        }
-
-        if self.config.strategy == AllocationStrategy::NoSteal {
-            return AllocationResult::Unavailable;
-        }
-
-        if let Some(slot_index) = self.find_slot_to_steal() {
-            let old_id = self.slots[slot_index].id();
-            self.id_to_slot.remove(old_id);
-
-            let voice_id = self.next_voice_id;
-            self.next_voice_id = self.next_voice_id.next();
-
-            self.slots[slot_index].activate(
-                voice_id,
-                id,
-                note,
-                channel,
-                velocity,
-                self.current_time,
-            );
-
-            self.id_to_slot.insert(id, slot_index);
-
-            AllocationResult::Stolen { slot_index }
-        } else {
-            AllocationResult::Unavailable
-        }
+        // 16 bits, never 0 (a zero velocity is a note-off).
+        let v16 = ((velocity.clamp(0.0, 1.0) * 65535.0) as u16).max(1);
+        let on = Voice2::NoteOn {
+            note,
+            velocity: v16,
+            attribute: tutti_ump::Attribute::None,
+        };
+        self.run(channel, &on, Some((id, velocity)))
     }
 
     /// Processes a note-off for `id`. Returns the slot whose voice should now be
     /// gated off (the note actually stopped sounding), or `None` when the note
-    /// is held by sustain/sostenuto or no live voice matched `id`. The caller
-    /// gates the returned slot's voice directly — no note/channel re-scan.
+    /// is held by sustain/sostenuto or no live voice matched `id`.
     pub fn release(&mut self, id: NoteId, channel: MidiChannel) -> Option<usize> {
-        let mut released = None;
-        if let Some(slot_index) = self.id_to_slot.get(id).copied() {
-            let slot = &mut self.slots[slot_index];
-
-            if slot.channel() == channel && slot.is_active() {
-                slot.set_key_held(false);
-                if self.sustain_pedal[usize::from(channel.get())] {
-                    slot.set_sustained(true);
-                } else if !slot.is_sostenuto_held() {
-                    slot.release();
-                    self.id_to_slot.remove(id);
-                    released = Some(slot_index);
-                }
-            }
-        }
-
-        if self.config.mode == VoiceMode::Legato
-            && self.legato_last_note == NoteNumber::new(id.note_number())
-        {
-            self.legato_last_note = None;
-        }
-
-        released
-    }
-
-    /// The active slot a key sounds in, if it does.
-    pub(crate) fn slot_of(&self, id: NoteId) -> Option<usize> {
-        self.id_to_slot.get(id).copied()
+        let note = NoteNumber::new(id.note_number())?;
+        let off = Voice2::NoteOff {
+            note,
+            velocity: 0,
+            attribute: tutti_ump::Attribute::None,
+        };
+        let before = self.gates.len();
+        self.run(channel, &off, None);
+        self.gates[before..].iter().find_map(|g| match g {
+            Gate::Off(i) => Some(*i),
+            Gate::Cut(_) | Gate::Retune(..) => None,
+        })
     }
 
     /// Call when envelope reaches zero to free the slot for reuse.
     pub fn voice_finished(&mut self, voice_id: VoiceId) {
-        for i in 0..self.slots.len() {
-            if self.slots[i].voice_id() == voice_id {
-                let id = self.slots[i].id();
-                if self.id_to_slot.get(id).copied() == Some(i) {
-                    self.id_to_slot.remove(id);
-                }
-                self.slots[i].silence();
-                break;
+        if let Some(i) = self.slot_of_voice(voice_id) {
+            let id = self.slots[i].id();
+            if self.id_to_slot.get(id).copied() == Some(i) {
+                self.id_to_slot.remove(id);
             }
+            self.slots[i].silence();
         }
+    }
+
+    fn control(&mut self, channel: MidiChannel, controller: tutti_ump::CCNumber, down: bool) {
+        let cc = Voice2::ControlChange {
+            controller,
+            value: if down { u32::MAX } else { 0 },
+        };
+        self.run(channel, &cc, None);
     }
 
     pub fn sustain_pedal(&mut self, channel: MidiChannel, on: bool) {
-        self.sustain_pedal[usize::from(channel.get())] = on;
-
-        if !on {
-            for i in 0..self.slots.len() {
-                let slot = &mut self.slots[i];
-                if slot.channel() == channel && slot.is_sustained() {
-                    slot.set_sustained(false);
-                    if slot.is_active() && !slot.is_sostenuto_held() && !slot.is_key_held() {
-                        slot.release();
-                        let id = slot.id();
-                        self.id_to_slot.remove(id);
-                    }
-                }
-            }
-        }
+        self.control(channel, tutti_ump::CCNumber::SUSTAIN, on);
     }
 
     pub fn sostenuto_pedal(&mut self, channel: MidiChannel, on: bool) {
-        self.sostenuto_pedal[usize::from(channel.get())] = on;
+        self.control(channel, tutti_ump::CCNumber::SOSTENUTO, on);
+    }
 
-        if on {
-            for slot in &mut self.slots {
-                if slot.channel() == channel && slot.is_active() {
-                    slot.set_sostenuto_held(true);
-                }
-            }
-        } else {
-            for i in 0..self.slots.len() {
-                let slot = &mut self.slots[i];
-                if slot.channel() == channel && slot.is_sostenuto_held() {
-                    slot.set_sostenuto_held(false);
-                    if slot.is_active() && !slot.is_sustained() && !slot.is_key_held() {
-                        slot.release();
-                        let id = slot.id();
-                        self.id_to_slot.remove(id);
-                    }
-                }
-            }
-        }
+    /// Reset All Controllers: the pedals come up.
+    pub fn reset_controllers(&mut self, channel: MidiChannel) {
+        self.control(channel, tutti_ump::CCNumber::RESET_ALL, false);
+    }
+
+    pub fn all_notes_off(&mut self, channel: MidiChannel) {
+        self.control(channel, tutti_ump::CCNumber::ALL_NOTES_OFF, false);
+    }
+
+    pub fn all_sound_off(&mut self, channel: MidiChannel) {
+        self.control(channel, tutti_ump::CCNumber::ALL_SOUND_OFF, false);
     }
 
     pub fn update_envelope_level(&mut self, slot_index: usize, level: f32) {
@@ -505,6 +555,19 @@ impl VoiceAllocator {
 
     pub fn advance_time(&mut self, samples: u64) {
         self.current_time = self.current_time.wrapping_add(samples);
+        self.core.advance(Samples(samples as usize));
+    }
+
+    /// Whether channels 0 and 15 are zone masters (MPE), whose pitch bend
+    /// reaches every channel.
+    pub fn set_zone_masters(&mut self, on: bool) {
+        self.core.set_zone_masters(on);
+    }
+
+    /// Runs a message that starts and releases no note (a bend, a sensitivity)
+    /// through the core.
+    pub fn message(&mut self, channel: MidiChannel, message: &Voice2) {
+        self.run(channel, message, None);
     }
 
     #[cfg(test)]
@@ -521,107 +584,8 @@ impl VoiceAllocator {
             *slot = VoiceSlot::default();
         }
         self.id_to_slot = PerNoteMap::new();
-        self.sustain_pedal = [false; 16];
-        self.sostenuto_pedal = [false; 16];
-        self.legato_last_note = None;
-    }
-
-    /// Lets go of every key on `channel`. A note the sustain pedal is down
-    /// for, or the sostenuto pedal holds, keeps sounding until the pedal
-    /// lifts, as after a note-off.
-    pub fn all_notes_off(&mut self, channel: MidiChannel) {
-        let sustain = self.sustain_pedal[usize::from(channel.get())];
-        for slot in &mut self.slots {
-            if slot.channel() != channel || !slot.is_active() {
-                continue;
-            }
-            slot.set_key_held(false);
-            if sustain {
-                slot.set_sustained(true);
-            } else if !slot.is_sostenuto_held() {
-                slot.release();
-                self.id_to_slot.remove(slot.id());
-            }
-        }
-    }
-
-    pub fn all_sound_off(&mut self, channel: MidiChannel) {
-        for i in 0..self.slots.len() {
-            if self.slots[i].channel() == channel {
-                let id = self.slots[i].id();
-                self.id_to_slot.remove(id);
-                let slot = &mut self.slots[i];
-                slot.silence();
-                slot.set_sustained(false);
-                slot.set_sostenuto_held(false);
-            }
-        }
-    }
-
-    fn find_idle_slot(&self) -> Option<usize> {
-        self.slots.iter().position(|s| s.is_idle())
-    }
-
-    fn find_slot_to_steal(&self) -> Option<usize> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| steal_score(s, self.config.strategy).map(|score| (i, score)))
-            .min_by_key(|(_, score)| *score)
-            .map(|(i, _)| i)
-    }
-
-    fn activate_slot(
-        &mut self,
-        slot_index: usize,
-        id: NoteId,
-        note: NoteNumber,
-        channel: MidiChannel,
-        velocity: f32,
-    ) -> AllocationResult {
-        let voice_id = self.next_voice_id;
-        self.next_voice_id = self.next_voice_id.next();
-
-        self.slots[slot_index].activate(voice_id, id, note, channel, velocity, self.current_time);
-
-        self.id_to_slot.insert(id, slot_index);
-
-        AllocationResult::Allocated { slot_index }
-    }
-
-    fn allocate_mono_legato(
-        &mut self,
-        id: NoteId,
-        note: NoteNumber,
-        channel: MidiChannel,
-        velocity: f32,
-    ) -> AllocationResult {
-        let active_slot = self
-            .slots
-            .iter()
-            .position(|s| s.is_active() && s.channel() == channel);
-
-        match (self.config.mode, active_slot, self.legato_last_note) {
-            (VoiceMode::Legato, Some(slot_index), Some(_)) => {
-                let old_id = self.slots[slot_index].id();
-                self.id_to_slot.remove(old_id);
-                self.slots[slot_index].update_note(id, note, velocity);
-                self.id_to_slot.insert(id, slot_index);
-                self.legato_last_note = Some(note);
-
-                AllocationResult::LegatoRetrigger { slot_index }
-            }
-            _ => {
-                if let Some(slot_index) = active_slot {
-                    let old_id = self.slots[slot_index].id();
-                    self.id_to_slot.remove(old_id);
-                    self.slots[slot_index].release();
-                }
-
-                self.legato_last_note = Some(note);
-                self.activate_slot(0, id, note, channel, velocity)
-            }
-        }
+        self.core.reset();
+        self.gates.clear();
     }
 }
 
@@ -629,13 +593,13 @@ impl Clone for VoiceAllocator {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
+            core: self.core.clone(),
             slots: self.slots.clone(),
-            next_voice_id: self.next_voice_id,
-            current_time: self.current_time,
             id_to_slot: self.id_to_slot.clone(),
-            sustain_pedal: self.sustain_pedal,
-            sostenuto_pedal: self.sostenuto_pedal,
-            legato_last_note: self.legato_last_note,
+            current_time: self.current_time,
+            views: Vec::with_capacity(self.config.max_voices),
+            commands: Vec::with_capacity(2 * self.config.max_voices + 64),
+            gates: Vec::with_capacity(2 * self.config.max_voices + 64),
         }
     }
 }

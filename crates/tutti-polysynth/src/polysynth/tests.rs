@@ -2653,9 +2653,10 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
     ] {
         let mut synth = poly_synth();
         synth.apply_midi(ump(message));
+        // The synth keeps where the pitch stands: the wheel times the range.
         assert_eq!(
-            synth.bends.position(MidiChannel::FIRST),
-            expected,
+            synth.bends[usize::from(MidiChannel::FIRST.get())],
+            synth.config.pitch_bend_range * expected,
             "{message:?}"
         );
     }
@@ -2911,4 +2912,32 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
     s.tick(&[], &mut out);
     assert_eq!(s.voices[0].sound_controllers(), (cutoff, resonance));
     assert_eq!(s.voices[0].mod_wheel(), 0.0);
+}
+
+/// The MPE switch is live: turning it on after construction makes the master
+/// channel's bend reach every channel, and turning it off takes that back.
+///
+/// Mutation (run): `set_mpe_enabled` not telling the note logic
+/// (`allocator.set_zone_masters`) leaves channel 5 centred.
+#[test]
+fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
+    let bend = |synth: &mut PolySynth, channel: u8| {
+        synth.apply_midi(ump(Message::Midi2(
+            address(channel),
+            Voice2::PitchBend(u32::MAX),
+        )));
+    };
+    let mut synth = poly_synth();
+    synth.set_mpe_enabled(true);
+    bend(&mut synth, 0);
+    assert_ne!(synth.bends[5].0, 0.0, "a master bend reaches channel 5");
+    synth.set_mpe_enabled(false);
+    bend(&mut synth, 15);
+    assert_ne!(synth.bends[15].0, 0.0, "and its own channel");
+    // Off again, a bend on channel 0 stays on channel 0.
+    synth.apply_midi(ump(Message::Midi2(address(0), Voice2::PitchBend(0))));
+    assert_ne!(
+        synth.bends[5].0, synth.bends[0].0,
+        "channel 5 keeps the bend it had"
+    );
 }

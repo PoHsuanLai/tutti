@@ -28,6 +28,17 @@
 //! where it stands). Each jump moves the [generation](Run::generation) on: a live disk
 //! read's segment.
 //!
+//! # Wrap crossfade
+//!
+//! A wrap is a jump in the playhead and a cut in a voice that plays through
+//! it. So a run that follows a wrap carries a [`Wrap`]: for [`WRAP_FADE`]
+//! after the wrap (at most half a pass of the loop), the voice also sounds
+//! where the playhead would be had it run on past the loop's end, a loop's
+//! length ahead of it, and blends that tail out under the loop's start. The
+//! crossfade starts on the wrap's frame and moves nothing: the loop's start
+//! is on the same frame it was. It outlasts the block ([`Clock`] carries it)
+//! and a seek or a stop ends it.
+//!
 //! A seek at a block's first frame to exactly where the playhead would have
 //! been anyway is invisible here (the `Env` says only where the playhead
 //! is), and so not a jump: nothing buffered is stale after it. A seek inside

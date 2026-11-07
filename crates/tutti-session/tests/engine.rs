@@ -23,7 +23,7 @@ use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::{Const, assert_golden};
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples, TapAlign};
 
 const RATE: f64 = 48_000.0;
 
@@ -334,30 +334,114 @@ fn an_offline_render_feeds_the_load_meter() {
     assert!(detached.load_meter().is_none());
 }
 
-/// An offline session's master meter is the engine's: [`Session::render`]
-/// feeds it (enabled from the build), as a device callback would, and a
-/// detached session, which has no engine, has none.
+/// A session's master meter is an op in its plan, declared and on from the
+/// build: [`Session::render`] feeds it as a device callback would, and so does
+/// a detached session's [`Session::render_frame`] (it had no meter while the
+/// engine fed it).
 ///
-/// Mutation (run, recorded here): `SessionBuilder::session` leaving `meter` at
-/// `None` for an offline engine -> `expect` fails. `Engine` not measuring in
-/// `process` -> the peak reads 0.0 (`tutti-engine`'s `master_meter` tests).
+/// Mutation (run, recorded here): `Graph::new` not declaring the master
+/// meter -> `expect` fails; not enabling it -> the peak reads 0.0.
 #[test]
 fn an_offline_render_feeds_the_master_meter() {
     let mut s = offline();
-    let meter = s.master_meter().expect("an offline engine").clone();
+    let mut meter = s.take_master_meter().expect("declared at the build");
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.graph().set_output_source(0, GraphSource::Node(dc, 0));
     s.graph().set_output_source(1, GraphSource::Node(dc, 0));
     s.update();
     let mut block = vec![0.0f32; 128 * 2];
     s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
-    let r = meter.get();
-    assert!((r.peak_left.get() - 0.5).abs() < 1e-6, "{r:?}");
-    assert!((r.rms_right.get() - 0.5).abs() < 1e-6, "{r:?}");
-    let detached = Session::builder()
+    let r = meter.read();
+    assert!((r[0].peak.get() - 0.5).abs() < 1e-6, "{r:?}");
+    assert!((r[1].rms.get() - 0.5).abs() < 1e-6, "{r:?}");
+    assert_eq!(r[0].frames, Samples(128));
+
+    let mut detached = Session::builder()
+        .outputs_floor(1)
         .build_detached(SampleRate(RATE))
         .expect("builds");
-    assert!(detached.master_meter().is_none());
+    let mut meter = detached.take_master_meter().expect("declared at the build");
+    let (dc, _) = detached.graph().insert(Const::mono(0.5));
+    detached
+        .graph()
+        .set_output_source(0, GraphSource::Node(dc, 0));
+    let mut frame = [0.0f32];
+    detached.render_frame(&mut frame);
+    assert_eq!(meter.read()[0].peak.get(), 0.5);
+    assert!(
+        detached.take_master_meter().is_none(),
+        "taken once: one consumer"
+    );
+}
+
+/// A track meter declared on a node's port reads that node, through `Graph`;
+/// a second meter on the same port is its own consumer; and removing the node
+/// leaves the channel on silence while the graph still commits. A dropped
+/// reader's meter is closed by the Reclaim phase and its op leaves the plan.
+///
+/// Mutation (run, recorded here): `Graph::open_meter` not marking the graph
+/// edited -> `update` sends no plan and the meter reads nothing.
+#[test]
+fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
+    let mut s = offline();
+    let (a, _) = s.graph().insert(Const::mono(0.5));
+    let (b, _) = s.graph().insert(Const::mono(0.25));
+    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    // The meters are the only edit of the second update.
+    s.update();
+    let mut track = s.graph().open_node_meter(a);
+    let mut other = s.graph().open_meter(
+        &[GraphSource::Node(a, 0), GraphSource::Node(b, 0)],
+        TapAlign::Raw,
+    );
+    track.enable();
+    other.enable();
+    s.update();
+    let mut block = vec![0.0f32; 64 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    assert_eq!(track.channels(), 1);
+    assert_eq!(track.read()[0].peak.get(), 0.5);
+    let o = other.read();
+    assert_eq!((o[0].peak.get(), o[1].peak.get()), (0.5, 0.25));
+
+    s.graph().remove(b);
+    s.update();
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    let o = other.read();
+    assert_eq!((o[0].peak.get(), o[1].peak.get()), (0.5, 0.0));
+}
+
+/// A dropped meter reader is closed by the `Reclaim` phase: the meter's op
+/// leaves the plan at the commit after it, and the master meter's (held by
+/// the session) stays.
+///
+/// Mutation (run, recorded here): delete `self.graph.reap_meters()` from the
+/// `Phase::Reclaim` arm -> the plan keeps its meter ops.
+#[test]
+fn a_dropped_meter_reader_leaves_the_plan_at_the_reclaim_phase() {
+    let meters = |s: &Session| {
+        s.graph_ref()
+            .sent_plan()
+            .expect("a plan was sent")
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, Op::Meter { .. }))
+            .count()
+    };
+    let mut s = offline();
+    let (a, _) = s.graph().insert(Const::mono(0.5));
+    let track = s.graph().open_node_meter(a);
+    s.update();
+    assert_eq!(meters(&s), 2, "the master's and the track's");
+    drop(track);
+    s.update();
+    assert_eq!(
+        meters(&s),
+        2,
+        "the reclaim of this update closed it; the plan is the last commit's"
+    );
+    s.update();
+    assert_eq!(meters(&s), 1, "the master's stays");
 }
 
 /// A tap on an offline session's outputs is fed by [`Session::render`]: a

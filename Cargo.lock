@@ -4325,7 +4325,6 @@ dependencies = [
  "tutti-engine",
  "tutti-graph",
  "tutti-io",
- "tutti-metering",
  "tutti-nodes",
  "tutti-rt",
  "tutti-transport",
@@ -4425,7 +4424,6 @@ dependencies = [
 name = "tutti-metering"
 version = "0.0.1"
 dependencies = [
- "assert_no_alloc",
  "tutti-types",
 ]
 

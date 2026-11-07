@@ -76,3 +76,32 @@ fn midi_clock_decoder_queries_are_allocation_free() {
         }
     });
 }
+
+/// `from_midi1_bytes` runs on a plugin's output and a packet transport, where
+/// the bytes are not ours: a stray status, a truncated message, an undefined
+/// status and SysEx allocate nothing and read as `None`, and a good message
+/// still reads.
+///
+/// Mutation (run): the old `midly` path restored in `from_midi1_bytes` ->
+/// the process aborts on `[0xF7, 1, 2]` under `assert_no_alloc`.
+#[test]
+fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
+    use tutti_midi_types::ump::MidiEvent;
+
+    let hostile: [&[u8]; 8] = [
+        &[0xF7, 1, 2],
+        &[0x90, 60],
+        &[0x90],
+        &[0xF0, 1, 2],
+        &[0xF4, 1, 2],
+        &[0xFD],
+        &[0x90, 0x80, 1],
+        &[],
+    ];
+    assert_no_alloc::assert_no_alloc(|| {
+        for bytes in hostile {
+            assert!(MidiEvent::from_midi1_bytes(0, bytes).is_none(), "{bytes:02X?}");
+        }
+        assert!(MidiEvent::from_midi1_bytes(3, &[0x90, 60, 100]).is_some());
+    });
+}

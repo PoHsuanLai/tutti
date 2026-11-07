@@ -2325,12 +2325,13 @@ mod tests {
     /// Figures 8 to 10 for System and MIDI 1.0 channel voice, and Figures 54 to
     /// 66 for MIDI 2.0), with unequal LSB and MSB.
     ///
-    /// Mutations (each run, each fails here): Song Position `[F2, lsb, msb]`
-    /// swapped; `System::SongSelect` data zeroed; MIDI 1.0 Pitch Bend LSB and
-    /// MSB swapped; `narrow_bend` in `Voice2::PitchBend` replaced by a constant;
-    /// MIDI 1.0 Program Change byte `^ 1`; MIDI 1.0 and MIDI 2.0 Channel
-    /// Pressure zeroed; MIDI 1.0 Control Change value zeroed; MIDI 2.0 Control
-    /// Change narrowing zeroed.
+    /// Mutations (each run, each fails here): in `System::bytes`, Song Position
+    /// `[F2, lsb, msb]` swapped and Song Select data zeroed; in `Voice1::bytes`,
+    /// Pitch Bend LSB and MSB swapped, the Program Change byte `^ 1`, Channel
+    /// Pressure zeroed and the Control Change value zeroed; in
+    /// `tutti_midi_protocol::narrow`, the Pitch Bend narrowing replaced by a
+    /// constant, the Channel Pressure narrowing zeroed and the Control Change
+    /// narrowing zeroed.
     #[test]
     fn spec_packets_stage_exact_midi_bytes() {
         let at = |bytes| vec![(11, bytes)];

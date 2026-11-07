@@ -58,6 +58,9 @@ pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::
     if let Some(client) = *slot {
         return Ok(client);
     }
+    // CoreMIDI sends notifications to the run loop of the process's first client,
+    // so the device watch's client must be created before this one.
+    let _ = watch::hub();
     let client: &'static Client = Box::leak(Box::new(Client::new("tutti-midi")?));
     *slot = Some(client);
     Ok(client)

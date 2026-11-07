@@ -50,68 +50,26 @@ fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     assert_eq!(registered(), 0);
 }
 
-// DIAG: which client's run loop gets the notification?
-fn diag_wait(label: &str, spin_test_thread: bool) {
-    eprintln!(
-        "DIAG {label}: test thread {:?}",
-        std::thread::current().id()
-    );
-    let name = format!("tutti-diag-{}", std::process::id());
+/// The notification path itself: with the engine's shared client created first,
+/// as `Devices::open` does, CoreMIDI still delivers the hub's notifications, and
+/// they arrive on the hub's client (`CALLBACKS`), not through the idle look.
+/// Mutation: `shared_client` not starting the hub first leaves `CALLBACKS` at 0
+/// (measured on the runner: no fire in four seconds), and this times out.
+#[test]
+fn notifications_reach_the_hub_when_the_shared_client_is_created() {
+    let _ = crate::backend::coremidi::shared_client().expect("shared client");
+    hub().expect("hub");
+    let before = CALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    let name = format!("tutti-callbacks-{}", std::process::id());
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(4) {
-        if spin_test_thread {
-            let run_loop = core_foundation::runloop::CFRunLoop::get_current();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(500));
-                run_loop.stop();
-            });
-            let began = Instant::now();
-            core_foundation::runloop::CFRunLoop::run_current();
-            eprintln!(
-                "DIAG {label}: test-thread run_current ran {:?}",
-                began.elapsed()
-            );
-        } else {
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        eprintln!(
-            "DIAG {label}: t={:?} fires={}",
-            start.elapsed(),
-            DIAG_FIRES.load(std::sync::atomic::Ordering::SeqCst)
+    let deadline = Instant::now() + PATIENCE;
+    while CALLBACKS.load(std::sync::atomic::Ordering::Relaxed) == before {
+        assert!(
+            Instant::now() < deadline,
+            "no notification reached the hub's client"
         );
+        // Observing another process (CoreMIDI): a short wait, bounded above.
+        std::thread::park_timeout(Duration::from_millis(50));
     }
     drop(destination);
-    std::thread::sleep(Duration::from_millis(1500));
-    eprintln!(
-        "DIAG {label}: after drop fires={}",
-        DIAG_FIRES.load(std::sync::atomic::Ordering::SeqCst)
-    );
-    panic!("DIAG {label} done"); // show output
-}
-
-#[test]
-fn diag_hub_first() {
-    let _ = hub().expect("hub");
-    diag_wait("hub-first", false);
-}
-
-#[test]
-fn diag_hub_first_spin() {
-    let _ = hub().expect("hub");
-    diag_wait("hub-first-spin", true);
-}
-
-#[test]
-fn diag_shared_client_first() {
-    let _ = crate::backend::coremidi::shared_client().expect("shared");
-    let _ = hub().expect("hub");
-    diag_wait("shared-first", false);
-}
-
-#[test]
-fn diag_shared_client_first_spin() {
-    let _ = crate::backend::coremidi::shared_client().expect("shared");
-    let _ = hub().expect("hub");
-    diag_wait("shared-first-spin", true);
 }

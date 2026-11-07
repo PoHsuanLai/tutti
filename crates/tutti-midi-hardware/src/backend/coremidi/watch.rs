@@ -10,13 +10,18 @@
 //! On a notification that the device setup changed, each registered watch
 //! enumerates again and reports the difference, as the ALSA watch does.
 //!
-//! GitHub's macOS runner showed that the notification path cannot be relied on: a
-//! client created on a background thread got no notification at all, and its run
-//! loop had no source (`run_current` returned at once, every time). The hub
-//! thread therefore also looks again once a second whenever its loop has nothing
-//! to wait for, which finds a hot-plug within about a second there; where
-//! CoreMIDI does deliver notifications the loop blocks and the look is on the
-//! notification. Nothing here has been run on a Mac with a main run loop.
+//! CoreMIDI sends a client's notifications to the run loop that was current when
+//! the process created its *first* client, whichever thread creates later ones.
+//! Measured on GitHub's macOS runner: with the hub's client first, its callback
+//! fired on the hub thread for every endpoint added or removed in the process
+//! (13 fires in a few seconds); with another client created first, on the
+//! calling thread, it never fired in four seconds, and fired when that thread
+//! ran its own run loop. So the hub starts before any other client the backend
+//! creates (`shared_client` starts it), and a host that creates a client of its
+//! own earlier still takes the notifications. The hub thread therefore also looks
+//! again once a second whenever its loop has nothing to wait for (a loop with no
+//! source returns at once), which finds a hot-plug in about a second in that
+//! case. Nothing here has been run on a Mac with a main run loop.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -39,10 +44,8 @@ const IDLE_RETURN: Duration = Duration::from_millis(50);
 /// How long the hub thread rests before it runs the loop again after such a
 /// return, so a loop with no source is four wakes a second and not a spin.
 const IDLE_REST: Duration = Duration::from_millis(250);
-/// How often a hub whose run loop has no source looks again by itself. On
-/// GitHub's macOS runner CoreMIDI attached no source to the loop of the thread
-/// that created the client and sent no notification at all, so the watch cannot
-/// rely on one.
+/// How often a hub whose run loop has no source looks again by itself: the
+/// fallback for a process whose first CoreMIDI client was not the hub's.
 const IDLE_LOOK: Duration = Duration::from_secs(1);
 
 /// One registered watch: the reporting state of a `Devices`, and the sink to
@@ -55,7 +58,12 @@ struct Watcher {
     live: bool,
 }
 
-pub(super) static DIAG_FIRES: AtomicU64 = AtomicU64::new(0); // DIAG
+/// Notifications CoreMIDI has delivered to the hub's client: what tests count to
+/// tell a delivered notification from the idle look.
+#[cfg(test)]
+pub(super) static CALLBACKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 type Shared = Arc<Mutex<Watcher>>;
 
@@ -83,7 +91,7 @@ fn look(watcher: &Shared) {
 }
 
 /// The watches registered with the process-wide client.
-struct Hub {
+pub(super) struct Hub {
     watches: Mutex<Vec<(u64, Shared)>>,
     next: AtomicU64,
 }
@@ -104,7 +112,7 @@ impl Hub {
 
 /// The hub, started on first use, or why there is none (CoreMIDI refused the
 /// client). A refusal is not kept: the next watch tries again.
-fn hub() -> std::result::Result<&'static Hub, String> {
+pub(super) fn hub() -> std::result::Result<&'static Hub, String> {
     static HUB: Mutex<Option<&'static Hub>> = Mutex::new(None);
     let mut slot = HUB.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(hub) = *slot {
@@ -127,8 +135,7 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
             .spawn(move || {
                 let client =
                     Client::new_with_notifications("tutti-midi-watch", move |n: &Notification| {
-                        DIAG_FIRES.fetch_add(1, Ordering::SeqCst); // DIAG
-                        eprintln!("DIAG fired on {:?}: {n:?}", std::thread::current().id()); // DIAG
+                        CALLBACKS.fetch_add(1, Ordering::Relaxed);
                         if matches!(
                             n,
                             Notification::SetupChanged

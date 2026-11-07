@@ -336,16 +336,27 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
 - **macOS.** One process-wide CoreMIDI client with a notification block, on one
   thread that runs its run loop for the life of the process; each `Devices` is a
   registration with it, removed on drop. (coremidi 0.9.2's `Client` never
-  disposes on drop, so a client per `Devices` would leak one.) A run loop that
-  returns at once is rested four times a second, not spun. A panic in a watch's enumeration is caught, fails that watch (`watch_failure`, as on Linux) and leaves the others; a refused client fails the watch the same way and is retried by the next. On GitHub's macOS runner CoreMIDI sent the
-  background client no notification (the loop had no source), so the hub also
-  looks again once a second whenever its loop has nothing to wait for; a
-  hot-plug there is found in about a second. Where CoreMIDI does notify the loop
-  blocks and the look is on the notification, which has not been observed. The
-  hub never holds its lock across a CoreMIDI call (with one held across a call,
-  the macOS tests hung). Compiled and linted
-  for `aarch64-apple-darwin` from Linux; its test runs only on macOS CI, and
-  the author has not run any of this on a Mac.
+  disposes on drop, so a client per `Devices` would leak one.) Measured on
+  GitHub's macOS runner: CoreMIDI sends notifications to the run loop that was
+  current when the process created its *first* client, whichever thread creates
+  later ones. With the hub's client first, its callback fired on the hub thread
+  for every endpoint added or removed in the process; with the engine's shared
+  client created first on another thread, it never fired in four seconds and the
+  hub's loop had no source (`run_current` returned at once), and the callback did
+  fire on that other thread when it ran its own loop. So `shared_client` starts
+  the hub before it creates its own client. A host that creates a CoreMIDI client
+  earlier still takes the notifications away, and a hub whose loop has nothing to
+  wait for also looks again once a second (a hot-plug is then found in about a
+  second); the same look backs up a missed notification. A run loop that
+  returns at once is rested four times a second, not spun. The hub never holds
+  its lock across a CoreMIDI call (with one held across a call, the macOS tests
+  hung); a watch's own lock is held across its enumeration, so a `Devices` drop
+  can wait for one. A panic in a watch's enumeration is caught, fails that watch
+  (`watch_failure`, as on Linux) and leaves the others; a refused client fails
+  the watch the same way and is retried by the next. Compiled and linted for
+  `aarch64-apple-darwin` from Linux; its tests run only on macOS CI (one asserts
+  the notification callback fired, one that `Devices` sees a virtual endpoint
+  come and go), and the author has not run any of this on a Mac.
 - **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
   watches nothing, as it enumerates nothing. Opening reports `Unsupported`.
 - **`DeviceId`** is an `Identity` and an ordinal. `Identity` is the Product

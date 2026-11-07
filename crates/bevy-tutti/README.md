@@ -86,7 +86,6 @@ fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) -> Result {
 | `TransportRes` | always | Play, stop, seek, tempo and loop |
 | `MetronomeRes` | always | The metronome click state |
 | `MeteringRes` | always | Master peak and RMS meters |
-| `AudioTapRes` | always | A copy of the master output for analysis or recording |
 | `MasterSources` | always | What feeds each output channel |
 | `AudioDeviceState`, `AudioEngineState`, `AudioDeviceFault` (message) | always | The output device, whether the engine is running, and the device's faults |
 | `GraphLatency`, `ChannelCompensation` | always | Latency compensation figures |
@@ -123,7 +122,7 @@ let wav = mic.matching_sink(&path, BitDepth::Float32)?;
 let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
 ```
 
-`TapIn::new(tap.open()?)` records the master output the same way.
+`TapIn::new(graph.graph().open_output_tap(Samples(144_000)))` records the graph's output the same way (a tap on any ports and any width is `Graph::open_tap`).
 `MicIn::open_with_monitor` also returns a `MicMonitorNode` to hear the input
 through the graph. `Recorder` is the same loop without ECS.
 

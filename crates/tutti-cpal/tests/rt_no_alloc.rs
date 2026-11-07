@@ -55,7 +55,12 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
 /// is returned, and must be held), and the engine's master meter to enable.
 fn rolling_state_with(
     tap: bool,
-) -> (Transport, AudioCallbackState, MasterMeter, Option<TapReader>) {
+) -> (
+    Transport,
+    AudioCallbackState,
+    MasterMeter,
+    Option<TapReader>,
+) {
     let transport = Transport::new(SAMPLE_RATE);
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));

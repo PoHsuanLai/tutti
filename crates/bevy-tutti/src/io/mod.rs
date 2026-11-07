@@ -92,10 +92,11 @@
 //!
 //! # Recording what the graph is playing
 //!
-//! The mic is one source; the *master output* is the other one hosts ask for.
-//! [`AudioTapRes`](crate::graph::AudioTapRes) is the engine's lock-free copy of
-//! that output, and [`TapIn`] adapts its consumer end into an [`AudioIn`] so the
-//! same pump records either:
+//! The mic is one source; the *graph's output* is the other one hosts ask for.
+//! A tap on the outputs ([`Graph::open_output_tap`](tutti_session::Graph::open_output_tap),
+//! through [`AudioGraphRes::graph`](crate::graph::AudioGraphRes::graph)) copies
+//! them out of the plan as the graph renders, and [`TapIn`] adapts the
+//! [`TapReader`](tutti_graph::TapReader) it returns into an [`AudioIn`] so the same pump records either:
 //!
 //! ```rust
 //! use bevy_app::prelude::*;
@@ -108,22 +109,24 @@
 //! struct TakePath(std::path::PathBuf);
 //!
 //! fn record_master(
-//!     tap: Res<AudioTapRes>,
+//!     mut graph: ResMut<AudioGraphRes>,
 //!     config: Res<AudioConfig>,
 //!     path: Res<TakePath>,
 //!     mut commands: Commands,
 //! ) {
-//!     let src = TapIn::new(tap.open().expect("tap is free"));
-//!     // The rate is `AudioConfig`'s: a tap has no device to ask.
-//!     let wav = WavOut::create(&path.0, config.sample_rate, ChannelLayout::STEREO, BitDepth::Float32)
+//!     // Three seconds of ring: what the pump does not drain in time is
+//!     // counted (`TapReader::take_lost`), not blocked on.
+//!     let reader = graph.graph().open_output_tap(Samples(144_000));
+//!     // The sink is as wide as the tap; the rate is `AudioConfig`'s.
+//!     let wav = WavOut::create(&path.0, config.sample_rate, reader.layout(), BitDepth::Float32)
 //!         .expect("a writable path");
-//!     commands.spawn(AudioPump::start(src, wav, Samples(1024)));
+//!     commands.spawn(AudioPump::start(TapIn::new(reader), wav, Samples(1024)));
 //! }
 //!
 //! let dir = tempfile::tempdir().expect("a temp dir");
 //! let mut app = App::new();
 //! app.add_audio_pump::<f32>();
-//! app.insert_resource(AudioTapRes::default());
+//! app.insert_resource(AudioGraphRes::headless(0, 2));
 //! app.insert_resource(AudioConfig {
 //!     sample_rate: tutti_types::SampleRate(48_000.0),
 //!     channels: ChannelLayout::STEREO,
@@ -132,15 +135,14 @@
 //! app.add_systems(Startup, record_master);
 //! app.update();
 //!
-//! assert!(app.world().resource::<AudioTapRes>().is_open());
 //! assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
 //! ```
 //!
-//! Two things this cannot do for you. The tap is **opt-in** — until `open()` is
-//! called the audio thread pays one atomic load and pushes nothing — and it
-//! serves one consumer at a time, so `open()` fails rather than displacing an
-//! analysis reader that got there first. And the rate is yours to match: a tap
-//! has no device to ask, so it is
+//! Two things this cannot do for you. The tap flows from the commit that
+//! carries it (the frame's own, once the graph was edited), and it is fed by
+//! the graph's render, so it records the signal *before* the engine's declick
+//! fader and the fold to the device's width. And the rate is yours to match:
+//! a tap has no device to ask, so it is
 //! [`AudioConfig`](crate::graph::AudioConfig) that knows, not this module.
 
 // Re-exported, not wrapped — see the module docs. `MicIn` owns a CPAL input

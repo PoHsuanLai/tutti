@@ -129,23 +129,18 @@ fn _surface_compiles() {
     // was reachable only by naming an engine crate directly until the types
     // below were forwarded.
 
-    // Recording the master output: `io/mod.rs`'s "Recording what the graph is
-    // playing". Needs `TapIn` *and* `TapBusy` — the second because `open`
-    // returns it, and a host that cannot name it cannot write this signature at
-    // all, only call the method inside someone else's.
+    // Recording the graph's output: `io/mod.rs`'s "Recording what the graph is
+    // playing". Needs `TapIn` and `TapReader` (what `open_output_tap` returns,
+    // so a host can write the signature of a function that holds one).
     #[cfg(feature = "audio-io")]
-    fn _record_master(tap: &AudioTapRes, path: std::path::PathBuf) -> Result<AudioPump, TapBusy> {
-        // The sink's width must match the source's — `TapIn` is stereo, so this
-        // is `ChannelLayout::STEREO` and not a bare `2`. Naming the layout is
-        // what makes the pairing legible; `Recorder::start` rejects a mismatch
-        // outright, and `pump` debug-asserts it.
-        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
+    fn _record_master(graph: &mut AudioGraphRes, path: std::path::PathBuf) -> AudioPump {
+        let reader: TapReader = graph.graph().open_output_tap(Samples(48_000));
+        // The sink's width must match the source's: the tap's own layout, not a
+        // bare `2`. `Recorder::start` rejects a mismatch outright, and `pump`
+        // debug-asserts it.
+        let wav = WavOut::create(&path, 48_000.0, reader.layout(), BitDepth::Float32)
             .expect("sink opens");
-        Ok(AudioPump::start(
-            TapIn::new(tap.open()?),
-            wav,
-            Samples(1024),
-        ))
+        AudioPump::start(TapIn::new(reader), wav, Samples(1024))
     }
 
     // Recording a mic: `io/mod.rs`'s `matching_sink` example.

@@ -31,14 +31,12 @@
 //! assert!(!app.world().resource::<MeteringRes>().is_enabled());
 //! ```
 //!
-//! With the switch off and the tap closed the CPAL callback skips both the
-//! stereo fold of the device buffer and the amplitude pass; an open tap runs
-//! the fold either way.
+//! With the switch off the engine skips the amplitude pass (and the stereo
+//! fold of a device that is not stereo) entirely.
 //!
-//! The analysis tap ([`AudioTapRes`](super::AudioTapRes)) defaults the other
-//! way — closed until a host opens it — because its cost is a full buffer copy
-//! rather than a scan, and because `open()` returns a consumer somebody has to
-//! own.
+//! Copying audio out of the graph is a tap, not the meter: open one with
+//! `AudioGraphRes::graph().open_output_tap(..)`, which returns the reader its
+//! owner drains.
 
 use bevy_ecs::prelude::*;
 

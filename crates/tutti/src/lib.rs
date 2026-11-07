@@ -36,7 +36,7 @@ pub use tutti_engine as engine;
 /// machine, timed commands, the offline timeline.
 pub use tutti_transport as transport;
 
-/// Level metering (`tutti-metering`): `MasterMeter`, `AudioTap`, `LoadMeter`.
+/// Level metering (`tutti-metering`): `MasterMeter`, `LoadMeter`.
 pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
@@ -159,10 +159,8 @@ pub use tutti_plugin as plugin;
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_engine::prelude::*;
-    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS};
-    pub use tutti_metering::{
-        AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
-    };
+    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS, TapReader};
+    pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_transport::{
@@ -170,7 +168,7 @@ pub mod prelude {
         OfflineTimelineConfig, Then, Timeline, Transport, TransportCommand,
     };
     pub use tutti_types::prelude::*;
-    pub use tutti_types::{At, BarNumber, LoopRange, Meter};
+    pub use tutti_types::{At, BarNumber, LoopRange, Meter, TapAlign, TapId};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     // The device handle and its enumeration record.

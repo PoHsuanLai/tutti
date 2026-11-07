@@ -69,3 +69,26 @@ fn sysex7_packet_count_is_what_sysex7_packets_yields() {
         );
     }
 }
+
+/// The words of a single packet from M2-104 Table 18: type 3, group, status 0,
+/// byte count, then the bytes; a byte's high bit is dropped.
+///
+/// Mutation (run): the count nibble shifted by 20 instead of 16, and the mask
+/// removed → each case fails.
+#[test]
+fn sysex7_single_words_are_the_spec_words() {
+    let words = |group, payload: &[u8]| {
+        MidiEvent::sysex7_single(MidiGroup::of(group), payload)
+            .expect("fits one packet")
+            .data_words()
+            .to_vec()
+    };
+    assert_eq!(
+        words(3, &[0x7E, 0x7F, 0x06, 0x01]),
+        [0x3304_7E7F, 0x0601_0000]
+    );
+    assert_eq!(words(0, &[]), [0x3000_0000, 0]);
+    assert_eq!(words(15, &[1, 2, 3, 4, 5, 6]), [0x3F06_0102, 0x0304_0506]);
+    assert_eq!(words(0, &[0x81, 0xFF]), [0x3002_017F, 0]);
+    assert!(MidiEvent::sysex7_single(MidiGroup::FIRST, &[0; 7]).is_none());
+}

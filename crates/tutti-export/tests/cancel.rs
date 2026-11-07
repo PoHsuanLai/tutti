@@ -7,9 +7,9 @@
 #![cfg(all(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Flow, FrozenClock,
-    GRAPH_MAX_BLOCK, Normalize, Outcome, Pass, Progress, RenderConfig, RenderGraph,
-    render_normalized_to_file_with, render_to_buffers_with, render_to_file_with,
+    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Flow, Format, FrozenClock,
+    GRAPH_MAX_BLOCK, IntDepth, Normalize, Outcome, Pass, Pcm, Progress, Quality, RenderConfig,
+    RenderGraph, render_normalized_to_file_with, render_to_buffers_with, render_to_file_with,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -26,7 +26,22 @@ fn graph() -> RenderGraph {
     RenderGraph::new(editor, executor).expect("built together")
 }
 
-fn config(format: AudioFormat) -> ExportConfig {
+/// FLAC at 24 bit and the default level.
+fn flac() -> Format {
+    Format::Flac {
+        depth: IntDepth::Int24,
+        level: FlacLevel::default(),
+    }
+}
+
+/// Ogg Vorbis at the default quality.
+fn vorbis() -> Format {
+    Format::Vorbis {
+        quality: Quality::default(),
+    }
+}
+
+fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -35,7 +50,6 @@ fn config(format: AudioFormat) -> ExportConfig {
         },
         encode: EncodeConfig {
             format,
-            bit_depth: BitDepth::Int16,
             channels: ChannelLayout::STEREO,
             topology: None,
         },
@@ -43,12 +57,12 @@ fn config(format: AudioFormat) -> ExportConfig {
     }
 }
 
-fn formats() -> [(AudioFormat, &'static str); 4] {
+fn formats() -> [(Format, &'static str); 4] {
     [
-        (AudioFormat::Wav, "wav"),
-        (AudioFormat::Flac(Default::default()), "flac"),
-        (AudioFormat::OggVorbis(Default::default()), "ogg"),
-        (AudioFormat::Aiff, "aiff"),
+        (Format::Wav(Pcm::Int16), "wav"),
+        (flac(), "flac"),
+        (vorbis(), "ogg"),
+        (Format::Aiff(Pcm::Int16), "aiff"),
     ]
 }
 
@@ -217,7 +231,7 @@ fn a_stopped_buffer_render_is_cancelled() {
     let mut seen = Vec::new();
     let outcome = render_to_buffers_with(
         graph(),
-        &config(AudioFormat::Wav),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         &mut stop_after(2, 0, &mut seen),
     )
@@ -263,7 +277,7 @@ fn stopping_the_first_normalize_pass_never_writes() {
     let mut seen = Vec::new();
     let outcome = render_normalized_to_file_with(
         graph(),
-        &config(AudioFormat::Wav),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         Normalize::peak(Db(-6.0)),
         &path,
@@ -290,7 +304,7 @@ fn progress_is_monotonic_per_pass_and_reaches_the_total() {
     let mut plain = Vec::new();
     let outcome = render_to_file_with(
         graph(),
-        &config(AudioFormat::Wav),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         dir.path().join("p.wav"),
         &mut |p| {
@@ -309,7 +323,7 @@ fn progress_is_monotonic_per_pass_and_reaches_the_total() {
     assert_eq!(plain.last().unwrap().produced, total);
 
     let mut two = Vec::new();
-    let cfg = config(AudioFormat::Wav);
+    let cfg = config(Format::Wav(Pcm::Int16));
     let outcome = render_normalized_to_file_with(
         graph(),
         &cfg,
@@ -346,7 +360,7 @@ fn a_stop_on_the_final_tick_is_cancelled() {
     let path = dir.path().join("last.wav");
     let outcome = render_to_file_with(
         graph(),
-        &config(AudioFormat::Wav),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         &path,
         &mut |p| {

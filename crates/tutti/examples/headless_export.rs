@@ -29,8 +29,8 @@
 
 use tutti::dsp::{LoudnessConfig, measure_loudness};
 use tutti::export::{
-    AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
-    render_to_buffers, render_to_file,
+    EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph, render_to_buffers,
+    render_to_file,
 };
 use tutti::graph::GraphBuilder;
 use tutti::prelude::*;
@@ -76,8 +76,7 @@ fn config(seconds: f64, channels: ChannelLayout) -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels,
             topology: None,
         },

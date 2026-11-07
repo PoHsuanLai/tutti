@@ -6,7 +6,7 @@
 //!
 //! ```
 //! # use tutti_types::SampleRate;
-//! # use tutti_export::{AudioFormat, EncodeConfig, ExportConfig, Flac, RenderConfig};
+//! # use tutti_export::{EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, RenderConfig};
 //! let config = ExportConfig {
 //!     render: RenderConfig {
 //!         sample_rate: SampleRate(48_000.0),
@@ -14,7 +14,7 @@
 //!         ..Default::default()
 //!     },
 //!     encode: EncodeConfig {
-//!         format: AudioFormat::Flac(Flac::default()),
+//!         format: Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard },
 //!         ..Default::default()
 //!     },
 //!     ..Default::default()
@@ -32,8 +32,9 @@
 //! build up, log, diff, and hand around; one with an "ask the graph" mode is
 //! not.
 
-use crate::options::{AudioFormat, BitDepth, Dither};
+use crate::options::Dither;
 use crate::process::ChunkSize;
+use tutti_codec::Format;
 use tutti_types::SampleRate;
 use tutti_types::{ChannelLayout, Samples};
 
@@ -116,11 +117,10 @@ impl Default for RenderConfig {
 /// The encode stage: what file to write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodeConfig {
-    /// The container to write, carrying that format's own settings.
-    pub format: AudioFormat,
-    /// Depth the samples are quantized to. `Float32` does not quantize, so it is
-    /// also the depth [`ExportConfig::dither`] is ignored at.
-    pub bit_depth: BitDepth,
+    /// The container to write, carrying that format's own settings, the sample
+    /// width among them. A width that does not quantize (`Pcm::Float32`, and
+    /// Ogg Vorbis) is also where [`ExportConfig::dither`] is ignored.
+    pub format: Format,
     /// Width of the written file. A graph wider than this is folded with the
     /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
     pub channels: ChannelLayout,
@@ -133,18 +133,19 @@ pub struct EncodeConfig {
     pub topology: Option<tutti_types::ChannelTopology>,
 }
 
-/// The format's and depth's own defaults, written to a stereo file.
+/// A 24-bit WAV, written to a stereo file. There is a default only with the
+/// `wav` feature: a build without it names its format.
 ///
 /// Hand-written because [`ChannelLayout`] has no `Default`, so the width is a
 /// stated choice rather than one a derive picks. Stereo is the answer for a
 /// bounce left unspecified: a wider graph folds down to it through the
 /// ITU/Dolby matrix, and a caller wanting the graph's own width sets
 /// `channels`.
+#[cfg(feature = "wav")]
 impl Default for EncodeConfig {
     fn default() -> Self {
         Self {
-            format: AudioFormat::default(),
-            bit_depth: BitDepth::default(),
+            format: Format::default(),
             channels: ChannelLayout::STEREO,
             topology: None,
         }
@@ -186,7 +187,7 @@ impl Resample {
 /// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
 /// with [`tutti_dsp::measure_loudness`], take `Loudness::gain_to` and
 /// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExportConfig {
     /// What to produce, and for how long.
     pub render: RenderConfig,
@@ -194,7 +195,21 @@ pub struct ExportConfig {
     pub encode: EncodeConfig,
     /// `None` writes at the render rate.
     pub resample: Option<Resample>,
-    /// Applied when quantizing to an integer bit depth. Ignored for
-    /// [`BitDepth::Float32`], which does not quantize.
+    /// Applied when quantizing to an integer width. Ignored for a format that
+    /// does not quantize (`Pcm::Float32`, and Ogg Vorbis).
     pub dither: Dither,
+}
+
+/// A zero-length render to a 24-bit stereo WAV. Only with the `wav` feature,
+/// like [`EncodeConfig`]'s.
+#[cfg(feature = "wav")]
+impl Default for ExportConfig {
+    fn default() -> Self {
+        Self {
+            render: RenderConfig::default(),
+            encode: EncodeConfig::default(),
+            resample: None,
+            dither: Dither::default(),
+        }
+    }
 }

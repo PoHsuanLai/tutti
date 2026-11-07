@@ -28,8 +28,8 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_export::{
-    AudioFormat, BitDepth, Dither, EncodeConfig, ExportConfig, Normalize, RenderConfig,
-    RenderGraph, Resample, render_normalized_to_file, render_to_buffers, render_to_file,
+    Dither, EncodeConfig, ExportConfig, Format, Normalize, Pcm, RenderConfig, RenderGraph,
+    Resample, render_normalized_to_file, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -68,7 +68,7 @@ fn dc_graph(rate: f64) -> RenderGraph {
     built(g, rate)
 }
 
-fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: AudioFormat) -> ExportConfig {
+fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(rate),
@@ -77,7 +77,6 @@ fn config(seconds: f64, rate: f64, channels: ChannelLayout, format: AudioFormat)
         },
         encode: EncodeConfig {
             format,
-            bit_depth: BitDepth::Float32,
             channels,
             topology: None,
         },
@@ -91,7 +90,12 @@ fn bench_render(c: &mut Criterion) {
     let mut group = c.benchmark_group("render");
 
     for seconds in [0.25f64, 1.0] {
-        let cfg = config(seconds, SR, ChannelLayout::STEREO, AudioFormat::Wav);
+        let cfg = config(
+            seconds,
+            SR,
+            ChannelLayout::STEREO,
+            Format::Wav(Pcm::Float32),
+        );
         let frames = (seconds * SR) as u64;
         group.throughput(Throughput::Elements(frames));
         group.bench_with_input(
@@ -114,7 +118,7 @@ fn bench_render(c: &mut Criterion) {
         ("quad", ChannelLayout::from(4usize)),
         ("5.1", ChannelLayout::from(6usize)),
     ] {
-        let cfg = config(0.25, SR, layout, AudioFormat::Wav);
+        let cfg = config(0.25, SR, layout, Format::Wav(Pcm::Float32));
         group.throughput(Throughput::Elements((0.25 * SR) as u64));
         group.bench_with_input(BenchmarkId::new("width", name), &cfg, |b, cfg| {
             b.iter(|| {
@@ -125,7 +129,7 @@ fn bench_render(c: &mut Criterion) {
 
     // Rate: twice the samples for the same wall-clock duration.
     for rate in [48_000.0f64, 96_000.0] {
-        let cfg = config(0.25, rate, ChannelLayout::STEREO, AudioFormat::Wav);
+        let cfg = config(0.25, rate, ChannelLayout::STEREO, Format::Wav(Pcm::Float32));
         group.throughput(Throughput::Elements((0.25 * rate) as u64));
         group.bench_with_input(BenchmarkId::new("rate", rate as u64), &cfg, |b, cfg| {
             b.iter(|| {
@@ -147,18 +151,27 @@ fn bench_encode(c: &mut Criterion) {
     // length, which the type cannot express. The `mut` is only used when a
     // pushing arm is compiled in.
     #[cfg_attr(not(any(feature = "flac", feature = "ogg")), allow(unused_mut))]
-    let mut formats: Vec<(&str, AudioFormat)> = vec![("wav", AudioFormat::Wav)];
+    let mut formats: Vec<(&str, Format)> = vec![("wav", Format::Wav(Pcm::Int24))];
     #[cfg(feature = "flac")]
-    formats.push(("flac", AudioFormat::Flac(Default::default())));
+    formats.push((
+        "flac",
+        Format::Flac {
+            depth: tutti_export::IntDepth::Int24,
+            level: tutti_export::FlacLevel::default(),
+        },
+    ));
     #[cfg(feature = "ogg")]
-    formats.push(("ogg", AudioFormat::OggVorbis(Default::default())));
+    formats.push((
+        "ogg",
+        Format::Vorbis {
+            quality: tutti_export::Quality::default(),
+        },
+    ));
 
     for (name, format) in formats {
-        // Int24, not Float32: FLAC is an integer codec and errors on a float
-        // depth rather than downgrading (see `tests/roundtrip.rs`). One depth
-        // across the group also keeps the formats comparable.
-        let mut cfg = config(0.25, SR, ChannelLayout::STEREO, format);
-        cfg.encode.bit_depth = BitDepth::Int24;
+        // Int24 throughout, FLAC being an integer codec: one depth across the
+        // group keeps the formats comparable.
+        let cfg = config(0.25, SR, ChannelLayout::STEREO, format);
         let path = dir.path().join(format!("bench.{name}"));
         group.bench_with_input(BenchmarkId::from_parameter(name), &cfg, |b, cfg| {
             b.iter(|| {
@@ -182,7 +195,12 @@ fn bench_resample(c: &mut Criterion) {
     group.sample_size(10);
     let from = 44_100.0f64;
     for seconds in [30.0f64, 60.0, 180.0] {
-        let mut cfg = config(seconds, from, ChannelLayout::STEREO, AudioFormat::Wav);
+        let mut cfg = config(
+            seconds,
+            from,
+            ChannelLayout::STEREO,
+            Format::Wav(Pcm::Float32),
+        );
         cfg.resample = Some(Resample::to(SampleRate(SR)));
         let path = dir.path().join("resampled.wav");
         group.throughput(Throughput::Elements((seconds * from) as u64));

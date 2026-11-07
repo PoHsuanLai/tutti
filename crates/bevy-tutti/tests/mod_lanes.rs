@@ -259,7 +259,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
         ExportTarget,
     };
     use std::sync::Mutex;
-    use tutti_export::{AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig};
+    use tutti_export::{EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, mut side) = app(2);
@@ -310,8 +310,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels: tutti_types::ChannelLayout::STEREO,
             topology: None,
         },

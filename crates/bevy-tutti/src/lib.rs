@@ -263,7 +263,7 @@ pub mod prelude {
         ExportPlugin, ExportRequest, ExportSource, ExportTarget,
     };
     #[cfg(feature = "audio-io")]
-    pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
+    pub use crate::io::{MicIn, MicMonitorNode, Pcm, Recorder, TapIn, WavOut};
     #[cfg(feature = "midi")]
     pub use crate::midi::{
         LiveMidi, LiveMidiInput, MidiEngineNodes, MidiRouteRule, MidiSourceInstall, MpeModeRes,

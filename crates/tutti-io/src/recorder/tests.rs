@@ -1,8 +1,8 @@
 use super::*;
+use crate::Pcm;
 use crate::WavOut;
 use crate::pump_loop::{ManualDriver, PumpPass};
 use tutti_types::ChannelLayout;
-use tutti_types::pcm::BitDepth;
 use tutti_types::pump;
 use tutti_types::{AudioIn, OnEmpty};
 
@@ -55,8 +55,7 @@ fn pump_into_wav_sink_round_trips_frame_count() {
         pos: 0,
         layout: ChannelLayout::STEREO,
     };
-    let mut wav =
-        WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink should open");
+    let mut wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink should open");
 
     // The exact loop the pump thread runs — allocate the scratch once, drain
     // to exhaustion. (No idle-park: the fake source never returns 0 early.)
@@ -92,7 +91,7 @@ fn start_rejects_a_source_sink_width_mismatch() {
 
     // Stereo source, 6-channel sink: refused.
     let wide_path = dir.path().join("mismatch.wav");
-    let wide = WavOut::create(&wide_path, 48_000.0, 6u16, BitDepth::Float32).expect("sink opens");
+    let wide = WavOut::create(&wide_path, 48_000.0, 6u16, Pcm::Float32).expect("sink opens");
     let err = Recorder::start(stereo_src(), wide)
         .expect_err("a width mismatch must be refused, not recorded");
     // The typed variant carries both layouts as values, so a caller can
@@ -114,12 +113,12 @@ fn start_rejects_a_source_sink_width_mismatch() {
     // as wrong as a widening one, and it is the direction a caller is most
     // likely to think "it'll just downmix".
     let mono_path = dir.path().join("mismatch_mono.wav");
-    let mono = WavOut::create(&mono_path, 48_000.0, 1u16, BitDepth::Float32).expect("sink opens");
+    let mono = WavOut::create(&mono_path, 48_000.0, 1u16, Pcm::Float32).expect("sink opens");
     assert!(Recorder::start(stereo_src(), mono).is_err());
 
     // And the matching pair is accepted.
     let ok_path = dir.path().join("match.wav");
-    let ok = WavOut::create(&ok_path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let ok = WavOut::create(&ok_path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
     let rec = Recorder::start(stereo_src(), ok).expect("matching widths must be accepted");
     rec.finish().expect("finalize");
 }
@@ -142,13 +141,8 @@ fn a_six_channel_source_records_at_its_own_width() {
         pos: 0,
         layout: ChannelLayout::from(6u16),
     };
-    let wav = WavOut::create(
-        &path,
-        48_000.0,
-        ChannelLayout::from(6u16),
-        BitDepth::Float32,
-    )
-    .expect("sink opens");
+    let wav = WavOut::create(&path, 48_000.0, ChannelLayout::from(6u16), Pcm::Float32)
+        .expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(src, wav, driver).expect("matching 6ch widths");
@@ -206,7 +200,7 @@ fn a_non_mic_live_source_records_until_stopped() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("generated.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(
@@ -290,7 +284,7 @@ impl AudioIn for AlwaysLive {
 fn dropping_a_live_recorder_still_finalizes_the_wav() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dropped.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let status = {
@@ -347,11 +341,9 @@ fn dropping_a_live_recorder_still_finalizes_the_wav() {
 /// block has to the caller; if it silently dropped the error, a truncated
 /// take would look like a clean one.
 ///
-/// The failure is provoked, not simulated: `narrow_header_for_test` opens
-/// an 8-bit header that the sink then quantizes into at `Int16`, so
-/// `AlwaysLive`'s ±0.5 (±16383 at `Int16`) is rejected by `hound` with
-/// `TooWide` on the write. See that constructor for why this shape rather
-/// than a permission or disk trick.
+/// The failure is provoked, not simulated: the sink's frame limit is zero, so
+/// the first write fails the way any refused write does, with no timing,
+/// permission or disk trick.
 ///
 /// Mutation-checked: deleting the `self.status.set(result)` line from
 /// `Drop` — or narrowing it to store only successes — fails this test while
@@ -360,14 +352,16 @@ fn dropping_a_live_recorder_still_finalizes_the_wav() {
 fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("doomed.wav");
-    let wav = WavOut::narrow_header_for_test(&path);
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Int16)
+        .unwrap()
+        .with_max_frames_for_test(0);
 
     let (driver, pump) = ManualDriver::new();
     let status = {
         let rec = Recorder::start_with(AlwaysLive, wav, driver)
             .expect("the fixture sink is stereo, as AlwaysLive is");
         let status = rec.finalize_status();
-        // One pass is enough: the first sample is already too wide, and
+        // One pass is enough: the first frame is already past the limit, and
         // `WavOut` latches `first_error` and stops writing from there. The
         // pass reports the latched failure as `Failed`; the error itself still
         // waits for finalize.
@@ -382,13 +376,13 @@ fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
     let err = status
         .error()
         .expect("a failed finalize on the drop path must be recorded, not swallowed");
-    // The specific cause survives — a caller can tell a too-wide sample
-    // from a full disk. Flattening to "finalize failed" would make the two
+    // The specific cause survives — a caller can tell a file at its size
+    // limit from a full disk. Flattening to "finalize failed" would make the two
     // indistinguishable, which is the information loss `WavOut::finalize`
     // already refuses to accept.
     assert!(
-        err.contains("more bits than the destination type"),
-        "the underlying hound error should be carried, got: {err}"
+        err.contains("cannot hold more than 0 frames"),
+        "the underlying cause should be carried, got: {err}"
     );
 }
 
@@ -403,7 +397,7 @@ fn a_finalize_that_fails_on_the_drop_path_is_recorded_not_swallowed() {
 fn stop_and_drop_do_not_both_join() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("stopped.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(AlwaysLive, wav, driver).expect("matching stereo widths");
@@ -553,7 +547,7 @@ fn a_zero_capacity_moves_one_frame_per_pass() {
 fn finish_in_place_finalizes_in_place_exactly_once() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("in_place.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let mut rec = Recorder::start_with(AlwaysLive, wav, driver).expect("matching stereo widths");
@@ -636,7 +630,7 @@ fn frames(n: usize) -> std::collections::VecDeque<[f32; 2]> {
 fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dead.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
     let dead = Arc::new(AtomicBool::new(false));
     let (driver, pump) = ManualDriver::new();
     let mut rec = Recorder::start_with(
@@ -681,7 +675,7 @@ fn a_dead_mic_fails_the_take_and_keeps_its_frames() {
 fn frames_buffered_at_the_fault_are_written_first() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("buffered.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
     let (driver, pump) = ManualDriver::new();
     let mut rec = Recorder::start_with(
         DyingMic {
@@ -708,7 +702,7 @@ fn frames_buffered_at_the_fault_are_written_first() {
 fn a_failed_sink_fails_the_take() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("full.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32)
         .unwrap()
         .with_max_frames_for_test(4);
     let (driver, pump) = ManualDriver::new();
@@ -775,7 +769,7 @@ impl AudioIn for RacingMic {
 fn a_frame_pushed_just_before_the_fault_is_not_lost() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("race.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
     let (driver, pump) = ManualDriver::new();
     let mut rec = Recorder::start_with(
         RacingMic {
@@ -810,7 +804,7 @@ fn a_failed_finite_source_is_failed_not_ended() {
         }
     }
     let dir = tempfile::tempdir().unwrap();
-    let wav = WavOut::create(dir.path().join("f.wav"), 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let wav = WavOut::create(dir.path().join("f.wav"), 48_000.0, 2u16, Pcm::Float32).unwrap();
     let (driver, pump) = ManualDriver::new();
     let _rec = Recorder::start_with(DeadFile, wav, driver).unwrap();
     assert_eq!(pump.pump_once(), Some(PumpPass::Failed));

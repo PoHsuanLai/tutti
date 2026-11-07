@@ -5,13 +5,9 @@
 //! block-based (an FFT overlap-add resampler), and normalization is the caller's two-pass composition
 //! (see `tutti_dsp::measure_loudness`), so this is the whole of what a "mastering"
 //! stage would otherwise hold.
-//! Reached only through the codec-gated encode arms, so a build with no format
-//! feature on compiles this with no consumers. Scoped to that configuration
-//! rather than allowed outright, so real dead code is still caught elsewhere.
-#![cfg_attr(not(codec), allow(dead_code))]
 
 use crate::config::ExportConfig;
-use crate::options::{AudioFormat, BitDepth, Dither};
+use crate::options::Dither;
 
 /// Per-render dither state: the mode, the target depth, and the RNG.
 ///
@@ -37,13 +33,13 @@ impl DitherState {
     ///
     /// Ogg Vorbis never dithers either: its encoder takes the float stream
     /// and quantizes nothing, so the noise would only be encoded as signal.
+    /// Both are a format with no integer width.
     pub(crate) fn for_config(config: &ExportConfig) -> Self {
-        let lsb = match (config.dither, config.encode.bit_depth) {
-            _ if matches!(config.encode.format, AudioFormat::OggVorbis(_)) => None,
-            (Dither::Off, _) | (_, BitDepth::Float32) => None,
+        let lsb = match (config.dither, config.encode.format.int_depth()) {
+            (Dither::Off, _) | (_, None) => None,
             // `bits - 1` is the magnitude of a full-scale integer sample, so
             // its reciprocal is one LSB in the [-1, 1] float domain.
-            (_, depth) => Some(1.0 / (1u32 << (depth.bits() - 1)) as f32),
+            (_, Some(depth)) => Some(1.0 / (1u32 << (depth.bits() - 1)) as f32),
         };
         Self {
             random_state: 0x12345678,

@@ -4293,6 +4293,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-codec"
+version = "0.0.1"
+dependencies = [
+ "aifc",
+ "flacenc",
+ "hound",
+ "md-5",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+ "tutti-codec",
+ "tutti-fixtures",
+ "tutti-nodes",
+ "tutti-types",
+ "vorbis_rs",
+]
+
+[[package]]
 name = "tutti-cpal"
 version = "0.0.1"
 dependencies = [
@@ -4345,16 +4364,13 @@ dependencies = [
 name = "tutti-export"
 version = "0.0.1"
 dependencies = [
- "aifc",
  "approx",
  "criterion",
- "flacenc",
  "hound",
- "md-5",
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
- "tracing",
+ "tutti-codec",
  "tutti-dsp",
  "tutti-graph",
  "tutti-io",
@@ -4363,7 +4379,6 @@ dependencies = [
  "tutti-spatial",
  "tutti-transport",
  "tutti-types",
- "vorbis_rs",
 ]
 
 [[package]]
@@ -4402,6 +4417,7 @@ dependencies = [
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
+ "tutti-codec",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",

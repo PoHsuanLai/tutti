@@ -11,15 +11,19 @@
 //! and an offline fork plays the clip on its render's `Env`.
 //!
 //! What it does keep is the set of notes it has started and not ended
-//! ([`HeldNotes`]): when playback stops, jumps (a seek, a loop wrap), or the
+//! (a [`NoteLedger`]): when playback stops, jumps (a seek, a loop wrap), or the
 //! clip is replaced, those notes would hang in whatever it feeds, so it ends
-//! each with a note-off on the frame the jump happens.
+//! each with a note-off on the frame the jump happens. It writes only through
+//! the ledger's [`Sending`], which pays a note-off the port refused before
+//! anything else goes out.
 //!
-//! A key is held or not (the MIDI convention), by one note at a time, as a
-//! DAW plays notes of one key that overlap: a note-on of a key it already
-//! holds ends the sounding note first, on the same frame, and the new note
-//! owns the key. From then on only the owning note's note-off ends the key;
-//! any other note's note-off for it is swallowed. So what it feeds never has
+//! A key (group, channel, note number) is held or not (the MIDI convention),
+//! by one note at a time, as a DAW plays notes of one key that overlap (M2-104
+//! Appendix C.2 would allow several, told apart by a Detach, which a clip does
+//! not carry): a note-on of a key it already holds ends the sounding note
+//! first, on the same frame, and the new note owns the key. From then on only
+//! the owning note's note-off ends the key; any other note's note-off for it
+//! is swallowed. So what it feeds never has
 //! two of its voices on one key, a note nested inside another ends at its
 //! own end, overlaps of any depth leave the newest note sounding to its
 //! end, and nothing is left sounding.
@@ -44,16 +48,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tutti_graph::{
-    Cx, Event, EventDensity, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
+    Cx, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
     MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
-use tutti_midi_types::MidiEvent;
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::Ump;
+
+use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
 use super::timed::TimedMidiEvent;
 use super::walk::{Beated, Visit, Walk};
+
+/// Keys a clip node tracks at once, held or refused. One group's 16 channels
+/// of 128 notes is 2,048, so a clip on one group never fills it; a note-on
+/// that finds it full is withheld and counted, never dropped silently. At 12
+/// bytes a key the table is 24 KiB, allocated with the node.
+const LEDGER_CAPACITY: usize = 2048;
 
 /// The events per frame a [`MidiClipNode`]'s port is sized for, which with
 /// its block makes its declared [`event_capacity`](Shape::event_capacity)
@@ -119,6 +130,10 @@ struct Shared {
     /// reads it with `ArcLend::current`. The node never takes it.
     publish: Mutex<()>,
     next_generation: AtomicU64,
+    /// Release requests made through the controls, and how many the node has
+    /// answered ([`MidiClipControls::release_held`]).
+    asked: AtomicU64,
+    answered: AtomicU64,
 }
 
 impl Shared {
@@ -131,12 +146,18 @@ impl Shared {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
             publish: Mutex::new(()),
             next_generation: AtomicU64::new(1),
+            asked: AtomicU64::new(0),
+            answered: AtomicU64::new(0),
         })
     }
 
     fn current(&self) -> Arc<ClipEvents> {
         self.cell.current()
     }
+}
+
+fn class_of(timed: &TimedMidiEvent) -> Class {
+    Class::of(Ump(timed.event.data))
 }
 
 /// `events` with each note-off paired to its note-on (see the module docs),
@@ -154,18 +175,18 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         .collect();
     // Each key's note-ons in list order, and a cursor past the taken ones at
     // its head (so notes that do not overlap pair in one step each).
-    let mut ons: HashMap<(usize, usize, u32), (Vec<u32>, usize)> = HashMap::new();
+    let mut ons: HashMap<NoteKey, (Vec<u32>, usize)> = HashMap::new();
     for (i, (_, e)) in v.iter().enumerate() {
-        if let Some((g, c, n, true)) = note_of(&e.timed.event) {
-            ons.entry((g, c, n)).or_default().0.push(i as u32);
+        if let Class::On(key) = class_of(&e.timed) {
+            ons.entry(key).or_default().0.push(i as u32);
         }
     }
     let mut taken = vec![false; v.len()];
     for i in 0..v.len() {
-        let Some((g, c, n, false)) = note_of(&v[i].1.timed.event) else {
+        let Class::Off(key) = class_of(&v[i].1.timed) else {
             continue;
         };
-        let Some((list, first)) = ons.get_mut(&(g, c, n)) else {
+        let Some((list, first)) = ons.get_mut(&key) else {
             continue;
         };
         while *first < list.len() && taken[list[*first] as usize] {
@@ -185,7 +206,7 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
     }
     // A note-on no note-off ends is a note too.
     for (i, (_, e)) in v.iter_mut().enumerate() {
-        if e.note.is_none() && matches!(note_of(&e.timed.event), Some((.., true))) {
+        if e.note.is_none() && matches!(class_of(&e.timed), Class::On(_)) {
             e.note = Some(ClipNote::from_index(i as u32));
         }
     }
@@ -204,6 +225,50 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         })
         .collect()
 }
+
+/// A request that one clip node end the notes it holds, made by
+/// [`MidiClipControls::release_held`]. It belongs to that node: only its
+/// [`drained`](Self::drained) can answer it.
+#[must_use = "cut the clip's edge only once `Releasing::drained` accepts the ticket"]
+pub struct Releasing {
+    shared: Arc<Shared>,
+    ticket: u64,
+}
+
+impl Releasing {
+    /// The proof that the node ended what it held when this was asked and owes
+    /// no note-off: every one is on its port. A note the clip starts after the
+    /// block that answered is not covered (see
+    /// [`MidiClipControls::release_held`]). An edit committed after this takes
+    /// effect at a later block than the one that answered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ticket while no block has answered it, or the port is still
+    /// refusing some of the note-offs.
+    pub fn drained(self) -> Result<Drained, Self> {
+        if self.shared.answered.load(Ordering::Acquire) >= self.ticket {
+            Ok(Drained(()))
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::fmt::Debug for Releasing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Releasing")
+            .field("ticket", &self.ticket)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Proof that a clip node ended the notes it held when a [`Releasing`] was
+/// asked and has none left to send: a snapshot, not a stop (see
+/// [`MidiClipControls::release_held`]).
+#[derive(Debug)]
+#[must_use = "this proves the clip's notes are ended; cut the edge with it in hand"]
+pub struct Drained(());
 
 /// The handle a host keeps on an inserted [`MidiClipNode`]: replace or clear
 /// the clip it plays. Control thread.
@@ -254,6 +319,26 @@ impl MidiClipControls {
         self.shared.cell.reclaim()
     }
 
+    /// Asks the node to end every note it holds, on the first frame of each
+    /// block until its note-offs are all on its port. A caller about to cut
+    /// the clip's edge to its sink waits for the ticket to be
+    /// [drained](Releasing::drained) first: after the cut the note-offs have
+    /// nowhere to go. The graph delivers events already on a delayed edge when
+    /// the edge goes, so no latency wait is needed.
+    ///
+    /// **The clip must be stopped first.** The ticket covers the notes held
+    /// when the node answers, not the ones the clip starts afterwards: a clip
+    /// that keeps rolling starts its next note after the answer, and cutting
+    /// then strands it. While the request is pending the node also ends what
+    /// it plays at each block's first frame. The node answers only while it is
+    /// processing blocks.
+    pub fn release_held(&self) -> Releasing {
+        Releasing {
+            shared: Arc::clone(&self.shared),
+            ticket: self.shared.asked.fetch_add(1, Ordering::AcqRel) + 1,
+        }
+    }
+
     /// How many events the clip holds.
     pub fn event_count(&self) -> usize {
         self.shared.current().events.len()
@@ -283,6 +368,8 @@ pub struct MidiClipNode {
     clip: Reader<ClipEvents>,
     /// The generation of the clip this node last played.
     generation: u64,
+    /// Release requests this node has answered.
+    answered: u64,
     play: Play,
     /// The declared event capacity, from the block the node was prepared for.
     capacity: u32,
@@ -302,7 +389,7 @@ impl std::fmt::Debug for MidiClipNode {
 #[derive(Debug)]
 struct Play {
     walk: Walk,
-    held: HeldNotes,
+    held: NoteLedger<ClipNote>,
 }
 
 impl MidiClipNode {
@@ -319,9 +406,10 @@ impl MidiClipNode {
             clip: shared.cell.reader(),
             shared,
             generation,
+            answered: 0,
             play: Play {
                 walk: Walk::default(),
-                held: HeldNotes::new(),
+                held: NoteLedger::new(LEDGER_CAPACITY),
             },
             capacity: MIN_EVENT_PORT_CAPACITY,
         }
@@ -334,11 +422,10 @@ impl Beated for ClipEvent {
     }
 }
 
-/// The clip's side of the walk: write each event, and end what is held
+/// The clip's side of the walk: send each event, and end what is held
 /// wherever playback stops or jumps (a seek, a loop wrap).
 struct Playing<'a, 'w> {
-    held: &'a mut HeldNotes,
-    out: &'a mut EventWriter<'w>,
+    sending: Sending<'a, 'w, ClipNote>,
 }
 
 impl Visit<ClipEvent> for Playing<'_, '_> {
@@ -346,18 +433,18 @@ impl Visit<ClipEvent> for Playing<'_, '_> {
         // Stopped (or no usable tempo): nothing plays, and nothing may keep
         // sounding.
         if let Some(o) = at {
-            self.held.release(self.out, o);
+            self.sending.release_all(o);
         }
     }
 
     fn jump(&mut self, at: Option<Offset>, _beat: f64, _fpb: f64, _events: &[ClipEvent]) {
         if let Some(o) = at {
-            self.held.release(self.out, o);
+            self.sending.release_all(o);
         }
     }
 
     fn event(&mut self, at: Offset, e: &ClipEvent) {
-        self.held.play(self.out, at, &e.timed.event, e.note);
+        self.sending.send(at, Ump(e.timed.event.data), e.note);
     }
 }
 
@@ -380,25 +467,28 @@ impl Node for MidiClipNode {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let clip = self.clip.lend();
-        let out = io.event_out(0);
-        if let Some(o) = cx.env.offset(0) {
-            let held = &mut self.play.held;
-            if held.owed {
-                held.release(out, o);
-            } else {
-                held.retry(out, o);
-            }
-        }
-        if clip.generation != self.generation {
-            self.generation = clip.generation;
-            if let Some(o) = cx.env.offset(0) {
-                self.play.held.release(out, o);
-            }
-        }
+        let Some(first) = cx.env.offset(0) else {
+            return Status::Modified;
+        };
+        let replaced = std::mem::replace(&mut self.generation, clip.generation) != clip.generation;
         let Play { walk, held } = &mut self.play;
-        let mut playing = Playing { held, out };
+        let mut playing = Playing {
+            sending: held.block(io.event_out(0), first),
+        };
+        let asked = self.shared.asked.load(Ordering::Acquire);
+        let asking = asked > self.answered;
+        if replaced || asking {
+            playing.sending.release_all(first);
+        }
         for (start, seg) in cx.env.segments() {
             walk.segment(&clip.events, cx.env, start, &seg, &mut playing);
+        }
+        // Answered once no note-off is owed, judged after the walk: a note the
+        // walk ended and the port refused is owed too. Until then the next
+        // block asks again.
+        if asking && playing.sending.owed() == 0 {
+            self.answered = asked;
+            self.shared.answered.store(asked, Ordering::Release);
         }
         Status::Modified
     }
@@ -406,7 +496,7 @@ impl Node for MidiClipNode {
     /// Forget what was sounding and where playback was: a reset starts the
     /// node over, and whatever it fed is reset with it.
     fn reset(&mut self) {
-        self.play.held.clear();
+        self.play.held.forget();
         self.play.walk.forget();
     }
 }
@@ -443,293 +533,10 @@ impl ForkSource for ClipFork {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&clip))),
             publish: Mutex::new(()),
             next_generation: AtomicU64::new(0),
+            asked: AtomicU64::new(0),
+            answered: AtomicU64::new(0),
         });
         Ok(Forked::new(Box::new(MidiClipNode::over(shared))))
-    }
-}
-
-/// The notes a node has started and not ended, per group, channel and note
-/// number: what it owes a note-off when playback jumps, and what it keeps
-/// track of when the port refuses an event.
-struct HeldNotes {
-    /// `bits[group * 16 + channel]`, bit `note`.
-    bits: Box<[u128; 256]>,
-    /// The note that owns each held key, `owner[(group * 16 + channel) *
-    /// 128 + note]`: only its note-off ends the key. Read only while the
-    /// key's bit is set; allocated once, with the node.
-    owner: Box<[Option<ClipNote>]>,
-    count: usize,
-    /// A release the port refused part of: the rest goes out at the next
-    /// block's first frame, and every block's after, until none is held.
-    owed: bool,
-    /// Held keys whose note-off the port refused, laid out as `bits`: each
-    /// goes out at the first frame of a following block ([`retry`](Self::retry))
-    /// until the port takes it. A subset of `bits`.
-    pending: Box<[u128; 256]>,
-    pending_count: usize,
-    /// Keys whose note-on the port refused, laid out as `bits`, until the
-    /// note-off of that note comes by: it is withheld (and counted), not
-    /// written, so nothing downstream gets an off for a note that never
-    /// started.
-    refused: Box<[u128; 256]>,
-    /// Whether `refused` holds a bit, so a release that finds none does not
-    /// clear it.
-    refused_any: bool,
-}
-
-impl std::fmt::Debug for HeldNotes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HeldNotes")
-            .field("count", &self.count)
-            .field("owed", &self.owed)
-            .field("pending", &self.pending_count)
-            .finish_non_exhaustive()
-    }
-}
-
-/// A MIDI channel-voice note message's `(group, channel, note)` and whether
-/// it starts a note (`Some(true)`) or ends one (`Some(false)`). A MIDI 1.0
-/// note-on at velocity 0 ends one; a MIDI 2.0 note-on never does.
-fn note_of(e: &MidiEvent) -> Option<(usize, usize, u32, bool)> {
-    let w = e.data[0];
-    let mt = w >> 28;
-    if mt != 0x2 && mt != 0x4 {
-        return None;
-    }
-    let status = (w >> 20) & 0xf;
-    let on = match status {
-        0x9 => mt == 0x4 || w & 0x7f != 0,
-        0x8 => false,
-        _ => return None,
-    };
-    let group = ((w >> 24) & 0xf) as usize;
-    let channel = ((w >> 16) & 0xf) as usize;
-    Some((group, channel, (w >> 8) & 0x7f, on))
-}
-
-/// A note-off of `(group, channel, note)` on `at`.
-fn off_event(at: Offset, g: usize, c: usize, n: u32) -> Event {
-    let off = MidiEvent::note_off(
-        MidiGroup::masked(g as u8),
-        MidiChannel::masked(c as u8),
-        n as u8,
-        0,
-    );
-    Event::midi(at, off.data)
-}
-
-impl HeldNotes {
-    fn new() -> Self {
-        Self {
-            bits: Box::new([0; 256]),
-            owner: vec![None; 256 * 128].into_boxed_slice(),
-            count: 0,
-            owed: false,
-            pending: Box::new([0; 256]),
-            pending_count: 0,
-            refused: Box::new([0; 256]),
-            refused_any: false,
-        }
-    }
-
-    fn track(&mut self, e: &MidiEvent) {
-        let Some((g, c, n, on)) = note_of(e) else {
-            return;
-        };
-        let (slot, bit) = (&mut self.bits[g * 16 + c], 1u128 << n);
-        match (on, *slot & bit != 0) {
-            (true, false) => {
-                *slot |= bit;
-                self.count += 1;
-            }
-            (false, true) => {
-                *slot &= !bit;
-                self.count -= 1;
-            }
-            _ => {}
-        }
-    }
-
-    /// The key `(i, n)` is no longer held: its note-off went out. Returns
-    /// whether that note-off had been refused before (it was owed).
-    fn end(&mut self, i: usize, n: u32) -> bool {
-        let bit = 1u128 << n;
-        self.bits[i] &= !bit;
-        self.owner[i * 128 + n as usize] = None;
-        self.count -= 1;
-        let was_owed = self.pending[i] & bit != 0;
-        if was_owed {
-            self.pending[i] &= !bit;
-            self.pending_count -= 1;
-        }
-        was_owed
-    }
-
-    /// The port refused a note-on of the key with `bit` in `refused[i]`.
-    fn refuse(&mut self, i: usize, bit: u128) {
-        self.refused[i] |= bit;
-        self.refused_any = true;
-    }
-
-    /// The port refused the note-off of the held key `(i, n)`: it is owed.
-    ///
-    /// The writer counted this refusal. A note-off refused again while it was
-    /// already owed is the same loss, so that second count is taken back
-    /// ([`EventWriter::recovered`]); a note-off that goes out is taken back
-    /// once ([`end`](Self::end)'s caller), so a delayed note-off nets zero.
-    fn owe(&mut self, out: &EventWriter<'_>, i: usize, n: u32) {
-        let bit = 1u128 << n;
-        if self.pending[i] & bit == 0 {
-            self.pending[i] |= bit;
-            self.pending_count += 1;
-        } else {
-            out.recovered();
-        }
-    }
-
-    /// Write `e`, of note `note` ([`ClipEvent::note`]), at `at`, keeping one
-    /// note per key, the one that last started it: a note-on of a key this
-    /// holds ends the sounding note first, on the same frame, and takes the
-    /// key; a note-off ends the key only when its note owns it, and is
-    /// swallowed otherwise (its note was ended when a newer one took the
-    /// key, or never started). A note-off of no note is written as it comes.
-    ///
-    /// **Pairing under refusal.** The state follows what the port took. A
-    /// note-on it refuses leaves the key unheld, remembers that the key's
-    /// next note-off is that note's, and withholds that note-off when it
-    /// comes ([`EventWriter::withhold`], counted): the port never sees an off
-    /// for a note it never started. A note-off it refuses leaves the key
-    /// held, owed ([`retry`](Self::retry)): it goes out at the first frame of
-    /// each following block until the port takes it, so the note ends late
-    /// rather than never.
-    fn play(
-        &mut self,
-        out: &mut EventWriter<'_>,
-        at: Offset,
-        e: &MidiEvent,
-        note: Option<ClipNote>,
-    ) {
-        if let Some((g, c, n, on)) = note_of(e) {
-            let (i, bit) = (g * 16 + c, 1u128 << n);
-            let key = i * 128 + n as usize;
-            let held = self.bits[i] & bit != 0;
-            if on {
-                // Taking the key from a sounding note ends that note first.
-                if held {
-                    if out.push(off_event(at, g, c, n)).is_err() {
-                        // The old note stays, its off owed, and the new note
-                        // does not start.
-                        self.owe(out, i, n);
-                        self.refuse(i, bit);
-                        out.withhold();
-                        return;
-                    }
-                    if self.end(i, n) {
-                        out.recovered();
-                    }
-                }
-                if out.push(Event::midi(at, e.data)).is_ok() {
-                    self.bits[i] |= bit;
-                    self.count += 1;
-                    self.owner[key] = note;
-                } else {
-                    self.refuse(i, bit);
-                }
-                return;
-            }
-            if note.is_some() {
-                if held && self.owner[key] == note {
-                    if out.push(Event::midi(at, e.data)).is_ok() {
-                        if self.end(i, n) {
-                            out.recovered();
-                        }
-                    } else {
-                        self.owe(out, i, n);
-                    }
-                } else if self.refused[i] & bit != 0 {
-                    // The off of a note whose on the port refused.
-                    self.refused[i] &= !bit;
-                    out.withhold();
-                }
-                return;
-            }
-        }
-        if out.push(Event::midi(at, e.data)).is_ok() {
-            self.track(e);
-        }
-    }
-
-    /// Write, at `at`, the note-offs the port refused earlier; one it
-    /// refuses again stays owed, with every one after it (they are tried in
-    /// key order, and a port that refuses one is full).
-    fn retry(&mut self, out: &mut EventWriter<'_>, at: Offset) {
-        if self.pending_count == 0 {
-            return;
-        }
-        for i in 0..self.pending.len() {
-            while self.pending[i] != 0 {
-                let n = self.pending[i].trailing_zeros();
-                if out.push(off_event(at, i / 16, i % 16, n)).is_err() {
-                    // Owed already: the writer's count for this attempt is
-                    // the same loss as before.
-                    out.recovered();
-                    return;
-                }
-                self.end(i, n);
-                out.recovered();
-            }
-        }
-    }
-
-    /// End every held note at `at`. A note-off the port refuses stays held,
-    /// and goes out the next time.
-    fn release(&mut self, out: &mut EventWriter<'_>, at: Offset) {
-        // What was refused belongs to the pass that is ending.
-        if self.refused_any {
-            self.refused.fill(0);
-            self.refused_any = false;
-        }
-        if self.count == 0 {
-            self.owed = false;
-            return;
-        }
-        // Once the port refuses one, the others are not tried (it is full),
-        // but each is owed and counted: a held note that gets no note-off is
-        // a lost event, whether or not its push was attempted. The refused
-        // push counted itself; the rest are withheld.
-        let mut full = false;
-        for i in 0..self.bits.len() {
-            let mut rest = self.bits[i];
-            while rest != 0 {
-                let n = rest.trailing_zeros();
-                rest &= rest - 1;
-                if !full {
-                    if out.push(off_event(at, i / 16, i % 16, n)).is_ok() {
-                        if self.end(i, n) {
-                            out.recovered();
-                        }
-                        continue;
-                    }
-                    full = true;
-                    self.owe(out, i, n);
-                } else if self.pending[i] & (1u128 << n) == 0 {
-                    self.owe(out, i, n);
-                    out.withhold();
-                }
-            }
-        }
-        self.owed = full;
-    }
-
-    fn clear(&mut self) {
-        self.bits.fill(0);
-        self.owner.fill(None);
-        self.count = 0;
-        self.owed = false;
-        self.pending.fill(0);
-        self.pending_count = 0;
-        self.refused.fill(0);
-        self.refused_any = false;
     }
 }
 

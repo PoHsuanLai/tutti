@@ -4466,6 +4466,7 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "atomic_float",
+ "criterion",
  "crossbeam-queue",
  "tutti-graph",
  "tutti-midi-types",

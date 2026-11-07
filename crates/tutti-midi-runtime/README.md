@@ -16,6 +16,8 @@ Pure MIDI values live in `tutti-midi-types`; OS ports live in
   [`HarmonyNode`] (a timeline), [`ClockNode`] (Beat Clock and MTC), and
   [`MidiOutNode`], the sink handing MIDI back to a control thread (a hardware
   pump).
+- [`NoteLedger`]: the notes a node has started and not ended, and the only way
+  it writes to its port; [`MidiClipNode`] uses it.
 - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`]: the lock-free ring MIDI
   crosses a thread boundary on (into a [`MidiQueueNode`], out of a
   [`MidiOutNode`]).

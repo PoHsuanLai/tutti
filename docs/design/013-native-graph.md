@@ -5462,7 +5462,8 @@ under both.
   is one event a frame of the block the node was prepared for
   (`CLIP_EVENT_DENSITY`, 256 to 8,192 events), and a note-off has room past
   it (`note_off_room`). A note-off the port still refuses stays owed and goes
-  out at the first frame of a following block (`HeldNotes::retry`); a
+  out at the first frame of a following block (`NoteLedger::block` pays it
+  before the node can send anything else); a
   note-on it refuses leaves its note-off withheld and counted, so nothing
   downstream gets an off for a note it never started.
 - **A loop shorter than a block plays every pass it holds.** The walk
@@ -5505,15 +5506,15 @@ under both.
   Not addressed: a beat after a wrap's last frame and before the loop's
   end (the fraction of a frame the clock skips as it wraps) is not played
   on that pass.
-- **A clip holds a key or not** (the MIDI convention its `HeldNotes` keeps),
+- **A clip holds a key or not** (the MIDI convention its `NoteLedger` keeps),
   by one note at a time, as a DAW plays notes of one key that overlap: a
   note-on of a key it holds ends the sounding note first, on the same
   frame, so what it feeds never has two of its voices on one key (whatever
   a receiver does with a repeated note-on), and the new note owns the key.
   From then on only the owning note's note-off ends the key; any other
   note's note-off for it is swallowed. The owner is a note id per key
-  (`HeldNotes::owner`, allocated with the node, cleared with the held bits
-  on a release, a reset, a seek and a wrap). Ids are given when the clip is
+  (the ledger entry's `owner`, in a table allocated with the node, cleared
+  when the key's note ends: a release, a reset, a seek and a wrap). Ids are given when the clip is
   set: a note-off belongs to the earliest-listed untaken note-on of its key
   at or before it in time, so a host that lists each note's on and off
   together gets its notes exactly, and a list in time order pairs first on,

@@ -95,6 +95,8 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false }
 tutti-clap-test-plugin = { path = "../../testing/tutti-clap-test-plugin" }
 # Finds both beside the running binary (`tests/support`).
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# The directory a cancelled export's file is looked for in (`tests/export_cancel.rs`).
+tempfile = "3.10"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -122,6 +124,11 @@ required-features = ["modulation"]
 [[test]]
 name = "midi"
 required-features = ["midi"]
+
+# Stopping an export and reading its progress (`ExportHandle`).
+[[test]]
+name = "export_cancel"
+required-features = ["export"]
 
 # Hosted plugins, their render mode and exports, over the reference CLAP
 # plugin in a real `plugin-server`: fails without the server, by design.

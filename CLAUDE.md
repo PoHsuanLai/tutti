@@ -84,12 +84,16 @@ cargo fmt
 scripts/check-canonical-paths.sh   # the import-path gate (also searches *.md)
 scripts/check-submodule-pins.sh    # VST3 SDK pins, asserted by SHA
 scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no bevy feature
-scripts/check-adapter.sh           # bevy-tutti composes nothing; tutti-session re-exports no crate
+scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
+just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
+
+`just deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
+the same version) and fails with that command when it is missing.
 
 `just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
 and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
@@ -196,7 +200,8 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
 with every format feature. It excludes the five members that cannot
 cross-compile: `ogg_next_sys` (via `tutti-export`) and `tutti-vst3-host`'s
 `conformance` probe need real Windows C headers. CI's `clippy (windows)` job
-runs everything natively on a `windows-latest` runner.
+runs everything natively on a `windows-latest` runner. It only lints: no CI job
+runs the tests on Windows.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
 type those constants as `c_uint` on unix and `c_int` on Windows, so
 `kFoo as i32` passes Linux clippy and fails `unnecessary_cast` on Windows.
@@ -323,7 +328,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   holds only code that names two or more engine crates, or the order they
   run in, has no `bevy` feature (`scripts/check-bevy-free.sh`) and
   re-exports no crate whole. `bevy-tutti` reaches the engine's composition
-  only through it (`scripts/check-adapter.sh`), and does not re-export it.
+  only through it, reads no clock but as a session phase's argument and holds
+  no `usize`/`Duration` limit const (`scripts/check-adapter.sh`, whose short
+  exception list names the lane that removes each), and does not re-export it.
 
 ## Unit types (MANDATORY)
 

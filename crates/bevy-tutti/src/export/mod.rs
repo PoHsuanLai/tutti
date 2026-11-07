@@ -147,17 +147,19 @@
 //! gather of the graph copy is main-thread work and a `run_if` gate cannot see
 //! requests spawned in its own frame.
 //!
-//! **No progress reporting.** The render is one synchronous call; there is
-//! nothing to sample between blocks without the engine pushing a callback back
-//! across the task boundary. Cancellation *is* available —
-//! [`ExportInFlight::cancel`], or just despawn the entity.
+//! **Progress and cancellation are the session's.** [`ExportInFlight::progress`]
+//! reads the render's reading, a frame count rising to its total (per pass: a
+//! normalized export has two), and [`ExportInFlight::cancel`] stops the render
+//! at its next block and triggers [`ExportCancelled`]; despawning the entity
+//! stops it too. This adapter forwards both and decides nothing.
 
 mod request;
 mod run;
 
 pub use request::{
-    ExportClock, ExportDone, ExportError, ExportInFlight, ExportNode, ExportOutput, ExportRequest,
-    ExportSource, ExportTarget, PrepareEdit, PrepareGraph, PreparedGraph,
+    ExportCancelled, ExportClock, ExportDone, ExportError, ExportInFlight, ExportNode,
+    ExportOutput, ExportRequest, ExportSource, ExportTarget, PrepareEdit, PrepareGraph,
+    PreparedGraph,
 };
 
 pub use run::{poll_exports, start_exports};

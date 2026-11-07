@@ -47,7 +47,7 @@ tutti-core = { path = "../tutti-core", default-features = false }
 tutti-io = { path = "../tutti-io", optional = true }
 
 # The mic ring's producer half, moved to the CPAL input callback thread.
-ringbuf = { version = "0.4", optional = true }
+ringbuf = { version = "0.6", optional = true }
 tutti-types = { path = "../tutti-types", default-features = false }
 
 [dev-dependencies]

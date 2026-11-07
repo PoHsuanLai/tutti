@@ -242,6 +242,8 @@ fn edit_in_the_past() {
 /// are refused here, whatever `Bpm` accepts.
 ///
 /// Mutation (run): the tempo check `t > 0.0` becomes `t >= 0.0`; a zero tempo is accepted.
+/// Mutation (run): `is_sound`'s `(back - dsec).abs() <= 1e-9 * dsec` becomes `true`; the
+/// squared-overflow ramp is accepted.
 #[test]
 fn refusals() {
     use Shape::{RampBeats, RampTime, Step};
@@ -304,6 +306,12 @@ fn refusals() {
     );
     assert_eq!(
         TempoMap::new([pt(0.0, 1e-300, Step), pt(1e300, 120.0, Step)]).unwrap_err(),
+        TempoError::Unrepresentable(0)
+    );
+    // Squares overflow while the ramp's rate of change stays finite: only the
+    // check that the closed forms agree end to end sees it.
+    assert_eq!(
+        TempoMap::new([pt(0.0, 9e155, RampTime), pt(1.0, 9.009e155, Step)]).unwrap_err(),
         TempoError::Unrepresentable(0)
     );
     // The error reads as a sentence and is a `std::error::Error`.

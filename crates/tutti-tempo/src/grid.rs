@@ -89,7 +89,7 @@ pub struct Cell {
     pub start: Frame,
     /// First frame of the next cell.
     pub end: Frame,
-    /// The segment's beat on `start`.
+    /// The map's beat on `start`.
     pub beat: Beat,
     /// The cell's constant tempo.
     pub tempo: Bpm,
@@ -117,10 +117,13 @@ impl Cell {
 /// absolute frames at any buffer size. A render that has to stop sooner (a
 /// transport command) stops inside the cell and carries on with the same cell.
 ///
-/// The cell starts on the segment's own beat there. A cell that ends where the
-/// next segment starts ends on its own segment's line, which is less than one
-/// frame's beat from the map's beat at that frame; the next cell starts on the
-/// map's.
+/// A cell starts on the map's beat. A ramp cell ends on the map's beat too, so
+/// the chord is the map's average tempo over the cell (a ramp segment shorter
+/// than a frame gives a tempo between its ends' and the next segment's). A step
+/// cell keeps its step's tempo to the bit, so one that ends where the next
+/// segment starts ends on its own line, which is less than one frame's beat
+/// from the map's beat at that frame, measured at the larger of the two tempos;
+/// the next cell starts on the map's.
 ///
 /// Inside a ramp the chord differs from the curve by a fraction of a frame that
 /// shrinks with the square of `grid` (about 0.04 frames for 60 to 240 BPM over
@@ -145,12 +148,15 @@ pub fn chord_cell_with(
     let end = on_grid
         .saturating_add(grid.get())
         .min(next_cut.unwrap_or(u64::MAX));
-    let beat_on = |f: u64| seg.beat_at(f as f64 / rate.get());
-    let b0 = beat_on(start);
+    let beat_on = |f: u64, hint: &mut Cursor| map.beat_at_frame_with(Frame(f), rate, hint);
+    let b0 = beat_on(start, hint).get();
     let tempo = match seg.shape {
         Shape::Step => seg.bpm0,
+        // The map's beat at both ends, not this segment's closed form: a
+        // segment shorter than a frame ends inside its last cell, and its
+        // form past that point is not the map's.
         Shape::RampTime | Shape::RampBeats => {
-            (beat_on(end) - b0) * 60.0 * rate.get() / (end - start).max(1) as f64
+            (beat_on(end, hint).get() - b0) * 60.0 * rate.get() / (end - start).max(1) as f64
         }
     };
     Cell {

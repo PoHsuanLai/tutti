@@ -100,12 +100,6 @@ impl Seg {
         }
     }
 
-    /// The beat at `t` seconds from beat 0, by this segment's own line (it
-    /// continues past the segment's end).
-    pub fn beat_at(&self, t: f64) -> f64 {
-        self.beat0 + self.beat_in(t - self.sec0)
-    }
-
     /// Tempo in BPM `ds` seconds in. Written as the given tempo plus a change,
     /// so offset 0 is that tempo to the bit.
     pub fn bpm_at_sec(&self, ds: f64) -> f64 {

@@ -136,18 +136,11 @@ fn cells_seat_on_the_map() {
                 "grid {grid:?} {c:?}: {at_end} vs {want}"
             );
             if map.tempo_at(c.beat).get() != c.tempo.get() {
-                // A ramp cell: the chord lands on the map's beat unless the cell
-                // ends on a point, where the next segment's beat differs a little.
-                let on_a_point = map
-                    .points()
-                    .iter()
-                    .any(|p| map.frame_at_or_after(p.beat, R) == c.end);
-                if !on_a_point {
-                    assert!(
-                        (at_end - want).abs() < 1e-9,
-                        "grid {grid:?} {c:?}: {at_end} vs {want}"
-                    );
-                }
+                // A ramp cell ends on the map's beat, also where a point cuts it.
+                assert!(
+                    (at_end - want).abs() < 1e-9,
+                    "grid {grid:?} {c:?}: {at_end} vs {want}"
+                );
             }
         }
         for p in &map.points()[1..] {
@@ -339,5 +332,97 @@ fn a_step_cell_has_the_segments_exact_tempo() {
         let c = chord_cell(&map, Frame(f), CellGrid::of(128), R);
         let want = if f < cut { 133.3f64 } else { 97.7 };
         assert_eq!(c.tempo.get().to_bits(), want.to_bits(), "frame {f}");
+    }
+}
+
+/// Cells over maps with ramps and steps shorter than a frame: every cell is
+/// finite, positive, tiles with the next, moves the beat forward, and has a
+/// tempo between the map's lowest and highest. The two literal maps are the
+/// ones that gave 1.19e10 BPM and -6.58 BPM when a cell was read from its
+/// segment's closed form past the segment's end.
+///
+/// Mutation (run): a ramp cell's end beat is read from its segment's closed form past the
+/// segment's end (`seg.beat_at(end / rate)` as the prototype did); the two literal
+/// maps give 1.19e10 and negative tempos.
+#[test]
+fn cells_over_sub_frame_segments_stay_inside_the_map() {
+    fn check(
+        map: &TempoMap,
+        rate: tutti_types::SampleRate,
+        grid: CellGrid,
+        frames: u64,
+        what: &str,
+    ) -> Vec<Cell> {
+        let (lo, hi) = map.points().iter().fold((f64::MAX, 0.0f64), |(lo, hi), p| {
+            (lo.min(p.tempo.get()), hi.max(p.tempo.get()))
+        });
+        let mut cells = vec![];
+        let mut f = 0;
+        while f < frames {
+            let c = chord_cell(map, Frame(f), grid, rate);
+            let t = c.tempo.get();
+            assert!(
+                t.is_finite() && t >= lo * (1.0 - 1e-9) && t <= hi * (1.0 + 1e-9),
+                "{what}: {c:?} outside {lo}..{hi}"
+            );
+            assert!(
+                c.end > c.start && c.beat_at(c.end, rate) > c.beat,
+                "{what}: {c:?} does not move forward"
+            );
+            f = c.end.get();
+            cells.push(c);
+        }
+        cells
+    }
+    let r44 = tutti_types::SampleRate(44_100.0);
+    // A 105 BPM beat ramp of 4.3e-6 beats (0.1 frame), then 351 BPM.
+    let map = TempoMap::new([
+        pt(0.0, 105.0, Shape::RampBeats),
+        pt(4.3e-6, 351.0, Shape::Step),
+    ])
+    .unwrap();
+    let cells = check(&map, r44, CellGrid::of(64), 200, "ramp then step");
+    assert_eq!(cells[0].start, Frame(0));
+    assert_eq!(cells[0].end, Frame(1));
+    assert!((105.0..=351.0).contains(&cells[0].tempo.get()));
+    // 120 BPM to beat 5, a 16e-6 beat ramp 189 to 51, then 51: the ramp is under a frame.
+    let map = TempoMap::new([
+        pt(0.0, 120.0, Shape::Step),
+        pt(5.0, 189.0, Shape::RampTime),
+        pt(5.000_016, 51.0, Shape::Step),
+    ])
+    .unwrap();
+    let cells = check(&map, r44, CellGrid::of(1), 111_000, "step, ramp, step");
+    let c = cells.iter().find(|c| c.start == Frame(110_250)).unwrap();
+    assert_eq!(c.end, Frame(110_251));
+    assert!((51.0..=189.0).contains(&c.tempo.get()), "{c:?}");
+    // Random maps with gaps from 1e-7 to 10 beats, at several grids.
+    let mut rng = Lcg(21);
+    for case in 0..300 {
+        let n = 2 + (rng.next() * 5.0) as usize;
+        let mut beat = 0.0;
+        let pts: Vec<_> = (0..n)
+            .map(|i| {
+                let shape =
+                    [Shape::Step, Shape::RampTime, Shape::RampBeats][(rng.next() * 3.0) as usize];
+                let p = pt(
+                    beat,
+                    20.0 + rng.next() * 979.0,
+                    if i + 1 == n { Shape::Step } else { shape },
+                );
+                beat += 10f64.powf(-7.0 + rng.next() * 8.0);
+                p
+            })
+            .collect();
+        let map = TempoMap::new(pts).unwrap();
+        let grid = CellGrid::of(1 + (rng.next() * 300.0) as u64);
+        let end = map.frame_at_or_after(Beat(beat), R).get() + 500;
+        check(
+            &map,
+            R,
+            grid,
+            end.min(40_000),
+            &format!("random map {case}"),
+        );
     }
 }

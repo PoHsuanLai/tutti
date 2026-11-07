@@ -94,7 +94,7 @@ jobs:
       # a module is renamed. The per-module gate covers it.
       - run: scripts/check-canonical-paths.sh tutti_graph arena builder command compile editor event exec fade fork io kernels legacy node param plan reference spec time
       # The same for `tutti-session`, which keeps every module private too.
-      - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session
+      - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
       # And `tutti-dsp`: its modules are private, the root names every item.

@@ -161,6 +161,49 @@ pub enum SessionEvent {
     /// the most recent one since the last poll.
     #[cfg(feature = "device")]
     DeviceFault(tutti_cpal::StreamFault),
+    /// A device is no longer listed by the host (a [`DeviceWatch`](crate::DeviceWatch)
+    /// is running; design 018). The stream's own loss is
+    /// [`DeviceFault`](Self::DeviceFault).
+    #[cfg(feature = "device")]
+    DeviceLost {
+        /// Which way it played or captured.
+        direction: tutti_cpal::Direction,
+        /// The device.
+        id: tutti_cpal::DeviceId,
+    },
+    /// A device is listed that was not (the first look lists them all).
+    #[cfg(feature = "device")]
+    DeviceAppeared {
+        /// Which way it plays or captures.
+        direction: tutti_cpal::Direction,
+        /// The device.
+        id: tutti_cpal::DeviceId,
+    },
+    /// The host's default device moved; `None`: there is none now.
+    #[cfg(feature = "device")]
+    DefaultChanged {
+        /// Which direction's default.
+        direction: tutti_cpal::Direction,
+        /// The new default.
+        id: Option<tutti_cpal::DeviceId>,
+    },
+    /// The device policy wants the stream restarted: run it with
+    /// [`Session::restart_wanted`](crate::Session::restart_wanted) (a
+    /// headless host) or the adapter's restart. The outcome is reported by
+    /// the next update, and tells the policy, which waits out its backoff
+    /// before it asks again.
+    #[cfg(feature = "device")]
+    RestartWanted(crate::DeviceRestart),
+    /// A restart moved the stream. A host that holds a capture stream at the
+    /// graph's rate (`MicIn`) reopens it when
+    /// [`rate_changed`](crate::DeviceRestarted::rate_changed): the session
+    /// does not hold it.
+    #[cfg(feature = "device")]
+    DeviceRestarted(crate::DeviceRestarted),
+    /// A restart was refused or failed (the message is the error's). See
+    /// [`Session::restart`](crate::Session::restart) for the stream's state.
+    #[cfg(feature = "device")]
+    RestartFailed(String),
     /// The modulation declarations were refused, in the host's keys
     /// (design 015 §4.7): reported once, when the refusal starts or
     /// changes; [`ModState::refusal`](crate::ModState::refusal) holds it
@@ -231,6 +274,30 @@ impl std::fmt::Debug for SessionEvent {
                 .finish(),
             #[cfg(feature = "device")]
             Self::DeviceFault(fault) => f.debug_tuple("DeviceFault").field(fault).finish(),
+            #[cfg(feature = "device")]
+            Self::DeviceLost { direction, id } => f
+                .debug_struct("DeviceLost")
+                .field("direction", direction)
+                .field("id", id)
+                .finish(),
+            #[cfg(feature = "device")]
+            Self::DeviceAppeared { direction, id } => f
+                .debug_struct("DeviceAppeared")
+                .field("direction", direction)
+                .field("id", id)
+                .finish(),
+            #[cfg(feature = "device")]
+            Self::DefaultChanged { direction, id } => f
+                .debug_struct("DefaultChanged")
+                .field("direction", direction)
+                .field("id", id)
+                .finish(),
+            #[cfg(feature = "device")]
+            Self::RestartWanted(request) => f.debug_tuple("RestartWanted").field(request).finish(),
+            #[cfg(feature = "device")]
+            Self::DeviceRestarted(r) => f.debug_tuple("DeviceRestarted").field(r).finish(),
+            #[cfg(feature = "device")]
+            Self::RestartFailed(why) => f.debug_tuple("RestartFailed").field(why).finish(),
             #[cfg(feature = "modulation")]
             Self::ModulationRefused(refusal) => {
                 f.debug_tuple("ModulationRefused").field(refusal).finish()
@@ -360,6 +427,12 @@ pub struct Session {
     /// and the count the last poll saw.
     #[cfg(feature = "device")]
     pub(crate) faults: Option<(Arc<tutti_cpal::StreamFaults>, u64)>,
+    /// The device watch (design 018), and what restarts reported since the
+    /// last poll.
+    #[cfg(feature = "device")]
+    pub(crate) device_watch: Option<crate::DeviceWatch>,
+    #[cfg(feature = "device")]
+    pub(crate) device_events: Vec<SessionEvent>,
     /// How often a healthy plugin's state is captured.
     #[cfg(feature = "plugin")]
     pub(crate) snapshot_interval: std::time::Duration,
@@ -482,15 +555,7 @@ impl Session {
             Phase::Poll =>
             {
                 #[cfg(feature = "device")]
-                if let Some((faults, seen)) = &mut self.faults {
-                    let count = faults.count();
-                    if count != *seen {
-                        *seen = count;
-                        if let Some(fault) = faults.last() {
-                            out.push(SessionEvent::DeviceFault(fault));
-                        }
-                    }
-                }
+                self.device_poll(cx.now, out)
             }
             Phase::Reclaim => {
                 // Any thread that owns the session: what it frees is

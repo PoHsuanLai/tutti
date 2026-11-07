@@ -14,22 +14,34 @@ use std::sync::Arc;
 use crate::Result;
 use crate::host::DeviceSelector;
 use crate::output::{AudioCallbackState, AudioEngine};
+use crate::roster::DeviceId;
 
 /// One enumerated audio device.
 ///
 /// Returned by [`AudioEngine::output_devices`] and
 /// [`DeviceHost::output_devices`](crate::DeviceHost::output_devices) /
 /// [`input_devices`](crate::DeviceHost::input_devices).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// Position in the host's device enumeration — the value
-    /// [`DeviceSelector::Index`] takes. Positional,
-    /// so it is only valid against the enumeration that produced it: devices
-    /// appearing or disappearing renumber the rest.
-    pub index: usize,
+    /// The identity [`DeviceSelector::Id`] takes.
+    pub id: DeviceId,
+}
+
+impl DeviceInfo {
     /// The device's human-readable name, as the OS reports it. Empty if the
     /// host failed to name it.
-    pub name: String,
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.id.name()
+    }
+
+    /// Devices for `names`, in enumeration order.
+    pub(crate) fn list(names: impl IntoIterator<Item = String>) -> Vec<DeviceInfo> {
+        DeviceId::list(names)
+            .into_iter()
+            .map(|id| DeviceInfo { id })
+            .collect()
+    }
 }
 
 /// Access to the engine while its stream is stopped, handed to a restart hook.
@@ -126,8 +138,8 @@ impl TuttiDriver {
     /// must run at the rate the graph was built at.
     ///
     /// Stops the current stream, selects `device` (a
-    /// [`DeviceSelector`], or an `Option<usize>`
-    /// position with `None` for the default), reads its config and starts a
+    /// [`DeviceSelector`], or an `Option<DeviceId>`
+    /// with `None` for the default), reads its config and starts a
     /// new stream on it.
     ///
     /// # Errors
@@ -244,11 +256,7 @@ impl TuttiDriver {
         &self.audio_engine
     }
 
-    /// Selects a device by name or index. Takes effect on the next
-    /// [`restart`](Self::restart).
-    ///
-    /// Prefer a name: [`DeviceInfo::index`] is positional within one
-    /// enumeration, so any hot-plug renumbers it.
+    /// Selects a device for the next [`restart`](Self::restart).
     pub fn select_device(&mut self, sel: DeviceSelector) -> &mut Self {
         self.audio_engine.select_device(sel);
         self

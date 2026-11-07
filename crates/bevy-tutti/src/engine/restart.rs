@@ -62,6 +62,18 @@ pub fn restart_device(world: &mut World, request: DeviceRestart) -> Result<()> {
     })
 }
 
+/// A restart the device policy asked for (`SessionEvent::RestartWanted`):
+/// dropped, `Ok(false)`, when the app has chosen another device since
+/// (`Session::restart_wanted`). Never changes what the policy follows.
+pub(crate) fn restart_wanted(world: &mut World, request: DeviceRestart) -> Result<bool> {
+    let mut ran = false;
+    restart(world, |session, device, follow| {
+        ran = session.restart_wanted(device, request, follow)?;
+        Ok(())
+    })?;
+    Ok(ran)
+}
+
 /// [`restart_device`] on a driver of the caller's choosing, with `spec`
 /// standing for the config the new device reports: the device-free restart
 /// (`Session::restart_on`), for a host's tests or a stream it drives itself.

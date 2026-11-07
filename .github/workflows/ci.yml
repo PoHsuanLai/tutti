@@ -262,10 +262,9 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
-      #   tutti-midi-hardware/sequencer-tests — `Devices` against the real ALSA
-      #                         sequencer (`backend/alsa/tests.rs`): user-space
-      #                         clients are the devices. Needs `snd-seq` loaded and
-      #                         `/dev/snd/seq` readable, which the step below sets up
+      #   tutti-midi-hardware/sequencer-tests — compiled and linted here; run in
+      #                         the `alsa-sequencer` job, which needs the kernel's
+      #                         `snd-seq` module
       #   tutti-plugin-types/test-support — the `FakePlugin` a consumer's tests
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
@@ -308,13 +307,6 @@ jobs:
       # job does. CLAP only: that is the format the reference plugin is, and the
       # default features would pull the VST3 SDK submodules this checkout does
       # not fetch.
-      # `tutti-midi-hardware/sequencer-tests` opens the ALSA sequencer: the
-      # kernel module is loaded and the node made readable first.
-      - name: Load the ALSA sequencer (tutti-midi-hardware/sequencer-tests)
-        run: |
-          sudo modprobe snd-seq
-          sudo chmod a+rw /dev/snd/seq
-
       - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap and tutti/clap spawn it)
         run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap
 
@@ -332,7 +324,6 @@ jobs:
           # dev-dependency turns it on); this step names it so tests/serde.rs still runs
           # if that edge goes away.
           cargo nextest run --locked -p tutti-ump --features serde
-          cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json
@@ -397,6 +388,33 @@ jobs:
         run: cargo build --locked -p tutti-plugin-server
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
+
+  # `tutti-midi-hardware/sequencer-tests`: `Devices` against the real ALSA
+  # sequencer (`backend/alsa/tests.rs`), with user-space clients as the devices.
+  # A job of its own, so a runner image without the `snd-seq` module fails here
+  # by name and takes no other suite with it. The suite fails, never skips, when
+  # `/dev/snd/seq` is missing.
+  alsa-sequencer:
+    name: alsa sequencer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libasound2-dev libdbus-1-dev pkg-config
+      # The Azure kernel keeps its sound modules in the extra modules package.
+      - name: Load the ALSA sequencer
+        run: |
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
+          sudo modprobe snd-seq
+          sudo chmod a+rw /dev/snd/seq
+          ls -l /dev/snd/seq
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests
 
   # Benchmarks: proved to RUN, never compared.
   #

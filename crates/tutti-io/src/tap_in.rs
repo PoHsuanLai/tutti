@@ -37,7 +37,8 @@ use tutti_types::{ChannelLayout, Samples};
 /// # Examples
 ///
 /// ```no_run
-/// use tutti_io::{Pcm, Recorder, TapIn, WavOut};
+/// use tutti_codec::Pcm;
+/// use tutti_io::{Recorder, TapIn, WavOut};
 ///
 /// # fn go(tap: &tutti_metering::AudioTap) -> tutti_io::Result<()> {
 /// let src = TapIn::new(tap.open().expect("tap is free"));

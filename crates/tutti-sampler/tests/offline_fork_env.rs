@@ -15,11 +15,11 @@
 
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::{
     Cx, Editor, Executor, ForkByClone, ForkMode, ForkTarget, IntoNode, Io, Node, Prepare, Shape,
     Status, Transport,
 };
-use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoiceSource,
 };

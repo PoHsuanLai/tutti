@@ -111,7 +111,7 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_codec aiff encoder error flac format pcm spec staged vorbis wav
+      - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
       # And `tutti-sf2` and `tutti-rustysynth`: modules private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_sf2 binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: scripts/check-canonical-paths.sh tutti_rustysynth array_math bi_quad_filter channel chorus envelope_stage error lfo modulation_envelope oscillator region_ex region_pair reverb soundfont_math synthesizer synthesizer_settings voice voice_collection volume_envelope
@@ -277,13 +277,16 @@ jobs:
       #                         run, which no run ever made
       #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
       #                         components) and its tests
-      #   tutti-io/bevy       — WaveAsset's Asset derive
-      #   tutti-codec/*       — a `Format` variant exists only with its feature, so
-      #                         each of none, wav, aiff, flac and vorbis is built
-      #                         and tested alone (a workspace run has them all on,
-      #                         through tutti-export, and proves nothing about the
-      #                         gating); with them all and `serde`, the pinned
-      #                         bytes and Quality's range contract run
+      #   tutti-codec/*       — a `Format` variant exists only with its encode
+      #                         feature, so each of none, encode-wav, encode-aiff,
+      #                         encode-flac and encode-vorbis is built and tested
+      #                         alone (a workspace run has them all on, through
+      #                         tutti-export, and proves nothing about the
+      #                         gating); each decode-* feature is built alone as
+      #                         a library (its tests always have every decoder on,
+      #                         through the crate's dev-dependency on itself);
+      #                         with them all and `serde`, the pinned bytes and
+      #                         Quality's range contract run
       #   bevy-tutti/plugin   — src/plugin_host's binding against a live plugin:
       #                         tests/plugin_capture.rs loads the reference CLAP
       #                         plugin through a real plugin-server and is the
@@ -337,12 +340,16 @@ jobs:
           cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+          cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
           cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-codec --features wav --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-codec --features aiff --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-codec --features flac --all-targets -- -D warnings
-          cargo clippy --locked -p tutti-codec --features vorbis --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features encode-flac --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features encode-vorbis --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --lib --features decode-wav -- -D warnings
+          cargo clippy --locked -p tutti-codec --lib --features decode-flac -- -D warnings
+          cargo clippy --locked -p tutti-codec --lib --features decode-mp3 -- -D warnings
+          cargo clippy --locked -p tutti-codec --lib --features decode-ogg -- -D warnings
           cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
@@ -370,12 +377,12 @@ jobs:
           cargo nextest run --locked -p bevy-tutti --features full,plugin
           cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
           cargo nextest run --locked -p tutti --features clap,export,modulation
-          cargo nextest run --locked -p tutti-io --features bevy
+          cargo nextest run --locked -p tutti --features audio-io
           cargo nextest run --locked -p tutti-codec
-          cargo nextest run --locked -p tutti-codec --features wav
-          cargo nextest run --locked -p tutti-codec --features aiff
-          cargo nextest run --locked -p tutti-codec --features flac
-          cargo nextest run --locked -p tutti-codec --features vorbis
+          cargo nextest run --locked -p tutti-codec --features encode-wav
+          cargo nextest run --locked -p tutti-codec --features encode-aiff
+          cargo nextest run --locked -p tutti-codec --features encode-flac
+          cargo nextest run --locked -p tutti-codec --features encode-vorbis
           cargo nextest run --locked -p tutti-codec --all-features
           # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
           # dev-dependency turns it on); this step names it so tests/serde.rs still runs

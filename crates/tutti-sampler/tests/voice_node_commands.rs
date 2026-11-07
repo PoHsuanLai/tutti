@@ -34,8 +34,8 @@
 
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::{Editor, Executor, ForkMode, ForkTarget, Prepare, Transport, Unforkable};
-use tutti_io::Wave;
 use tutti_sampler::testing::{MockTransport, block};
 use tutti_sampler::{MemorySource, Playback, Voice, VoiceNode, VoiceSource, VoiceWindow};
 use tutti_types::graph::{OutPort, Source};

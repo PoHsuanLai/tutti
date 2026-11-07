@@ -432,7 +432,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
     let tone = |i: usize| (std::f32::consts::TAU * 440.0 * i as f32 / RATE as f32).sin();
 
     let mut app = app_over(graph_on());
-    let mut wave = tutti_io::Wave::new(1, RATE);
+    let mut wave = tutti_codec::Wave::new(1, RATE);
     for i in 0..RATE as usize {
         wave.push_frame(&[tone(i)]);
     }
@@ -444,7 +444,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
         app.world_mut().spawn(AudioNode(node)).id()
     };
     let zero = {
-        let mut wave = tutti_io::Wave::new(1, RATE);
+        let mut wave = tutti_codec::Wave::new(1, RATE);
         for i in 0..RATE as usize {
             wave.push_frame(&[tone(i)]);
         }
@@ -1505,7 +1505,7 @@ mod disk {
         let (disk_node, memory_node) = {
             let bare = disk_voice(&streamer, 3.0);
             let wrapped = node_of(VoiceSource::Disk(disk_voice(&other, 3.0)));
-            let mut wave = tutti_io::Wave::new(2, RATE);
+            let mut wave = tutti_codec::Wave::new(2, RATE);
             for i in 0..LEN {
                 wave.push_frame(&[value(i), -value(i)]);
             }

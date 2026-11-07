@@ -48,12 +48,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tutti_io::Wave;
+use tutti_codec::Wave;
 use tutti_rt::{ArcLend, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader};
 use tutti_types::{ChannelLayout, Samples};
 
 #[cfg(codec)]
-use tutti_io::FileIn;
+use tutti_codec::FileIn;
 
 use super::command::RegionId;
 use super::loops::{Arrangement, Content, Mapping, RingMap};

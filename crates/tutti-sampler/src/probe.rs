@@ -88,7 +88,7 @@ pub enum ProbeError {
         path: PathBuf,
         /// The decoder's error.
         #[source]
-        source: tutti_io::WaveError,
+        source: tutti_codec::DecodeError,
     },
 }
 
@@ -117,7 +117,7 @@ pub enum ProbeError {
 /// ```
 pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     let path = path.as_ref();
-    let meta = tutti_io::Wave::read_metadata(path).map_err(|source| ProbeError::Unreadable {
+    let meta = tutti_codec::Wave::read_metadata(path).map_err(|source| ProbeError::Unreadable {
         path: path.to_path_buf(),
         source,
     })?;
@@ -134,13 +134,13 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
 /// The one place these conditions live: `butler::handlers::open_stream` asks
 /// [`probe`] for its verdict instead of re-deriving it, so a host picking a
 /// playback tier and the butler cannot disagree.
-fn streamable(path: &Path, meta: &tutti_io::WaveMetadata) -> bool {
+fn streamable(path: &Path, meta: &tutti_codec::WaveMetadata) -> bool {
     // 1. No frame count means no seekable end — the butler falls back whole-file.
     if meta.total_frames.is_none() {
         return false;
     }
     // 2. The incremental decoder must actually open.
-    let Ok(decoder) = tutti_io::FileIn::open(path) else {
+    let Ok(decoder) = tutti_codec::FileIn::open(path) else {
         return false;
     };
     // 3. Defensive, and inherited from `open_stream`: a decoder that reports

@@ -14,7 +14,7 @@
 //! see its type docs, which is where that decision and its reasoning live.
 
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
-use tutti_io::Wave;
+use tutti_codec::Wave;
 use tutti_types::{ChannelLayout, fold_frame};
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into

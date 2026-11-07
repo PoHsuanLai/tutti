@@ -44,9 +44,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::{Cx, Editor, Env, Io, Node, Prepare, Shape, Status, TransportChanges, contract};
-use tutti_io::Wave;
 use tutti_sampler::{MemorySource, SlotId, Voice, VoicePool, VoiceSource};
 use tutti_transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_types::graph::{OutPort, Source};

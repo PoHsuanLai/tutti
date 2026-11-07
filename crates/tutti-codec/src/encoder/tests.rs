@@ -10,11 +10,11 @@ use tutti_types::SampleRate;
 fn formats() -> Vec<(&'static str, Format)> {
     #[allow(unused_mut)]
     let mut all: Vec<(&'static str, Format)> = Vec::new();
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "encode-wav")]
     all.push(("wav", Format::Wav(crate::Pcm::Int16)));
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     all.push(("aiff", Format::Aiff(crate::Pcm::Int16)));
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "encode-flac")]
     all.push((
         "flac",
         Format::Flac {
@@ -22,7 +22,7 @@ fn formats() -> Vec<(&'static str, Format)> {
             level: crate::FlacLevel::default(),
         },
     ));
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     all.push((
         "ogg",
         Format::Vorbis {
@@ -197,7 +197,7 @@ fn a_spec_that_cannot_be_written_is_refused_without_a_file() {
 /// zero that is refused anyway).
 #[test]
 fn a_width_past_the_containers_header_is_refused() {
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     {
         let s = spec(Format::Aiff(crate::Pcm::Int16), 40_000);
         let err = Encoder::create(&s, Cursor::new(Vec::new())).expect_err("past i16");
@@ -212,7 +212,7 @@ fn a_width_past_the_containers_header_is_refused() {
             "{err}"
         );
     }
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     {
         let s = spec(
             Format::Vorbis {
@@ -294,7 +294,7 @@ fn an_encoder_can_move_to_another_thread() {
 /// Mutation (run): letting `finish` commit despite `first_error` replaces the
 /// sentinel with the partial file and fails the equality; deleting the
 /// `staged` drop on that path leaves the temporary and fails the listing.
-#[cfg(feature = "wav")]
+#[cfg(feature = "encode-wav")]
 #[test]
 fn a_file_that_crosses_its_limit_is_never_put_in_place() {
     let dir = tempfile::tempdir().unwrap();
@@ -332,7 +332,7 @@ fn a_file_that_crosses_its_limit_is_never_put_in_place() {
 ///
 /// Mutation (run): making `finish` return `first_error` for a plain sink fails
 /// the `expect`.
-#[cfg(feature = "wav")]
+#[cfg(feature = "encode-wav")]
 #[test]
 fn a_plain_sink_keeps_its_prefix_after_a_failed_write() {
     let spec = spec(Format::Wav(crate::Pcm::Int16), 2);

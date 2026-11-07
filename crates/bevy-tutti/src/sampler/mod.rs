@@ -14,15 +14,14 @@ use tutti_sampler::DiskStreamer;
 
 // What `SpawnVoice` / `tutti_sampler::memory_voice` take and what the `.wav`
 // loader hands out, re-exported so a Bevy host playing a clip needs no direct
-// `tutti-io` dependency. (`sampler` enables `tutti-io/bevy`, so `WaveAsset` always exists
-// here.)
-pub use tutti_io::{Wave, WaveAsset};
+// `tutti-codec` dependency.
+pub use tutti_codec::Wave;
 
 pub mod voice;
 pub mod wave_loader;
 
 pub use voice::{InsertVoice, SamplerVoice, SpawnVoice, VoiceCommands};
-pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
+pub use wave_loader::{WaveAsset, WaveAssetLoader, WaveAssetLoaderError};
 
 /// The disk-streaming engine. Owns the butler thread that drives all disk I/O;
 /// built by [`build_into`](crate::engine::build_into).

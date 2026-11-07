@@ -18,8 +18,8 @@ use super::pool::{DrainCounters, LoopRoute, PoolDrops, Retired, StreamAddr, forw
 use super::slot::{stretch_values_want_filter, stretch_wanted};
 use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
+use tutti_codec::Wave;
 use tutti_graph::ParamSet;
-use tutti_io::Wave;
 use tutti_rt::ArcLend;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
@@ -401,7 +401,7 @@ impl std::error::Error for SendError {}
 ///
 /// ```compile_fail
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
-/// # use tutti_io::Wave;
+/// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
 /// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
 /// # let voice = Voice {
@@ -418,7 +418,7 @@ impl std::error::Error for SendError {}
 ///
 /// ```
 /// # use tutti_sampler::{MemorySource, Playback, Voice, VoiceCommand, VoiceNode, VoiceSource};
-/// # use tutti_io::Wave;
+/// # use tutti_codec::Wave;
 /// # use std::sync::Arc;
 /// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
 /// # let voice = Voice {

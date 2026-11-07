@@ -18,10 +18,10 @@ workspace = true
 default = ["wav", "flac", "aiff", "ogg"]
 # The formats `tutti-codec` writes; a `Format` variant exists only with its
 # feature on.
-wav = ["tutti-codec/wav"]
-flac = ["tutti-codec/flac"]
-aiff = ["tutti-codec/aiff"]
-ogg = ["tutti-codec/vorbis"]
+wav = ["tutti-codec/encode-wav"]
+flac = ["tutti-codec/encode-flac"]
+aiff = ["tutti-codec/encode-aiff"]
+ogg = ["tutti-codec/encode-vorbis"]
 
 [dependencies]
 thiserror.workspace = true
@@ -56,8 +56,6 @@ tutti-spatial = { path = "../tutti-spatial", default-features = false }
 # voice through the offline clock and asserts on the exported pitch. Also
 # acyclic: tutti-sampler does NOT depend on tutti-export.
 tutti-sampler = { path = "../tutti-sampler", default-features = false }
-# The `Wave` those voices play. Acyclic: tutti-io does not depend on tutti-export.
-tutti-io = { path = "../tutti-io" }
 # An independent decoder for every container this crate writes, for
 # `tests/oracle_decode.rs`. `hound` only speaks WAV, so FLAC/AIFF/Ogg were
 # checked by frame count and header, never by content. The feature list is the

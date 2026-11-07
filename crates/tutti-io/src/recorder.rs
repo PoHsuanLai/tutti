@@ -59,7 +59,8 @@ const SCRATCH_FRAMES: Samples = Samples(1024);
 /// # Examples
 ///
 /// ```no_run
-/// # use tutti_io::{Recorder, WavOut, Pcm};
+/// # use tutti_codec::Pcm;
+/// # use tutti_io::{Recorder, WavOut};
 /// # fn go<I: tutti_types::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
 /// let wav = WavOut::create("take.wav", 48_000.0, 2u16, Pcm::Float32)
 ///     .expect("sink opens");

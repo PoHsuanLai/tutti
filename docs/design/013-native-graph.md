@@ -426,9 +426,89 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   re-wired), and `TapIn` over a `TapReader`, as wide as the tap. Offline and
   headless sessions feed them: the op runs wherever the plan runs.
 
-The engine, not the device callback, feeds the master meter: `Engine::process`
-and `process_segment` measure the output buffer after the declick, on a stereo
-fold, so an offline session's meter reads what its blocks carry.
+#### Meters: level metering as an op in the plan
+
+A level meter reduces a block to a peak and an energy per channel. It is **an
+op in the compiled plan**, declared like a tap and read by a thread of the
+caller's; it replaced the engine's `Heard` (a stereo fold into a scratch
+buffer, measured after the declick, `MasterMeter` in `tutti-metering`). `Heard`
+and its fold scratch left `Engine`; `LoadMeter` stayed, because it times the
+block and is not audio.
+
+- **Shares with the tap, and stops where they differ.** A declared reader on
+  sources: `Topology.meters: BTreeMap<MeterId, MeterSpec>`, `MeterSpec::Ports(
+  Vec<Source>)` (any ports, any width) or `MeterSpec::Outputs` (the global
+  outputs, following `Topology.outputs` as they change); one `Op::Meter {
+  meter, srcs }` per meter, scheduled after all its sources and before any
+  in-place overwrite of them, as `Op::Tap` is; the writer rides the next
+  `Commit` and is carried or replaced by id (`Executor::rebuild`); a closed
+  meter emits nothing and leaves the ops of a graph that never had one
+  (`tests/meter.rs`); a fork carries none; `Editor::open_meter` / `close_meter`
+  / `reap_meters`; a removed node turns its lanes to silence;
+  `CommitError::MeterWidth` for a width that no longer fits the cells. A tap
+  moves samples out through a ring and can lose them; a meter keeps two
+  scalars a lane and cannot. They are two ops with two readers, not one op with
+  a mode.
+- **One op per meter.** Its lanes are folded in one op, so a reader sees
+  each block's lanes together and the claim is one decision. A track is a
+  meter on a node's output ports (`Graph::open_node_meter`); the master is
+  `MeterSpec::Outputs`, a lane per output channel, **per channel and before
+  the engine's fold to the device and its declick**. The fader is declick
+  only; there is no master volume and no stereo fold in the meter (a reader
+  that wants a display fold takes it through the channel `Fold`).
+- **A meter reads each source as it leaves its node**, with no alignment
+  delay. An output the compiler delays (PDC) is therefore metered up to the
+  compensation ahead of what the output carries, which a level display cannot
+  show; spending a ring per lane for it, as an aligned tap does, was not worth
+  it.
+- **The cells are atomics, so no claim and no `unsafe`.** A lane is two
+  words: the peak since the last read, as the bits of a non-negative `f32`
+  (which order like the numbers) raised with `fetch_max`, and the frames and
+  sum of squares since the last read packed in one `u64`, added with a
+  compare-exchange loop. A read **swaps both to zero**, so every update and the
+  take are read-modify-writes of one word: a block lands in this read or the
+  next, never lost, never counted twice (`concurrent_reads_lose_nothing`). No
+  store-load pair exists between words, so there is no fence and every access is
+  `Relaxed`; no `ArcLend` (only scalars are published), no new structure for
+  `tutti-rt` and no loom model. The op is `meter_op`, written once over
+  `AudioSlots` and called from `exec.rs` and `par.rs`; a lane has one writer by
+  construction, so the parallel executor shares the cells without a claim, and
+  the serial and parallel readings are equal bit for bit
+  (`the_parallel_meters_are_bit_identical_and_allocation_free`). The block
+  statistic is a fixed shape (eight running figures, combined in lane order),
+  which vectorizes and is the same on every executor. A slot the executor
+  knows is silent is not scanned.
+- **Peak held since the last read.** `MeterReader::read` returns a `Level`
+  per channel: the peak and RMS over the frames measured since the previous
+  read, and that frame count (zero means nothing new, not silence). A reader
+  that never reads grows nothing: a peak is a maximum, and the frame count stops
+  adding at `u32::MAX`. **One consumer per reader**: `MeterReader` is not
+  `Clone` and reads through `&mut self`, because a take would steal the other
+  reader's peak; a second consumer declares a second meter. The peak and the
+  energy are taken separately, so one read may straddle a block (a display
+  figure).
+- **Ballistics are the reader's.** The audio side holds no clock and no decay:
+  an offline render runs faster than any clock, and the reader knows its own
+  refresh rate. `tutti-dsp`'s `Ballistics` and `step_ballistics` smooth a
+  `Level` on read.
+- **Off until enabled.** The reader's switch makes the op skip its pass, so
+  an unwatched meter costs a load a block. `Graph` declares the session's master
+  meter at construction and enables it, so `Session::take_master_meter` readers
+  measure from the start; `Session::master_meter` / `take_master_meter` hand
+  out the one reader. A track meter is opened off.
+- **Reclaim.** A dropped reader leaves its meter in the plan measuring for
+  nobody; `Graph::reap_meters` (the session's `Reclaim` phase) closes it and the
+  cells are freed with the old plan's state on the control side (a writer and a
+  reader both `RtScope::check_outside` in their `Drop`). A fork's export opens
+  its own meter on the fork; the live meter never sees it.
+- **The reference interpreter knows no meters**, as it knows no taps: a meter
+  reads and changes nothing, so the differential suite has nothing to compare.
+  The properties are analytic (`tests/meter.rs`), and the serial render
+  against the parallel one.
+
+The master meter is an op in the plan (see "Meters" above): a device callback,
+`Engine::process_segment`, an offline `Session::render` and a detached
+`Session::render_frame` all feed it, because the op runs wherever the plan runs.
 
 ### 5. Types that make the footguns unrepresentable
 
@@ -4887,7 +4967,7 @@ slices are ignored on every path, and fewer is a caller bug (a
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |
-| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and the master meter is the engine's |
+| Metering / `AudioTap` | A side-output op the compiler can attach to **any** port, which gives per-track meters and taps. It reads planar slices, so there is no deinterleave pass. The tap is built (`Op::Tap`, see "Taps" in the runtime); `AudioTap` is gone, and so is the engine's master meter: a meter is an op too (`Op::Meter`, see "Meters" in the runtime), per channel, on the outputs or any port |
 | `MidiInPort`, `MidiPostBlock`/`MidiOutSink`, bevy `MidiTargetRegistry` | Events ports. Event edges join the one topological order, so arp → synth delivers **in the same block**. The uniform `MIDI_OUT_LATENCY_BLOCKS = 1` is paid only on actual `Feedback` edges. Addressing becomes `(NodeKey, InPort::Events(n))` |
 | `plugin_host/bind.rs` and `latency.rs` (the 3 production `node_as_mut` sites, the latency poll, the `CompensatedLatency` shadow) | Binding is a typestate transition at insert. A latency change is a `Shape` change in the next `Delta` (the poll that feeds `Editor::set_latency` stays, reading the plugin's controls) |
 

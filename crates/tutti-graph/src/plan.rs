@@ -392,6 +392,13 @@ pub enum Op {
         /// Audio slot per lane (into [`Plan::audio_list`]).
         srcs: Span,
     },
+    /// Fold a block of every lane of a meter into its cells.
+    Meter {
+        /// Index into `Plan::meters`.
+        meter: u32,
+        /// Audio slot per lane (into [`Plan::audio_list`]).
+        srcs: Span,
+    },
     /// Push an audio port's block into its feedback ring.
     Capture {
         /// Index into [`Plan::feedback`] (audio).
@@ -852,6 +859,8 @@ pub struct Plan {
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
     pub(crate) taps: Vec<tutti_types::TapId>,
+    /// The meters the plan measures, with their lane counts.
+    pub(crate) meters: Vec<(tutti_types::MeterId, usize)>,
     pub(crate) units: Vec<PlanUnit>,
     pub(crate) store_len: u32,
     pub(crate) order: Vec<NodeKey>,

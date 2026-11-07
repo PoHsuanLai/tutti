@@ -202,7 +202,8 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
         | Op::Delay { .. }
         | Op::Output { .. }
         | Op::Capture { .. }
-        | Op::Tap { .. } => COPY,
+        | Op::Tap { .. }
+        | Op::Meter { .. } => COPY,
         Op::EventDelay { .. } | Op::EventMerge { .. } | Op::EventCapture { .. } => EVENTS,
         Op::Node { unit, .. } => node_work(&shapes[unit as usize]),
     }

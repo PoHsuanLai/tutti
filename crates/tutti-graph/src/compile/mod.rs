@@ -338,6 +338,10 @@ enum Pre {
         tap: u32,
         srcs: Vec<ARef>,
     },
+    Meter {
+        meter: u32,
+        srcs: Vec<ARef>,
+    },
     Capture {
         feedback: u32,
         src: u32,
@@ -983,6 +987,30 @@ pub fn compile(
         tap_ids.push(tap);
     }
 
+    // Meters: one lane per source, read as it leaves its node (no delay: a
+    // level has no time structure a ring would keep). One op a meter, so its
+    // lanes are folded together. A closed meter is not in the topology.
+    let mut meter_ids: Vec<(tutti_types::MeterId, usize)> = Vec::new();
+    for (&meter, spec) in &topology.meters {
+        let srcs: Vec<ARef> = spec
+            .sources(&topology.outputs)
+            .iter()
+            .map(|source| match *source {
+                Source::Node(p) => ARef::Val(audio_out_val[&p]),
+                Source::Global(ch) => ARef::Val(global_val[&ch]),
+                Source::Zero => ARef::Zero,
+            })
+            .collect();
+        let op = em.push(Pre::Meter {
+            meter: meter_ids.len() as u32,
+            srcs: srcs.clone(),
+        });
+        meter_ids.push((meter, srcs.len()));
+        for src in srcs {
+            em.read_aref(src, op);
+        }
+    }
+
     // Captures run last. They feed the feedback delays, which the executor
     // reads from *before* the block (into the feedback slots), so a capture
     // needs no ordering against the feedback's readers: with a delay of a
@@ -1203,6 +1231,10 @@ pub fn compile(
                 tap: *tap,
                 srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
             },
+            Pre::Meter { meter, srcs } => Op::Meter {
+                meter: *meter,
+                srcs: span_of(&mut audio_list, &mut srcs.iter().map(|&r| aref_slot(r))),
+            },
             Pre::Capture { feedback, src } => Op::Capture {
                 feedback: *feedback,
                 src: aslot(*src),
@@ -1351,6 +1383,7 @@ pub fn compile(
             .collect(),
         delays: em.delays,
         taps: tap_ids,
+        meters: meter_ids,
         event_edges: {
             let mut v: Vec<(EventOut, EventIn)> = graph
                 .events()

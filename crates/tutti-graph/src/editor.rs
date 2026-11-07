@@ -56,18 +56,20 @@ use std::sync::Arc;
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey, Samples, TapAlign, TapId, TapSpec};
+use tutti_types::{Latency, MeterId, MeterSpec, NodeKey, Samples, TapAlign, TapId, TapSpec};
 
 use tutti_types::At;
 
 use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
+use crate::exec::Opened;
 use crate::exec::{
     Channels, Commit, DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY, channels,
 };
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
+use crate::meter::{MeterReader, MeterWriter};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
 use crate::plan::{Delta, Placement, Plan};
@@ -153,6 +155,19 @@ pub enum CommitError {
         sources: usize,
         /// The lanes it was opened with.
         opened: usize,
+    },
+    /// A meter's lanes in the spec do not fit the cells it was opened with
+    /// ([`Editor::open_meter`] fixed them there): the spec's
+    /// `MeterSpec::Ports` was edited, or the outputs a master meter follows
+    /// grew past [`MAX_ROOT_CHANNELS`]. Nothing was sent. Close the meter and
+    /// open another to change its width.
+    MeterWidth {
+        /// The meter.
+        meter: MeterId,
+        /// The lanes the spec names now.
+        sources: usize,
+        /// The lanes its cells hold.
+        capacity: usize,
     },
     /// No node at this key ([`Editor::set_latency`]).
     NoSuchNode {
@@ -256,6 +271,15 @@ impl std::fmt::Display for CommitError {
                 f,
                 "tap {} names {sources} lanes but was opened with {opened}",
                 tap.0
+            ),
+            Self::MeterWidth {
+                meter,
+                sources,
+                capacity,
+            } => write!(
+                f,
+                "meter {} names {sources} lanes but its cells hold {capacity}",
+                meter.0
             ),
             Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
             Self::LatencyTooLong {
@@ -365,6 +389,10 @@ pub struct Editor {
     pending_taps: Vec<(TapId, TapWriter)>,
     /// Each open tap's reader, to see which were dropped.
     tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
+    /// Meter writers opened since the last commit, sent with the next.
+    pending_meters: Vec<(MeterId, MeterWriter)>,
+    /// Each open meter's lane capacity and reader, to see which were dropped.
+    meter_readers: BTreeMap<MeterId, (usize, std::sync::Weak<()>)>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -531,6 +559,92 @@ impl Editor {
         gone.len()
     }
 
+    /// Declares a level meter and returns its reader, **off** until
+    /// [`MeterReader::enable`]. It takes effect at the next
+    /// [`commit`](Self::commit), which compiles the meter's op and hands the
+    /// executor its cells; until then the reader sees nothing.
+    ///
+    /// [`MeterSpec::Outputs`] meters the graph's global outputs, one channel
+    /// each, following them as they change (up to [`MAX_ROOT_CHANNELS`]);
+    /// [`MeterSpec::Ports`] meters those sources, fixed at the width given
+    /// here. A meter reads each source as it leaves its node, before the
+    /// compiler's alignment delay and before anything the engine does to the
+    /// output (the fold to the device and the declick). Opening an id again
+    /// replaces it: the new reader is fed from the next commit and the old
+    /// one gets nothing more. A closed meter is not compiled, so it costs the
+    /// audio thread nothing.
+    ///
+    /// Nothing is validated here. A lane naming a node port or global input
+    /// that does not exist ([`Invalid::MeterOutOfRange`](tutti_types::graph::Invalid))
+    /// makes **every** commit fail until the meter is closed or the source
+    /// exists.
+    pub fn open_meter(&mut self, id: MeterId, spec: MeterSpec) -> MeterReader {
+        let (lanes, width) = match &spec {
+            MeterSpec::Outputs => (MAX_ROOT_CHANNELS, 0),
+            MeterSpec::Ports(sources) => (sources.len(), sources.len()),
+        };
+        let (reader, writer) = MeterReader::pair(id, lanes, width);
+        self.pending_meters.retain(|(k, _)| *k != id);
+        self.pending_meters.push((id, writer));
+        self.meter_readers.insert(id, (lanes, reader.watch()));
+        self.spec_mut().topology.meters.insert(id, spec);
+        reader
+    }
+
+    /// Removes a meter: its op leaves the plan at the next commit and its
+    /// cells are freed on the control side. Its reader keeps what it held and
+    /// reads silence after.
+    pub fn close_meter(&mut self, id: MeterId) {
+        self.pending_meters.retain(|(k, _)| *k != id);
+        self.meter_readers.remove(&id);
+        self.spec_mut().topology.meters.remove(&id);
+    }
+
+    /// Refuses a spec with a meter wider than the cells it was opened with.
+    fn check_meter_widths(&self) -> Result<(), CommitError> {
+        let t = &self.spec.topology;
+        for (&meter, spec) in &t.meters {
+            let sources = spec.sources(&t.outputs).len();
+            match self.meter_readers.get(&meter) {
+                Some(&(capacity, _)) if sources > capacity => {
+                    return Err(CommitError::MeterWidth {
+                        meter,
+                        sources,
+                        capacity,
+                    });
+                }
+                Some(&(capacity, _))
+                    if matches!(spec, MeterSpec::Ports(_)) && sources != capacity =>
+                {
+                    return Err(CommitError::MeterWidth {
+                        meter,
+                        sources,
+                        capacity,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Closes every meter whose [`MeterReader`] was dropped, and returns how
+    /// many. A dropped reader leaves its meter in the plan (the op then
+    /// measures for nobody); this is the control-side tick that takes it out.
+    /// Moves the spec only when it closes one.
+    pub fn reap_meters(&mut self) -> usize {
+        let gone: Vec<MeterId> = self
+            .meter_readers
+            .iter()
+            .filter(|(_, (_, alive))| alive.strong_count() == 0)
+            .map(|(&id, _)| id)
+            .collect();
+        for &id in &gone {
+            self.close_meter(id);
+        }
+        gone.len()
+    }
+
     /// An empty graph, and the executor that will run it, both for
     /// `prepare`. The only way to build an [`Executor`].
     #[must_use]
@@ -561,6 +675,8 @@ impl Editor {
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
             tap_readers: BTreeMap::new(),
+            pending_meters: Vec::new(),
+            meter_readers: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             committed: None,
@@ -1171,6 +1287,15 @@ impl Editor {
                 }
             }
         }
+        for spec in t.meters.values_mut() {
+            if let MeterSpec::Ports(sources) = spec {
+                for s in sources {
+                    if matches!(s, Source::Node(p) if p.node == key) {
+                        *s = Source::Zero;
+                    }
+                }
+            }
+        }
         self.spec.events.retain(|at, _| at.node != key);
         for sources in self.spec.events.values_mut() {
             sources.retain(|e: &EventEdge| e.from().node != key);
@@ -1344,6 +1469,7 @@ impl Editor {
         self.limits.block(prepare.max_block().get())?;
         self.limits.outputs(self.spec.topology.outputs.len())?;
         self.check_tap_widths()?;
+        self.check_meter_widths()?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
             .map_err(CommitError::Compile)?;
@@ -1541,8 +1667,10 @@ impl Editor {
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
         self.check_tap_widths()?;
+        self.check_meter_widths()?;
         if self.pending.is_empty()
             && self.pending_taps.is_empty()
+            && self.pending_meters.is_empty()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
@@ -1791,7 +1919,15 @@ impl Editor {
             ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
         let taps = std::mem::take(&mut self.pending_taps);
-        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params, taps);
+        let meters = std::mem::take(&mut self.pending_meters);
+        let commit = Commit::build(
+            self.sent + 1,
+            Arc::clone(&plan),
+            delta,
+            units,
+            params,
+            Opened { taps, meters },
+        );
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");

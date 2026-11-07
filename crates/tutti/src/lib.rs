@@ -36,7 +36,8 @@ pub use tutti_engine as engine;
 /// machine, timed commands, the offline timeline.
 pub use tutti_transport as transport;
 
-/// Level metering (`tutti-metering`): `MasterMeter`, `LoadMeter`.
+/// Load metering (`tutti-metering`): `LoadMeter`. Level meters are the
+/// graph's (`MeterReader`, `Editor::open_meter`).
 pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
@@ -163,8 +164,8 @@ pub use tutti_plugin as plugin;
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
     pub use tutti_engine::prelude::*;
-    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS, TapReader};
-    pub use tutti_metering::{LoadMeter, LoadReading, MasterMeter, MeterReading};
+    pub use tutti_graph::{CrossfadeCurve, Level, MAX_ROOT_CHANNELS, MeterReader, TapReader};
+    pub use tutti_metering::{LoadMeter, LoadReading};
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_transport::{

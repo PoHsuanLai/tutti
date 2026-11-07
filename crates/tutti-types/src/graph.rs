@@ -320,6 +320,36 @@ pub struct Topology {
     /// Copy-out points ("tap these sources"). A closed tap is absent: nothing
     /// is compiled for it.
     pub taps: BTreeMap<TapId, TapSpec>,
+    /// Level meters ("measure these sources"). A closed meter is absent:
+    /// nothing is compiled for it.
+    pub meters: BTreeMap<MeterId, MeterSpec>,
+}
+
+/// The name of one level meter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MeterId(pub u32);
+
+/// What a level meter measures: one lane per source, as the source leaves its
+/// node (a meter adds no delay, so it sees a level a little ahead of the
+/// output when the compiler aligns that source).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum MeterSpec {
+    /// The graph's global outputs, one lane per output channel, following
+    /// [`Topology::outputs`] when they change.
+    Outputs,
+    /// These sources, any ports, any number.
+    Ports(Vec<Source>),
+}
+
+impl MeterSpec {
+    /// The sources, one per lane; `outputs` is the topology's own.
+    #[must_use]
+    pub fn sources<'a>(&'a self, outputs: &'a [Source]) -> &'a [Source] {
+        match self {
+            Self::Outputs => outputs,
+            Self::Ports(sources) => sources,
+        }
+    }
 }
 
 /// The name of one tap.
@@ -364,6 +394,7 @@ impl Default for Topology {
             outputs: Vec::new(),
             inputs: ChannelLayout::EMPTY,
             taps: BTreeMap::new(),
+            meters: BTreeMap::new(),
         }
     }
 }
@@ -420,6 +451,16 @@ pub enum Invalid {
     TapOutOfRange {
         /// Which tap.
         tap: TapId,
+        /// Which of its lanes.
+        lane: usize,
+        /// What it names.
+        source: Source,
+    },
+    /// A meter lane is sourced from a node port or a global input that does
+    /// not exist.
+    MeterOutOfRange {
+        /// Which meter.
+        meter: MeterId,
         /// Which of its lanes.
         lane: usize,
         /// What it names.
@@ -567,6 +608,26 @@ impl Topology {
                 };
                 if !resolves {
                     errs.push(Invalid::TapOutOfRange { tap, lane, source });
+                }
+            }
+        }
+
+        for (&meter, spec) in &self.meters {
+            for (lane, &source) in spec.sources(&self.outputs).iter().enumerate() {
+                let resolves = match source {
+                    Source::Node(from) => self
+                        .nodes
+                        .get(&from.node)
+                        .is_some_and(|n| from.port < n.outputs.count()),
+                    Source::Global(channel) => channel < self.inputs.count(),
+                    Source::Zero => true,
+                };
+                if !resolves {
+                    errs.push(Invalid::MeterOutOfRange {
+                        meter,
+                        lane,
+                        source,
+                    });
                 }
             }
         }

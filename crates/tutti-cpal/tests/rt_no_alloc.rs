@@ -25,14 +25,13 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_cpal::{AudioCallbackState, MAX_FRAMES, OutputBlock, process_audio};
 use tutti_engine::Engine;
-use tutti_graph::{Editor, Prepare, TapReader};
-use tutti_metering::MasterMeter;
+use tutti_graph::{Editor, MeterReader, Prepare, TapReader};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut};
-use tutti_types::{Hz, NodeKey, Q, SampleRate, Samples, TapAlign, TapId};
+use tutti_types::{Hz, MeterId, MeterSpec, NodeKey, Q, SampleRate, Samples, TapAlign, TapId};
 
 // Without this every `assert_no_alloc` below is a silent no-op. See the module
 // header — this is the whole reason the gate is an integration test.
@@ -52,13 +51,14 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
 }
 
 /// [`rolling_state`], with a graph tap on both outputs when `tap` (the reader
-/// is returned, and must be held), and the engine's master meter to enable.
+/// is returned, and must be held), and the master meter declared on the
+/// outputs (off until enabled).
 fn rolling_state_with(
     tap: bool,
 ) -> (
     Transport,
     AudioCallbackState,
-    MasterMeter,
+    MeterReader,
     Option<TapReader>,
 ) {
     let transport = Transport::new(SAMPLE_RATE);
@@ -92,9 +92,9 @@ fn rolling_state_with(
         let sources = ed.spec().topology.outputs.clone();
         ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(MAX_FRAMES))
     });
+    let meter = ed.open_meter(MeterId(0), MeterSpec::Outputs);
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-    let meter = engine.master_meter().clone();
     // Every commit is sent; the editor only has to outlive the engine's
     // setup. Leaked like the fixtures in `support`, for the same reason.
     Box::leak(Box::new(ed));
@@ -212,11 +212,10 @@ fn process_audio_across_block_sizes_is_allocation_free() {
 /// allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
 /// block (so the gate ran the metering pass) and the tap must hold frames.
 ///
-/// Mutation (run): a `Vec::with_capacity(1)` in `MeterWriter::measure`
-/// aborts it.
+/// Mutation (run): a `Vec::with_capacity(1)` in `meter_op` aborts it.
 #[test]
 fn a_metered_and_tapped_callback_is_allocation_free() {
-    let (_transport, state, meter, tap) = rolling_state_with(true);
+    let (_transport, state, mut meter, tap) = rolling_state_with(true);
     let tap = tap.expect("opened");
     meter.enable();
     let mut block = OutputBlock::new(std::sync::Arc::new(state), ChannelLayout::STEREO);
@@ -230,6 +229,6 @@ fn a_metered_and_tapped_callback_is_allocation_free() {
             block.render(&mut out);
         }
     });
-    assert!(meter.get().peak_left.get() > 0.0, "the meter read nothing");
+    assert!(meter.read()[0].peak.get() > 0.0, "the meter read nothing");
     assert!(tap.available().get() > 0, "the tap read nothing");
 }

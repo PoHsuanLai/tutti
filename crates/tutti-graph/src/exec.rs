@@ -180,6 +180,7 @@ use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
 use crate::loss::{Dropped, EventLoss};
+use crate::meter::{MeterWriter, meter_op};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, Node, Prepare, SilenceMask, Status, Transport,
     TransportChanges,
@@ -191,7 +192,7 @@ use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
 use crate::tap::TapWriter;
-use tutti_types::{PlayReading, TapId};
+use tutti_types::{MeterId, PlayReading, TapId};
 
 /// Events per block an event output port holds when its node declares no
 /// [`Shape::event_capacity`](crate::Shape::event_capacity), unless
@@ -338,8 +339,16 @@ pub(crate) struct Commit {
     /// Held-key tables the executor let go of, freed on the control side.
     spare_held: Vec<Tables>,
     old_state: Option<State>,
-    /// Tap producers the editor opened since the last commit, by lane.
-    taps: Vec<(TapId, TapWriter)>,
+    /// Tap producers and meter cells the editor opened since the last commit.
+    opened: Opened,
+}
+
+/// What the editor opened since its last commit, handed to the executor with
+/// the next: a tap's producers and a meter's cells.
+#[derive(Debug, Default)]
+pub(crate) struct Opened {
+    pub(crate) taps: Vec<(TapId, TapWriter)>,
+    pub(crate) meters: Vec<(MeterId, MeterWriter)>,
 }
 
 impl Drop for Commit {
@@ -357,7 +366,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
-        taps: Vec<(TapId, TapWriter)>,
+        opened: Opened,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -420,7 +429,7 @@ impl Commit {
             spare_params,
             spare_held: Vec::with_capacity(delta_units),
             old_state: None,
-            taps,
+            opened,
         })
     }
 
@@ -439,7 +448,7 @@ impl Commit {
             spare_params: Vec::with_capacity(units),
             spare_held: Vec::with_capacity(units),
             old_state: None,
-            taps: Vec::new(),
+            opened: Opened::default(),
         })
     }
 
@@ -646,6 +655,8 @@ struct State {
     event_fb: Vec<Option<EventFifo>>,
     /// One producer per planned tap lane (`None`: nobody opened it).
     taps: Vec<Option<TapWriter>>,
+    /// One set of cells per planned meter (`None`: nobody opened it).
+    meters: Vec<Option<MeterWriter>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
     /// Plan units with a scheduled command landing this block.
@@ -668,6 +679,7 @@ impl State {
             audio_fb: Vec::new(),
             event_fb: Vec::new(),
             taps: Vec::new(),
+            meters: Vec::new(),
             inject: Vec::new(),
             has_inject: Vec::new(),
             has_due: Vec::new(),
@@ -1156,7 +1168,7 @@ impl Executor {
         c.incoming = incoming;
 
         let old_plan = self.plan.take();
-        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.taps);
+        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed, &mut c.opened);
         c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
         c.spare_held.append(&mut departed.spare);
         self.suspended = false;
@@ -1174,7 +1186,7 @@ impl Executor {
         plan: &Plan,
         old_plan: Option<&Plan>,
         departed: &mut Gone,
-        opened: &mut Vec<(TapId, TapWriter)>,
+        opened: &mut Opened,
     ) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
@@ -1294,15 +1306,49 @@ impl Executor {
             .iter()
             .map(|k| {
                 opened
+                    .taps
                     .iter()
                     .position(|(o, _)| o == k)
-                    .map(|at| opened.swap_remove(at).1)
+                    .map(|at| opened.taps.swap_remove(at).1)
                     .or_else(|| {
                         old_taps
                             .get(k)
                             .and_then(|&i| old.taps.get_mut(i))
                             .and_then(Option::take)
                     })
+            })
+            .collect();
+
+        // Meters, the same way: carried by id, replaced by one opened since,
+        // and the width each now measures told to its cells.
+        let old_meters: BTreeMap<MeterId, usize> = old_plan
+            .map(|p| {
+                p.meters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (k, _))| (*k, i))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let meters: Vec<Option<MeterWriter>> = plan
+            .meters
+            .iter()
+            .map(|(k, lanes)| {
+                let writer = opened
+                    .meters
+                    .iter()
+                    .position(|(o, _)| o == k)
+                    .map(|at| opened.meters.swap_remove(at).1)
+                    .or_else(|| {
+                        old_meters
+                            .get(k)
+                            .and_then(|&i| old.meters.get_mut(i))
+                            .and_then(Option::take)
+                    });
+                if let Some(w) = &writer {
+                    w.set_width(*lanes);
+                }
+                writer
             })
             .collect();
 
@@ -1536,6 +1582,7 @@ impl Executor {
             audio_fb,
             event_fb,
             taps,
+            meters,
             inject,
             has_inject,
             has_due: vec![false; plan.units.len()],
@@ -1734,6 +1781,7 @@ impl Executor {
                 audio_fb,
                 event_fb,
                 taps,
+                meters,
                 inject,
                 has_inject,
                 has_due,
@@ -1797,6 +1845,7 @@ impl Executor {
                         audio_fb,
                         event_fb,
                         taps,
+                        meters: &*meters,
                         inject,
                         has_inject,
                         has_due,
@@ -1892,6 +1941,17 @@ impl Executor {
                                 crate::tap::tap_op(
                                     tap,
                                     &*st.arena,
+                                    &plan.audio_list[srcs.range()],
+                                    frames,
+                                );
+                            }
+                        }
+                        Op::Meter { meter, srcs } => {
+                            if let Some(meter) = meters[meter as usize].as_ref() {
+                                meter_op(
+                                    meter,
+                                    &*st.arena,
+                                    &*st.flags,
                                     &plan.audio_list[srcs.range()],
                                     frames,
                                 );
@@ -2301,7 +2361,7 @@ fn fading_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
 }
 
 /// Per audio slot: every sample of the block is exact `0.0`.
-const SILENT: u8 = 1;
+pub(crate) const SILENT: u8 = 1;
 /// Per audio slot: the block holds one value throughout.
 const CONSTANT: u8 = 2;
 

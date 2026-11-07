@@ -223,6 +223,12 @@ impl Plugins {
     }
 
     /// The database, for reading rows this catalog has no method for.
+    ///
+    /// Its rows are keyed by [`canonical_path`](tutti_plugin_db::canonical_path),
+    /// which is what a scan and every method of this catalog key by. The table
+    /// itself matches paths exactly, so look a file up by its canonical path
+    /// (an alias finds nothing); the catalog's own `is_blacklisted`, `blacklist`
+    /// and the rest canonicalize for you.
     pub fn db(&self) -> &PluginDb {
         &self.db
     }
@@ -858,7 +864,7 @@ mod tests {
         // A rescan recovers first; it must not delete what it could not save.
         plugins.rescan().unwrap();
 
-        assert!(plugins.db().is_blacklisted(&crashy));
+        assert!(plugins.db().is_blacklisted(&key(&crashy)));
         assert!(config.pedal_path().exists());
         assert_eq!(
             plugins.save().unwrap_err().kind(),
@@ -980,7 +986,7 @@ mod tests {
 
         plugins.remove(&b);
         plugins.rescan().unwrap();
-        assert!(plugins.db().row(&b).is_none(), "the removal held");
+        assert!(plugins.db().row(&key(&b)).is_none(), "the removal held");
         assert!(!config.pedal_path().exists());
     }
 

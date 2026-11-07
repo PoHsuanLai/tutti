@@ -176,6 +176,12 @@ pub struct BlacklistedFile<'a> {
 ///
 /// Plain data with no I/O; `save` and `load` (feature `json`) are functions over
 /// it. Every change goes through [`apply`](Self::apply).
+///
+/// A path matches exactly; the table never touches the filesystem to resolve
+/// one. A scan, the pedal's recovery and `tutti_plugin::catalog::Plugins` key
+/// rows by [`canonical_path`](crate::canonical_path), so a caller that reads
+/// this table directly asks with a canonical path too: an alias of a file finds
+/// no row.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PluginDb {
     files: BTreeMap<PathBuf, FileRow>,

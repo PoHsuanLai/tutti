@@ -24,7 +24,7 @@ use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
-use tutti_io::Wave;
+use tutti_codec::Wave;
 use tutti_rt::MAX_POS_RING_POSITION;
 
 /// How many frames to read this cycle, under the varifill strategy.

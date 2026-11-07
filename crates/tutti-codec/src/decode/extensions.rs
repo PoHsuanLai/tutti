@@ -4,9 +4,9 @@
 //!
 //! Codec support is a cargo feature, and `default = []` on this crate — a host
 //! that names none can decode nothing. Even `tutti-sampler`, whose own default
-//! is `["wav"]`, only forwards: its `wav = ["tutti-io/wav"]` enables no
-//! decoder, and the line that pulls one in is this crate's
-//! `wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]`.
+//! is `["wav"]`, only forwards: its `wav = ["tutti-codec/decode-wav"]` enables
+//! no decoder, and the line that pulls one in is this crate's
+//! `decode-wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]`.
 //!
 //! So "supported" is a property of the resolved feature set, and the only place
 //! that can answer it honestly is where the features terminate. Anywhere else
@@ -30,7 +30,7 @@
 /// Returns every file extension this build can decode, lowercase and without
 /// a dot.
 ///
-/// Empty when no codec feature is enabled, which is the default for this crate
+/// Empty when no `decode-*` feature is enabled, which is the default for this crate
 /// and is a legitimate configuration — a host doing pure synthesis needs no
 /// decoders at all. Callers must handle the empty case rather than assuming at
 /// least `wav`.
@@ -39,9 +39,9 @@
 /// it to build a display string without sorting.
 ///
 /// ```
-/// // On a build with no codec features this is empty; with `wav` it contains
+/// // On a build with no decode features this is empty; with `decode-wav` it contains
 /// // "wav". Either way it never contains a leading dot or an uppercase letter.
-/// for ext in tutti_io::decodable_extensions() {
+/// for ext in tutti_codec::decodable_extensions() {
 ///     assert!(!ext.starts_with('.'));
 ///     assert_eq!(*ext, ext.to_ascii_lowercase());
 /// }
@@ -62,14 +62,14 @@ pub fn decodable_extensions() -> &'static [&'static str] {
 ///
 /// What stays hand-written is the **feature → reader** mapping below, because
 /// that is tutti's own knowledge and not symphonia's: nothing upstream can know
-/// that this crate's `wav` resolves to `symphonia/{wav,pcm}` and never
+/// that this crate's `decode-wav` resolves to `symphonia/{wav,pcm}` and never
 /// `symphonia/aiff`.
 ///
 /// A `LazyLock` rather than a `const`, because `Descriptor::extensions` is only
 /// reachable through a trait method. The work is a few slice copies, once per
 /// process.
 static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(decode)]
     use symphonia::core::probe::QueryDescriptor;
 
     #[allow(
@@ -81,7 +81,7 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
     // Append every extension a reader declares, skipping repeats. Two containers
     // claiming one extension is possible in principle, and a duplicate would
     // make this list unusable for building a display string.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(decode)]
     macro_rules! add {
         ($reader:ty) => {
             for d in <$reader as QueryDescriptor>::query() {
@@ -96,18 +96,18 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 
     // One arm per *feature*. AIFF's absence is the case worth stating: symphonia
     // has an `AiffReader` in the very crate that provides `WavReader`
-    // (`symphonia-format-riff`), but this crate's `wav` enables `symphonia/wav`
+    // (`symphonia-format-riff`), but this crate's `decode-wav` enables `symphonia/wav`
     // and `symphonia/pcm` only — never `symphonia/aiff`. So no current build
     // decodes AIFF, however much the format resembles WAV, and listing it would
     // be exactly the lie this module exists to stop. Adding it is one line in
     // this crate's `Cargo.toml` plus an arm here.
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "decode-wav")]
     add!(symphonia::default::formats::WavReader);
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "decode-flac")]
     add!(symphonia::default::formats::FlacReader);
-    #[cfg(feature = "mp3")]
+    #[cfg(feature = "decode-mp3")]
     add!(symphonia::default::formats::MpaReader);
-    #[cfg(feature = "ogg")]
+    #[cfg(feature = "decode-ogg")]
     add!(symphonia::default::formats::OggReader);
 
     // The descriptors are upstream data, so the case guarantee this module's
@@ -130,7 +130,7 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
 /// config file holds is as likely to say `.wav`.
 ///
 /// ```
-/// # use tutti_io::can_decode;
+/// # use tutti_codec::can_decode;
 /// // Whatever this build enables, these three agree with each other.
 /// assert_eq!(can_decode("wav"), can_decode(".WAV"));
 /// assert_eq!(can_decode("wav"), can_decode("Wav"));

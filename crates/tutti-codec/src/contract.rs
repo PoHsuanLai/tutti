@@ -213,7 +213,7 @@ macro_rules! contract {
     };
 }
 
-#[cfg(feature = "wav")]
+#[cfg(feature = "encode-wav")]
 contract!(
     wav,
     Format::Wav(crate::Pcm::Int24),
@@ -222,7 +222,7 @@ contract!(
     |spec: &Spec, sink| crate::WavWriter::create(spec, crate::Pcm::Int24, sink)
 );
 
-#[cfg(feature = "aiff")]
+#[cfg(feature = "encode-aiff")]
 contract!(
     aiff,
     Format::Aiff(crate::Pcm::Int16),
@@ -231,7 +231,7 @@ contract!(
     |spec: &Spec, sink| crate::AiffWriter::create(spec, crate::Pcm::Int16, sink)
 );
 
-#[cfg(feature = "flac")]
+#[cfg(feature = "encode-flac")]
 contract!(
     flac,
     Format::Flac {
@@ -248,7 +248,7 @@ contract!(
     )
 );
 
-#[cfg(feature = "vorbis")]
+#[cfg(feature = "encode-vorbis")]
 contract!(
     vorbis,
     Format::Vorbis {

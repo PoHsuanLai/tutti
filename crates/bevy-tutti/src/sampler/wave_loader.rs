@@ -26,7 +26,7 @@ pub enum WaveAssetLoaderError {
     Io(#[from] std::io::Error),
     /// The bytes were read but are not a wave this decoder accepts.
     #[error(transparent)]
-    Decode(#[from] tutti_io::WaveError),
+    Decode(#[from] tutti_codec::DecodeError),
 }
 
 impl AssetLoader for WaveAssetLoader {
@@ -42,7 +42,7 @@ impl AssetLoader for WaveAssetLoader {
     ) -> Result<Self::Asset, Self::Error> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        WaveAsset::from_bytes(&bytes).map_err(WaveAssetLoaderError::Decode)
+        WaveAsset::from_bytes(bytes).map_err(WaveAssetLoaderError::Decode)
     }
 
     fn extensions(&self) -> &[&str] {

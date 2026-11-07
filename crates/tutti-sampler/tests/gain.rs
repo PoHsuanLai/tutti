@@ -31,8 +31,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tutti_codec::Wave;
 use tutti_graph::{Env, Node, TransportChanges, contract};
-use tutti_io::Wave;
 use tutti_sampler::{
     MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoicePool, VoiceSource,
 };

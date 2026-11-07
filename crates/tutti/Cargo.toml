@@ -30,6 +30,7 @@ tutti-graph = { path = "../tutti-graph" }
 
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../tutti-io", optional = true }
+tutti-codec = { path = "../tutti-codec", optional = true }
 tutti-export = { path = "../tutti-export", optional = true }
 tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
@@ -101,18 +102,20 @@ jack = ["device", "tutti-cpal/jack"]
 
 # --- codecs -----------------------------------------------------------------
 #
-# The decoder is `tutti-io`'s, so a codec turns on `io` (below): `Wave::read`
-# and `FileIn` are reached as `tutti::io::…`. bevy-tutti forwards with
-# `tutti-io?/` instead, because there `tutti-io` arrives only with an edge
-# that uses it.
-wav = ["io", "tutti-io/wav", "tutti-sampler?/wav"]
-flac = ["io", "tutti-io/flac", "tutti-sampler?/flac"]
-mp3 = ["io", "tutti-io/mp3", "tutti-sampler?/mp3"]
-ogg = ["io", "tutti-io/ogg", "tutti-sampler?/ogg"]
+# The decoder is `tutti-codec`'s, so a format turns on `codec` (below):
+# `Wave::read` and `FileIn` are reached as `tutti::codec::…`. bevy-tutti
+# forwards without it, because there `tutti-codec` is always a dependency.
+wav = ["codec", "tutti-codec/decode-wav", "tutti-sampler?/wav"]
+flac = ["codec", "tutti-codec/decode-flac", "tutti-sampler?/flac"]
+mp3 = ["codec", "tutti-codec/decode-mp3", "tutti-sampler?/mp3"]
+ogg = ["codec", "tutti-codec/decode-ogg", "tutti-sampler?/ogg"]
 
-# `tutti::io` — `tutti-io`, the I/O edge. Implied by `audio-io` and by every
-# codec, so it is rarely named directly; it exists so `src/lib.rs` gates the
-# module on one feature rather than a list that must track the codecs.
+# `tutti::codec` — `tutti-codec`: `Wave`, the decoder and the encoders `export`
+# writes through. Implied by every format, so it is rarely named directly.
+codec = ["dep:tutti-codec"]
+
+# `tutti::io` — `tutti-io`, the live I/O edge. Implied by `audio-io`, so it is
+# rarely named directly.
 io = ["dep:tutti-io"]
 
 # --- MIDI, two axes (identical to bevy-tutti) -------------------------------

@@ -9,11 +9,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tutti_codec::Wave;
 use tutti_graph::{
     CrossfadeCurve, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     param_parts,
 };
-use tutti_io::Wave;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
     SamplePosition, SampleRate, Samples, SrcRatio, Tail, UnitParam,

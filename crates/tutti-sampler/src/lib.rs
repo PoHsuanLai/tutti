@@ -75,7 +75,7 @@ pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 // voice needs no direct `tutti-io` dependency. `WaveAsset` is not here: it
 // exists only under `tutti-io/bevy`, which this crate does not enable — it is
 // `bevy_tutti::sampler`'s to surface.
-pub use tutti_io::Wave;
+pub use tutti_codec::Wave;
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.

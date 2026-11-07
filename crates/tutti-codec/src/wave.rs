@@ -1,12 +1,13 @@
 //! [`Wave`]: a resident, planar, multichannel sample buffer.
 //!
-//! A buffer only: build it, index it, decode a file into it. Decoding a file *into* a `Wave` is in [`decode`](crate::Wave::read), behind
-//! the codec features; the buffer itself needs none.
+//! A buffer only: build it, index it, decode a file into it. Decoding a file
+//! *into* a `Wave` is `Wave::read`, behind the `decode-*` features; the buffer
+//! itself needs none.
 
 /// Multichannel audio held in memory, one `Vec<f32>` per channel.
 ///
 /// What a sampler voice plays and what `Wave::read` decodes a file into
-/// (with a codec feature). Planar rather than interleaved because its
+/// (with a decode feature). Planar rather than interleaved because its
 /// consumers index it by `(channel, frame)`. Every channel has the same
 /// length, [`len`](Self::len). The sample rate is carried as data; nothing
 /// here resamples.
@@ -18,7 +19,7 @@
 /// # Examples
 ///
 /// ```
-/// use tutti_io::Wave;
+/// use tutti_codec::Wave;
 ///
 /// let mut wave = Wave::new(2, 48_000.0);
 /// wave.push_frame(&[0.5, -0.5]);
@@ -175,7 +176,7 @@ impl Wave {
 
     /// The backing vector of one channel, for the decoder's batch append.
     /// The caller must follow with [`set_len`](Self::set_len).
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(decode)]
     #[inline]
     pub(crate) fn channel_vec_mut(&mut self, channel: usize) -> &mut Vec<f32> {
         &mut self.vec[channel]
@@ -183,7 +184,7 @@ impl Wave {
 
     /// Set the length in frames after a batch append. Every channel must
     /// already hold at least this many samples.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    #[cfg(decode)]
     #[inline]
     pub(crate) fn set_len(&mut self, len: usize) {
         self.len = len;

@@ -8,8 +8,8 @@
 - `Format` names the container and carries only the settings it accepts:
   `Wav(Pcm)`, `Aiff(Pcm)`, `Flac { depth: IntDepth, level: FlacLevel }` and
   `Vorbis { quality: Quality }`. FLAC at float and Ogg at a sample width are not
-  expressible. Each variant exists only with its feature (`wav`, `aiff`, `flac`,
-  `vorbis`), none on by default.
+  expressible. Each variant exists only with its feature (`encode-wav`, `encode-aiff`, `encode-flac`,
+  `encode-vorbis`), none on by default.
 - `Spec` is what a file is written as: the format, the width, the rate and the
   speaker order.
 - `Encoder` is `create(spec, sink)`, a fallible `write(block)` and `finish()`.

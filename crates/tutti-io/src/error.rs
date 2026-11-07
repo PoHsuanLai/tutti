@@ -8,7 +8,7 @@
 //! carries both layouts as values, not prose.
 //!
 //! [`Recorder::start`]: crate::Recorder::start
-//! [`pump`]: crate::pump
+//! [`pump`]: tutti_types::pump
 
 use thiserror::Error;
 use tutti_types::ChannelLayout;
@@ -27,13 +27,13 @@ pub enum Error {
          recording a mismatched pair rotates the file's channels every frame"
     )]
     ChannelWidthMismatch {
-        /// What the [`AudioIn`](crate::AudioIn) source reports.
+        /// What the [`AudioIn`](tutti_types::AudioIn) source reports.
         src: ChannelLayout,
-        /// What the [`AudioOut`](crate::AudioOut) sink was opened with.
+        /// What the [`AudioOut`](tutti_types::AudioOut) sink was opened with.
         sink: ChannelLayout,
     },
 
-    /// The source broke mid-take ([`AudioIn::is_failed`](crate::AudioIn::is_failed)),
+    /// The source broke mid-take ([`AudioIn::is_failed`](tutti_types::AudioIn::is_failed)),
     /// for a microphone because its device went away.
     ///
     /// The frames delivered before the failure are in the sink, which was
@@ -42,7 +42,7 @@ pub enum Error {
     SourceFailed,
 
     /// File I/O failed — opening the sink, writing frames, or the header
-    /// back-patch in [`finalize`](crate::AudioOut::finalize).
+    /// back-patch in [`finalize`](tutti_types::AudioOut::finalize).
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -52,7 +52,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// An [`Error`](enum@Error) as the `io::Error` a sink's
-/// [`finalize`](crate::AudioOut::finalize) speaks, for a host that reports
+/// [`finalize`](tutti_types::AudioOut::finalize) speaks, for a host that reports
 /// every way a take can end through one channel (`bevy-tutti`'s
 /// `PumpFinished`).
 ///

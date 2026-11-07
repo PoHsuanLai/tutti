@@ -2216,7 +2216,7 @@ the default. Now a forked disk voice plays its file:
   than real time and would outrun its refills; an underrun is silence written
   into the file as a success) and need tearing down when the export ends.
   Offline there is no deadline, so the copy **re-opens the file by its
-  path** with the butler's own decoder (`tutti_io::FileIn`, `seek` +
+  path** with the butler's own decoder (`tutti_codec::FileIn`, `seek` +
   `fill_sequential_interleaved`) and keeps two 32 768-frame pages resident
   (two, because the loop seam and a loop crossfade read two places at once).
   A page is laid out ahead of the read, after the missed frame going forward

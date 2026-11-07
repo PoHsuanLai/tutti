@@ -1,11 +1,11 @@
 //! The [`Encoder`]: one type over every format.
 
 use crate::error::{Error, Result};
-#[cfg(codec)]
+#[cfg(encode)]
 use crate::format::Format;
 use crate::spec::Spec;
 use crate::staged::Staged;
-#[cfg(codec)]
+#[cfg(encode)]
 use crate::writer::FormatWriter;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
@@ -32,7 +32,7 @@ use tutti_types::{ChannelLayout, Interleaved};
 /// path alone.
 ///
 /// ```
-/// # #[cfg(feature = "wav")] {
+/// # #[cfg(feature = "encode-wav")] {
 /// use std::io::Cursor;
 /// use tutti_codec::{Encoder, Format, Pcm, Spec};
 /// use tutti_types::{ChannelLayout, Interleaved, SampleRate};
@@ -65,34 +65,34 @@ impl<W: Write + Seek + Send + 'static> std::fmt::Debug for Encoder<W> {
 }
 
 enum Inner<W: Write + Seek + Send + 'static> {
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "encode-wav")]
     Wav(crate::WavWriter<W>),
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     Aiff(Box<crate::AiffWriter<W>>),
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "encode-flac")]
     Flac(Box<crate::FlacWriter<W>>),
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     Vorbis(Box<crate::VorbisWriter<W>>),
     // No format feature: `Format` has no value, so neither has this.
-    #[cfg(not(codec))]
+    #[cfg(not(encode))]
     Never(std::convert::Infallible, std::marker::PhantomData<W>),
 }
 
 impl<W: Write + Seek + Send + 'static> Inner<W> {
-    #[cfg_attr(not(codec), expect(unused_variables))]
+    #[cfg_attr(not(encode), expect(unused_variables))]
     fn open(spec: &Spec, sink: W) -> Result<Self> {
         match spec.format {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Format::Wav(pcm) => Ok(Self::Wav(crate::WavWriter::create(spec, pcm, sink)?)),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Format::Aiff(pcm) => Ok(Self::Aiff(Box::new(crate::AiffWriter::create(
                 spec, pcm, sink,
             )?))),
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Format::Flac { depth, level } => Ok(Self::Flac(Box::new(crate::FlacWriter::create(
                 spec, depth, level, sink,
             )?))),
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Format::Vorbis { quality } => Ok(Self::Vorbis(Box::new(crate::VorbisWriter::create(
                 spec, quality, sink,
             )?))),
@@ -124,20 +124,20 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
     /// unbounded. For a caller that records into a space it knows.
     #[must_use]
     #[cfg_attr(
-        not(feature = "wav"),
+        not(feature = "encode-wav"),
         allow(unused_mut, unused_variables, unreachable_code)
     )]
     pub fn limit_frames(mut self, frames: u64) -> Self {
         match &mut self.inner {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Inner::Wav(w) => w.limit_frames(frames),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Inner::Aiff(_) => {}
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Inner::Flac(_) => {}
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Inner::Vorbis(_) => {}
-            #[cfg(not(codec))]
+            #[cfg(not(encode))]
             Inner::Never(never, _) => match *never {},
         }
         self
@@ -173,15 +173,15 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
             });
         }
         match &mut self.inner {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Inner::Wav(w) => w.write(block),
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Inner::Aiff(w) => w.write(block),
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Inner::Flac(w) => w.write(block),
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Inner::Vorbis(w) => w.write(block),
-            #[cfg(not(codec))]
+            #[cfg(not(encode))]
             Inner::Never(never, _) => match *never {},
         }
     }
@@ -204,15 +204,15 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
     /// the encoder made.
     pub fn finish(mut self) -> Result<W> {
         let mut sink: W = match self.inner {
-            #[cfg(feature = "wav")]
+            #[cfg(feature = "encode-wav")]
             Inner::Wav(w) => w.finish()?,
-            #[cfg(feature = "aiff")]
+            #[cfg(feature = "encode-aiff")]
             Inner::Aiff(w) => w.finish()?,
-            #[cfg(feature = "flac")]
+            #[cfg(feature = "encode-flac")]
             Inner::Flac(w) => w.finish()?,
-            #[cfg(feature = "vorbis")]
+            #[cfg(feature = "encode-vorbis")]
             Inner::Vorbis(w) => w.finish()?,
-            #[cfg(not(codec))]
+            #[cfg(not(encode))]
             Inner::Never(never, _) => match never {},
         };
         // A buffered sink reports a failed write only when it is flushed, and
@@ -259,5 +259,5 @@ impl Encoder<BufWriter<File>> {
     }
 }
 
-#[cfg(all(test, codec))]
+#[cfg(all(test, encode))]
 mod tests;

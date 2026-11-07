@@ -852,7 +852,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
         if case.reverse {
             voice.set_direction(tutti_sampler::Direction::Reverse);
         }
-        let mut wave = tutti_io::Wave::new(2, case.file_rate as f64);
+        let mut wave = tutti_codec::Wave::new(2, case.file_rate as f64);
         for i in 0..LEN {
             wave.push_frame(&[value(i), -value(i)]);
         }

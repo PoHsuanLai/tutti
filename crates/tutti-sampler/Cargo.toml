@@ -38,19 +38,19 @@ bevy = ["dep:bevy_ecs"]
 # `contract` harness).
 test-support = ["tutti-graph/contract"]
 
-# Audio format support - cascade to tutti-io, which owns the decoder.
-wav = ["tutti-io/wav"]
-flac = ["tutti-io/flac"]
-mp3 = ["tutti-io/mp3"]
-ogg = ["tutti-io/ogg"]
+# Audio format support - cascade to tutti-codec, which owns the decoder.
+wav = ["tutti-codec/decode-wav"]
+flac = ["tutti-codec/decode-flac"]
+mp3 = ["tutti-codec/decode-mp3"]
+ogg = ["tutti-codec/decode-ogg"]
 files = ["wav", "flac", "mp3", "ogg"]
 
 [dependencies]
-# The file edge: `Wave` (the resident buffer a voice plays), and with a codec
+# The file edge: `Wave` (the resident buffer a voice plays), and with a decode
 # feature the decoder the butler loads and streams through (`Wave::read`,
-# `Wave::read_metadata`, `FileIn`). No cycle: `tutti-io` does not depend on
+# `Wave::read_metadata`, `FileIn`). No cycle: `tutti-codec` does not depend on
 # this crate.
-tutti-io = { path = "../tutti-io" }
+tutti-codec = { path = "../tutti-codec" }
 
 # The graph: every node here is a `tutti_graph::Node`, reads
 # the transport from its block's `Env`, and hands its controls and its fork

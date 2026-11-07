@@ -48,8 +48,8 @@ files = ["wav", "flac", "mp3", "ogg"]
 [dependencies]
 # The file edge: `Wave` (the resident buffer a voice plays), and with a codec
 # feature the decoder the butler loads and streams through (`Wave::read`,
-# `Wave::read_metadata`, `FileIn`). No cycle: `tutti-io` names nothing above
-# `tutti-metering`.
+# `Wave::read_metadata`, `FileIn`). No cycle: `tutti-io` does not depend on
+# this crate.
 tutti-io = { path = "../tutti-io" }
 
 # The graph: every node here is a `tutti_graph::Node`, reads

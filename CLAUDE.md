@@ -72,7 +72,8 @@ serial one.
 - A parallel test compares against the **serial render, bit for bit**
   (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
   parallel path runs every participant inside `assert_no_alloc`, helpers
-  included (`TestPool::no_alloc`, `tutti-engine`'s `GatedPool`).
+  included (`TestPool::no_alloc`, the `GatedPool` in `tutti-engine`'s `rt_no_alloc_engine`, `tutti-nodes`'s
+  `rt_no_alloc_modulation` and `tutti-clap-host`'s `clap_thread_pool`).
 
 ## Commands
 

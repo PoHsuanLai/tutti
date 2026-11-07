@@ -131,14 +131,18 @@ impl LoadMeter {
         self.peak.store(0, Ordering::Relaxed);
     }
 
-    /// Count `n` events the graph dropped. Audio thread.
+    /// Count `n` events the graph dropped. Audio thread; only `Engine` calls
+    /// it (public because the engine is another crate). Another caller adds
+    /// to the same counter and skews the reading.
     pub fn record_dropped_events(&self, n: u64) {
         if n > 0 {
             self.dropped_events.fetch_add(n, Ordering::Relaxed);
         }
     }
 
-    /// Count one block rendered silent, refused the graph. Audio thread.
+    /// Count one block rendered silent, refused the graph. Audio thread; only
+    /// `Engine` calls it (public because the engine is another crate). Another
+    /// caller adds to the same counter and skews the reading.
     pub fn record_silenced(&self) {
         self.silenced.fetch_add(1, Ordering::Relaxed);
     }
@@ -146,6 +150,10 @@ impl LoadMeter {
     /// Record one block that took `elapsed` against a budget of `budget`.
     /// Audio thread, one writer: atomics only, no allocation, no lock. A
     /// block with no budget (no frames) records nothing.
+    ///
+    /// Only `Engine` calls it (public because the engine is another crate).
+    /// The mean is a load then a store, not a read-modify-write, so a second
+    /// writer can lose an update and skew the mean.
     pub fn record(&self, elapsed: Seconds, budget: Seconds) {
         if budget.0 <= 0.0 {
             return;

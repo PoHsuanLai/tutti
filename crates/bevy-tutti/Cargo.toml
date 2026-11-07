@@ -35,9 +35,6 @@ bevy_tasks.workspace = true
 # below.) bevy-tutti supplies the node component, the reconcile systems and the
 # CPAL audio callback (src/engine/).
 tutti-transport = { path = "../tutti-transport" }
-# Only the prelude names `Engine` and `Error`; bevy-tutti reaches the engine
-# through `tutti-session`.
-tutti-engine = { path = "../tutti-engine" }
 tutti-metering = { path = "../tutti-metering" }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its

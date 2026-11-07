@@ -52,7 +52,7 @@ use tutti_graph::{Cx, Editor, ForkByClone, Io, Node, Prepare, Shape, Status};
 
 // A node reads the transport from each block's `Env`. This one puts the beat
 // on two ports (whole beats, then the fraction). Tone generators and filters
-// are `tutti-nodes`', a crate above this one.
+// are `tutti-nodes`'; its tests use them through a dev edge.
 #[derive(Clone)]
 struct Beats;
 

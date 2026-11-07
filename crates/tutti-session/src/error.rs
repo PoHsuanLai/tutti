@@ -12,7 +12,7 @@ use thiserror::Error;
 pub enum Error {
     /// Wraps an error from `tutti_engine::Error`.
     #[error(transparent)]
-    Core(#[from] tutti_engine::Error),
+    Engine(#[from] tutti_engine::Error),
 
     /// The graph engine refused its graph: wraps
     /// `tutti_engine::GraphEngineError`.

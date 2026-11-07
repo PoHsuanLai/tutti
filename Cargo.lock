@@ -393,7 +393,6 @@ dependencies = [
  "tracing",
  "tutti-clap-test-plugin",
  "tutti-cpal",
- "tutti-engine",
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",

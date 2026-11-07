@@ -264,7 +264,9 @@ impl MotionFsm {
 
     /// The audio half: the FSM, taken out of this handle until the
     /// returned value is dropped. `None` while another holds it (on this
-    /// handle or a clone), so there is one FSM per transport.
+    /// handle or a clone), so there is one FSM per transport. `Engine` takes
+    /// it; a host does not name it, and holding it keeps an engine from
+    /// being built over this transport.
     pub fn audio(&self) -> Option<MotionAudio> {
         let Home { fsm, owner } = self.home.pop()?;
         Some(MotionAudio {

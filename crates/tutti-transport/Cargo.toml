@@ -15,6 +15,11 @@ categories = ["multimedia::audio"]
 [lints]
 workspace = true
 
+[features]
+default = []
+# `ClockLinks::bare`, for `tutti-engine`'s unit tests.
+test-support = []
+
 [dependencies]
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
 # `RenderClock` hands a block's transport to the graph's executor.

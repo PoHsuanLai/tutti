@@ -273,7 +273,9 @@ impl std::error::Error for PlayheadClaimed {}
 impl ClockLinks {
     /// Links that follow a transport's live tempo and pausedness and share
     /// nothing else: a clock over them writes no playhead and takes no claim.
-    /// For a test that needs a second clock over a transport an engine drives.
+    /// For a test that needs a second clock over a transport an engine drives;
+    /// built only under `cfg(test)` or the `test-support` feature.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
         Self {
             tempo,

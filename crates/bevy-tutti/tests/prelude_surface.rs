@@ -261,7 +261,7 @@ fn the_loop_region_round_trips_through_the_prelude() {
 
 /// The engine's measurement vocabulary arrives whole, not as a hand-picked subset.
 ///
-/// The names are what app code imports from `tutti-engine` / `tutti-types`
+/// The names are what app code imports from `tutti-metering` / `tutti-types`
 /// alongside this prelude, most-used first. This stays a `#[test]` rather than
 /// moving into [`_surface_compiles`] because it asserts the *conversions*, not
 /// just the names: `to_samples`, `to_amplitude` and `to_semitones` are the

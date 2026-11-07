@@ -105,7 +105,7 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
       # private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_transport clock fsm handle loop_region motion offline project_meter settings state timed timeline
+      - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
       - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-rt`, which keeps its modules private: the root names every item.

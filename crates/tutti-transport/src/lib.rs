@@ -7,9 +7,8 @@
 //! playhead, which the graph reads from each block's `Env`.
 //!
 //! The traits below are the read side: [`Timeline`] is what a reader outside
-//! the graph consults (a node reads its block's `Env`),
-//! [`RenderClock`] is what a renderer drives, and [`TransportState`] adds the
-//! live-session facts (record, loop).
+//! the graph consults (a node reads its block's `Env`)
+//! and [`RenderClock`] is what a renderer drives.
 //!
 //! `tutti-engine`'s `Engine` drives a [`TransportClock`] and applies the
 //! motion and timed commands; [`Control`], [`MotionAudio`], [`Schedule`] and
@@ -33,14 +32,13 @@ mod timed;
 mod timeline;
 
 pub use clock::{Control, TransportClock};
-pub use fsm::DEFAULT_DECLICK_FRAMES;
 pub use handle::Transport;
 pub use loop_region::{LoopEdit, LoopRegion};
 pub use motion::{FadeOut, MotionAudio, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
-pub use state::{ClockLinks, Declick, PlayheadClaimed, SeekSlot};
+pub use state::{ClockLinks, PlayheadClaimed, SeekSlot};
 pub use timed::{SCHEDULE_CAPACITY, Schedule, ScheduleFull, Scheduled, TransportCommand};
 
 pub use timeline::{OfflineClock, OfflineTransport, Timeline};
@@ -133,40 +131,4 @@ impl RenderClock for FrozenClock {
             tutti_graph::TransportChanges::NONE,
         )
     }
-}
-
-/// A live transport: a [`Timeline`] that also carries the record/loop state a
-/// plugin host asks for.
-///
-/// This is the "transport state" bundle plugins request by name — VST3's opt-in
-/// flag is literally `kNeedTransportState`, VST2 prefixes the flags
-/// `TRANSPORT_RECORDING`/`TRANSPORT_CYCLE_ACTIVE`, CLAP groups them under
-/// `clap_transport_flags`. Splitting it off keeps [`Timeline`] minimal so an
-/// [`OfflineTimeline`] stays a first-class `Timeline`: an offline render has no
-/// record state and folds looping into its own `advance()`, so it implements
-/// `Timeline` only and keeps `loop_range` as an inherent method.
-///
-/// The live [`Transport`] implements this. Nothing in this repository consumes
-/// it now (a graph node, a hosted plugin's included, reads its block's `Env`);
-/// it is kept as public API, for a host's own consumer that needs record or
-/// loop state through `dyn TransportState` rather than the concrete backend.
-pub trait TransportState: Timeline {
-    /// Whether the transport is armed and recording. Always `false` offline.
-    fn is_recording(&self) -> bool;
-    /// The active loop region, or `None` when not looping. Always a valid,
-    /// non-empty region — see [`LoopRange`](tutti_types::LoopRange).
-    fn loop_range(&self) -> Option<tutti_types::LoopRange>;
-    /// Samples elapsed since the stream started — free-running, never reset by
-    /// a loop, seek, or stop.
-    ///
-    /// Belongs here rather than on [`Timeline`] for the same reason as the two
-    /// above: it is a live-session fact.
-    ///
-    /// Required, not defaulted. A default of `0` would be defensible only for an
-    /// offline render — but an offline render implements [`Timeline`] alone and
-    /// never reaches this trait, so the default would exist for a case that
-    /// cannot occur while silently letting a real implementor report "no
-    /// continuous clock" forever. A host with no sample counter should return `0`
-    /// deliberately, which is what the plugin ABIs read as exactly that.
-    fn steady_time(&self) -> i64;
 }

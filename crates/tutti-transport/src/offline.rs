@@ -204,10 +204,9 @@ impl OfflineTimeline {
 
     /// The active loop region, or `None` when not looping.
     ///
-    /// An inherent method, not a [`Timeline`](super::Timeline) one: looping is a
-    /// live-transport concept ([`TransportState`](super::TransportState)), and
-    /// the offline render never reads it through a trait — `advance()` folds the
-    /// wrap in directly.
+    /// An inherent method, not a [`Timeline`](super::Timeline) one: the offline
+    /// render never reads it through a trait — `advance()` folds the wrap in
+    /// directly.
     #[inline]
     pub fn loop_range(&self) -> Option<LoopRange> {
         self.loop_range

@@ -81,15 +81,16 @@
 //! fn control_audio(
 //!     transport: Res<TransportRes>,
 //!     mut graph: ResMut<AudioGraphRes>,
-//! ) {
+//! ) -> Result {
 //!     transport.settings.set_tempo(128.0);
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
-//!     let _ = transport.motion.try_send(MotionEvent::Play);
+//!     transport.motion.try_send(MotionEvent::Play)?;
 //!     let (node, _) = graph.graph().insert(tutti_nodes::testing::Osc::sine(tutti_types::Hz(440.0)));
 //!     // Staged, not committed: the insert marks the session edited, and
 //!     // `commit_graph` publishes the frame's edits once.
 //!     let _ = node;
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -298,8 +299,9 @@ pub mod prelude {
         AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
     };
     pub use tutti_rt::{ArcLend, Loan, Reader};
-    pub use tutti_transport::{Timeline, Transport, TransportState};
+    pub use tutti_transport::{Timeline, Transport, TransportCommand};
     pub use tutti_types::prelude::*;
+    pub use tutti_types::{At, BarNumber, Meter};
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     pub use tutti_nodes::{ClickState, MetronomeMode};

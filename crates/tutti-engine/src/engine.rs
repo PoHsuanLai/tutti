@@ -42,7 +42,7 @@
 //! the output, continuous at every frame:
 //!
 //! - **A timed command** (`At::Frame`, `At::Beat`) is seen ahead: the walk
-//!   looks one fade (480 frames) past each block for the next declicked
+//!   looks one fade (10 ms) past each block for the next declicked
 //!   command playback reaches, and the gain falls linearly on the *old*
 //!   position's audio to reach zero exactly on its frame. Seen with less
 //!   than a fade to go (sent late, or reached sooner after a tempo change),
@@ -85,8 +85,8 @@ use tutti_rt::AudioThreadCell;
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
-    Control, DEFAULT_DECLICK_FRAMES, FadeOut, MotionAudio, MotionEvent, MotionState,
-    SCHEDULE_CAPACITY, Schedule, Scheduled, TransportClock, TransportCommand,
+    Control, FadeOut, MotionAudio, MotionEvent, MotionState, SCHEDULE_CAPACITY, Schedule,
+    Scheduled, TransportClock, TransportCommand,
 };
 use tutti_types::{At, Frame};
 use tutti_types::{InterleavedMut, SampleRate, Samples, Seconds};
@@ -329,7 +329,7 @@ impl Engine {
                 playhead: Playhead::new(),
                 dropped_seen,
             }),
-            fader: AudioThreadCell::new(Fader::new()),
+            fader: AudioThreadCell::new(Fader::new(fade_frames(rate))),
             capacity: Samples(stride),
             load: Arc::new(LoadMeter::new()),
         })
@@ -489,9 +489,9 @@ impl Engine {
             );
             let changes = pieces.changes;
             g.render(output, out_ch, done, len, &walk.start, &changes);
-            self.fader
-                .borrow_mut()
-                .apply(&walk.gain, frame0, output, out_ch, done, len);
+            let mut fader = self.fader.borrow_mut();
+            fader.fade = fade_frames(rate);
+            fader.apply(&walk.gain, frame0, output, out_ch, done, len);
             done += len;
         }
         self.load.record_dropped_events(g.take_dropped_events());
@@ -517,6 +517,7 @@ impl Engine {
     ) -> Walk {
         let Track { motion, playhead } = track;
         let schedule = &self.timed;
+        let fade = fade_frames(rate);
         let mut walk = Walk {
             start: pieces.begin(None),
             gain: GainPlan::new(),
@@ -544,7 +545,7 @@ impl Engine {
                 };
                 // The next declicked command ahead, within one fade of the end of
                 // this block: the fade-out that ends on its frame may start here.
-                let next = lead_target(pending, &env);
+                let next = lead_target(pending, &env, fade);
                 if next != aim {
                     walk.gain.push(cursor, Gain::Aim(next));
                     aim = next;
@@ -660,7 +661,7 @@ impl Engine {
 /// `at`: the transport has already moved (the machine applies a fade's
 /// outcome at once), so the fade is the engine's, as gain. Mark the jump
 /// (the fade-out, if it had lead time, ends here; the fade-in starts
-/// here) and settle the machine, whose own ramp the engine does not use.
+/// here) and settle the machine.
 /// Returns whether it marked one.
 fn settle_declick(motion: &mut MotionAudio, gain: &mut GainPlan, at: usize) -> bool {
     if is_declicking(motion.motion()) {
@@ -696,9 +697,14 @@ struct Walk {
     gain: GainPlan,
 }
 
-/// Frames a declick fades over, out and in: the motion machine's fade
-/// length (10 ms at 48 kHz).
-const FADE: usize = DEFAULT_DECLICK_FRAMES.get();
+/// How long a declick fades, out and in: long enough to kill a click, short
+/// enough not to read as a fade.
+const FADE_TIME: Seconds = Seconds(0.01);
+
+/// Frames a declick fades over at `rate`, at least one.
+fn fade_frames(rate: SampleRate) -> usize {
+    FADE_TIME.to_samples(rate).get().max(1)
+}
 
 /// Whether `command` asks for a declick (the motion machine grants it only
 /// while the transport is audible, which the lead check mirrors).
@@ -720,12 +726,12 @@ fn declicks(command: &TransportCommand) -> bool {
 /// if playback reaches it within `env`'s block plus one fade: where a
 /// fade-out has to end. Timed commands only (`At::Frame`, `At::Beat`); one
 /// due on the first frame itself has no lead left.
-fn lead_target(pending: &[Scheduled], env: &Env) -> Option<Frame> {
+fn lead_target(pending: &[Scheduled], env: &Env, fade: usize) -> Option<Frame> {
     if !env.transport.playing {
         return None;
     }
     let look = Env {
-        block_len: env.block_len + Samples(FADE),
+        block_len: env.block_len + Samples(fade),
         ..*env
     };
     pending
@@ -791,7 +797,7 @@ impl GainPlan {
 ///
 /// Continuous by construction: a fade-out falls linearly from wherever the
 /// gain is to zero at its target, so with a full fade of lead each frame
-/// moves it by at most `1/FADE`; a fade-in rises by `1/FADE` a frame. The one
+/// moves it by at most `1/fade`; a fade-in rises by `1/fade` a frame. The one
 /// step is a declicked command with no lead time (`At::NextBlock`, a late
 /// command, an untimed `try_send`): the old audio ends on the jump frame
 /// with the gain at zero there, and the new audio fades in.
@@ -799,13 +805,16 @@ impl GainPlan {
 struct Fader {
     gain: f32,
     aim: Option<Frame>,
+    /// Frames a fade spans, at the rate of the block being shaped.
+    fade: usize,
 }
 
 impl Fader {
-    fn new() -> Self {
+    fn new(fade: usize) -> Self {
         Self {
             gain: 1.0,
             aim: None,
+            fade,
         }
     }
 
@@ -821,10 +830,11 @@ impl Fader {
         base: usize,
         frames: usize,
     ) {
+        let fade = self.fade;
         let end = frame0.get() + frames as u64;
         // Nothing to do on a block with no event, full gain, and no fade-out
         // starting inside it: the common case.
-        let quiet = self.aim.is_none_or(|to| to.get() > end + FADE as u64);
+        let quiet = self.aim.is_none_or(|to| to.get() > end + fade as u64);
         if plan.len == 0 && self.gain == 1.0 && quiet {
             return;
         }
@@ -854,11 +864,11 @@ impl Fader {
                         self.gain = 0.0;
                         self.aim = None;
                     }
-                    Some(to) if to.get() - x <= FADE as u64 => {
+                    Some(to) if to.get() - x <= fade as u64 => {
                         let left = (to.get() - x) as f32;
                         self.gain *= left / (left + 1.0);
                     }
-                    _ => self.gain = (self.gain + 1.0 / FADE as f32).min(1.0),
+                    _ => self.gain = (self.gain + 1.0 / fade as f32).min(1.0),
                 }
             }
             if self.gain != 1.0 {
@@ -1256,7 +1266,7 @@ mod tests {
         );
         assert_eq!(walk.gain.len, 0, "nothing planned");
         let mut out = vec![0.25f32; 512];
-        let mut fader = Fader::new();
+        let mut fader = Fader::new(fade_frames(SampleRate(48_000.0)));
         fader.apply(&walk.gain, Frame::ZERO, &mut out, 1, 0, 512);
         assert!(out.iter().all(|&x| x == 0.25), "untouched");
 

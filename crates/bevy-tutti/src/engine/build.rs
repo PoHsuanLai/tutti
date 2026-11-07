@@ -153,7 +153,7 @@ pub(crate) fn build_with(
         crate::graph::latency::ChannelCompensation(std::sync::Arc::clone(session.compensation()));
     let transport = session.transport().clone();
     let metronome = std::sync::Arc::clone(session.click_settings());
-    let meter = session.meter().clone();
+    let meter = session.master_meter().clone();
     let tap = session.tap().clone();
     let click = session.click_node();
     #[cfg(feature = "sampler")]

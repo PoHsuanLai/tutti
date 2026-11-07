@@ -61,8 +61,8 @@
 //!
 //! With a runtime width, "a stereo source cannot feed a 6-channel sink" is not a
 //! type error. Two runtime checks carry it instead, and both are load-bearing:
-//! [`pump`]'s `debug_assert_eq!` and `tutti_io::Recorder::start`'s returned
-//! error. See [`pump`]'s docs for why there are two.
+//! [`pump`]'s `debug_assert_eq!` and a checked constructor's returned error
+//! (a recorder's `start`). See [`pump`]'s docs for why there are two.
 //!
 //! # Deliberately minimal
 //!
@@ -305,8 +305,8 @@ pub trait AudioOut<S = f32> {
 ///
 /// - **this `debug_assert_eq!`**, which fires in every test and debug build the
 ///   moment a mismatched pair is pumped;
-/// - **`tutti_io::Recorder::start`**, which returns an error for the same
-///   condition, so a release build refuses the pairing up front rather than
+/// - **a checked constructor** (a recorder's `start`), which returns an error
+///   for the same condition, so a release build refuses the pairing up front rather than
 ///   writing a file whose channels rotate every frame.
 ///
 /// A `debug_assert` rather than a hard panic because this is the *inner* check:
@@ -610,11 +610,9 @@ mod tests {
     /// `debug_assert` rather than quietly writing a stream whose channels
     /// rotate every frame.
     ///
-    /// The outer half — a checked constructor that errors in release builds too
-    /// — is `tutti_io::Recorder::start`, which is the one place both endpoints
-    /// are in scope before any frame moves.
-    // It tests a `debug_assert` (CLAUDE.md makes `pump`'s width check one),
-    // so it exists only where that assertion does: a release build has no
+    /// The outer half is a checked constructor that errors in release builds
+    /// too, at the one place both endpoints are in scope before any frame moves.
+    // It tests a `debug_assert`, so it exists only where that assertion does: a release build has no
     // check to test, and the test would fail there for that reason alone.
     #[test]
     #[cfg(debug_assertions)]

@@ -1,9 +1,7 @@
-//! [`PlayReading`]: the graph's play clock at one frame (doc 014 §4.3).
+//! [`PlayReading`]: the graph's play clock at one frame.
 //!
-//! A value type, here rather than in `tutti-graph` (which keeps the clock
-//! and re-exports this) so a crate that names no graph can carry one: the
-//! modulation compiler (`tutti_mod::compile`) dates a rate edit's anchor
-//! from the executor's last reading.
+//! A value type, so a crate that names no graph can carry one, for example to
+//! date a rate edit's anchor from an executor's last reading.
 
 use super::{Frame, Samples};
 
@@ -18,7 +16,7 @@ const PLAY_MASK: u64 = (1 << (64 - EPOCH_BITS)) - 1;
 ///
 /// `play` is a [`Frame`], a count, not `Seconds`: `Seconds` is `f32`, and an
 /// hour of play needs `f64` phase. Epochs are compared for equality only (a
-/// rate anchor dated in one epoch is ignored in another, doc 014 §4.3); they
+/// rate anchor dated in one epoch is ignored in another); they
 /// wrap after [`EPOCHS`](Self::EPOCHS) play starts in one process.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PlayReading {

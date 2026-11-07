@@ -264,8 +264,7 @@ impl Note {
     /// Returns the frequency in A440 twelve-tone equal temperament.
     ///
     /// This is the plain default. Alternative temperaments — just intonation,
-    /// Pythagorean, meantone — are a tuning table's job, not a note's; see
-    /// `tutti_polysynth::tuning`.
+    /// Pythagorean, meantone — are a tuning table's job, not a note's.
     #[inline]
     #[must_use]
     pub fn frequency(self) -> Hz {

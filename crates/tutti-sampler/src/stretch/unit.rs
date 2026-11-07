@@ -184,7 +184,7 @@ impl Unit {
                 scratch_out: scratch(),
             }),
             width,
-            stretch_factor: AtomicF32::new(StretchFactor::new_clamped(stretch_factor.get()).get()),
+            stretch_factor: AtomicF32::new(clamp_stretch(stretch_factor).get()),
             pitch_cents: AtomicF32::new(clamp_pitch(pitch_cents).get()),
             enabled,
             intake_debt: 0.0,
@@ -218,8 +218,7 @@ impl Unit {
     }
 
     /// Sets the duration scaling, clamped into
-    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]
-    /// ([`StretchFactor::new_clamped`]): zero or a negative factor is
+    /// [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]: zero or a negative factor is
     /// [`MIN`](StretchFactor::MIN), a non-finite one
     /// [`UNITY`](StretchFactor::UNITY). This is the cell's only writer, so a
     /// factor the hops cannot divide by never reaches them.
@@ -228,10 +227,8 @@ impl Unit {
     /// untouched either way. `&self` and a single atomic store, so a control
     /// thread may call it while the audio thread ticks.
     pub fn set_stretch_factor(&self, factor: StretchFactor) {
-        self.stretch_factor.store(
-            StretchFactor::new_clamped(factor.get()).get(),
-            Ordering::Release,
-        );
+        self.stretch_factor
+            .store(clamp_stretch(factor).get(), Ordering::Release);
     }
 
     /// The duration scaling currently in force, as last clamped and stored.
@@ -472,6 +469,17 @@ pub(super) fn clamp_pitch(cents: Cents) -> Cents {
         cents.clamp(MIN_PITCH, MAX_PITCH)
     } else {
         Cents(0.0)
+    }
+}
+
+/// `factor` within [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]; a
+/// non-finite value is no stretch. [`StretchFactor::new_clamped`] passes NaN
+/// through, and a NaN factor is a NaN hop.
+pub(super) fn clamp_stretch(factor: StretchFactor) -> StretchFactor {
+    if factor.get().is_finite() {
+        StretchFactor::new_clamped(factor.get())
+    } else {
+        StretchFactor::UNITY
     }
 }
 

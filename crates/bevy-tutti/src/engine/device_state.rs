@@ -184,6 +184,8 @@ pub(crate) fn device_fault_poll(
         if let Some(change) = translate(&event) {
             changes.write(change);
         }
+        #[cfg(feature = "midi-hardware")]
+        crate::midi::translate_midi_device(&event, &mut commands);
         match event {
             SessionEvent::DeviceFault(fault) => {
                 if let Some(state) = state.as_mut() {

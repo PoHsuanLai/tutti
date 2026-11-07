@@ -44,6 +44,8 @@
 //!   thread (one `fetch_or`) and a control thread takes whole.
 //! - [`edit_ring()`] — a bounded single-producer single-consumer queue of small
 //!   `Copy` values, for edits the control thread hands the audio thread.
+//! - [`drain_clock()`] — counts the drains the audio side begins, so the control
+//!   side can tell which of its writes a block has surely taken.
 //! - [`RtScope`] — a per-thread "inside a block" marker, which a `Drop`
 //!   impl checks ([`RtScope::check_outside`]) so a value that must be
 //!   freed on the control thread panics, in debug builds, when it is not.
@@ -62,6 +64,7 @@
 
 mod cell;
 mod denormals;
+mod drain_clock;
 mod edits;
 mod job_gate;
 mod packed_atomic;
@@ -76,6 +79,7 @@ mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::with_no_denormals;
+pub use drain_clock::{DrainBeat, DrainMark, DrainWatch, drain_clock};
 pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;

@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use tutti_rt::{DrainMark, DrainWatch};
+
 use tutti_plugin_types::{
     AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
     ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset,
@@ -41,7 +43,40 @@ pub struct Vst3Controller {
     /// A [`Edit::Reset`] the full ring refused: sent before anything in `unsent`,
     /// which is everything written since.
     reset_pending: bool,
+    /// What the Controller handed the Processor, latest per parameter, until a
+    /// block has surely taken it: what a save must add, because the
+    /// component's stream does not hold it yet.
+    handed: Vec<Handed>,
+    /// Reads the Processor's drain count.
+    watch: DrainWatch,
     _not_sync: PhantomData<Cell<()>>,
+}
+
+/// A write on its way to the Processor.
+#[derive(Debug, Clone, Copy)]
+struct Handed {
+    id: ParamId,
+    value: Normalized,
+    /// The drain count read after the write entered the ring; `None` while the
+    /// ring has refused it.
+    sent_at: Option<DrainMark>,
+}
+
+impl Handed {
+    /// Whether the write has left the ring for the plugin's `process`: two
+    /// drains have begun since it entered (`tutti_rt::DrainWatch::two_since`
+    /// says why two). That is the ring read, not the plugin's word that it took
+    /// the point. A drain that overflows `pending` (more than the reserve's
+    /// distinct parameters in one drain, which only a burst from a
+    /// parameter-rich plugin can reach) drops the point and counts it in
+    /// `edits_dropped`, and the entry goes with the rest: that write is then in
+    /// no save. A bus bind that fails after the drain would lose its points
+    /// too, but it fails only on a sample-width mismatch, which a typed
+    /// Processor cannot have; a `process` that fails was handed the points
+    /// first.
+    fn is_drained(&self, watch: &DrainWatch) -> bool {
+        self.sent_at.is_some_and(|mark| watch.two_since(mark))
+    }
 }
 
 impl std::fmt::Debug for Vst3Controller {
@@ -53,13 +88,21 @@ impl std::fmt::Debug for Vst3Controller {
 }
 
 impl Vst3Controller {
-    fn new(loaded: Vst3Loaded, shell: Arc<Shell>, edits: EditSink) -> Self {
+    fn new(
+        loaded: Vst3Loaded,
+        shell: Arc<Shell>,
+        edits: EditSink,
+        handed: Vec<Handed>,
+        watch: DrainWatch,
+    ) -> Self {
         Self {
             loaded: Some(loaded),
             shell,
             edits,
             unsent: Vec::new(),
             reset_pending: false,
+            handed,
+            watch,
             _not_sync: PhantomData,
         }
     }
@@ -87,17 +130,31 @@ impl Vst3Controller {
     /// A value already waiting to be retried is replaced by the newer one; a
     /// full ring keeps the value for the next tick.
     fn queue_edit(&mut self, id: ParamId, value: Normalized) {
-        if self.reset_pending {
-            self.keep(id, value);
-            return;
-        }
-        if self.unsent.iter().any(|(waiting, _)| *waiting == id) {
-            self.keep(id, value);
-            return;
-        }
-        if self.edits.send(Edit::Param { id, value }).is_err() {
+        let held_back = self.reset_pending || self.unsent.iter().any(|(waiting, _)| *waiting == id);
+        let sent = !held_back && self.edits.send(Edit::Param { id, value }).is_ok();
+        if !sent {
             self.keep(id, value);
         }
+        let sent_at = sent.then(|| self.watch.mark());
+        self.hand(id, value, sent_at);
+    }
+
+    /// Records the write as handed to the Processor, replacing an earlier one
+    /// to the same parameter.
+    fn hand(&mut self, id: ParamId, value: Normalized, sent_at: Option<DrainMark>) {
+        let handed = Handed { id, value, sent_at };
+        match self.handed.iter_mut().find(|h| h.id == id) {
+            Some(slot) => *slot = handed,
+            None => self.handed.push(handed),
+        }
+    }
+
+    /// The writes handed to the Processor that no block has surely taken yet,
+    /// and so are in no component stream. Forgets the ones that have been.
+    fn undrained(&mut self) -> Vec<(ParamId, Normalized)> {
+        let watch = &self.watch;
+        self.handed.retain(|h| !h.is_drained(watch));
+        self.handed.iter().map(|h| (h.id, h.value)).collect()
     }
 
     /// Holds a write for the next tick, replacing an earlier one to the same
@@ -115,6 +172,7 @@ impl Vst3Controller {
     /// holds it for the next tick, and every write after it waits behind it.
     fn reset_edits(&mut self) {
         self.unsent.clear();
+        self.handed.clear();
         self.reset_pending = self.edits.send(Edit::Reset).is_err();
     }
 }
@@ -180,15 +238,23 @@ impl Control for Vst3Controller {
         Control::parameter_value_from_text(&**self, id, text)
     }
 
+    /// Saves the state, with the writes no block has taken yet beside the
+    /// component's stream, which does not hold them.
     fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self)
+        let undrained = self.undrained();
+        self.save_state_with(&undrained)
     }
 
-    /// Restores the state, and makes the writes queued before it stale.
+    /// Restores the state, and makes the writes queued before it stale. The
+    /// writes the blob carries are queued to the Processor, which the
+    /// component's own stream did not hold.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        let result = Control::load_state(&mut **self, bytes);
+        let result = self.restore_state(bytes);
         self.reset_edits();
-        result
+        for (id, value) in result? {
+            self.queue_edit(id, value);
+        }
+        Ok(())
     }
 
     fn presets(&mut self) -> Vec<Preset> {
@@ -241,6 +307,9 @@ impl Control for Vst3Controller {
         for (id, value) in waiting {
             if self.edits.send(Edit::Param { id, value }).is_err() {
                 self.unsent.push((id, value));
+            } else {
+                let sent_at = Some(self.watch.mark());
+                self.hand(id, value, sent_at);
             }
         }
     }
@@ -330,15 +399,28 @@ impl Vst3Loaded {
         let context_requirements = loaded.context_requirements();
         let shell = Arc::new(Shell::new());
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
+        let (beat, watch) = tutti_rt::drain_clock();
+        let handed = carried
+            .iter()
+            .map(|&(id, value)| Handed {
+                id,
+                value,
+                sent_at: Some(watch.mark()),
+            })
+            .collect();
         let processor = Vst3Processor::new(ProcessorParts {
             shell: shell.clone(),
             audio,
             audio_side,
             context_requirements,
             drain,
+            beat,
             carried: carried.into_iter().map(|(id, v)| (id.get(), v)).collect(),
         });
-        Ok((processor, Vst3Controller::new(loaded, shell, sink)))
+        Ok((
+            processor,
+            Vst3Controller::new(loaded, shell, sink, handed, watch),
+        ))
     }
 
     /// Rejoins the halves of one activation of any sample type: checks they are
@@ -423,7 +505,9 @@ impl Vst3Loaded {
 
 /// `pending` with each parameter once, at its latest value, in the order each
 /// parameter was first written.
-fn latest_per_parameter(pending: Vec<(ParamId, Normalized)>) -> Vec<(ParamId, Normalized)> {
+pub(super) fn latest_per_parameter(
+    pending: Vec<(ParamId, Normalized)>,
+) -> Vec<(ParamId, Normalized)> {
     let mut out: Vec<(ParamId, Normalized)> = Vec::with_capacity(pending.len());
     for (id, value) in pending {
         match out.iter_mut().find(|(seen, _)| *seen == id) {

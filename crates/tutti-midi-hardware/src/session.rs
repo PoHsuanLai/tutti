@@ -31,10 +31,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::backend;
-use crate::capability::{EndpointId, EndpointInfo};
+use crate::devices::Devices;
 use crate::endpoints::{InputConnection, MidiEndpoints};
 use crate::error::{Error, Result};
 use crate::{HardwareMidiInputs, PortId};
+use tutti_midi_device::{DeviceId, DeviceInfo};
 use tutti_midi_types::MidiOut;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -68,7 +69,8 @@ struct Inner {
     /// `connect_input` can mint a producer handle per connection, and
     /// `disconnect_input` can retire the port it fed.
     ports: Arc<HardwareMidiInputs>,
-    backend: Box<dyn MidiEndpoints>,
+    /// The devices present, and the backend that opens them.
+    devices: Devices,
 }
 
 impl Drop for Inner {
@@ -86,8 +88,8 @@ impl Drop for Inner {
 /// What is currently connected.
 #[derive(Default)]
 struct Open {
-    /// Live input connections, keyed by endpoint.
-    inputs: HashMap<EndpointId, OpenInput>,
+    /// Live input connections, keyed by device.
+    inputs: HashMap<DeviceId, OpenInput>,
     /// The single output sink, if one is connected.
     output: Option<OpenOutput>,
 }
@@ -131,7 +133,7 @@ impl Inner {
 }
 
 struct OpenOutput {
-    id: EndpointId,
+    id: DeviceId,
     name: String,
     sink: Box<dyn MidiOut>,
 }
@@ -148,7 +150,11 @@ impl core::fmt::Debug for MidiSession {
 
 impl MidiSession {
     /// A session over this platform's backend.
-    pub fn new(ports: Arc<HardwareMidiInputs>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`Devices::open`].
+    pub fn new(ports: Arc<HardwareMidiInputs>) -> Result<Self> {
         Self::with_backend(backend::active(), ports)
     }
 
@@ -158,14 +164,27 @@ impl MidiSession {
     /// every connect/disconnect path deterministically, on any platform,
     /// including one with no MIDI hardware. Without it a test can assert only
     /// "does not panic".
-    pub fn with_backend(backend: Box<dyn MidiEndpoints>, ports: Arc<HardwareMidiInputs>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// As [`Devices::with_backend`].
+    pub fn with_backend(
+        backend: Box<dyn MidiEndpoints>,
+        ports: Arc<HardwareMidiInputs>,
+    ) -> Result<Self> {
+        Ok(Self {
             inner: Arc::new(Inner {
                 open: Mutex::new(Open::default()),
                 ports,
-                backend,
+                devices: Devices::with_backend(backend)?,
             }),
-        }
+        })
+    }
+
+    /// The devices present and their changes. A host polls it for hot-plug
+    /// ([`Devices::poll`]); the session's `Phase::Poll` does.
+    pub fn devices(&self) -> &Devices {
+        &self.inner.devices
     }
 
     /// The ring manager inbound events land in. The audio thread polls this.
@@ -175,25 +194,27 @@ impl MidiSession {
 
     // --- Enumeration ---
 
-    /// Endpoints that can send MIDI to this engine, as of now.
-    ///
-    /// A fresh snapshot per call, in the backend's own order — device lists go
-    /// stale on hot-plug, so nothing here is cached.
-    pub fn inputs(&self) -> Vec<EndpointInfo> {
-        self.inner.backend.inputs()
+    /// Devices that can send MIDI to this engine, as of now, ordered by id.
+    pub fn inputs(&self) -> Vec<DeviceInfo> {
+        self.devices_where(|d| d.direction.is_input())
     }
 
-    /// Endpoints this engine can send MIDI to, as of now. A fresh snapshot per
-    /// call, as [`inputs`](Self::inputs) is.
-    pub fn outputs(&self) -> Vec<EndpointInfo> {
-        self.inner.backend.outputs()
+    /// Devices this engine can send MIDI to, as of now, ordered by id.
+    pub fn outputs(&self) -> Vec<DeviceInfo> {
+        self.devices_where(|d| d.direction.is_output())
+    }
+
+    fn devices_where(&self, keep: impl Fn(&DeviceInfo) -> bool) -> Vec<DeviceInfo> {
+        let mut list = self.inner.devices.list();
+        list.retain(keep);
+        list
     }
 
     /// The shared name match for every `*_by_name` method here: **case-
     /// insensitive substring, first hit wins**, in the backend's enumeration
     /// order. See [`connect_input_by_name`](MidiSession::connect_input_by_name)
     /// for what that means for a caller.
-    fn find(list: Vec<EndpointInfo>, name: &str) -> Option<EndpointInfo> {
+    fn find(list: Vec<DeviceInfo>, name: &str) -> Option<DeviceInfo> {
         let needle = name.to_lowercase();
         list.into_iter()
             .find(|e| e.name.to_lowercase().contains(&needle))
@@ -211,27 +232,25 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no current input — the shape a
+    /// [`Error::MidiDevice`] when `id` names no present input — the shape a
     /// stale id takes after a hot-plug. Otherwise whatever the backend raises
     /// while opening the port.
-    pub fn connect_input(&self, id: EndpointId) -> Result<()> {
+    pub fn connect_input(&self, id: &DeviceId) -> Result<()> {
         let mut open = self.inner.open();
-        if open.inputs.contains_key(&id) {
+        if open.inputs.contains_key(id) {
             return Ok(());
         }
 
         let info = self
-            .inner
-            .backend
             .inputs()
             .into_iter()
-            .find(|e| e.id == id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI input with id {}", id.raw())))?;
+            .find(|d| d.id == *id)
+            .ok_or_else(|| Error::MidiDevice(format!("no MIDI input {id}")))?;
 
         // One ring per connection, and its only producer goes to the backend.
         let producer = self.inner.ports.open_input_port(info.name.as_str());
         let port = producer.port_id();
-        let connection = match self.inner.backend.open_input(id, producer) {
+        let connection = match self.inner.devices.open_input(id, producer) {
             Ok(connection) => connection,
             Err(e) => {
                 // The backend dropped the handle; the port it would have fed
@@ -242,7 +261,7 @@ impl MidiSession {
         };
 
         open.inputs.insert(
-            id,
+            id.clone(),
             OpenInput {
                 connection,
                 port,
@@ -257,12 +276,10 @@ impl MidiSession {
     /// # Matching
     ///
     /// **Case-insensitive substring, first hit wins.** `name` is lowercased and
-    /// tested with `contains` against each endpoint's lowercased name, in the
-    /// order [`inputs`](Self::inputs) returns them — which is the backend's
-    /// enumeration order, not sorted and not stable across a hot-plug. So
-    /// `"iac"` matches `"IAC Driver Bus 1"`, and a `name` matching two devices
-    /// silently picks whichever the OS listed first. Connect by
-    /// [`EndpointId`] when that matters.
+    /// tested with `contains` against each device's lowercased name, in the
+    /// order [`inputs`](Self::inputs) returns them: by id. So `"iac"` matches
+    /// `"IAC Driver Bus 1"`, and a `name` matching two devices picks the one
+    /// with the lowest id. Connect by [`DeviceId`] when that matters.
     ///
     /// # Errors
     ///
@@ -271,17 +288,21 @@ impl MidiSession {
     pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.inputs(), name)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI input matching '{name}'")))?;
-        self.connect_input(info.id)
+        self.connect_input(&info.id)
     }
 
     /// Closes an input endpoint and retires the port its events landed in.
-    /// Closing one that is not open is a no-op.
+    /// Returns whether it was open; closing one that is not is a no-op.
     ///
     /// Events still queued in that port are discarded with it.
-    pub fn disconnect_input(&self, id: EndpointId) {
+    pub fn disconnect_input(&self, id: &DeviceId) -> bool {
         let mut open = self.inner.open();
-        if let Some(input) = open.inputs.remove(&id) {
-            input.close(&self.inner.ports);
+        match open.inputs.remove(id) {
+            Some(input) => {
+                input.close(&self.inner.ports);
+                true
+            }
+            None => false,
         }
     }
 
@@ -291,7 +312,7 @@ impl MidiSession {
     /// Closes **at most one**, and the search runs over a `HashMap` of open
     /// connections — so unlike the `connect_*_by_name` pair there is no
     /// "first" to speak of: a `name` matching two open inputs closes an
-    /// arbitrary one of them. Pass an [`EndpointId`] to
+    /// arbitrary one of them. Pass a [`DeviceId`] to
     /// [`disconnect_input`](Self::disconnect_input) to be exact, or
     /// [`disconnect_all_inputs`](Self::disconnect_all_inputs) to close every
     /// one.
@@ -304,10 +325,10 @@ impl MidiSession {
             open.inputs
                 .iter()
                 .find(|(_, input)| input.name.to_lowercase().contains(&needle))
-                .map(|(id, _)| *id)
+                .map(|(id, _)| id.clone())
         };
         if let Some(id) = id {
-            self.disconnect_input(id);
+            self.disconnect_input(&id);
         }
     }
 
@@ -352,21 +373,19 @@ impl MidiSession {
     ///
     /// # Errors
     ///
-    /// [`Error::MidiDevice`] when `id` names no current output, plus whatever
+    /// [`Error::MidiDevice`] when `id` names no present output, plus whatever
     /// the backend raises while opening.
-    pub fn connect_output(&self, id: EndpointId) -> Result<()> {
+    pub fn connect_output(&self, id: &DeviceId) -> Result<()> {
         let info = self
-            .inner
-            .backend
             .outputs()
             .into_iter()
-            .find(|e| e.id == id)
-            .ok_or_else(|| Error::MidiDevice(format!("no MIDI output with id {}", id.raw())))?;
+            .find(|d| d.id == *id)
+            .ok_or_else(|| Error::MidiDevice(format!("no MIDI output {id}")))?;
 
-        let sink = self.inner.backend.open_output(id)?;
+        let sink = self.inner.devices.open_output(id)?;
         let mut open = self.inner.open();
         open.output = Some(OpenOutput {
-            id,
+            id: id.clone(),
             name: info.name,
             sink,
         });
@@ -387,12 +406,12 @@ impl MidiSession {
     pub fn connect_output_by_name(&self, name: &str) -> Result<()> {
         let info = Self::find(self.outputs(), name)
             .ok_or_else(|| Error::MidiDevice(format!("no MIDI output matching '{name}'")))?;
-        self.connect_output(info.id)
+        self.connect_output(&info.id)
     }
 
-    /// Closes the output endpoint, if one is open.
-    pub fn disconnect_output(&self) {
-        self.inner.open().output = None;
+    /// Closes the output endpoint, if one is open. Returns whether one was.
+    pub fn disconnect_output(&self) -> bool {
+        self.inner.open().output.take().is_some()
     }
 
     /// Whether an output is open.
@@ -406,9 +425,15 @@ impl MidiSession {
         self.inner.open().output.as_ref().map(|o| o.name.clone())
     }
 
-    /// The open output's endpoint, if any.
-    pub fn output_endpoint(&self) -> Option<EndpointId> {
-        self.inner.open().output.as_ref().map(|o| o.id)
+    /// The open output's device, if any.
+    pub fn output_device(&self) -> Option<DeviceId> {
+        self.inner.open().output.as_ref().map(|o| o.id.clone())
+    }
+
+    /// Whether `id` is an open input.
+    #[must_use]
+    pub fn is_input_connected(&self, id: &DeviceId) -> bool {
+        self.inner.open().inputs.contains_key(id)
     }
 
     /// Sends events to the open output.

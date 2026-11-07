@@ -269,6 +269,28 @@ pub enum SessionEvent {
     /// drain.
     #[cfg(feature = "midi-hardware")]
     MidiInputDropped(u64),
+    /// A MIDI device was added, removed or changed, in the order the OS
+    /// reported (design 017 §5). The session reads the devices in
+    /// `Phase::Poll`; the list at any time is
+    /// [`MidiSession::devices`](tutti_midi_hardware::MidiSession::devices).
+    #[cfg(feature = "midi-hardware")]
+    MidiDevice(tutti_midi_hardware::DeviceEvent),
+    /// A device the session held open as an input vanished: its connection
+    /// is closed and its port retired, after the [`MidiDevice`](Self::MidiDevice)
+    /// `Removed` that said so. What the device had queued is discarded; notes
+    /// it held are not released (design 017 §8.3 is not built).
+    #[cfg(feature = "midi-hardware")]
+    MidiInputLost(tutti_midi_hardware::DeviceInfo),
+    /// The device the session held open as its output vanished: the output is
+    /// closed, and what the hardware out sends is counted as dropped until a
+    /// host connects another.
+    #[cfg(feature = "midi-hardware")]
+    MidiOutputLost(tutti_midi_hardware::DeviceInfo),
+    /// The OS watch for MIDI devices ended on its own (the reason is the
+    /// message): the device list is frozen at what it last saw and no further
+    /// hot-plug is reported. Reported once.
+    #[cfg(feature = "midi-hardware")]
+    MidiWatchFailed(String),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
@@ -405,6 +427,14 @@ impl std::fmt::Debug for SessionEvent {
             Self::MidiInputDropped(count) => {
                 f.debug_tuple("MidiInputDropped").field(count).finish()
             }
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiDevice(event) => f.debug_tuple("MidiDevice").field(event).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
             Self::EventsDropped {
                 node,
                 port,

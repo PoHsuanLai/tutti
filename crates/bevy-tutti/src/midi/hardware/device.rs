@@ -108,6 +108,42 @@ pub enum MidiDeviceEvent {
     },
 }
 
+/// A MIDI device was added, removed or changed in the OS list (design 017
+/// §5), as the session's `Phase::Poll` reports it
+/// (`tutti_session::SessionEvent::MidiDevice`). It says what the OS list did,
+/// not what the engine holds: a held input that vanishes is also a
+/// [`MidiDeviceEvent::Disconnected`].
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct MidiHotplug(pub tutti_midi_hardware::DeviceEvent);
+
+/// Writes what a session event says about MIDI devices as messages.
+///
+/// A device event becomes a [`MidiHotplug`]. A held port the session retired
+/// clears the poll timer, so [`midi_device_poll_system`] reports the
+/// disconnect on the next frame rather than up to two seconds later.
+pub(crate) fn translate(event: &tutti_session::SessionEvent, commands: &mut Commands) {
+    use tutti_session::SessionEvent;
+    match event {
+        SessionEvent::MidiDevice(device) => {
+            let message = MidiHotplug(device.clone());
+            commands.queue(move |world: &mut World| {
+                world.write_message(message);
+            });
+        }
+        SessionEvent::MidiWatchFailed(why) => {
+            warn!("the MIDI device watch ended, hot-plug is no longer reported: {why}");
+        }
+        SessionEvent::MidiInputLost(_) | SessionEvent::MidiOutputLost(_) => {
+            commands.queue(|world: &mut World| {
+                if let Some(mut state) = world.get_resource_mut::<MidiDeviceState>() {
+                    state.last_check = None;
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
 /// What the last poll saw, so a change can be spotted.
 ///
 /// `seen` is **not** a record of what is connected — `MidiIo` already keeps
@@ -259,6 +295,7 @@ pub struct MidiDevicePlugin;
 impl Plugin for MidiDevicePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<MidiDeviceEvent>();
+        app.add_message::<MidiHotplug>();
         app.add_message::<ConnectMidiDevice>();
         app.add_message::<DisconnectMidiDevice>();
         app.add_message::<ConnectMidiOutput>();
@@ -274,3 +311,6 @@ impl Plugin for MidiDevicePlugin {
         );
     }
 }
+
+#[cfg(test)]
+mod tests;

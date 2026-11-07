@@ -137,7 +137,9 @@ just test-all                      # both
   example (`plugin_midi_export`, `--features clap,export`), and `bevy-tutti`'s
   `plugin_capture`, `mod_plugin` and `export_fork` plugin tests and
   `engine::restart::tests::a_restart_to_another_callback_size_re_declares_a_plugins_latency`
-  (`--features full,plugin`) fail with that exact command. They must fail
+  (`--features full,plugin`) fail with that exact command, and
+  `tutti-plugin-contract`'s `server` suite (`--features server`) needs
+  `--no-default-features --features clap,vst2,vst3`. They must fail
   rather than skip, and they cannot use a dev-dependency because that would
   be a cycle.
 - **Feature-gated suites** run only where a feature is on. A workspace run
@@ -584,7 +586,13 @@ Scalars use `Param<U>`.
 `testing/tutti-plugin-contract` runs the same cases against each format's host
 through `Loaded`, `Processor`, `Controller` and `Control`, with the one test
 plugin `testing/tutti-shared-plugin` (a format-free `core` and a shell per
-format). A format is a `Format` impl and `contract!(Fmt, gaps = N)`.
+format: CLAP, VST2 and VST3, each in `tutti-shared-plugin/src/<format>.rs`).
+A format is a `Format` impl and `contract!(Fmt, gaps = N)`. The C++ plugin
+`testing/tutti-shared-plugin-vst3-cpp` is the same spec on the Steinberg SDK
+classes, a separate component and controller, and runs the same cases as the
+`Vst3Cpp` format: the Rust VST3 shell shares the `vst3` crate with the host, so
+only the C++ one checks the bindings. `ParamTiming` and `Gap` are a format's
+only ways out of a case.
 
 - **The expected figures live in the contract's `spec`**, never imported from
   the plugin: a case that asked the plugin could not fail when it is wrong.
@@ -598,8 +606,11 @@ format). A format is a `Format` impl and `contract!(Fmt, gaps = N)`.
   test file is the ratchet; raising it is a reviewed edit. Never `#[ignore]`.
 - **A new case is mutation-tested**: break the property in the host or the
   plugin, watch it fail, restore, and write the mutation on the case.
-- A plugin that cannot share the core (a C++ VST3 plugin, an in-process AU
-  unit) follows the spec in `core`'s docs and runs the same cases.
+- A plugin that cannot share the core (the C++ VST3 plugin, an in-process AU
+  unit) follows the spec in `core`'s docs (and `core.hpp` mirrors it) and runs
+  the same cases. A change to the spec changes both cores.
+- The VST2 shell uses `vst-tutti`'s authoring side as a dependency; when that
+  half moves out of `vst-tutti`, the shell's one dependency line changes.
 
 ## Check the constraint before designing around it
 

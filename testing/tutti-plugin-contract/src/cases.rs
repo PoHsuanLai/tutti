@@ -64,8 +64,8 @@ fn changes(points: &[(Param, i32, f64)]) -> ParameterChanges {
 }
 
 /// Each input channel lands in its own output slot: `out = in + tag`.
-// Mutation (run): the host binds the input channels in reverse order -> fails (and
-//   `f64_carries_same_audio`).
+// Mutation (run): CLAP, VST2 and VST3 hosts each binding or copying channels in reverse ->
+//   fails (also f64_carries_same_audio).
 pub fn routing_tag_oracle<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let ins = [ramp(BLOCK, 0.25), ramp(BLOCK, 0.5)];
@@ -78,8 +78,7 @@ pub fn routing_tag_oracle<F: Format>() {
 }
 
 /// A rate and block change reaches the plugin and rendering goes on.
-// Mutation (run): the host activates at a fixed 48 kHz -> fails on the rate the plugin was
-//   told.
+// Mutation (run): each host telling the plugin 48 kHz instead of the rate -> fails.
 pub fn reconfigure_keeps_rendering<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     a.silent(BLOCK);
@@ -93,7 +92,7 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
 }
 
 /// Reported latency follows the plugin's mode.
-// Mutation (run): the host reports the latency plus one -> fails.
+// Mutation (run): each host reporting the latency plus one -> fails.
 pub fn latency_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Delay).controller().latency(),
@@ -103,7 +102,8 @@ pub fn latency_reported<F: Format>() {
 }
 
 /// The reported latency is the delay the plugin applies, across blocks.
-// Mutation (run): the plugin's delay line one frame short -> fails at the impulse.
+// Mutation (run): the plugin's delay line one frame short (core.rs and core.hpp) -> fails
+//   in all four.
 pub fn latency_applied<F: Format>() {
     let mut a = active_with::<F>(Mode::Delay, 128, SampleFormat::Float32);
     let frames = 100;
@@ -125,7 +125,7 @@ pub fn latency_applied<F: Format>() {
 }
 
 /// The tail the plugin reports.
-// Mutation (run): the host reports the tail plus one -> fails.
+// Mutation (run): each host reporting the tail plus one -> fails.
 pub fn tail_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Tag).controller().tail(),
@@ -136,9 +136,9 @@ pub fn tail_reported<F: Format>() {
 /// The plugin lists its parameters with their names, defaults and, where the
 /// format reports it, that they are automatable. Not step counts: CLAP's stepped
 /// flag carries none, and VST2 has no steps.
-// Mutation (run): the host lists every parameter but the last -> fails; the
-// plugin swaps two names -> fails; the host reports automatable as hidden ->
-// fails.
+// Mutation (run): each host listing all but the last parameter -> fails; a swapped name in
+//   core.rs or in the C++ controller -> fails; the CLAP host reporting automatable as hidden
+//   -> fails.
 pub fn parameters_listed<F: Format>() {
     let mut got = F::load().parameters();
     got.sort_by_key(|p| p.id.get());
@@ -156,7 +156,7 @@ pub fn parameters_listed<F: Format>() {
 }
 
 /// A parameter written loaded reads back, loaded and active.
-// Mutation (run): the host's loaded `set_parameter` writes nothing -> fails.
+// Mutation (run): each host's loaded set_parameter writing nothing -> fails.
 pub fn parameter_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Aux, 0.75);
@@ -166,7 +166,8 @@ pub fn parameter_round_trip<F: Format>() {
 }
 
 /// An id the plugin lacks reads `None`.
-// Mutation (run): the host answers 0.0 for an id the plugin lacks -> fails.
+// Mutation (run): each host answering for an id the plugin lacks (VST2 mapping it to index
+//   0) -> fails.
 pub fn unlisted_parameter_is_none<F: Format>() {
     let loaded = F::load();
     assert_eq!(loaded.parameter(spec::UNLISTED), None, "loaded");
@@ -175,7 +176,9 @@ pub fn unlisted_parameter_is_none<F: Format>() {
 }
 
 /// A write to an active plugin is applied at the head of its next block.
-// Mutation (run): the controller drops a queued edit -> fails.
+// Mutation (run): each host's controller dropping the write -> fails; the VST3 host not
+//   queueing it to the processor -> fails the C++ plugin (a separate controller), not the
+//   Rust one.
 pub fn active_write_applied<F: Format>() {
     let mut a = active_in::<F>(Mode::Level);
     assert!(
@@ -189,7 +192,7 @@ pub fn active_write_applied<F: Format>() {
 
 /// A parameter point lands at its sample offset, or at the block head where
 /// the format cannot place it.
-// Mutation (run): the host sends every parameter point at offset 0 -> fails.
+// Mutation (run): each host sending every point at offset 0 (VST2: writing 0.0) -> fails.
 pub fn automation_point_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Level);
     let points = changes(&[(Param::Level, 32, 0.75)]);
@@ -202,7 +205,7 @@ pub fn automation_point_offset<F: Format>() {
 }
 
 /// A note starts and stops at its sample offset.
-// Mutation (run): the host moves every note one frame later -> fails.
+// Mutation (run): each host moving notes one frame later -> fails.
 pub fn note_at_offset<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(10, true), note(40, false)];
@@ -215,9 +218,9 @@ pub fn note_at_offset<F: Format>() {
 }
 
 /// What the host sent arrives as sent: events by offset, blocks by size.
-// Mutation (run): the host sorts events latest first -> fails; the host hands the plugin one
-//   frame fewer than the block -> fails on the block sizes; the plugin not logging
-//   parameter events -> fails on the count.
+// Mutation (run): each host ordering latest first, or handing the plugin one frame fewer
+//   than the block -> fails; the Rust core, the VST2 shell or the C++ plugin not logging
+//   parameters -> fails on the points.
 pub fn arrival_is_ordered_and_sized<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false), note(30, true)];
@@ -251,7 +254,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
 }
 
 /// State round-trips what the plugin persists.
-// Mutation (run): the host's `load_state` loads nothing -> fails.
+// Mutation (run): each host's load_state loading nothing -> fails.
 pub fn state_round_trip<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
@@ -265,7 +268,9 @@ pub fn state_round_trip<F: Format>() {
 }
 
 /// A parameter written to a loaded plugin reaches its audio at the first block.
-// Mutation (run): the plugin resets its level on activation -> fails.
+// Mutation (run): CLAP and VST2: the plugin resets its level on activation -> fails; VST3:
+//   the host dropping the write it carries to the first block -> fails the C++ plugin, and
+//   with the plugin's reset the Rust one.
 pub fn loaded_write_reaches_the_audio<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
@@ -276,7 +281,9 @@ pub fn loaded_write_reaches_the_audio<F: Format>() {
 
 /// A parameter written to a loaded plugin and saved before it ever renders is
 /// in the state; a restore of that state reads it back and renders it.
-// Mutation (run): the plugin saves the default level -> fails.
+// Mutation (run): CLAP and VST2: the plugin saving the default level -> fails; VST3: the
+//   host leaving the carried write out of the saved state -> fails the C++ plugin, and with
+//   the plugin's default the Rust one.
 pub fn loaded_write_survives_a_save<F: Format>() {
     let mut loaded = F::load();
     set_mode::<F, _>(&mut loaded, Mode::Level);
@@ -290,7 +297,9 @@ pub fn loaded_write_survives_a_save<F: Format>() {
 }
 
 /// Bytes that are not the plugin's state leave it working.
-// Mutation (run): the plugin resets its level before it refuses a state -> fails.
+// Mutation (run): the plugin switching to Silent when it refuses a state -> fails CLAP and
+//   VST3; the VST2 host zeroing parameter 0 when it refuses one -> fails VST2 (the host, not
+//   the plugin, sees the bytes).
 pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
@@ -301,7 +310,7 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
 }
 
 /// Halves of two activations do not rejoin.
-// Mutation (run): the host skips the check that the halves belong together -> fails.
+// Mutation (run): each host skipping the identity check -> fails.
 pub fn halves_of_two_activations_are_stuck<F: Format>() {
     let p = prepare(RATE, BLOCK, SampleFormat::Float32);
     let (pa, ca) = F::load().activate(p).map_err(|r| r.reason).expect("first");
@@ -312,19 +321,28 @@ pub fn halves_of_two_activations_are_stuck<F: Format>() {
 }
 
 /// 64-bit audio carries the same arithmetic, at 64 bits: 0.1 is not exact in 32.
-// Mutation (run): the host declares one channel on its 64-bit port table -> fails;
-// the VST2 host narrowing the block through 32 bits -> fails.
+// Mutation (run): each host's 64-bit port table or bus holding one channel -> fails; the
+//   VST2 host narrowing through 32 bits -> fails.
 pub fn f64_carries_same_audio<F: Format>() {
     let mut a = active_with::<F>(Mode::Tag, BLOCK, SampleFormat::Float64);
     let ins = [vec![0.1f64; BLOCK], vec![0.2f64; BLOCK]];
     let out = a.render(&ins, BLOCK, &ProcessContext::new());
-    assert!(out[0].iter().all(|&v| v == 0.1 + 1.0), "ch0 {:?}", &out[0][..2]);
-    assert!(out[1].iter().all(|&v| v == 0.2 + 2.0), "ch1 {:?}", &out[1][..2]);
+    assert!(
+        out[0].iter().all(|&v| v == 0.1 + 1.0),
+        "ch0 {:?}",
+        &out[0][..2]
+    );
+    assert!(
+        out[1].iter().all(|&v| v == 0.2 + 2.0),
+        "ch1 {:?}",
+        &out[1][..2]
+    );
 }
 
 /// A plugin whose log overflowed fails the oracle instead of passing on the
 /// part it kept.
-// Mutation (run): the plugin not flagging blocks past the ring -> fails.
+// Mutation (run): the plugin not flagging blocks past the ring (core.rs and core.hpp) ->
+//   fails in all four.
 pub fn overflowing_log_fails_the_oracle<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     for _ in 0..=spec::LOG_BLOCKS {
@@ -348,7 +366,7 @@ pub fn overflowing_log_fails_the_oracle<F: Format>() {
 ///
 /// A failure aborts the process, so under plain `cargo test` it takes the whole
 /// test binary with it, and a [`Gap`](crate::Gap) cannot express it.
-// Mutation (run): the host allocates once per block -> aborts under `AllocDisabler`.
+// Mutation (run): each host allocating once per block -> aborts under `AllocDisabler`.
 pub fn process_does_not_allocate<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false)];

@@ -117,11 +117,12 @@ check-features:
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
-# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and
-# `tutti-session/clap`'s plugin suite and `tutti`'s §5.2 example, which spawn it; CLAP
-# only, as in CI, so no VST3 SDK is needed.
+# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs,
+# `tutti-session/clap`'s plugin suite, `tutti`'s §5.2 example and
+# `tutti-plugin-contract`'s server suite, which spawn it; it needs the VST3 SDK
+# submodules, as in CI.
 test-features:
-    cargo build --locked -p tutti-plugin-server --no-default-features --features clap
+    cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
     cargo nextest run --locked -p tutti-cpal --features capture
     cargo nextest run --locked -p bevy-tutti --features audio-io
     cargo nextest run --locked -p bevy-tutti --features soundfont

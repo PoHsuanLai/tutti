@@ -176,7 +176,7 @@ unsafe extern "C" fn params_info(
         };
     info.cookie = ptr::null_mut();
     info.name = [0; CLAP_NAME_SIZE];
-    let name: &[u8] = [b"level".as_slice(), b"aux", b"mode"][index as usize];
+    let name = core::NAMES[index as usize].as_bytes();
     for (d, s) in info.name.iter_mut().zip(name) {
         *d = *s as c_char;
     }

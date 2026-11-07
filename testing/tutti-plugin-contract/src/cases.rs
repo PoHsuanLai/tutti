@@ -240,7 +240,12 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
             "{kind:?} outside the block"
         );
     }
-    assert_eq!(t.of(Kind::Param).count(), 2);
+    let points: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
+    match F::PARAM_TIMING {
+        ParamTiming::SampleAccurate => assert_eq!(points, [(3, 0.5), (25, 0.75)]),
+        // One value per parameter at the head: the latest.
+        ParamTiming::BlockHead => assert_eq!(points, [(0, 0.75)]),
+    }
     assert_eq!(t.of(Kind::NoteOn).count(), 2);
     assert_eq!(t.of(Kind::NoteOff).count(), 1);
 }

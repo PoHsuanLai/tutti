@@ -19,8 +19,8 @@ pub use active::{Active, BLOCK, RATE, Width, prepare};
 pub use assert_no_alloc::AllocDisabler;
 pub use cases::*;
 pub use format::{Format, Gap, ParamTiming, run};
-pub use formats::Clap;
-pub use plugin::{clap as clap_path, library};
+pub use formats::{Clap, Vst2, Vst3, Vst3Cpp};
+pub use plugin::{bundle_of, clap as clap_path, library, vst3_cpp_module, vst3_module};
 pub use transcript::{
     Kind, Logged, Transcript, find_blob, patch_mode, replace_blob, set_mode, transcript,
 };

@@ -16,12 +16,16 @@ tutti-fixtures = { path = "../tutti-fixtures" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-midi-types = { path = "../../crates/tutti-midi-types" }
 tutti-clap-host = { path = "../../crates/tutti-clap-host" }
+tutti-vst2-host = { path = "../../crates/tutti-vst2-host" }
+tutti-vst3-host = { path = "../../crates/tutti-vst3-host" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-shared-plugin = { path = "../tutti-shared-plugin" }
+tutti-shared-plugin-vst3-cpp = { path = "../tutti-shared-plugin-vst3-cpp" }
 
-# Needs `cargo build -p tutti-plugin-server --no-default-features --features clap`
-# first: the server cannot be a dependency (it depends on `tutti-plugin`).
-tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap"], optional = true }
+# Needs `cargo build -p tutti-plugin-server --no-default-features --features
+# clap,vst2,vst3` first: the server cannot be a dependency (it depends on
+# `tutti-plugin`).
+tutti-plugin = { path = "../../crates/tutti-plugin", features = ["clap", "vst2", "vst3"], optional = true }
 
 [features]
 # `tests/server.rs`: the same configuration and transcript through a real

@@ -12,7 +12,7 @@ or a beat (`MotionFsm::schedule`). `Transport` is the two halves as one handle,
 and `TransportClock` is the playhead `tutti-engine`'s `Engine` drives and hands
 to the graph in each block's `Env`.
 
-Also here: the read side (`Timeline`, `TransportState`), the clocks a renderer
+Also here: the read side (`Timeline`), the clocks a renderer
 drives (`RenderClock`, `FrozenClock`, `OfflineTimeline`) and `ProjectMeter`, the
 project's time signature and tempo map.
 

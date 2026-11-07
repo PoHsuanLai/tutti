@@ -35,11 +35,9 @@ use tutti_types::{Beat, Bpm};
 /// # What is deliberately NOT here
 ///
 /// Recording, looping, and preroll are live-session facts, not timeline
-/// facts: an offline render either answers `false`/`None` forever or handles
-/// them by direct field access, never through this trait. They live on
-/// the [`TransportState`](super::TransportState) supertrait (record + loop)
-/// and [`TransportSettings`](super::TransportSettings) (preroll), read only
-/// where a genuinely live transport is required.
+/// facts: they live on [`TransportSettings`](super::TransportSettings) and
+/// [`MotionFsm::loop_region`](super::MotionFsm::loop_region), read only where a
+/// genuinely live transport is required.
 pub trait Timeline: Send + Sync {
     /// Returns the playhead, as a [`Beat`] position. May be negative during a
     /// count-in.

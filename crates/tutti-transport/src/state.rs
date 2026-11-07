@@ -4,20 +4,19 @@
 //! The transport is *state* — a handful of atomics shared between the UI
 //! thread and the audio thread — plus the commands that mutate it. These
 //! types name the groups that always travel together, so consumers ask for
-//! a concept (`Declick`) instead of assembling one from loose atomics.
+//! a concept (`SeekSlot`) instead of assembling one from loose atomics.
 //!
 //! Grouping is by **data-flow direction**:
 //!
 //! - [`ClockLinks`] — what `TransportClock` shares with the live transport.
-//! - [`Declick`] — the fade contract between the FSM and `Engine`.
+//! - [`SeekSlot`] — the pending jump the FSM hands the clock.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use tutti_types::Beat;
-use tutti_types::Samples;
 
 /// A pending absolute jump. `pending` is the one-shot flag the clock
 /// consumes; `target` is where to land.
@@ -64,84 +63,6 @@ impl SeekSlot {
 }
 
 impl Default for SeekSlot {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Declick fade contract between the transport FSM and `Engine`.
-///
-/// The FSM arms a fade; the processor reads `remaining` every buffer to shape
-/// the output gain and reports completion. Both halves are load-bearing — this
-/// is a real two-thread handshake, not vestigial state.
-///
-/// # Frames narrow once, and saturate
-///
-/// Frames are `u32` in the atomics and [`Samples`] at the API, and `Samples` is
-/// `usize`-backed, so the narrowing is real. It happens once, in
-/// [`start`](Self::start), saturating rather than truncating: a fade longer
-/// than `u32::MAX` frames (over a day) is nonsense, but wrapping it to a short
-/// fade would click, which is the one thing this type exists to prevent.
-#[derive(Clone, Debug)]
-pub struct Declick {
-    /// Frames left in the fade. 0 = no fade active.
-    pub remaining: Arc<AtomicU32>,
-    /// Fade length in frames, stamped when the fade starts.
-    pub total: Arc<AtomicU32>,
-}
-
-impl Declick {
-    /// An idle contract: no fade armed, no length stamped.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            remaining: Arc::new(AtomicU32::new(0)),
-            total: Arc::new(AtomicU32::new(0)),
-        }
-    }
-
-    /// Arms a fade of `frames`, resetting the ramp to full gain.
-    ///
-    /// Takes [`Samples`] because that is what callers hold and what the
-    /// processor compares against — `Seconds::to_samples_*` returns one, and
-    /// the RT loop bounds itself by the block's frame count, so the narrowing
-    /// happens here instead of at every call site.
-    ///
-    /// **Not for retargeting a fade in flight.** Resetting `remaining` mid-fade
-    /// steps the gain back to 1.0, which clicks — the FSM keeps the ramp
-    /// counting and swaps only its outcome instead.
-    pub fn start(&self, frames: impl Into<Samples>) {
-        let n = u32::try_from(frames.into().get()).unwrap_or(u32::MAX);
-        self.total.store(n, Ordering::Release);
-        self.remaining.store(n, Ordering::Release);
-    }
-
-    /// Frames left in the fade, 0 when inactive.
-    #[inline]
-    pub fn remaining(&self) -> Samples {
-        Samples(self.remaining.load(Ordering::Acquire) as usize)
-    }
-
-    /// Fade length as armed, 0 when never started.
-    #[inline]
-    pub fn total(&self) -> Samples {
-        Samples(self.total.load(Ordering::Acquire) as usize)
-    }
-
-    /// Whether a fade is still ramping.
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.remaining.load(Ordering::Acquire) > 0
-    }
-
-    /// Abandon any fade in flight. `total` is left stamped, so the length of
-    /// the last fade stays inspectable.
-    pub fn clear(&self) {
-        self.remaining.store(0, Ordering::Release);
-    }
-}
-
-impl Default for Declick {
     fn default() -> Self {
         Self::new()
     }
@@ -374,33 +295,5 @@ mod tests {
         // Consumed — a second take sees nothing.
         assert_eq!(seek.take(), None);
         assert!(!seek.is_pending());
-    }
-
-    /// `start` must stamp BOTH halves, and `clear` must retain `total`.
-    ///
-    /// Not folded into the `motion.rs` fade tests, and not foldable: those
-    /// assert through [`Declick::is_active`], which reads `remaining` alone. A
-    /// `start` that set `remaining` and skipped `total` passes every one of
-    /// them — and then `Engine::apply_declick` early-returns on `total == 0.0`,
-    /// so the fade is silently disabled and a stop clicks. Mutation-checked:
-    /// drop the `total` store and only this test goes red.
-    ///
-    /// The `clear` half is the same argument pointed the other way. `total`
-    /// is deliberately left stamped so the last fade's length stays
-    /// inspectable, which no public predicate reports.
-    #[test]
-    fn declick_start_arms_both_halves() {
-        let declick = Declick::new();
-        assert!(!declick.is_active());
-
-        declick.start(480);
-        assert!(declick.is_active());
-        assert_eq!(declick.total.load(Ordering::Acquire), 480);
-        assert_eq!(declick.remaining.load(Ordering::Acquire), 480);
-
-        declick.clear();
-        assert!(!declick.is_active());
-        // Total is retained so a fade's length stays inspectable.
-        assert_eq!(declick.total.load(Ordering::Acquire), 480);
     }
 }

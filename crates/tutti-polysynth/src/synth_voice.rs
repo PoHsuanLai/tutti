@@ -21,9 +21,8 @@ use crate::mpe::{MpeControl, SLIDE_CENTER};
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
-use tutti_midi_types::midi2::num::u7;
 use tutti_types::{Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, Semitones};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber};
 
 /// A gate edge waiting for the next control step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +38,7 @@ enum GateEdge {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SynthVoice {
-    note: u7,
+    note: NoteNumber,
     channel: MidiChannel,
     velocity: f32,
     gate: bool,
@@ -85,7 +84,7 @@ pub(crate) struct SynthVoice {
 }
 
 impl SynthVoice {
-    pub(crate) fn note(&self) -> u7 {
+    pub(crate) fn note(&self) -> NoteNumber {
         self.note
     }
     pub(crate) fn channel(&self) -> MidiChannel {
@@ -140,7 +139,7 @@ impl SynthVoice {
     }
 
     /// Update note and channel for legato retrigger (without re-gating).
-    pub(crate) fn update_legato(&mut self, note: u7, channel: MidiChannel) {
+    pub(crate) fn update_legato(&mut self, note: NoteNumber, channel: MidiChannel) {
         self.note = note;
         self.channel = channel;
     }
@@ -153,7 +152,7 @@ impl SynthVoice {
         };
 
         Self {
-            note: u7::new(0),
+            note: NoteNumber::default(),
             channel: MidiChannel::FIRST,
             velocity: 0.0,
             gate: false,
@@ -180,7 +179,7 @@ impl SynthVoice {
 
     pub(crate) fn note_on(
         &mut self,
-        note: u7,
+        note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
         base_freq: impl Into<Hz>,
@@ -215,7 +214,7 @@ impl SynthVoice {
     /// Return the voice to its just-built state. The caller silences its lanes
     /// (`VoiceBank::kill`); this resets only the control state.
     pub(crate) fn reset(&mut self) {
-        self.note = u7::new(0);
+        self.note = NoteNumber::default();
         self.channel = MidiChannel::FIRST;
         self.velocity = 0.0;
         self.envelope_level = 0.0;

@@ -11,7 +11,7 @@
 //!
 //! [`UmpVirtualDestination`] creates one such endpoint with
 //! `MIDIDestinationCreateWithProtocol` and hands every received UMP message to a
-//! callback. Unlike the source side, the safe `coremidi` 0.8 wrapper *does*
+//! callback. Unlike the source side, the safe `coremidi` wrapper *does*
 //! expose this (`Client::virtual_destination_with_protocol`), so no unsafe FFI
 //! bridge is needed here.
 //!
@@ -19,10 +19,11 @@
 //! UMP messages with no separators, each one's length implied by its type nibble.
 //! [`split_ump_stream`](tutti_midi_types::ump::split_ump_stream) walks that.
 
-use coremidi::{Client, EventList, Protocol, VirtualDestination};
+use coremidi::{EventList, Protocol, VirtualDestination};
 use tracing::debug;
 use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
 
+use super::shared_client;
 use crate::error::{Error, Result};
 
 /// A CoreMIDI virtual destination that speaks the **MIDI 2.0 (UMP) protocol**.
@@ -34,9 +35,8 @@ use crate::error::{Error, Result};
 ///
 /// Keep the value alive: dropping it tears the endpoint down.
 pub struct UmpVirtualDestination {
-    // Both are retained purely to own the endpoint's lifetime — the callback
-    // installed at creation is what actually does the work.
-    _client: Client,
+    // Retained purely to own the endpoint's lifetime — the callback installed at
+    // creation is what actually does the work.
     _destination: VirtualDestination,
     name: String,
 }
@@ -65,11 +65,10 @@ impl UmpVirtualDestination {
     where
         F: FnMut(MidiEvent) + Send + 'static,
     {
-        let client =
-            Client::new(&format!("tutti-ump-dst-{name}")).map_err(|status| Error::CoreMidi {
-                operation: "create client (ump destination)",
-                status,
-            })?;
+        let client = shared_client().map_err(|status| Error::CoreMidi {
+            operation: "create client (ump destination)",
+            status,
+        })?;
 
         let destination = client
             .virtual_destination_with_protocol(
@@ -91,7 +90,6 @@ impl UmpVirtualDestination {
 
         debug!(name, "Created native-UMP virtual MIDI destination");
         Ok(Self {
-            _client: client,
             _destination: destination,
             name: name.to_string(),
         })

@@ -246,9 +246,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -858,12 +858,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1288,12 +1282,12 @@ dependencies = [
 
 [[package]]
 name = "coremidi"
-version = "0.8.0"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "964eb3e10ea8b0d29c797086aab3ca730f75e06dced0cb980642fd274a5cca30"
+checksum = "a57ede822fdaf19280cf1320a5a5d3a522c75c910d01750af1e8122b6ad2595b"
 dependencies = [
- "block",
- "core-foundation 0.9.4",
+ "block2 0.6.2",
+ "core-foundation 0.10.1",
  "core-foundation-sys",
  "coremidi-sys",
 ]
@@ -3426,9 +3420,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "ringbuf"
-version = "0.4.8"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe47b720588c8702e34b5979cb3271a8b1842c7cb6f57408efa70c779363488c"
+checksum = "33d5f59e4145df5f29e84b6389394a8a3fedf7bd8c12570560ae67a917e6eae3"
 dependencies = [
  "crossbeam-utils",
  "portable-atomic",
@@ -4033,9 +4027,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.54.0"
+version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0c168a474b95bfecfe908a65d4bdffc523144b649a74c09c286afb35d53e0bc"
+checksum = "b52fd3255258d26fac7264ab5a76b53c13367136dc011d3d6ad4f8ed070396a3"
 dependencies = [
  "pin-project-lite",
 ]
@@ -4418,13 +4412,12 @@ name = "tutti-midi-hardware"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "core-foundation 0.9.4",
+ "core-foundation 0.10.1",
  "coremidi",
  "coremidi-sys",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
  "tutti-alsa-ump-sys",
  "tutti-graph",
  "tutti-midi-hardware",

@@ -45,7 +45,7 @@ tutti-graph = { path = "../tutti-graph" }
 
 # The capture ring `MicMonitorNode` drains. The producer half lives in the
 # device layer (`tutti-cpal`), which sits *above* this crate.
-ringbuf = "0.4"
+ringbuf = "0.6"
 
 # WAV encode for the `WavOut` sink. Deliberately not in `tutti-types`, which is
 # the root leaf: a file-format codec belongs at the edge that writes files.
@@ -73,7 +73,7 @@ tempfile = "3.8"
 # The RT gate: `MicMonitorNode::process` must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
 # The gate builds a ring by hand to feed the node under a disabled allocator.
-ringbuf = "0.4"
+ringbuf = "0.6"
 
 [package.metadata.docs.rs]
 all-features = true

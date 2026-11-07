@@ -89,7 +89,11 @@ scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-s
 scripts/check-guards.sh            # every host callback runs under the panic guard
 scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
+just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
 ```
+
+`just deny` needs `cargo install cargo-deny --version 0.20.2 --locked` (CI pins
+the same version) and fails with that command when it is missing.
 
 `just doc` runs rustdoc as CI does (`--document-private-items`, per feature,
 and the docs.rs build on a dated nightly); `just check-loom` runs clippy under

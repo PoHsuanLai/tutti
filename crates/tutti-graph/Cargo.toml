@@ -36,7 +36,7 @@ bytemuck = { version = "1.16", features = ["derive"] }
 # retired boxes back. Already the engine's ring (tutti-core, tutti-io,
 # tutti-sampler use it); lock-free and allocation-free once built, which is
 # what the audio-thread side of the queue needs.
-ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
+ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 # Turns `contract` on for this crate's own tests (the pattern `tutti-nodes`

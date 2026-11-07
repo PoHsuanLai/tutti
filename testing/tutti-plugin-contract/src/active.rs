@@ -1,8 +1,8 @@
 //! One activation, both halves held together.
 
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Loaded, PluginError, PluginIo, Prepare, ProcessContext,
-    ProcessOutput, Processor, RenderMode, Sample, SampleFormat, SampleRate, Samples,
+    AudioBuffer, AudioBufferMut, Loaded, MaxBlock, PluginError, PluginIo, Prepare, ProcessContext,
+    ProcessOutput, Processor, Sample, SampleFormat, SampleRate, Samples,
 };
 
 /// The default rate.
@@ -16,12 +16,10 @@ const UNWRITTEN: f64 = 9.0;
 /// A `Prepare` for realtime rendering.
 #[must_use]
 pub fn prepare(rate: f64, block: usize, format: SampleFormat) -> Prepare {
-    Prepare {
-        rate: SampleRate(rate),
-        max_block: Samples(block),
-        format,
-        mode: RenderMode::Realtime,
-    }
+    let block = MaxBlock::new(Samples(block)).expect("a case renders at least one frame");
+    Prepare::new(SampleRate(rate), block)
+        .expect("a case runs at a positive finite rate")
+        .with_format(format)
 }
 
 /// A sample width a case can render at.
@@ -123,7 +121,7 @@ impl<L: Loaded> Active<L> {
         let mut refs: Vec<&mut [S]> = outs.iter_mut().map(Vec::as_mut_slice).collect();
         let mut out = ProcessOutput::default();
         let mut io = PluginIo {
-            buffer: S::wrap(AudioBuffer::new(&ins, &mut refs, self.prepare.rate.0)),
+            buffer: S::wrap(AudioBuffer::new(&ins, &mut refs, self.prepare.rate().0)),
             ctx,
             out: &mut out,
         };

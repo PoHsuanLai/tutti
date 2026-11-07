@@ -11,8 +11,8 @@ use std::sync::{Mutex, MutexGuard};
 use assert_no_alloc::{AllocDisabler, assert_no_alloc};
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, Control, Controller, Event, Hand, HostOp, Lifecycle, Loaded,
-    Normalized, Notice, ParamId, ParameterChanges, PluginError, PluginIo, Prepare, ProcessContext,
-    ProcessOutput, Processor, RenderMode, SampleFormat, SampleRate, Samples, Stage,
+    MaxBlock, Normalized, Notice, ParamId, ParameterChanges, PluginError, PluginIo, Prepare,
+    ProcessContext, ProcessOutput, Processor, RenderMode, SampleFormat, SampleRate, Samples, Stage,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{MidiEvent, Vst2Controller, Vst2Loaded, Vst2Processor};
@@ -35,12 +35,7 @@ const START_PROCESS: i32 = 71;
 const STOP_PROCESS: i32 = 72;
 
 fn prepare() -> Prepare {
-    Prepare {
-        rate: SampleRate(SAMPLE_RATE),
-        max_block: Samples(BLOCK),
-        format: SampleFormat::Float32,
-        mode: RenderMode::Realtime,
-    }
+    Prepare::new(SampleRate(SAMPLE_RATE), MaxBlock::of(Samples(BLOCK))).expect("a real rate")
 }
 
 /// Holds the probe for one test and puts its switches, capture, trace and
@@ -225,8 +220,7 @@ fn activation_splits_the_plugin_and_renders_through_the_trait() {
 fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     let probe = Probe::acquire();
     probe.declaring_f64();
-    let mut wanted = prepare();
-    wanted.format = SampleFormat::Float64;
+    let wanted = prepare().with_format(SampleFormat::Float64);
     let (mut processor, controller) = probe.load().activate(wanted).expect("activates");
     assert_eq!(capture().set_precision_value, 1, "told 64-bit");
 
@@ -263,24 +257,29 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     drop(rejoin(processor, controller));
 }
 
-/// **A refused activation hands the plugin back, loaded and untouched**, and it
-/// activates afterwards.
+/// **A rate or block that is no rate or block never reaches the host**: no
+/// `Prepare` can be built from it, so the plugin stays loaded and untouched and
+/// activates afterwards. (The host used to refuse these at `activate`, handing
+/// the plugin back; the `Prepare` type now holds that line.)
 ///
-/// Mutation (run): the rate check removed from `Loaded::activate` -> a rate of
-/// zero reaches `effSetSampleRate` and the activation succeeds -> the
-/// `expect_err` fails.
+/// Mutation (run): the finite and positive check removed from `Prepare::new` and
+/// `with_rate` -> a rate of zero builds a `Prepare` -> the `is_none` fails.
 #[test]
-fn a_refused_activation_hands_the_plugin_back() {
+fn a_prepare_without_a_real_rate_or_block_cannot_be_built() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let mut bad = prepare();
-    bad.rate = SampleRate(0.0);
-    let refused = loaded.activate(bad).expect_err("a rate of zero is refused");
-    let plugin = refused.plugin.expect("the plugin comes back");
-    assert!(!plugin.is_active());
+    for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            Prepare::new(SampleRate(rate), MaxBlock::of(Samples(BLOCK))).is_none(),
+            "{rate} Hz"
+        );
+        assert!(prepare().with_rate(SampleRate(rate)).is_none(), "{rate} Hz");
+    }
+    assert!(MaxBlock::new(Samples(0)).is_none());
+    assert!(!loaded.is_active());
     assert_eq!(capture().resume_count, 0, "nothing reached the plugin");
-    assert!(!Control::parameters(&plugin).is_empty(), "still usable");
-    let (processor, controller) = plugin.activate(prepare()).expect("a valid rate again");
+    assert!(!Control::parameters(&loaded).is_empty(), "still usable");
+    let (processor, controller) = loaded.activate(prepare()).expect("a valid rate");
     drop(rejoin(processor, controller));
 }
 
@@ -317,10 +316,10 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     let probe = Probe::acquire();
     let (mut processor, mut controller) = probe.activate();
     let id = ParamId::new(1);
-    controller.set_parameter(id, Normalized::new(0.5));
+    controller.set_parameter(id, Normalized::of(0.5));
     assert_eq!(
         Control::parameter(&controller, id),
-        Some(Normalized::new(0.5))
+        Some(Normalized::of(0.5))
     );
 
     let mut changes = ParameterChanges::reserved(2, 4);
@@ -330,7 +329,7 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     assert_eq!(
         Control::parameter(&controller, id),
-        Some(Normalized::new(0.75))
+        Some(Normalized::of(0.75))
     );
     drop(rejoin(processor, controller));
 }
@@ -463,7 +462,10 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
         for round in 0..40 {
             let saved = controller.save_state().expect("saves");
             controller.load_state(&saved).expect("loads");
-            controller.set_parameter(ParamId::new(0), Normalized::new(f64::from(round) / 40.0));
+            controller.set_parameter(
+                ParamId::new(0),
+                Normalized::clamped(f64::from(round) / 40.0),
+            );
             let _ = controller.parameter(ParamId::new(0));
             let _ = controller.wiring();
             let _ = controller.presets();
@@ -556,8 +558,7 @@ fn stopping_twice_and_rejoining_sends_one_stop_and_one_suspend() {
 #[test]
 fn the_render_mode_changes_live_without_a_restart() {
     let probe = Probe::acquire();
-    let mut wanted = prepare();
-    wanted.mode = RenderMode::Offline;
+    let wanted = prepare().with_mode(RenderMode::Offline);
     let (mut processor, controller) = probe.load().activate(wanted).expect("activates");
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 4, "offline");
@@ -734,8 +735,9 @@ fn a_rate_change_that_moves_the_latency_is_told() {
     set_late_latency(0);
     let mut driven = Driven::activated(&probe);
     set_late_latency(1537);
-    let mut wanted = prepare();
-    wanted.rate = SampleRate(96_000.0);
+    let wanted = prepare()
+        .with_rate(SampleRate(96_000.0))
+        .expect("a real rate");
     driven.drive(Event::Op(HostOp::Reconfigure(wanted)));
     assert_eq!(driven.state.stage(), Stage::Active);
     assert!(

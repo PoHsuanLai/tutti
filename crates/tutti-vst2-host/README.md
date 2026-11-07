@@ -123,7 +123,7 @@ for info in plugin.parameters() {
 
 // A normalized `0..=1` value, written to the parameter at position 0.
 let first = plugin.parameters()[0].id;
-plugin.set_parameter(first, Normalized::new(0.5));
+plugin.set_parameter(first, Normalized::of(0.5));
 # Ok(()) }
 ```
 

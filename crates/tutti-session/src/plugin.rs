@@ -1601,7 +1601,7 @@ mod tests {
             self.params
                 .iter()
                 .find(|(a, _)| *a == id)
-                .map(|&(_, v)| Normalized::new(f64::from(v)))
+                .map(|&(_, v)| Normalized::clamped(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {

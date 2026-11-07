@@ -309,7 +309,7 @@ mod tests {
     fn at(offset: i32, value: f64) -> ParameterPoint {
         ParameterPoint {
             sample_offset: offset,
-            value: Normalized::new(value),
+            value: Normalized::clamped(value),
         }
     }
 

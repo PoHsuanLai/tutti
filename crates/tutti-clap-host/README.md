@@ -128,8 +128,8 @@ for info in plugin.parameters() {
 // Values are normalized `0..=1` at the trait. A loaded plugin takes the write
 // now; a controller queues it to the Processor, which applies it at the head
 // of its next block.
-plugin.set_parameter(ParamId::new(0), Normalized::new(0.75));
-plugin.set_parameter(ParamId::new(1), Normalized::new(0.5));
+plugin.set_parameter(ParamId::new(0), Normalized::of(0.75));
+plugin.set_parameter(ParamId::new(1), Normalized::of(0.5));
 
 // State save/restore is legal before any buffer exists.
 let saved = plugin.save_state()?;

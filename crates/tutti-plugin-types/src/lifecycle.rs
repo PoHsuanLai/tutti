@@ -23,7 +23,9 @@
 
 use arrayvec::ArrayVec;
 
-use crate::{Layout, PluginError, PluginTail, RenderMode, SampleFormat, SampleRate, Samples};
+use crate::{
+    Layout, MaxBlock, PluginError, PluginTail, RenderMode, SampleFormat, SampleRate, Samples,
+};
 
 /// How many effects one [`step`] can emit.
 ///
@@ -63,16 +65,95 @@ pub struct FdId(pub i32);
 
 /// What `activate` needs, and what a change of any field costs: a deactivate
 /// and an activate.
+///
+/// A rate is finite and positive and a block holds at least one frame, so no
+/// host is handed an activation its format would refuse.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_plugin_types::{MaxBlock, Prepare, RenderMode};
+/// use tutti_types::{SampleRate, Samples};
+///
+/// let block = MaxBlock::of(Samples(512));
+/// let prepare = Prepare::new(SampleRate(48_000.0), block).unwrap();
+/// assert_eq!(prepare.mode(), RenderMode::Realtime);
+/// assert!(Prepare::new(SampleRate(f64::NAN), block).is_none());
+/// assert!(Prepare::new(SampleRate(0.0), block).is_none());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prepare {
+    rate: SampleRate,
+    max_block: MaxBlock,
+    format: SampleFormat,
+    mode: RenderMode,
+}
+
+impl Prepare {
+    /// An activation at `rate` with blocks of up to `max_block` frames, in
+    /// 32-bit audio under realtime pressure. [`None`] if `rate` is not finite
+    /// and positive.
+    #[must_use]
+    pub fn new(rate: SampleRate, max_block: MaxBlock) -> Option<Self> {
+        Some(Self {
+            rate: valid_rate(rate)?,
+            max_block,
+            format: SampleFormat::default(),
+            mode: RenderMode::default(),
+        })
+    }
+
+    /// This activation, at `rate`. [`None`] if `rate` is not finite and
+    /// positive.
+    #[must_use]
+    pub fn with_rate(self, rate: SampleRate) -> Option<Self> {
+        Some(Self {
+            rate: valid_rate(rate)?,
+            ..self
+        })
+    }
+
+    /// This activation, exchanging audio in `format`.
+    #[must_use]
+    pub const fn with_format(mut self, format: SampleFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    /// This activation, under `mode`.
+    #[must_use]
+    pub const fn with_mode(mut self, mode: RenderMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// The sample rate blocks are rendered at.
-    pub rate: SampleRate,
+    #[must_use]
+    pub const fn rate(&self) -> SampleRate {
+        self.rate
+    }
+
     /// The most frames one block carries.
-    pub max_block: Samples,
+    #[must_use]
+    pub const fn max_block(&self) -> MaxBlock {
+        self.max_block
+    }
+
     /// The sample width audio is exchanged in.
-    pub format: SampleFormat,
+    #[must_use]
+    pub const fn format(&self) -> SampleFormat {
+        self.format
+    }
+
     /// Whether blocks arrive under realtime pressure.
-    pub mode: RenderMode,
+    #[must_use]
+    pub const fn mode(&self) -> RenderMode {
+        self.mode
+    }
+}
+
+fn valid_rate(rate: SampleRate) -> Option<SampleRate> {
+    (rate.get().is_finite() && rate.get() > 0.0).then_some(rate)
 }
 
 /// Which changes a format needs a restart for.

@@ -85,9 +85,10 @@ use crate::exec::{
 };
 use crate::history::TransportHistory;
 use crate::loss::Dropped;
-use crate::node::{Env, MAX_PORTS, MaxBlock};
+use crate::node::{Env, MAX_PORTS};
 use crate::plan::{Op, Plan, Span};
 use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
+use tutti_types::MaxBlock;
 
 /// A pool of threads that runs a job on several of them — what the parallel
 /// executor (and a CLAP plugin's `clap.thread-pool` request) asks of a

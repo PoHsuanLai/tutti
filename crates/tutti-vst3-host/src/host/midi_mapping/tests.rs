@@ -518,7 +518,7 @@ fn a_bridged_chunk_reaches_the_route_whole() {
             id,
             tutti_plugin_types::ParameterPoint {
                 sample_offset: 0,
-                value: tutti_plugin_types::Normalized::new(0.25),
+                value: tutti_plugin_types::Normalized::of(0.25),
             },
         ));
     }

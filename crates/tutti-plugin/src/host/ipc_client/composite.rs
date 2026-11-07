@@ -366,7 +366,7 @@ impl PluginBridge {
             // Flush pending GUI param changes before closing.
             for (param_id, value) in gui.poll_gui_param_changes() {
                 self.audio
-                    .set_parameter_rt(param_id, Normalized::new(f64::from(value)));
+                    .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
             gui.close_editor();
             true
@@ -384,7 +384,7 @@ impl PluginBridge {
             // Forward GUI-originated parameter changes to the audio bridge.
             for (param_id, value) in gui.poll_gui_param_changes() {
                 self.audio
-                    .set_parameter_rt(param_id, Normalized::new(f64::from(value)));
+                    .set_parameter_rt(param_id, Normalized::clamped(f64::from(value)));
             }
         }
     }

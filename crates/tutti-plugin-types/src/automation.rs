@@ -36,7 +36,7 @@ pub struct ParameterPoint {
 fn point(sample_offset: i32, value: f64) -> ParameterPoint {
     ParameterPoint {
         sample_offset,
-        value: Normalized::new(value),
+        value: Normalized::clamped(value),
     }
 }
 
@@ -824,7 +824,7 @@ mod serde_tests {
                     (0..13).map(|k| {
                         bincode::serialize(&ParameterPoint {
                             sample_offset: k * 4 + id % 4,
-                            value: crate::Normalized::new(0.25),
+                            value: crate::Normalized::of(0.25),
                         })
                         .expect("serialize")
                     }),
@@ -1315,7 +1315,7 @@ mod carried_tests {
         assert_eq!(changes.points_overflowed(), 0);
         let carried = ParameterPoint {
             sample_offset: 0,
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         let all = assert_no_alloc::assert_no_alloc(|| {
             (0..PARAMS).all(|i| changes.prepend_carried(i, carried))
@@ -1354,7 +1354,7 @@ mod carried_tests {
         }
         let carried = ParameterPoint {
             sample_offset: 0,
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         assert!(!changes.prepend_carried(0, carried));
         assert!(!changes.prepend_carried(1, carried));

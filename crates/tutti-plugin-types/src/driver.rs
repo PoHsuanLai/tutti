@@ -247,7 +247,7 @@ impl<L: Loaded> Lifecycle<L> {
                 if let Some(plugin) = plugin {
                     *self = Self::Refused {
                         plugin,
-                        rate: Some(prepare.rate),
+                        rate: Some(prepare.rate()),
                     };
                 }
                 Reply::Refused(reason)

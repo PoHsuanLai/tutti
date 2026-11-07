@@ -22,11 +22,11 @@ fn a_prepended_point_without_room_is_counted_not_grown_into() {
     changes.add_change(7u32.into(), 4, 0.2);
     list.refill_from_changes(&changes);
 
-    list.prepend_point(7, Normalized::new(0.9));
+    list.prepend_point(7, Normalized::of(0.9));
     assert_eq!(list.points_dropped(), 1, "the queue of 7 is full");
-    list.prepend_point(9, Normalized::new(0.4));
+    list.prepend_point(9, Normalized::of(0.4));
     assert_eq!(list.points_dropped(), 1, "the free queue took 9");
-    list.prepend_point(11, Normalized::new(0.5));
+    list.prepend_point(11, Normalized::of(0.5));
     assert_eq!(list.points_dropped(), 2, "no queue left for 11");
 
     let mut out = ParameterChanges::reserved(4, 4);
@@ -485,7 +485,7 @@ fn a_chunk_with_carried_values_refills_whole() {
             i,
             tutti_plugin_types::ParameterPoint {
                 sample_offset: 0,
-                value: tutti_plugin_types::Normalized::new(0.25),
+                value: tutti_plugin_types::Normalized::of(0.25),
             },
         ));
     }

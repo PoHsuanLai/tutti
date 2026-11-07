@@ -238,7 +238,7 @@ impl IParamValueQueueTrait for ParamValueQueueImpl {
                 // Inbound across the ABI: the *plugin* calls this, so the value is
                 // as untrusted as anything else crossing that edge. `Normalized`
                 // clamps it, which is a guard this direction never had.
-                value: Normalized::new(value),
+                value: Normalized::clamped(value),
             };
             let at = match points.try_push(point) {
                 Ok(()) => Some(points.len() - 1),

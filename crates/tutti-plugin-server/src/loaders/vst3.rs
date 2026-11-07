@@ -15,8 +15,8 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Stage, State,
 };
 use tutti_vst3_host::{LoadOptions, ProcessorAny, Vst3Loaded};
 
@@ -99,12 +99,16 @@ impl Vst3Instance {
         } else {
             SampleFormat::Float32
         };
-        let prepare = Prepare {
-            rate: SampleRate(sample_rate),
-            max_block: Samples(block_size),
-            format,
-            mode: RenderMode::Realtime,
-        };
+        let prepare = MaxBlock::new(Samples(block_size))
+            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+            .ok_or_else(|| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Activation,
+                reason: format!(
+                    "activate failed: the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                ),
+            })?
+            .with_format(format);
 
         let mut instance = Self {
             lifecycle: Lifecycle::new(loaded),
@@ -381,17 +385,20 @@ impl PluginAudio for Vst3Instance {
                 "VST3 plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        let mut wanted = previous;
-        wanted.rate = SampleRate(rate);
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate}: not a positive finite rate"
+            )));
+        };
         self.reconfigure(previous, wanted)
             .map_err(|(reason, rolled_back)| {
                 PluginError::Other(format!(
                     "VST3 plugin refused sample rate {rate} ({}): {reason}",
                     if rolled_back {
-                        format!("running at {}", previous.rate.0)
+                        format!("running at {}", previous.rate().0)
                     } else {
                         "deactivated".to_string()
                     }
@@ -419,12 +426,10 @@ impl PluginAudio for Vst3Instance {
         let Some(previous) = self.state.prepare() else {
             return false;
         };
-        if previous.mode == mode && self.is_active() {
+        if previous.mode() == mode && self.is_active() {
             return true;
         }
-        let mut wanted = previous;
-        wanted.mode = mode;
-        self.reconfigure(previous, wanted).is_ok()
+        self.reconfigure(previous, previous.with_mode(mode)).is_ok()
     }
 }
 
@@ -453,7 +458,7 @@ impl PluginParams for Vst3Instance {
     }
 
     /// The inverse. `getParamValueByString` answers normalized too, so the
-    /// result passes through `Normalized::new`'s clamp only.
+    /// result passes through `Normalized::clamped` only.
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
         Control::parameter_value_from_text(self.loaded_ref()?, id, text)
     }
@@ -633,7 +638,7 @@ mod tests {
     fn activations_seen_by_the_plugin(instance: &mut Vst3Instance) -> u32 {
         instance.set_parameter(
             tutti_plugin_types::ParamId::new(PARAM_MODE),
-            Normalized::new(MODE_ACTIVATION_COUNT),
+            Normalized::clamped(MODE_ACTIVATION_COUNT),
         );
         let frames = 128;
         let input = vec![vec![0.0f32; frames]; 3];
@@ -898,7 +903,7 @@ mod tests {
         );
         assert!(instance.is_active(), "the refusal was rolled back");
         assert_eq!(
-            instance.state.prepare().map(|p| p.mode),
+            instance.state.prepare().map(|p| p.mode()),
             Some(RenderMode::Realtime),
             "and the mode the core holds is the one that runs"
         );

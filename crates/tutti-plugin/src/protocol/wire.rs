@@ -71,9 +71,9 @@ pub mod normalized {
         (value.get() as f32).serialize(s)
     }
 
-    /// Decodes an `f32` and clamps it onto `0..=1` ([`Normalized::new`]).
+    /// Decodes an `f32` and clamps it onto `0..=1` ([`Normalized::clamped`]).
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
-        Ok(Normalized::new(f64::from(f32::deserialize(d)?)))
+        Ok(Normalized::clamped(f64::from(f32::deserialize(d)?)))
     }
 }
 
@@ -90,7 +90,7 @@ pub mod normalized_opt {
 
     /// Decodes an optional `f32`, clamping a present one onto `0..=1`.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Normalized>, D::Error> {
-        Ok(Option::<f32>::deserialize(d)?.map(|v| Normalized::new(f64::from(v))))
+        Ok(Option::<f32>::deserialize(d)?.map(|v| Normalized::clamped(f64::from(v))))
     }
 }
 
@@ -149,7 +149,7 @@ mod tests {
 
         let set = HostMessage::SetParameter {
             param_id: ParamId::new(0x0102_0304),
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         // variant 4, id, 0.25f32
         assert_eq!(
@@ -177,7 +177,7 @@ mod tests {
         );
 
         let some = BridgeMessage::ParameterValue {
-            value: Some(Normalized::new(0.25)),
+            value: Some(Normalized::of(0.25)),
         };
         // variant 3, Some, 0.25f32
         assert_eq!(
@@ -189,7 +189,7 @@ mod tests {
 
         let changed = BridgeMessage::ParameterChanged {
             index: ParamId::new(7),
-            value: Normalized::new(0.5),
+            value: Normalized::of(0.5),
         };
         // variant 9, index 7, 0.5f32
         assert_eq!(
@@ -202,7 +202,7 @@ mod tests {
         assert!(matches!(
             back,
             BridgeMessage::ParameterChanged { index, value }
-                if index == ParamId::new(7) && value == Normalized::new(0.5)
+                if index == ParamId::new(7) && value == Normalized::of(0.5)
         ));
     }
 
@@ -219,7 +219,7 @@ mod tests {
             match bincode::deserialize::<HostMessage>(&bytes).unwrap() {
                 HostMessage::SetParameter { param_id, value } => {
                     assert_eq!(param_id, ParamId::new(1));
-                    assert_eq!(value, Normalized::new(want));
+                    assert_eq!(value, Normalized::clamped(want));
                 }
                 other => panic!("{other:?}"),
             }

@@ -14,7 +14,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
 use tutti_plugin_types::{
-    Loaded, PluginError, Prepare, RenderMode, SampleFormat, SampleRate, Samples,
+    Loaded, MaxBlock, PluginError, Prepare, SampleFormat, SampleRate, Samples,
 };
 use tutti_vst2_host::{
     MidiEventVec, Vst2Controller, Vst2Error, Vst2Loaded, Vst2ProcessContext, Vst2Processor,
@@ -29,16 +29,14 @@ pub struct Active {
 
 /// The `Prepare` a rate, block size and width stand for, in realtime mode.
 pub fn prepare_for(rate: f64, frames: usize, double: bool) -> Prepare {
-    Prepare {
-        rate: SampleRate(rate),
-        max_block: Samples(frames),
-        format: if double {
+    let block = MaxBlock::new(Samples(frames)).expect("a block of at least one frame");
+    Prepare::new(SampleRate(rate), block)
+        .expect("a positive finite rate")
+        .with_format(if double {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32
-        },
-        mode: RenderMode::Realtime,
-    }
+        })
 }
 
 /// The width a plugin is told it will be processed at.
@@ -145,15 +143,22 @@ impl Active {
 
     /// A new rate, with the block size and width kept.
     pub fn set_sample_rate(&mut self, rate: f64) {
-        let mut wanted = self.prepare;
-        wanted.rate = SampleRate(rate);
+        let wanted = self
+            .prepare
+            .with_rate(SampleRate(rate))
+            .expect("a positive finite rate");
         self.reconfigure(wanted).expect("the rate is accepted");
     }
 
     /// A new maximum block, with the rate and width kept.
     pub fn set_block_size(&mut self, frames: usize) {
-        let mut wanted = self.prepare;
-        wanted.max_block = Samples(frames);
+        let wanted = Prepare::new(
+            self.prepare.rate(),
+            MaxBlock::new(Samples(frames)).expect("a block of at least one frame"),
+        )
+        .expect("the rate was already accepted")
+        .with_format(self.prepare.format())
+        .with_mode(self.prepare.mode());
         self.reconfigure(wanted).expect("the block is accepted");
     }
 

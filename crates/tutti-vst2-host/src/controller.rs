@@ -201,11 +201,10 @@ impl Loaded for Vst2Loaded {
     ///
     /// # Errors
     ///
-    /// [`Refused`] hands the plugin back, suspended and untouched, for a rate
-    /// that is not a positive finite number or a block of no frames. The
-    /// protocol has no way for a plugin to decline `effMainsChanged`: one that
-    /// stays suspended and renders silence (a failed licence claim, say) is not
-    /// an error the host can see.
+    /// [`Refused`] hands the plugin back, suspended and untouched, if it is
+    /// already active. The protocol has no way for a plugin to decline
+    /// `effMainsChanged`: one that stays suspended and renders silence (a
+    /// failed licence claim, say) is not an error the host can see.
     fn activate(
         mut self,
         prepare: Prepare,
@@ -213,16 +212,8 @@ impl Loaded for Vst2Loaded {
         tutti_plugin_types::assert_main_thread();
         crate::shell::warm_retirement();
         crate::shell::reap();
-        let rate = prepare.rate.0;
-        let block = prepare.max_block.0;
-        if !(rate.is_finite() && rate > 0.0) || block == 0 {
-            return Err(Refused {
-                plugin: Some(self),
-                reason: PluginError::Other(format!(
-                    "the plugin cannot run at {rate} Hz in blocks of {block} frames"
-                )),
-            });
-        }
+        let rate = prepare.rate().0;
+        let block = prepare.max_block().get();
         let Some(audio) = self.audio.take() else {
             return Err(Refused {
                 plugin: Some(self),
@@ -231,14 +222,14 @@ impl Loaded for Vst2Loaded {
         };
 
         let double_precision =
-            prepare.format == SampleFormat::Float64 && self.metadata().supports_f64;
+            prepare.format() == SampleFormat::Float64 && self.metadata().supports_f64;
         // Before each dispatch, so a plugin asking `audioMasterGetSampleRate` or
         // `GetBlockSize` from inside it reads the figure being set.
         self.host.set_sample_rate(rate);
         self.handle.instance.set_sample_rate(rate as f32);
         self.host.set_block_size(block);
         self.handle.instance.set_block_size(block as i64);
-        self.host.set_offline(prepare.mode.is_offline());
+        self.host.set_offline(prepare.mode().is_offline());
         // `effSetProcessPrecision` is a suspended-state opcode, and a plugin that
         // switches its internal precision on it reallocates the same buffers
         // `effMainsChanged` does.

@@ -142,7 +142,7 @@ impl ClapLoaded {
         mut self,
         prepare: Prepare,
     ) -> std::result::Result<(ClapProcessor, ClapController), Refused<Self>> {
-        let wide = prepare.format == SampleFormat::Float64;
+        let wide = prepare.format() == SampleFormat::Float64;
         self.assert_main_thread();
         let refuse = |plugin: Self, error: ClapError| Refused {
             plugin: Some(plugin),
@@ -152,13 +152,13 @@ impl ClapLoaded {
         // The rate and block size are fixed by `activate`; a refusal below
         // leaves the previous ones in place.
         let previous = self.audio;
-        self.audio.sample_rate = prepare.rate.0;
+        self.audio.sample_rate = prepare.rate().0;
         // `Samples` counts frames; CLAP's `max_frames_count` is a `u32`.
-        self.audio.max_frames = u32::try_from(prepare.max_block.0).unwrap_or(u32::MAX);
+        self.audio.max_frames = u32::try_from(prepare.max_block().get()).unwrap_or(u32::MAX);
         // CLAP's render mode is `[main-thread]` and carries no activation
         // constraint; a plugin without the extension has declined, which is
         // not a failure.
-        let _ = self.set_render_mode(prepare.mode.is_offline());
+        let _ = self.set_render_mode(prepare.mode().is_offline());
 
         // The plugin may have changed its ports since it was loaded or last
         // deactivated, and the 64-bit flag is part of them.
@@ -184,7 +184,7 @@ impl ClapLoaded {
 
         let table = self.read_param_ranges();
         let max_frames = self.audio.max_frames as usize;
-        let mut scratch = AudioScratch::new(prepare.format);
+        let mut scratch = AudioScratch::new(prepare.format());
         let port_channels = |ports: &tutti_plugin_types::BusChannels| -> Vec<u32> {
             ports.iter().map(|c| u32::from(c.count())).collect()
         };
@@ -491,7 +491,7 @@ mod tests {
                 i,
                 ParameterPoint {
                     sample_offset: 0,
-                    value: tutti_plugin_types::Normalized::new(0.25),
+                    value: tutti_plugin_types::Normalized::of(0.25),
                 },
             ));
         }

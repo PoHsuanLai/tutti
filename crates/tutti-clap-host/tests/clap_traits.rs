@@ -19,8 +19,8 @@ use tutti_clap_test_plugin::{
     PORTS_64BIT_INPUTS, PORTS_64BIT_OUTPUTS, ProcessCapture, Site, ThreadCapture,
 };
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, Normalized, ParamId, PluginError,
-    PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor, RenderMode,
+    AudioBuffer, AudioBufferMut, Control, Controller, Loaded, MaxBlock, Normalized, ParamId,
+    PluginError, PluginIo, PluginTail, Prepare, ProcessContext, ProcessOutput, Processor,
     SampleFormat, SampleRate, Samples,
 };
 
@@ -33,12 +33,7 @@ static PROBE_LOCK: Mutex<()> = Mutex::new(());
 const PARAM_VALUE: u16 = 5;
 
 fn prepare() -> Prepare {
-    Prepare {
-        rate: SampleRate(48_000.0),
-        max_block: Samples(256),
-        format: SampleFormat::Float32,
-        mode: RenderMode::Realtime,
-    }
+    Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(256))).expect("a real rate")
 }
 
 struct Probe {
@@ -195,8 +190,7 @@ fn activation_splits_the_plugin_and_renders_at_the_prepared_width() {
     // The same plugin, its ports flagged for 64-bit audio, activates at 64-bit
     // when the `Prepare` says so.
     set_ports_64bit(PORTS_64BIT_INPUTS | PORTS_64BIT_OUTPUTS);
-    let mut wide = prepare();
-    wide.format = SampleFormat::Float64;
+    let wide = prepare().with_format(SampleFormat::Float64);
     let (mut processor, controller) = loaded.activate(wide).expect("activates at 64-bit");
     assert!(processor.is_f64());
     render(&mut processor, SampleFormat::Float64).expect("an f64 block renders");
@@ -241,8 +235,7 @@ fn one_processor_type_renders_both_widths_to_the_same_signal() {
     const FRAMES: usize = 32;
     let ctx = ClapProcessContext::default();
 
-    let mut narrow = prepare();
-    narrow.format = SampleFormat::Float32;
+    let narrow = prepare().with_format(SampleFormat::Float32);
     let (mut processor, controller) = probe.load().activate(narrow).expect("activates at 32-bit");
     assert_eq!(processor.format(), SampleFormat::Float32);
     let mut left32 = [0.0f32; FRAMES];
@@ -254,8 +247,7 @@ fn one_processor_type_renders_both_widths_to_the_same_signal() {
     }
     let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
 
-    let mut wide = prepare();
-    wide.format = SampleFormat::Float64;
+    let wide = prepare().with_format(SampleFormat::Float64);
     let (mut processor, controller) = loaded.activate(wide).expect("activates at 64-bit");
     assert_eq!(processor.format(), SampleFormat::Float64);
     let mut left64 = [0.0f64; FRAMES];
@@ -295,15 +287,13 @@ fn a_64bit_request_negotiates_to_32bit_without_64bit_ports() {
         .expect("inactive");
     assert_eq!(negotiated, SampleFormat::Float32, "no 64-bit ports");
 
-    let mut asked = prepare();
-    asked.format = SampleFormat::Float64;
+    let asked = prepare().with_format(SampleFormat::Float64);
     let refused = loaded
         .activate(asked)
         .expect_err("the raw request is refused");
     let loaded = refused.plugin.expect("the plugin comes back");
 
-    let mut settled = prepare();
-    settled.format = negotiated;
+    let settled = prepare().with_format(negotiated);
     let (mut processor, controller) = loaded.activate(settled).expect("the fallback activates");
     assert_eq!(processor.format(), SampleFormat::Float32);
     render(&mut processor, SampleFormat::Float32).expect("and renders");
@@ -380,8 +370,9 @@ fn partly_64bit_ports_negotiate_to_32bit_and_the_ports_are_read_again() {
 fn a_refused_activation_hands_the_plugin_back() {
     let probe = Probe::acquire();
     set_activate_refusal(96_000.0);
-    let mut wanted = prepare();
-    wanted.rate = SampleRate(96_000.0);
+    let wanted = prepare()
+        .with_rate(SampleRate(96_000.0))
+        .expect("a real rate");
     let refused = probe
         .load()
         .activate(wanted)
@@ -432,7 +423,7 @@ fn a_controller_write_is_a_param_value_event_at_the_head_of_the_next_block() {
     let id = ParamId::new(cutoff.id);
 
     render(&mut processor, SampleFormat::Float32).expect("block");
-    controller.set_parameter(id, Normalized::new(0.25));
+    controller.set_parameter(id, Normalized::of(0.25));
     let before = process_capture();
     assert!(
         !before.events[..before.event_count as usize]
@@ -466,10 +457,10 @@ fn a_state_load_makes_queued_writes_stale() {
     let id = ParamId::new(cutoff.id);
 
     render(&mut processor, SampleFormat::Float32).expect("block");
-    controller.set_parameter(id, Normalized::new(0.25));
+    controller.set_parameter(id, Normalized::of(0.25));
     let saved = controller.save_state().expect("saves");
     controller.load_state(&saved).expect("restores");
-    controller.set_parameter(id, Normalized::new(0.75));
+    controller.set_parameter(id, Normalized::of(0.75));
 
     render(&mut processor, SampleFormat::Float32).expect("block");
     let cap = process_capture();
@@ -500,7 +491,7 @@ fn a_full_ring_keeps_the_latest_value_and_retries_on_flush() {
     let id = ParamId::new(cutoff.id);
 
     for step in 0..1000 {
-        controller.set_parameter(id, Normalized::new(f64::from(step) / 1000.0));
+        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 1000.0));
     }
     assert!(controller.refused_edits() > 0, "the ring filled");
 
@@ -531,7 +522,7 @@ fn draining_edits_does_not_allocate() {
     let id = ParamId::new(probe_params()[0].id);
     render(&mut processor, SampleFormat::Float32).expect("warm up");
     for step in 0..200 {
-        controller.set_parameter(id, Normalized::new(f64::from(step) / 200.0));
+        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 200.0));
     }
     assert_no_alloc(|| {
         render(&mut processor, SampleFormat::Float32).expect("block");
@@ -595,7 +586,7 @@ fn the_controller_serves_reads_while_the_processor_renders() {
         let _ = controller.parameter(id).expect("a value");
         let _ = controller.parameters();
         controller.save_state().expect("state saves beside process");
-        controller.set_parameter(id, Normalized::new(f64::from(step % 10) / 10.0));
+        controller.set_parameter(id, Normalized::clamped(f64::from(step % 10) / 10.0));
         controller.flush_edits();
         std::thread::yield_now();
     }
@@ -633,7 +624,7 @@ fn queued_edits_survive_a_rejoin() {
     let id = ParamId::new(cutoff.id);
 
     let (processor, mut controller) = probe.load().activate(prepare()).expect("activates");
-    controller.set_parameter(id, Normalized::new(0.25));
+    controller.set_parameter(id, Normalized::of(0.25));
     assert_eq!(peek_param(cutoff.id), Some(cutoff.default), "queued only");
     let loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
     assert_eq!(peek_param(cutoff.id), Some(350.0), "100 + 0.25 * 1000");
@@ -641,7 +632,7 @@ fn queued_edits_survive_a_rejoin() {
     // More writes than the ring holds: the last is in `unsent`.
     let (processor, mut controller) = loaded.activate(prepare()).expect("activates");
     for step in 0..1000 {
-        controller.set_parameter(id, Normalized::new(f64::from(step) / 1000.0));
+        controller.set_parameter(id, Normalized::clamped(f64::from(step) / 1000.0));
     }
     let _loaded = ClapLoaded::deactivate(processor, controller).expect("a pair");
     let wanted = cutoff.min + 0.999 * (cutoff.max - cutoff.min);

@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use assert_no_alloc::AllocDisabler;
+use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_vst2_host::{MidiEvent, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
@@ -373,18 +374,19 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     assert!(inst.is_active());
 }
 
-/// A refused activation (a rate that is no rate) leaves the plugin loaded and
-/// untouched: nothing crosses the FFI seam, and a valid activation after it is
-/// the first resume.
+/// A rate or block that is no rate or block cannot be built into a `Prepare`,
+/// so nothing crosses the FFI seam for it: the plugin stays loaded and
+/// untouched, and a valid activation after it is the first resume. (The host
+/// used to refuse these at `activate`; the `Prepare` type now holds that line.)
 ///
-/// Mutation (run): the rate check removed from `Loaded::activate` -> the
-/// refused rate reaches `effSetSampleRate` and the plugin resumes -> fails.
+/// Mutation (run): the finite and positive check removed from `Prepare::new` ->
+/// the zero and NaN rates build a `Prepare` -> the `is_none` fails.
 #[test]
-fn a_refused_activation_dispatches_nothing() {
+fn a_prepare_that_is_no_rate_dispatches_nothing() {
     let _guard = lock_probe();
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let mut loaded = Vst2Loaded::load(&path).expect("the probe loads");
+    let loaded = Vst2Loaded::load(&path).expect("the probe loads");
 
     for (rate, block) in [
         (0.0, BLOCK),
@@ -392,10 +394,12 @@ fn a_refused_activation_dispatches_nothing() {
         (-48_000.0, BLOCK),
         (48_000.0, 0),
     ] {
-        match Active::activate(loaded, active::prepare_for(rate, block, false)) {
-            Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
-            Err((plugin, _reason)) => loaded = plugin,
-        }
+        let prepare =
+            MaxBlock::new(Samples(block)).and_then(|block| Prepare::new(SampleRate(rate), block));
+        assert!(
+            prepare.is_none(),
+            "{rate} Hz in {block} frames must be refused"
+        );
         assert_eq!(
             read_capture(&path).resume_count,
             0,

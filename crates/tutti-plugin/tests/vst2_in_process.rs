@@ -31,7 +31,7 @@ const PARAM_0: ParamId = ParamId::new(0);
 /// in the type, so a caller looking at a `[10, 22050]` Hz range on a
 /// `ParameterInfo` cannot write `20_000.0` and silently land at full scale.
 fn n(v: f64) -> Normalized {
-    Normalized::new(v)
+    Normalized::clamped(v)
 }
 
 /// Serializes against the probe's process-global switches and environment, and

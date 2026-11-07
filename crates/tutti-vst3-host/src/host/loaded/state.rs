@@ -470,7 +470,7 @@ pub(super) fn unpack_full(data: &[u8]) -> Unpacked<'_> {
                 let (id, value) = entry.split_first_chunk::<4>()?;
                 Some((
                     ParamId::new(u32::from_le_bytes(*id)),
-                    Normalized::new(f64::from_le_bytes(value.try_into().ok()?)),
+                    Normalized::clamped(f64::from_le_bytes(value.try_into().ok()?)),
                 ))
             })
             .collect::<Option<Vec<_>>>()?;
@@ -622,8 +622,8 @@ mod state_container_tests {
 
     fn writes() -> [(ParamId, Normalized); 2] {
         [
-            (ParamId::new(7), Normalized::new(0.75)),
-            (ParamId::new(1), Normalized::new(0.125)),
+            (ParamId::new(7), Normalized::of(0.75)),
+            (ParamId::new(1), Normalized::of(0.125)),
         ]
     }
 
@@ -731,7 +731,7 @@ mod state_container_tests {
                 let id = [7, 1, 1000 + i][(i % 3) as usize];
                 (
                     ParamId::new(id),
-                    Normalized::new(f64::from(i % 100) / 100.0),
+                    Normalized::clamped(f64::from(i % 100) / 100.0),
                 )
             })
             .collect();

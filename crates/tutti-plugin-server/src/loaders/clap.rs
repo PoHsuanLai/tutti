@@ -16,8 +16,8 @@ use tutti_plugin::server::{
 use tutti_plugin::server::{ProcessContext, ProcessOutput, RenderMode};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{
-    Control, Event, Hand, HostOp, Lifecycle, Notice, Prepare, Request, SampleFormat, SampleRate,
-    Samples, Seat, Stage, State,
+    Control, Event, Hand, HostOp, Lifecycle, MaxBlock, Notice, Prepare, Request, SampleFormat,
+    SampleRate, Samples, Seat, Stage, State,
 };
 
 use crate::loaders::common::Meta;
@@ -207,12 +207,14 @@ impl ClapInstance {
         let format = loaded
             .negotiate_format(requested)
             .map_err(|e| activation_failed(e.to_string()))?;
-        let prepare = Prepare {
-            rate: SampleRate(sample_rate),
-            max_block: Samples(block_size),
-            format,
-            mode: RenderMode::Realtime,
-        };
+        let prepare = MaxBlock::new(Samples(block_size))
+            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+            .ok_or_else(|| {
+                activation_failed(format!(
+                    "the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                ))
+            })?
+            .with_format(format);
 
         let mut instance = Self {
             lifecycle: Lifecycle::new(loaded),
@@ -518,11 +520,14 @@ impl PluginAudio for ClapInstance {
                 "CLAP plugin has no configuration to change".to_string(),
             ));
         };
-        if self.is_active() && (previous.rate.0 - rate).abs() < f64::EPSILON {
+        if self.is_active() && (previous.rate().0 - rate).abs() < f64::EPSILON {
             return Ok(());
         }
-        let mut wanted = previous;
-        wanted.rate = SampleRate(rate);
+        let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
+            return Err(PluginError::Other(format!(
+                "plugin refused sample rate {rate}: not a positive finite rate"
+            )));
+        };
         let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
             None => Ok(()),
             Some(reason) => {
@@ -535,7 +540,7 @@ impl PluginAudio for ClapInstance {
                 Err(PluginError::Other(format!(
                     "CLAP plugin refused sample rate {rate} ({}): {reason}",
                     if rolled_back {
-                        format!("running at {}", previous.rate.0)
+                        format!("running at {}", previous.rate().0)
                     } else {
                         "deactivated".to_string()
                     }
@@ -1860,7 +1865,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let param_id = params[0].id;
-        instance.set_parameter(param_id, Normalized::new(0.5));
+        instance.set_parameter(param_id, Normalized::of(0.5));
     }
 
     // ── Group A: Plugin Lifecycle ──
@@ -2007,7 +2012,7 @@ mod tests {
         let original = instance.get_parameter(param_id);
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
 
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
         assert_eq!(
             instance.get_parameter(param_id),
             original,
@@ -2086,7 +2091,7 @@ mod tests {
         instance.set_render_mode(RenderMode::Offline);
         assert_eq!(crate::test_utils::clap_probe_activation_count(), 0);
         assert_eq!(
-            instance.state.prepare().map(|p| p.mode),
+            instance.state.prepare().map(|p| p.mode()),
             Some(RenderMode::Offline)
         );
         instance.set_render_mode(RenderMode::Realtime);
@@ -2116,7 +2121,7 @@ mod tests {
 
         // Set to a different value
         let new_value = if original < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
         // The bridge also applies the write now (see `set_parameter`), and the
         // queued copy reaches the next block.
         process_blocks(&mut instance, 1);
@@ -2170,7 +2175,7 @@ mod tests {
 
         // Change parameter
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
 
         // Restore state
         instance.set_state(&saved).expect("restore should succeed");
@@ -2378,7 +2383,7 @@ mod tests {
 
         let original_value = instance.get_parameter(param_id);
         let new_value = if original_value < 0.5 { 0.75 } else { 0.25 };
-        instance.set_parameter(param_id, Normalized::new(new_value));
+        instance.set_parameter(param_id, Normalized::clamped(new_value));
 
         instance.set_state(&saved).expect("restore should succeed");
 

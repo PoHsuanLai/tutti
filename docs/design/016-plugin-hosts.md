@@ -297,12 +297,10 @@ pub enum Notice {
 
 /// What `activate` needs, and what a change of any field costs: a deactivate
 /// and an activate.
-pub struct Prepare {
-    pub rate: SampleRate,
-    pub max_block: Samples,
-    pub format: SampleFormat,
-    pub mode: RenderMode,
-}
+/// Fields are private: `Prepare::new(rate, max_block) -> Option<Self>` refuses a
+/// rate that is not finite and positive, and `MaxBlock` (`tutti-types`) holds at
+/// least one frame. `with_format`, `with_mode` and `with_rate` change one field.
+pub struct Prepare { /* rate: SampleRate, max_block: MaxBlock, format, mode */ }
 
 pub struct State { /* stage, last Prepare, latency, tail, layout, pending requests,
                      the plan parked behind a recall, `shadow_loads`, `swap` */ }

@@ -260,7 +260,7 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     assert!(presets.load_preset(&program_1));
     handle
         .params()
-        .set_parameter_value(ParamId::new(0), Normalized::new(0.75));
+        .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
 
     let fork = client
         .fork_instance(ForkMode::Live)
@@ -277,10 +277,10 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
 
     handle
         .params()
-        .set_parameter_value(ParamId::new(0), Normalized::new(0.25));
+        .set_parameter_value(ParamId::new(0), Normalized::of(0.25));
     assert_eq!(
         handle.params().parameter_value(ParamId::new(0)),
-        Some(Normalized::new(0.25)),
+        Some(Normalized::of(0.25)),
         "the live write landed"
     );
     assert_renders(

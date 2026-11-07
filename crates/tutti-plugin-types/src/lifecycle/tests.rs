@@ -74,24 +74,23 @@ fn tag(effect: &Effect) -> Fx {
 }
 
 fn prep(n: u8) -> Prepare {
-    Prepare {
-        rate: SampleRate(if n.is_multiple_of(2) {
-            48_000.0
-        } else {
-            44_100.0
-        }),
-        max_block: Samples(64 << (n % 3)),
-        format: if n.is_multiple_of(5) {
+    let rate = SampleRate(if n.is_multiple_of(2) {
+        48_000.0
+    } else {
+        44_100.0
+    });
+    Prepare::new(rate, MaxBlock::of(Samples(64 << (n % 3))))
+        .expect("the tests use real rates")
+        .with_format(if n.is_multiple_of(5) {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32
-        },
-        mode: if n.is_multiple_of(7) {
+        })
+        .with_mode(if n.is_multiple_of(7) {
             RenderMode::Offline
         } else {
             RenderMode::Realtime
-        },
-    }
+        })
 }
 
 fn err() -> PluginError {
@@ -866,7 +865,7 @@ fn rule_3_a_refusal_reads_nothing_and_a_later_activation_retries() {
     let (s, _) = go(State::new(REST), Event::Op(HostOp::Activate(p)));
     let (s, fx) = reply(s, Reply::Refused(err()));
     assert_eq!(fx, [Fx::RefusedNotice]);
-    assert_eq!(s.stage(), Stage::Refused { rate: p.rate });
+    assert_eq!(s.stage(), Stage::Refused { rate: p.rate() });
     assert!(!s.renders());
     let (s, fx) = go(s, Event::Op(HostOp::Reconfigure(prep(4))));
     assert_eq!(fx, [Fx::Activate(prep(4))]);
@@ -1612,7 +1611,7 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
     let p = prep(1);
     let mut s = active(RESTARTS, p);
     s.set_mode(RenderMode::Offline);
-    assert_eq!(s.prepare().map(|p| p.mode), Some(RenderMode::Offline));
+    assert_eq!(s.prepare().map(|p| p.mode()), Some(RenderMode::Offline));
     assert_eq!(s.stage(), Stage::Active);
     assert!(
         go(s.clone(), Event::Tick).1.is_empty(),
@@ -1623,9 +1622,62 @@ fn set_mode_changes_the_next_activation_and_restarts_nothing() {
     let (s, _) = go(s, Event::Tick);
     let (s, _) = reply(s, Reply::Returned);
     let (_, fx) = reply(s, Reply::Deactivated);
-    let want = Prepare {
-        mode: RenderMode::Offline,
-        ..p
-    };
+    let want = p.with_mode(RenderMode::Offline);
     assert_eq!(fx, [Fx::Activate(want)]);
+}
+
+/// **A `Prepare` has a real rate and a block of at least one frame**: no other
+/// one can be built, so a host is never asked to activate at one.
+///
+/// Mutation: dropping `is_finite` from `valid_rate` -> infinity builds ->
+/// fails; dropping `> 0.0` -> zero and a negative rate build -> fails;
+/// `with_rate` skipping `valid_rate` -> the `with_rate` assertions fail; a
+/// `MaxBlock::new` that accepts zero -> the last assertion fails.
+#[test]
+fn a_prepare_has_a_real_rate_and_a_block() {
+    let block = MaxBlock::of(Samples(64));
+    for rate in [48_000.0, 44_100.0, f64::MIN_POSITIVE, f64::MAX] {
+        let prepare = Prepare::new(SampleRate(rate), block).expect("a real rate");
+        assert_eq!(prepare.rate(), SampleRate(rate));
+        assert_eq!(prepare.max_block(), block);
+        assert_eq!(prepare.format(), SampleFormat::Float32);
+        assert_eq!(prepare.mode(), RenderMode::Realtime);
+    }
+    for rate in [
+        0.0,
+        -0.0,
+        -48_000.0,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
+        assert!(Prepare::new(SampleRate(rate), block).is_none(), "{rate}");
+        assert!(
+            prep(0).with_rate(SampleRate(rate)).is_none(),
+            "with_rate({rate})"
+        );
+    }
+    assert_eq!(
+        prep(0).with_rate(SampleRate(96_000.0)).map(|p| p.rate()),
+        Some(SampleRate(96_000.0))
+    );
+    assert!(MaxBlock::new(Samples(0)).is_none());
+}
+
+/// `MaxBlock` keeps the range contract. It is tested here, not in
+/// `tutti-types`, which dev-depends on no workspace crate.
+///
+/// Mutation: `MaxBlock::new` accepting zero -> "new accepted Samples(0)"; the
+/// `try_from` attribute removed from its serde derive -> "deserialize accepted
+/// Samples(0)"; `of` not panicking on zero -> "of accepted Samples(0)".
+#[cfg(feature = "serde")]
+#[test]
+fn a_max_block_keeps_the_range_contract() {
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: MaxBlock::new,
+        get: MaxBlock::samples,
+        of: Some(MaxBlock::of),
+        valid: &[Samples(1), Samples(64), Samples(4096), Samples(usize::MAX)],
+        invalid: &[Samples(0)],
+    });
 }

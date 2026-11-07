@@ -9,7 +9,7 @@
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
-use tutti_plugin_types::{Loaded, Prepare, RenderMode, Request, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{Loaded, MaxBlock, Prepare, Request, SampleRate, Samples};
 use tutti_vst2_host::{
     ChannelLayout, MidiEventVec, ParameterChange, PluginInfo, Vst2Controller, Vst2Loaded,
     Vst2ProcessContext, Vst2Processor,
@@ -73,12 +73,16 @@ impl Instance {
     ) -> Result<Self, (LoadStage, String)> {
         let loaded = Vst2Loaded::load(path)
             .map_err(|e| (LoadStage::Opening, format!("vst2-host load failed: {e}")))?;
-        let prepare = Prepare {
-            rate: SampleRate(sample_rate),
-            max_block: Samples(block_size),
-            format: SampleFormat::Float32,
-            mode: RenderMode::Realtime,
-        };
+        let prepare = MaxBlock::new(Samples(block_size))
+            .and_then(|block| Prepare::new(SampleRate(sample_rate), block))
+            .ok_or_else(|| {
+                (
+                    LoadStage::Activation,
+                    format!(
+                        "vst2-host activation failed: the plugin cannot run at {sample_rate} Hz in blocks of {block_size} frames"
+                    ),
+                )
+            })?;
         match loaded.activate(prepare) {
             Ok(halves) => {
                 let declared = Declared {

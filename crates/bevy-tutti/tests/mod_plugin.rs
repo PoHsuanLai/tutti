@@ -375,7 +375,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
                 .param_values()
                 .expect("the mirror")
                 .get(ParamId::new(0))),
-        Some(Some(Some(Normalized::new(0.5)))),
+        Some(Some(Some(Normalized::of(0.5)))),
         "and the mirror"
     );
 }
@@ -460,7 +460,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
         assert_eq!(sources, want, "{what}: the port's sources");
         assert_eq!(
             value(app),
-            Normalized::new(0.25),
+            Normalized::of(0.25),
             "{what}: the lane reaches the plugin"
         );
     };
@@ -544,7 +544,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
         );
         assert_eq!(
             handle.params().parameter_value(ParamId::new(0)),
-            Some(Normalized::new(0.25)),
+            Some(Normalized::of(0.25)),
             "round {round}: the plugin reads the knob plus the offset"
         );
     }

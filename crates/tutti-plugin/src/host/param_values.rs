@@ -175,7 +175,7 @@ impl PluginParamValues {
 mod tests {
     use super::*;
     fn n(v: f64) -> Normalized {
-        Normalized::new(v)
+        Normalized::clamped(v)
     }
 
     use crate::backend::{HostParams, HostState, ParameterChangeSink};
@@ -204,7 +204,7 @@ mod tests {
                 .iter()
                 .find(|(a, _)| *a == id)?
                 .1
-                .map(|v| Normalized::new(f64::from(v)))
+                .map(|v| Normalized::clamped(f64::from(v)))
         }
         fn set_parameter_value(&self, _id: ParamId, _value: Normalized) {}
         fn is_crashed(&self) -> bool {

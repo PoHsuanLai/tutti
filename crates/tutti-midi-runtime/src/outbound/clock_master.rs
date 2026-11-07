@@ -18,6 +18,15 @@
 //!   edges — Start when playback begins at beat 0, Continue otherwise.
 //! - **Song Position** (0xF2) on Continue, on seek-while-playing and on the
 //!   frame a loop wraps, in MIDI beats (1/16 notes).
+//!
+//! A loop wrap is a locate on its own frame: a Song Position there (also on a
+//! block's first frame, when the previous block ended on the wrap), the next
+//! ticks from the wrapped beat, and the MTC grid restarts. A Song Position
+//! counts sixteenths and rounds to the nearest, so a loop start off a
+//! sixteenth leaves a receiver up to 1/8 beat behind the sender's tick grid,
+//! as after any locate. The restarted grid puts its first piece 0 on the next
+//! even frame of the timeline from the wrapped beat, so a loop start that is
+//! not on an even frame leaves up to two frames with no quarter-frames.
 //! - **MTC quarter-frames** (0xF1) at frame-rate×4, cycling the 8 SMPTE nibbles
 //!   (when `send_mtc` is set).
 
@@ -29,7 +38,7 @@ use tutti_graph::Transport;
 use tutti_midi_types::sync::{SmpteFrameRate, SmpteTimecode};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_types::{
-    Beat, BeatDuration, LoopRange, Pass, SampleRate, Samples, first_frame_at_or_after,
+    Beat, BeatDuration, LoopRange, Pass, PassEnd, SampleRate, Samples, first_frame_at_or_after,
 };
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
@@ -89,6 +98,11 @@ struct PrevTick {
     /// sample rate may have moved in between, and a wrap moves the beat
     /// backwards.
     end: AtomicF64,
+    /// The previous tick's block ended on a loop wrap, on its last frame's
+    /// successor: that frame is the next block's first, whose clock already
+    /// stands on the wrapped beat, so the wrap shows in no pass of its own
+    /// and `end` equals the start. The next tick sends its Song Position.
+    wrapped: AtomicBool,
 }
 
 /// The MTC quarter-frame grid.
@@ -132,6 +146,7 @@ impl ClockMaster {
             prev: PrevTick {
                 playing: AtomicBool::new(false),
                 end: AtomicF64::new(0.0),
+                wrapped: AtomicBool::new(false),
             },
             mtc: MtcGrid {
                 base: AtomicU64::new(0),
@@ -275,8 +290,13 @@ impl ClockMaster {
     /// Events come out in the order generated, not by offset: in each pass
     /// (the block cut at a loop wrap) the MTC quarter-frames follow its ticks.
     pub fn tick(&self, transport: &Transport, block_size: usize, emit: &mut impl FnMut(MidiEvent)) {
-        // Once per block: a rate moved mid-block would split it in two.
-        let sample_rate = self.sample_rate();
+        // Once per block: a rate moved mid-block would split it in two. A
+        // counted transport carries the rate its block runs at, and that is
+        // the one its clock is rebuilt at (a master re-rated between the
+        // host's block and this tick would otherwise mix the two).
+        let sample_rate = transport
+            .origin()
+            .map_or_else(|| self.sample_rate(), |o| o.sample_rate);
         if !self.enabled.load(Ordering::Acquire) || block_size == 0 || sample_rate.get() <= 0.0 {
             // Keep prev.playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming playback was already
@@ -284,6 +304,7 @@ impl ClockMaster {
             self.prev
                 .playing
                 .store(transport.playing, Ordering::Release);
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
@@ -306,10 +327,12 @@ impl ClockMaster {
             self.restart_mtc();
         } else if !playing && was_playing {
             emit(MidiEvent::stop(self.group));
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
         if !playing {
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
 
@@ -317,6 +340,7 @@ impl ClockMaster {
         if tempo.get() <= 0.0 {
             // Not moving: the next block starts where this one did.
             self.prev.end.store(beat.get(), Ordering::Release);
+            self.prev.wrapped.store(false, Ordering::Release);
             return;
         }
         // Kept as the `BeatDuration` the shared derivation returns rather than
@@ -328,10 +352,14 @@ impl ClockMaster {
 
         // --- seek while playing ---------------------------------------------
         // A block starts where the previous one ended; any other start, either
-        // direction, is a locate.
+        // direction, is a locate. So is a block that starts on a wrap: the
+        // previous block ended on it, and one Song Position serves it and a
+        // locate on the same frame.
         let prev_end = Beat(self.prev.end.load(Ordering::Acquire));
         let is_edge = playing && !was_playing;
-        if !is_edge && (beat - prev_end).abs() > BeatDuration(SEEK_EPSILON_BEATS) {
+        let located = (beat - prev_end).abs() > BeatDuration(SEEK_EPSILON_BEATS);
+        let wrapped = self.prev.wrapped.load(Ordering::Acquire);
+        if !is_edge && (located || wrapped) {
             emit(MidiEvent::song_position(
                 self.group,
                 beats_to_midi_beats(beat),
@@ -349,7 +377,9 @@ impl ClockMaster {
             .looping
             .and_then(|l| LoopRange::new(l.start, l.end));
         let mut clock = transport.clock(sample_rate);
+        let mut ends_on_wrap = false;
         for pass in clock.passes(Samples(block_size), region) {
+            ends_on_wrap = pass.end == PassEnd::Wrap;
             if !pass.start.is_zero() {
                 emit(
                     MidiEvent::song_position(self.group, beats_to_midi_beats(pass.beat))
@@ -363,6 +393,7 @@ impl ClockMaster {
             }
         }
         self.prev.end.store(clock.beat().get(), Ordering::Release);
+        self.prev.wrapped.store(ends_on_wrap, Ordering::Release);
     }
 
     /// Emit a 0xF8 at every 1/24-beat boundary playback reaches inside `pass`,

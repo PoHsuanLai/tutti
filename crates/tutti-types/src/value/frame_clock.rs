@@ -154,6 +154,18 @@ pub struct Pass {
     pub len: Samples,
     /// The beat on `start`.
     pub beat: Beat,
+    /// What ends the pass.
+    pub end: PassEnd,
+}
+
+/// What ends a [`Pass`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassEnd {
+    /// A loop wrap, on the frame after the pass (the next pass's first, or,
+    /// for a block's last pass, the first frame of the block after it).
+    Wrap,
+    /// The end of the block, with no wrap on that frame.
+    Block,
 }
 
 /// A playhead kept as a frame count on a [`TimelineSegment`], with its beat
@@ -308,7 +320,10 @@ impl FrameClock {
 
     /// The passes a block of `frames` makes under `looping`: the stretches
     /// over which the playhead rolls linearly, cut at each loop wrap, in
-    /// order. A block with no wrap is one pass; an empty block has none.
+    /// order. A block with no wrap is one pass; an empty block has none. A
+    /// wrap on the first frame after the block ends its last pass
+    /// ([`PassEnd::Wrap`]): the clock then stands on the wrapped beat, and
+    /// the next block has no wrap of its own to report.
     ///
     /// Rolls this clock as the iterator is consumed, so once it is
     /// exhausted the clock stands where [`advance`](Self::advance) would
@@ -329,8 +344,19 @@ impl FrameClock {
                 return None;
             }
             let beat = self.beat();
-            let len = self.advance_to_wrap(left, looping).unwrap_or(left);
-            let pass = Pass { start, len, beat };
+            let wrapped = self.advance_to_wrap(left, looping);
+            let len = wrapped.unwrap_or(left);
+            let end = if wrapped.is_some() {
+                PassEnd::Wrap
+            } else {
+                PassEnd::Block
+            };
+            let pass = Pass {
+                start,
+                len,
+                beat,
+                end,
+            };
             start = Samples(start.get() + len.get());
             Some(pass)
         })
@@ -603,7 +629,8 @@ mod tests {
             [Pass {
                 start: Samples(0),
                 len: Samples(512),
-                beat: Beat(1.0)
+                beat: Beat(1.0),
+                end: PassEnd::Block
             }]
         );
         assert_eq!(c.passes(Samples(0), None).count(), 0, "empty block");
@@ -641,6 +668,30 @@ mod tests {
         assert_eq!(passes[0].len, Samples(1_600));
         assert_eq!(passes[1].start, Samples(1_600));
         assert_eq!(passes[1].beat, Beat(0.0));
+    }
+
+    /// A pass ends in a wrap when one falls on its last frame's successor,
+    /// the block's last included: 4 beats at 90 BPM is 128 000 frames, so a
+    /// block of exactly that ends on the wrap and the next has none of its
+    /// own.
+    ///
+    /// Mutation (run): report `PassEnd::Block` for every pass → the wrap on
+    /// the block edge is not reported → fails.
+    #[test]
+    fn a_wrap_on_the_block_edge_ends_the_last_pass() {
+        let four = LoopRange::new(0.0, 4.0);
+        let mut c = FrameClock::new(Beat(0.0), Bpm(90.0), SR);
+        let ends: Vec<_> = c.passes(Samples(128_000), four).map(|p| p.end).collect();
+        assert_eq!(ends, [PassEnd::Wrap]);
+        let next: Vec<_> = c
+            .passes(Samples(512), four)
+            .map(|p| (p.beat, p.end))
+            .collect();
+        assert_eq!(next, [(Beat(0.0), PassEnd::Block)]);
+
+        let mut c = FrameClock::new(Beat(0.0), Bpm(90.0), SR);
+        let ends: Vec<_> = c.passes(Samples(128_001), four).map(|p| p.end).collect();
+        assert_eq!(ends, [PassEnd::Wrap, PassEnd::Block]);
     }
 
     /// Consuming the passes leaves the clock where `advance` leaves it, bit

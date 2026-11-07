@@ -344,7 +344,7 @@ fn a_change_during_subscribe_is_in_initial_or_in_the_stream_once() {
 #[test]
 fn a_saved_device_resolves_through_devices() {
     let (devices, events, fake) = fake();
-    let mut port = |raw, name: &str, direction| {
+    let port = |raw, name: &str, direction| {
         let mut e = endpoint(raw, name);
         e.identity = Identity::Product("unit-1".into());
         fake.plug(e, direction);

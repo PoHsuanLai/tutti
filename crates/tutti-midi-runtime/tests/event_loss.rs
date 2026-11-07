@@ -396,8 +396,12 @@ fn a_note_that_takes_a_refused_key_still_counts_the_old_notes_off() {
 /// from beat 0 with the note-on refused, then seeking past it, its note-off
 /// is not a loss of this pass.
 ///
-/// Mutation: skip the `refused = false` in `Sending::release_all` → the
-/// note-off after the seek is counted → fails.
+/// Mutation (run): `Sending::release_all` keeping a row that holds only a
+/// refused mark, and not clearing the mark → the note-off after the seek is
+/// counted → fails. Dropping the clear alone changes nothing here, because a
+/// row with no held note is removed anyway; the clear matters for a row that
+/// is held and marked, which `a_release_clears_the_mark_of_a_row_that_stays_owed`
+/// in `note_ledger.rs` covers.
 #[test]
 fn a_seek_forgets_what_the_port_refused() {
     let filler = (1..257).map(|i| at(10, on(i)));

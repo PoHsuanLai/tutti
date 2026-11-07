@@ -374,7 +374,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
 /// The ledger on every path, with a full table: 2,100 notes sound at once
 /// across two groups against 2,048 keys (the last 52 are withheld), all end
 /// on one frame into a port that takes 584 of them (the rest are owed and
-/// paid over the next blocks), then a release request, a seek (every held
+/// paid over the next blocks), a release request asked while they are owed, a seek (every held
 /// note ended again) and a stop. None allocates.
 ///
 /// Mutation (run): a `Vec` collected in `NoteLedger::pay` → the gate panics.
@@ -419,15 +419,27 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     };
     let mut polled = block(&mut exec, true, f);
     assert_no_alloc::assert_no_alloc(|| {
-        // The table fills over blocks 0 to 4, then the offs at frame 4,000.
-        for _ in 0..11 {
+        // The table fills over blocks 0 to 4; the offs at frame 4,000 are in
+        // block 7, which refuses most of them.
+        for _ in 0..7 {
             f += 512;
             polled += block(&mut exec, true, f);
         }
-        let ticket = clip.release_held();
-        f += 512;
-        polled += block(&mut exec, true, f);
-        assert!(ticket.drained().is_ok());
+        // A release asked while offs are owed is answered when the last is
+        // paid.
+        let mut ticket = Some(clip.release_held());
+        let mut drained = false;
+        for _ in 0..8 {
+            f += 512;
+            polled += block(&mut exec, true, f);
+            if let Some(t) = ticket.take() {
+                match t.drained() {
+                    Ok(_) => drained = true,
+                    Err(t) => ticket = Some(t),
+                }
+            }
+        }
+        assert!(drained);
         // A seek back: the table is empty, the notes start again.
         for k in 0..8 {
             polled += block(&mut exec, true, 512 * k);

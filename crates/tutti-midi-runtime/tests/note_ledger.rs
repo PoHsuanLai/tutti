@@ -28,6 +28,24 @@
 //!   `a_fork_does_not_answer_the_lives_ticket` fails.
 //! - `Sending::off` writing a tagged off that has no row: the fork test, the
 //!   rewire after the drain, the full-table test and the clip property fail.
+//! - Counting (each run): `pay` removing a row that is still marked refused,
+//!   `forget_if_idle` ignoring the mark, `owe` without its `recovered()`,
+//!   `Sending::on` not marking the key when the old note's off is refused:
+//!   the first test of the counting section and `an_off_refused_twice_is_one_loss`
+//!   fail, and so does the exact-loss property. `pay` without `recovered()`:
+//!   six existing tests, `an_off_refused_twice_is_one_loss` and the property.
+//!   A tagged off of a refused row not withheld: six tests and the property.
+//! - `release_all` not clearing the mark of a row that stays owed:
+//!   `a_release_clears_the_mark_of_a_row_that_stays_owed`. The untagged off
+//!   not settling a refused row, or leaving the mark of a held one:
+//!   `an_untagged_off_settles_the_row_of_a_refused_on` and
+//!   `an_untagged_off_of_a_held_key_settles_a_refused_on_too`.
+//! - The node answering a ticket while offs are owed:
+//!   `a_ticket_is_drained_only_when_every_off_is_on_the_port`.
+//! - Equivalent, so no test: `release_all` not setting `full` (a later push is
+//!   refused too and counts as the withheld one would, and an owed off's
+//!   refusal is given back either way) and `pay` not clearing `owner` (a row
+//!   with no held note never has its owner read, and `on` overwrites it).
 //! - `MidiClipNode::reset` without `forget`:
 //!   `a_reset_node_forgets_the_notes_it_held` fails.
 
@@ -1171,8 +1189,9 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
 /// note-on has its note-off, no off is orphaned, and a release ticket is
 /// drained.
 ///
-/// Mutation (run): `owe` without `recovered()` and the other counting
-/// mutations of the two tests above → the totals differ → fails.
+/// Mutation (run): `pay` or `owe` without `recovered()`, `pay` dropping a
+/// marked row, `Sending::on` not marking the key, and a tagged off of a refused
+/// row not withheld each change the total → fails.
 #[test]
 fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
     let (mut refused, mut recovered) = (0, 0);

@@ -373,3 +373,23 @@ fn with_no_denormals_is_allocation_free() {
         }
     });
 }
+
+/// `DrainBeat::begin`, and `DrainWatch::mark` and `two_since`, neither allocate
+/// nor free: the audio thread's per-block count and the control thread's reads.
+///
+/// Mutation (run): a `Box::new` kept across the add in `DrainBeat::begin` makes
+/// the gate abort on the first call.
+#[test]
+fn drain_clock_is_allocation_free() {
+    let (mut beat, watch) = tutti_rt::drain_clock();
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            let mark = watch.mark();
+            assert!(!watch.two_since(mark));
+            beat.begin();
+            assert!(!watch.two_since(mark));
+            beat.begin();
+            assert!(watch.two_since(mark));
+        }
+    });
+}

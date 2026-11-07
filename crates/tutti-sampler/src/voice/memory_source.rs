@@ -10,7 +10,8 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tutti_graph::{
-    Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status, param_parts,
+    CrossfadeCurve, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
+    param_parts,
 };
 use tutti_io::Wave;
 use tutti_types::{
@@ -23,8 +24,9 @@ use super::interp::{
     Gate, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
 };
 use super::loop_span::{LoopSpan, blend};
+use super::slot::Piece;
 use super::types::Direction;
-use crate::lanes::{Gather, UNPREPARED_FRAMES};
+use crate::lanes::{Gather, Lane, UNPREPARED_FRAMES, scale};
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
 /// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
@@ -267,6 +269,10 @@ pub struct MemorySource {
     /// The block read's gather ([`read_placed_lanes`](Self::read_placed_lanes)),
     /// sized beside [`positions`](Self::positions) and empty where they are.
     gather: Gather,
+
+    /// The lanes a wrap crossfade's tail is read into, one per output
+    /// channel, sized beside [`positions`](Self::positions).
+    tail: Vec<Lane>,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>`. Print the wave length +
@@ -308,6 +314,7 @@ impl Clone for MemorySource {
             // a node is prepared, which sizes it.
             positions: Vec::new(),
             gather: Gather::empty(),
+            tail: Vec::new(),
         }
     }
 }
@@ -336,6 +343,7 @@ impl MemorySource {
             channels: ChannelLayout::STEREO,
             positions: Vec::new(),
             gather: Gather::empty(),
+            tail: Vec::new(),
         }
     }
 
@@ -1184,6 +1192,71 @@ impl MemorySource {
         }
     }
 
+    /// The placed read of block frames `range` into frames `0..range.len()`
+    /// of the first `n` `head` lanes, gained by `gain`: the one read a
+    /// pool's slot, a [`VoiceNode`](super::VoiceNode) and a bare source all
+    /// make. Every frame of each lane is written, silence as zero, unless
+    /// the piece is [`Piece::Silent`].
+    ///
+    /// Across a transport loop wrap the voice's tail past the loop's end is
+    /// read into `tail` (lanes as long as the piece) and blended under the
+    /// head (`crossfade_wraps`); a block with no wrap reads and gains the
+    /// head alone.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub(crate) fn render_placed<H: AsMut<[f32]>, T: AsMut<[f32]>>(
+        &self,
+        clock: &BlockClock<'_>,
+        range: Range<usize>,
+        direction: Direction,
+        gain: f32,
+        n: usize,
+        positions: &mut [Option<SamplePosition>],
+        gather: &mut Gather,
+        head: &mut [H],
+        tail: &mut [T],
+    ) -> Piece {
+        let frames = range.len();
+        let sounds = self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
+        let fades = clock.fades();
+        // With no position, every frame reads +0.0, gained to ±0.0 by a
+        // finite gain (an infinite or NaN one makes NaNs, which are read).
+        if !sounds && gain.is_finite() && !fades {
+            return Piece::Silent;
+        }
+        self.read_placed_lanes(positions, direction, head, n, gather);
+        for lane in head.iter_mut().take(n) {
+            scale(&mut lane.as_mut()[..frames], gain);
+        }
+        if !fades {
+            return Piece::Ready;
+        }
+        let span = self.placed_tail(clock, range.clone(), positions);
+        let first = span.as_ref().map_or(0, |s| s.start);
+        let mut views: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
+            std::array::from_fn(|_| Default::default());
+        for (view, lane) in views.iter_mut().zip(tail.iter_mut()) {
+            *view = lane
+                .as_mut()
+                .get_mut(span.clone().unwrap_or(0..0))
+                .unwrap_or_default();
+        }
+        // Only the frames the tail sounds over are read.
+        if let Some(span) = &span {
+            self.read_placed_lanes(&positions[span.clone()], direction, &mut views, n, gather);
+            for view in views.iter_mut().take(n) {
+                scale(view, gain);
+            }
+        }
+        let blended = self.gate(ReadRate::UNITY).is_some_and(|gate| {
+            crossfade_wraps(clock, range, gate, first, positions, &views, head, n)
+        });
+        if !blended && !sounds && gain.is_finite() {
+            return Piece::Silent;
+        }
+        Piece::Ready
+    }
+
     /// Render block frames `range` (at most `positions.len()`)
     /// into frame `i - range.start` of each of `out`'s channels: the node's
     /// own read, gained by its own gain.
@@ -1202,6 +1275,7 @@ impl MemorySource {
         range: Range<usize>,
         positions: &mut [Option<SamplePosition>],
         gather: &mut Gather,
+        tail: &mut [Lane],
         out: &mut [&mut [f32]],
     ) {
         let n = out.len().min(MAX_SAMPLER_CHANNELS);
@@ -1210,14 +1284,6 @@ impl MemorySource {
         if self.placement.is_some() {
             let frames = range.len();
             let positions = &mut positions[..frames];
-            let sounds = self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
-            if !sounds {
-                // Every frame is outside the window: silence, ungained.
-                for lane in out.iter_mut().take(n) {
-                    lane[range.clone()].fill(0.0);
-                }
-                return;
-            }
             if gather.frames() >= frames {
                 let mut lanes: [&mut [f32]; MAX_SAMPLER_CHANNELS] =
                     std::array::from_fn(|_| Default::default());
@@ -1225,25 +1291,31 @@ impl MemorySource {
                     *lane = &mut ch[range.clone()];
                 }
                 let lanes = &mut lanes[..n];
-                self.read_placed_lanes(positions, Direction::Forward, lanes, n, gather);
-                // The gain on each frame with a position, as `apply_gain`
-                // gains a read frame; the frames without stay 0.0.
                 let gain = self.block_gain();
-                let mut i = 0;
-                while i < frames {
-                    let inside = positions[i].is_some();
-                    let mut j = i + 1;
-                    while j < frames && positions[j].is_some() == inside {
-                        j += 1;
+                let piece = self.render_placed(
+                    clock,
+                    range,
+                    Direction::Forward,
+                    gain,
+                    n,
+                    positions,
+                    gather,
+                    lanes,
+                    tail,
+                );
+                if piece == Piece::Silent {
+                    // Every frame is outside the window: silence, ungained.
+                    for lane in lanes.iter_mut() {
+                        lane.fill(0.0);
                     }
-                    if inside {
-                        for lane in lanes.iter_mut() {
-                            for s in &mut lane[i..j] {
-                                *s *= gain;
-                            }
-                        }
-                    }
-                    i = j;
+                }
+                return;
+            }
+            // Unsized scratch (driven by hand, unprepared): a frame at a
+            // time, with no wrap crossfade.
+            if !self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions) {
+                for lane in out.iter_mut().take(n) {
+                    lane[range.clone()].fill(0.0);
                 }
                 return;
             }
@@ -1283,6 +1355,57 @@ impl MemorySource {
             *s *= gain;
         }
     }
+}
+
+/// Blend a wrap crossfade's tail into the loop's start, for a voice with a
+/// tail (`Gate::tail_sounds`; a voice without one is untouched). Returns
+/// whether any run was blended. Where the tail has ended inside the fade
+/// (`positions` empty), the head finishes its ramp alone.
+/// `tail` holds the frames from `first`; `range` is the piece, whose first
+/// frame is lane frame 0.
+///
+/// A head in the middle of a sound is `head * g_in + tail * g_out` at
+/// [`CrossfadeCurve`]'s equal-power gains: the two are different stretches
+/// of the source, which add in power. A head that is the clip's own start
+/// (`Gate::begins_with_loop`) keeps unity, `head + tail * g_out`: its attack
+/// is not ramped, and the join steps as the clip's first pass does. Both
+/// sounding at full level, correlated, the sum peaks at the two together.
+#[allow(clippy::too_many_arguments)]
+fn crossfade_wraps<H: AsMut<[f32]>>(
+    clock: &BlockClock<'_>,
+    range: Range<usize>,
+    gate: Gate,
+    first: usize,
+    positions: &[Option<SamplePosition>],
+    tail: &[&mut [f32]],
+    head: &mut [H],
+    n: usize,
+) -> bool {
+    let base = range.start;
+    let mut blended = false;
+    for run in clock.runs_in(range) {
+        let Some(wrap) = run.wrap else { continue };
+        if !gate.tail_sounds(&run, &wrap) {
+            continue;
+        }
+        blended = true;
+        let own_start = gate.begins_with_loop(&run, &wrap);
+        let end = run.end.min(run.start + wrap.left());
+        for at in run.start..end {
+            let i = at - base;
+            let (g_in, g_out) =
+                CrossfadeCurve::EqualPower.gains(wrap.ago + at - run.start, wrap.len);
+            let g_in = if own_start { 1.0 } else { g_in };
+            // A tail that has ended leaves the head to finish its ramp.
+            let sounding = positions[i].is_some();
+            for (h, t) in head.iter_mut().zip(tail).take(n) {
+                let tail = if sounding { t[i - first] * g_out } else { 0.0 };
+                let h = &mut h.as_mut()[i];
+                *h = *h * g_in + tail;
+            }
+        }
+    }
+    blended
 }
 
 /// Wrap a position that ran past `loop_end` back into `[loop_start, loop_end)`.
@@ -1326,7 +1449,7 @@ impl MemorySource {
         let mut from = 0;
         while from < frames {
             let to = (from + UNPREPARED_FRAMES).min(frames);
-            self.render_range(clock, from..to, &mut positions, &mut gather, out);
+            self.render_range(clock, from..to, &mut positions, &mut gather, &mut [], out);
             from = to;
         }
     }
@@ -1375,6 +1498,13 @@ impl Node for MemorySource {
         self.positions.resize(frames, None);
         self.positions.shrink_to_fit();
         self.gather.resize(frames);
+        let width = (self.channels.count() as usize).min(MAX_SAMPLER_CHANNELS);
+        self.tail.resize_with(width, Vec::new);
+        for lane in &mut self.tail {
+            lane.clear();
+            lane.resize(frames, 0.0);
+            lane.shrink_to_fit();
+        }
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -1402,15 +1532,18 @@ impl Node for MemorySource {
         if frames <= self.positions.len() {
             let mut positions = std::mem::take(&mut self.positions);
             let mut gather = std::mem::replace(&mut self.gather, Gather::empty());
+            let mut tail = std::mem::take(&mut self.tail);
             self.render_range(
                 &clock,
                 0..frames,
                 &mut positions,
                 &mut gather,
+                &mut tail,
                 &mut refs[..n],
             );
             self.positions = positions;
             self.gather = gather;
+            self.tail = tail;
         } else {
             self.render_unprepared(&clock, frames, &mut refs[..n]);
         }

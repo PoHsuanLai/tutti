@@ -29,7 +29,7 @@ tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
 # The graph: `RenderGraph` is a forked or built
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
-# tutti-graph depends on no tutti crate but tutti-types.
+# tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
 tutti-graph = { path = "../tutti-graph" }
 # EBU R128 loudness measurement lives in tutti-dsp (the crate's
 # Config/State/step analysis home) — `render_normalized_to_file` measures with

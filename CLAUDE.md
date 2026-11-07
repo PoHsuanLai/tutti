@@ -59,7 +59,7 @@ serial one.
   (`tutti-graph/src/slots.rs`). Do not add an op path that reaches the arena,
   the event slots, a unit, a ring or an output except through them or a
   claim: that is what keeps `tutti-graph` `#![forbid(unsafe_code)]`.
-- **New lock-free or `unsafe` runtime structure goes in `tutti-types`**, with
+- **New lock-free or `unsafe` runtime structure goes in `tutti-rt`**, with
   a loom model beside `pos_ring_loom.rs` that runs the shipped code, and a
   mutation record in it. The one exception is the publish cell, which is its
   own crate, `crates/arc-lend` (`ArcLend`/`Loan`; its loom model is
@@ -225,15 +225,21 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-session  Bevy-free API layer: the cross-crate composition both umbrellas use
                  (design 015: `Session`, `Graph`, `SessionBuilder`, `Device`).
   arc-lend       The publish cell (`ArcLend`/`Loan`): a general-purpose crate with
-                 no dependencies, `publish = false`, re-exported by tutti-types.
+                 no dependencies, `publish = false`, re-exported by tutti-rt.
+  tutti-rt       Real-time-safe shared-memory primitives for the audio thread:
+                 `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
+                 the parallel executor's claims and job gate, `ScopedNoDenormals`,
+                 and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
+                 and `unsafe` runtime structure, with every loom model; depends
+                 on `arc-lend` alone, `publish = false`
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
                  needs); no dependencies but `bytemuck` (and optional `serde`)
-  tutti-types    vocabulary only: units, channel layouts, io edge traits, rt
-                 primitives, Topology; no FFT and no new algorithms. Downmix, interp
-                 and sample conversion stay until a follow-up moves them
+  tutti-types    vocabulary only: units, channel layouts, io edge traits,
+                 Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
+                 Downmix and sample conversion stay until a follow-up moves them
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter; `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
@@ -262,7 +268,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`
+1. `tutti-types`, `tutti-rt`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
 3. `tutti-core`, `tutti-plugin-types`
 4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
@@ -290,9 +296,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `tutti` and `bevy-tutti` preludes export all three, and `tutti-session`
   exports `MidiChannel` behind `midi`. A consumer that persists one with serde
   depends on `tutti-ump` with its `serde` feature; no umbrella forwards it.
-- `tutti-types` names no other tutti crate. Its one workspace-member
-  dependency is `arc-lend`, which is not a tutti crate: it depends on nothing
-  at all, and nothing audio-specific belongs in it.
+- `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
+  nothing audio-specific belongs in it beyond its vocabulary.
+- `tutti-rt` names no tutti crate. Its one workspace-member dependency is
+  `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
+  `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep
+  every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
+  the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
   rustfft, ebur128, libm and thiserror; `tutti-core` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
@@ -313,7 +323,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   algorithm plain values (`CompressorKernel::gain` takes a `CompressorBlock`).
   A loop that indexes the graph's `Inputs`/`Outputs`, or reads a `Param` cell,
   stays in the node.
-- `tutti-graph` depends on no tutti crate but `tutti-types` and `tutti-ump` (its outside
+- `tutti-graph` depends on no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump` (its outside
   deps are `bytemuck` and `ringbuf`, the editor→executor queue), keeps every
   module private (`tutti_graph::Plan`, never `tutti_graph::plan::Plan`; CI runs
   the per-module path gate on it) and is `#![forbid(unsafe_code)]`.
@@ -354,7 +364,7 @@ quantity one covers: fields, signatures, `Param<U>` and return types.
 ## Publishing to the audio thread (MANDATORY)
 
 Non-scalar state handed to the audio thread goes through
-`tutti_types::{ArcLend, Reader, Loan}` (the `arc-lend` crate, re-exported).
+`tutti_rt::{ArcLend, Reader, Loan}` (the `arc-lend` crate, re-exported).
 Scalars use `Param<U>`.
 
 - **The audio thread never holds an owning handle to published state, and

@@ -15,9 +15,11 @@
 # workspace crates points strictly down the LAYERS table. A crate missing from
 # the table is an error: placing it is the point. On top of that:
 # - `arc-lend` and `tutti-ump` depend on no workspace crate, of any kind;
-# - `tutti-types` depends on no tutti crate but `arc-lend`;
-# - `tutti-dsp` and `tutti-mod` depend on `tutti-types` alone, and
-#   `tutti-graph` and `tutti-midi-types` on `tutti-types` and `tutti-ump`;
+# - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
+#   alone;
+# - `tutti-dsp` and `tutti-mod` depend on `tutti-types` alone,
+#   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
+#   `tutti-graph` on those three;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -26,8 +28,10 @@
 # Mutation record (each planted on the tree that added this script, seen to
 # exit 1, then removed):
 # - `tutti-nodes` as a `[dependencies]` entry of `tutti-types`: "tutti-types ->
-#   tutti-nodes (normal) points up" and "tutti-types may depend on ['arc-lend']
-#   only";
+#   tutti-nodes (normal) points up" and "tutti-types may depend on no workspace
+#   crate"; `arc-lend` as a `[dependencies]` entry of `tutti-types`: "tutti-types
+#   may depend on no workspace crate"; `tutti-types` as a `[dependencies]` entry
+#   of `tutti-rt`: "tutti-rt may depend on ['arc-lend'] only";
 # - `tutti-spatial` as a `[dev-dependencies]` entry of `tutti-nodes`:
 #   "tutti-nodes must not depend on tutti-spatial";
 # - `tutti-fixtures` as a `[dependencies]` entry of `tutti-dsp`, and as
@@ -42,7 +46,7 @@
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
 #   (normal) points up" and "tutti-ump may depend on no workspace crate";
 # - `tutti-core` as a `[dependencies]` entry of `tutti-graph`: "tutti-graph may
-#   depend on ['tutti-types', 'tutti-ump'] only".
+#   depend on ['tutti-rt', 'tutti-types', 'tutti-ump'] only".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -86,7 +90,7 @@ def rel(p):
 LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
-    ["tutti-types"],
+    ["tutti-types", "tutti-rt"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types"],
     ["tutti-core", "tutti-plugin-types"],
     ["tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
@@ -167,13 +171,15 @@ for n in ("arc-lend", "tutti-ump"):
     if n in pkgs:
         only(n, [], ("normal", "build", "dev"))
 if "tutti-types" in pkgs:
-    only("tutti-types", ["arc-lend"])
+    only("tutti-types", [])
+if "tutti-rt" in pkgs:
+    only("tutti-rt", ["arc-lend"])
 for n in ("tutti-dsp", "tutti-mod"):
     if n in pkgs:
         only(n, ["tutti-types"])
 for n in ("tutti-graph", "tutti-midi-types"):
     if n in pkgs:
-        only(n, ["tutti-types", "tutti-ump"])
+        only(n, ["tutti-types", "tutti-rt", "tutti-ump"])
 if "tutti-nodes" in pkgs and "tutti-spatial" in deps_of("tutti-nodes"):
     fail("tutti-nodes must not depend on tutti-spatial (spatial depends on nodes)")
 if "tutti-spatial" in pkgs and "tutti-nodes" not in deps_of("tutti-spatial"):

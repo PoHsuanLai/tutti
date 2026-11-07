@@ -127,7 +127,7 @@ scaling module — stay explicit imports so a glob does not flood scope.
 
 ## Where it sits
 
-Depends on `tutti-types` (for `ArcLend`) and `tutti-ump` (the `MidiGroup`,
+Depends on `tutti-rt` (for `ArcLend`), `tutti-types` and `tutti-ump` (the `MidiGroup`,
 `MidiChannel` and `CCNumber` newtypes, which callers import from there) plus
 `midi2` and `midly`. Everything
 MIDI-shaped in the engine builds on it: `tutti-core`, the other `tutti-midi-*`

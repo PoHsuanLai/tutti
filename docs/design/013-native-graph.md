@@ -2434,7 +2434,7 @@ held it, and the ring was redesigned so a reposition has nothing to flush.
 - **The no-tear protocol is `tutti_types::PosRing`'s**, beside what was then
   `RtPublish` (now the `arc-lend` crate's `ArcLend`),
   and checked the same way: its atomics become loom's under `--cfg loom`, and
-  `tutti-types/tests/pos_ring_loom.rs` models a reader making two claims
+  `tutti-rt/tests/pos_ring_loom.rs` models a reader making two claims
   against a writer that pushes round the ring, retracts then pushes, and
   resets then pushes, every sample tagged with its position and generation.
   (tutti-sampler cannot build under the flag: `event-listener`, under its
@@ -3413,7 +3413,7 @@ What each layer holds:
   workgroup join goes. The engine does not promote threads itself, for the
   reason it does not promote the callback. The helpers must run at the
   callback's priority, not below it (decision 7).
-- **The runtime primitives (`tutti-types`, loom-checked).**
+- **The runtime primitives (`tutti-rt`, loom-checked).**
   `JobGate` lends one borrowed job to helper threads per call (the only
   lifetime erasure, and the reason the pool needs no `std::thread::scope`
   per block); `TaskGraph` runs a DAG of tasks once per block over any

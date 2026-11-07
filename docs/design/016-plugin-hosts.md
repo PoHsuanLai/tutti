@@ -1192,7 +1192,7 @@ breaks it misbehaves in every host. `Vst2Controller` follows it:
 `unsafe` stays in the host crates: the shell, the FFI calls and the `unsafe impl
 Send` and `Sync`, each with a `// SAFETY:` naming the clause above it leans on.
 The traits, `Lifecycle` and the pure core add none, and `Handoff` and
-`EditRing` carry their own in `tutti-types` under loom.
+`EditRing` carry their own in `tutti-rt` under loom.
 
 ### 2.3 `Lifecycle`
 
@@ -1360,7 +1360,7 @@ host state) and AU's property listener are made on whatever thread the plugin
 chooses. Each becomes a bit in one atomic word:
 
 ```rust
-// tutti-types, rt/: one AtomicU32. `raise` is fetch_or(Release), wait-free, any
+// tutti-rt: : one AtomicU32. `raise` is fetch_or(Release), wait-free, any
 // thread; `take` is swap(0, Acquire), main thread only.
 pub struct RequestWord(AtomicU32);
 impl RequestWord {
@@ -1385,7 +1385,7 @@ A callback body is `word.raise(..)` and a return value. The main-thread pass
 descriptors are main-thread registrations (`poll_timers_at`,
 `clap-host/src/instance/polling.rs`, already takes `now`): the shell turns a due
 timer into `Event::Request(Timer(id))`. `RequestWord` is new lock-free structure
-and goes in `tutti-types` with a loom model beside `pos_ring_loom.rs` that runs
+and goes in `tutti-rt` with a loom model beside `pos_ring_loom.rs` that runs
 the shipped code (two threads raising while a third takes: no bit lost, each bit
 taken exactly once) and a mutation record in it.
 
@@ -1396,7 +1396,7 @@ thread holds the Processor, and it holds nothing else of the plugin.
 
 **Parameter edits.** `Control::set_parameter` on an active plugin pushes an edit
 into an `EditRing`, a bounded single-producer single-consumer ring in
-`tutti-types` (new lock-free structure: loom model and mutation record, like
+`tutti-rt` (new lock-free structure: loom model and mutation record, like
 `RequestWord`). The Processor drains it at the head of each block into the
 format's own channel: CLAP `PARAM_VALUE` events, VST3 `IParameterChanges`, AU
 `AudioUnitSetParameter`, and for a VST2 plugin carrying the quirk `setParameter`.

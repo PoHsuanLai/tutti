@@ -99,6 +99,8 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter swept_delay waveshape resample
+      # And `tutti-rt`, which keeps its modules private: the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -514,8 +516,8 @@ jobs:
       # too: its stress test runs far more interleavings at release speed.
       # `tutti-graph`'s executor guards (a caller bug asserts in debug and
       # renders silence in release) have a test per build.
-      - name: Test tutti-types, arc-lend and tutti-graph (release)
-        run: cargo nextest run --locked --release -p tutti-types -p arc-lend -p tutti-graph
+      - name: Test tutti-types, tutti-rt, arc-lend and tutti-graph (release)
+        run: cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph
 
       # nextest does NOT run doctests, and says nothing about skipping them.
       # That is not a rounding error here: these are the only tests covering the
@@ -636,9 +638,8 @@ jobs:
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
   # structural answer there instead. Of what is left, the two that matter are
-  # the aliasing in `tutti-types`' `AudioThreadCell` and `arc-lend`'s
-  # hazard-slot reclamation (`ArcLend`, its own crate since it left
-  # `tutti-types`). (The third, the pointer arithmetic in
+  # the aliasing in `tutti-rt`'s `AudioThreadCell` and `arc-lend`'s
+  # hazard-slot reclamation (`ArcLend`, its own crate). (The third, the pointer arithmetic in
   # `tutti-node`'s planar buffers, went with that crate: a
   # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
   #
@@ -660,7 +661,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      # ALSA headers: `tutti-types` does not need them, but
+      # ALSA headers: `tutti-rt` does not need them, but
       # cargo resolves the whole workspace before building a member.
       - run: sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       # `+nightly` on each command below: `rust-toolchain.toml` overrides the
@@ -676,7 +677,7 @@ jobs:
       # list parked loans keep growing, is quadratic and runs past this job's
       # timeout under miri. They test a debug-only policy check, which the
       # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
-      - run: cargo +nightly miri test --locked -p tutti-types --lib
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
       - run: cargo +nightly miri test --locked -p arc-lend
       # Its unit tests again over 16 scheduling seeds: the small
@@ -720,7 +721,7 @@ jobs:
       # Clippy under `--cfg loom`: the flag changes constants the lints see
       # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
       # and no other job compiles that configuration.
-      - run: cargo clippy --locked -p arc-lend -p tutti-types -p tutti-shm-model --all-targets -- -D warnings
+      - run: cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
       - run: cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
       - run: cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
         env:
@@ -729,20 +730,20 @@ jobs:
       # shipped code: nine models, about five minutes at this bound (the
       # shrink models a minute each); every recorded mutation fails at it but
       # the documented survivor (`tests/pos_ring_loom.rs`).
-      - run: cargo test --locked -p tutti-types --release --test pos_ring_loom
+      - run: cargo test --locked -p tutti-rt --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
       # `PackedAtomic`'s one property (no torn `[min, max]`), against the
       # shipped code: one model, seconds.
-      - run: cargo test --locked -p tutti-types --release --test packed_atomic_loom
+      - run: cargo test --locked -p tutti-rt --release --test packed_atomic_loom
       # `SeqWriter`/`SeqReader`'s one property (no copy mixing two writes),
       # against the shipped code: two models (the writer on either thread),
       # unbounded, about four seconds.
-      - run: cargo test --locked -p tutti-types --release --test seq_cell_loom
+      - run: cargo test --locked -p tutti-rt --release --test seq_cell_loom
       # `AudioThreadCell`'s always-on borrow flag (no aliasing, a granted
       # borrow sees the last one's writes), against the shipped code: one
       # model, unbounded, under a second.
-      - run: cargo test --locked -p tutti-types --release --test cell_loom
+      - run: cargo test --locked -p tutti-rt --release --test cell_loom
       - run: cargo test --locked -p tutti-shm-model --release
 
   # The parallel executor's runtime primitives (doc 013), each
@@ -763,11 +764,11 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --locked -p tutti-types --release --test split_loom
-      - run: cargo test --locked -p tutti-types --release --test job_gate_loom
-      - run: cargo test --locked -p tutti-types --release --test task_graph_loom
+      - run: cargo test --locked -p tutti-rt --release --test split_loom
+      - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
+      - run: cargo test --locked -p tutti-rt --release --test task_graph_loom
       # `RequestWord` (no bit lost, each taken once, a raise orders what
       # preceded it) and `edit_ring` (each edit applied once, in order, no torn
       # slot), against the shipped code.
-      - run: cargo test --locked -p tutti-types --release --test request_word_loom
-      - run: cargo test --locked -p tutti-types --release --test edit_ring_loom
+      - run: cargo test --locked -p tutti-rt --release --test request_word_loom
+      - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom

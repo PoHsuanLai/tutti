@@ -223,7 +223,7 @@ fn hardware_poll_with_stale_timestamps_is_allocation_free() {
 ///
 /// This pins the reader's code path, not the race: a single thread cannot
 /// exhaust the interleavings. The reclamation protocol itself is checked by
-/// `tutti-types`' loom model.
+/// `tutti-rt`' loom model.
 ///
 /// Mutation: putting the port set back on `ArcSwap` (`load()` in the drain,
 /// `load` + clone + `store` in `open_input_port`) aborts this test on its

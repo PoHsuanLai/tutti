@@ -15,7 +15,7 @@ together — an upper bound, not a block count:
 | `crates/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
 | `crates/tutti-plugin/` | 46 | shm slab, IPC transport |
 | `crates/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
-| `tutti-core`, `-types`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
+| `tutti-core`, `-rt`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
 | `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 14 | see below |
 | `crates/tutti-plugin-types/` | 7 | bundle/ABI value types |
 
@@ -32,7 +32,7 @@ deleted `tutti-node` and its planar buffers, and #116 made
 cost something on the audio thread, and each is named here so the list can
 be checked against the tree.
 
-- **`tutti-types/src/rt/cell.rs`** — `AudioThreadCell`: an `UnsafeCell` plus
+- **`tutti-rt/src/cell.rs`** — `AudioThreadCell`: an `UnsafeCell` plus
   `unsafe impl Sync`, with a borrow check in every build: one atomic word,
   a writer bit plus a reader count, taken by a compare-exchange per borrow
   and released by its guard's drop. Any number of shared borrows (`borrow`,
@@ -47,7 +47,8 @@ be checked against the tree.
   a `Mutex`: the check never waits. Its `loom` model is `tests/cell_loom.rs`. (Its `reset_owner`,
   a no-op that pinned no owner thread, is deleted.)
 - **`arc-lend/src/current.rs`, `arc-lend/src/reader.rs`** — `ArcLend` (it was `tutti-types`'
-  `RtPublish`, in `rt/publish.rs`, until it became its own crate): an
+  `RtPublish`, in `rt/publish.rs`, until it became its own crate; `tutti-rt`
+  re-exports it): an
   `AtomicPtr` holding an `Arc::into_raw` pointer (its private `Current`,
   which holds every `Arc::from_raw`: its `swap`, `to_arc` and `Drop`), and
   dereferenced by `Loan` under a hazard-slot protocol. The safe
@@ -56,7 +57,7 @@ be checked against the tree.
   `SeqCst` fence pair, which is a *concurrency* property — so it is checked by
   a loom model run against the shipped code (`arc-lend/tests/loom.rs`) as
   well as by miri over the crate's concurrent stress test.
-- **`tutti-types/src/rt/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
+- **`tutti-rt/src/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
   set. x86 SSE control-register intrinsics; there is no safe spelling.
 - **`tutti-sampler/src/butler/prefetch.rs`** — `unsafe impl Send`/`Sync` on
   `SendProd`, the ring producer handed to the disk butler. The file says it
@@ -143,8 +144,9 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   unsafety — miri deliberately perturbs libm results between calls to catch
   code that assumes they reproduce, so `Cents::from_pitch_ratio(2.0)` came
   back 1199.9998 and two calls to the same dB conversion disagreed in the
-  last bits. Both tests are exact by design, contain no `unsafe`, and are now
-  `#[cfg_attr(miri, ignore)]`d with that reasoning at the test. Worth knowing
+  last bits. Both tests are exact by design and contain no `unsafe`; they were
+  `#[cfg_attr(miri, ignore)]`d until `tutti-types` forbade `unsafe` and left
+  the miri job (which runs `tutti-rt` and `arc-lend`). Worth knowing
   before reading a green miri run as broader than it is: it covers the
   aliasing and the pointer arithmetic, and it is not a numerical check.
 - **`assert_no_alloc`** gates, which are about RT-safety rather than memory
@@ -157,3 +159,6 @@ a stronger claim than it is: every crate that matters would carry the escape
 hatch, and the annotation would say nothing a reader could rely on.
 `#![forbid(unsafe_code)]` on crates that genuinely have none is the honest
 version, and a new crate without `unsafe` takes it.
+`tutti-types` is one: all of its `rt` module moved to `tutti-rt` for that, so the
+vocabulary crate carries the forbid and the lock-free structure sits in one
+place with its loom models.

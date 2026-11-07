@@ -47,7 +47,7 @@ tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The graph, for a plugin node's own `ForkSource` (fork by state
-# transfer). No cycle: `tutti-graph` names only `tutti-types`.
+# transfer). No cycle: `tutti-graph` names only `tutti-types`, `tutti-rt` and `tutti-ump`.
 tutti-graph = { path = "../tutti-graph" }
 
 # Lock-free f64 cursor for the harmony source

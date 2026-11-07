@@ -10,7 +10,7 @@
 #
 # Usage:
 #   scripts/check-canonical-paths.sh                       # chained-path gate
-#   scripts/check-canonical-paths.sh tutti_types value rt  # + per-module gate
+#   scripts/check-canonical-paths.sh tutti_rt cell vec      # + per-module gate
 
 set -uo pipefail
 

@@ -23,14 +23,31 @@ fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
     );
 }
 
+static STAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
+fn stage(n: usize) {
+    STAGE.store(n, std::sync::atomic::Ordering::SeqCst); // DIAG
+}
+
 fn diag_flow(settle: Option<Duration>) {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_secs(70)); // DIAG watchdog
+        eprintln!(
+            "DIAG WATCHDOG stage={} notifications={}",
+            STAGE.load(std::sync::atomic::Ordering::SeqCst),
+            NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        std::process::abort();
+    });
+    stage(1);
     let name = format!("tutti-test-{}", std::process::id());
     let devices = Devices::open().unwrap();
+    stage(2);
     assert_eq!(registered(), 1);
     if let Some(settle) = settle {
         devices.wait(settle); // DIAG
     }
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
+    stage(3);
     let stop = std::sync::atomic::AtomicBool::new(false);
     struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
     impl Drop for Stop<'_> {
@@ -60,15 +77,19 @@ fn diag_flow(settle: Option<Duration>) {
             &devices,
             |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
         );
+        stage(4);
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(destination);
+        stage(5);
         let id = added.info().id.clone();
         until(
             &devices,
             |e| matches!(e, DeviceEvent::Removed(i) if i.id == id),
         );
     });
+    stage(6);
     drop(devices);
+    stage(7);
     assert_eq!(registered(), 0);
 }
 

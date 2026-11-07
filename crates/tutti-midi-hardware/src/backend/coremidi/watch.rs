@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use core_foundation::runloop::CFRunLoop;
@@ -39,37 +39,58 @@ pub(super) static NOTIFICATIONS: std::sync::atomic::AtomicUsize =
 #[cfg(not(test))]
 static NOTIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
 
-type Notify = Box<dyn FnMut() + Send>;
+/// One registered watch: the reporting state of a `Devices`, and the sink to
+/// tell if it fails.
+struct Watcher {
+    reporter: Reporter,
+    snapshot: fn() -> Vec<OsDevice>,
+    sink: ChangeSink,
+    /// False once its `Devices` has dropped.
+    live: bool,
+}
+
+type Shared = Arc<Mutex<Watcher>>;
+
+/// Looks again at CoreMIDI and reports what changed. A panic does not unwind
+/// into CoreMIDI's block: it fails the watch.
+///
+/// The hub's own lock is not held here. The watcher's enumeration calls into
+/// CoreMIDI, and a thread holding the hub lock across such a call would block
+/// the notification callback that CoreMIDI may be waiting on.
+fn look(watcher: &Shared) {
+    let mut watcher = watcher.lock().unwrap_or_else(PoisonError::into_inner);
+    if !watcher.live {
+        return;
+    }
+    let Watcher {
+        reporter, snapshot, ..
+    } = &mut *watcher;
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        reporter.report(snapshot(), |_| false);
+    }));
+    if run.is_err() {
+        watcher.live = false;
+        watcher.sink.fail("the CoreMIDI watch panicked".into());
+    }
+}
 
 /// The watches registered with the process-wide client.
 struct Hub {
-    watches: Mutex<Vec<Registered>>,
+    watches: Mutex<Vec<(u64, Shared)>>,
     next: AtomicU64,
 }
 
-/// One watch: how to run its enumeration, and where to say it failed.
-struct Registered {
-    key: u64,
-    notify: Notify,
-    sink: ChangeSink,
-}
-
 impl Hub {
-    fn watches(&self) -> MutexGuard<'_, Vec<Registered>> {
+    fn watches(&self) -> MutexGuard<'_, Vec<(u64, Shared)>> {
         self.watches.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Runs every registered watch's enumeration. A watch whose enumeration
-    /// panics is failed and dropped from the hub: the panic does not unwind
-    /// into CoreMIDI's block.
+    /// Has every registered watch look again.
     fn notify(&self) {
-        self.watches().retain_mut(|watch| {
-            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (watch.notify)()));
-            if run.is_err() {
-                watch.sink.fail("the CoreMIDI watch panicked".into());
-            }
-            run.is_ok()
-        });
+        let all: Vec<Shared> = self.watches().iter().map(|(_, w)| Arc::clone(w)).collect();
+        for watcher in &all {
+            look(watcher);
+        }
     }
 }
 
@@ -131,17 +152,22 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
 }
 
 /// A registration with the hub. Dropping it removes the registration, and
-/// returns once a notification in progress has finished with it.
+/// returns once a look in progress has finished: nothing is reported after.
 struct CoreMidiWatch {
     hub: &'static Hub,
     key: u64,
+    watcher: Shared,
 }
 
 impl Watch for CoreMidiWatch {}
 
 impl Drop for CoreMidiWatch {
     fn drop(&mut self) {
-        self.hub.watches().retain(|watch| watch.key != self.key);
+        self.hub.watches().retain(|(key, _)| *key != self.key);
+        self.watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live = false;
     }
 }
 
@@ -159,18 +185,19 @@ pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result
     };
     let failures = sink.clone();
     let mut reporter = Reporter::new(sink);
-    // Registered while the hub is locked, so a notification cannot slip between
-    // the first look and the registration.
-    let mut watches = hub.watches();
     reporter.seed(snapshot());
-    let key = hub.next.fetch_add(1, Ordering::Relaxed);
-    watches.push(Registered {
-        key,
-        notify: Box::new(move || reporter.report(snapshot(), |_| false)),
+    let watcher: Shared = Arc::new(Mutex::new(Watcher {
+        reporter,
+        snapshot,
         sink: failures,
-    });
-    drop(watches);
-    Ok(Box::new(CoreMidiWatch { hub, key }))
+        live: true,
+    }));
+    let key = hub.next.fetch_add(1, Ordering::Relaxed);
+    hub.watches().push((key, Arc::clone(&watcher)));
+    // A change between the seed and the registration sent no notification this
+    // watch could act on; look once more.
+    look(&watcher);
+    Ok(Box::new(CoreMidiWatch { hub, key, watcher }))
 }
 
 /// How many watches are registered, for the test that one drops.

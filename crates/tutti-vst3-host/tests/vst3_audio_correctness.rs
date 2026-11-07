@@ -84,6 +84,7 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 
 const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
+const PARAM_GAIN: u32 = 102;
 /// Steps on `kParamMode`: 11 modes (0..=10) is 10 steps, and a stepped VST3
 /// parameter normalizes as `index / stepCount`. Adding a mode shifts every
 /// other mode's normalized value, so this must track `kModeStepCount` exactly —
@@ -1470,16 +1471,23 @@ fn a_sysex_open_across_a_stop_is_dropped() {
     assert_eq!(inst.sysex_dropped(), 1, "the tail completed nothing");
 }
 
-/// An id the plugin never listed has no descriptor, reads as 0 (what
-/// `getParamNormalized` answers for an unknown id), and a write to it changes
-/// no listed parameter and does not stick.
+/// An id the plugin never listed has no descriptor and reads as `None` (as the
+/// `Control::parameter` contract says, and as CLAP and VST2 answer), and a write
+/// to it changes no listed parameter and does not stick.
+///
+/// `getParamNormalized` answers 0 for an unknown id; the host used to pass that
+/// through as `Some(0.0)`. The owner decided on `None`, so the two reads below
+/// assert it.
 ///
 /// This covers what the `#[ignore]`d `test_set_parameter` (which needs an
 /// installed third-party plugin) also checks, on the repo's own probe.
 ///
 /// Mutation (run): making `parameter_info` return the first descriptor whatever
 /// the id fails the descriptor assertion; routing the write to the first listed
-/// parameter fails the final comparison.
+/// parameter fails the final comparison; dropping the `parameter_info` check in
+/// `Control::parameter` fails the two `None` assertions; dropping the
+/// `parameter_info` check from the `carried` push in `Control::set_parameter`
+/// fails the saved-state comparison.
 #[test]
 fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
@@ -1494,23 +1502,199 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
         .expect("some id is unlisted");
 
     assert!(loaded.parameter_info(unlisted).is_none());
-    assert_eq!(
-        Control::parameter(&loaded, unlisted),
-        Some(Normalized::new(0.0))
-    );
+    assert_eq!(Control::parameter(&loaded, unlisted), None);
 
     let before: Vec<_> = listed
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
         .collect();
+    let saved_before = Control::save_state(&mut loaded).expect("the probe saves");
     Control::set_parameter(&mut loaded, unlisted, Normalized::new(0.25));
-    assert_eq!(
-        Control::parameter(&loaded, unlisted),
-        Some(Normalized::new(0.0))
-    );
+    assert_eq!(Control::parameter(&loaded, unlisted), None);
     let after: Vec<_> = listed
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
         .collect();
     assert_eq!(before, after);
+    // The write is not remembered for the next activation either: it would be
+    // in the saved state.
+    assert_eq!(
+        Control::save_state(&mut loaded).expect("the probe saves"),
+        saved_before
+    );
+}
+
+// ── Writes to a plugin that is loaded and not active ─────────────────────────
+//
+// The probe is an `AudioEffect` with a separate `EditController`: a controller
+// write reaches the component only as `IParameterChanges` in a process call, so
+// a loaded plugin's component (and its `getState`) does not hear of it.
+
+mod loaded_writes {
+    use super::*;
+    use tutti_plugin_types::{Control, Normalized};
+
+    const MODE_RAMP: f64 = 0.1;
+    const RAMP_LEVEL: f64 = 0.75;
+
+    fn load() -> Vst3Loaded {
+        Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads")
+    }
+
+    fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {
+        Control::set_parameter(loaded, ParamId::new(id), Normalized::new(value));
+    }
+
+    fn read(plugin: &impl Control, id: u32) -> Option<f64> {
+        plugin.parameter(ParamId::new(id)).map(Normalized::get)
+    }
+
+    /// A loaded probe in ramp mode at `RAMP_LEVEL`, by controller writes alone.
+    fn written() -> Vst3Loaded {
+        let mut loaded = load();
+        write(&mut loaded, PARAM_MODE, MODE_RAMP);
+        write(&mut loaded, PARAM_RAMP, RAMP_LEVEL);
+        loaded
+    }
+
+    /// One block from a freshly activated plugin, no parameter points.
+    fn first_block(loaded: Vst3Loaded) -> Vec<f32> {
+        let mut inst = loaded
+            .activate_at::<f32>(48_000.0, 64)
+            .map_err(|(_, e)| e)
+            .expect("the probe activates");
+        render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone()
+    }
+
+    /// What a write made before activation sounds like in the first block.
+    ///
+    /// Without the write in `carried` the probe stays in tag-passthrough mode
+    /// and the block is the constant 1.0.
+    ///
+    /// Mutation (run): `Control::set_parameter` never pushing to `carried`
+    /// fails this (and every other test here that writes a loaded plugin).
+    #[test]
+    fn a_write_to_a_loaded_plugin_reaches_its_first_block() {
+        let _guard = plugin_guard();
+        let block = first_block(written());
+        assert!(
+            block.iter().all(|&v| v == RAMP_LEVEL as f32),
+            "the first block did not carry the loaded writes: {:?}",
+            &block[..4]
+        );
+    }
+
+    /// The write survives a save into a fresh instance, in the value read back
+    /// and in the audio.
+    ///
+    /// Mutation (run): `read_state` packing with an empty pending slice fails
+    /// the value assertion; `write_state` returning no overlay fails the value
+    /// assertion; `Control::load_state` not assigning `carried` fails the audio
+    /// assertion only.
+    #[test]
+    fn a_write_to_a_loaded_plugin_survives_a_save_and_restore() {
+        let _guard = plugin_guard();
+        let mut source = written();
+        let blob = Control::save_state(&mut source).expect("the probe saves");
+
+        let mut restored = load();
+        assert_eq!(read(&restored, PARAM_RAMP), Some(0.0), "a fresh probe");
+        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        assert_eq!(read(&restored, PARAM_RAMP), Some(RAMP_LEVEL));
+
+        let block = first_block(restored);
+        assert!(
+            block.iter().all(|&v| v == RAMP_LEVEL as f32),
+            "the restored writes did not reach the first block: {:?}",
+            &block[..4]
+        );
+    }
+
+    /// A blob saved with no write pending is the version 1 container: nothing
+    /// re-saves a project for having been opened. A write made while the plugin
+    /// is active is not remembered for the next activation (the Controller
+    /// queues it to the Processor), so it is not in the blob either.
+    ///
+    /// Mutation (run): dropping the `!self.active.is_active()` guard in
+    /// `Control::set_parameter` makes the active write sit in `carried` and the
+    /// blob version 2, failing the last assertion (and only this test);
+    /// `read_state` packing no pending writes fails the middle one.
+    #[test]
+    fn a_blob_is_version_1_unless_a_loaded_write_is_pending() {
+        const VERSION_AT: usize = 8;
+        let _guard = plugin_guard();
+
+        let mut loaded = load();
+        let plain = Control::save_state(&mut loaded).expect("the probe saves");
+        assert_eq!(plain[VERSION_AT], 1);
+
+        write(&mut loaded, PARAM_RAMP, RAMP_LEVEL);
+        let pending = Control::save_state(&mut loaded).expect("the probe saves");
+        assert_eq!(pending[VERSION_AT], 2, "a loaded write is stored");
+
+        let mut inst = load()
+            .activate_at::<f32>(48_000.0, 64)
+            .map_err(|(_, e)| e)
+            .expect("the probe activates");
+        Control::set_parameter(&mut *inst, ParamId::new(PARAM_RAMP), Normalized::new(0.5));
+        let blob = Control::save_state(&mut *inst).expect("the probe saves");
+        assert_eq!(blob[VERSION_AT], 1, "an active write is not carried");
+    }
+
+    /// A version 2 blob loaded into an active plugin reaches its next block: the
+    /// component's own stream does not hold the writes, so the Controller queues
+    /// them.
+    ///
+    /// Mutation (run): `Vst3Controller::load_state` not queueing the returned
+    /// writes leaves the block at the constant 1.0.
+    #[test]
+    fn a_blob_with_pending_writes_loaded_into_an_active_plugin_reaches_its_next_block() {
+        let _guard = plugin_guard();
+        let blob = Control::save_state(&mut written()).expect("the probe saves");
+
+        let mut inst = load()
+            .activate_at::<f32>(48_000.0, 64)
+            .map_err(|(_, e)| e)
+            .expect("the probe activates");
+        Control::load_state(&mut *inst, &blob).expect("the blob loads");
+
+        let block = render(&mut inst, 64, &[], None, |_, _, _| 0.0).out[0][0].clone();
+        assert!(
+            block.iter().all(|&v| v == RAMP_LEVEL as f32),
+            "the blob's writes did not reach the active plugin: {:?}",
+            &block[..4]
+        );
+    }
+
+    /// A pending write to an id the plugin does not list is dropped on load, so
+    /// it is not stored again.
+    ///
+    /// Mutation (run): dropping the `parameter_info` check in `write_state`
+    /// stores the unlisted entry again and the re-saved blob differs.
+    #[test]
+    fn a_pending_write_to_an_unlisted_id_is_dropped_on_load() {
+        const TABLE_AT: usize = 8 + 1;
+        let _guard = plugin_guard();
+        let mut source = load();
+        write(&mut source, PARAM_GAIN, 0.25);
+        let blob = Control::save_state(&mut source).expect("the probe saves");
+
+        let listed = source.parameter_ids();
+        let unlisted = (0..=u32::MAX)
+            .find(|c| !listed.contains(&ParamId::new(*c)))
+            .expect("some id is unlisted");
+        // Version 2: magic, version, count, entries, body. Add an entry first.
+        let mut crafted = blob[..TABLE_AT].to_vec();
+        crafted.extend_from_slice(&2u32.to_le_bytes());
+        crafted.extend_from_slice(&unlisted.to_le_bytes());
+        crafted.extend_from_slice(&0.9f64.to_le_bytes());
+        crafted.extend_from_slice(&blob[TABLE_AT + 4..]);
+
+        let mut restored = load();
+        Control::load_state(&mut restored, &crafted).expect("the blob loads");
+        assert_eq!(
+            Control::save_state(&mut restored).expect("the probe saves"),
+            blob
+        );
+    }
 }

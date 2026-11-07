@@ -791,9 +791,26 @@ one; what differs is VST3's.
 - VST3 has no `params.flush`, so a rejoin cannot write the ring's leftovers into
   the plugin: they are kept (with the writes a full ring refused, latest per
   parameter) in `Vst3Loaded::carried` and delivered in the first block of the next
-  activation. A write on the loaded plugin overwrites its carried entry, and a
-  state or preset load drops them all, so an older write never goes in over a
-  newer one.
+  activation. A write on the loaded plugin is recorded there too (it updates the
+  controller only, and a separate component hears of a value from
+  `IParameterChanges` in a process call, which a loaded plugin does not make), and
+  overwrites an entry for the same parameter. A state or preset load drops them
+  all, so an older write never goes in over a newer one.
+- `save_state` stores `carried` in the blob, because the component's stream does
+  not hold those writes. The container is `TUTTIVS3`, a version byte, the
+  component length and the two streams; with writes pending it is version 2, which
+  puts a `u32` count and that many `u32` id, `f64` value pairs before the length.
+  With nothing pending the blob is version 1's, byte for byte. `load_state` reads
+  both versions, applies the writes to the controller after the component and
+  controller streams (an id the plugin does not list is dropped), and refills
+  `carried`; on an active plugin the Controller queues them to the Processor
+  instead. A malformed version 2 blob is read as a bare component stream, as a
+  malformed version 1 is. A build that predates version 2 reads the whole blob as
+  a component stream, so a blob with writes pending does not restore there; only
+  tutti reads the container. A save made while active, before a queued write has
+  reached a block, holds the component's value from before it.
+- `Control::parameter` answers `None` for an id the plugin does not list
+  (`getParamNormalized` answers 0 for it), as CLAP and VST2 do.
 - `Edit::Reset` (new in the core) says every write queued before it is stale. A
   Controller's `load_state` and `load_preset` send one (CLAP's too), the ring's
   order makes it exact, and a drain applies none of the writes ahead of it. A

@@ -675,23 +675,16 @@ fn test_set_parameter() {
             .find(|c| !listed.contains(c))
             .expect("some id is unlisted");
         assert!(plugin.parameter_info(unlisted).is_none());
-        // Not silently written: `getParamNormalized` answers 0 for an unknown
-        // id, so it reads as `Some(0.0)` (the controller has no way to say
-        // "unknown"), and a write to it must leave every listed parameter and
-        // that read unchanged.
-        assert_eq!(
-            Control::parameter(&*plugin, unlisted),
-            Some(Normalized::new(0.0))
-        );
+        // Not silently written: it reads as `None` (`getParamNormalized`
+        // answers 0 for an unknown id), and a write to it must leave every
+        // listed parameter and that read unchanged.
+        assert_eq!(Control::parameter(&*plugin, unlisted), None);
         let before: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))
             .collect();
         Control::set_parameter(&mut *plugin, unlisted, Normalized::new(0.25));
-        assert_eq!(
-            Control::parameter(&*plugin, unlisted),
-            Some(Normalized::new(0.0))
-        );
+        assert_eq!(Control::parameter(&*plugin, unlisted), None);
         let after: Vec<_> = listed
             .iter()
             .map(|i| plugin.get_parameter(i.get()))

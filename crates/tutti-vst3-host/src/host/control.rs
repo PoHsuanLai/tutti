@@ -65,6 +65,16 @@ fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
 }
 
 impl Vst3Loaded {
+    /// [`Control::load_state`], keeping the writes the blob carried: applied to
+    /// the controller already, and owed to the component's next block.
+    pub(super) fn restore_state(
+        &mut self,
+        bytes: &[u8],
+    ) -> PluginResult<Vec<(ParamId, Normalized)>> {
+        self.carried.clear();
+        self.write_state(bytes).map_err(plugin_error)
+    }
+
     /// The descriptor for this plugin as loaded: its factory info, with whether
     /// it has an editor measured from the plugin itself.
     fn measured_descriptor(&self) -> PluginDescriptor {
@@ -212,19 +222,31 @@ impl Control for Vst3Loaded {
         self.parameter_list()
     }
 
-    /// Normalized `0..=1`, VST3's own domain. `None` for a plugin with no edit
-    /// controller.
+    /// Normalized `0..=1`, VST3's own domain. `None` for an id the plugin does
+    /// not list (`getParamNormalized` would answer 0 for it) and for a plugin
+    /// with no edit controller.
     fn parameter(&self, id: ParamId) -> Option<Normalized> {
+        self.parameter_info(id)?;
         self.plugin.parameter_normalized(id).map(Normalized::new)
     }
 
     /// Applied now, as `setParamNormalized` on the edit controller. A plugin
     /// with no controller has nothing to write to.
+    ///
+    /// That call updates the controller only (`ivsteditcontroller.h`: "update
+    /// the according GUI element(s) only"). A component that is separate from
+    /// its controller learns a value from `IParameterChanges` in a process call,
+    /// and a plugin that is not active is not processing. So a write to an
+    /// inactive plugin waits in `carried`, which the next activation delivers in
+    /// its first block and `save_state` stores beside the component's stream.
+    /// While active, the Controller queues the write to the Processor instead.
     fn set_parameter(&mut self, id: ParamId, value: Normalized) {
-        self.write_normalized(id, value);
+        let written = self.write_normalized(id, value);
         // A write the last activation left undelivered is older than this one.
         if let Some(slot) = self.carried.iter_mut().find(|(waiting, _)| *waiting == id) {
             slot.1 = value;
+        } else if written && !self.active.is_active() && self.parameter_info(id).is_some() {
+            self.carried.push((id, value));
         }
     }
 
@@ -255,10 +277,14 @@ impl Control for Vst3Loaded {
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
-    /// are dropped.
+    /// are dropped; the writes the blob itself carries wait for the next
+    /// activation.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        self.carried.clear();
-        self.write_state(bytes).map_err(plugin_error)
+        let pending = self.restore_state(bytes)?;
+        if !self.active.is_active() {
+            self.carried = pending;
+        }
+        Ok(())
     }
 
     /// The plugin's programs, flattened out of its named program lists.

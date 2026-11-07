@@ -184,11 +184,16 @@ impl Control for Vst3Controller {
         Control::save_state(&mut **self)
     }
 
-    /// Restores the state, and makes the writes queued before it stale.
+    /// Restores the state, and makes the writes queued before it stale. The
+    /// writes the blob carries are queued to the Processor, which the
+    /// component's own stream did not hold.
     fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        let result = Control::load_state(&mut **self, bytes);
+        let result = self.restore_state(bytes);
         self.reset_edits();
-        result
+        for (id, value) in result? {
+            self.queue_edit(id, value);
+        }
+        Ok(())
     }
 
     fn presets(&mut self) -> Vec<Preset> {

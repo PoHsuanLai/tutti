@@ -18,6 +18,8 @@ fn a_take_returns_the_fold_and_clears_it() {
             frames: 24
         }
     );
+    // The next takes read the other slot, then this one again, cleared.
+    assert_eq!(r.take(), LevelSpan::default());
     assert_eq!(r.take(), LevelSpan::default());
     w.fold(0.125, 1.0, 4);
     assert_eq!(r.take().frames, 4, "the other slot works too");
@@ -31,15 +33,15 @@ fn a_take_returns_the_fold_and_clears_it() {
 #[test]
 fn a_long_unread_span_stays_exact() {
     let (w, mut r) = level_cell();
-    // 512-frame blocks of 0.5: 128 each; 337_500 blocks is an hour at 48 kHz.
+    // 512-frame blocks each worth 127 (not a power of two, so an `f32` sum
+    // rounds once it passes 2^24); 337_500 blocks is an hour at 48 kHz.
     let blocks = 337_500u64;
     for _ in 0..blocks {
-        w.fold(0.5, 128.0, 512);
+        w.fold(0.5, 127.0, 512);
     }
     let span = r.take();
     assert_eq!(span.frames, blocks * 512);
-    assert_eq!(span.sum_sq, blocks as f64 * 128.0);
-    assert_eq!((span.sum_sq / span.frames as f64).sqrt(), 0.5);
+    assert_eq!(span.sum_sq, blocks as f64 * 127.0);
 }
 
 /// The frame count saturates instead of wrapping.

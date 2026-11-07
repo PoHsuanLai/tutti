@@ -31,9 +31,8 @@ bevy_reflect.workspace = true
 bevy_tasks.workspace = true
 
 # Tutti audio engine — bevy-tutti depends on the subsystem crates directly.
-# (The Asset derive on `WaveAsset` is `tutti-io/bevy`, enabled by `sampler`
-# below.) bevy-tutti supplies the node component, the reconcile systems and the
-# CPAL audio callback (src/engine/).
+# bevy-tutti supplies the node component, the reconcile systems and the CPAL
+# audio callback (src/engine/).
 tutti-transport = { path = "../tutti-transport" }
 tutti-metering = { path = "../tutti-metering" }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed

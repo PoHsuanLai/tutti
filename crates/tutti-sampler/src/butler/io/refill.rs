@@ -237,7 +237,7 @@ pub(in crate::butler) fn load_wave(
         return Some(cached);
     }
 
-    // `Wave::read` is `tutti-io`'s decode path, which is compiled only when a
+    // `Wave::read` is `tutti-codec`'s decode path, which is compiled only when a
     // codec feature is on — calling it unconditionally breaks the
     // `--no-default-features` build.
     #[cfg(codec)]

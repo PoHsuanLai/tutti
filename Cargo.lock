@@ -4323,6 +4323,7 @@ dependencies = [
  "criterion",
  "ringbuf",
  "thiserror 2.0.21",
+ "tutti-codec",
  "tutti-engine",
  "tutti-graph",
  "tutti-io",

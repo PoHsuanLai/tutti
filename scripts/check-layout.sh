@@ -26,6 +26,15 @@
 # - `tutti-metering` depends on `tutti-types` alone, and `tutti-transport` on
 #   `tutti-types`, `tutti-rt` and `tutti-graph`;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
+# - the codec libraries (`symphonia`, `flacenc`, `aifc`, `vorbis_rs`) are normal
+#   dependencies of `tutti-codec` alone, and in its manifest a `decode-*`
+#   feature enables no encoder library and an `encode-*` feature no
+#   `symphonia`, so a build that reads pulls no encoder (nor the C Vorbis
+#   library) and a build that writes pulls no decoder;
+# - `symphonia` is named in `tutti-codec/src/decode.rs` and `src/decode/`
+#   alone (a comment excepted), and no `pub` item there names it in its
+#   signature, a field or an `impl` header (a `pub(super)` item may): the
+#   decoder is swapped by editing that module;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -65,7 +74,14 @@
 #   may depend on ['tutti-plugin-types'] only";
 # - `tutti-engine` as a `[dependencies]` entry of `tutti-codec`: "tutti-codec ->
 #   tutti-engine (normal) points up" and "tutti-codec may depend on ['tutti-types']
-#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS".
+#   only"; `tutti-codec` deleted from LAYERS: "tutti-codec is not in LAYERS";
+# - `symphonia` as a `[dependencies]` entry of `tutti-io`: "symphonia is a normal
+#   dependency of tutti-io; ... tutti-codec alone"; `"dep:vorbis_rs"` in the
+#   `decode-ogg` feature: "decode-ogg enables an encoder library"; `"dep:symphonia"`
+#   in `encode-wav`: "encode-wav enables symphonia"; `use symphonia::core::errors;`
+#   at the end of `tutti-io/src/lib.rs`: "names symphonia outside
+#   tutti-codec's decode module"; `pub fn probe(..) -> symphonia::core::errors::Error`
+#   in `tutti-codec/src/decode/read.rs`: "pub item names symphonia".
 #
 # - a test finds a repo file through `tutti_fixtures`, never through a path
 #   that depends on its own depth. In a `.rs` file under `crates/` or `testing/`
@@ -178,6 +194,65 @@ for name, p in pkgs.items():
             continue
         if layer[dep] >= layer[name]:
             fail(f"{name} -> {dep} ({kind}) points up or sideways (layer {layer[name]} -> {layer[dep]}); dependencies point down")
+
+# ---- the codec libraries stay behind tutti-codec ---------------------------
+CODEC_LIBS = ("symphonia", "flacenc", "aifc", "vorbis_rs")
+for name, p in pkgs.items():
+    if name == "tutti-codec":
+        continue
+    for d in p["dependencies"]:
+        if d["name"] in CODEC_LIBS and (d["kind"] or "normal") != "dev":
+            fail(f"{d['name']} is a {d['kind'] or 'normal'} dependency of {name}; the codec libraries are tutti-codec's alone")
+if "tutti-codec" in pkgs:
+    encoders = {"flacenc", "aifc", "vorbis_rs", "md-5"}
+    for feat, enables in pkgs["tutti-codec"]["features"].items():
+        names = {e.split("/")[0].removeprefix("dep:").removesuffix("?") for e in enables}
+        if feat.startswith("decode-") and names & encoders:
+            fail(f"{feat} enables an encoder library ({sorted(names & encoders)}); a build that reads pulls no encoder")
+        if feat.startswith("encode-") and "symphonia" in names:
+            fail(f"{feat} enables symphonia; a build that writes pulls no decoder")
+
+import re
+decode_root = os.path.join(root, "crates", "tutti-codec", "src", "decode")
+decode_files = {os.path.join(root, "crates", "tutti-codec", "src", "decode.rs")}
+for dirpath, _, files in os.walk(decode_root):
+    decode_files |= {os.path.join(dirpath, f) for f in files if f.endswith(".rs")}
+code_only = lambda text: re.sub(r"//[^\n]*", "", text)
+for top in ("crates", "testing"):
+    for dirpath, _, files in os.walk(os.path.join(root, top)):
+        for f in files:
+            path = os.path.join(dirpath, f)
+            if not f.endswith(".rs") or path in decode_files:
+                continue
+            r = os.path.relpath(path, root)
+            # A test oracle may read with symphonia: it is a dev-dependency.
+            if "/tests/" in r or "/benches/" in r or "/examples/" in r:
+                continue
+            if "symphonia" in code_only(open(path, encoding="utf-8").read()):
+                fail(f"{r} names symphonia outside tutti-codec's decode module")
+public_item = re.compile(
+    r"^[ \t]*pub (?:const |unsafe |async )*(?:fn|struct|enum|type|trait|use|static|const|mod)\b[^{;]*"
+    r"|^[ \t]*pub \w+:[^,\n]*"
+    r"|^[ \t]*impl\b[^{;]*",
+    re.M,
+)
+for path in sorted(decode_files):
+    if os.path.basename(path) == "tests.rs":
+        continue
+    text = code_only(open(path, encoding="utf-8").read())
+    spans = [(m.start(), m.group(0)) for m in public_item.finditer(text)]
+    # A `pub struct`, `pub enum` or `pub trait` is its whole body: a variant
+    # carries no `pub` of its own.
+    for m in re.finditer(r"^[ \t]*pub (?:struct|enum|trait)\b[^{;]*\{", text, re.M):
+        depth, i = 1, m.end()
+        while depth and i < len(text):
+            depth += (text[i] == "{") - (text[i] == "}")
+            i += 1
+        spans.append((m.start(), text[m.start():i]))
+    for start, item in spans:
+        if "symphonia" in item or re.search(r"\bSymphonia\b", item):
+            line = text.count("\n", 0, start) + 1
+            fail(f"{os.path.relpath(path, root)}:{line}: a pub item names symphonia: {item.strip()[:80]}")
 
 def deps_of(name, kinds=("normal", "build", "dev")):
     return {d for d, k in internal_deps(pkgs[name]) if k in kinds}

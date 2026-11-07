@@ -215,7 +215,7 @@ impl Vocoder {
             let phase = Radians(self.spectrum[k].arg());
 
             // Deviation of the observed advance from the expected one, wrapped
-            // into (-π, π] — the unwrapping step that recovers the bin's true
+            // into [-π, π) — the unwrapping step that recovers the bin's true
             // instantaneous frequency rather than its aliased one.
             let expected = Radians(self.phase_per_sample[k].get() * analysis_hop as f32);
 
@@ -263,17 +263,13 @@ impl Vocoder {
     }
 }
 
-/// Wrap a phase into `[-π, π)`.
+/// Wrap a phase into `[-π, π)`, exactly, for any finite input.
 ///
-/// A thin alias over [`Radians::wrapped_signed`], which owns the arithmetic.
-/// Hand-rolling the wrap in raw `f32` here instead is exactly the escape the
-/// unit-type omission ledger exists to catch: an operator [`Radians`] declines
-/// to offer means "call the named method", not "drop to the primitive".
-///
-/// The half-open end is `-π`, not `+π`. They are the same point on the circle,
-/// so nothing downstream distinguishes them — the interval is stated precisely
-/// only so a reader comparing against a textbook's `(-π, π]` does not go looking
-/// for a bug.
+/// An alias over [`Radians::wrapped_signed`], which owns the arithmetic: an
+/// operator [`Radians`] declines to offer means "call the named method", not
+/// "drop to the primitive". `+π` and `-π` are one point on the circle; the
+/// interval is stated so a reader comparing against `(-π, π]` does not go
+/// looking for a bug.
 #[inline]
 pub(super) fn wrap_phase(phase: Radians) -> Radians {
     phase.wrapped_signed()

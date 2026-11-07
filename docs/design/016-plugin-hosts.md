@@ -815,14 +815,17 @@ one; what differs is VST3's.
 - A save made while active also stores the writes no block has taken yet. The
   Controller keeps a record of what it handed the Processor (the carried writes
   at activation and every queued edit, latest per parameter, with the ring's
-  refusals), and the Shell counts the drains the Processor begins (one atomic
-  add and a fence per block, before the drain). A write is dropped from the record
-  once two drains have begun after it entered the ring: the first may have missed
-  it, the second began after the first block ended. The Controller reads the count
-  behind a fence after sending, which pairs with the Processor's, so a write is
-  either seen by a drain or counted before it. A save in that window is version 2
-  with the record's writes; a save later is the component's stream alone. This is
-  a counter and two fences, not a new queue, so there is no loom model for it.
+  refusals), and `tutti_rt::drain_clock()` counts the drains the Processor begins:
+  the Processor holds the `DrainBeat` (one `begin` per block, before the drain),
+  the Controller the `DrainWatch`. After sending a write the Controller takes a
+  `DrainMark`; the write leaves the record once `two_since(mark)` is true. Two,
+  not one: the drain the mark counted may have read the ring before the write,
+  and the next began after the mark was read, so it began after the send and sees
+  the write; the one after it began only when that block was over. The fences
+  that make this a store-load pair, and `+ 2`, are checked by
+  `tutti-rt/tests/drain_clock_loom.rs` against the shipped code (`+ 1` fails it).
+  A save in that window is version 2 with the record's writes; a save later is
+  the component's stream alone.
 - Two cases stay open. A plugin's own `performEdit` while no block runs reaches
   the host's component handler, and the host records it only if the app relays it
   through `set_parameter`. After a `restartComponent` that changes the parameter

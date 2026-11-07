@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use tutti_rt::{DrainMark, DrainWatch};
+
 use tutti_plugin_types::{
     AutomationMode, Control, Controller, Edit, EditSink, Loaded, LoadedPlugin, Normalized, ParamId,
     ParameterInfo, PluginDescriptor, PluginError, PluginResult, PluginTail, Prepare, Preset,
@@ -45,6 +47,8 @@ pub struct Vst3Controller {
     /// block has surely taken it: what a save must add, because the
     /// component's stream does not hold it yet.
     handed: Vec<Handed>,
+    /// Reads the Processor's drain count.
+    watch: DrainWatch,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -55,15 +59,14 @@ struct Handed {
     value: Normalized,
     /// The drain count read after the write entered the ring; `None` while the
     /// ring has refused it.
-    sent_at: Option<u64>,
+    sent_at: Option<DrainMark>,
 }
 
 impl Handed {
     /// Whether a block has surely taken the write: two drains have begun since
-    /// it entered the ring, so the first may have missed it and the second
-    /// began after the first block, which ends before it.
-    fn is_taken(&self, drains: u64) -> bool {
-        self.sent_at.is_some_and(|sent| drains >= sent + 2)
+    /// it entered the ring (`tutti_rt::DrainWatch::two_since` says why two).
+    fn is_taken(&self, watch: &DrainWatch) -> bool {
+        self.sent_at.is_some_and(|mark| watch.two_since(mark))
     }
 }
 
@@ -76,7 +79,13 @@ impl std::fmt::Debug for Vst3Controller {
 }
 
 impl Vst3Controller {
-    fn new(loaded: Vst3Loaded, shell: Arc<Shell>, edits: EditSink, handed: Vec<Handed>) -> Self {
+    fn new(
+        loaded: Vst3Loaded,
+        shell: Arc<Shell>,
+        edits: EditSink,
+        handed: Vec<Handed>,
+        watch: DrainWatch,
+    ) -> Self {
         Self {
             loaded: Some(loaded),
             shell,
@@ -84,6 +93,7 @@ impl Vst3Controller {
             unsent: Vec::new(),
             reset_pending: false,
             handed,
+            watch,
             _not_sync: PhantomData,
         }
     }
@@ -116,13 +126,13 @@ impl Vst3Controller {
         if !sent {
             self.keep(id, value);
         }
-        let sent_at = sent.then(|| self.shell.drains_after_send());
+        let sent_at = sent.then(|| self.watch.mark());
         self.hand(id, value, sent_at);
     }
 
     /// Records the write as handed to the Processor, replacing an earlier one
     /// to the same parameter.
-    fn hand(&mut self, id: ParamId, value: Normalized, sent_at: Option<u64>) {
+    fn hand(&mut self, id: ParamId, value: Normalized, sent_at: Option<DrainMark>) {
         let handed = Handed { id, value, sent_at };
         match self.handed.iter_mut().find(|h| h.id == id) {
             Some(slot) => *slot = handed,
@@ -133,8 +143,8 @@ impl Vst3Controller {
     /// The writes handed to the Processor that no block has surely taken yet,
     /// and so are in no component stream. Forgets the ones that have been.
     fn undrained(&mut self) -> Vec<(ParamId, Normalized)> {
-        let drains = self.shell.drains_after_send();
-        self.handed.retain(|h| !h.is_taken(drains));
+        let watch = &self.watch;
+        self.handed.retain(|h| !h.is_taken(watch));
         self.handed.iter().map(|h| (h.id, h.value)).collect()
     }
 
@@ -289,7 +299,7 @@ impl Control for Vst3Controller {
             if self.edits.send(Edit::Param { id, value }).is_err() {
                 self.unsent.push((id, value));
             } else {
-                let sent_at = Some(self.shell.drains_after_send());
+                let sent_at = Some(self.watch.mark());
                 self.hand(id, value, sent_at);
             }
         }
@@ -380,12 +390,13 @@ impl Vst3Loaded {
         let context_requirements = loaded.context_requirements();
         let shell = Arc::new(Shell::new());
         let (sink, drain) = tutti_plugin_types::edits(EDIT_CAPACITY);
+        let (beat, watch) = tutti_rt::drain_clock();
         let handed = carried
             .iter()
             .map(|&(id, value)| Handed {
                 id,
                 value,
-                sent_at: Some(0),
+                sent_at: Some(watch.mark()),
             })
             .collect();
         let processor = Vst3Processor::new(ProcessorParts {
@@ -394,9 +405,13 @@ impl Vst3Loaded {
             audio_side,
             context_requirements,
             drain,
+            beat,
             carried: carried.into_iter().map(|(id, v)| (id.get(), v)).collect(),
         });
-        Ok((processor, Vst3Controller::new(loaded, shell, sink, handed)))
+        Ok((
+            processor,
+            Vst3Controller::new(loaded, shell, sink, handed, watch),
+        ))
     }
 
     /// Rejoins the halves of one activation of any sample type: checks they are

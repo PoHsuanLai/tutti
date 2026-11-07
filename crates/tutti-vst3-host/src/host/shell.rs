@@ -59,7 +59,6 @@
 //!    `Vst3Loaded`.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use parking_lot::Mutex;
 
@@ -78,11 +77,6 @@ struct State {
 /// when they are dropped apart.
 pub(super) struct Shell {
     state: Mutex<State>,
-    /// Drains of the edit ring begun by the Processor, one per block. The
-    /// Controller reads it to tell which of its writes a block has taken
-    /// ([`Vst3Controller::save_state`](super::Vst3Controller)); see
-    /// [`begin_drain`](Self::begin_drain).
-    drains: AtomicU64,
 }
 
 impl Shell {
@@ -94,26 +88,7 @@ impl Shell {
                 processor_alive: true,
                 parked: None,
             }),
-            drains: AtomicU64::new(0),
         }
-    }
-
-    /// Counts a drain of the edit ring. Audio thread, once per block, before
-    /// the drain: a plain add and a fence, lock-free and allocation-free.
-    ///
-    /// The fence pairs with [`drains_after_send`](Self::drains_after_send)'s: a
-    /// write the Controller sent and then counted behind is either seen by this
-    /// drain or counted before it.
-    pub(super) fn begin_drain(&self) {
-        self.drains.fetch_add(1, Ordering::Relaxed);
-        fence(Ordering::SeqCst);
-    }
-
-    /// The drains begun so far, read after sending a write. A write sent before
-    /// this read is in the ring of any drain that begins after it.
-    pub(super) fn drains_after_send(&self) -> u64 {
-        fence(Ordering::SeqCst);
-        self.drains.load(Ordering::Relaxed)
     }
 
     /// The Controller is dropped holding `loaded`: parks it if the Processor

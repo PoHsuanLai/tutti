@@ -5174,7 +5174,8 @@ the one place that says what a ported node can rely on:
   tables with the executor; a fork starts with empty ones. A replace with a
   fade while one runs waits in the unit's `queued` slot, and the running
   replacement keeps writing, so its table stays; the waiting unit's tables
-  are allocated beside it, and when it takes over the two swap and the
+  are allocated beside it (`held.rs`, `Keys`: `held`, `staged`, `owed`, with a
+  table of every way out), and when it takes over the two swap and the
   keys of the unit that stopped are closed ahead of the next block, on the
   unit's own output port (a hard replace or a cut closes them at the
   commit; a re-prepare keeps them for the first block after the resume). A

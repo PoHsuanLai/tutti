@@ -16,6 +16,10 @@
 //! passes nodes no silence or constant hints, so a node that behaves
 //! differently on a hint than without one is caught too.
 //!
+//! It has no crossfade model: `set_graph` takes a replace as a plain swap, so
+//! the held-key behaviour of a queued fade (`held.rs`, `Keys`) is tested on the
+//! executors only.
+//!
 //! # Semantics it pins
 //!
 //! - **Delay keys are (sink, source)** (see [`DelayKey`]). A PDC delay whose

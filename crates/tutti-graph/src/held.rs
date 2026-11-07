@@ -12,7 +12,9 @@
 //! sets, so a parallel block needs no new claim.
 //!
 //! A sink fed by several sources cannot tell whose note a key is: one source's
-//! close ends another's note on the same key.
+//! close ends another's note on the same key. So can an owed close that follows a
+//! replacement: past about 72 held keys (what a block's slot takes) it can end a
+//! note the new unit started on the same key.
 
 use tutti_ump::{Key, KeyEvent, Ump};
 
@@ -177,6 +179,17 @@ pub(crate) type Tables = Vec<Option<Held>>;
 /// Add every table of `from` to the matching table of `into`, and empty
 /// `from` (its tables stay allocated).
 fn absorb(into: &mut Tables, from: &mut Tables) {
+    if from.is_empty() {
+        return;
+    }
+    debug_assert!(
+        into.len() == from.len()
+            && into
+                .iter()
+                .zip(from.iter())
+                .all(|(a, b)| a.is_some() == b.is_some()),
+        "tables of one unit have one shape"
+    );
     for (a, b) in into.iter_mut().zip(from.iter_mut()) {
         if let (Some(a), Some(b)) = (a, b) {
             a.merge(b);
@@ -203,9 +216,9 @@ fn absorb(into: &mut Tables, from: &mut Tables) {
 /// | the unit is retired or hard-replaced (`depart`) | closed at the commit | freed | closed with it |
 /// | a cut displaces the running unit (`displace`) | the waiting unit's | taken | closed at the commit |
 /// | a re-prepare checks the unit out (`park`) | kept | taken | gains the displaced unit's |
-/// | the unit comes back (`restore`) | as parked | re-made if one waits | as parked |
+/// | the unit comes back (restore) | as parked | `size` re-makes it if one waits | as parked |
 /// | it does not come back | closed (`depart`) | freed | closed with it |
-/// | an edge is cut with keys owed | closed on that edge | | closed on that edge too; the rest still drain to the other sinks |
+/// | an edge is cut with keys owed | closed on that edge | | closed on that edge too; the rest still drain to the other sinks. Cutting and re-adding the edge while a close is owed can send the sink an extra orphan off: harmless, but not "closed once" |
 #[derive(Default)]
 pub(crate) struct Keys {
     held: Tables,
@@ -274,6 +287,10 @@ impl Keys {
 
     /// The waiting unit takes over; the unit that stopped leaves its keys owed.
     pub(crate) fn promote(&mut self) {
+        debug_assert!(
+            self.staged.len() == self.held.len(),
+            "promoting with nothing waiting"
+        );
         std::mem::swap(&mut self.held, &mut self.staged);
         absorb(&mut self.owed, &mut self.staged);
         self.closing = true;
@@ -282,6 +299,10 @@ impl Keys {
     /// The running unit is displaced by the waiting one at once (a cut):
     /// returns what it held and owed, to close at the commit.
     pub(crate) fn displace(&mut self) -> Tables {
+        debug_assert!(
+            self.staged.len() == self.held.len(),
+            "displacing with nothing waiting"
+        );
         let mut stale = std::mem::replace(&mut self.held, std::mem::take(&mut self.staged));
         absorb(&mut stale, &mut self.owed);
         self.closing = false;

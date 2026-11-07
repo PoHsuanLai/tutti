@@ -657,6 +657,8 @@ holds the second borrow of the port).
 - **What the close does not do.** An off for a key the sink never saw begin still
   reaches it (a conforming receiver ignores it). A sink fed by several sources cannot
   tell whose note a key is, so one source's close or off ends another's note on the
+  same key. So can a close still owed after a replacement: past about 72 held
+  keys (what a block's slot takes) it can end a note the new unit started on the
   same key. A fork starts with empty tables and closes what it has seen itself.
   Sostenuto, CC 120 and 123, per-note controllers and pitch bend are not tracked.
 

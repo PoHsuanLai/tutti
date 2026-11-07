@@ -1215,28 +1215,49 @@ fn a_hard_replace_during_a_fade_closes_the_running_units_keys() {
     assert_eq!(r.words(2), vec![ON60, OFF60]);
 }
 
-/// The first replacement holds `ON60` under a 3-block fade; a second waits
+/// The first replacement holds `ON60` under a fade of `fade_blocks` blocks; a second waits
 /// behind it. `then` runs `j` blocks after the second is queued (the first
-/// fade ends, and the second takes over, in the course of these), with the
+/// fade ends, and the second takes over, in the course of these, so `j` up to
+/// `fade_blocks + 4` crosses the promotion), with the
 /// sinks `sinks` fed by the source.
-fn around_promotion(sinks: &[u64], j: usize, then: impl FnOnce(&mut Rig)) -> Rig {
-    let mut r = Rig::new(Mode::Serial, sinks);
+fn around_promotion(
+    mode: Mode,
+    sinks: &[u64],
+    fade_blocks: usize,
+    j: usize,
+    then: impl FnOnce(&mut Rig),
+) -> Rig {
+    let mut r = Rig::new(mode, sinks);
     let edges: Vec<(u64, u64)> = sinks.iter().map(|&s| (1, s)).collect();
     r.wire(&edges);
     r.block();
     let (m2, m3): (Mail, Mail) = Default::default();
-    swap_with_fade(&mut r, &m2, MAX * 3);
+    swap_with_fade(&mut r, &m2, MAX * fade_blocks);
     m2.lock().unwrap().push((0, ON60));
     r.block();
-    swap_with_fade(&mut r, &m3, MAX * 3);
+    swap_with_fade(&mut r, &m3, MAX * fade_blocks);
     for _ in 0..j {
         r.block();
     }
     then(&mut r);
-    for _ in 0..4 {
+    // Long enough for the promotion and the owed closes after any `j`.
+    for _ in 0..fade_blocks + 4 {
         r.block();
     }
     r
+}
+
+/// Run `act` at every offset that crosses the promotion, for fades of 2, 3
+/// and 5 blocks, on the serial and the parallel executor, and `check` each.
+fn sweep(sinks: &[u64], act: impl Fn(&mut Rig), check: impl Fn(&Rig, &str)) {
+    for mode in [Mode::Serial, Mode::Parallel] {
+        for fade in [2, 3, 5] {
+            for j in 0..fade + 4 {
+                let r = around_promotion(mode, sinks, fade, j, &act);
+                check(&r, &format!("{j} blocks on, {fade}-block fade, {mode:?}"));
+            }
+        }
+    }
 }
 
 /// Removing the source at every block offset around the promotion: the
@@ -1247,17 +1268,21 @@ fn around_promotion(sinks: &[u64], j: usize, then: impl FnOnce(&mut Rig)) -> Rig
 /// -> the offsets just after the promotion leave the note on -> fails.
 #[test]
 fn removing_the_source_around_a_promotion_closes_once() {
-    for j in 0..8 {
-        let r = around_promotion(&[2], j, |r| r.remove_source());
-        assert_eq!(r.words(2), vec![ON60, OFF60], "removed {j} blocks on");
-    }
+    sweep(
+        &[2],
+        |r| r.remove_source(),
+        |r, label| {
+            assert_eq!(r.words(2), vec![ON60, OFF60], "removed {label}");
+        },
+    );
 }
 
 /// A hard replace at every offset around the promotion.
 #[test]
 fn a_hard_replace_around_a_promotion_closes_once() {
-    for j in 0..8 {
-        let r = around_promotion(&[2], j, |r| {
+    sweep(
+        &[2],
+        |r| {
             let ed = r.ed.as_mut().unwrap();
             ed.replace(
                 NodeKey(1),
@@ -1270,9 +1295,11 @@ fn a_hard_replace_around_a_promotion_closes_once() {
             ed.commit().unwrap();
             r.exec.as_mut().unwrap().apply_pending();
             ed.collect();
-        });
-        assert_eq!(r.words(2), vec![ON60, OFF60], "replaced {j} blocks on");
-    }
+        },
+        |r, label| {
+            assert_eq!(r.words(2), vec![ON60, OFF60], "replaced {label}");
+        },
+    );
 }
 
 /// One of two sinks is cut at every offset around the promotion: it hears
@@ -1284,12 +1311,15 @@ fn a_hard_replace_around_a_promotion_closes_once() {
 /// after the promotion -> fails.
 #[test]
 fn cutting_an_edge_around_a_promotion_closes_once() {
-    for j in 0..8 {
-        let r = around_promotion(&[2, 3], j, |r| r.wire(&[(1, 3)]));
-        for sink in [2, 3] {
-            assert_eq!(r.words(sink), vec![ON60, OFF60], "sink {sink}, cut {j} on");
-        }
-    }
+    sweep(
+        &[2, 3],
+        |r| r.wire(&[(1, 3)]),
+        |r, label| {
+            for sink in [2, 3] {
+                assert_eq!(r.words(sink), vec![ON60, OFF60], "sink {sink}, cut {label}");
+            }
+        },
+    );
 }
 
 /// The resume commit of a re-prepare replaces the held source: the old

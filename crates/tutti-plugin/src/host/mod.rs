@@ -4,7 +4,7 @@
 //! transport-agnostic (the IPC substrate lives in [`crate::util`]). What's
 //! here is the actual plumbing of *being a plugin host*:
 //!
-//! - [`discovery`] — scanning plugin directories, the on-disk catalog, dedup.
+//! - [`db_probe`] — the subprocess probe that `tutti-plugin-db` scans with.
 //! - [`subprocess`] — spawning / locating / probing the `tutti-plugin-server`.
 //! - [`ipc_client`] — the host-process client for an out-of-process plugin:
 //!   the RT-safe audio command bus plus the composited control surface.
@@ -18,7 +18,7 @@
 //!   once: the parameter mirror and its read job, the death debounce, and
 //!   when to announce a render mode.
 
-pub mod discovery;
+pub mod db_probe;
 pub mod handles;
 pub mod ipc_client;
 pub mod liveness;

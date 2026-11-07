@@ -65,6 +65,9 @@ members = [
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
     "crates/tutti-plugin-types",
+    # Plugin discovery: directory walk, scan with crash recovery, the catalog.
+    # Depends on `tutti-plugin-types` alone; the probe is a parameter.
+    "crates/tutti-plugin-db",
     # Test-only: a loom model of tutti-plugin's shm header protocol. A separate
     # crate because `--cfg loom` is global and breaks a transitive dep of
     # tutti-plugin; see its Cargo.toml.

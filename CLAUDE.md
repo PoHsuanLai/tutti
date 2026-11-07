@@ -260,7 +260,7 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-soundfont, tutti-rustysynth (our fork of rustysynth)
   tutti-midi-{types,runtime,hardware,file}, tutti-alsa-ump-sys
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
-  tutti-plugin{,-types,-server}, tutti-{vst2,vst3,clap,au}-host,
+  tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
   vst-tutti (our fork of the vst crate; its split is a later lane)
 testing/         never shipped
@@ -279,7 +279,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
 3. `tutti-core`, `tutti-plugin-types`
 4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
    `tutti-clap-host`, `tutti-vst3-host`
@@ -346,6 +347,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-session` keeps every module private too (`tutti_session::Graph`;
   CI runs the per-module path gate on it), has no `bevy` feature and
   re-exports no crate whole (`scripts/check-adapter.sh`).
+- `tutti-plugin-db` depends on `tutti-plugin-types` alone among workspace
+  crates, keeps every module private (`tutti_plugin_db::PluginScanner`; CI runs
+  the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
+  `bevy` feature. It holds plugin discovery (the directory walk, the scanner,
+  the pedal, the catalog and its records) and never loads a plugin: the probe is
+  a parameter, and `tutti-plugin` supplies the out-of-process one. Consumers
+  name its types from it, not through `tutti-plugin`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.
 - `tutti-rustysynth` (our fork) is excluded from clippy and rustdoc.
@@ -364,8 +372,9 @@ Use the `tutti_types::value::units` newtype, never a bare float, for any
 quantity one covers: fields, signatures, `Param<U>` and return types.
 
 - **Operators are opt-in per type, and every omission is deliberate.** Read
-  the omission ledger in `units.rs`'s tests before adding one. If it is listed
-  there, write a named method instead.
+  the omission ledgers in `value/units/`'s tests (one per family) before
+  adding one; a unit's `unit!` ability list is its whole algebra. If it is
+  listed there, write a named method instead.
 - **An omission must ship with its replacement in the same change.**
 - **Convert with the named converters** (`Db::to_amplitude`,
   `Seconds::to_samples{,_floor,_ceil}`, `Cents::to_semitones`), never by hand.

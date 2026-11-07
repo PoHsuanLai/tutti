@@ -160,9 +160,9 @@ for a control is silent, and the compiler should refuse it. Same split `Q` and
 
 **Operators are opt-in per type, and every omission is deliberate.** `Db * 2.0`
 squares the amplitude; `Beat + Beat` has no origin; `Azimuth` has no ordering
-because a circle has no ends. Before adding an operator, read the omission ledger
-in `units.rs`'s tests — if the operator is listed there, the answer is a named
-method, not an `impl`.
+because a circle has no ends. Before adding an operator, read the omission ledgers
+in `value/units/`'s tests (one per family) — if the operator is listed there,
+the answer is a named method, not an `impl`.
 
 **An omission must ship with its replacement.** This rule was paid for: `Degrees`
 omitted `Ord` and `Add`, named `shortest_arc_to`/`wrap_signed` as the

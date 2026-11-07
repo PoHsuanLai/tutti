@@ -192,7 +192,7 @@ impl PluginCatalog for MemoryCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::discovery::record::{PluginDescriptor, PluginFormat};
+    use crate::{PluginDescriptor, PluginFormat};
 
     const T: u64 = 1_700_000_000;
 

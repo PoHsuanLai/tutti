@@ -19,6 +19,7 @@ pub use error::{Error, Result};
 mod voice;
 pub(crate) use voice::{AllocationResult, VoiceAllocator, VoiceAllocatorConfig};
 
+mod bend;
 mod mpe;
 pub(crate) use mpe::MpeVoiceState;
 // Public: these appear in `SynthConfig`'s fields.

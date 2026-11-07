@@ -25,6 +25,7 @@ use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
 use tutti_io::Wave;
+use tutti_rt::MAX_POS_RING_POSITION;
 
 /// How many frames to read this cycle, under the varifill strategy.
 ///
@@ -182,7 +183,12 @@ fn refill_one(
     // may cover until it claims again, so moving it every cycle would never
     // let the refill land.
     let far = (writer.frames() / 4) as u64;
-    if play < from || (play > to.saturating_add(far) && end.is_none_or(|end| play < end)) {
+    // A window already parked at the position limit (a reader that ran off to
+    // an unbounded position) stays: it reads as a miss, so that voice is
+    // silent, and moving it again each cycle would only shrink it again.
+    let parked = to >= MAX_POS_RING_POSITION;
+    if play < from || (play > to.saturating_add(far) && !parked && end.is_none_or(|end| play < end))
+    {
         writer.reset(play.saturating_sub(HISTORY_FRAMES));
         if writer.content().switch_at != 0 {
             let mut content = Content::new(writer.content().current.clone());
@@ -193,8 +199,11 @@ fn refill_one(
     }
     let (_, to) = writer.window();
     let frames = writer.frames() as u64;
-    let ahead = play + frames - frames / 8;
-    let limit = end.map_or(ahead, |end| end.min(ahead));
+    let ahead = play.saturating_add(frames - frames / 8);
+    // Nothing is written at the position limit, so nothing is read for it.
+    let limit = end
+        .map_or(ahead, |end| end.min(ahead))
+        .min(MAX_POS_RING_POSITION);
     let fill = (to.saturating_sub(play) as f64 / frames as f64) as f32;
     rt_state.set_buffer_fill(fill);
     let fill_threshold = (0.75 / buffer_margin) as f32;
@@ -407,5 +416,46 @@ mod tests {
             nan >= 1024,
             "a NaN fill must still respect the 1024 floor, got {nan}"
         );
+    }
+
+    /// A voice whose reader sits at an unbounded position (the audio thread's
+    /// saturating cast turns `inf` into a huge `u64`) must neither panic the
+    /// butler nor make it read the disk or move the window again each cycle:
+    /// its window parks empty at the position limit, so its reads miss and
+    /// that voice is silent. (The test ring's length is unknown, so its end
+    /// is `u64::MAX`; the reader sits one frame short of it. A looped stream
+    /// has no end and takes the same branch.)
+    ///
+    /// Mutation (run): drop the `.min(MAX_POS_RING_POSITION)` on `limit` ->
+    /// the cycle reads a chunk for nothing and `buffer` is non-empty -> fails.
+    /// Mutation (run): drop `!parked` -> the second cycle moves the window
+    /// again and `moves()` grows -> fails. Mutation (run): `PosWriter::reset`
+    /// without its saturation -> the first cycle panics -> fails.
+    #[test]
+    fn a_reader_at_an_unbounded_position_parks_the_window() {
+        use super::super::super::command::RegionId;
+        use super::super::super::prefetch::RegionBuffer;
+        use std::path::PathBuf;
+
+        let (mut writer, ring) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 4096, 1usize);
+        let mut reader = ring.take_reader(true).expect("the reader");
+        let rt_state = RtState::new();
+        let mut buffer = Vec::new();
+        for _ in 0..3 {
+            drop(reader.claim(u64::MAX - 1, [(u64::MAX - 6, u64::MAX - 1), (0, 0)]));
+            refill_one(&mut writer, &rt_state, 4096, 1.0, 0.0, &mut buffer);
+        }
+        assert_eq!(
+            writer.window(),
+            (MAX_POS_RING_POSITION, MAX_POS_RING_POSITION)
+        );
+        assert!(buffer.is_empty(), "nothing is read for a parked window");
+        assert_eq!(ring.moves(), 1, "the window moved once, then stayed");
+
+        // The voice coming back is followed again.
+        drop(reader.claim(0, [(0, 4), (0, 0)]));
+        refill_one(&mut writer, &rt_state, 4096, 1.0, 0.0, &mut buffer);
+        assert_eq!(writer.window().0, 0);
     }
 }

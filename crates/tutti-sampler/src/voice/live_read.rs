@@ -293,7 +293,7 @@ impl LiveRead {
         for p in positions.iter().flatten() {
             let f = p.get().max(0.0).floor() as u64;
             lo = lo.min(f.saturating_sub(3));
-            hi = hi.max(f + 5);
+            hi = hi.max(f.saturating_add(5));
         }
         let Some(first) = positions.iter().flatten().next().map(|p| p.get()) else {
             for i in 0..positions.len() {
@@ -313,7 +313,8 @@ impl LiveRead {
         // The old continuation's positions, for the claim.
         let old_range = jump.map_or((0, 0), |expected| {
             let a = (expected.max(0.0).floor() as u64).saturating_sub(3);
-            let e = (expected + rate * OLD_FRAMES as f64).max(0.0).floor() as u64 + 5;
+            let e =
+                ((expected + rate * OLD_FRAMES as f64).max(0.0).floor() as u64).saturating_add(5);
             (a, e)
         });
         let claim = reader.claim(first.max(0.0).floor() as u64, [(lo, hi), old_range]);

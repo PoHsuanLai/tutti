@@ -142,7 +142,7 @@ fn a_write_round_the_ring_never_lands_under_a_claim() {
         let (mut writer, reader) = full_ring(1, 1);
         let reading = read(reader, [(4, [(2, 4), NONE]), (4, [(0, 2), NONE])]);
         writer.set_play(4);
-        writer.push(&frames(4, 3, 0));
+        let _ = writer.push(&frames(4, 3, 0));
         reading.join().expect("the reader");
     });
 }
@@ -152,7 +152,7 @@ fn a_second_range_is_kept() {
     loom::model(|| {
         let (mut writer, reader) = full_ring(0, 3);
         let reading = read(reader, [(3, [(3, 4), (0, 1)]), (3, [(3, 4), (0, 1)])]);
-        writer.push(&frames(4, 2, 0));
+        let _ = writer.push(&frames(4, 2, 0));
         reading.join().expect("the reader");
     });
 }
@@ -163,7 +163,7 @@ fn retract_then_push() {
         let (mut writer, reader) = full_ring(1, 1);
         let reading = read(reader, [(1, [(0, 4), NONE]), (1, [(0, 4), NONE])]);
         writer.retract_to(2);
-        writer.push(&frames(2, 2, 1));
+        let _ = writer.push(&frames(2, 2, 1));
         reading.join().expect("the reader");
     });
 }
@@ -174,7 +174,7 @@ fn reset_then_push() {
         let (mut writer, reader) = full_ring(1, 1);
         let reading = read(reader, [(1, [(0, 4), NONE]), (1, [(0, 4), NONE])]);
         writer.reset(1);
-        writer.push(&frames(1, 3, 1));
+        let _ = writer.push(&frames(1, 3, 1));
         reading.join().expect("the reader");
     });
 }
@@ -186,7 +186,7 @@ fn retract_twice_then_push() {
         let reading = read(reader, [(1, [(1, 3), NONE])]);
         writer.retract_to(3);
         writer.retract_to(1);
-        writer.push(&frames(1, 2, 1));
+        let _ = writer.push(&frames(1, 2, 1));
         reading.join().expect("the reader");
     });
 }
@@ -198,7 +198,7 @@ fn raise_then_reset_then_push() {
         let reading = read(reader, [(1, [(0, 2), NONE])]);
         writer.raise_from(2);
         writer.reset(0);
-        writer.push(&frames(0, 1, 1));
+        let _ = writer.push(&frames(0, 1, 1));
         reading.join().expect("the reader");
     });
 }
@@ -210,7 +210,7 @@ fn reset_then_wrap() {
         let reading = read(reader, [(2, [(1, 3), NONE]), (2, [(1, 3), NONE])]);
         writer.reset(2);
         // 2..6 over four slots: 4 and 5 go round onto 0 and 1.
-        writer.push(&frames(2, 4, 1));
+        let _ = writer.push(&frames(2, 4, 1));
         reading.join().expect("the reader");
     });
 }
@@ -220,9 +220,9 @@ fn a_capped_push_then_reset_keeps_the_claim() {
     loom::model(|| {
         let (mut writer, reader) = full_ring(0, 2);
         let reading = read(reader, [(2, [(2, 3), (0, 1)])]);
-        writer.push(&frames(4, 2, 0));
+        let _ = writer.push(&frames(4, 2, 0));
         writer.reset(0);
-        writer.push(&frames(0, 1, 1));
+        let _ = writer.push(&frames(0, 1, 1));
         reading.join().expect("the reader");
     });
 }
@@ -236,9 +236,9 @@ fn a_partly_capped_push_then_reset_keeps_the_claim() {
     loom::model(|| {
         let (mut writer, reader) = full_ring(0, 3);
         let reading = read(reader, [(3, [(3, 4), (1, 2)])]);
-        writer.push(&frames(4, 3, 0));
+        let _ = writer.push(&frames(4, 3, 0));
         writer.reset(0);
-        writer.push(&frames(0, 3, 1));
+        let _ = writer.push(&frames(0, 3, 1));
         reading.join().expect("the reader");
     });
 }

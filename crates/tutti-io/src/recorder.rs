@@ -59,9 +59,9 @@ const SCRATCH_FRAMES: Samples = Samples(1024);
 /// # Examples
 ///
 /// ```no_run
-/// # use tutti_io::{Recorder, WavOut, BitDepth};
+/// # use tutti_io::{Recorder, WavOut, Pcm};
 /// # fn go<I: tutti_types::AudioIn + Send + 'static>(src: I) -> tutti_io::Result<()> {
-/// let wav = WavOut::create("take.wav", 48_000.0, 2u16, BitDepth::Float32)
+/// let wav = WavOut::create("take.wav", 48_000.0, 2u16, Pcm::Float32)
 ///     .expect("sink opens");
 /// let rec = Recorder::start(src, wav)?;   // errors if the widths disagree
 /// // ... later ...

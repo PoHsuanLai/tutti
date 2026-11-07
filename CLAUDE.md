@@ -208,9 +208,11 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
 ```
 
 `just check-windows` runs this over the workspace and over the plugin crates
-with every format feature. It excludes the five members that cannot
-cross-compile: `ogg_next_sys` (via `tutti-export`) and `tutti-vst3-host`'s
-`conformance` probe need real Windows C headers. CI's `clippy (windows)` job
+with every format feature. It leaves out the members that cannot
+cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `vorbis` feature,
+which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
+real Windows C headers. `tutti-codec` itself is linted with its other formats
+(`wav,aiff,flac`). CI's `clippy (windows)` job
 runs everything natively on a `windows-latest` runner. It only lints: no CI job
 runs the tests on Windows.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
@@ -260,6 +262,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
+  tutti-codec    the audio file encoders: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
+                 `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
+                 over a `Write + Seek` sink; the `Pcm` widths and their one
+                 quantization. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
@@ -296,7 +302,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
 
 0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
-2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`
+2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
+   `tutti-codec`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
@@ -356,6 +363,27 @@ list (normal and build edges; dev-dependencies may go anywhere).
   list behind it are crate-private.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
+- `tutti-codec` depends on `tutti-types` alone, keeps every module private
+  (`tutti_codec::Encoder`; CI runs the per-module path gate on it), is
+  `#![forbid(unsafe_code)]`, is `publish = false` and has no `bevy` feature.
+  Each format is a cargo feature (`wav`, `aiff`, `flac`, `vorbis`), none on by
+  default, and a `Format` variant exists only with its feature: no `cfg(not)`
+  arm refuses a format. An `Encoder` takes blocks already at the
+  `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
+  the crate stops a caller from handing it blocks that were not. Pulling,
+  resampling and dithering are the pipeline's, and `tutti-export` has one path
+  through its own (`pump_blocks`, private). `write` is fallible; the file
+  `create_file` makes is removed unless `finish` moved it into place (and
+  `finish` after a failed `write` removes it and returns the first error). The
+  sink is `Write + Seek + Send + 'static` on `Encoder` whatever the features,
+  because bounds that followed the features would be worse; a `FormatWriter`
+  asks only for what its own format needs. The
+  WAV writer is one: `tutti-export` and `tutti-io`'s `WavOut` both write
+  through it. Each format's writer implements `FormatWriter` (its boundary: it writes
+  blocks of interleaved samples into a sink as one file of its format), with
+  the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
+  them. A new format is a `Format` variant, a writer type, a `contract!` line in
+  `src/contract.rs` and a row in `tests/bytes.rs`.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
   `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep

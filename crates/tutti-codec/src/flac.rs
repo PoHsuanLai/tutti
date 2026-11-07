@@ -1,5 +1,5 @@
 //! FLAC (flacenc). Streams both ways: PCM in a block at a time, frames out to
-//! the file as they are encoded.
+//! the sink as they are encoded.
 //!
 //! flacenc's own entry point, `encode_with_fixed_block_size`, is a pull loop
 //! over a `Source` that returns the whole compressed `Stream` at the end, and
@@ -9,20 +9,18 @@
 //! mono, padding that is stale samples from a reused buffer rather than zeros.
 //!
 //! So this drives flacenc's frame encoder, `encode_fixed_size_frame`, itself:
-//! [`pump_blocks`](crate::encode::pump_blocks) pushes the gated, resampled
-//! and dithered render; every full [`BLOCK_SIZE`] block is encoded on a worker
-//! and written in order as soon as it and every frame before it are done; the
-//! last block is encoded at its own length. The STREAMINFO is written as a
-//! placeholder first and rewritten once the totals and the MD5 are known. Every
-//! full-size frame is the one `encode_with_fixed_block_size` writes (the same
-//! function, block, frame number and stream info).
+//! every full [`BLOCK_SIZE`] block is encoded on a worker and written in order
+//! as soon as it and every frame before it are done; the last block is encoded
+//! at its own length. The STREAMINFO is written as a placeholder first and
+//! rewritten once the totals and the MD5 are known. Every full-size frame is
+//! the one `encode_with_fixed_block_size` writes (the same function, block,
+//! frame number and stream info).
 
-use crate::config::ExportConfig;
-use crate::control::{Control, Outcome};
-use crate::encode::Encoder;
 use crate::error::{Codec, Error, Result};
-use crate::options::BitDepth;
-use crate::render::{FrameSource, RenderPlan};
+use crate::format::FlacLevel;
+use crate::pcm::IntDepth;
+use crate::spec::Spec;
+use crate::writer::FormatWriter;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::{BitRepr, Frame, Stream, StreamInfo};
 use flacenc::config::Encoder as EncoderConfig;
@@ -32,118 +30,105 @@ use flacenc::error::{Verified, Verify};
 use flacenc::source::{Fill, FrameBuf};
 use md5::{Digest, Md5};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufWriter, Seek, Write};
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::io::{Seek, SeekFrom, Write};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use tutti_types::Interleaved;
 
 /// Frames per FLAC block, every block but the last.
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) struct FlacEncoder {
-    path: PathBuf,
-    compression_level: u8,
-    bit_depth: BitDepth,
+/// A FLAC file being written.
+/// Writes a FLAC file through the [`FormatWriter`] contract.
+pub struct FlacWriter<W: Write + Seek> {
+    sink: W,
+    frames: FrameWriter,
+    depth: IntDepth,
+    /// The block being filled, interleaved, at most [`BLOCK_SIZE`] frames.
+    pcm: Vec<i32>,
+    channels: usize,
 }
 
-impl FlacEncoder {
-    pub(crate) fn create(
-        path: &std::path::Path,
-        config: &ExportConfig,
-        opts: crate::options::Flac,
-    ) -> Result<Self> {
-        if config.encode.bit_depth == BitDepth::Float32 {
-            return Err(Error::UnsupportedFormat {
-                format: "FLAC".into(),
-                reason: crate::UnsupportedReason::BitDepth,
-            });
-        }
-        Ok(Self {
-            path: path.to_path_buf(),
-            compression_level: opts.compression_level,
-            bit_depth: config.encode.bit_depth,
-        })
+impl<W: Write + Seek> std::fmt::Debug for FlacWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlacWriter").finish_non_exhaustive()
     }
 }
 
-impl Encoder for FlacEncoder {
-    fn encode(
-        self,
-        src: &mut dyn FrameSource,
-        source_rate: tutti_types::SampleRate,
-        plan: &RenderPlan,
-        config: &ExportConfig,
-        control: &mut Control<'_>,
-    ) -> Result<Outcome<()>> {
-        let bits = bits_for(self.bit_depth);
-        let bit_depth = self.bit_depth;
-        // Once, at entry: the stride is a runtime value.
-        let ch = usize::from(config.encode.channels.count());
-        let rate = crate::encode::encoder_rate(config) as usize;
+impl<W: Write + Seek> FlacWriter<W> {
+    /// Starts the file in `sink`, writing its header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Encoder::create`](crate::Encoder::create).
+    pub fn create(spec: &Spec, depth: IntDepth, level: FlacLevel, mut sink: W) -> Result<Self> {
+        let rate = spec.header_rate()?.get() as usize;
+        let channels = usize::from(spec.channels()?);
+        let bits = usize::from(depth.bits());
 
         let verify = |c: EncoderConfig| {
             c.into_verified()
                 .map_err(|e| Error::encoding(Codec::Flac, format!("invalid config: {e:?}")))
         };
         let configs = Configs {
-            full: verify(encoder_config(self.compression_level))?,
-            short: verify(short_block_config(self.compression_level))?,
+            full: verify(encoder_config(level))?,
+            short: verify(short_block_config(level))?,
             #[cfg(test)]
             panic_at: None,
         };
-        let info = StreamInfo::new(rate, ch, bits)
+        let info = StreamInfo::new(rate, channels, bits)
             .map_err(|e| Error::encoding(Codec::Flac, format!("invalid stream: {e:?}")))?;
 
-        let mut file = BufWriter::new(File::create(&self.path)?);
         // A placeholder of the final header's size (STREAMINFO is fixed
         // length), rewritten once the totals and the MD5 are known.
-        file.write_all(&header_bytes(&info)?)?;
+        sink.write_all(&header_bytes(&info)?)?;
 
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
-        let info = std::thread::scope(|scope| {
-            let mut writer = FrameWriter::start(scope, workers, &configs, info, ch, bits);
-            let mut pcm: Vec<i32> = Vec::with_capacity(BLOCK_SIZE * ch);
-            // Through `pump_blocks`, like every other format: that is what
-            // applies the gate, the resample and the dither.
-            let pumped =
-                crate::encode::pump_blocks(src, source_rate, plan, config, control, |frames| {
-                    let mut samples = frames.samples();
-                    while !samples.is_empty() {
-                        let take = (BLOCK_SIZE * ch - pcm.len()).min(samples.len());
-                        pcm.extend(samples[..take].iter().map(|&s| f32_to_i32(s, bit_depth)));
-                        samples = &samples[take..];
-                        if pcm.len() == BLOCK_SIZE * ch {
-                            writer.block(&pcm, &mut file)?;
-                            pcm.clear();
-                        }
-                    }
-                    Ok(())
-                });
-            // Finish the workers even when the pump failed, so the scope's
-            // join does not wait on a worker blocked on a full queue.
-            let tail = match pumped {
-                Ok(Outcome::Finished(())) if !pcm.is_empty() => writer
-                    .block(&pcm, &mut file)
-                    .map(|()| Outcome::Finished(())),
-                other => other,
-            };
-            let finished = writer.finish(&mut file);
-            match tail {
-                Ok(Outcome::Finished(())) => finished.map(Outcome::Finished),
-                Ok(Outcome::Cancelled) => Ok(Outcome::Cancelled),
-                Err(e) => Err(e),
-            }
-        })?;
-        let Outcome::Finished(info) = info else {
-            return Ok(Outcome::Cancelled);
-        };
+        let frames = FrameWriter::start(workers, Arc::new(configs), info.clone(), channels, bits);
+        Ok(Self {
+            sink,
+            frames,
+            depth,
+            pcm: Vec::with_capacity(BLOCK_SIZE * channels),
+            channels,
+        })
+    }
+}
 
-        let mut file = file.into_inner().map_err(|e| Error::Io(e.into_error()))?;
-        file.rewind()?;
-        file.write_all(&header_bytes(&info)?)?;
-        file.flush()?;
-        Ok(Outcome::Finished(()))
+impl<W: Write + Seek> FormatWriter for FlacWriter<W> {
+    type Sink = W;
+
+    fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+        let mut samples = block.samples();
+        while !samples.is_empty() {
+            let take = (BLOCK_SIZE * self.channels - self.pcm.len()).min(samples.len());
+            let depth = self.depth;
+            self.pcm
+                .extend(samples[..take].iter().map(|&s| depth.quantize(s)));
+            samples = &samples[take..];
+            if self.pcm.len() == BLOCK_SIZE * self.channels {
+                let queued = self.frames.block(&self.pcm, &mut self.sink);
+                // Cleared whatever came of it: the block is in the writer's
+                // hands now, and a failed one must not be queued again.
+                self.pcm.clear();
+                queued?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Self::Sink> {
+        if !self.pcm.is_empty() && !self.frames.failed {
+            self.frames.block(&self.pcm, &mut self.sink)?;
+        }
+        let info = self.frames.finish(&mut self.sink)?;
+        self.sink.flush()?;
+        self.sink.seek(SeekFrom::Start(0))?;
+        self.sink.write_all(&header_bytes(&info)?)?;
+        self.sink.seek(SeekFrom::End(0))?;
+        self.sink.flush()?;
+        Ok(self.sink)
     }
 }
 
@@ -181,6 +166,7 @@ type Encoded = (usize, std::result::Result<Frame, String>, FrameBuf);
 ///
 /// [`block`]: Self::block
 struct FrameWriter {
+    threads: Vec<JoinHandle<()>>,
     jobs: Option<mpsc::SyncSender<(usize, FrameBuf)>>,
     done: mpsc::Receiver<Encoded>,
     /// Buffers back from the workers, ready to refill.
@@ -191,6 +177,9 @@ struct FrameWriter {
     sent: usize,
     written: usize,
     in_flight_cap: usize,
+    /// A frame failed to encode or to reach the sink: the frame is lost, so
+    /// the stream cannot be completed and nothing waits for it.
+    failed: bool,
     info: StreamInfo,
     md5: Md5,
     md5_bytes: Vec<u8>,
@@ -200,10 +189,9 @@ struct FrameWriter {
 }
 
 impl FrameWriter {
-    fn start<'scope, 'env>(
-        scope: &'scope std::thread::Scope<'scope, 'env>,
+    fn start(
         workers: usize,
-        configs: &'env Configs,
+        configs: Arc<Configs>,
         info: StreamInfo,
         channels: usize,
         bits: usize,
@@ -211,55 +199,59 @@ impl FrameWriter {
         let workers = workers.max(1);
         let (job_tx, job_rx) = mpsc::sync_channel::<(usize, FrameBuf)>(workers);
         let (done_tx, done_rx) = mpsc::channel::<Encoded>();
-        let job_rx = std::sync::Arc::new(Mutex::new(job_rx));
-        for _ in 0..workers {
-            let job_rx = std::sync::Arc::clone(&job_rx);
-            let done_tx = done_tx.clone();
-            // Every frame is encoded against the stream info as it stood
-            // before any frame, as flacenc's own parallel encoder does: a
-            // frame's encoding reads only its rate, width and depth.
-            let info = info.clone();
-            scope.spawn(move || {
-                loop {
-                    // The lock is held only to take one job; a closed queue ends
-                    // the worker.
-                    let job = job_rx.lock().map(|rx| rx.recv());
-                    let Ok(Ok((n, buf))) = job else { return };
-                    let config = if buf.size() < MIN_BLOCK_SIZE {
-                        &configs.short
-                    } else {
-                        &configs.full
-                    };
-                    // A panic is caught and sent back as an error: the producer
-                    // waits on `done` while this worker's sender is alive in its
-                    // siblings, so a worker that unwound silently would leave it
-                    // waiting forever.
-                    let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        #[cfg(test)]
-                        if configs.panic_at == Some(n) {
-                            panic!("injected at frame {n}");
-                        }
-                        encode_fixed_size_frame(config, &buf, n, &info).map(|mut f| {
-                            f.precompute_bitstream();
-                            f
+        let job_rx = Arc::new(Mutex::new(job_rx));
+        let threads = (0..workers)
+            .map(|_| {
+                let job_rx = Arc::clone(&job_rx);
+                let configs = Arc::clone(&configs);
+                let done_tx = done_tx.clone();
+                // Every frame is encoded against the stream info as it stood
+                // before any frame, as flacenc's own parallel encoder does: a
+                // frame's encoding reads only its rate, width and depth.
+                let info = info.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        // The lock is held only to take one job; a closed queue ends
+                        // the worker.
+                        let job = job_rx.lock().map(|rx| rx.recv());
+                        let Ok(Ok((n, buf))) = job else { return };
+                        let config = if buf.size() < MIN_BLOCK_SIZE {
+                            &configs.short
+                        } else {
+                            &configs.full
+                        };
+                        // A panic is caught and sent back as an error: the producer
+                        // waits on `done` while this worker's sender is alive in its
+                        // siblings, so a worker that unwound silently would leave it
+                        // waiting forever.
+                        let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            #[cfg(test)]
+                            if configs.panic_at == Some(n) {
+                                panic!("injected at frame {n}");
+                            }
+                            encode_fixed_size_frame(config, &buf, n, &info).map(|mut f| {
+                                f.precompute_bitstream();
+                                f
+                            })
+                        }))
+                        .map_err(|payload| {
+                            let msg = payload
+                                .downcast_ref::<&str>()
+                                .map(|s| (*s).to_owned())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_default();
+                            format!("panicked: {msg}")
                         })
-                    }))
-                    .map_err(|payload| {
-                        let msg = payload
-                            .downcast_ref::<&str>()
-                            .map(|s| (*s).to_owned())
-                            .or_else(|| payload.downcast_ref::<String>().cloned())
-                            .unwrap_or_default();
-                        format!("panicked: {msg}")
-                    })
-                    .and_then(|r| r.map_err(|e| format!("{e:?}")));
-                    if done_tx.send((n, frame, buf)).is_err() {
-                        return;
+                        .and_then(|r| r.map_err(|e| format!("{e:?}")));
+                        if done_tx.send((n, frame, buf)).is_err() {
+                            return;
+                        }
                     }
-                }
-            });
-        }
+                })
+            })
+            .collect();
         Self {
+            threads,
             jobs: Some(job_tx),
             done: done_rx,
             free: Vec::new(),
@@ -267,6 +259,7 @@ impl FrameWriter {
             sent: 0,
             written: 0,
             in_flight_cap: 2 * workers,
+            failed: false,
             info,
             md5: Md5::new(),
             md5_bytes: Vec::new(),
@@ -279,6 +272,9 @@ impl FrameWriter {
     /// Queue one interleaved block: [`BLOCK_SIZE`] frames, or fewer for the
     /// last.
     fn block<W: Write>(&mut self, pcm: &[i32], out: &mut W) -> Result<()> {
+        if self.failed {
+            return Err(lost_frame());
+        }
         let frames = pcm.len() / self.channels;
         // The MD5 is over the samples as the decoder will return them: the
         // first `bytes_per_sample` bytes of each, little-endian, in
@@ -322,6 +318,14 @@ impl FrameWriter {
     /// Take one encoded frame back (waiting for it when `wait`), then write
     /// every frame that is next in order. Returns whether one was taken.
     fn receive<W: Write>(&mut self, out: &mut W, wait: bool) -> Result<bool> {
+        let taken = self.take_one(out, wait);
+        if taken.is_err() {
+            self.failed = true;
+        }
+        taken
+    }
+
+    fn take_one<W: Write>(&mut self, out: &mut W, wait: bool) -> Result<bool> {
         let got = if wait {
             self.done.recv().ok()
         } else {
@@ -352,10 +356,17 @@ impl FrameWriter {
     fn finish<W: Write>(mut self, out: &mut W) -> Result<StreamInfo> {
         // Dropping the sender is what ends the workers.
         self.jobs = None;
+        if self.failed {
+            return Err(lost_frame());
+        }
         while self.written < self.sent {
             if !self.receive(out, true)? {
                 return Err(Error::encoding(Codec::Flac, "a worker stopped"));
             }
+        }
+        for thread in self.threads.drain(..) {
+            // A worker's panic was caught and reported as a frame error.
+            let _ = thread.join();
         }
         // A fixed-blocksize stream's STREAMINFO states the block size every
         // block but the last has, whatever the last one's; an empty stream
@@ -376,29 +387,33 @@ impl FrameWriter {
     }
 }
 
-/// flacenc's coding options for a level 0 to 8, modelled loosely on
-/// libFLAC's presets. Levels 0 to 2 code with fixed predictors only; 3 and
-/// up add LPC at an exact order (flacenc's `lpc_order` is the order used,
-/// not a searched maximum): 6, then 8 from level 4, 12 from level 7. Every
-/// level but 0 tries mid/side and left/right-side stereo.
+fn lost_frame() -> Error {
+    Error::encoding(
+        Codec::Flac,
+        "an earlier frame failed, so the stream cannot be completed",
+    )
+}
+
+/// flacenc's coding options for a level, modelled loosely on libFLAC's
+/// presets. [`Fastest`](FlacLevel::Fastest) codes with fixed predictors only;
+/// the next adds LPC at an exact order (flacenc's `lpc_order` is the order used,
+/// not a searched maximum): 6, 8, then 12 at [`Best`](FlacLevel::Best). Every
+/// level but the first tries mid/side and left/right-side stereo.
 ///
-/// Where this departs from libFLAC: its level 3 has no stereo
-/// decorrelation, and its levels 0 to 2 use 1152-sample blocks, while the
-/// block size here is [`BLOCK_SIZE`] at every level. Only five configs are
-/// distinct: levels 1 and 2, 4 to 6, and 7 and 8 encode identically. Above
-/// 8 reads as 8. Every level is lossless.
-fn encoder_config(level: u8) -> EncoderConfig {
-    let level = level.min(8);
+/// Where this departs from libFLAC: its level 3 has no stereo decorrelation,
+/// and its levels 0 to 2 use 1152-sample blocks, while the block size here is
+/// [`BLOCK_SIZE`] at every level. Every level is lossless.
+fn encoder_config(level: FlacLevel) -> EncoderConfig {
     let mut config = EncoderConfig::default();
-    let side = level >= 1;
+    let side = level != FlacLevel::Fastest;
     config.stereo_coding.use_leftside = side;
     config.stereo_coding.use_rightside = side;
     config.stereo_coding.use_midside = side;
-    config.subframe_coding.use_lpc = level >= 3;
+    config.subframe_coding.use_lpc = !matches!(level, FlacLevel::Fastest | FlacLevel::Fast);
     config.subframe_coding.qlpc.lpc_order = match level {
-        0..=3 => 6,
-        4..=6 => 8,
-        _ => 12,
+        FlacLevel::Fastest | FlacLevel::Fast | FlacLevel::Medium => 6,
+        FlacLevel::Standard => 8,
+        FlacLevel::Best => 12,
     };
     config
 }
@@ -410,39 +425,11 @@ fn encoder_config(level: u8) -> EncoderConfig {
 /// partition search underflows below it), but FLAC allows any length for the
 /// last block, and a verbatim subframe of under 64 samples costs at most a
 /// few hundred bytes once per file.
-fn short_block_config(level: u8) -> EncoderConfig {
+fn short_block_config(level: FlacLevel) -> EncoderConfig {
     let mut config = encoder_config(level);
     config.subframe_coding.use_fixed = false;
     config.subframe_coding.use_lpc = false;
     config
-}
-
-fn bits_for(bit_depth: BitDepth) -> usize {
-    match bit_depth {
-        BitDepth::Int16 => 16,
-        BitDepth::Int24 => 24,
-        // Rejected in `create`.
-        BitDepth::Float32 => 24,
-    }
-}
-
-/// Quantize to the integer sample flacenc takes, via the engine's canonical
-/// converters.
-///
-/// Delegation is the whole point. A local `(clamped * 32767.0) as i32`
-/// truncates where [`tutti_types::pcm`] rounds: the two agree on 0.0 and ±1.0
-/// and diverge by one LSB everywhere else, so 0.7 encodes as 22936 in a FLAC and
-/// 22937 in a WAV from the same render. `pcm` exists so a recorded and an
-/// exported file quantize a given sample identically, and its docs call bare
-/// truncation biased toward zero — a consistent negative DC error on the
-/// negative half.
-#[inline]
-fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
-    match bit_depth {
-        BitDepth::Int16 => i32::from(tutti_types::f32_to_i16(sample)),
-        // Float32 is rejected in `create`, so this is the Int24 path.
-        _ => tutti_types::f32_to_i24(sample),
-    }
 }
 
 #[cfg(test)]

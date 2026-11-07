@@ -19,9 +19,7 @@ mod off_thread {
         ExportSource, ExportTarget,
     };
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphSource};
-    use tutti_export::{
-        AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
-    };
+    use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
     use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
     use tutti_types::{SampleRate, Samples};
 
@@ -73,8 +71,7 @@ mod off_thread {
                     ..Default::default()
                 },
                 encode: EncodeConfig {
-                    format: AudioFormat::Wav,
-                    bit_depth: BitDepth::Float32,
+                    format: Format::Wav(Pcm::Float32),
                     channels: ChannelLayout::STEREO,
                     topology: None,
                 },

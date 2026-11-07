@@ -10,7 +10,7 @@ The graph is *pulled* to a known frame count that `RenderConfig` fixes up front,
 then resampled, dithered and encoded on the way out. Three entry points, and the
 names say which path a caller is on:
 
-- `render_to_file` — render straight to disk. Streams: the encoder pulls the
+- `render_to_file` — render straight to disk. Streams: the pipeline pulls the
   graph one block at a time and no PCM is held whole.
 - `render_to_buffers` — render into memory, as planar `Vec<f32>` planes.
 - `write_buffers` — encode planes a caller already holds.
@@ -55,8 +55,8 @@ forks it instead, with `RenderGraph::fork`.
 use tutti_transport::FrozenClock;
 use tutti_types::{Hz, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, ChannelLayout, EncodeConfig, ExportConfig,
-    Flac, RenderConfig, RenderGraph,
+    render_to_buffers, render_to_file, ChannelLayout, EncodeConfig, ExportConfig,
+    FlacLevel, Format, IntDepth, RenderConfig, RenderGraph,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -79,7 +79,7 @@ let config = ExportConfig {
         ..Default::default()
     },
     encode: EncodeConfig {
-        format: AudioFormat::Flac(Flac::default()),
+        format: Format::Flac { depth: IntDepth::Int24, level: FlacLevel::Standard },
         ..Default::default()
     },
     ..Default::default()
@@ -114,10 +114,13 @@ run *while* rendering), take `Loudness::gain_to`, apply it with
 
 ## Features
 
-- `wav` (default) — WAV encoding, via hound.
-- `flac` (default) — FLAC encoding, via flacenc.
-- `aiff` (default) — AIFF / AIFF-C encoding, via aifc.
-- `ogg` (default) — OGG Vorbis encoding, via vorbis_rs.
+- `wav` (default) — WAV, `tutti-codec`'s own writer.
+- `flac` (default) — FLAC, via flacenc.
+- `aiff` (default) — AIFF / AIFF-C, via aifc.
+- `ogg` (default) — Ogg Vorbis, via vorbis_rs.
+
+Each turns on the `tutti-codec` feature of the same name (`ogg` is its
+`vorbis`), and a `Format` variant exists only with its feature.
 
 Resampling (an FFT resampler on `tutti_dsp::RealFft`) is unconditional:
 it is not a codec, so it is not gated.

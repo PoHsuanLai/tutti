@@ -25,9 +25,7 @@ use bevy_tutti::export::{
     ExportSource, ExportTarget, PreparedGraph,
 };
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, AudioNode, GraphSource};
-use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig,
-};
+use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
 use tutti_graph::{
     Cx, ForkByClone, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Prepare, Shape, Status,
@@ -47,8 +45,7 @@ fn config(seconds: f64) -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels: ChannelLayout::STEREO,
             topology: None,
         },

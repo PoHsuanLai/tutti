@@ -44,9 +44,8 @@ tutti-graph = { path = "../tutti-graph" }
 # device layer (`tutti-cpal`), which sits *above* this crate.
 ringbuf = "0.6"
 
-# WAV encode for the `WavOut` sink. Deliberately not in `tutti-types`, which is
-# the root leaf: a file-format codec belongs at the edge that writes files.
-hound = "3.5"
+# The WAV writer behind the `WavOut` sink, the one an export writes through.
+tutti-codec = { path = "../tutti-codec", features = ["wav"] }
 
 # File decode for `Wave::read` / `FileIn`. No default features: each codec is a
 # feature above, so a build lists exactly the containers it can read.
@@ -57,6 +56,8 @@ bevy_reflect = { workspace = true, optional = true }
 tutti-types = { path = "../tutti-types", default-features = false }
 
 [dev-dependencies]
+# An independent reader for the WAV files the tests write.
+hound = "3.5"
 # Finds the repo's `assets/` for the tests.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 # Every codec, for this crate's own tests. A dev-dependency on self is how a

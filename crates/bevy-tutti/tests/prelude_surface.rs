@@ -139,7 +139,7 @@ fn _surface_compiles() {
         // is `ChannelLayout::STEREO` and not a bare `2`. Naming the layout is
         // what makes the pairing legible; `Recorder::start` rejects a mismatch
         // outright, and `pump` debug-asserts it.
-        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
+        let wav = WavOut::create(&path, 48_000.0, ChannelLayout::STEREO, Pcm::Float32)
             .expect("sink opens");
         Ok(AudioPump::start(
             TapIn::new(tap.open()?),
@@ -156,7 +156,7 @@ fn _surface_compiles() {
     #[cfg(feature = "audio-io")]
     fn _record_mic(path: std::path::PathBuf, rate: SampleRate) -> std::io::Result<AudioPump> {
         let mic = MicIn::open(None, rate).map_err(std::io::Error::other)?;
-        let wav = mic.matching_sink(path, BitDepth::Float32)?;
+        let wav = mic.matching_sink(path, Pcm::Float32)?;
         Ok(AudioPump::start(mic, wav, Samples(1024)))
     }
 

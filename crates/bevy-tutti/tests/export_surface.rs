@@ -27,7 +27,7 @@ use bevy_tutti::graph::{AudioConfig, AudioGraphRes};
 // render, which `bevy-tutti` does not re-export (`scripts/check-adapter.sh`):
 // a host that names it depends on `tutti-export`, as this test does.
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
 };
 use tutti_nodes::testing::{Const, Sink};
 use tutti_types::NodeKey;
@@ -50,8 +50,7 @@ fn stereo_config() -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels: ChannelLayout::STEREO,
             topology: None,
         },

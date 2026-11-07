@@ -110,6 +110,8 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
       - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
+      # And `tutti-codec`, which keeps its modules private: the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_codec aiff encoder error flac format pcm spec staged vorbis wav
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -273,6 +275,12 @@ jobs:
       #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
       #                         components) and its tests
       #   tutti-io/bevy       — WaveAsset's Asset derive
+      #   tutti-codec/*       — a `Format` variant exists only with its feature, so
+      #                         each of none, wav, aiff, flac and vorbis is built
+      #                         and tested alone (a workspace run has them all on,
+      #                         through tutti-export, and proves nothing about the
+      #                         gating); with them all and `serde`, the pinned
+      #                         bytes and Quality's range contract run
       #   bevy-tutti/plugin   — src/plugin_host's binding against a live plugin:
       #                         tests/plugin_capture.rs loads the reference CLAP
       #                         plugin through a real plugin-server and is the
@@ -327,6 +335,12 @@ jobs:
           cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
           cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
           cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features wav --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features aiff --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features flac --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --features vorbis --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
           cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
@@ -353,6 +367,12 @@ jobs:
           cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
           cargo nextest run --locked -p tutti --features clap,export,modulation
           cargo nextest run --locked -p tutti-io --features bevy
+          cargo nextest run --locked -p tutti-codec
+          cargo nextest run --locked -p tutti-codec --features wav
+          cargo nextest run --locked -p tutti-codec --features aiff
+          cargo nextest run --locked -p tutti-codec --features flac
+          cargo nextest run --locked -p tutti-codec --features vorbis
+          cargo nextest run --locked -p tutti-codec --all-features
           # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
           # dev-dependency turns it on); this step names it so tests/serde.rs still runs
           # if that edge goes away.

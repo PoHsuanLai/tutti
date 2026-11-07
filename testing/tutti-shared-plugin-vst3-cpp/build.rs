@@ -1,6 +1,6 @@
 //! Builds the C++ comparison plugin: the SDK's translation units plus this
 //! plugin's own, linked into `shared-vst3-cpp.vst3`. The SDK recipe is the one
-//! `tutti-vst3-host/build.rs` uses for its probe (copied, not shared).
+//! `tutti-vst3-host/build.rs` uses for its reference plugins (copied, not shared).
 
 use std::path::{Path, PathBuf};
 
@@ -176,11 +176,11 @@ fn link_bundle<'a>(
         let implib =
             PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR")).join(format!("{plugin}.lib"));
         cmd.arg(format!("/IMPLIB:{}", implib.display()));
-        cmd.args(probe_link_args());
+        cmd.args(plugin_link_args());
     } else {
         cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
         cmd.args(&objects);
-        cmd.args(probe_link_args());
+        cmd.args(plugin_link_args());
     }
 
     let status = cmd.status().expect("failed to invoke the linker");
@@ -188,15 +188,15 @@ fn link_bundle<'a>(
     assert!(so.is_file(), "linker reported success but {so:?} is absent");
 }
 
-/// System libraries the probe's platform sources need at link time.
+/// System libraries the plugin's platform sources need at link time.
 ///
 /// The SDK's per-OS sources in [`platform_sources`] are what pull these in:
 /// macOS builds `systemclipboard_mac.mm` / `threadchecker_mac.mm` plus the
 /// CoreFoundation calls in `fstring`/`timer`/`funknown` and the CoreAudio host
-/// clock in `systemtime.cpp`, so the probe needs the Objective-C runtime and
+/// clock in `systemtime.cpp`, so the plugin needs the Objective-C runtime and
 /// four frameworks. On Linux the equivalents are `libstdc++fs`/`pthread`/`dl`.
 /// Windows resolves its own through the MSVC defaults and needs nothing here.
-fn probe_link_args() -> Vec<String> {
+fn plugin_link_args() -> Vec<String> {
     if target_os_is("macos") {
         [
             "-framework",
@@ -267,6 +267,9 @@ fn main() {
         "no VST3 SDK at {}",
         sdk.display()
     );
+    for f in SDK_SOURCES.iter().chain(platform_sources()) {
+        println!("cargo:rerun-if-changed={}", sdk.join(f).display());
+    }
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let gen_dir = out_dir.join("gen");
     std::fs::create_dir_all(&gen_dir).expect("gen dir");

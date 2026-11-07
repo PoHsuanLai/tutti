@@ -68,6 +68,7 @@ impl IPluginBaseTrait for Plugin {
 }
 
 unsafe fn stream_bytes(s: *mut IBStream) -> Option<Vec<u8>> {
+    // SAFETY, for this function's `unsafe` blocks: `s` is the host's stream, null-checked by `ComRef`; `read` fills at most the chunk.
     let s = unsafe { ComRef::from_raw(s) }?;
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 256];
@@ -112,6 +113,7 @@ impl IComponentTrait for Plugin {
         index: i32,
         bus: *mut BusInfo,
     ) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `bus` is an out-pointer the host owns for the call.
         let bus = unsafe { &mut *bus };
         match (media as MediaTypes, dir as BusDirections, index) {
             (MediaTypes_::kAudio, d, 0) => {
@@ -152,12 +154,14 @@ impl IComponentTrait for Plugin {
         kResultOk
     }
     unsafe fn setState(&self, state: *mut IBStream) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `state` is the host's stream, null-checked by `ComRef`.
         match unsafe { stream_bytes(state) } {
             Some(b) if self.core.load(&b).is_ok() => kResultOk,
             _ => kResultFalse,
         }
     }
     unsafe fn getState(&self, state: *mut IBStream) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `state` is the host's stream, null-checked by `ComRef`; `write` reads from a live slice.
         let Some(s) = (unsafe { ComRef::from_raw(state) }) else {
             return kInvalidArgument;
         };
@@ -191,6 +195,7 @@ impl IAudioProcessorTrait for Plugin {
     ) -> tresult {
         if n_in == 1
             && n_out == 1
+            // SAFETY, for this function's `unsafe` blocks: `ins` and `outs` hold one arrangement each (the counts are checked first).
             && unsafe { *ins == SpeakerArr::kStereo && *outs == SpeakerArr::kStereo }
         {
             kResultTrue
@@ -207,6 +212,7 @@ impl IAudioProcessorTrait for Plugin {
         if index != 0 || dir as BusDirections > BusDirections_::kOutput {
             return kInvalidArgument;
         }
+        // SAFETY, for this function's `unsafe` blocks: `arr` is an out-pointer the host owns for the call.
         unsafe { *arr = SpeakerArr::kStereo };
         kResultOk
     }
@@ -220,6 +226,7 @@ impl IAudioProcessorTrait for Plugin {
         self.core.latency()
     }
     unsafe fn setupProcessing(&self, setup: *mut ProcessSetup) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `setup` is valid for the call.
         let s = unsafe { &*setup };
         self.core.prepare(
             &mut self.dsp.lock().unwrap_or_else(|e| e.into_inner()),
@@ -236,6 +243,7 @@ impl IAudioProcessorTrait for Plugin {
         kResultOk
     }
     unsafe fn process(&self, data: *mut ProcessData) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `data` and the lists, buses and channel pointers in it are valid for the call (ivstaudioprocessor.h); a channel holds `numSamples` samples.
         let d = unsafe { &*data };
         let mut guard = self.dsp.lock().unwrap_or_else(|e| e.into_inner());
         let dsp = &mut *guard;
@@ -322,6 +330,7 @@ unsafe fn run<S: Sample>(
         (ib.numChannels.max(0) as usize).min(MAX_CHANNELS),
         (ob.numChannels.max(0) as usize).min(MAX_CHANNELS),
     );
+    // SAFETY, for this function's `unsafe` blocks: the bus tables are valid for the call; every channel holds `frames` samples and `nin`/`nout` bound the tables.
     let scratch = core.stage(dsp, frames, |c, i| unsafe { *(*ti.add(c)).add(i) }, nin);
     {
         let ins: [&[S]; MAX_CHANNELS] =
@@ -363,6 +372,7 @@ impl IEditControllerTrait for Plugin {
         let Some(default) = core::default_of(index as u32).filter(|_| index >= 0) else {
             return kInvalidArgument;
         };
+        // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call.
         let info = unsafe { &mut *info };
         info.id = index as u32;
         put_wstring(core::NAMES[index as usize], &mut info.title);
@@ -382,6 +392,7 @@ impl IEditControllerTrait for Plugin {
         if core::default_of(id).is_none() {
             return kInvalidArgument;
         }
+        // SAFETY, for this function's `unsafe` blocks: `s` is a valid `String128` the host owns for the call.
         put_wstring(&format!("{v:.3}"), unsafe { &mut *s });
         kResultOk
     }
@@ -391,6 +402,7 @@ impl IEditControllerTrait for Plugin {
         }
         let mut units = Vec::new();
         let mut p = s;
+        // SAFETY, for this function's `unsafe` blocks: `s` is a NUL-terminated UTF-16 string and `v` an out-pointer, both the host's for the call.
         while unsafe { *p } != 0 {
             units.push(unsafe { *p });
             p = unsafe { p.add(1) };
@@ -438,6 +450,7 @@ impl Class for Factory {
 
 impl IPluginFactoryTrait for Factory {
     unsafe fn getFactoryInfo(&self, info: *mut PFactoryInfo) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call.
         let info = unsafe { &mut *info };
         put_cstring("Tutti", &mut info.vendor);
         put_cstring("", &mut info.url);
@@ -452,6 +465,7 @@ impl IPluginFactoryTrait for Factory {
         if index != 0 {
             return kInvalidArgument;
         }
+        // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call.
         let info = unsafe { &mut *info };
         info.cid = CID;
         info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
@@ -465,6 +479,7 @@ impl IPluginFactoryTrait for Factory {
         iid: FIDString,
         obj: *mut *mut c_void,
     ) -> tresult {
+        // SAFETY, for this function's `unsafe` blocks: `cid` points at a TUID; `iid` and `obj` are `queryInterface`'s arguments.
         if unsafe { *(cid as *const TUID) } != CID {
             return kInvalidArgument;
         }

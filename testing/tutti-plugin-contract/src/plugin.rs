@@ -36,7 +36,22 @@ pub fn vst3_module() -> PathBuf {
         let _ = std::fs::remove_file(&staging);
     }
     #[cfg(windows)]
-    let _ = std::fs::copy(&real, &module);
+    {
+        // A copy, so a process loading it must never see it half written: stage
+        // beside it and rename, and leave one that is already whole alone (a
+        // loaded DLL cannot be replaced).
+        let whole = |p: &std::path::Path| {
+            std::fs::metadata(p)
+                .and_then(|m| Ok(m.len() == std::fs::metadata(&real)?.len()))
+                .unwrap_or(false)
+        };
+        if !whole(&module) {
+            let staging = dir.join(format!(".stage{}", std::process::id()));
+            std::fs::copy(&real, &staging).expect("stage the bundle copy");
+            let _ = std::fs::rename(&staging, &module);
+            let _ = std::fs::remove_file(&staging);
+        }
+    }
     assert!(module.exists(), "no module at {}", module.display());
     module
 }

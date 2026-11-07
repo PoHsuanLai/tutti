@@ -10,7 +10,9 @@ use tutti_plugin_types::{
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use crate::spec::{self, Mode, Param};
-use crate::{Active, BLOCK, Format, Kind, ParamTiming, RATE, prepare, set_mode, transcript};
+use crate::{
+    Active, BLOCK, Format, Kind, ParamTiming, RATE, prepare, set_level, set_mode, transcript,
+};
 
 fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
     c.parameter(param.id()).map(Normalized::get)
@@ -78,7 +80,8 @@ pub fn routing_tag_oracle<F: Format>() {
 }
 
 /// A rate and block change reaches the plugin and rendering goes on.
-// Mutation (run): each host telling the plugin 48 kHz instead of the rate -> fails.
+// Mutation (run): each host telling the plugin 48 kHz instead of the rate -> fails; a
+//   plugin counting blocks across an activation (core.rs, core.hpp) -> fails.
 pub fn reconfigure_keeps_rendering<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     a.silent(BLOCK);
@@ -89,6 +92,8 @@ pub fn reconfigure_keeps_rendering<F: Format>() {
     let t = transcript::<F, _>(a.controller());
     assert_eq!((t.rate, t.max_block), (44_100.0, 128), "what it was told");
     assert_eq!(t.prepares, 2);
+    assert_eq!((t.calls, t.frames), (1, 128), "counted from the activation");
+    assert_eq!((t.level, t.aux), (0.5, 0.25), "the defaults");
 }
 
 /// Reported latency follows the plugin's mode.
@@ -220,7 +225,8 @@ pub fn note_at_offset<F: Format>() {
 /// What the host sent arrives as sent: events by offset, blocks by size.
 // Mutation (run): each host ordering latest first, or handing the plugin one frame fewer
 //   than the block -> fails; the Rust core, the VST2 shell or the C++ plugin not logging
-//   parameters -> fails on the points.
+//   parameters -> fails on the points; the C++ plugin writing the call count 32 bits wide,
+//   or the Rust core the frame count, or `parse` reading level and aux swapped -> fails.
 pub fn arrival_is_ordered_and_sized<F: Format>() {
     let mut a = active_in::<F>(Mode::Notes);
     let events = [note(5, true), note(20, false), note(30, true)];
@@ -243,10 +249,23 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
             "{kind:?} outside the block"
         );
     }
+    assert_eq!(
+        (t.calls, t.frames),
+        (4, 105),
+        "blocks and frames the host sent"
+    );
+    assert_eq!(
+        (t.level, t.aux),
+        (0.5, 0.75),
+        "parameters as the events left them"
+    );
     let points: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
     match F::PARAM_TIMING {
         ParamTiming::SampleAccurate => assert_eq!(points, [(3, 0.5), (25, 0.75)]),
-        // One value per parameter at the head: the latest.
+        // One value per parameter at the head: the latest. This is stricter than
+        // VST2 requires (two in-order `setParameter` calls would be legal), and it
+        // cannot tell a host that keeps the last point on purpose from one that
+        // loses the first by accident. Kept, so a change in either direction is seen.
         ParamTiming::BlockHead => assert_eq!(points, [(0, 0.75)]),
     }
     assert_eq!(t.of(Kind::NoteOn).count(), 2);
@@ -296,17 +315,23 @@ pub fn loaded_write_survives_a_save<F: Format>() {
     assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
 }
 
-/// Bytes that are not the plugin's state leave it working.
-// Mutation (run): the plugin switching to Silent when it refuses a state -> fails CLAP and
-//   VST3; the VST2 host zeroing parameter 0 when it refuses one -> fails VST2 (the host, not
-//   the plugin, sees the bytes).
+/// Bytes that are not the plugin's state leave it working, with the level it held.
+///
+/// The level and the mode go in through the state, so they sit in the component
+/// itself: a host that carries a later write to the component's first block
+/// cannot hide a plugin that loses them on a refusal.
+// Mutation (run): the plugin switching to Silent when it refuses a state -> fails CLAP
+//   and VST3 (Rust and C++); the plugin resetting its level when it refuses one -> fails
+//   CLAP and both VST3 plugins; the VST2 host zeroing parameter 0 when it refuses one ->
+//   fails VST2 (the host, not the plugin, sees the bytes).
 pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     let mut loaded = F::load();
-    write(&mut loaded, Param::Level, 0.75);
+    set_mode::<F, _>(&mut loaded, Mode::Level);
+    set_level::<F, _>(&mut loaded, 0.75);
     let _refused = loaded.load_state(b"not the plugin's state");
     assert_eq!(read(&loaded, Param::Level), Some(0.75));
     let out = activate(loaded, BLOCK).silent(BLOCK);
-    assert!(out[0].iter().all(|&v| v == spec::tag(0)));
+    assert!(out[0].iter().all(|&v| v == 0.75), "got {:?}", &out[0][..4]);
 }
 
 /// Halves of two activations do not rejoin.

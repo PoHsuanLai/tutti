@@ -138,10 +138,13 @@ impl Plugin for Shared {
             if ev.is_null() {
                 continue;
             }
+            // SAFETY: a non-null event pointer the host owns for the call.
             let ev = unsafe { &*ev };
             if !matches!(ev.event_type, api::EventType::Midi) {
                 continue;
             }
+            // SAFETY: the type tag says it is a `MidiEvent`, which starts with the
+            // common `Event` header.
             let midi = unsafe { &*(ev as *const api::Event as *const api::MidiEvent) };
             let offset = midi.delta_frames.max(0) as u32;
             let [s, key, vel] = midi.midi_data;

@@ -41,6 +41,14 @@ pub struct Logged {
 pub struct Transcript {
     /// The mode index.
     pub mode: u32,
+    /// The `level` and `aux` parameters, as the plugin holds them.
+    pub level: f64,
+    /// See `level`.
+    pub aux: f64,
+    /// Blocks processed since the last activation.
+    pub calls: u64,
+    /// Frames processed since the last activation.
+    pub frames: u64,
     /// Frame counts of the last blocks, oldest first.
     pub blocks: Vec<u32>,
     /// Activations.
@@ -120,8 +128,8 @@ impl Transcript {
             "the blob starts with the plugin's magic"
         );
         let mode = c.u32();
-        c.take::<16>(); // level, aux
-        c.take::<16>(); // process calls, frames
+        let (level, aux) = (c.f64(), c.f64());
+        let (calls, frames) = (c.u64(), c.u64());
         let prepares = c.u32();
         let rate = c.f64();
         let max_block = c.u32();
@@ -147,6 +155,10 @@ impl Transcript {
             .collect();
         Self {
             mode,
+            level,
+            aux,
+            calls,
+            frames,
             blocks,
             prepares,
             rate,
@@ -198,6 +210,23 @@ pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
         .expect("the plugin takes its configuration");
 }
 
+/// Selects the plugin's `level` the same way: through the state, so it reaches
+/// the component itself and not a controller that a host delivers separately.
+pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
+    let state = c.save_state().expect("the plugin saves");
+    let patched = F::embed_blob(&state, &patch_level(F::extract_blob(&state), level));
+    c.load_state(&patched)
+        .expect("the plugin takes its configuration");
+}
+
+/// `blob` with its `level` set.
+#[must_use]
+pub fn patch_level(mut blob: Vec<u8>, level: f64) -> Vec<u8> {
+    let at = MAGIC.len() + 4;
+    blob[at..at + 8].copy_from_slice(&level.to_bits().to_le_bytes());
+    blob
+}
+
 /// `blob` with its mode word set.
 #[must_use]
 pub fn patch_mode(mut blob: Vec<u8>, mode: Mode) -> Vec<u8> {
@@ -213,7 +242,10 @@ mod tests {
     fn blob(overflow: u32, blocks: &[u32]) -> Vec<u8> {
         let mut b = MAGIC.to_vec();
         b.extend_from_slice(&1u32.to_le_bytes()); // mode
-        b.extend_from_slice(&[0; 32]); // level, aux, calls, frames
+        b.extend_from_slice(&0.25f64.to_bits().to_le_bytes()); // level
+        b.extend_from_slice(&0.75f64.to_bits().to_le_bytes()); // aux
+        b.extend_from_slice(&5u64.to_le_bytes()); // calls
+        b.extend_from_slice(&320u64.to_le_bytes()); // frames
         b.extend_from_slice(&2u32.to_le_bytes()); // prepares
         b.extend_from_slice(&48_000f64.to_bits().to_le_bytes());
         b.extend_from_slice(&64u32.to_le_bytes());
@@ -237,6 +269,7 @@ mod tests {
             (t.mode, t.prepares, t.rate, t.max_block),
             (1, 2, 48_000.0, 64)
         );
+        assert_eq!((t.level, t.aux, t.calls, t.frames), (0.25, 0.75, 5, 320));
         assert_eq!(t.blocks, [64, 1]);
         assert_eq!(
             t.events,

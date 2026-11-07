@@ -51,9 +51,11 @@ marked as read.
 
 Three ways of reading a message compete. `MidiMessage` has 22 variants and almost
 no production consumer outside its crate; it has no group, mints a `NoteId` on
-decode, and repeats `frame_offset` in each variant. The polysynth, SoundFont,
-CLAP and VST3 call `UmpMessage::try_from` from `midi2` directly. `tutti-graph`,
-`clip_node`, `clip_file` and `wire.rs` shift bits by hand. `MidiEvent::frame_offset`
+decode, and repeats `frame_offset` in each variant. The polysynth and SoundFont
+now read `tutti_ump::Message` (stage 2); CLAP and VST3 still call
+`UmpMessage::try_from` from `midi2` directly. `tutti-graph` reads through
+`Ump::is_note_off` (one test kernel takes a data byte by hand); `clip_node`,
+`clip_file` and `tutti-midi-types`' `wire.rs` shift bits by hand. `MidiEvent::frame_offset`
 has three meanings: a block offset, an absolute frame, and meaningless in storage.
 
 ### 1.2 What is solid and stays
@@ -514,6 +516,9 @@ a behaviour change.
    as a Note Off with release velocity `0x8000`, not `0`.
 2. **Consumers move to `Message`,** one per PR: polysynth, SoundFont, then each
    host.
+   A consumer with MIDI 1.0 resolution only (SoundFont, the hosts) narrows with
+   `tutti_midi_protocol::{narrow_velocity, narrow_value, narrow_bend}` (M2-115
+   section 3.4, a right shift).
 3. **`Translator` in `tutti-midi-protocol`.** Translation to the edge, with the
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.

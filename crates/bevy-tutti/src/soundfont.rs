@@ -19,9 +19,8 @@ use std::sync::Arc;
 use crate::graph::{
     AudioConfig, AudioGraphRes, CapturedControls, GraphReconcileSystems, engine_ready,
 };
-use tutti_midi_types::midi2::num::u7;
 use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, U7};
 
 /// A parsed `.sf2` as a loadable asset.
 ///
@@ -211,9 +210,7 @@ pub fn soundfont_playback_system(
         // checked MIDI values.
         let (Some(channel), Some(program)) = (
             u8::try_from(play.channel).ok().and_then(MidiChannel::new),
-            u8::try_from(play.preset)
-                .ok()
-                .and_then(|p| u7::try_from(p).ok()),
+            u8::try_from(play.preset).ok().and_then(U7::new),
         ) else {
             bevy_log::error!(
                 "PlaySoundFont: channel {} or preset {} is out of range",

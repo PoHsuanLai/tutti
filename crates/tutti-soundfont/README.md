@@ -26,8 +26,7 @@ use tutti_types::graph::{OutPort, Source};
 use std::sync::Arc;
 use tutti_types::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};
-use tutti_ump::MidiChannel;
-use tutti_midi_types::midi2::num::u7;
+use tutti_ump::{MidiChannel, U7};
 use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 
 let mut file = File::open("piano.sf2")?;
@@ -35,7 +34,7 @@ let soundfont = Arc::new(SoundFont::new(&mut file)?);
 
 let settings = Settings::new(SampleRate::SR_44K1);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;
-unit.program_change(MidiChannel::FIRST, u7::new(0)); // channel 0 → program 0
+unit.program_change(MidiChannel::FIRST, U7::new(0).unwrap()); // channel 0 → program 0
 
 // Into the graph: no audio input, stereo out, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
@@ -76,15 +75,20 @@ exactly the offset-0 render shifted by N frames. The smaller chunk costs about
 
 ## MIDI value resolution: 7 bits
 
-The event input carries MIDI 2.0 (UMP); RustySynth takes MIDI 1.0. Values are
-narrowed with the MIDI 2.0 spec's Min-Center-Max converters.
+The event input carries UMP, MIDI 1.0 and MIDI 2.0 messages; RustySynth takes
+MIDI 1.0 values. A MIDI 1.0 message is widened to its MIDI 2.0 form first, and
+every MIDI 2.0 value is narrowed with `tutti_midi_protocol::narrow_*`, which
+keeps the top bits (a plain right shift, M2-115 section 3.4).
 
 - Applied: note-on, note-off, control change, channel pitch bend, program
-  change.
+  change (the program only). A note-on of velocity 0 is a note-off, and a
+  nonzero velocity that narrows to 0 sounds at 1.
 - Dropped: anything MIDI 1.0 cannot express (per-note pitch bend, per-note
-  controllers, per-note management) and channel and key pressure, which
-  RustySynth has no setter for. 16-bit velocity and 32-bit controller values
-  are reduced to 7 bits.
+  controllers, per-note management), channel and key pressure, which RustySynth
+  has no setter for, native RPN and NRPN messages, and a program change's bank.
+  A MIDI 1.0 control change run for an RPN or NRPN still reaches RustySynth as
+  plain control changes. Every other message type, and a packet that does not
+  decode, is not used.
 
 ## Real-time behaviour
 

@@ -26,12 +26,12 @@ mod node;
 pub use tutti_rustysynth::{SoundFont, SoundFontError};
 
 use std::sync::Arc;
+use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
-use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_rustysynth::Synthesizer;
 use tutti_types::SampleRate;
-use tutti_ump::MidiChannel;
+use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Unknown, Voice1, Voice2, decode};
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
 /// are dropped. Fully initialised, since events are written into its slots.
@@ -69,13 +69,12 @@ pub const SYNTH_BLOCK_FRAMES: usize = 8;
 /// use std::fs::File;
 /// use std::sync::Arc;
 /// use tutti_types::SampleRate;
-/// use tutti_ump::MidiChannel;
-/// use tutti_midi_types::midi2::num::u7;
+/// use tutti_ump::{MidiChannel, U7};
 /// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 ///
 /// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
 /// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
-/// unit.program_change(MidiChannel::FIRST, u7::new(0));
+/// unit.program_change(MidiChannel::FIRST, U7::new(0).unwrap());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -159,7 +158,7 @@ impl SoundFontUnit {
         soundfont: Arc<SoundFont>,
         sample_rate: SampleRate,
         channel: MidiChannel,
-        program: u7,
+        program: U7,
     ) -> Result<Self> {
         let mut unit = Self::new(soundfont, &Settings::new(sample_rate))?;
         unit.program_change(channel, program);
@@ -209,19 +208,19 @@ impl SoundFontUnit {
     ///
     /// These are MIDI 1.0 values, as RustySynth takes them. A `velocity` of 0
     /// reads as a note-off.
-    pub fn note_on(&mut self, channel: MidiChannel, key: u7, velocity: u7) {
+    pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: U7) {
         self.synthesizer.note_on(
             i32::from(channel.get()),
-            i32::from(u8::from(key)),
-            i32::from(u8::from(velocity)),
+            i32::from(key.get()),
+            i32::from(velocity.get()),
         );
     }
 
     /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
     /// input; see [`note_on`](Self::note_on).
-    pub fn note_off(&mut self, channel: MidiChannel, key: u7) {
+    pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
         self.synthesizer
-            .note_off(i32::from(channel.get()), i32::from(u8::from(key)));
+            .note_off(i32::from(channel.get()), i32::from(key.get()));
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.
@@ -229,11 +228,11 @@ impl SoundFontUnit {
     /// `program` is the number within the SoundFont's current bank. Call it
     /// before inserting the unit; once in a graph, send a program change on the
     /// event input instead.
-    pub fn program_change(&mut self, channel: MidiChannel, program: u7) {
+    pub fn program_change(&mut self, channel: MidiChannel, program: U7) {
         self.synthesizer.process_midi_message(
             i32::from(channel.get()),
             0xC0,
-            i32::from(u8::from(program)),
+            i32::from(program.get()),
             0,
         );
     }
@@ -265,79 +264,100 @@ impl SoundFontUnit {
         }
     }
 
-    /// Normalize one polled event into MIDI 2.0 vocabulary, then hand it to
-    /// [`Self::dispatch`], which is where the downscale to 7-bit happens.
+    /// Decodes one packet and applies it. The only place the unit reads the
+    /// wire: everything below takes typed values.
+    ///
+    /// The group is ignored: one unit is one instrument, whatever group its
+    /// notes arrive on. This is a sink, so a message it has no use for
+    /// (including one `decode` cannot frame) is unused, not an error.
     fn apply_event(&mut self, event: &MidiEvent) {
-        self.dispatch(&tutti_midi_types::normalize(event));
+        match decode(Ump(event.data)) {
+            Ok(Message::Midi1(address, voice)) => self.voice1(address.channel, voice),
+            Ok(Message::Midi2(address, voice)) => self.voice2(address.channel, voice),
+            // Not channel voice: the synthesizer has no clock, sysex, flex
+            // data or stream state to follow.
+            Ok(
+                Message::Utility(_)
+                | Message::System(..)
+                | Message::Sysex7(..)
+                | Message::Data128(..)
+                | Message::Flex(..)
+                | Message::Stream(_),
+            ) => {}
+            // A reserved or undefined packet, with its words kept in
+            // `Unknown`: nothing here forwards them, so they are unused.
+            Err(Unknown(_)) => {}
+        }
     }
 
-    /// Apply one MIDI 2.0 event to the synthesizer, downscaling to MIDI 1.0.
-    ///
-    /// This is the crate's resolution boundary: values narrow through the spec's
-    /// Min-Center-Max converters in `tutti_midi_types::convert`.
-    ///
-    /// # Translated
-    ///
-    /// NoteOn / NoteOff, control change, channel pitch bend, program change.
-    ///
-    /// # Dropped
-    ///
-    /// Anything with no RustySynth MIDI 1.0 analogue falls through the `_` arm:
-    /// per-note pitch bend, per-note controllers, per-note management
-    /// (Detach / Reset), channel and poly pressure, RPN/NRPN, and any 16-bit
-    /// velocity or 32-bit CC precision beyond 7 bits. Channel and key pressure
-    /// arrive as well-formed UMP but RustySynth exposes no setter for them, so
-    /// they are dropped rather than approximated.
-    fn dispatch(&mut self, event: &MidiEvent) {
-        use tutti_midi_types::convert::{
-            midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
-        };
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
-        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+    /// A MIDI 1.0 channel voice message, widened to the MIDI 2.0 message that
+    /// means the same (M2-104 App. D.3), so [`Self::voice2`] is the one place
+    /// a message is read.
+    fn voice1(&mut self, channel: MidiChannel, voice: Voice1) {
+        self.voice2(channel, widen(voice));
+    }
 
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.data_words()) else {
-            return;
-        };
-        let ch = i32::from(u8::from(cv2.channel()));
-        match cv2 {
-            Cv2::NoteOn(m) => {
-                // A zero after downscale would read as NoteOff to rustysynth;
-                // `normalize` already folded true velocity-0 to NoteOff, so any
-                // NoteOn here is audible — clamp the 7-bit floor to 1.
-                let vel_u7 = midi2_velocity_to_midi1(m.velocity()).max(1);
-                self.synthesizer.note_on(
-                    ch,
-                    i32::from(u8::from(m.note_number())),
-                    i32::from(vel_u7),
-                );
-            }
-            Cv2::NoteOff(m) => {
+    /// A MIDI 2.0 channel voice message, narrowed to the MIDI 1.0 resolution
+    /// RustySynth takes (M2-115 section 3.4).
+    ///
+    /// Applied: Note On, Note Off, Control Change, Pitch Bend, Program Change.
+    /// The rest has no RustySynth setter and is dropped, arm by arm below.
+    fn voice2(&mut self, channel: MidiChannel, voice: Voice2) {
+        let ch = i32::from(channel.get());
+        match voice {
+            // Native MIDI 2.0 velocity 0 is a Note Off here, as it always has
+            // been (M2-104 7.4.2 keeps it a Note On; that is for the
+            // translation stage). A widened MIDI 1.0 Note On at velocity 0
+            // never gets here: it arrives as a `NoteOff`.
+            Voice2::NoteOn {
+                note, velocity: 0, ..
+            } => self.synthesizer.note_off(ch, i32::from(note.get())),
+            Voice2::NoteOn { note, velocity, .. } => {
+                // A nonzero 16-bit velocity below 0x0200 narrows to 0, which
+                // RustySynth reads as a Note Off: floor it at 1.
+                let velocity = narrow_velocity(velocity).get().max(1);
                 self.synthesizer
-                    .note_off(ch, i32::from(u8::from(m.note_number())));
+                    .note_on(ch, i32::from(note.get()), i32::from(velocity));
             }
-            Cv2::ProgramChange(m) => {
-                self.synthesizer.process_midi_message(
-                    ch,
-                    0xC0,
-                    i32::from(u8::from(m.program())),
-                    0,
-                );
-            }
-            Cv2::ChannelPitchBend(m) => {
-                let bend14 = midi2_pitch_bend_to_midi1(m.pitch_bend_data());
-                let lsb = i32::from(bend14 & 0x7F);
-                let msb = i32::from((bend14 >> 7) & 0x7F);
-                self.synthesizer.process_midi_message(ch, 0xE0, lsb, msb);
-            }
-            Cv2::ControlChange(m) => {
+            Voice2::NoteOff { note, .. } => self.synthesizer.note_off(ch, i32::from(note.get())),
+            Voice2::ControlChange { controller, value } => {
                 self.synthesizer.process_midi_message(
                     ch,
                     0xB0,
-                    i32::from(u8::from(m.control())),
-                    i32::from(midi2_cc_to_midi1(m.control_change_data())),
+                    i32::from(controller.get()),
+                    i32::from(narrow_value(value).get()),
                 );
             }
-            _ => {}
+            Voice2::PitchBend(bend) => {
+                let bend = narrow_bend(bend).get();
+                self.synthesizer.process_midi_message(
+                    ch,
+                    0xE0,
+                    i32::from(bend & 0x7F),
+                    i32::from(bend >> 7),
+                );
+            }
+            // The program only: a bank would need Bank Select state, and
+            // RustySynth takes its bank from the SoundFont's current one.
+            Voice2::ProgramChange { program, .. } => {
+                self.synthesizer
+                    .process_midi_message(ch, 0xC0, i32::from(program.get()), 0);
+            }
+            // RustySynth exposes no setter for pressure, so it is dropped
+            // rather than approximated.
+            Voice2::ChannelPressure(_) | Voice2::PolyPressure { .. } => {}
+            // No per-note control: a SoundFont voice is a channel's.
+            Voice2::RegisteredPerNote { .. }
+            | Voice2::AssignablePerNote { .. }
+            | Voice2::PerNotePitchBend { .. }
+            | Voice2::PerNoteManagement { .. } => {}
+            // A native RPN or NRPN message: RustySynth only follows the
+            // Control Change run (101/100, 99/98, 6) of a MIDI 1.0 wire, and
+            // nothing here assembles that run from these messages.
+            Voice2::Registered { .. }
+            | Voice2::Assignable { .. }
+            | Voice2::RelativeRegistered { .. }
+            | Voice2::RelativeAssignable { .. } => {}
         }
     }
 }

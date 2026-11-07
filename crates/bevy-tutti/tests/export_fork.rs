@@ -1079,12 +1079,11 @@ mod synths {
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Node, Offset};
     use tutti_midi_runtime::TimedMidiEvent;
-    use tutti_midi_types::midi2::num::u7;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
     use tutti_types::{Beat, Bpm, Seconds};
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup, U7};
 
     /// A beat at 90 BPM and 48 kHz, in frames.
     const BEAT_48K: usize = 32_000;
@@ -1092,7 +1091,7 @@ mod synths {
     const NOTE: usize = 4_096;
     /// A preset of the test soundfont that is not the default piano, so a
     /// fork that lost the live unit's preset is heard.
-    const PRESET: u7 = u7::new(24);
+    const PRESET: U7 = U7::new(24).unwrap();
 
     /// A saw with an instant attack, built at the live graph's rate.
     fn poly() -> PolySynth {

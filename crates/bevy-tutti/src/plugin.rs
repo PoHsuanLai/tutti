@@ -83,9 +83,10 @@ pub struct TuttiPlugin {
     /// The output device: the system default, or one by identity
     /// ([`DeviceSelector`]).
     pub output_device: DeviceSelector,
-    /// Watch the host's devices (design 018): `None`, the default, enumerates
-    /// once at startup, starts no thread and never moves the stream by
-    /// itself. With a policy, a poller thread enumerates every
+    /// Watch the host's devices (design 018): `None`, the default, lists the
+    /// output devices once, on a thread that ends with the answer (some
+    /// frames after `Startup`; [`AudioDeviceState`](crate::AudioDeviceState)'s
+    /// list is empty until then), and never moves the stream by itself. With a policy, a poller thread enumerates every
     /// [`poll_interval`](DevicePolicy::poll_interval) (on ALSA that opens
     /// every PCM, a cost the app opts into),
     /// [`AudioDeviceState`](crate::AudioDeviceState)'s list is the session's,

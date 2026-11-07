@@ -110,6 +110,34 @@ impl SeqClient {
         unsafe { sys::snd_seq_set_client_name(self.seq, cname.as_ptr()) };
     }
 
+    /// Sets the capability bits of one of this client's ports; the sequencer
+    /// announces the change.
+    #[cfg(all(test, feature = "sequencer-tests"))]
+    pub fn set_port_caps(&self, port: c_int, caps: u32) -> Result<()> {
+        let mut info: *mut sys::snd_seq_port_info_t = std::ptr::null_mut();
+        // SAFETY: `info` is a valid out-pointer, freed on every path below;
+        // `self.seq` is open.
+        unsafe {
+            check(
+                sys::snd_seq_port_info_malloc(&mut info),
+                "snd_seq_port_info_malloc",
+            )?;
+            let set = check(
+                sys::snd_seq_get_port_info(self.seq, port, info),
+                "snd_seq_get_port_info",
+            )
+            .and_then(|_| {
+                sys::snd_seq_port_info_set_capability(info, caps);
+                check(
+                    sys::snd_seq_set_port_info(self.seq, port, info),
+                    "snd_seq_set_port_info",
+                )
+            });
+            sys::snd_seq_port_info_free(info);
+            set.map(drop)
+        }
+    }
+
     /// Creates a port on this client.
     pub fn open_port(&self, name: &str, caps: u32, kind: u32) -> Result<c_int> {
         let cname = CString::new(name).unwrap_or_else(|_| CString::new("tutti").unwrap());

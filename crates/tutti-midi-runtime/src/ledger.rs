@@ -56,13 +56,10 @@ use tutti_ump::{
 
 /// A note's place on the wire: its Group, Channel and Note Number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NoteKey {
-    /// The UMP group.
-    pub group: MidiGroup,
-    /// The channel within the group.
-    pub channel: MidiChannel,
-    /// The note number.
-    pub note: NoteNumber,
+pub(crate) struct NoteKey {
+    group: MidiGroup,
+    channel: MidiChannel,
+    note: NoteNumber,
 }
 
 impl NoteKey {
@@ -82,14 +79,14 @@ impl NoteKey {
 
 /// A note message, read once. A MIDI 1.0 Note On at velocity 0 ends a note; a
 /// MIDI 2.0 one starts it (M2-104 section 7.4.2).
-enum Class {
+pub(crate) enum Class {
     On(NoteKey),
     Off(NoteKey),
     Other,
 }
 
 impl Class {
-    fn of(ump: Ump) -> Self {
+    pub(crate) fn of(ump: Ump) -> Self {
         let key = |a: Address, note| NoteKey {
             group: a.group,
             channel: a.channel,
@@ -164,21 +161,9 @@ impl<T: Copy + PartialEq> NoteLedger<T> {
     }
 
     /// Bytes of heap the table holds.
-    #[must_use]
-    pub fn heap_bytes(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> usize {
         self.capacity * size_of::<Entry<T>>()
-    }
-
-    /// Notes whose off has not gone out: sounding or owing.
-    #[must_use]
-    pub fn sounding(&self) -> usize {
-        self.entries.iter().filter(|e| e.held.is_some()).count()
-    }
-
-    /// Note-offs the port refused that the ledger will send.
-    #[must_use]
-    pub fn owed(&self) -> usize {
-        self.owing
     }
 
     /// Forgets every note: the node was reset, and whatever it fed is reset

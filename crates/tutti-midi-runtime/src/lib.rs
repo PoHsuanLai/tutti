@@ -18,7 +18,7 @@ mod split;
 mod sysex;
 
 pub use gather::gather_midi;
-pub use ledger::{NoteKey, NoteLedger, Sending};
+pub use ledger::{NoteLedger, Sending};
 pub use live::{
     CHANNELLESS_PORT, MAILBOX_CAPACITY, MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY,
     MIDI_INPUT_PORTS, MIDI_OUT_CAPACITY, MIDI_QUEUE_CAPACITY, MidiInputControls, MidiInputNode,

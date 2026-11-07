@@ -50,12 +50,11 @@ use tutti_graph::{
     Cx, EventDensity, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
     MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
-use tutti_midi_types::MidiEvent;
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::ChannelLayout;
 use tutti_ump::Ump;
 
-use crate::ledger::{NoteLedger, Sending};
+use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
 /// Keys a clip node tracks at once, held or refused. One group's 16 channels
 /// of 128 notes is 2,048, so a clip on one group never fills it; a note-on
@@ -156,6 +155,10 @@ impl Shared {
     }
 }
 
+fn class_of(timed: &TimedMidiEvent) -> Class {
+    Class::of(Ump(timed.event.data))
+}
+
 /// `events` with each note-off paired to its note-on (see the module docs),
 /// sorted by beat, stably (events on one beat keep their order: a note-off
 /// before a note-on of the same note stays first). A beat that is not finite
@@ -171,18 +174,18 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         .collect();
     // Each key's note-ons in list order, and a cursor past the taken ones at
     // its head (so notes that do not overlap pair in one step each).
-    let mut ons: HashMap<(usize, usize, u32), (Vec<u32>, usize)> = HashMap::new();
+    let mut ons: HashMap<NoteKey, (Vec<u32>, usize)> = HashMap::new();
     for (i, (_, e)) in v.iter().enumerate() {
-        if let Some((g, c, n, true)) = note_of(&e.timed.event) {
-            ons.entry((g, c, n)).or_default().0.push(i as u32);
+        if let Class::On(key) = class_of(&e.timed) {
+            ons.entry(key).or_default().0.push(i as u32);
         }
     }
     let mut taken = vec![false; v.len()];
     for i in 0..v.len() {
-        let Some((g, c, n, false)) = note_of(&v[i].1.timed.event) else {
+        let Class::Off(key) = class_of(&v[i].1.timed) else {
             continue;
         };
-        let Some((list, first)) = ons.get_mut(&(g, c, n)) else {
+        let Some((list, first)) = ons.get_mut(&key) else {
             continue;
         };
         while *first < list.len() && taken[list[*first] as usize] {
@@ -202,7 +205,7 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
     }
     // A note-on no note-off ends is a note too.
     for (i, (_, e)) in v.iter_mut().enumerate() {
-        if e.note.is_none() && matches!(note_of(&e.timed.event), Some((.., true))) {
+        if e.note.is_none() && matches!(class_of(&e.timed), Class::On(_)) {
             e.note = Some(ClipNote::from_index(i as u32));
         }
     }
@@ -504,26 +507,6 @@ impl ForkSource for ClipFork {
         });
         Ok(Forked::new(Box::new(MidiClipNode::over(shared))))
     }
-}
-
-/// A MIDI channel-voice note message's `(group, channel, note)` and whether
-/// it starts a note (`Some(true)`) or ends one (`Some(false)`). A MIDI 1.0
-/// note-on at velocity 0 ends one; a MIDI 2.0 note-on never does.
-fn note_of(e: &MidiEvent) -> Option<(usize, usize, u32, bool)> {
-    let w = e.data[0];
-    let mt = w >> 28;
-    if mt != 0x2 && mt != 0x4 {
-        return None;
-    }
-    let status = (w >> 20) & 0xf;
-    let on = match status {
-        0x9 => mt == 0x4 || w & 0x7f != 0,
-        0x8 => false,
-        _ => return None,
-    };
-    let group = ((w >> 24) & 0xf) as usize;
-    let channel = ((w >> 16) & 0xf) as usize;
-    Some((group, channel, (w >> 8) & 0x7f, on))
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use super::*;
+use tutti_midi_types::MidiEvent;
 use tutti_types::Beat;
 use tutti_ump::{MidiChannel, MidiGroup};
 

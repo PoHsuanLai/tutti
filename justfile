@@ -107,6 +107,7 @@ check-features:
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
     cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
@@ -133,6 +134,9 @@ test-features:
     # dev-dependency turns it on); this step names it so tests/serde.rs still runs
     # if that edge goes away.
     cargo nextest run --locked -p tutti-ump --features serde
+    # Local only: CI's runner has no `snd-seq` (see ci.yml). Needs `/dev/snd/seq`
+    # and fails without it.
+    cargo nextest run --locked -p tutti-midi-hardware --features sequencer-tests
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support
     cargo nextest run --locked -p tutti-plugin-db --features json
@@ -193,6 +197,7 @@ loom:
     LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test task_graph_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test request_word_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test edit_ring_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture
 
 # The `ArcLend` loom models, after changing `arc-lend`'s protocol code: eight
 # of the nine unbounded (exhaustive, about 10 s; CI runs them so too), and

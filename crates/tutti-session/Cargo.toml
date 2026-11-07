@@ -83,6 +83,9 @@ clap = ["plugin", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin/au"]
 
 [dev-dependencies]
+# The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
+# `midi-hardware` must not link a fake backend.
+tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.

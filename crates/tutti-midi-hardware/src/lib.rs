@@ -7,6 +7,7 @@
 // `//!` and re-resolves its intra-doc links in this scope.
 mod backend;
 pub mod capability;
+pub mod devices;
 pub mod endpoints;
 pub mod error;
 pub mod port;
@@ -17,11 +18,15 @@ pub mod session;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use capability::{EndpointId, EndpointInfo, UmpCapability};
-pub use endpoints::{InputConnection, MidiEndpoints};
+pub use capability::{EndpointInfo, UmpCapability};
+pub use devices::{ChangeSink, Devices};
+pub use endpoints::{InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiDrain, HardwareMidiInputs, InputProducerHandle, PortId, PortInfo};
 pub use session::MidiSession;
+pub use tutti_midi_device::{
+    DeviceEvent, DeviceId, DeviceInfo, Direction, EndpointId, Identity, OsChange, OsDevice,
+};
 
 #[cfg(target_os = "macos")]
 pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};

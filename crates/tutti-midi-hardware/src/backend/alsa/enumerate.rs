@@ -3,8 +3,9 @@
 use std::os::raw::c_int;
 
 use super::client::{SeqClient, cstr};
-use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
+use crate::capability::{EndpointInfo, UmpCapability};
 use tutti_alsa_ump_sys as sys;
+use tutti_midi_device::{EndpointId, Identity};
 
 /// Which direction an endpoint is being listed for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,7 +75,8 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
         sys::snd_seq_client_info_set_client(cinfo, -1);
         while sys::snd_seq_query_next_client(seq.raw(), cinfo) >= 0 {
             let client = sys::snd_seq_client_info_get_client(cinfo);
-            if client == own_id {
+            // The kernel's own client (Timer, Announce) is not a device.
+            if client == own_id || client == sys::SND_SEQ_CLIENT_SYSTEM {
                 continue;
             }
             let client_name = cstr(sys::snd_seq_client_info_get_name(cinfo))
@@ -94,6 +96,7 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
 
                 out.push(EndpointInfo {
                     id: pack_id(client, port),
+                    identity: Identity::alsa(client_name.as_str(), port_name.as_str()),
                     // "Client: Port" is how `aconnect -l` presents them, and a
                     // bare port name ("MIDI 1") is ambiguous across devices.
                     name: if port_name.starts_with(&client_name) {

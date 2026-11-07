@@ -1,76 +1,4 @@
 //! [`Fold`] — the one way a signal of one channel topology becomes another's.
-//!
-//! An edge (a file, a device, a plugin bus) states the [`ChannelTopology`] it
-//! has; the engine's graph keeps its own order. [`Fold::between`] is built once
-//! on the control side from two topologies and then applied to blocks without
-//! allocating. It places channels by *speaker*, never by width: a width alone
-//! is not a placement (see [`ChannelTopology`]).
-//!
-//! # The rules
-//!
-//! - **Same speakers, any order:** a pure permutation. Gain exactly 1.0, the
-//!   samples copied bit for bit.
-//! - **A speaker in both:** it goes straight across at gain 1.0.
-//! - **A speaker the destination lacks** folds into the nearest ones the
-//!   destination has, at −3 dB ([`M3DB`]), by the table in `fallbacks`:
-//!   the centre into front left and right, a side or rear speaker into its
-//!   counterpart (side for rear and back) or else the front speaker on its
-//!   side, an overhead speaker into the front speaker on its side. The
-//!   LFE is omitted unless the destination has one. This is the ITU-R BS.775 /
-//!   Dolby consumer downmix for a stereo destination, the coefficients
-//!   [`fold_frame`](crate::fold_frame) always used. For any other destination
-//!   (5.1 to quad, 7.1.4 to 7.1) the same −3 dB table applies and the
-//!   coefficients are this crate's own: no standard fixes them.
-//!   A side or rear speaker whose counterpart the *source* lacks and the
-//!   destination has is moved there at gain 1.0 (a pure reposition, so 5.1 to
-//!   quad keeps its surrounds at full level).
-//! - **A lone centre channel** (a mono source) feeds the destination's centre
-//!   if it has one, else its front left and right, each at gain 1.0.
-//! - **A destination with one channel** is a mono mix, whatever it is called:
-//!   a one-channel source is copied, front left and right alone are averaged
-//!   (`(L + R) / 2`), and anything else is the stereo fold times −3 dB. The
-//!   two rules do not meet (`[0.1, 0.2]` gives `0.15`, `[0.1, 0.2, 0.0]` gives
-//!   `0.212`), as before.
-//! - **Upmix zero-fills.** A destination speaker nothing feeds is silent;
-//!   nothing is invented.
-//! - **Discrete channels** map one to one by index and never pass through a
-//!   matrix. Discrete to discrete is a copy (zero-filled when wider). Discrete
-//!   against named is a relabelling, allowed only when the widths are equal;
-//!   different widths is [`FoldError::Discrete`]. B-format is not speaker feeds
-//!   and has no [`Speaker`]: an edge that has it declares it discrete, never
-//!   quad.
-//! - **Not silent.** A source channel the destination has no place for is
-//!   [`FoldError::Unplaced`]; an [`Unknown`](Speaker::Unknown) speaker is
-//!   [`FoldError::Unnamed`] (unless the two topologies are identical, which is
-//!   an identity), and a speaker listed twice is [`FoldError::Duplicate`].
-//!
-//! The matrix is **not normalised**: full scale on every 5.1 channel gives
-//! `1 + 2·`[`M3DB`]` = 2.414` per side. Headroom is the caller's.
-//!
-//! # Bit-identity with the width folds
-//!
-//! For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
-//! gives, a fold to one or two channels reproduces
-//! [`fold_frame`](crate::fold_frame) to the bit, in their
-//! order of operations: the direct channel, then each folded channel in source
-//! order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
-//! channels of a side are summed first and scaled once, as the 12-wide fold
-//! always did. Rounding differs between the two forms, which is why both exist.
-//!
-//! # Examples
-//!
-//! ```
-//! use tutti_types::{ChannelLayout, ChannelTopology, Fold, M3DB};
-//!
-//! let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
-//! let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();
-//! let fold = Fold::between(&five_one, &stereo).unwrap();
-//!
-//! // Only the centre active: both sides get it at −3 dB.
-//! let mut out = [0.0f32; 2];
-//! fold.frame(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &mut out);
-//! assert_eq!(out, [M3DB, M3DB]);
-//! ```
 
 use crate::{ChannelLayout, ChannelTopology, Interleaved, InterleavedMut, M3DB, Speaker};
 
@@ -314,9 +242,82 @@ impl Row {
 /// How a signal of one [`ChannelTopology`] becomes another's.
 ///
 /// Built on the control side by [`between`](Self::between) (it allocates) and
-/// applied by [`frame`](Self::frame), [`interleaved`](Self::interleaved) and
-/// [`planar_channel`](Self::planar_channel), none of which allocate, so they are
-/// safe on the audio thread. See the [module docs](self) for the rules.
+/// applied by [`frame`](Self::frame), [`interleaved`](Self::interleaved),
+/// [`planar_channel`](Self::planar_channel) and
+/// [`planar_to_interleaved`](Self::planar_to_interleaved), none of which
+/// allocate, so they are safe on the audio thread.
+///
+/// An edge (a file, a device, a plugin bus) states the [`ChannelTopology`] it
+/// has; the engine's graph keeps its own order. [`Fold::between`] is built once
+/// on the control side from two topologies and then applied to blocks without
+/// allocating. It places channels by *speaker*, never by width: a width alone
+/// is not a placement (see [`ChannelTopology`]).
+///
+/// # The rules
+///
+/// - **Same speakers, any order:** a pure permutation. Gain exactly 1.0, the
+///   samples copied bit for bit.
+/// - **A speaker in both:** it goes straight across at gain 1.0.
+/// - **A speaker the destination lacks** folds into the nearest ones the
+///   destination has, at −3 dB ([`M3DB`]), by the table in `fallbacks`:
+///   the centre into front left and right, a side or rear speaker into its
+///   counterpart (side for rear and back) or else the front speaker on its
+///   side, an overhead speaker into the front speaker on its side. The
+///   LFE is omitted unless the destination has one. This is the ITU-R BS.775 /
+///   Dolby consumer downmix for a stereo destination, the coefficients
+///   [`fold_frame`](crate::fold_frame) always used. For any other destination
+///   (5.1 to quad, 7.1.4 to 7.1) the same −3 dB table applies and the
+///   coefficients are this crate's own: no standard fixes them.
+///   A side or rear speaker whose counterpart the *source* lacks and the
+///   destination has is moved there at gain 1.0 (a pure reposition, so 5.1 to
+///   quad keeps its surrounds at full level).
+/// - **A lone centre channel** (a mono source) feeds the destination's centre
+///   if it has one, else its front left and right, each at gain 1.0.
+/// - **A destination with one channel** is a mono mix, whatever it is called:
+///   a one-channel source is copied, front left and right alone are averaged
+///   (`(L + R) / 2`), and anything else is the stereo fold times −3 dB. The
+///   two rules do not meet (`[0.1, 0.2]` gives `0.15`, `[0.1, 0.2, 0.0]` gives
+///   `0.212`), as before.
+/// - **Upmix zero-fills.** A destination speaker nothing feeds is silent;
+///   nothing is invented.
+/// - **Discrete channels** map one to one by index and never pass through a
+///   matrix. Discrete to discrete is a copy (zero-filled when wider). Discrete
+///   against named is a relabelling, allowed only when the widths are equal;
+///   different widths is [`FoldError::Discrete`]. B-format is not speaker feeds
+///   and has no [`Speaker`]: an edge that has it declares it discrete, never
+///   quad.
+/// - **Not silent.** A source channel the destination has no place for is
+///   [`FoldError::Unplaced`]; an [`Unknown`](Speaker::Unknown) speaker is
+///   [`FoldError::Unnamed`] (unless the two topologies are identical, which is
+///   an identity), and a speaker listed twice is [`FoldError::Duplicate`].
+///
+/// The matrix is **not normalised**: full scale on every 5.1 channel gives
+/// `1 + 2·`[`M3DB`]` = 2.414` per side. Headroom is the caller's.
+///
+/// # Bit-identity with the width folds
+///
+/// For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
+/// gives, a fold to one or two channels reproduces
+/// [`fold_frame`](crate::fold_frame) to the bit, in their
+/// order of operations: the direct channel, then each folded channel in source
+/// order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
+/// channels of a side are summed first and scaled once, as the 12-wide fold
+/// always did. Rounding differs between the two forms, which is why both exist.
+///
+/// # Examples
+///
+/// ```
+/// use tutti_types::{ChannelLayout, ChannelTopology, Fold, M3DB};
+///
+/// let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
+/// let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();
+/// let fold = Fold::between(&five_one, &stereo).unwrap();
+///
+/// // Only the centre active: both sides get it at −3 dB.
+/// let mut out = [0.0f32; 2];
+/// fold.frame(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &mut out);
+/// assert_eq!(out, [M3DB, M3DB]);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fold {
     src: u16,
@@ -498,7 +499,7 @@ fn first_duplicate(of: &[Speaker]) -> Option<Speaker> {
 impl Fold {
     /// Builds the fold from `src` into `dst`.
     ///
-    /// Control side: it allocates. The rules are in the [module docs](self).
+    /// Control side: it allocates. The rules are on [`Fold`].
     ///
     /// # Errors
     ///

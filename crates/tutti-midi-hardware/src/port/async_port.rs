@@ -50,7 +50,7 @@ use super::PortId;
 /// There is no second handle to a ring. It cannot be cloned:
 ///
 /// ```compile_fail,E0599
-/// let inputs = tutti_midi_hardware::HardwareMidiInputs::new(16);
+/// let inputs = tutti_midi_hardware::HardwareMidiInputs::new(16, 44_100.0);
 /// let handle = inputs.open_input_port("In");
 /// let second = handle.clone();
 /// ```

@@ -290,7 +290,7 @@ pub enum SessionEvent {
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.
     #[cfg(feature = "midi-hardware")]
-    MidiWatchFailed(String),
+    MidiWatchFailed(tutti_midi_hardware::WatchFailure),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
@@ -578,7 +578,7 @@ pub struct Session {
     /// a device (the callback holds it) or detached.
     pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
-    pub(crate) load: Option<Arc<tutti_metering::LoadMeter>>,
+    pub(crate) load: Option<tutti_metering::LoadMeter>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
     pub(crate) click: Option<NodeKey>,
@@ -960,7 +960,7 @@ impl Session {
     /// Fed by every block the device callback (or, offline,
     /// [`render`](Self::render)) renders; `None` on a detached session,
     /// which has no engine.
-    pub fn load_meter(&self) -> Option<&Arc<tutti_metering::LoadMeter>> {
+    pub fn load_meter(&self) -> Option<&tutti_metering::LoadMeter> {
         self.load.as_ref()
     }
 

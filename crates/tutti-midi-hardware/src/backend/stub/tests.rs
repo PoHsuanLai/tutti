@@ -23,11 +23,12 @@ fn opening_reports_unsupported_rather_than_not_found() {
 /// the same "no devices" enumeration reports, with opening left `Unsupported`.
 #[test]
 fn devices_over_the_stub_is_empty_and_quiet() {
-    let devices = crate::Devices::with_backend(Box::new(StubEndpoints::new())).unwrap();
+    let devices = crate::Devices::open_over(Box::new(StubEndpoints::new())).unwrap();
     assert!(devices.list().is_empty());
-    assert!(
+    assert!(matches!(
         devices
-            .wait(std::time::Duration::from_millis(10))
-            .is_empty()
-    );
+            .subscribe()
+            .recv_timeout(std::time::Duration::from_millis(10)),
+        Err(crate::RecvTimeoutError::Timeout)
+    ));
 }

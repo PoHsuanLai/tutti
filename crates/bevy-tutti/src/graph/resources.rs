@@ -217,7 +217,7 @@ impl AudioGraphRes {
 
     /// The engine's DSP-load meter ([`Session::load_meter`]); `None` on a
     /// [`headless`](Self::headless) graph, which has no engine.
-    pub fn load_meter(&self) -> Option<std::sync::Arc<tutti_metering::LoadMeter>> {
+    pub fn load_meter(&self) -> Option<tutti_metering::LoadMeter> {
         self.read().load_meter().cloned()
     }
 

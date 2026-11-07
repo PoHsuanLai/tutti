@@ -21,7 +21,7 @@ fn now() -> Instant {
 
 #[test]
 fn test_create_ports() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let input_id = manager.open_input_port("Test Input").port_id();
     assert_eq!(input_id.index(), 0);
@@ -39,7 +39,7 @@ fn test_create_ports() {
 /// Four ports of 256 events each offer 1024, four times the cap.
 #[test]
 fn cycle_read_is_capped_across_ports() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     for port in 0..4 {
         let mut handle = manager.open_input_port(format!("Input {port}"));
         for _ in 0..256 {
@@ -65,7 +65,7 @@ fn cycle_read_is_capped_across_ports() {
 
 #[test]
 fn test_list_ports() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let id1 = manager.open_input_port("Input 1").port_id();
     let id2 = manager.open_input_port("Input 2").port_id();
@@ -78,7 +78,7 @@ fn test_list_ports() {
 
 #[test]
 fn test_port_active_state() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let port_id = manager.open_input_port("Test").port_id();
     assert!(manager.is_port_active(port_id));
@@ -98,7 +98,7 @@ fn test_port_active_state() {
 /// port attribution the single-port drain cannot assert.
 #[test]
 fn manager_tags_drained_events_with_their_port_id() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let mut producer_handle = manager.open_input_port("Input");
     let input_id = producer_handle.port_id();
@@ -121,7 +121,7 @@ fn manager_tags_drained_events_with_their_port_id() {
 
 #[test]
 fn test_inactive_ports_ignored() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let mut producer_handle = manager.open_input_port("Input");
     let input_id = producer_handle.port_id();
@@ -137,7 +137,7 @@ fn test_inactive_ports_ignored() {
 
 #[test]
 fn test_multiple_input_ports() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
 
     let mut handle1 = manager.open_input_port("Input 1");
     let mut handle2 = manager.open_input_port("Input 2");
@@ -179,7 +179,7 @@ fn concurrent_creators_all_land() {
 
     const THREADS: usize = 8;
     const PER_THREAD: usize = 200;
-    let manager = Arc::new(HardwareMidiInputs::new(4));
+    let manager = Arc::new(HardwareMidiInputs::new(4, 44_100.0));
     let start = Arc::new(Barrier::new(THREADS));
 
     let handles: Vec<_> = (0..THREADS)
@@ -238,7 +238,7 @@ fn concurrent_creators_all_land() {
 /// `Instant::now()` inside the drain, the age is whatever the scheduler made
 /// it, and the only assertion available is a band.
 fn offset_for(sample_rate: f64, nframes: usize, age: core::time::Duration) -> u32 {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     manager.set_sample_rate(sample_rate);
     let mut handle = manager.open_input_port("Input");
 
@@ -335,7 +335,7 @@ fn an_event_arriving_at_the_block_start_lands_on_its_last_frame() {
 fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
     use core::time::Duration;
 
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     let mut handle = manager.open_input_port("Input");
     let block_start = Instant::now();
     let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100);
@@ -375,7 +375,7 @@ fn the_default_rate_mistimes_an_event_the_set_rate_times_correctly() {
 /// index check and the slot bound.
 #[test]
 fn hot_plug_cycles_reuse_freed_slots() {
-    let manager = Arc::new(HardwareMidiInputs::new(16));
+    let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut interior = manager.open_input_port("Interior").port_id();
     let anchor = manager.open_input_port("Anchor").port_id();
     assert_eq!((interior.index(), anchor.index()), (0, 1));
@@ -421,7 +421,7 @@ fn hot_plug_cycles_reuse_freed_slots() {
 /// reference still upgrades.
 #[test]
 fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
-    let manager = Arc::new(HardwareMidiInputs::new(16));
+    let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut handle = manager.open_input_port("Gone");
     let id = handle.port_id();
     assert!(handle.push(MidiEvent::noop(), now()));
@@ -451,7 +451,7 @@ fn a_removed_port_is_freed_by_the_publish_that_removes_it() {
 /// manager. Run it under miri to check the claim directly.
 #[test]
 fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
-    let manager = Arc::new(HardwareMidiInputs::new(4));
+    let manager = Arc::new(HardwareMidiInputs::new(4, 44_100.0));
     let mut handle = manager.open_input_port("Orphan");
     assert!(manager.remove_input_port(handle.port_id()));
     drop(manager);
@@ -482,7 +482,7 @@ fn a_producer_outliving_its_manager_pushes_into_its_own_ring() {
 /// block finds none → fails.
 #[test]
 fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
-    let manager = Arc::new(HardwareMidiInputs::new(16));
+    let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut a = manager.open_input_port("A");
     let mut b = manager.open_input_port("B");
     for i in 0..2 {
@@ -527,7 +527,7 @@ fn a_drain_re_entered_from_its_visitor_hands_out_every_event() {
 /// fails.
 #[test]
 fn a_stale_port_id_cannot_reach_the_port_that_reused_its_slot() {
-    let manager = Arc::new(HardwareMidiInputs::new(16));
+    let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let a = manager.open_input_port("A").port_id();
     assert!(manager.remove_input_port(a));
     let mut b = manager.open_input_port("B");
@@ -562,7 +562,7 @@ fn the_sample_rate_can_be_set_while_a_drain_runs() {
     use core::time::Duration;
     use std::sync::atomic::AtomicBool;
 
-    let manager = Arc::new(HardwareMidiInputs::new(64));
+    let manager = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
     manager.set_sample_rate(48_000.0);
     let mut handle = manager.open_input_port("Input");
     let stop = Arc::new(AtomicBool::new(false));
@@ -603,7 +603,7 @@ fn the_sample_rate_can_be_set_while_a_drain_runs() {
 /// → the port stays alive → fails.
 #[test]
 fn collect_frees_a_port_removed_during_a_drain() {
-    let manager = Arc::new(HardwareMidiInputs::new(16));
+    let manager = Arc::new(HardwareMidiInputs::new(16, 44_100.0));
     let mut handle = manager.open_input_port("Gone");
     let id = handle.port_id();
     assert!(handle.push(MidiEvent::noop(), now()));
@@ -639,7 +639,7 @@ fn collect_frees_a_port_removed_during_a_drain() {
 /// cycle takes 256 → fails.
 #[test]
 fn a_reserved_drain_takes_a_longer_blocks_events() {
-    let manager = Arc::new(HardwareMidiInputs::new(256));
+    let manager = Arc::new(HardwareMidiInputs::new(256, 44_100.0));
     for port in 0..4 {
         let mut handle = manager.open_input_port(format!("Input {port}"));
         for _ in 0..256 {
@@ -668,7 +668,7 @@ fn a_reserved_drain_takes_a_longer_blocks_events() {
 #[test]
 fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
     use tutti_midi_types::MidiIn;
-    let manager = Arc::new(HardwareMidiInputs::new(64));
+    let manager = Arc::new(HardwareMidiInputs::new(64, 44_100.0));
     let mut handle = manager.open_input_port("In");
     for i in 0..30u32 {
         assert!(handle.push(MidiEvent::noop().with_frame_offset(i), now()));
@@ -690,7 +690,7 @@ fn a_poll_into_a_small_buffer_defers_and_drops_nothing() {
 /// `remove_input_port` → the total falls to 0 on removal → fails.
 #[test]
 fn a_full_ring_counts_what_it_drops() {
-    let manager = Arc::new(HardwareMidiInputs::new(4));
+    let manager = Arc::new(HardwareMidiInputs::new(4, 44_100.0));
     let mut handle = manager.open_input_port("Busy");
     let id = handle.port_id();
     let taken = (0..10)

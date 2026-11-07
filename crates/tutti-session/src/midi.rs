@@ -357,6 +357,10 @@ pub(crate) struct MidiState {
     /// when.
     #[cfg(feature = "midi-hardware")]
     input_drops_seen: u64,
+    /// The session's subscription to the device list: `Phase::Poll` reads it
+    /// and nothing else does.
+    #[cfg(feature = "midi-hardware")]
+    device_events: Option<tutti_midi_hardware::DeviceEvents>,
     /// Whether the device watch's failure has been reported.
     #[cfg(feature = "midi-hardware")]
     watch_failure_reported: bool,
@@ -394,6 +398,17 @@ pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
 impl MidiState {
+    /// A state whose `Phase::Poll` reads `device_events`.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn with_device_events(
+        device_events: Option<tutti_midi_hardware::DeviceEvents>,
+    ) -> Self {
+        Self {
+            device_events,
+            ..Self::default()
+        }
+    }
+
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
     /// is no longer one.
@@ -415,26 +430,22 @@ impl MidiState {
         out: &mut Vec<crate::SessionEvent>,
     ) {
         let Some(io) = io else { return };
-        for event in io.devices().poll() {
-            if let tutti_midi_hardware::DeviceEvent::Removed(device) = &event {
+        let events = self.device_events.as_ref();
+        for event in events.into_iter().flat_map(|events| events.try_iter()) {
+            out.push(crate::SessionEvent::MidiDevice(event.clone()));
+            if let tutti_midi_hardware::DeviceEvent::Removed(device) = event {
                 // Held ones are closed here, not left to fail on a dead
                 // handle: the port goes and the lists agree.
-                let lost_input = io.disconnect_input(&device.id);
-                let lost_output =
-                    io.output_device().as_ref() == Some(&device.id) && io.disconnect_output();
-                out.push(crate::SessionEvent::MidiDevice(event.clone()));
-                if lost_input {
+                if io.disconnect_input(&device.id) {
                     out.push(crate::SessionEvent::MidiInputLost(device.clone()));
                 }
-                if lost_output {
-                    out.push(crate::SessionEvent::MidiOutputLost(device.clone()));
+                if io.output_device().as_ref() == Some(&device.id) && io.disconnect_output() {
+                    out.push(crate::SessionEvent::MidiOutputLost(device));
                 }
-            } else {
-                out.push(crate::SessionEvent::MidiDevice(event));
             }
         }
         if !self.watch_failure_reported
-            && let Some(why) = io.devices().watch_failure()
+            && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
             self.watch_failure_reported = true;
             out.push(crate::SessionEvent::MidiWatchFailed(why));

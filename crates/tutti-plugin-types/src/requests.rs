@@ -15,18 +15,18 @@ use tutti_rt::{EditReader, EditWriter, RequestBit, RequestWord, RingFull, edit_r
 
 use crate::{Normalized, ParamId, Request, RescanScope};
 
-const RESTART: RequestBit = RequestBit::new(0);
-const IO_CHANGED: RequestBit = RequestBit::new(1);
-const LATENCY_CHANGED: RequestBit = RequestBit::new(2);
-const TAIL_CHANGED: RequestBit = RequestBit::new(3);
-const RELOAD: RequestBit = RequestBit::new(4);
-const CALLBACK: RequestBit = RequestBit::new(5);
-const RESCAN_VALUES: RequestBit = RequestBit::new(6);
-const RESCAN_TEXT: RequestBit = RequestBit::new(7);
-const RESCAN_INFO: RequestBit = RequestBit::new(8);
-const RESCAN_ALL: RequestBit = RequestBit::new(9);
-const MIDI_CC: RequestBit = RequestBit::new(10);
-const NOTE_EXPRESSION: RequestBit = RequestBit::new(11);
+const RESTART: RequestBit = RequestBit::of(0);
+const IO_CHANGED: RequestBit = RequestBit::of(1);
+const LATENCY_CHANGED: RequestBit = RequestBit::of(2);
+const TAIL_CHANGED: RequestBit = RequestBit::of(3);
+const RELOAD: RequestBit = RequestBit::of(4);
+const CALLBACK: RequestBit = RequestBit::of(5);
+const RESCAN_VALUES: RequestBit = RequestBit::of(6);
+const RESCAN_TEXT: RequestBit = RequestBit::of(7);
+const RESCAN_INFO: RequestBit = RequestBit::of(8);
+const RESCAN_ALL: RequestBit = RequestBit::of(9);
+const MIDI_CC: RequestBit = RequestBit::of(10);
+const NOTE_EXPRESSION: RequestBit = RequestBit::of(11);
 
 /// Every request that has a bit, in the order [`taken`] yields them.
 const WORD_REQUESTS: [(RequestBit, Request); 12] = [

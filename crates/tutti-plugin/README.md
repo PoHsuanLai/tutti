@@ -115,10 +115,11 @@ app's choices, so the default build pulls no `serde_json` and no format FFI.
 Without any feature, VST3, CLAP, AU and VST2 plugins all load in the
 subprocess, with no editor support.
 
-- `json` — `tutti_plugin_db::JsonCatalog`, a JSON-file-backed
-  `PluginCatalog`, and `Plugins::with_json_catalog`. One ready-made store, not
-  the shape of the API: implement the trait over your own store instead, or use
-  `tutti_plugin_db::discover` with [`probe_record`](catalog::probe_record).
+- `json` — `tutti_plugin_db::{save, load}`, the versioned JSON database file,
+  and `Plugins::load` and `Plugins::save`. One ready-made store, not the shape
+  of the API: build a `tutti_plugin_db::PluginDb` from your own store and pass
+  it to `Plugins::with_db`, or use `tutti_plugin_db::discover` with
+  [`probe_record`](catalog::probe_record).
 - `vst3`, `clap`, `au` — editor support for that format. Loads the plugin
   library a second time in the *host* process for editor rendering only; audio
   still runs out of process. The editor instance is therefore not isolated: a

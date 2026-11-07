@@ -352,11 +352,14 @@ list (normal and build edges; dev-dependencies may go anywhere).
   CI runs the per-module path gate on it), has no `bevy` feature and
   re-exports no crate whole (`scripts/check-adapter.sh`).
 - `tutti-plugin-db` depends on `tutti-plugin-types` alone among workspace
-  crates, keeps every module private (`tutti_plugin_db::PluginScanner`; CI runs
+  crates, keeps every module private (`tutti_plugin_db::Scanner`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   `bevy` feature. It holds plugin discovery (the directory walk, the scanner,
-  the pedal, the catalog and its records) and never loads a plugin: the probe is
-  a parameter, and `tutti-plugin` supplies the out-of-process one. Consumers
+  the pedal, and the file table `PluginDb` with its versioned file) and never
+  loads a plugin: the probe is a parameter, and `tutti-plugin` supplies the
+  out-of-process one. The table has one owning thread; a scan works on a
+  snapshot and sends `Delta`s, and `PluginDb::apply` is the only code that
+  changes a row. Consumers
   name its types from it, not through `tutti-plugin`.
 - `tutti-spatial` depends on `tutti-nodes`, never the reverse.
 - `tutti-midi-file` is OS-free.

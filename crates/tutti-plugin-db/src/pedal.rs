@@ -2,13 +2,13 @@
 //! crashed while probing a specific plugin. Next startup blacklists that
 //! plugin so the scan can make progress.
 
-use super::catalog::{CatalogExt, PluginCatalog};
 use super::facts::FileFacts;
+use super::table::PluginDb;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Pedal {
     path: PathBuf,
 }
@@ -32,32 +32,40 @@ impl Pedal {
         let _ = std::fs::remove_file(&self.path);
     }
 
-    /// If a pedal file survives from a crashed previous scan, blacklist
-    /// the recorded plugin and remove the pedal. Returns `true` if
-    /// recovery happened.
-    pub(super) fn recover(&self, catalog: &mut dyn PluginCatalog) -> bool {
+    /// If a pedal file survives from a crashed previous scan, blacklists the
+    /// recorded file in `db`, hands `db` to `save`, and removes the pedal.
+    /// Returns the file that was blacklisted.
+    ///
+    /// The pedal stays until `save` succeeds, so a host that dies again before
+    /// the blacklist is on disk still finds it next start.
+    pub(super) fn recover(
+        &self,
+        db: &mut PluginDb,
+        save: impl FnOnce(&PluginDb) -> std::io::Result<()>,
+    ) -> Option<PathBuf> {
         if !self.path.exists() {
-            return false;
+            return None;
         }
         let crashed = std::fs::read_to_string(&self.path)
             .ok()
             .and_then(|text| parse_pedal(&text));
-        let recovered = crashed.is_some();
-        if let Some(p) = crashed {
+        if let Some(p) = &crashed {
             warn!(
                 "dead-man's pedal found: blacklisting {:?} (crashed during previous scan)",
                 p
             );
-            catalog.blacklist(
-                &p,
+            db.blacklist(
+                p,
                 "crashed during previous scan".into(),
-                &FileFacts::read(&p),
+                &FileFacts::read(p),
             );
-            // Persist the blacklist immediately so it survives another crash.
-            let _ = catalog.flush();
+            if let Err(e) = save(db) {
+                warn!("could not save the blacklist for {p:?}; keeping the pedal: {e}");
+                return crashed;
+            }
         }
         let _ = std::fs::remove_file(&self.path);
-        recovered
+        crashed
     }
 }
 
@@ -71,7 +79,6 @@ pub(super) fn parse_pedal(text: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::catalog::MemoryCatalog;
     use super::*;
     use tempfile::TempDir;
 
@@ -90,27 +97,49 @@ mod tests {
         assert!(!pedal.path.exists());
     }
 
+    /// Mutation: skip the `save` call.
     #[test]
-    fn recover_blacklists_crashed_plugin() {
+    fn recover_blacklists_crashed_plugin_and_saves_before_clearing_the_pedal() {
         let dir = TempDir::new().unwrap();
         let pedal = Pedal::new(dir.path().join(".scanning"));
-
-        // Simulate a previous crash.
         std::fs::write(&pedal.path, "/plugins/crashy.vst3").unwrap();
 
-        let mut db = MemoryCatalog::default();
-        assert!(pedal.recover(&mut db));
+        let mut db = PluginDb::new();
+        let mut saved = None;
+        let crashed = pedal.recover(&mut db, |db| {
+            assert!(pedal.path.exists(), "the pedal outlives the save");
+            saved = Some(db.clone());
+            Ok(())
+        });
+
+        assert_eq!(crashed, Some(PathBuf::from("/plugins/crashy.vst3")));
         assert!(db.is_blacklisted(Path::new("/plugins/crashy.vst3")));
+        assert_eq!(saved, Some(db));
         assert!(!pedal.path.exists());
     }
 
+    /// Mutation: remove the pedal whatever `save` returned.
     #[test]
-    fn recover_returns_false_when_no_pedal() {
+    fn recover_keeps_the_pedal_when_the_save_fails() {
         let dir = TempDir::new().unwrap();
         let pedal = Pedal::new(dir.path().join(".scanning"));
-        let mut db = MemoryCatalog::default();
+        std::fs::write(&pedal.path, "/plugins/crashy.vst3").unwrap();
 
-        assert!(!pedal.recover(&mut db));
+        let mut db = PluginDb::new();
+        let crashed = pedal.recover(&mut db, |_| Err(std::io::Error::other("disk full")));
+
+        assert!(crashed.is_some());
+        assert!(db.is_blacklisted(Path::new("/plugins/crashy.vst3")));
+        assert!(pedal.path.exists());
+    }
+
+    #[test]
+    fn recover_returns_none_when_no_pedal() {
+        let dir = TempDir::new().unwrap();
+        let pedal = Pedal::new(dir.path().join(".scanning"));
+        let mut db = PluginDb::new();
+
+        assert_eq!(pedal.recover(&mut db, |_| Ok(())), None);
     }
 
     // Mutation records: the edit that breaks each in-memory test.
@@ -154,8 +183,8 @@ mod tests {
         let pedal = Pedal::new(dir.path().join(".scanning"));
         std::fs::write(&pedal.path, "  \n").unwrap();
 
-        let mut db = MemoryCatalog::default();
-        assert!(!pedal.recover(&mut db));
+        let mut db = PluginDb::new();
+        assert_eq!(pedal.recover(&mut db, |_| Ok(())), None);
         assert!(db.is_empty());
         assert!(!pedal.path.exists());
     }

@@ -1,48 +1,50 @@
-//! Plugin discovery and persistence, in two layers.
+//! Plugin discovery and persistence.
 //!
-//! **Pure** — [`discover`] walks directories and returns paths. It touches no
-//! store. Every decision about a candidate ([`classify`], [`needs_rescan`],
-//! [`blacklist_record`], [`missing`]) is a pure function of a [`FileFacts`] read
-//! once at the edge and a catalog record. An app that wants to own persistence entirely (records in a CRDT, a database, or just
-//! a `Vec`) needs nothing else from this crate.
+//! The pieces, from pure to stateful:
 //!
-//! **Stateful** — [`PluginScanner`] walks directories and probes each plugin
-//! through the probe it is given (the host supplies an out-of-process one),
-//! recording results in any [`PluginCatalog`]. This layer exists for the two
-//! things the pure functions structurally cannot do:
-//! skip unchanged plugins on a rescan (probing is expensive; mtime comparison
-//! against stored records is what makes startup #2 fast) and survive a plugin
-//! that hard-crashes the scanner (a dead-man's pedal sentinel outlives the
-//! process and auto-blacklists the culprit on the next run).
+//! - [`discover`] walks directories and returns plugin paths. It touches no
+//!   database.
+//! - [`classify`], [`needs_rescan`] and the rest of the decisions are pure
+//!   functions of a [`FileFacts`] read once at the edge and a [`FileRow`].
+//! - [`PluginDb`] is a plain table, `path -> FileRow` (modification time, then
+//!   either the plugins the file holds or a blacklist). The file is the unit
+//!   because a crash blacklists a file before any plugin id is known. A
+//!   [`Delta`] replaces or drops one row, and [`PluginDb::apply`] is the only
+//!   code that changes the table. With feature `json`, `save` and `load`
+//!   write and read it as a versioned file.
+//! - [`Scanner`] probes the files that are new or changed since their row was
+//!   stamped, through the probe it is given (the host supplies an out-of-process
+//!   one). A scan runs on a worker over a snapshot of the table and sends
+//!   deltas; the owner applies them with [`Scan::poll`], so the table stays
+//!   readable for the whole scan. A sentinel file (the dead-man's pedal)
+//!   outlives a host that dies mid-probe and blacklists the culprit on the next
+//!   run.
 //!
-//! Persistence is pluggable — implement [`PluginCatalog`] over whatever store
-//! you like. `JsonCatalog` is one ready-made implementation, behind the
-//! opt-in `json` feature.
+//! The crate never loads a plugin and never touches the audio thread.
 
 #![forbid(unsafe_code)]
 
-mod catalog;
-#[cfg(feature = "json")]
-mod database;
 mod facts;
+mod format;
 mod fs;
 mod pedal;
-mod record;
 mod scanner;
-
-pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
-pub use database::{JsonCatalog, parse_records};
+mod store;
+mod table;
+
 pub use facts::{
-    FileFacts, ScanDecision, blacklist_record, classify, is_blacklisted_and_unchanged, missing,
-    needs_rescan,
+    FileFacts, ScanDecision, classify, is_blacklisted_and_unchanged, missing, needs_rescan,
+};
+pub use format::{
+    AuComponentType, ClapFeature, PluginClass, PluginDescriptor, PluginFormat, PluginRole,
+    Vst2Category, Vst3PlugType, Vst3SubCategories,
 };
 pub use fs::{discover, format_from_path};
-pub use record::{
-    AuComponentType, Blacklist, ClapFeature, PluginClass, PluginDescriptor, PluginFormat,
-    PluginRecord, PluginRole, Vst2Category, Vst3PlugType, Vst3SubCategories,
-};
 pub use scanner::{
-    PluginScanner, ProbeFailure, ScanHandle, ScanPhase, ScanProgress, ScanResult,
+    ProbeFailure, Scan, ScanPhase, ScanPoll, ScanProgress, ScanResult, Scanner,
     probe_plugin_fallback,
 };
+#[cfg(feature = "json")]
+pub use store::{load, save};
+pub use table::{BlacklistedFile, Delta, FileRow, FileState, PluginDb, PluginEntry};

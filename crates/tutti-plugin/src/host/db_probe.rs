@@ -5,7 +5,7 @@ use crate::protocol::PluginDescriptor;
 use std::path::Path;
 use tracing::debug;
 use tutti_plugin_db::{
-    Blacklist, FileFacts, PluginFormat, PluginRecord, ProbeFailure, probe_plugin_fallback,
+    Delta, FileFacts, FileRow, PluginFormat, ProbeFailure, probe_plugin_fallback,
 };
 
 /// The blacklist decision for a failed probe, kept as a conversion so tests
@@ -76,13 +76,13 @@ fn interpret_probe(
     }
 }
 
-/// Probes a plugin file into a full record.
+/// Probes a plugin file into the delta that records it.
 ///
 /// Spawns a short-lived `plugin-server` subprocess to read the plugin's
 /// metadata, so a plugin that crashes while being probed does not take the
 /// caller down. Blocks for up to a few seconds; call it off the audio and
-/// UI threads. Yields the same record a
-/// [`PluginCatalog`](tutti_plugin_db::PluginCatalog) stores.
+/// UI threads. The delta puts the same row a scan stores; apply it with
+/// [`PluginDb::apply`](tutti_plugin_db::PluginDb::apply).
 ///
 /// # Errors
 ///
@@ -91,7 +91,7 @@ fn interpret_probe(
 /// [`BridgeError::ServerNotFound`] when the `plugin-server` binary cannot
 /// be located, and a timeout, I/O or protocol variant when the subprocess
 /// cannot be reached.
-pub fn probe_record(path: impl AsRef<Path>) -> Result<PluginRecord, BridgeError> {
+pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
     let path = path.as_ref();
     let facts = FileFacts::read(path);
     let format = facts.format.ok_or_else(|| BridgeError::LoadFailed {
@@ -102,13 +102,10 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<PluginRecord, BridgeError>
 
     let descriptor = super::subprocess::probe_metadata(path)?;
 
-    Ok(PluginRecord {
-        path: path.to_path_buf(),
-        format,
-        descriptor,
-        modification_time: facts.mtime.unwrap_or(0),
-        blacklist: Blacklist::Ok,
-    })
+    Ok(Delta::put(
+        path,
+        FileRow::probed(format, &facts, vec![descriptor]),
+    ))
 }
 
 #[cfg(test)]

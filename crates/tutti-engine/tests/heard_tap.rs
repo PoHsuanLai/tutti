@@ -240,7 +240,7 @@ fn channels_do_not_tear_under_a_concurrent_drain() {
     });
     assert!(lost > 0, "the ring overflowed, so the test saw drops");
     assert_eq!(got.len() / 6 + lost, CALLS * FRAMES);
-    for frame in got.chunks_exact(6) {
+    for frame in got.as_chunks::<6>().0 {
         for (c, &x) in frame.iter().enumerate() {
             assert_eq!(x, frame[0] * (c + 1) as f32, "a torn frame: {frame:?}");
         }

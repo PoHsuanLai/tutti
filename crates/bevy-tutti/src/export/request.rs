@@ -89,7 +89,7 @@ pub struct ExportRequest {
     /// Rate, duration, format, bit depth, channel width, resample, dither.
     ///
     /// Not every field reaches every target. [`ExportTarget::Buffers`] renders
-    /// PCM and encodes nothing, so `format` and `bit_depth` are inert there —
+    /// PCM and encodes nothing, so `format` is inert there —
     /// and so is `resample`, because `render_to_buffers` deliberately does not
     /// resample. Only `channels` and `dither` affect a `Buffers` render.
     pub config: ExportConfig,

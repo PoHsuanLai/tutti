@@ -43,7 +43,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tutti_io::{AudioIn, BitDepth, OnEmpty, Recorder, WavOut};
+use tutti_io::{AudioIn, OnEmpty, Pcm, Recorder, WavOut};
 use tutti_types::{ChannelLayout, Samples};
 
 /// Block until `cond` holds, or fail the test at `deadline`.
@@ -179,7 +179,7 @@ impl AudioIn for Exploding {
 }
 
 fn sink(path: &std::path::Path) -> WavOut {
-    WavOut::create(path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens")
+    WavOut::create(path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens")
 }
 
 /// **A finite take ends itself, on a real thread, and the file is readable.**
@@ -549,7 +549,7 @@ impl AudioIn for Dead {
 fn a_dead_source_ends_its_own_take() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dead.wav");
-    let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+    let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
     let mut rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
 
     wait_until("the pump to stop on its own", || rec.is_finished());
@@ -568,7 +568,7 @@ fn wait_and_finish_report_a_failed_source() {
     for use_wait in [true, false] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("dead.wav");
-        let wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).unwrap();
+        let wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
         let rec = Recorder::start(Dead { left: 7 }, wav).unwrap();
         wait_until("the pump to stop on its own", || rec.is_finished());
         let result = if use_wait { rec.wait() } else { rec.finish() };

@@ -163,7 +163,7 @@ fn a_recorder_on_a_disconnected_mic_fails_the_take() {
     mic.cons = cons;
     let faults = mic.faults();
     let path = std::env::temp_dir().join(format!("tutti-mic-fault-{}.wav", std::process::id()));
-    let sink = mic.matching_sink(&path, BitDepth::Float32).unwrap();
+    let sink = mic.matching_sink(&path, Pcm::Float32).unwrap();
     let (driver, pump) = tutti_io::ManualDriver::new();
     let mut rec = tutti_io::Recorder::start_with(mic, sink, driver).unwrap();
 

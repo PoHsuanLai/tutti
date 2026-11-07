@@ -19,7 +19,7 @@ use bevy_ecs::prelude::*;
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Normalize, RenderConfig,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, Normalize, Pcm, RenderConfig,
 };
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
@@ -203,8 +203,7 @@ fn config() -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Int24,
+            format: Format::Wav(Pcm::Int24),
             channels: ChannelLayout::STEREO,
             topology: None,
         },

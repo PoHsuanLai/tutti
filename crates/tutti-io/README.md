@@ -35,7 +35,7 @@ And the file side, which needs no device either:
 - `can_decode` / `decodable_extensions` — which formats *this build* reads.
 
 The traits this crate implements are re-exported from its root (`pump`,
-`AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches the
+`AudioIn`, `AudioOut`, `OnEmpty`, `Pcm`), so a consumer reaches the
 vocabulary and its live impls from one place.
 
 ## What this crate does not own
@@ -80,7 +80,7 @@ the traits exist.
 ```rust
 use tutti_metering::AudioTap;
 use tutti_types::Samples;
-use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
+use tutti_io::{pump, AudioIn, AudioOut, Pcm, TapIn, WavOut};
 
 let tap = AudioTap::new();
 let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
@@ -92,7 +92,7 @@ tap.push(&block, 3);
 
 let dir = tempfile::tempdir().expect("temp dir");
 let path = dir.path().join("take.wav");
-let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+let mut wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32)
     .expect("sink opens");
 assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
 

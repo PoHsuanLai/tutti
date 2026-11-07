@@ -16,17 +16,20 @@ workspace = true
 
 [features]
 default = ["wav", "flac", "aiff", "ogg"]
-wav = ["hound"]
-flac = ["flacenc", "md-5"]
-aiff = ["aifc"]
-ogg = ["vorbis_rs"]
+# The formats `tutti-codec` writes; a `Format` variant exists only with its
+# feature on.
+wav = ["tutti-codec/wav"]
+flac = ["tutti-codec/flac"]
+aiff = ["tutti-codec/aiff"]
+ogg = ["tutti-codec/vorbis"]
 
 [dependencies]
 thiserror.workspace = true
-# An unfinished file that cannot be removed is logged.
-tracing = "0.1"
 tutti-transport = { path = "../tutti-transport" }
 tutti-types = { path = "../tutti-types", default-features = false }
+# The encoders and the file's format; the pipeline in this crate hands them
+# blocks. No features of its own: the four above turn each format on.
+tutti-codec = { path = "../tutti-codec" }
 # The graph: `RenderGraph` is a forked or built
 # `Editor`/`Executor` pair, the only thing an export renders. Acyclic:
 # tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
@@ -35,24 +38,11 @@ tutti-graph = { path = "../tutti-graph" }
 # Config/State/step analysis home) — `render_normalized_to_file` measures with
 # it — and so does the resampler's `RealFft`. Acyclic: tutti-dsp does NOT depend on tutti-export.
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
-hound = { version = "3.5", optional = true }
-# No default features: the encoder drives flacenc's frame encoder on its own
-# workers, so flacenc's `par` (and its `serde`/`log`) are unused.
-flacenc = { version = "0.4", optional = true, default-features = false }
-# The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
-# only inside its own encode loop, which pads the last block; the FLAC encoder
-# drives flacenc's frame encoder itself, so it hashes the samples here. The
-# same crate and version flacenc already pulls in.
-md-5 = { version = "0.10", optional = true }
-vorbis_rs = { version = "0.5", optional = true }
-# AIFF/AIFF-C. Replaced ~200 lines of hand-rolled IFF chunk writing (including a
-# by-hand 80-bit IEEE 754 extended encoder); its I16/I24/F32 formats match our
-# three bit depths exactly and it back-patches sizes on finalize, so AIFF
-# streams like the other three.
-aifc = { version = "0.7", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
+# An independent reader for the WAV files the tests export.
+hound = "3.5"
 tempfile = "3.10"
 approx = "0.5"
 # Convolution nodes and the `testing` stimulus nodes for the end-to-end export

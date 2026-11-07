@@ -36,11 +36,11 @@ use ringbuf::{
 };
 
 use tutti_graph::MAX_ROOT_CHANNELS;
+use tutti_io::Pcm;
 use tutti_io::{MicMonitorNode, MicRing, WavOut};
 use tutti_types::ChannelLayout;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
-use tutti_types::pcm::BitDepth;
 use tutti_types::{AudioIn, OnEmpty};
 
 use crate::driver::DeviceInfo;
@@ -262,7 +262,7 @@ impl MicIn {
     pub fn matching_sink(
         &self,
         path: impl AsRef<std::path::Path>,
-        depth: BitDepth,
+        depth: Pcm,
     ) -> std::io::Result<WavOut> {
         // Read off `AudioIn::layout` rather than hard-coded, so this pairing
         // cannot drift from what `poll_into` actually hands back. (Today that is

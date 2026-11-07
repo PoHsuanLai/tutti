@@ -1,85 +1,11 @@
 //! Public option types — every variant the user picks from when
 //! configuring an export.
 
-use crate::error::{Error, Result};
-use std::path::Path;
-
-/// The container to write, carrying that format's own settings.
-///
-/// The settings live in the variant, not beside it: a compression level
-/// cannot be set on a format that has no compression, because there is nowhere
-/// to put it. A flat config holding `flac: Flac` and `ogg: Ogg` unconditionally
-/// would make every WAV export carry two settings nothing reads.
-///
-/// Each variant needs its cargo feature enabled; the crate's `default` turns all
-/// four on. Asking for one whose feature is off is a clean
-/// [`Error::UnsupportedFormat`], never a silent downgrade.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-#[non_exhaustive]
-pub enum AudioFormat {
-    /// Uncompressed RIFF/WAVE. Writes any [`BitDepth`]. The default.
-    #[default]
-    Wav,
-    /// Lossless FLAC. Integer depths only — `Float32` is refused at encoder
-    /// construction.
-    Flac(Flac),
-    /// AIFF at an integer depth; AIFF-C when the depth is `Float32`, since float
-    /// samples are an AIFF-C extension.
-    Aiff,
-    /// Lossy Ogg Vorbis. Float internally, so [`BitDepth`] and [`Dither`] do not
-    /// apply. Vorbis's own channel mappings cap the width at 8.
-    OggVorbis(Ogg),
-}
-
-impl AudioFormat {
-    /// The format a file extension names, with that format's defaults. Case
-    /// does not matter, and `aif` aliases `aiff`.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnsupportedFormat`] if the extension is not `wav`, `flac`,
-    /// `aiff`, `aif` or `ogg`.
-    pub fn from_extension(ext: &str) -> Result<Self> {
-        let ext = ext.to_lowercase();
-        match ext.as_str() {
-            "wav" => Ok(Self::Wav),
-            "flac" => Ok(Self::Flac(Flac::default())),
-            "aiff" | "aif" => Ok(Self::Aiff),
-            "ogg" => Ok(Self::OggVorbis(Ogg::default())),
-            _ => Err(Error::UnsupportedFormat {
-                format: if ext.is_empty() { "(none)".into() } else { ext },
-                reason: crate::UnsupportedReason::UnknownExtension,
-            }),
-        }
-    }
-
-    /// The format a file path's extension names, with that format's defaults.
-    /// See [`from_extension`](Self::from_extension).
-    ///
-    /// # Errors
-    ///
-    /// [`Error::UnsupportedFormat`] if the extension is not a supported one, or
-    /// is missing.
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_extension(
-            path.as_ref()
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or(""),
-        )
-    }
-}
-
-// The depth vocabulary lives in `tutti-types`, beside the quantizers that give
-// it meaning (`pcm::f32_to_i16` / `f32_to_i24`). Re-exported here so a caller
-// configuring an export can name it from this crate.
-pub use tutti_types::pcm::BitDepth;
-
 /// Noise added before quantizing, to decorrelate quantization error from the
 /// signal.
 ///
-/// Scaled to one LSB at [`EncodeConfig::bit_depth`](crate::EncodeConfig), so it
-/// is a no-op at [`BitDepth::Float32`], which does not quantize.
+/// Scaled to one LSB at the format's integer width, so it is a no-op for a
+/// format that does not quantize (`Pcm::Float32`, and Ogg Vorbis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum Dither {
@@ -92,38 +18,4 @@ pub enum Dither {
     /// in a way a single draw does not. The default.
     #[default]
     Triangular,
-}
-
-/// FLAC settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Flac {
-    /// Encoder effort, 0 to 8, modelled loosely on libFLAC's levels but not
-    /// matching them: 0 to 2 code with fixed predictors only, 3 and up add
-    /// linear prediction at a fixed order (6, then 8 from 4, 12 from 7),
-    /// and every level but 0 tries the side and mid/side stereo modes. The
-    /// block size is 4096 at every level. Levels 1 and 2, 4 to 6, and 7 and
-    /// 8 encode identically. Values above 8 read as 8. Defaults to 5. Every
-    /// level is lossless.
-    pub compression_level: u8,
-}
-
-impl Default for Flac {
-    fn default() -> Self {
-        Self {
-            compression_level: 5,
-        }
-    }
-}
-
-/// Ogg Vorbis settings.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Ogg {
-    /// Target VBR quality, 0.0 (lowest) to 1.0 (highest). Defaults to 0.5.
-    pub quality: f32,
-}
-
-impl Default for Ogg {
-    fn default() -> Self {
-        Self { quality: 0.5 }
-    }
 }

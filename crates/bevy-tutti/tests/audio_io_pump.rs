@@ -36,7 +36,7 @@ mod audio_pump {
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
     // need to name `tutti-metering` or `tutti-io` to write a pump, and this pins that.
-    use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, Samples, WavOut};
+    use bevy_tutti::io::{AudioIn, ChannelLayout, OnEmpty, Pcm, Samples, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -104,7 +104,7 @@ mod audio_pump {
     }
 
     fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("sink should open")
     }
 
@@ -311,13 +311,8 @@ mod audio_pump {
 
         let mut app = app();
         // A stereo source into a six-channel sink.
-        let wide = WavOut::create(
-            &path,
-            SAMPLE_RATE,
-            ChannelLayout::from(6u16),
-            BitDepth::Float32,
-        )
-        .expect("sink should open");
+        let wide = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::from(6u16), Pcm::Float32)
+            .expect("sink should open");
         let entity = app
             .world_mut()
             .spawn(AudioPump::start(
@@ -475,7 +470,7 @@ mod audio_pump {
             frames: frames(128),
             pos: 0,
         };
-        let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("could not create WAV");
         let pump = app
             .world_mut()
@@ -510,12 +505,12 @@ mod master_record {
 
     use bevy_app::prelude::*;
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, AudioTapRes};
-    use bevy_tutti::io::{BitDepth, ChannelLayout, Samples, TapIn, WavOut};
+    use bevy_tutti::io::{ChannelLayout, Pcm, Samples, TapIn, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
     fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("sink should open")
     }
 

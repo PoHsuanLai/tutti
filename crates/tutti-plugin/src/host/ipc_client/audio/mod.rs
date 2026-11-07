@@ -182,12 +182,13 @@ impl AudioBridge {
         self.lifecycle.set_rate_timeout(timeout);
     }
 
-    /// How many blocks in a row the bridge thread abandoned with no reply of
-    /// any kind since (an on-time reply, or an owed one taken back off the
-    /// socket). The bridge thread writes it and any thread reads it: one
-    /// relaxed atomic, no lock, no allocation.
-    pub fn starved_blocks(&self) -> u32 {
-        self.channels.starved()
+    /// Blocks the bridge thread abandoned and replies it took (on time, or
+    /// owed and taken back off the socket), ever. The bridge thread writes
+    /// them and any thread reads them: relaxed atomics, no lock, no
+    /// allocation.
+    pub fn block_counts(&self) -> crate::host::handles::BlockCounts {
+        let (abandoned, replies) = self.channels.block_counts();
+        crate::host::handles::BlockCounts { abandoned, replies }
     }
 
     /// Latches `cause` as the reason the bridge is dead (the first cause

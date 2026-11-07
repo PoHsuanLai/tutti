@@ -210,9 +210,9 @@ impl PluginBridge {
         self.audio.abandoned_replies()
     }
 
-    /// See [`AudioBridge::starved_blocks`](super::audio::AudioBridge::starved_blocks).
-    pub fn starved_blocks(&self) -> u32 {
-        self.audio.starved_blocks()
+    /// See [`AudioBridge::block_counts`](super::audio::AudioBridge::block_counts).
+    pub fn block_counts(&self) -> crate::host::handles::BlockCounts {
+        self.audio.block_counts()
     }
 
     /// See [`AudioBridge::mark_crashed`](super::audio::AudioBridge::mark_crashed).
@@ -551,8 +551,8 @@ impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
         self.bridge.crash_cause()
     }
 
-    fn starved_blocks(&self) -> u32 {
-        self.bridge.starved_blocks()
+    fn block_counts(&self) -> crate::host::handles::BlockCounts {
+        self.bridge.block_counts()
     }
 
     fn terminate(&self, cause: &str) {

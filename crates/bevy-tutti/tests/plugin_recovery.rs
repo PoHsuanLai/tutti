@@ -145,7 +145,7 @@ fn a_crashed_plugin_comes_back_on_the_same_entity() {
                 .map(|h| h.status.clone()),
             app.world()
                 .get::<PluginEmitter>(entity)
-                .map(|e| (e.handle.status(), e.handle.starved_blocks())),
+                .map(|e| (e.handle.status(), e.handle.block_counts())),
         );
         frame(&mut app);
     }

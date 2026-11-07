@@ -6,7 +6,8 @@
 
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
+    BlockCounts, HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode,
+    HostState,
 };
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
@@ -539,11 +540,11 @@ impl PluginHandle {
         self.params.is_crashed()
     }
 
-    /// How many blocks in a row the audio path abandoned with no reply of any
-    /// kind since. See [`HostParams::starved_blocks`]. An atomic read.
+    /// Blocks the audio path abandoned and replies it took. See
+    /// [`HostParams::block_counts`]. Atomic reads.
     #[must_use]
-    pub fn starved_blocks(&self) -> u32 {
-        self.params.starved_blocks()
+    pub fn block_counts(&self) -> BlockCounts {
+        self.params.block_counts()
     }
 
     /// Ends the plugin's server process. The bridge then latches `cause`

@@ -19,7 +19,7 @@
 //!   cause.
 //! - **Recovery.** `tutti_session::Recovery` decides, on `Instant`s the
 //!   session is given: a death or a hang (blocks abandoned with no reply for
-//!   seconds, `PluginHandle::starved_blocks`) keeps the node, reloads the
+//!   seconds, `PluginHandle::block_counts`) keeps the node, reloads the
 //!   plugin with its last snapshot after a backoff, and gives up after
 //!   too many failures in a window. This module holds none of that: it runs
 //!   the reload jobs the session hands out on the task pool, and puts what

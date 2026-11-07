@@ -16,11 +16,14 @@
 //!   is given up on; one that runs for longer than the window between
 //!   crashes never is.
 //! - **Hang.** A plugin that is alive but never returns from `process()` is
-//!   declared hung when, at every observation over
-//!   [`RecoveryPolicy::hang_window`], at least [`RecoveryPolicy::hang_blocks`]
-//!   consecutive blocks had been abandoned with no reply since. Any reply
-//!   resets the bridge's count, so a slow plugin that still answers never
-//!   reaches it, and one late reply never starts it.
+//!   declared hung when, over [`RecoveryPolicy::hang_window`], blocks kept
+//!   being abandoned (at least [`RecoveryPolicy::hang_blocks`] of them) and
+//!   no reply of any kind came. It is read off two monotonic totals from the
+//!   bridge, abandoned blocks and replies, compared between observations: a
+//!   reply, or no new abandoned block (a stopped or restarted device sends
+//!   none), starts the suspicion over. So a slow plugin that still answers
+//!   is never declared hung, and neither is a count that merely stands
+//!   still.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -42,6 +45,11 @@ pub struct RecoveryPolicy {
     pub hang_blocks: u32,
     /// How long the suspicion must hold, continuously, to declare the hang.
     pub hang_window: Duration,
+    /// How long without a newly abandoned block means blocks stopped coming
+    /// (a stopped or restarted device), not that the plugin is slow to
+    /// abandon: the suspicion starts over. Longer than the bridge's longest
+    /// wait for one block.
+    pub stall_gap: Duration,
     /// How long a reload may run before it counts as failed.
     pub load_timeout: Duration,
 }
@@ -62,6 +70,7 @@ impl Default for RecoveryPolicy {
             backoff_cap: Duration::from_secs(8),
             hang_blocks: 16,
             hang_window: Duration::from_secs(5),
+            stall_gap: Duration::from_secs(1),
             load_timeout: Duration::from_secs(60),
         }
     }
@@ -82,11 +91,12 @@ pub enum RecoveryEvent {
         /// Why.
         reason: String,
     },
-    /// The running plugin's consecutive abandoned blocks, as the bridge
-    /// counts them (zero while it answers).
+    /// The running plugin's totals from the bridge, since it started.
     Starved {
-        /// The count.
-        blocks: u32,
+        /// Blocks the bridge gave up waiting for.
+        abandoned: u64,
+        /// Replies it took, on time or owed.
+        replies: u64,
     },
     /// Time passed with nothing else to report.
     Tick,
@@ -138,10 +148,13 @@ impl std::fmt::Display for GiveUp {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum State {
-    /// Running. `since` is when the current unbroken starvation began.
+    /// Running. `last` is the previous observation's totals; `since` when
+    /// the current unbroken starvation began, with the abandoned total then.
     Running {
-        since: Option<Instant>,
-        last: u32,
+        last: Option<(u64, u64)>,
+        since: Option<(Instant, u64)>,
+        /// When an abandoned block was last seen to be new.
+        grew_at: Option<Instant>,
         terminating: bool,
     },
     /// Dead; a reload has been scheduled and not yet reported loaded.
@@ -167,8 +180,9 @@ impl Recovery {
             policy,
             failures: VecDeque::new(),
             phase: State::Running {
+                last: None,
                 since: None,
-                last: 0,
+                grew_at: None,
                 terminating: false,
             },
         }
@@ -218,39 +232,61 @@ impl Recovery {
             (State::Running { .. }, RecoveryEvent::Tick) => RecoveryAction::Wait,
             (
                 State::Running {
-                    since,
                     last,
+                    since,
+                    grew_at,
                     terminating,
                 },
-                RecoveryEvent::Starved { blocks },
+                RecoveryEvent::Starved { abandoned, replies },
             ) => {
-                if blocks == 0 {
-                    *since = None;
-                } else if since.is_none() || blocks < *last {
-                    // New run, or the count was reset and grew again between
-                    // two observations: the suspicion starts over.
-                    *since = Some(now);
-                }
-                *last = blocks;
-                let held = since.map(|s| now.saturating_duration_since(s));
-                let hung = blocks >= self.policy.hang_blocks
-                    && held.is_some_and(|h| h >= self.policy.hang_window);
-                if hung && !*terminating {
-                    *terminating = true;
-                    RecoveryAction::Terminate {
-                        cause: format!(
-                            "the plugin stopped answering ({blocks} blocks abandoned over {:?})",
-                            held.unwrap_or_default()
-                        ),
+                let before = last.replace((abandoned, replies));
+                if let Some((was_abandoned, was_replies)) = before {
+                    if abandoned > was_abandoned {
+                        *grew_at = Some(now);
                     }
-                } else {
-                    RecoveryAction::Wait
+                    if replies != was_replies {
+                        // It answered: not a hang.
+                        *since = None;
+                    } else if abandoned > was_abandoned {
+                        if since.is_none() {
+                            *since = Some((now, was_abandoned));
+                        }
+                    } else if grew_at
+                        .is_none_or(|g| now.saturating_duration_since(g) >= self.policy.stall_gap)
+                    {
+                        // Nothing new to abandon for a while: the blocks
+                        // stopped, which says nothing about the plugin.
+                        *since = None;
+                    }
+                }
+                let verdict = since.map(|(at, base)| {
+                    (
+                        abandoned.saturating_sub(base),
+                        now.saturating_duration_since(at),
+                    )
+                });
+                match verdict {
+                    Some((blocks, held))
+                        if blocks >= u64::from(self.policy.hang_blocks)
+                            && held >= self.policy.hang_window
+                            && !*terminating =>
+                    {
+                        *terminating = true;
+                        RecoveryAction::Terminate {
+                            cause: format!(
+                                "the plugin stopped answering ({blocks} blocks abandoned \
+                                 over {held:?}, no reply)"
+                            ),
+                        }
+                    }
+                    _ => RecoveryAction::Wait,
                 }
             }
             (State::Reloading { .. }, RecoveryEvent::Loaded) => {
                 self.phase = State::Running {
+                    last: None,
                     since: None,
-                    last: 0,
+                    grew_at: None,
                     terminating: false,
                 };
                 RecoveryAction::Wait
@@ -327,6 +363,7 @@ mod tests {
             backoff_cap: 2 * S,
             hang_blocks: 16,
             hang_window: 5 * S,
+            stall_gap: S,
             load_timeout: 30 * S,
         }
     }
@@ -442,12 +479,17 @@ mod tests {
         );
     }
 
-    fn starved(r: &mut Recovery, at: Instant, blocks: u32) -> RecoveryAction {
-        r.step(RecoveryEvent::Starved { blocks }, at)
+    fn starved(r: &mut Recovery, at: Instant, abandoned: u64, replies: u64) -> RecoveryAction {
+        r.step(RecoveryEvent::Starved { abandoned, replies }, at)
     }
 
-    /// A hang is declared only when the suspicion holds, unbroken, for the
-    /// window; it ends the server once, however long it is then watched.
+    fn terminates(a: RecoveryAction) -> bool {
+        matches!(a, RecoveryAction::Terminate { .. })
+    }
+
+    /// A hang is declared only when blocks keep being abandoned, with no
+    /// reply, for the window; it ends the server once, however long it is
+    /// then watched.
     ///
     /// Mutations (each run, each failed): the window not checked (declared
     /// at the first observation over the block count); `terminating` not
@@ -457,91 +499,141 @@ mod tests {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
         assert_eq!(
-            starved(&mut r, t0, 100),
+            starved(&mut r, t0, 100, 5),
             RecoveryAction::Wait,
-            "first sight"
+            "baseline"
         );
         assert_eq!(
-            starved(&mut r, t0 + 4 * S, 400),
+            starved(&mut r, t0 + S, 200, 5),
             RecoveryAction::Wait,
-            "not yet 5 s"
+            "starts"
         );
-        assert!(matches!(
-            starved(&mut r, t0 + 5 * S, 500),
-            RecoveryAction::Terminate { .. }
-        ));
         assert_eq!(
-            starved(&mut r, t0 + 6 * S, 600),
+            starved(&mut r, t0 + 4 * S, 300, 5),
+            RecoveryAction::Wait,
+            "3 s"
+        );
+        assert!(terminates(starved(&mut r, t0 + 6 * S, 400, 5)), "5 s");
+        assert_eq!(
+            starved(&mut r, t0 + 7 * S, 500, 5),
             RecoveryAction::Wait,
             "once"
         );
         // Its death then follows the ordinary path.
-        assert_eq!(r.step(died("terminated"), t0 + 7 * S), reload(250, 1));
+        assert_eq!(r.step(died("terminated"), t0 + 8 * S), reload(250, 1));
     }
 
-    /// Few blocks over a long time is not a hang (a stopped device abandons
-    /// nothing), and neither is a long run of blocks over a short time.
+    /// Few blocks over a long time is not a hang, and neither is a long run
+    /// of blocks over a short time.
     ///
     /// Mutation (run, failed): the block count not checked.
     #[test]
     fn neither_time_nor_blocks_alone_is_a_hang() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        for i in 0..20 {
-            assert_eq!(starved(&mut r, t0 + i * S, 15), RecoveryAction::Wait);
+        for i in 0..20u64 {
+            let at = t0 + i as u32 * S;
+            assert_eq!(starved(&mut r, at, i.min(15), 5), RecoveryAction::Wait);
         }
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 5_000), RecoveryAction::Wait);
-        assert_eq!(starved(&mut r, t0 + S, 9_000), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0, 0, 5), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0 + S, 5_000, 5), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0 + 2 * S, 9_000, 5), RecoveryAction::Wait);
     }
 
-    /// A slow plugin that still answers is not hung: its count keeps
-    /// falling back to zero (a reply resets it), and a drop between two
-    /// observations restarts the suspicion even when the count has regrown
-    /// past where it was.
+    /// **A count that stands still is not a hang.** The device stopped or
+    /// restarted with blocks already abandoned and no reply owed yet: the
+    /// totals freeze, nothing new is abandoned, and a live plugin is left
+    /// alone however long that lasts. It resumes as a suspicion only from
+    /// the blocks abandoned after it.
     ///
-    /// Mutations (each run, each failed): a zero not clearing `since`; a
-    /// drop (`blocks < last`) not restarting it.
+    /// Mutation (run, failed): the stall not clearing the suspicion (the
+    /// frozen totals are held for the window and ended).
+    #[test]
+    fn a_count_that_stands_still_is_not_a_hang() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(policy());
+        assert_eq!(starved(&mut r, t0, 10, 5), RecoveryAction::Wait);
+        assert_eq!(
+            starved(&mut r, t0 + S, 40, 5),
+            RecoveryAction::Wait,
+            "growing"
+        );
+        for i in 2..60 {
+            assert_eq!(
+                starved(&mut r, t0 + i * S, 40, 5),
+                RecoveryAction::Wait,
+                "frozen at {i} s"
+            );
+        }
+        // The device comes back and the plugin does answer.
+        assert_eq!(starved(&mut r, t0 + 61 * S, 41, 6), RecoveryAction::Wait);
+    }
+
+    /// **Observed faster than blocks are abandoned.** A frame every 16 ms
+    /// and a block abandoned only every 48 ms (the bridge waits out each):
+    /// most observations see no new block, and a hang is still declared
+    /// after the window.
+    ///
+    /// Mutation (run, failed): `stall_gap` ignored (any observation without
+    /// growth clears the suspicion).
+    #[test]
+    fn a_hang_is_seen_by_an_observer_faster_than_the_blocks() {
+        let t0 = Instant::now();
+        let mut r = Recovery::new(policy());
+        let mut told = None;
+        for i in 0..1000u64 {
+            let at = t0 + Duration::from_millis(16 * i);
+            if terminates(starved(&mut r, at, i / 3, 5)) {
+                told = Some(at - t0);
+                break;
+            }
+        }
+        let told = told.expect("a hang is declared");
+        assert!(told >= 5 * S && told < 7 * S, "{told:?}");
+    }
+
+    /// A slow plugin that still answers is not declared hung: replies keep
+    /// arriving between observations, even when the abandoned total keeps
+    /// growing. A reply between two observations restarts the suspicion
+    /// however far the count has grown since.
+    ///
+    /// Mutations (each run, each failed): a changed reply total not clearing
+    /// the suspicion.
     #[test]
     fn a_plugin_that_still_answers_is_not_hung() {
         let t0 = Instant::now();
         let mut r = Recovery::new(policy());
-        // Sawtooth: 20 blocks lost, a reply, again, for a minute.
-        for i in 0..60 {
+        // 20 blocks lost, a reply, again, for a minute.
+        for i in 0..60u64 {
             assert_eq!(
-                starved(&mut r, t0 + i * S, 20),
+                starved(&mut r, t0 + i as u32 * S, 20 * i, i),
                 RecoveryAction::Wait,
                 "i {i}"
             );
-            assert_eq!(starved(&mut r, t0 + i * S + S / 2, 0), RecoveryAction::Wait);
         }
-        // A plugin that answered for a while (zeros) and then lost blocks
-        // is a new suspicion, not a continuing one.
+        // A reply between two readings 6 s apart: 20 then 30 abandoned.
         let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 0), RecoveryAction::Wait);
-        assert_eq!(starved(&mut r, t0 + S, 0), RecoveryAction::Wait);
+        assert_eq!(starved(&mut r, t0, 20, 1), RecoveryAction::Wait);
         assert_eq!(
-            starved(&mut r, t0 + 7 * S, 20),
+            starved(&mut r, t0 + 6 * S, 30, 2),
+            RecoveryAction::Wait,
+            "answered"
+        );
+        assert_eq!(
+            starved(&mut r, t0 + 7 * S, 40, 2),
             RecoveryAction::Wait,
             "fresh"
         );
-        // Reset and regrown between two observations: 90 then 30.
-        let mut r = Recovery::new(policy());
-        assert_eq!(starved(&mut r, t0, 90), RecoveryAction::Wait);
         assert_eq!(
-            starved(&mut r, t0 + 4 * S, 30),
+            starved(&mut r, t0 + 11 * S, 90, 2),
             RecoveryAction::Wait,
-            "a drop"
+            "4 s"
         );
-        assert_eq!(
-            starved(&mut r, t0 + 8 * S, 60),
-            RecoveryAction::Wait,
-            "4 s since"
+        assert!(
+            terminates(starved(&mut r, t0 + 12 * S, 100, 2)),
+            "5 s from the fresh start"
         );
-        assert!(matches!(
-            starved(&mut r, t0 + 9 * S, 70),
-            RecoveryAction::Terminate { .. }
-        ));
     }
 
     /// Whatever the order of events, the machine never reloads without a
@@ -561,15 +653,18 @@ mod tests {
         for _ in 0..200 {
             let mut r = Recovery::new(policy());
             let mut now = t0;
+            let (mut abandoned, mut replies) = (0u64, 0u64);
             for _ in 0..300 {
                 now += Duration::from_millis(next() % 4_000);
                 let event = match next() % 5 {
                     0 => died("d"),
                     1 => RecoveryEvent::Loaded,
                     2 => failed("f"),
-                    3 => RecoveryEvent::Starved {
-                        blocks: (next() % 600) as u32,
-                    },
+                    3 => {
+                        abandoned += next() % 40;
+                        replies += next() % 2;
+                        RecoveryEvent::Starved { abandoned, replies }
+                    }
                     _ => RecoveryEvent::Tick,
                 };
                 let was_reloading = r.is_reloading();

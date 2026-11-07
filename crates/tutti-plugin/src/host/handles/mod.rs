@@ -36,6 +36,7 @@ pub use crate::host::node::TransportView;
 // trait at all.
 pub use crate::protocol::{ChordValue, Normalized, ParamId, Preset, PresetId, ScaleValue};
 pub use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
+pub use capabilities::BlockCounts;
 pub use control_handle::{OptionalCapabilities, PluginHandle, PluginStatus};
 
 /// In-process VST2 graph node, and the controls inserting it hands back. Used

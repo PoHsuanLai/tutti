@@ -14,7 +14,7 @@ use super::messages::{AudioResponse, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::Thread;
 use tutti_types::SampleRate;
 
@@ -60,11 +60,12 @@ pub(super) struct Channels {
     /// owed back, so a test can bound what the drain took by what was owed
     /// instead of by how many budgets a loaded machine happened to miss.
     abandoned: Arc<AtomicU64>,
-    /// How many blocks in a row were abandoned with no reply of any kind
-    /// since: zero after every reply, on time or owed. The hang verdict's
-    /// input (`PluginHandle::starved_blocks`). Written by the bridge thread
-    /// only; a relaxed read is enough, since a host that reads it is polling.
-    starved: Arc<AtomicU32>,
+    /// How many replies the bridge thread has taken from the plugin, ever,
+    /// on time or owed. With [`abandoned`](Self::abandoned) the hang
+    /// verdict's input (`PluginHandle::block_counts`): a hang is abandoned
+    /// blocks growing while this does not. Written by the bridge thread only;
+    /// a relaxed read is enough, since a host that reads it is polling.
+    replies: Arc<AtomicU64>,
     /// How many unsolicited parameter events the bridge thread dropped
     /// because more arrived during one command than its inbox holds, ever.
     /// Each drop also raises a `Resync(ParamValues)`, so the host re-reads.
@@ -85,7 +86,7 @@ impl Channels {
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.get().to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
-            starved: Arc::new(AtomicU32::new(0)),
+            replies: Arc::new(AtomicU64::new(0)),
             dropped_param_events: Arc::new(AtomicU64::new(0)),
             dropped_midi: Arc::new(AtomicU64::new(0)),
         }
@@ -135,7 +136,7 @@ impl Channels {
     pub(super) fn note_settled(&self, n: u32) {
         if n > 0 {
             self.settled.fetch_add(n as u64, Ordering::Release);
-            self.note_replied();
+            self.replies.fetch_add(u64::from(n), Ordering::Relaxed);
         }
     }
 
@@ -150,21 +151,22 @@ impl Channels {
     /// because the `Release` on [`note_settled`](Self::note_settled) orders it.
     pub(super) fn note_abandoned(&self) {
         self.abandoned.fetch_add(1, Ordering::Relaxed);
-        // Saturating: a plugin hung for hours must not wrap to zero.
-        let _ = self
-            .starved
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1));
     }
 
     /// Record that the plugin answered (a reply for a block, on time or
     /// owed): it is not hung. Bridge thread only.
     pub(super) fn note_replied(&self) {
-        self.starved.store(0, Ordering::Relaxed);
+        self.replies.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Blocks abandoned in a row with no reply since.
-    pub(super) fn starved(&self) -> u32 {
-        self.starved.load(Ordering::Relaxed)
+    /// Blocks abandoned and replies taken, over the life of the bridge. Two
+    /// relaxed reads: a reply landing between them shows up on the next call,
+    /// which is all a poller needs.
+    pub(super) fn block_counts(&self) -> (u64, u64) {
+        (
+            self.abandoned.load(Ordering::Relaxed),
+            self.replies.load(Ordering::Relaxed),
+        )
     }
 
     /// How many blocks' replies were abandoned, over the life of the bridge.
@@ -249,41 +251,24 @@ mod tests {
         Channels::new(SampleRate(48_000.0))
     }
 
-    /// Abandoned blocks accumulate while nothing answers, and any reply, on
-    /// time or owed, clears them: the count is "in a row".
+    /// Abandoned blocks and replies are separate monotonic totals: a poller
+    /// who sees the first grow while the second does not has a hang.
     ///
-    /// Mutations (each run, each failed): `note_abandoned` not counting
-    /// (first assert); `note_replied` a no-op (the reset asserts);
-    /// `note_settled` not clearing the count (the settled assert).
+    /// Mutations (each run, each failed): `note_abandoned` not counting;
+    /// `note_replied` a no-op; `note_settled` not counting its replies.
     #[test]
-    fn starvation_counts_abandoned_blocks_in_a_row() {
+    fn blocks_abandoned_and_replies_are_counted_apart() {
         let c = channels();
-        assert_eq!(c.starved(), 0);
+        assert_eq!(c.block_counts(), (0, 0));
         for _ in 0..3 {
             c.note_abandoned();
         }
-        assert_eq!(c.starved(), 3);
+        assert_eq!(c.block_counts(), (3, 0));
         c.note_replied();
-        assert_eq!(c.starved(), 0, "an on-time reply ends the run");
-        c.note_abandoned();
-        c.note_abandoned();
-        c.note_settled(1);
-        assert_eq!(c.starved(), 0, "an owed reply taken back is an answer too");
+        assert_eq!(c.block_counts(), (3, 1), "an on-time reply");
+        c.note_settled(2);
+        assert_eq!(c.block_counts(), (3, 3), "owed replies taken back");
         c.note_settled(0);
-        c.note_abandoned();
-        c.note_settled(0);
-        assert_eq!(c.starved(), 1, "settling nothing is not an answer");
-    }
-
-    /// The count saturates instead of wrapping to zero, which would read as
-    /// a plugin that answered.
-    ///
-    /// Mutation (run, failed): `fetch_add(1)` in place of the checked add.
-    #[test]
-    fn starvation_saturates() {
-        let c = channels();
-        c.starved.store(u32::MAX, Ordering::Relaxed);
-        c.note_abandoned();
-        assert_eq!(c.starved(), u32::MAX);
+        assert_eq!(c.block_counts(), (3, 3), "settling nothing is no reply");
     }
 }

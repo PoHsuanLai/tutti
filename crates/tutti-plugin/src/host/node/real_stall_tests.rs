@@ -396,10 +396,10 @@ fn a_plugin_that_never_parks_settles_nothing() {
     );
 }
 
-/// **A plugin that never returns from `process()` shows as a run of abandoned
-/// blocks, and its server can be ended.** The probe parks for good from block
-/// 4 (nothing releases it): the bridge's run of blocks without a reply climbs
-/// past the count a host reads as a hang, the plugin stays `Alive` (nothing
+/// **A plugin that never returns from `process()` shows as abandoned blocks
+/// growing with no reply, and its server can be ended.** The probe parks for good from block
+/// 4 (nothing releases it): the abandoned count climbs past what a host reads as a hang while the
+/// reply count stands still, the plugin stays `Alive` (nothing
 /// crashed), and `terminate` ends the server and latches the host's reason,
 /// so `status` reads `Dead` with it.
 ///
@@ -408,7 +408,7 @@ fn a_plugin_that_never_parks_settles_nothing() {
 /// status stays `Alive`); not latching the cause (the status reads the
 /// bridge's own "crashed" text).
 #[test]
-fn a_parked_plugin_shows_as_starved_blocks_and_can_be_terminated() {
+fn a_parked_plugin_shows_as_abandoned_blocks_with_no_replies_and_can_be_terminated() {
     let _lock = probe_lock::acquire();
     let mut env = ProbeEnv::new();
     env.set("TUTTI_CLAP_PROBE_BLOCK_FROM", PARK_FROM.to_string());
@@ -416,18 +416,37 @@ fn a_parked_plugin_shows_as_starved_blocks_and_can_be_terminated() {
     let mut client = graph_of(client);
     let mut midi_out = crate::protocol::MidiEventVec::new();
 
-    assert_eq!(handle.starved_blocks(), 0, "nothing is abandoned yet");
-    const HANG: u32 = 16;
+    assert_eq!(
+        handle.block_counts().abandoned,
+        0,
+        "nothing is abandoned yet"
+    );
+    const HANG: u64 = 16;
     let deadline = Instant::now() + Duration::from_secs(20);
-    while handle.starved_blocks() < HANG {
+    let replies_at_park = loop {
+        let counts = handle.block_counts();
+        if counts.abandoned >= HANG {
+            break counts.replies;
+        }
         assert!(
             Instant::now() < deadline,
-            "the run of abandoned blocks stopped at {}",
-            handle.starved_blocks()
+            "abandoned blocks stopped at {}",
+            counts.abandoned
         );
         let _ = drive_block(&mut client, &mut midi_out);
         std::thread::sleep(PACE);
+    };
+    // Replies came before the park; none since the blocks began to be
+    // abandoned (the count read at that moment is the baseline).
+    for _ in 0..5 {
+        let _ = drive_block(&mut client, &mut midi_out);
+        std::thread::sleep(PACE);
     }
+    assert_eq!(
+        handle.block_counts().replies,
+        replies_at_park,
+        "a parked plugin gave no reply"
+    );
     assert_eq!(
         handle.status(),
         crate::handles::PluginStatus::Alive,

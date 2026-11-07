@@ -52,7 +52,7 @@
 //! reloaded at its own node instead of removed. The policy is the pure
 //! [`Recovery`]; this module carries out what it decides:
 //!
-//! - **Hang.** `PluginHandle::starved_blocks` is observed each phase; a
+//! - **Hang.** `PluginHandle::block_counts` is observed each phase; a
 //!   verdict ends the server (`PluginHandle::terminate`), so a hung plugin
 //!   dies like a crashed one, and the load below never races a live server.
 //! - **Death.** The node stays in the graph, silent, with its wiring and
@@ -68,7 +68,7 @@
 //!
 //! An in-process plugin (VST2) is not recovered: a crash in it takes the
 //! process, and a hang in it blocks the audio thread itself, which nothing
-//! here observes (`starved_blocks` is `0` for it).
+//! here observes (`block_counts` is zeros for it).
 //!
 //! # `Phase::RenderMode` (with `export`)
 //!
@@ -1327,8 +1327,12 @@ impl Session {
             if cause.is_none()
                 && let Some(recovery) = hosted.recovery.as_mut()
                 && let RecoveryAction::Terminate { cause } = recovery.step(
-                    RecoveryEvent::Starved {
-                        blocks: hosted.handle.starved_blocks(),
+                    {
+                        let counts = hosted.handle.block_counts();
+                        RecoveryEvent::Starved {
+                            abandoned: counts.abandoned,
+                            replies: counts.replies,
+                        }
                     },
                     now,
                 )

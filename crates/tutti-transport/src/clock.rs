@@ -36,7 +36,7 @@ pub(crate) fn tempo_in_effect(asked: Bpm, in_force: Bpm) -> Bpm {
 /// Only a command the engine applies changes them mid-block
 /// ([`Control::apply`]).
 #[derive(Clone, Copy, Debug)]
-pub struct Control {
+pub(crate) struct Control {
     /// The tempo the block renders at.
     pub tempo: Bpm,
     /// Whether the transport is paused.
@@ -94,9 +94,9 @@ impl Control {
 /// it. A seek, a tempo or rate change and a loop wrap start a new segment on
 /// their frame.
 #[derive(Clone, Debug)]
-pub struct TransportClock {
+pub(crate) struct TransportClock {
     /// Everything shared with the live transport. A derived stream
-    /// ([`starting_at`](Self::starting_at), [`at_tempo`](Self::at_tempo))
+    /// (`starting_at`, `at_tempo`)
     /// severs it wholesale; every other field is this clock's own.
     links: ClockLinks,
     /// The playhead, and the tempo in force (its hysteresis applied) and rate
@@ -165,6 +165,7 @@ impl TransportClock {
     /// seconds while the live engine plays **writes** `position_writeback`
     /// and consumes `seek` every block: a shared clone stomps the live
     /// playhead and swallows live seeks.
+    #[cfg(test)]
     #[must_use]
     pub fn starting_at(&self, beat: impl Into<Beat>) -> Self {
         let mut derived = self.severed();
@@ -174,6 +175,7 @@ impl TransportClock {
 
     /// Derive an independent stream running at a fixed `bpm` (severed, as
     /// [`starting_at`](Self::starting_at) is).
+    #[cfg(test)]
     #[must_use]
     pub fn at_tempo(&self, bpm: impl Into<tutti_types::Bpm>) -> Self {
         let mut derived = self.severed();
@@ -183,6 +185,7 @@ impl TransportClock {
 
     /// A clone sharing nothing with the live transport. The tempo is copied
     /// into a cell of its own; the loop is dropped.
+    #[cfg(test)]
     fn severed(&self) -> Self {
         let mut derived = self.clone();
         derived.links = derived.links.severed();
@@ -190,6 +193,7 @@ impl TransportClock {
     }
 
     /// Set this clock's tempo, from its current frame on.
+    #[cfg(test)]
     fn set_tempo(&mut self, bpm: impl Into<tutti_types::Bpm>) {
         let bpm = bpm.into();
         self.links.tempo.store(bpm.get(), Ordering::Release);
@@ -197,8 +201,15 @@ impl TransportClock {
         self.publish_tempo();
     }
 
+    /// Publishes `beat` as the live playhead without moving this clock (see
+    /// [`ClockLinks::set_playhead`](super::state::ClockLinks::set_playhead)).
+    pub(crate) fn set_playhead(&self, beat: Beat) {
+        self.links.set_playhead(beat);
+    }
+
     /// The beat this clock will emit next. Its own position, not the live
     /// transport's — a derived stream reports its private playhead here.
+    #[cfg(test)]
     pub fn current_beat(&self) -> Beat {
         self.clock.beat()
     }
@@ -403,7 +414,6 @@ mod tests {
                 segment_generation: None,
                 steady_time: None,
                 tempo_in_force: None,
-                claim: None,
             },
             44100.0,
         );

@@ -22,23 +22,23 @@ use tutti_types::{Beat, Bpm};
 #[derive(Clone, Debug)]
 pub struct TransportSettings {
     /// Beats per minute. Read by the clock every buffer.
-    pub tempo: Arc<AtomicF64>,
+    pub(crate) tempo: Arc<AtomicF64>,
     /// The playhead, in beats. Written by `TransportClock` via its position
     /// writeback (and by a locate, which moves the readout at once); read by
     /// the UI and by pull-based sources through [`beat`](Self::beat).
     ///
     /// Crate-private, as is [`segment_generation`](Self::segment_generation):
-    /// only the transport's one playhead writer
-    /// ([`Transport::clock_links`](super::Transport::clock_links)) stores
-    /// them. A public cell was a second writer anyone could be:
+    /// only the transport's one audio side
+    /// ([`Transport::audio`](super::Transport::audio)) stores them. A public
+    /// cell was a second writer anyone could be:
     ///
     /// ```compile_fail,E0616
     /// let t = tutti_transport::Transport::new(48_000.0);
     /// t.settings.beat.store(8.0, std::sync::atomic::Ordering::Release);
     /// ```
     ///
-    /// A host that drives the playhead by hand takes the writer and stores
-    /// through it ([`ClockLinks::set_playhead`](super::ClockLinks::set_playhead)).
+    /// A host that drives the playhead by hand takes the audio side and
+    /// stores through it ([`TransportAudio::set_playhead`](super::TransportAudio::set_playhead)).
     pub(crate) beat: Arc<AtomicF64>,
     /// The segment the playhead is on
     /// ([`Timeline::segment_generation`](super::Timeline::segment_generation)):
@@ -53,7 +53,7 @@ pub struct TransportSettings {
     pub(crate) segment_generation: Arc<AtomicU64>,
     /// Whether the transport is armed and capturing. Read by the metronome's
     /// `RecordingOnly` mode and by hosted plugins' transport snapshot.
-    pub recording: Arc<AtomicBool>,
+    pub(crate) recording: Arc<AtomicBool>,
     /// Whether a count-in is running. Read independently of `recording` — the
     /// metronome's `RecordingOnly` mode plays only when recording *and not* in
     /// preroll, while `PrerollOnly` plays on exactly the opposite condition.
@@ -62,8 +62,14 @@ pub struct TransportSettings {
     /// count-in.
     pub in_preroll: Arc<AtomicBool>,
     /// Derived from motion by the engine's motion machine — the clock
-    /// reads it to decide whether to advance. Not set directly.
-    pub paused: Arc<AtomicBool>,
+    /// reads it to decide whether to advance. Crate-private: nothing outside
+    /// can set it.
+    ///
+    /// ```compile_fail,E0616
+    /// let t = tutti_transport::Transport::new(48_000.0);
+    /// t.settings.paused.store(false, std::sync::atomic::Ordering::Release);
+    /// ```
+    pub(crate) paused: Arc<AtomicBool>,
     /// Free-running sample count since the stream started, written by
     /// `TransportClock` every buffer.
     ///
@@ -71,12 +77,12 @@ pub struct TransportSettings {
     /// stops. Hosted plugins receive it as VST3's `continousTimeSamples` /
     /// CLAP's `steady_time`, which free-running effects key off precisely
     /// because the playhead is discontinuous.
-    pub steady_time: Arc<AtomicI64>,
+    pub(crate) steady_time: Arc<AtomicI64>,
     /// The tempo the clock is actually running at: [`tempo`](Self::tempo)
     /// as the clock last took it, which ignores wiggles smaller than its
     /// hysteresis. Written by the clock; what a beat must be resolved with
     /// to agree with it.
-    pub tempo_in_force: Arc<AtomicF64>,
+    pub(crate) tempo_in_force: Arc<AtomicF64>,
 }
 
 impl TransportSettings {
@@ -93,6 +99,12 @@ impl TransportSettings {
             steady_time: Arc::new(AtomicI64::new(0)),
             tempo_in_force: Arc::new(AtomicF64::new(120.0)),
         }
+    }
+
+    /// The tempo the clock is actually running at (see the field).
+    #[must_use]
+    pub fn tempo_in_force(&self) -> Bpm {
+        Bpm(self.tempo_in_force.load(Ordering::Acquire))
     }
 
     /// Samples elapsed since the stream started. Free-running: never reset by a
@@ -124,7 +136,7 @@ impl TransportSettings {
 
     /// Overwrite the published playhead: this crate's tests, which stand in
     /// for the clock. Outside it, the writer is
-    /// [`ClockLinks::set_playhead`](super::ClockLinks::set_playhead).
+    /// [`TransportAudio::set_playhead`](super::TransportAudio::set_playhead).
     #[cfg(test)]
     pub(crate) fn set_beat(&self, beat: impl Into<Beat>) {
         self.beat.store(beat.into().get(), Ordering::Release);

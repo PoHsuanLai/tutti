@@ -4,12 +4,11 @@
 //! The transport is *state* — a handful of atomics shared between the UI
 //! thread and the audio thread — plus the commands that mutate it. These
 //! types name the groups that always travel together, so consumers ask for
-//! a concept (`SeekSlot`) instead of assembling one from loose atomics.
+//! a concept instead of assembling one from loose atomics.
 //!
 //! Grouping is by **data-flow direction**:
 //!
 //! - [`ClockLinks`] — what `TransportClock` shares with the live transport.
-//! - [`SeekSlot`] — the pending jump the FSM hands the clock.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -68,62 +67,27 @@ impl Default for SeekSlot {
     }
 }
 
-/// Everything [`TransportClock`](super::TransportClock) shares with the live
-/// transport, and — when it came from [`Transport::clock_links`] — the
-/// transport's **one playhead writer**.
+/// Everything `TransportClock` shares with the live
+/// transport.
 ///
 /// The membership rule is exactly a derived stream's cut
-/// ([`TransportClock::starting_at`](super::TransportClock::starting_at), via
-/// [`severed`](Self::severed)): every field here is `Arc`-shared, so an
+/// (`TransportClock::starting_at`, via
+/// `severed`): every field here is `Arc`-shared, so an
 /// offline render stepping a clone must drop all of them or it stomps live
-/// playback. Fields the clock owns privately — its beat,
-/// sample rate, cached increment — are deliberately *not* here; that is the
-/// whole distinction the type draws.
+/// playback. Fields the clock owns privately are deliberately *not* here.
 ///
-/// Two are read to advance time (`tempo`, `paused`) and are public. The loop
-/// region is the engine's, not a link (`LoopRegion`). The rest are the writer half, written every buffer: the seek it
-/// consumes, and the playhead, segment generation, steady time and tempo in
-/// force it publishes. Both directions travel together because a clock given
-/// only the inputs advances a playhead nothing can read.
-///
-/// # One writer per transport
-///
-/// The writer half is private to the transport module, so the only
-/// `ClockLinks` that writes a live playhead is one from
-/// [`Transport::clock_links`], and that hands one out **once** per transport
-/// (every clone of the transport shares the claim). A second clock over the
-/// same transport is refused there, with [`PlayheadClaimed`], instead of two
-/// clocks both consuming each seek and both writing the playhead. Cloning the
-/// links (a clock's commit-clone) shares the one claim; [`severed`](Self::severed)
-/// drops it; the claim is given back when the last holder is dropped.
-///
-/// ```compile_fail,E0451
-/// # use std::sync::Arc;
-/// # use tutti_transport::ClockLinks;
-/// # use std::sync::atomic::AtomicBool;
-/// # use atomic_float::AtomicF64;
-/// # let t = tutti_transport::Transport::new(48_000.0);
-/// // A writer assembled by hand, around the claim: refused.
-/// let forged = ClockLinks {
-///     tempo: Arc::new(AtomicF64::new(120.0)),
-///     paused: Arc::new(AtomicBool::new(false)),
-///     seek: t.motion.seek.clone(),
-///     position_writeback: Some(Arc::new(AtomicF64::new(0.0))),
-///     segment_generation: None,
-///     steady_time: None,
-///     tempo_in_force: None,
-///     claim: None,
-/// };
-/// ```
-///
-/// [`Transport::clock_links`]: super::Transport::clock_links
+/// Crate-private: the only live links are the ones
+/// [`Transport::audio`](super::Transport::audio) builds for the one
+/// [`TransportAudio`](super::TransportAudio) that holds the motion machine,
+/// so no second playhead writer can be assembled outside.
 #[derive(Clone, Debug)]
-pub struct ClockLinks {
+pub(crate) struct ClockLinks {
     /// Beats per minute, re-read every buffer so a tempo edit takes effect
     /// within one block.
-    pub tempo: Arc<AtomicF64>,
+    pub(super) tempo: Arc<AtomicF64>,
     /// Whether to hold position. Written by the motion FSM, never set directly.
-    pub paused: Arc<AtomicBool>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) paused: Arc<AtomicBool>,
     /// Pending absolute jump, consumed once per buffer. Writer half: the
     /// clock that consumes the live seek is the one that moves the playhead.
     pub(super) seek: SeekSlot,
@@ -148,56 +112,13 @@ pub struct ClockLinks {
     /// applied), so a beat resolved elsewhere uses the same one. `None` =
     /// writes nothing live.
     pub(super) tempo_in_force: Option<Arc<AtomicF64>>,
-    /// The transport's playhead-writer claim, when these are its live links:
-    /// shared by clones of the links, given back when the last is dropped.
-    pub(super) claim: Option<Arc<PlayheadClaim>>,
 }
-
-/// A transport's playhead-writer claim, held (in an `Arc`) by the one
-/// [`ClockLinks`] that writes its playhead and by that links' clones. Its
-/// drop gives the claim back, so a transport whose clock is gone (an engine
-/// dropped for a new one) can hand out another.
-#[derive(Debug)]
-pub(super) struct PlayheadClaim(Arc<AtomicBool>);
-
-impl PlayheadClaim {
-    /// Take `flag`'s claim, if nobody holds it.
-    pub(super) fn take(flag: &Arc<AtomicBool>) -> Result<Self, PlayheadClaimed> {
-        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| Self(Arc::clone(flag)))
-            .map_err(|_| PlayheadClaimed)
-    }
-}
-
-impl Drop for PlayheadClaim {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-/// [`Transport::clock_links`](super::Transport::clock_links) refused: a
-/// clock over this transport already writes its playhead (an engine's, or a
-/// clone of it). Two would both consume every seek and both write the
-/// playhead. Drop the first (its engine) before building another over the
-/// same transport.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PlayheadClaimed;
-
-impl std::fmt::Display for PlayheadClaimed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a clock over this transport already writes its playhead")
-    }
-}
-
-impl std::error::Error for PlayheadClaimed {}
 
 impl ClockLinks {
     /// Links that follow a transport's live tempo and pausedness and share
-    /// nothing else: a clock over them writes no playhead and takes no claim.
-    /// For a test that needs a second clock over a transport an engine drives;
-    /// built only under `cfg(test)` or the `test-support` feature.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
+    /// nothing else: a clock over them writes no playhead. For tests.
+    #[cfg(test)]
+    pub(crate) fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
         Self {
             tempo,
             paused,
@@ -206,29 +127,13 @@ impl ClockLinks {
             segment_generation: None,
             steady_time: None,
             tempo_in_force: None,
-            claim: None,
         }
     }
 
-    /// Move the playhead by hand: a host with no clock (a headless tool, a
-    /// test standing in for the engine) publishes `beat` as the transport's
-    /// playhead through the writer it holds. A jump, as far as a reader can
-    /// tell, so the segment generation moves on first. A no-op on links
-    /// that write no playhead ([`writes_playhead`](Self::writes_playhead)).
-    ///
-    /// ```
-    /// use tutti_types::Beat;
-    /// use tutti_transport::{Timeline, Transport};
-    /// let transport = Transport::new(48_000.0);
-    /// let playhead = transport.clock_links().expect("the only writer");
-    /// playhead.set_playhead(Beat(4.0));
-    /// assert_eq!(transport.beat(), Beat(4.0));
-    /// // A jump: a reader keyed on the segment re-seats.
-    /// assert_eq!(transport.segment_generation(), 1);
-    /// // The writer is held: nobody else may store.
-    /// assert!(transport.clock_links().is_err());
-    /// ```
-    pub fn set_playhead(&self, beat: impl Into<Beat>) {
+    /// Move the playhead by hand: publishes `beat` as the transport's
+    /// playhead. A jump, as far as a reader can tell, so the segment
+    /// generation moves on first. A no-op on links that write no playhead.
+    pub(crate) fn set_playhead(&self, beat: impl Into<Beat>) {
         let beat = beat.into();
         if let Some(ref generation) = self.segment_generation {
             generation.fetch_add(1, Ordering::AcqRel);
@@ -238,24 +143,18 @@ impl ClockLinks {
         }
     }
 
-    /// Whether these links write a transport's playhead: they came from
-    /// [`Transport::clock_links`](super::Transport::clock_links) and were not
-    /// [`severed`](Self::severed).
-    pub fn writes_playhead(&self) -> bool {
-        self.claim.is_some()
-    }
-
     /// A copy sharing nothing with the live transport.
     ///
     /// Tempo is snapshotted into a private cell, playback forced unpaused with
-    /// no pending seek, and the loop, writeback and claim dropped — so a clock
+    /// no pending seek, and the loop and writeback dropped — so a clock
     /// built from this reads no live state and writes to nothing live.
     ///
     /// The destructure is exhaustive on purpose: adding another shared field
     /// becomes a compile error here rather than a field silently left shared,
     /// which is the bug class this cut exists to prevent.
+    #[cfg(test)]
     #[must_use]
-    pub fn severed(&self) -> Self {
+    pub(crate) fn severed(&self) -> Self {
         let Self {
             tempo,
             paused: _,
@@ -264,7 +163,6 @@ impl ClockLinks {
             segment_generation: _,
             steady_time: _,
             tempo_in_force: _,
-            claim: _,
         } = self;
 
         Self {
@@ -275,7 +173,6 @@ impl ClockLinks {
             segment_generation: None,
             steady_time: None,
             tempo_in_force: None,
-            claim: None,
         }
     }
 }

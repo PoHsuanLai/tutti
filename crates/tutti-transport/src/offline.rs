@@ -430,7 +430,7 @@ mod tests {
     /// reads as "the samplers are slightly late" and nothing else.
     #[test]
     fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
-        use crate::TransportClock;
+        use crate::clock::TransportClock;
         use atomic_float::AtomicF64;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
@@ -440,7 +440,7 @@ mod tests {
         let start_beat = Beat(4.0);
 
         let mut clock = TransportClock::new(
-            crate::ClockLinks::bare(
+            crate::state::ClockLinks::bare(
                 Arc::new(AtomicF64::new(tempo)),
                 Arc::new(AtomicBool::new(false)),
             ),
@@ -520,7 +520,7 @@ mod tests {
     /// tempo whose per-frame step is not representable fails.
     #[test]
     fn a_long_render_stands_on_the_closed_form() {
-        use crate::TransportClock;
+        use crate::clock::TransportClock;
         use atomic_float::AtomicF64;
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
@@ -543,7 +543,7 @@ mod tests {
                 loop_range: None,
             });
             let mut clock = TransportClock::new(
-                crate::ClockLinks::bare(
+                crate::state::ClockLinks::bare(
                     Arc::new(AtomicF64::new(tempo)),
                     Arc::new(AtomicBool::new(false)),
                 ),

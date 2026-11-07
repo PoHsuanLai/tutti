@@ -25,8 +25,6 @@ tutti-transport = { path = "../tutti-transport" }
 tutti-metering = { path = "../tutti-metering" }
 
 [dev-dependencies]
-# `ClockLinks::bare`, for the unit tests in `src/engine.rs`.
-tutti-transport = { path = "../tutti-transport", features = ["test-support"] }
 # The same crate as the dependency above, with the sample-accuracy contract
 # harness on (`tests/graph_contract.rs`): its `Pulse` and
 # `Latent` nodes are the engine-level rows' sources.

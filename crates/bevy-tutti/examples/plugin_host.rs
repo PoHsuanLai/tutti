@@ -278,13 +278,19 @@ fn narrate_editor(
 /// seconds-shaped quantity being added to a beat-shaped one.
 ///
 /// There is no engine here to drive the playhead, so this is its one writer
-/// (`clock_links`): with an engine running, taking it would be refused.
-fn drive_transport(transport: Res<TransportRes>) {
+/// (`Transport::audio`): with an engine running, taking it would be refused.
+fn drive_transport(
+    transport: Res<TransportRes>,
+    mut audio: Local<Option<tutti_transport::TransportAudio>>,
+) {
     let beat = transport.settings.beat();
     let per_tick = tutti_types::BeatDuration(TEMPO / 60.0 / SAMPLE_RATE * BLOCK);
-    transport
-        .clock_links()
-        .expect("the only playhead writer")
+    audio
+        .get_or_insert_with(|| {
+            transport
+                .audio(SAMPLE_RATE)
+                .expect("the only playhead writer")
+        })
         .set_playhead(beat + per_tick);
 }
 

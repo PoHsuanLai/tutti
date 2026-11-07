@@ -232,15 +232,12 @@ fn the_timeline_handle_tracks_the_live_transport() {
     let res = TransportRes(Transport::new(48_000.0));
     let timeline = res.timeline();
 
-    res.clock_links()
-        .expect("the only playhead writer")
-        .set_playhead(4.0);
+    let mut audio = res.audio(48_000.0).expect("the only playhead writer");
+    audio.set_playhead(4.0);
     assert_eq!(timeline.beat().get(), 4.0);
 
     // Move it again through the resource; the handed-out handle follows.
-    res.clock_links()
-        .expect("the only playhead writer")
-        .set_playhead(12.5);
+    audio.set_playhead(12.5);
     assert_eq!(
         timeline.beat().get(),
         12.5,

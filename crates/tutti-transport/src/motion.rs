@@ -2,8 +2,8 @@
 //!
 //! This is the *decision* half of the transport. The UI enqueues a
 //! [`MotionEvent`] through the control handle, [`MotionFsm`]; the engine
-//! owns the audio half, `MotionAudio`, and drains the queue into its FSM, which
-//! decides what actually happens (a `Play` while already rolling is a no-op,
+//! owns the audio half, `MotionAudio`, and applies each command to its FSM,
+//! which decides what actually happens (a `Play` while already rolling is a no-op,
 //! a `Stop` while rolling becomes a declick fade) and publishes the result to
 //! whoever needs it.
 //!
@@ -139,7 +139,7 @@ impl MotionEvent {
     /// Returns a stop that fades out, then returns to `beat` when the fade
     /// completes.
     ///
-    /// The Stop button. Sending a stop and a locate as two events drains both
+    /// The Stop button. Sending a stop and a locate as two events applies both
     /// in one callback, so the seek lands immediately and the fade ramps down
     /// audio rendered from the *new* position — protecting nothing.
     pub const fn stop_then_locate(beat: Beat) -> Self {
@@ -151,24 +151,21 @@ impl MotionEvent {
     }
 }
 
-/// Capacity of the UI → audio-thread command queue. Transport commands are
-/// user-driven and rare; overflowing means something is spamming events.
-const COMMAND_QUEUE_CAPACITY: usize = 64;
-
 /// The command queue was full, so `event` never reached the state machine.
 ///
 /// Distinct from the FSM *rejecting* a transition (`Play` while already
-/// rolling is a legitimate no-op): this means the event was lost, which is a
-/// bug — the queue holds 64 user-driven commands.
+/// rolling is a legitimate no-op): this means the event was not sent, which
+/// is a bug — the queue holds [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY)
+/// user-driven commands in flight.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QueueFull {
-    /// The event that was dropped, handed back so a caller can retry it.
+    /// The event that was refused, handed back so a caller can retry it.
     pub event: MotionEvent,
 }
 
 impl core::fmt::Display for QueueFull {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "transport command queue full; dropped {:?}", self.event)
+        write!(f, "transport command queue full; {:?} not sent", self.event)
     }
 }
 
@@ -182,18 +179,15 @@ impl std::error::Error for QueueFull {}
 /// this transport, and comes back here when that engine is dropped.
 #[derive(Clone)]
 pub struct MotionFsm {
-    /// MPMC lock-free bounded queue. A full queue drops the command;
-    /// [`MotionFsm::try_send`] reports that rather than hiding it.
-    queue: Arc<ArrayQueue<MotionEvent>>,
     /// Published mirror of the FSM's motion, so the UI can read it without
     /// reaching the engine.
     motion: Arc<AtomicU8>,
     /// Pending absolute jump. Consumed by `TransportClock` once per buffer.
-    pub seek: SeekSlot,
+    pub(crate) seek: SeekSlot,
     /// The FSM writes the playhead on a locate, and pausedness tracks motion,
     /// so it needs the settings it publishes into.
     settings: TransportSettings,
-    /// Timestamped commands, applied by the engine on their frame. See
+    /// Every command, applied by the engine on its frame. See
     /// [`schedule`](Self::schedule).
     timed: Schedule,
     /// The one FSM and loop region, while no [`MotionAudio`] holds them. A
@@ -216,7 +210,7 @@ impl core::fmt::Debug for MotionFsm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MotionFsm")
             .field("motion", &self.motion())
-            .field("queued", &self.queue.len())
+            .field("scheduled", &self.timed.outstanding())
             .field("seek_pending", &self.seek.is_pending())
             .finish_non_exhaustive()
     }
@@ -234,7 +228,6 @@ impl MotionFsm {
             owner,
         });
         Self {
-            queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
             motion: Arc::new(AtomicU8::new(MotionState::Stopped.into())),
             seek: SeekSlot::new(),
             settings,
@@ -259,15 +252,12 @@ impl MotionFsm {
 
     /// The audio half: the FSM, taken out of this handle until the
     /// returned value is dropped. `None` while another holds it (on this
-    /// handle or a clone), so there is one FSM per transport. `Engine` takes
-    /// it; a host does not name it, and holding it keeps an engine from
-    /// being built over this transport.
-    pub fn audio(&self) -> Option<MotionAudio> {
+    /// handle or a clone), so there is one FSM per transport.
+    pub(crate) fn audio(&self) -> Option<MotionAudio> {
         let Home { fsm, owner } = self.home.pop()?;
         Some(MotionAudio {
             fsm,
             owner: Some(owner),
-            queue: Arc::clone(&self.queue),
             motion: Arc::clone(&self.motion),
             seek: self.seek.clone(),
             settings: self.settings.clone(),
@@ -297,8 +287,8 @@ impl MotionFsm {
     /// A **declicked** stop or seek (`FadeOut::Declick`) is where a time
     /// pays off: the engine sees it coming and fades the old audio out so it
     /// reaches zero exactly on the command's frame, then fades back in from
-    /// there, with no gain step anywhere. The same command sent untimed (or
-    /// as `At::NextBlock`, or late) has no lead: the old audio ends on the
+    /// there, with no gain step anywhere. The same command sent as `At::NextBlock` (or
+    /// [`try_send`](Self::try_send), or late) has no lead: the old audio ends on the
     /// block's first frame and the new one fades in. See the engine's module
     /// docs. A frame
     /// already past, a beat continuous playback already crossed, or a
@@ -310,9 +300,10 @@ impl MotionFsm {
     /// playback reaches it, holding its credit;
     /// [`cancel_scheduled`](Self::cancel_scheduled) takes it back.
     ///
-    /// The untimed [`try_send`](Self::try_send) and settings stores mean
-    /// `At::NextBlock`; this method has no untimed form of its own, so
-    /// "whenever" is spelled out as `At::NextBlock`.
+    /// [`try_send`](Self::try_send) is this method at `At::NextBlock`, and the
+    /// two share one queue: commands apply in the order they were sent when
+    /// they are due on the same frame. This method has no untimed form of its
+    /// own, so "whenever" is spelled out as `At::NextBlock`.
     ///
     /// With no engine running over the transport, commands stay in flight,
     /// up to [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) (64), and past
@@ -351,11 +342,14 @@ impl MotionFsm {
         self.timed.send(at, command.into())
     }
 
-    /// Takes back every scheduled command not yet applied, and frees their
-    /// credit. That includes pending [`LoopEdit`](super::LoopEdit)s: a cancel
-    /// is "nothing sent so far happens", whatever it was, so the loop region
+    /// Takes back every command waiting for a frame or a beat that has not
+    /// been applied, and frees their credit. [`At::NextBlock`] commands,
+    /// [`try_send`](Self::try_send) among them, are not waiting for a time
+    /// and stand: a stop sent just before a cancel still stops. A timed
+    /// [`LoopEdit`](super::LoopEdit) is taken back too, so the loop region
     /// stays as the engine last applied it. (A rate change does not drop
-    /// commands; it only moves `At::Frame` ones.) Takes effect at the engine's next block.
+    /// commands; it only moves `At::Frame` ones.) Takes effect at the
+    /// engine's next block.
     pub fn cancel_scheduled(&self) {
         self.timed.cancel_all();
     }
@@ -372,20 +366,26 @@ impl MotionFsm {
         self.timed.late()
     }
 
-    /// The timestamped queue, for the engine.
-    pub fn timed(&self) -> &Schedule {
+    /// The command queue, for the engine.
+    pub(crate) fn timed(&self) -> &Schedule {
         &self.timed
     }
 
-    /// Requests a transition. Lock-free, callable from any thread.
+    /// Requests a transition on the next block:
+    /// [`schedule`](Self::schedule) at [`At::NextBlock`], through the same
+    /// queue and credits.
     ///
     /// `Ok` means only that the event was *queued* — the FSM decides on the
     /// audio thread whether it actually applies, and that decision is not
     /// available synchronously. Observe the outcome by reading
     /// [`MotionFsm::motion`] on a later frame.
     ///
-    /// With no engine running over the transport, events stay queued, up to
-    /// 64, and past that this returns [`QueueFull`].
+    /// With no engine running over the transport, events stay queued. Past
+    /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) in flight (timed
+    /// commands waiting for their time count) it may still use the
+    /// [`IMMEDIATE_RESERVE`](super::IMMEDIATE_RESERVE) credits only
+    /// `At::NextBlock` commands take, so a backlog of waiting commands cannot
+    /// refuse a stop; past those too this returns [`QueueFull`].
     ///
     /// RT-safe: lock-free, no allocation.
     ///
@@ -394,7 +394,9 @@ impl MotionFsm {
     /// Returns [`QueueFull`] when the command queue is full. The event was
     /// not queued, and is handed back inside the error so it can be retried.
     pub fn try_send(&self, event: MotionEvent) -> Result<(), QueueFull> {
-        self.queue.push(event).map_err(|event| QueueFull { event })
+        self.timed
+            .send(At::NextBlock, event.into())
+            .map_err(|_| QueueFull { event })
     }
 
     /// Requests several transitions, in order.
@@ -411,7 +413,7 @@ impl MotionFsm {
         events.into_iter().try_for_each(|e| self.try_send(e))
     }
 
-    /// The current motion, as published by the engine's last drain.
+    /// The current motion, as published by the engine's last applied command.
     pub fn motion(&self) -> MotionState {
         MotionState::from(self.motion.load(Ordering::Acquire))
     }
@@ -438,11 +440,10 @@ impl MotionFsm {
 ///
 /// Dropping it hands the FSM back to its [`MotionFsm`], so an engine built
 /// later over the same transport resumes the same machine.
-pub struct MotionAudio {
+pub(crate) struct MotionAudio {
     fsm: TransportFsm,
     /// The loop region. `None` only once handed back.
     owner: Option<LoopOwner>,
-    queue: Arc<ArrayQueue<MotionEvent>>,
     motion: Arc<AtomicU8>,
     seek: SeekSlot,
     settings: TransportSettings,
@@ -482,7 +483,7 @@ impl MotionAudio {
     }
 
     /// Apply one scheduled command now: a motion change goes through the
-    /// state machine exactly as a drained event does.
+    /// state machine.
     pub fn apply(&mut self, command: TransportCommand) {
         match command {
             TransportCommand::Motion(event) => self.step(event),
@@ -500,16 +501,6 @@ impl MotionAudio {
         self.owner
             .as_ref()
             .map_or_else(LoopRegion::default, LoopOwner::region)
-    }
-
-    /// Drains the queue into the FSM and publishes the results.
-    ///
-    /// RT-safe: no allocation, no locks, bounded by the queue's 64-command
-    /// capacity.
-    pub fn drain(&mut self) {
-        while let Some(event) = self.queue.pop() {
-            self.step(event);
-        }
     }
 
     fn step(&mut self, event: MotionEvent) {
@@ -608,22 +599,72 @@ impl MotionAudio {
 /// Whether `motion` is a fade in progress. A retarget between two declick
 /// states must leave the ramp counting; only a settled state clears it.
 #[inline]
-fn is_declicking(motion: MotionState) -> bool {
+pub(crate) fn is_declicking(motion: MotionState) -> bool {
     matches!(
         motion,
         MotionState::DeclickToStop | MotionState::DeclickToLocate
     )
 }
 
+/// The audio half as the engine's walk drives it, for tests of the machine
+/// and of the handle over it.
+#[cfg(test)]
+pub(crate) mod harness {
+    use super::*;
+    use crate::timed::ScheduleAudio;
+
+    /// The audio half the engine would own, with the queue its walk applies
+    /// from: `drain` applies what was sent, in send order, as a block whose
+    /// commands are all due at its first frame.
+    pub(crate) struct Audio {
+        motion: MotionAudio,
+        queue: ScheduleAudio,
+    }
+
+    impl Audio {
+        pub(crate) fn of(m: &MotionFsm) -> Self {
+            Self {
+                motion: m.audio().expect("no engine holds it"),
+                queue: ScheduleAudio::new(m.timed().clone()),
+            }
+        }
+
+        pub(crate) fn drain(&mut self) {
+            self.queue.gather();
+            while let Some(i) =
+                (0..self.queue.pending().len()).min_by_key(|&i| self.queue.pending()[i].seq())
+            {
+                let command = self.queue.take(i, false).command();
+                self.motion.apply(command);
+            }
+        }
+    }
+
+    impl std::ops::Deref for Audio {
+        type Target = MotionAudio;
+        fn deref(&self) -> &MotionAudio {
+            &self.motion
+        }
+    }
+
+    impl std::ops::DerefMut for Audio {
+        fn deref_mut(&mut self) -> &mut MotionAudio {
+            &mut self.motion
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::harness::Audio;
     use super::*;
+    use crate::timed::{IMMEDIATE_RESERVE, SCHEDULE_CAPACITY};
     use tutti_types::Beat;
 
     /// The control handle and the audio half the engine would own.
-    fn fsm() -> (MotionFsm, MotionAudio) {
+    fn fsm() -> (MotionFsm, Audio) {
         let m = MotionFsm::new(TransportSettings::new());
-        let a = m.audio().expect("a new machine is home");
+        let a = Audio::of(&m);
         (m, a)
     }
 
@@ -661,7 +702,7 @@ mod tests {
         a.drain();
         drop(a);
 
-        let mut again = clone.audio().expect("handed back on drop");
+        let mut again = Audio::of(&clone);
         let _ = m.try_send(MotionEvent::stop_unfaded());
         again.drain();
         assert!(m.is_stopped(), "the returned FSM knew it was rolling");
@@ -692,7 +733,7 @@ mod tests {
     #[test]
     fn send_reports_a_full_queue() {
         let (m, _a) = fsm();
-        for _ in 0..COMMAND_QUEUE_CAPACITY {
+        for _ in 0..SCHEDULE_CAPACITY + IMMEDIATE_RESERVE {
             assert!(m.try_send(MotionEvent::Play).is_ok());
         }
         assert_eq!(
@@ -702,6 +743,63 @@ mod tests {
             }),
             "a full queue must report the drop, and hand the event back"
         );
+    }
+
+    /// A cancel takes back what waits for a time, never an immediate command:
+    /// a stop sent with `try_send` just before it still stops.
+    ///
+    /// Mutation (run): drop the `At::NextBlock` exemption in
+    /// `ScheduleAudio::gather` → the stop is cancelled and the transport
+    /// keeps rolling → fails.
+    #[test]
+    fn a_cancel_leaves_an_immediate_stop_standing() {
+        let (m, mut a) = fsm();
+        m.try_send(MotionEvent::Play).expect("room");
+        a.drain();
+        assert!(m.is_playing());
+        m.schedule(At::Beat(Beat(1000.0)), MotionEvent::Play)
+            .expect("room");
+        m.try_send(MotionEvent::stop_unfaded()).expect("room");
+        m.cancel_scheduled();
+        a.drain();
+        assert!(m.is_stopped(), "the immediate stop stood");
+        assert_eq!(m.scheduled_outstanding(), 0, "the timed one was taken back");
+    }
+
+    /// A backlog of commands waiting for their time cannot refuse a stop:
+    /// `try_send` has the immediate reserve past the timed limit, applies in
+    /// send order after the waiting ones, and the reserve's own limit still
+    /// hands the event back.
+    ///
+    /// Mutation (run): `Schedule::send` limiting every `At` to
+    /// `SCHEDULE_CAPACITY` → the stop is refused → fails; `try_send` turning
+    /// a refusal into `Ok` → the ninth immediate command is not reported →
+    /// fails.
+    #[test]
+    fn a_backlog_of_timed_commands_does_not_refuse_a_stop() {
+        let (m, mut a) = fsm();
+        m.try_send(MotionEvent::Play).expect("room");
+        a.drain();
+        assert!(m.is_playing());
+        for _ in 0..SCHEDULE_CAPACITY {
+            m.schedule(At::Beat(Beat(1000.0)), MotionEvent::Play)
+                .expect("room");
+        }
+        for _ in 1..IMMEDIATE_RESERVE {
+            m.try_send(MotionEvent::Play).expect("reserve");
+        }
+        m.try_send(MotionEvent::stop_unfaded())
+            .expect("the last reserve credit takes the stop");
+        assert_eq!(
+            m.try_send(MotionEvent::Play),
+            Err(QueueFull {
+                event: MotionEvent::Play
+            })
+        );
+        a.drain();
+        assert!(m.is_stopped(), "the stop applied, last in send order");
+        m.try_send(MotionEvent::Play)
+            .expect("the engine took the credits back");
     }
 
     #[test]

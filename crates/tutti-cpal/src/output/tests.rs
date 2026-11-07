@@ -95,7 +95,7 @@ fn test_transport_loop_wrapping() {
         )
         .expect("room");
     let _ = transport.motion.try_send(MotionEvent::Play);
-    transport.motion.seek.request(3.99);
+    let _ = transport.motion.try_send(MotionEvent::locate(Beat(3.99)));
 
     let frames = 1024;
     let mut output = vec![0.0f32; frames * 2];
@@ -104,9 +104,14 @@ fn test_transport_loop_wrapping() {
         &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
     );
 
+    // Seeked to 3.99 at the first frame, rolling at 2 beats a second: one
+    // wrap past 4.0, so the beat is 3.99 plus the block, less the loop's
+    // length. No seek would leave it at the block's own length, and a wrap
+    // counted twice or not at all would miss it.
     let beat = transport.settings.beat();
+    let expected = Beat(3.99 + 1024.0 * (120.0 / 60.0) / 44100.0 - 4.0);
     assert!(
-        beat < Beat(4.0),
-        "expected beat wrapped below 4.0, got {beat:?}"
+        (beat - expected).abs() < BeatDuration(1e-6),
+        "expected {expected:?} after one wrap, got {beat:?}"
     );
 }

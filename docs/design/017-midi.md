@@ -342,8 +342,8 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   looks again once a second whenever its loop has nothing to wait for; a
   hot-plug there is found in about a second. Where CoreMIDI does notify the loop
   blocks and the look is on the notification, which has not been observed. The
-  hub never holds its lock across a CoreMIDI call (a lock held across one
-  stalled the notification callback and hung the tests). Compiled and linted
+  hub never holds its lock across a CoreMIDI call (with one held across a call,
+  the macOS tests hung). Compiled and linted
   for `aarch64-apple-darwin` from Linux; its test runs only on macOS CI, and
   the author has not run any of this on a Mac.
 - **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and

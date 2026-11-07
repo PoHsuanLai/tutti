@@ -509,7 +509,8 @@ holds the second borrow of the port).
   whose on the port refused is withheld and counted, tagged or not, and clears the
   row, so a note lost entire is two losses (the 44 + 44 of
   `a_loss_is_counted_exactly_and_leaves_no_orphan`). An off the port refused is a
-  loss that is given back when the off goes out. A relay's table is therefore
+  loss that is given back when the off goes out. A key counts its refused ons (to
+  255), so notes that overlap on a key are counted one by one. A relay's table is therefore
   freed by its sender's offs without a `release_all`.
 - **Memory and cost.** 12 bytes a key with the clip's tag, 24 KiB per clip node,
   allocated with the node. Per 512-frame block, against the bitsets it replaced

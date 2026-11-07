@@ -8,12 +8,12 @@
 //! Layout: a 44-byte `PCMWAVEFORMAT` header for at most two channels of at most
 //! 16 bits, else a 68-byte `WAVE_FORMAT_EXTENSIBLE` one (which also names the
 //! speakers). The RIFF and `data` sizes are written as zero first and
-//! back-patched by [`finish`](Writer::finish).
+//! back-patched by [`finish`](FormatWriter::finish).
 //!
 //! A WAV file's sizes are 32-bit, so a file holds at most [`max_data_frames`]
 //! frames (just under 4 GiB: about 62 minutes of 8-channel 24-bit audio at
 //! 48 kHz). The write that would cross it writes the frames that fit and fails
-//! with [`Error::WavTooLarge`]; [`finish`](Writer::finish) then closes the file
+//! with [`Error::WavTooLarge`]; [`finish`](FormatWriter::finish) then closes the file
 //! at the last whole frame, which stays readable. RF64 is not written.
 
 mod mask;

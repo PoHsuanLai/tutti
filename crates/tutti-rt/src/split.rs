@@ -853,6 +853,28 @@ mod tests {
         assert_eq!(view.try_get_mut(1).map(|c| c.len()), Ok(1));
     }
 
+    /// The same for a write: a full `Held` refuses an exclusive claim before
+    /// taking it.
+    ///
+    /// Mutation (run): drop the `ensure_room` call in `acquire_write`'s
+    /// `None` arm -> chunk 1 stays exclusively claimed after the view drops
+    /// -> the last `try_get_mut` conflicts -> fails.
+    #[test]
+    fn a_full_held_leaves_no_write_claim_behind() {
+        let mut v = [0u8; 2];
+        let mut t = ClaimTable::new(2);
+        let s = SplitRw::new(&mut v, 1, &mut t);
+        let h = Held::new(1);
+        let mut view = s.view(&h);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.split(&[(0, ()), (1, ())], |()| true, |_, _| {}, |_, _| {});
+        }));
+        assert!(r.is_err(), "the second claim does not fit");
+        drop(view);
+        let mut view = s.view(&h);
+        assert_eq!(view.try_get_mut(1).map(|c| c.len()), Ok(1));
+    }
+
     /// `split`'s reads and writes land on the right chunks.
     ///
     /// Mutation: in `split`, hand `write` the chunk at `i + 1` → the written

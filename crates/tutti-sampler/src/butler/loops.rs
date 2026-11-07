@@ -122,7 +122,13 @@ impl Arrangement {
             Some(_) => {
                 let (idx, frac) = split_position(pos);
                 Some((
-                    [idx.saturating_sub(1), idx, idx + 1, idx + 2].map(|s| s as u64),
+                    [
+                        idx.saturating_sub(1),
+                        idx,
+                        idx.saturating_add(1),
+                        idx.saturating_add(2),
+                    ]
+                    .map(|s| s as u64),
                     frac,
                 ))
             }
@@ -644,6 +650,34 @@ pub(crate) fn buffer_size_for_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A looped position the audio thread cannot place (`floor() as usize`
+    /// saturates for infinity and anything from 2^64 up) makes taps near
+    /// `usize::MAX`, not an overflow, and none is in a ring window, which
+    /// stops at 2^40: the read misses and that voice is silent.
+    ///
+    /// Mutation (run): the `saturating_add` calls back to `+` -> `taps(inf)`
+    /// panics on overflow in debug -> fails.
+    #[test]
+    fn a_looped_position_past_usize_saturates_to_taps_no_window_holds() {
+        let arrangement = Arrangement {
+            reverse: false,
+            len: 1000,
+            span: Some(LoopSpan::new(10, 20, 4, 1000).expect("a loop")),
+        };
+        let window = tutti_rt::RingWindow {
+            from: 0,
+            to: tutti_rt::MAX_POS_RING_POSITION,
+        };
+        for pos in [f64::INFINITY, 1e30, 18_446_744_073_709_552_000.0] {
+            let (taps, _) = arrangement.taps(pos).expect("a looped position has taps");
+            assert!(
+                taps.iter().all(|&t| t >= usize::MAX as u64 - 1),
+                "{pos}: {taps:?}"
+            );
+            assert!(taps.iter().all(|&t| !window.holds(t)), "{pos}");
+        }
+    }
 
     fn make_test_wave(samples: &[(f32, f32)]) -> Wave {
         let mut wave = Wave::new(2, 48000.0);

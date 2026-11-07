@@ -125,7 +125,10 @@ pub struct RingWindow {
 
 impl RingWindow {
     fn pack(self) -> u64 {
-        assert!(self.to <= MAX_POS_RING_POSITION, "a position past 2^40");
+        assert!(
+            self.to <= MAX_POS_RING_POSITION,
+            "a window end past 2^40 - 1"
+        );
         debug_assert!(self.to - self.from <= MAX_POS_RING_FRAMES as u64);
         (self.to << LEN_BITS) | (self.to - self.from)
     }

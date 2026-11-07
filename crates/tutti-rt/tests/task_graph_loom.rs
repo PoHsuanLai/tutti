@@ -46,23 +46,11 @@
 //!   both models (the caller returns before that sink's write);
 //! - the successor decrement's `AcqRel` weakened to `Release` also fails
 //!   `the_caller_sees_every_task_through_the_sinks`, which reads no
-//!   predecessor's cell: the termination proof rests on that chain. With
-//!   every task counted (the earlier design), the same mutation passed that
-//!   model and failed only `diamond_two_participants`;
+//!   predecessor's cell: the termination proof rests on that chain;
 //! - `begin`'s counter re-arm removed → `diamond_two_participants` (the
 //!   second block's counters wrap and never reach zero, so the caller
 //!   spins; loom fails it with "Model exceeded maximum number of
-//!   branches"). Re-run after the caller's wait became `SpinThenYield`
-//!   (`src/spin.rs`, budget 2 under loom), and after the termination count
-//!   became the sinks': it still fails the same way.
-//!
-//! The record was re-run in full when the termination count became the
-//! sinks' and the helpers gained completion counters; every mutation above
-//! still fails.
-//! When the in-block waits became per-pool budgets (`BlockWaits`, a count
-//! under loom as before, so no ordering changed), the `pop` `Acquire`, the
-//! `remaining` `Release`, the successor decrement's `AcqRel` and the
-//! `begin` re-arm mutations were re-run: each still fails as recorded.
+//!   branches").
 //!
 //! The caller's spin-then-yield is a scheduling change, not an ordering
 //! one: its progress signal (the `remaining` load the exit test makes, and

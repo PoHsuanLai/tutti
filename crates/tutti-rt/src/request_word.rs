@@ -39,25 +39,63 @@ pub const REQUEST_BITS: u8 = 32;
 pub struct RequestBit(u8);
 
 impl RequestBit {
-    /// The bit at `index`.
+    /// The bit at `index`, or `None` if it is [`REQUEST_BITS`] or more.
+    #[must_use]
+    pub const fn new(index: u8) -> Option<Self> {
+        if index < REQUEST_BITS {
+            Some(Self(index))
+        } else {
+            None
+        }
+    }
+
+    /// The bit at `index`, for a literal or a constant.
     ///
     /// # Panics
     ///
-    /// If `index` is [`REQUEST_BITS`] or more.
+    /// If `index` is [`REQUEST_BITS`] or more, at compile time in a `const`.
     #[must_use]
-    pub const fn new(index: u8) -> Self {
-        assert!(index < REQUEST_BITS, "a request word has 32 bits");
-        Self(index)
+    pub const fn of(index: u8) -> Self {
+        match Self::new(index) {
+            Some(bit) => bit,
+            None => panic!("a request word has 32 bits"),
+        }
     }
 
     /// The position.
     #[must_use]
-    pub const fn index(self) -> u8 {
+    pub const fn get(self) -> u8 {
         self.0
     }
 
     const fn mask(self) -> u32 {
         1 << self.0
+    }
+}
+
+impl From<RequestBit> for u8 {
+    fn from(bit: RequestBit) -> u8 {
+        bit.0
+    }
+}
+
+/// A bit index a [`RequestWord`] has no room for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestBitOutOfRange(u8);
+
+impl RequestBitOutOfRange {
+    /// The index that was refused.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for RequestBit {
+    type Error = RequestBitOutOfRange;
+
+    fn try_from(index: u8) -> Result<Self, RequestBitOutOfRange> {
+        Self::new(index).ok_or(RequestBitOutOfRange(index))
     }
 }
 
@@ -100,7 +138,7 @@ impl RequestBits {
 /// ```
 /// use tutti_rt::{RequestBit, RequestWord};
 ///
-/// const RESTART: RequestBit = RequestBit::new(0);
+/// const RESTART: RequestBit = RequestBit::of(0);
 /// let word = RequestWord::new();
 /// word.raise(RESTART);
 /// word.raise(RESTART);
@@ -131,3 +169,6 @@ impl RequestWord {
         RequestBits(self.0.swap(0, Ordering::Acquire))
     }
 }
+
+#[cfg(all(test, not(loom)))]
+mod tests;

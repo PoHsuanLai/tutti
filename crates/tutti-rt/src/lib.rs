@@ -4,7 +4,8 @@
 //! Real-time-safe shared-memory primitives for the audio thread.
 //!
 //! Interior mutability, fixed-capacity buffers, and the denormals flush: each
-//! is `#[no_alloc]`-safe on the audio path and carries no engine dependency.
+//! is allocation-free on the audio path (`tests/rt_no_alloc.rs` gates it) and
+//! carries no engine dependency.
 //!
 //! # How the buffers relate
 //!
@@ -82,7 +83,7 @@ pub use pos_ring::{
     MAX_POS_RING_FRAMES, MAX_POS_RING_POSITION, PosClaim, PosFrame, PosReader, PosRing, PosWriter,
     RingWindow,
 };
-pub use request_word::{REQUEST_BITS, RequestBit, RequestBits, RequestWord};
+pub use request_word::{REQUEST_BITS, RequestBit, RequestBitOutOfRange, RequestBits, RequestWord};
 pub use scope::{RtScope, RtScopeGuard};
 pub use seq_cell::{Contended, SeqReader, SeqWriter};
 pub use spin::BlockWaits;

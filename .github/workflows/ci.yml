@@ -652,11 +652,11 @@ jobs:
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
-  # structural answer there instead. Of what is left, the two that matter are
-  # the aliasing in `tutti-rt`'s `AudioThreadCell` and `arc-lend`'s
-  # hazard-slot reclamation (`ArcLend`, its own crate). (The third, the pointer arithmetic in
-  # `tutti-node`'s planar buffers, went with that crate: a
-  # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
+  # structural answer there instead. Of what is left, the ones that matter
+  # are `tutti-rt`'s: the aliasing in `AudioThreadCell`, the claims behind
+  # `SplitMut`/`SplitRw`, `JobGate`'s job cell and `edit_ring`'s slot words
+  # (their unit tests, `--lib` below, run under miri), and `arc-lend`'s
+  # hazard-slot reclamation (`ArcLend`, its own crate).
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
   # and because a failure here should read as "a memory-safety claim broke",

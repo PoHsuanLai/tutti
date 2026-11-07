@@ -22,7 +22,7 @@ use tutti_core::{MeterSlot, MeterSlotReader, ProjectMeter};
 /// and every plugin with one call. Installing or clearing is a publish into
 /// the node's cell, never a swap of which cell it reads.
 ///
-/// The cell is an [`ArcLend`](tutti_types::ArcLend) of an `Option<Arc<_>>`,
+/// The cell is an [`ArcLend`](tutti_rt::ArcLend) of an `Option<Arc<_>>`,
 /// so the node only ever *borrows* the meter: an install or a clear during
 /// playback retires the old value for the control side to free. (An
 /// `ArcSwapOption` here turned the node's guard into the last strong count,

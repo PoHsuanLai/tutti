@@ -154,7 +154,8 @@ use std::sync::atomic::AtomicU64;
 
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_types::{Frame, NodeKey, RtScope, Samples, ScopedNoDenormals, Tail};
+use tutti_rt::{RtScope, ScopedNoDenormals};
+use tutti_types::{Frame, NodeKey, Samples, Tail};
 
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};

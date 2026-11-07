@@ -775,7 +775,7 @@ struct Published {
 
 /// [`Published`]'s unit: the reader it lends through.
 struct PublishedNode {
-    reader: tutti_types::Reader<u32>,
+    reader: tutti_rt::Reader<u32>,
 }
 
 /// [`Published`]'s controls: its cell, and a token only the controls hold
@@ -783,7 +783,7 @@ struct PublishedNode {
 /// and the graph's reclaimer's).
 #[derive(Clone)]
 struct PublishedControls {
-    cell: Arc<tutti_types::ArcLend<u32>>,
+    cell: Arc<tutti_rt::ArcLend<u32>>,
     token: Arc<()>,
 }
 
@@ -798,7 +798,7 @@ impl PublishedControls {
 
 impl Published {
     fn new() -> Self {
-        let cell = Arc::new(tutti_types::ArcLend::new(0));
+        let cell = Arc::new(tutti_rt::ArcLend::new(0));
         Self {
             node: PublishedNode {
                 reader: cell.reader(),

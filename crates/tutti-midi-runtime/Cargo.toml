@@ -27,6 +27,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 atomic_float = "1.1"
 crossbeam-queue = "0.3"
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]

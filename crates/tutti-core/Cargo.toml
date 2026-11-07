@@ -39,11 +39,12 @@ thiserror.workspace = true
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 # The graph runtime: `Engine` renders a `tutti_graph::Executor`. No cycle:
-# tutti-graph depends on no tutti crate but tutti-types.
+# tutti-graph depends on no tutti crate but tutti-types, tutti-rt and tutti-ump.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
 # Shared RT primitives (AudioThreadCell, RtVec).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
+tutti-rt = { path = "../tutti-rt" }
 
 # Lock-free (no_std compatible)
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }

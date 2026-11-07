@@ -1,8 +1,8 @@
 //! A `loom` model of [`SeqWriter`] and [`SeqReader`]: the shipped code, whose atomics and fences
-//! are loom's under the flag (see `rt/seq_cell.rs`'s `sync` module).
+//! are loom's under the flag (see `src/seq_cell.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test seq_cell_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test seq_cell_loom
 //! ```
 //!
 //! The value is a `[u32; 3]`: twelve bytes, so two words, the second only
@@ -19,7 +19,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/seq_cell.rs` (re-run against the typed
+//! Each was applied to `src/seq_cell.rs` (re-run against the typed
 //! `SeqWriter<T>`) and both models failed, at `LOOM_MAX_PREEMPTIONS=3` and
 //! unbounded (the pair runs in about four seconds):
 //!
@@ -44,7 +44,7 @@
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::{Contended, SeqReader, SeqWriter};
+use tutti_rt::{Contended, SeqReader, SeqWriter};
 
 type Value = [u32; 3];
 

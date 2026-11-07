@@ -12,7 +12,8 @@ pub use midly;
 // reaches the audio thread through `ArcLend`. The UMP constructors take
 // `tutti_ump`'s `MidiGroup`, `MidiChannel` and `CCNumber`, which callers import
 // from there.
-pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm};
+pub use tutti_rt::ArcLend;
+pub use tutti_types::{Beat, BeatDuration, Bpm};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
 // and re-resolve that text's intra-doc links in this scope rather than the
@@ -159,5 +160,6 @@ pub mod prelude {
         NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
         write_clip_file_from_beats,
     };
-    pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm};
+    pub use tutti_rt::ArcLend;
+    pub use tutti_types::{Beat, BeatDuration, Bpm};
 }

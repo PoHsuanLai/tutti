@@ -166,7 +166,9 @@ Rules:
   share it, and `Attribute::pitch` reads it.
 - **A per-note controller number is typed where Appendix A defines it.**
   `RegisteredPerNoteController` names each defined number and keeps any other as
-  `Reserved(u8)`, so every raw value re-encodes. `AssignablePerNote.controller`
+  `Reserved(u8)`, so every raw value re-encodes; build one from a wire number with
+  `From<u8>`, because a hand-built `Reserved` of a named number does not match its
+  named variant. `AssignablePerNote.controller`
   stays a byte: there are 256 assignable controllers, so it is not a `CCNumber`
   (7 bits), and masking it would alias controllers 128 to 255 onto 0 to 127.
 - **Flex addressing follows the specification.** Set Tempo, Set Time Signature and

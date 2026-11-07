@@ -354,30 +354,30 @@ impl<T: core::fmt::Debug> core::fmt::Debug for BorrowRef<'_, T> {
 ///
 /// ```compile_fail
 /// // `Cell` is `Send` but not `Sync`: two readers must not share a `&Cell`.
-/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// let cell = tutti_rt::AudioThreadCell::new(core::cell::Cell::new(0u32));
 /// let _r = cell.borrow();
 /// ```
 ///
 /// ```compile_fail
-/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// let cell = tutti_rt::AudioThreadCell::new(core::cell::Cell::new(0u32));
 /// let _r = cell.try_borrow();
 /// ```
 ///
 /// ```compile_fail
 /// fn sync<S: Sync>() {}
 /// // A shared `&guard` hands out `&Cell` on two threads.
-/// sync::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
+/// sync::<tutti_rt::BorrowGuard<'static, core::cell::Cell<u32>>>();
 /// ```
 ///
 /// ```
 /// fn send<S: Send>() {}
 /// fn sync<S: Sync>() {}
-/// sync::<tutti_types::AudioThreadCell<core::cell::Cell<u32>>>();
-/// send::<tutti_types::BorrowGuard<'static, core::cell::Cell<u32>>>();
-/// sync::<tutti_types::BorrowGuard<'static, u32>>();
-/// send::<tutti_types::BorrowRef<'static, u32>>();
-/// sync::<tutti_types::BorrowRef<'static, u32>>();
-/// let cell = tutti_types::AudioThreadCell::new(core::cell::Cell::new(0u32));
+/// sync::<tutti_rt::AudioThreadCell<core::cell::Cell<u32>>>();
+/// send::<tutti_rt::BorrowGuard<'static, core::cell::Cell<u32>>>();
+/// sync::<tutti_rt::BorrowGuard<'static, u32>>();
+/// send::<tutti_rt::BorrowRef<'static, u32>>();
+/// sync::<tutti_rt::BorrowRef<'static, u32>>();
+/// let cell = tutti_rt::AudioThreadCell::new(core::cell::Cell::new(0u32));
 /// cell.borrow_mut().set(1);
 /// ```
 ///
@@ -458,7 +458,7 @@ mod tests {
     ///
     /// Mutation (run): gate `try_acquire_writer`'s compare-exchange behind
     /// `cfg(debug_assertions)` (always succeeding without it), the shape the
-    /// cell had → `cargo nextest run --release -p tutti-types -E
+    /// cell had → `cargo nextest run --release -p tutti-rt -E
     /// 'test(concurrent_borrows_panic)'` fails (no panic: two `&mut u32`
     /// alias), while the debug run still passes.
     #[test]

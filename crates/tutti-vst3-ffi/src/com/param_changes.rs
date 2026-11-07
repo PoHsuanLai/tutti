@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_plugin_types::{Normalized, PointPool};
 use tutti_plugin_types::{ParameterChanges, ParameterPoint};
 
-use tutti_types::AudioThreadCell;
+use tutti_rt::AudioThreadCell;
 
 /// The host's `IParameterChanges`: a pool of preallocated queues the plugin
 /// reads (input) or fills through `addParameterData` (output) during one

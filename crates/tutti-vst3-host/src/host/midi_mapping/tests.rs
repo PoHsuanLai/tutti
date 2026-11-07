@@ -352,7 +352,7 @@ fn cc_route_reserves_only_while_mapped() {
 #[test]
 fn a_following_route_uses_the_published_mapping() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
-    use tutti_types::ArcLend;
+    use tutti_rt::ArcLend;
 
     let cell = std::sync::Arc::new(ArcLend::new(MidiCcCell(MidiCcMapping::empty())));
     let mut route = CcRoute::following(cell.reader(), true, 4, 4);

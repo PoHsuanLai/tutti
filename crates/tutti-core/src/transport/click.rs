@@ -39,9 +39,10 @@ use tutti_graph::{
     Cx, Env, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
+use tutti_rt::Reader;
 use tutti_types::AtomicF32;
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
-use tutti_types::{ChannelLayout, Reader, Tail};
+use tutti_types::{ChannelLayout, Tail};
 use tutti_types::{Meter, MeterMap};
 
 /// How far two beat onsets must differ to count as different beats.
@@ -113,7 +114,7 @@ pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.
     ///
-    /// Published through an [`ArcLend`](tutti_types::ArcLend) rather than a packed atomic because a
+    /// Published through an [`ArcLend`](tutti_rt::ArcLend) rather than a packed atomic because a
     /// [`MeterMap`] is a `Vec`, not a scalar. The node holds that cell itself
     /// (taken when it is built) and reads it once per block, never per
     /// sample; the control side reads the [`ProjectMeter`]'s own mirror.

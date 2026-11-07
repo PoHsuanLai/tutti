@@ -90,7 +90,7 @@
 //!    the host closure's obligation is a documented contract rather than
 //!    something the type can enforce.
 //!
-//! 3. **Plain atomics, not [`ArcLend`](tutti_types::ArcLend).** Every piece
+//! 3. **Plain atomics, not [`ArcLend`](tutti_rt::ArcLend).** Every piece
 //!    of state this module hands to the render thread is a scalar: a parameter
 //!    id, two `f32` endpoints, a frame offset, a duration. `ArcLend` exists
 //!    for state too large to pack into an atomic and costs a slot CAS, a
@@ -560,7 +560,7 @@ impl RenderNotify {
     /// that cannot be checked, so the bound is a contract rather than a
     /// guarantee. Concretely: no `Vec`/`String`/`format!`, no `Mutex`, no
     /// channel send that may allocate, no `println!`. Push scalars through
-    /// atomics; publish a table with [`ArcLend`](tutti_types::ArcLend) from
+    /// atomics; publish a table with [`ArcLend`](tutti_rt::ArcLend) from
     /// the control thread and *read* it here.
     ///
     /// A panic is caught rather than propagated, but by then it has already

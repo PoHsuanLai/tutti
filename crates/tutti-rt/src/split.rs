@@ -160,7 +160,7 @@ fn release_exclusive(word: &AtomicU32) {
 
 /// A slice whose elements can be claimed one at a time, exclusively, from
 /// any thread holding a `&SplitMut`. See the module docs
-/// (`src/rt/split.rs`).
+/// (`src/split.rs`).
 #[derive(Debug)]
 pub struct SplitMut<'a, T> {
     base: *mut T,
@@ -343,7 +343,7 @@ impl<T> Drop for ClaimedRun<'_, T> {
 
 /// A slice cut into chunks of `stride` elements, each of which can be read
 /// by several threads at once or written by one, through an [`RwView`]. See
-/// the module docs (`src/rt/split.rs`).
+/// the module docs (`src/split.rs`).
 #[derive(Debug)]
 pub struct SplitRw<'a, T> {
     base: *mut T,

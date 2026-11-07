@@ -1,8 +1,8 @@
 //! A `loom` model of [`RequestWord`]: the shipped code, whose atomics are
-//! loom's under the flag (see `rt/request_word.rs`'s `sync` module).
+//! loom's under the flag (see `src/request_word.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test request_word_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test request_word_loom
 //! ```
 //!
 //! Two threads raise one bit each while the main thread takes twice. Each
@@ -18,7 +18,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/request_word.rs`; the model failed as noted.
+//! Each was applied to `src/request_word.rs`; the model failed as noted.
 //!
 //! - `take` as `load` then `store(0)` (not one swap) → "a bit lost, or taken
 //!   twice": a raise between the two is cleared unseen;
@@ -33,7 +33,7 @@
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
-use tutti_types::{RequestBit, RequestWord};
+use tutti_rt::{RequestBit, RequestWord};
 
 const A: RequestBit = RequestBit::new(0);
 const B: RequestBit = RequestBit::new(5);

@@ -2,6 +2,7 @@
 // Catches a doc comment attached to the wrong item (say, an `impl Debug` right
 // below a struct), which leaves the type undocumented in rustdoc while it looks
 // documented in the source. Nothing else catches that.
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -21,8 +22,6 @@ pub mod value;
 mod channels;
 mod downmix;
 mod interleaved;
-mod interp;
-mod rt;
 mod topology;
 
 // Public: consumers spell `tutti_types::AudioIn` and the like through
@@ -34,21 +33,6 @@ pub mod meter;
 pub mod pcm;
 pub mod tail;
 pub mod wav;
-
-// RT-callback primitives.
-pub use rt::{
-    AudioThreadCell, BlockWaits, BorrowGuard, BorrowRef, ClaimConflict, ClaimTable, Claimed,
-    ClaimedRun, Contended, EditReader, EditWriter, Held, JobGate, MAX_POS_RING_FRAMES,
-    PackedAtomic, Participant, PosClaim, PosFrame, PosReader, PosRing, PosWriter, REQUEST_BITS,
-    RequestBit, RequestBits, RequestWord, RingFull, RingWindow, RtScope, RtScopeGuard, RtVec,
-    RwView, ScopedNoDenormals, SeqReader, SeqWriter, SplitMut, SplitRw, TaskGraph, edit_ring,
-};
-
-// The cell non-scalar state reaches the audio thread through: a control
-// thread publishes, the audio thread only borrows (`Loan`), so it never frees.
-// Its own crate (`arc-lend`, which names nothing of tutti's); re-exported here
-// so the engine spells it `tutti_types::ArcLend`.
-pub use arc_lend::{ArcLend, Loan, Reader};
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
 // addresses params without their unit types (tutti-graph's `ParamSet`) need
@@ -130,11 +114,7 @@ pub mod prelude {
     pub use crate::io::{AudioIn, AudioOut, OnEmpty, pump};
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
-    pub use crate::{ArcLend, Loan, Reader};
 }
 
 // PCM quantization.
 pub use pcm::{f32_to_i16, f32_to_i24};
-
-// Interpolation.
-pub use interp::cubic_hermite;

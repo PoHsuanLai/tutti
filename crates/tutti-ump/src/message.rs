@@ -302,8 +302,10 @@ pub enum Attribute {
 
 /// A Registered Per-Note Controller number (Appendix A, Table 22). A number
 /// the table leaves reserved is kept in [`Reserved`](Self::Reserved), so its
-/// message re-encodes exactly. [`From<u8>`] never builds `Reserved` for a
-/// number the table defines, so equal numbers are equal values.
+/// message re-encodes exactly. Build one from a wire number with [`From<u8>`],
+/// which names every number the table defines and only then falls back to
+/// `Reserved`. A hand-built `Reserved(7)` encodes as 7 but does not compare
+/// equal to, or match, [`Volume`](Self::Volume).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegisteredPerNoteController {
     /// 1: Modulation.

@@ -57,7 +57,7 @@ test-doc *ARGS:
 
 # The suites with a release-only half (`debug_assertions` off); CI's release step.
 test-release:
-    cargo nextest run --locked --release -p tutti-types -p arc-lend -p tutti-graph
+    cargo nextest run --locked --release -p tutti-types -p tutti-rt -p arc-lend -p tutti-graph
 
 # Everything.
 test-all: test test-features test-editor test-doc test-release
@@ -145,7 +145,7 @@ test-features:
 # in cpal's Linux/BSD target table. Enabling it on macOS or Windows compiles
 # clean and reaches nothing, which is exactly the silent-no-op shape
 # `check-windows` exists to catch — hence this recipe.
-# Miri over the non-FFI unsafe: the aliasing in `tutti-types`' `AudioThreadCell`
+# Miri over the non-FFI unsafe: the aliasing in `tutti-rt`'s `AudioThreadCell`
 # and `arc-lend`'s hazard-slot reclamation (`ArcLend`) (and, until doc 013 deleted
 # it, the pointer arithmetic in `tutti-node`'s planar buffers). See
 # `docs/design/012-unsafe-policy.md` for why this crate and not the rest — miri
@@ -156,7 +156,7 @@ test-features:
 # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d: they read MXCSR,
 # and miri has no x86 SSE intrinsics.
 miri:
-    cargo +nightly miri test --locked -p tutti-types --lib
+    cargo +nightly miri test --locked -p tutti-rt --lib
     cargo +nightly miri test --locked -p arc-lend
     MIRIFLAGS="-Zmiri-many-seeds=0..16" cargo +nightly miri test --locked -p arc-lend --lib
 
@@ -171,16 +171,16 @@ miri:
 loom:
     RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- --skip registering_and_dropping_readers
     LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p arc-lend --release --test loom -- registering_and_dropping_readers --exact
-    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test pos_ring_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test packed_atomic_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test seq_cell_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test cell_loom
+    LOOM_MAX_PREEMPTIONS=4 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test pos_ring_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test packed_atomic_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test seq_cell_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test cell_loom
     RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-shm-model --release
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test split_loom
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test job_gate_loom
-    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test task_graph_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test request_word_loom
-    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-types --release --test edit_ring_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test split_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test job_gate_loom
+    LOOM_MAX_PREEMPTIONS=3 RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test task_graph_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test request_word_loom
+    RUSTFLAGS="--cfg loom" cargo test --locked -p tutti-rt --release --test edit_ring_loom
 
 # The `ArcLend` loom models, after changing `arc-lend`'s protocol code: eight
 # of the nine unbounded (exhaustive, about 10 s; CI runs them so too), and
@@ -415,7 +415,7 @@ doc:
 # build can trip a lint only here (a `% 1` on a constant loom sets to 1). The
 # models run in `loom`; nothing else compiles this configuration.
 check-loom:
-    RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-types -p tutti-shm-model \
+    RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model \
         --all-targets -- -D warnings
 
 # The audio-correctness harnesses: a Rust example renders audio to a directory,

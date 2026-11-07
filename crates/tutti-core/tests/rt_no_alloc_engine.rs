@@ -180,7 +180,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
 /// must be *sounding* for it to count: a gated-off metronome returns before
 /// touching the meter, hence the `clicked` check.
 ///
-/// [`ArcLend`]: tutti_types::ArcLend
+/// [`ArcLend`]: tutti_rt::ArcLend
 ///
 /// Mutations (run): collect `env.segments()` into a `Vec` in
 /// `EnvClock::process` (the walk now in `Env::for_each_beat`), or in
@@ -287,7 +287,7 @@ impl tutti_graph::Pool for GatedPool {
         self.0
             .run(wake, &|i| assert_no_alloc::assert_no_alloc(|| job(i)));
     }
-    fn waits(&self) -> tutti_types::BlockWaits {
+    fn waits(&self) -> tutti_rt::BlockWaits {
         self.0.waits()
     }
 }

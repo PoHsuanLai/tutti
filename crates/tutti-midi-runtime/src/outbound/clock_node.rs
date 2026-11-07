@@ -20,7 +20,8 @@ use tutti_graph::{
     Shape, Status,
 };
 use tutti_midi_types::ump::MidiEvent;
-use tutti_types::{ChannelLayout, RtVec, SampleRate};
+use tutti_rt::RtVec;
+use tutti_types::{ChannelLayout, SampleRate};
 
 use super::clock_master::ClockMaster;
 use crate::live::order::{in_offset_order, offset_of};

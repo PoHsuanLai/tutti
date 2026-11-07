@@ -1,8 +1,8 @@
 //! A `loom` model of [`edit_ring`]: the shipped code, whose atomics and slot
-//! cells are loom's under the flag (see `rt/edits.rs`).
+//! cells are loom's under the flag (see `src/edits.rs`).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test edit_ring_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test edit_ring_loom
 //! ```
 //!
 //! The ring holds `[u32; 3]` (twelve bytes: two words, the second half used);
@@ -25,7 +25,7 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/edits.rs`; the model failed as noted.
+//! Each was applied to `src/edits.rs`; the model failed as noted.
 //!
 //! - `push`'s store of `head` weakened to `Relaxed` → a causality violation
 //!   (the consumer reads a slot whose write it is not ordered after);
@@ -48,7 +48,7 @@
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::edit_ring;
+use tutti_rt::edit_ring;
 
 fn run(capacity: usize) {
     loom::model(move || {
@@ -77,7 +77,7 @@ fn run(capacity: usize) {
         });
 
         let mut popped = Vec::new();
-        let take = |reader: &mut tutti_types::EditReader<[u32; 3]>, popped: &mut Vec<u32>| {
+        let take = |reader: &mut tutti_rt::EditReader<[u32; 3]>, popped: &mut Vec<u32>| {
             if let Some([a, b, c]) = reader.pop() {
                 assert!(a == b && b == c, "a torn slot: {:?}", [a, b, c]);
                 popped.push(a);

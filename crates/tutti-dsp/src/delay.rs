@@ -138,7 +138,7 @@ impl DelayLine {
                 let s0 = self.read_at(floor);
                 let s1 = self.read_at(floor + 1);
                 let s2 = self.read_at(floor + 2);
-                tutti_types::cubic_hermite(sm1, s0, s1, s2, frac)
+                crate::cubic_hermite(sm1, s0, s1, s2, frac)
             }
         }
     }

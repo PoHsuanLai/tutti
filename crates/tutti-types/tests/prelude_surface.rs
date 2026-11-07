@@ -31,24 +31,24 @@ use tutti_types::{
     Semitones as _, Tail as _, UnitAddr as _, UnitParam as _, Velocity as _,
 };
 
-// Channels, topology, buffers, I/O edge, meter, RT.
+// Channels, topology, buffers, I/O edge, meter.
 #[allow(
     unused_imports,
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::prelude::{
-    ArcLend as _, AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _,
-    Interleaved as _, InterleavedMut as _, Loan as _, MeterMap as _, NoteValue as _, Speaker as _,
-    StereoPlanes as _, TimeSignature as _,
+    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
+    InterleavedMut as _, MeterMap as _, NoteValue as _, Speaker as _, StereoPlanes as _,
+    TimeSignature as _,
 };
 #[allow(
     unused_imports,
     reason = "resolution IS the assertion — nothing uses these"
 )]
 use tutti_types::{
-    ArcLend as _, AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _,
-    Interleaved as _, InterleavedMut as _, Loan as _, MeterMap as _, NoteValue as _, Speaker as _,
-    StereoPlanes as _, TimeSignature as _,
+    AudioIn as _, AudioOut as _, ChannelLayout as _, ChannelTopology as _, Interleaved as _,
+    InterleavedMut as _, MeterMap as _, NoteValue as _, Speaker as _, StereoPlanes as _,
+    TimeSignature as _,
 };
 
 /// `pump` is a function rather than a type, so it needs a reference rather than

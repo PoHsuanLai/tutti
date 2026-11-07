@@ -109,7 +109,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
-| `PackedAtomic<ParamRange>` (one `AtomicU64`) | `PackedAtomic` in `tutti-types`, beside `AtomicF32`; `ParamRange` in `tutti-graph` | A plugin lane's own range; `ParamRanges` reuses it |
+| `PackedAtomic<ParamRange>` (one `AtomicU64`) | `PackedAtomic` in `tutti-rt`; `ParamRange` in `tutti-graph` | A plugin lane's own range; `ParamRanges` reuses it |
 | Plugin delivery | `tutti-plugin{,-types,-server}` | Where `ParameterChanges` is built, carried, applied |
 | The reconcile (`Modulation`, `ModHost`) | `tutti-nodes` (re-exported at the root), Bevy-free | It builds `tutti-nodes`' lanes and signal-source nodes and edits a plain `Editor`; a headless host needs it as much as an app. `tutti-nodes` already names `tutti-mod` and `tutti-graph`, and `bevy-tutti` names `tutti-nodes` |
 | Declarations (`Mods`, `ModRange`, `ParamRef`) and their adapter onto `Modulation` | `bevy-tutti` (`modulation`) | The API: entities to keys, `ModHost` over `AudioNode`s |

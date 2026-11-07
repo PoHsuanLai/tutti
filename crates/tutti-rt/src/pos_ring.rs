@@ -169,7 +169,7 @@ impl RingWindow {
 /// # Examples
 ///
 /// ```
-/// use tutti_types::PosRing;
+/// use tutti_rt::PosRing;
 ///
 /// // 8 stereo frames, nothing kept behind the play position.
 /// let (mut writer, mut reader) = PosRing::new(8, 2, 0);

@@ -27,7 +27,7 @@ use vst3::Steinberg::Vst::{
 use crate::events::{InputEvents, Stager};
 use crate::types::{MidiEvent, ParameterChanges};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
-use tutti_types::{Reader, RtVec};
+use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
 
 /// The MIDI a [`CcRoute`] passes on: a block's whole MIDI cap, so the route

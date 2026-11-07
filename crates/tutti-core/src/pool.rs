@@ -5,7 +5,7 @@
 //! job on the caller and up to `participants - 1` other threads, return when
 //! none is inside it); this is the engine's implementation. The handshake
 //! that lends each block's borrowed job to the helpers is
-//! `tutti_types::JobGate`, loom-checked there; this module adds only the
+//! `tutti_rt::JobGate`, loom-checked there; this module adds only the
 //! threads and how they wait.
 //!
 //! The pool runs one job at a time. A `run` that finds it busy (another
@@ -28,21 +28,21 @@
 //! never enters it. It waits only for helpers already inside the job, and a
 //! helper inside a job never yields or parks there: it takes tasks, spins
 //! for [`WorkerPoolBuilder::helper_leave_after`] (15 µs by default) when
-//! none is ready, and then leaves the job (`tutti_types::TaskGraph`'s
+//! none is ready, and then leaves the job (`tutti_rt::TaskGraph`'s
 //! "Waiting"). Yielding and parking happen only between jobs, outside the
 //! gate.
 //!
 //! The caller's own wait, for a helper still running a task or still inside
 //! the gate, spins, and on Linux yields its core once per
 //! [`WorkerPoolBuilder::caller_yield_after`] (250 µs by default) in which
-//! the helper made no progress (`tutti_types`' `rt/spin.rs`). That yield is
+//! the helper made no progress (`tutti-rt`'s `src/spin.rs`). That yield is
 //! for a helper queued behind the caller on the caller's core, and it only
 //! helps one at the caller's priority (below).
 //!
 //! The pool's four waits are its builder's: [`spin_budget`](WorkerPoolBuilder::spin_budget)
 //! and [`idle`](WorkerPoolBuilder::idle) between jobs, and the two inside a
 //! job above, which the executor reads through `Pool::waits` and the gate
-//! keeps for its close (`tutti_types::BlockWaits`).
+//! keeps for its close (`tutti_rt::BlockWaits`).
 //!
 //! # Priority
 //!
@@ -73,7 +73,7 @@ use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use tutti_graph::{BlockWaits, Pool};
-use tutti_types::JobGate;
+use tutti_rt::JobGate;
 
 /// A hook run once on each helper thread as it starts, with its index
 /// (`1..participants`).

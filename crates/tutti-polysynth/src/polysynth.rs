@@ -361,8 +361,10 @@ impl PolySynth {
     /// A MIDI 2.0 channel voice message.
     fn voice2(&mut self, channel: MidiChannel, voice: Voice2) {
         match voice {
-            // Velocity 0 is a Note Off here, as it always has been. M2-104
-            // §7.4.2 keeps it a Note On; that is for the translation stage.
+            // Native MIDI 2.0 velocity 0 is a Note Off here, as it always has
+            // been (M2-104 §7.4.2 keeps it a Note On; that is for the
+            // translation stage). A widened MIDI 1.0 Note On at velocity 0
+            // never gets here: it arrives as a `NoteOff`.
             Voice2::NoteOn {
                 note, velocity: 0, ..
             } => self.handle_note_off(note, channel),

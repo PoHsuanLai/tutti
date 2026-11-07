@@ -2806,7 +2806,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
 }
 
 /// An Assignable Per-Note Controller whose index byte has the high bit set is
-/// not CC74 or CC7: `CCNumber::of` used to mask 0xCA to 74. Mutation:
+/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74. Mutation:
 /// restoring the mask made the 0xCA case move the slide.
 #[test]
 fn an_assignable_per_note_index_is_a_whole_byte() {

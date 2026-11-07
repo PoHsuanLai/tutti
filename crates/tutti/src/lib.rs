@@ -36,8 +36,13 @@ pub use tutti_session as session;
 pub use tutti_core as core;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
-/// buffer views, the I/O edge traits, real-time primitives.
+/// buffer views, the I/O edge traits.
 pub use tutti_types as types;
+
+/// Real-time-safe shared-memory primitives for the audio thread (`tutti-rt`):
+/// the publish cell (`ArcLend`), the capped `RtVec`, the sequence lock and the
+/// denormals guard.
+pub use tutti_rt as rt;
 
 /// The audio graph (`tutti-graph`): `GraphBuilder`, `Editor`, `Executor`,
 /// and the `Node` trait. What `Engine` runs and what `export` renders.
@@ -155,6 +160,7 @@ pub mod prelude {
         OfflineTimeline, OfflineTimelineConfig, Then,
     };
     pub use tutti_graph::CrossfadeCurve;
+    pub use tutti_rt::{ArcLend, Loan, Reader};
     pub use tutti_types::LoopRange;
     pub use tutti_types::prelude::*;
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};

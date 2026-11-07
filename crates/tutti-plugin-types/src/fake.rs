@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use tutti_types::RequestWord;
+use tutti_rt::RequestWord;
 
 use crate::{
     AudioBufferMut, ChannelLayout, Control, Controller, EditDrain, EditSink, FdId, Layout, Loaded,

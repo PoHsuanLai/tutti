@@ -11,10 +11,10 @@ use tutti_graph::{
     SegmentShape, Shape, Status, Transport,
 };
 use tutti_mod::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
+use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::ChannelLayout;
 use tutti_types::{
-    ArcLend, AtomicF32, Beat, Frame, PackedAtomic, ParamAddr, ParamKey, Reader, SamplePosition,
-    Samples, Tail, Unit, UnitAddr,
+    AtomicF32, Beat, Frame, ParamAddr, ParamKey, SamplePosition, Samples, Tail, Unit, UnitAddr,
 };
 
 use super::lane::segment_shape;

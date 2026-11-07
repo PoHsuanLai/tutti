@@ -1,4 +1,4 @@
-//! Interpolation kernels shared by the engine's readers.
+//! Interpolation kernels shared by the delay line and the sampler's readers.
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
 ///
@@ -8,10 +8,11 @@
 ///
 /// The operation order is part of the contract: the sampler's readers and the
 /// delay line render bit for bit what this expression gives, so a
-/// re-association changes their output.
+/// re-association changes their output. Per-sample, so `#[inline]` lets the
+/// sampler's loops fuse it across the crate boundary.
 ///
 /// ```
-/// use tutti_types::cubic_hermite;
+/// use tutti_dsp::cubic_hermite;
 ///
 /// // Along a line the cubic is the line.
 /// assert_eq!(cubic_hermite(0.0, 1.0, 2.0, 3.0, 0.5), 1.5);

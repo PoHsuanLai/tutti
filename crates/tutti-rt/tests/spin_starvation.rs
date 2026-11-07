@@ -4,7 +4,7 @@
 //! [`TaskGraph::work`].
 //!
 //! ```text
-//! cargo test -p tutti-types --release --test spin_starvation -- --ignored --nocapture
+//! cargo test -p tutti-rt --release --test spin_starvation -- --ignored --nocapture
 //! ```
 //!
 //! Linux only. The `SCHED_FIFO` cases need `CAP_SYS_NICE` (or an `rtprio`
@@ -32,7 +32,7 @@
 //!   time-slice, so a caller that only spins keeps the helper off the core
 //!   for good once it is queued behind it (here, after its block): the
 //!   watchdog has to abort the block. A caller that yields after 250 µs
-//!   without progress (`rt/spin.rs`) goes behind the helper, which finishes
+//!   without progress (`src/spin.rs`) goes behind the helper, which finishes
 //!   the task, and the wait is about the rest of the task plus that budget.
 //!   This case is asserted.
 //!
@@ -52,7 +52,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tutti_types::{BlockWaits, Participant, TaskGraph};
+use tutti_rt::{BlockWaits, Participant, TaskGraph};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Policy {

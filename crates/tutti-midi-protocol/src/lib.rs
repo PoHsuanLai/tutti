@@ -1,4 +1,4 @@
-//! Translation between the MIDI 1.0 and MIDI 2.0 protocols (design 017 §4).
+//! Translation between the MIDI 1.0 and MIDI 2.0 protocols (design 017 §4 and §6).
 //!
 //! [`widen`] turns a MIDI 1.0 channel voice message into the MIDI 2.0 message
 //! that means the same, so a consumer matches [`Voice2`](tutti_ump::Voice2)

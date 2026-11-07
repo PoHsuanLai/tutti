@@ -32,6 +32,7 @@ testing = []
 # Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
 # default-features = false so bevy does not re-leak.
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The modulation compiler and its vocabulary (`ControlProgram`, `Curve`,
@@ -45,7 +46,7 @@ tutti-mod = { path = "../tutti-mod", default-features = false }
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 # The node contract every node here implements. tutti-graph depends on no
-# tutti crate but tutti-types, so the edge adds no cycle.
+# tutti crate but tutti-types, tutti-rt and tutti-ump, so the edge adds no cycle.
 tutti-graph = { path = "../tutti-graph" }
 
 # Envelope primitives consumed by `AutomationLaneNode` + `Recorder`, re-exported via

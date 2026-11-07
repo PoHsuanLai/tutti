@@ -28,7 +28,7 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 
 # `Node`, `ForkSource`: the synth as a graph node, and its own way into a
 # fork of the graph (an export), as `tutti-plugin`'s `PluginClient` has
-# one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`.
+# one. No cycle: `tutti-graph` names no tutti crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
 tutti-graph = { path = "../tutti-graph" }
 
 # The SVF and ladder coefficient functions. The voice bank runs those two
@@ -54,7 +54,7 @@ tutti-core = { path = "../tutti-core", default-features = false }
 # synth crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # The graph contract's test harness. No cycle: `tutti-graph` names no tutti
-# crate but `tutti-types`.
+# crate but `tutti-types`, `tutti-rt` and `tutti-ump`.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"

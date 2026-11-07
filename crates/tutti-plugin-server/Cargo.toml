@@ -46,7 +46,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types" }
 
 # Core types
 tutti-core = { path = "../tutti-core", default-features = false }
-tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
 

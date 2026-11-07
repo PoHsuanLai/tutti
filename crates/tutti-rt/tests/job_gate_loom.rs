@@ -1,8 +1,8 @@
 //! A `loom` model of [`JobGate`] — the shipped code, whose atomics and job
-//! cell are loom's under the flag (see `rt/job_gate.rs`'s `sync` module).
+//! cell are loom's under the flag (see `src/job_gate.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test job_gate_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test job_gate_loom
 //! ```
 //!
 //! The job borrows a `loom::cell::UnsafeCell` owned by the caller's stack
@@ -23,12 +23,12 @@
 //!
 //! # Mutation record
 //!
-//! Each was applied to `rt/job_gate.rs` and the model failed
+//! Each was applied to `src/job_gate.rs` and the model failed
 //! (`LOOM_MAX_PREEMPTIONS=3`):
 //!
 //! - the caller's wait for `entered` in `Close::drop` deleted → a causality
 //!   violation on the job cell (a helper reads after the overwrite). Re-run
-//!   after that wait became `SpinThenYield` (`rt/spin.rs`): the same;
+//!   after that wait became `SpinThenYield` (`src/spin.rs`): the same;
 //! - the helper's re-read of `state` after entering deleted → the same;
 //! - either `SeqCst` fence (the caller's in `Close::drop`, the helper's in
 //!   `help`) removed → the same;
@@ -54,7 +54,7 @@ use std::sync::Arc;
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
-use tutti_types::JobGate;
+use tutti_rt::JobGate;
 
 struct Borrowed {
     value: UnsafeCell<u32>,

@@ -77,7 +77,7 @@ use loom::{hint::spin_loop, thread::yield_now};
 /// block. A pool sets them (`tutti_core::WorkerPoolBuilder`), and the
 /// executor hands its pool's to [`TaskGraph::work`](super::TaskGraph::work);
 /// a [`JobGate`](super::JobGate) holds its own for its close. See the
-/// module docs (`src/rt/spin.rs`).
+/// module docs (`src/spin.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockWaits {
     /// How long the counter the audio thread waits on may stay unmoved
@@ -143,7 +143,7 @@ const LOOM_HELPER_SPINS: u32 = 2;
 
 /// A wait that spins, then yields its core after
 /// [`BlockWaits::caller_yield_after`] without progress (on Linux). See the
-/// module docs (`src/rt/spin.rs`).
+/// module docs (`src/spin.rs`).
 pub(super) struct SpinThenYield {
     /// The counter's value at the last wait.
     seen: u32,
@@ -346,14 +346,14 @@ pub(super) mod tests {
     /// Count this thread's caller-side yields into `counter` (a test's own
     /// static), so another thread can see that this one yielded.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(in crate::rt) fn count_yields_into(counter: &'static AtomicU32) {
+    pub(crate) fn count_yields_into(counter: &'static AtomicU32) {
         YIELDS.with(|y| y.set(Some(counter)));
     }
 
     /// Replace this thread's clock with one that advances `step` per read,
     /// so a wait's yield (or a helper's leaving) depends on how many waits
     /// it made and not on how long they took.
-    pub(in crate::rt) fn step_clock(step: std::time::Duration) {
+    pub(crate) fn step_clock(step: std::time::Duration) {
         CLOCK.with(|c| c.set(Some((std::time::Instant::now(), step))));
     }
 

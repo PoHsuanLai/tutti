@@ -19,6 +19,7 @@ categories = ["multimedia::audio"]
 # CoreMIDI.
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # The audio graph: what an export renders, and what `Engine` runs.

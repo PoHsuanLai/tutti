@@ -280,4 +280,5 @@ pub use play::PlayClock;
 pub use reference::Reference;
 pub use spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 pub use time::{Continuity, Due, Offset, Playhead};
-pub use tutti_types::{BlockWaits, PlayReading};
+pub use tutti_rt::BlockWaits;
+pub use tutti_types::PlayReading;

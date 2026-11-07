@@ -99,7 +99,7 @@ fn word_of(chunk: &[u8]) -> u64 {
 /// Wait-free on both sides; no allocation after [`new`](Self::new).
 ///
 /// ```
-/// use tutti_types::SeqWriter;
+/// use tutti_rt::SeqWriter;
 ///
 /// let mut writer = SeqWriter::<[f64; 2]>::new();
 /// let reader = writer.reader();
@@ -111,14 +111,14 @@ fn word_of(chunk: &[u8]) -> u64 {
 /// A second writer cannot be made:
 ///
 /// ```compile_fail
-/// let writer = tutti_types::SeqWriter::<u64>::new();
+/// let writer = tutti_rt::SeqWriter::<u64>::new();
 /// let second = writer.clone();
 /// ```
 ///
 /// Nor can a shared writer write:
 ///
 /// ```compile_fail
-/// fn write_shared(writer: &tutti_types::SeqWriter<u64>) {
+/// fn write_shared(writer: &tutti_rt::SeqWriter<u64>) {
 ///     writer.write(1);
 /// }
 /// ```

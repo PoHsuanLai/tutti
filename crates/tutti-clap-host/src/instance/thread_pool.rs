@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tutti_clap_ffi::{PoolHandle, TaskPool};
 use tutti_graph::Pool;
-use tutti_types::ScopedNoDenormals;
+use tutti_rt::ScopedNoDenormals;
 
 use super::ClapLoaded;
 

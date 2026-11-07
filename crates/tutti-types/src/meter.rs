@@ -168,7 +168,7 @@ impl core::fmt::Display for BeatsPerBar {
 /// time signature, and a non-power-of-two here would break the
 /// [SMF exponent](Self::to_smf_exponent) round trip.
 ///
-/// The raw is the denominator itself: `new`, `of`, `nearest`, `TryFrom<u32>` and
+/// The raw is the denominator itself: `new`, `of`, `TryFrom<u32>` and
 /// serde all take a `u32`. Only the [SMF exponent](Self::to_smf_exponent) is a
 /// different raw, and it has its own constructor.
 #[repr(transparent)]
@@ -219,29 +219,6 @@ impl NoteValue {
             Some(v) => v,
             None => panic!("a note value is a power of two from 1 to 64"),
         }
-    }
-
-    /// The smallest legal denominator not below `value`, saturating: `0` and `1`
-    /// give 1, `5` and `6` and `7` give 8, anything above [`MAX_NOTE_VALUE`]
-    /// gives that.
-    ///
-    /// Between two powers of two it rounds up, so `x/5` reads as `x/8`
-    /// whatever wrote it; it does not pick the closer of 4 and 8. For a lenient
-    /// import. A document or ABI value that should be refused goes through
-    /// [`new`](Self::new).
-    ///
-    /// The saturation comes **before** the rounding: `next_power_of_two`
-    /// overflows above 2^31, which panics in debug and returns 0 in release, and
-    /// a `NoteValue(0)` would make `bar_length` infinite.
-    #[inline]
-    #[must_use]
-    pub const fn nearest(value: u32) -> Self {
-        let value = if value > MAX_NOTE_VALUE {
-            MAX_NOTE_VALUE
-        } else {
-            value
-        };
-        Self(value.next_power_of_two())
     }
 
     /// Returns the denominator as written — `8` for 7/8. Always a power of two.
@@ -985,7 +962,7 @@ mod tests {
         assert!(p.fraction >= BeatDuration(0.0) && p.fraction < sig.beat_length());
     }
 
-    /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and the clamp share.
+    /// `MAX_BEATS_PER_BAR` is 64, the figure the wire form and `clamped` share.
     ///
     /// Mutation (run): `MAX_BEATS_PER_BAR` 64 → 65 → fails.
     #[test]
@@ -1012,11 +989,9 @@ mod tests {
         assert_eq!(seven_eight().beat_length(), BeatDuration(0.5));
     }
 
-    /// `clamped` and `nearest` are the saturating constructors; `new` refuses
-    /// the same raws.
+    /// `BeatsPerBar::clamped` saturates; `new` refuses the same raws.
     ///
     /// Mutation (run): `clamped` mapping 0 to 0 -> the `clamped(0)` assertion
-    /// fails; `nearest` rounding a non-power down -> the `nearest(5)` assertion
     /// fails; `new` accepting 0 -> the `BeatsPerBar::new(0)` assertion fails;
     /// `new` accepting any non-zero value up to 64 -> the `NoteValue::new`
     /// loop fails.
@@ -1028,13 +1003,6 @@ mod tests {
         assert_eq!(BeatsPerBar::clamped(999).get(), MAX_BEATS_PER_BAR);
         assert_eq!(BeatsPerBar::new(0), None);
         assert_eq!(BeatsPerBar::new(999), None);
-        // x/5 is not a meter; `nearest` rounds up to the next power of two.
-        assert_eq!(NoteValue::nearest(5).get(), 8);
-        assert_eq!(NoteValue::nearest(6).get(), 8);
-        assert_eq!(NoteValue::nearest(7).get(), 8);
-        assert_eq!(NoteValue::nearest(4).get(), 4);
-        assert_eq!(NoteValue::nearest(0).get(), 1);
-        assert_eq!(NoteValue::nearest(999).get(), MAX_NOTE_VALUE);
         for refused in [0, 3, 5, 6, 7, 9, 63, 65, 128, 999] {
             assert_eq!(NoteValue::new(refused), None, "{refused}");
         }
@@ -1042,14 +1010,9 @@ mod tests {
         assert!(TimeSignature::from_numbers(4, 5).is_none());
         assert!(TimeSignature::from_numbers(65, 4).is_none());
         assert_eq!(TimeSignature::from_numbers(7, 8), Some(seven_eight()));
-        // Above 2^31 `next_power_of_two` overflows — panicking in debug, and
-        // returning 0 in release, which would make `bar_length` infinite. The
-        // saturation has to happen first.
-        assert_eq!(NoteValue::nearest(u32::MAX).get(), MAX_NOTE_VALUE);
-        assert_eq!(NoteValue::nearest(2_147_483_649).get(), MAX_NOTE_VALUE);
         assert_eq!(BeatsPerBar::clamped(u32::MAX).get(), MAX_BEATS_PER_BAR);
         assert!(
-            TimeSignature::new(BeatsPerBar::clamped(0), NoteValue::nearest(5))
+            TimeSignature::new(BeatsPerBar::clamped(0), NoteValue::QUARTER)
                 .bar_length()
                 .get()
                 > 0.0
@@ -1064,7 +1027,7 @@ mod tests {
         //
         // Uses a legal power-of-two denominator on both sides, so this compares
         // 7/8 against 8/8 rather than 7/8 against a coerced 8/8 — the first
-        // version picked `NoteValue::nearest(7)`, which rounds to 8, making the
+        // version picked a rounded 7, which is 8, making the
         // assertion hold for a reason unrelated to its name.
         let seven_eight = TimeSignature::new(BeatsPerBar::of(7), NoteValue::EIGHTH);
         let eight_eighths = TimeSignature::new(BeatsPerBar::of(8), NoteValue::EIGHTH);

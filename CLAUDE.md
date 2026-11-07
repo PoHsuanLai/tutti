@@ -529,9 +529,9 @@ shape (`MidiChannel` is the reference). No macro.
   `new`, `of` and serde each take (`PitchBendSensitivity`: `new` and `of` take
   whole semitones, serde the bits) and gives the other a named constructor
   (`from_rpn_bits`).
-- `BeatsPerBar` and `NoteValue` keep the shape: `new` refuses, `clamped`
-  (`BeatsPerBar`) and `nearest` (`NoteValue`, which rounds up to the next power
-  of two, not to the closer one) saturate, and serde refuses.
+- `BeatsPerBar` and `NoteValue` keep the shape: `new` refuses and serde
+  refuses. Only `BeatsPerBar::clamped` saturates (the beat index in `bar_at`);
+  `NoteValue` has no saturating constructor until a lenient importer needs one.
 - **A new type is checked by `tutti_fixtures::check_range_contract`** in a
   test (valid and invalid raws through `new`, `TryFrom`, `of` and serde), and
   `scripts/check-range-types.sh` fails a private tuple field with a derived

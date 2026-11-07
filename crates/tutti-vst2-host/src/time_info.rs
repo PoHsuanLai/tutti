@@ -62,7 +62,7 @@ pub(crate) fn build_vst2_time_info(
     // because the field is non-`Option` — that argument is what set every other
     // VALID bit here unconditionally and shipped `tempo = 0, kVstTempoValid` to
     // plugins — but because `TimeSignature` is a validated newtype whose
-    // constructors clamp both halves into their legal ranges. There is no
+    // constructors refuse a half outside its legal range. There is no
     // representable invalid signature, so the claim is always true.
     let mut flags = F::TIME_SIG_VALID;
 

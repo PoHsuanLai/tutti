@@ -33,7 +33,7 @@ use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingP
 use tutti_core::transport::Transport;
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
-use tutti_types::{NodeKey, SampleRate};
+use tutti_types::SampleRate;
 
 const RATE: f64 = 48_000.0;
 
@@ -441,7 +441,7 @@ fn a_plugins_midi_rewiring_keeps_its_lanes() {
             .expect("a value")
     };
     let mut out = vec![Vec::new(), Vec::new()];
-    let mut check = |app: &mut App, want: &[NodeKey], what: &str| {
+    let mut check = |app: &mut App, want: &[tutti_types::NodeKey], what: &str| {
         let mut want = want.to_vec();
         want.sort();
         for _ in 0..2 {

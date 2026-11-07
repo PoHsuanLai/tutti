@@ -568,8 +568,8 @@ mod tests {
 
     /// Zero threads, the default, is one per available core.
     ///
-    /// Mutation: use `num_threads` as it is (zero) -> the helper count
-    /// underflows -> fails.
+    /// Mutation: a fixed `2` for the zero arm in `build` -> fails on any
+    /// machine without exactly two cores.
     #[test]
     fn the_default_is_one_thread_per_core() {
         let cores = std::thread::available_parallelism().map_or(1, |n| n.get());

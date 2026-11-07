@@ -1,14 +1,15 @@
-//! [`TapIn`] — the analysis tap's consumer end, as an [`AudioIn`].
+//! [`TapIn`] — a tap's reader, as an [`AudioIn`].
 //!
-//! `AudioTap` (in `tutti-metering`) is the RT-push half: the audio callback copies
-//! every master block into a lock-free ring, and `AudioTap::open` hands back the
-//! consumer as a [`TapCons`] — perfectly usable by an analysis thread draining
-//! it directly, but *not* an [`AudioIn`], so on its own it can feed neither a
-//! [`pump`](tutti_types::pump) nor a [`Recorder`](crate::Recorder).
+//! A tap (`tutti-graph`'s `Editor::open_tap`, or a session's
+//! `Graph::open_tap`) copies sources out of the graph into one ring a lane. Its
+//! [`TapReader`] drains them from any thread, perfectly usable by an analysis
+//! thread directly, but *not* an [`AudioIn`], so on its own it can feed neither
+//! a [`pump`](tutti_types::pump) nor a [`Recorder`](crate::Recorder).
 //!
-//! This is the join that makes *record what I am hearing* expressible in the I/O
-//! vocabulary, and deliberately nothing more: a newtype that pops the ring into
-//! the flat interleaved frame layout `AudioIn` speaks.
+//! This is the join that makes *record what the graph is producing*
+//! expressible in the I/O vocabulary, and deliberately nothing more: a newtype
+//! that pops the reader into the flat interleaved frame layout `AudioIn`
+//! speaks, as wide as the tap is.
 //!
 //! # The rate is the caller's to match
 //!
@@ -18,17 +19,17 @@
 //! `matching_sink` here as there is on `MicIn`, because a tap has no device to
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
-use tutti_metering::TapCons;
+use tutti_graph::TapReader;
 use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, Samples};
 
-/// The master-output analysis tap's consumer end, as an [`AudioIn`]: records
-/// what the graph is playing.
+/// A tap's reader as an [`AudioIn`]: records what the graph is producing.
 ///
-/// The audio callback copies every master block into a lock-free stereo ring
-/// ([`tutti_metering::AudioTap`]); construct this with [`new`](Self::new) from what
-/// `AudioTap::open` returned, and drain it from a pump thread (for example a
-/// [`Recorder`](crate::Recorder)), never from the audio thread.
+/// Construct it with [`new`](Self::new) from the reader a tap opened, and drain
+/// it from a pump thread (for example a [`Recorder`](crate::Recorder)), never
+/// from the audio thread. Its [`layout`](AudioIn::layout) is as wide as the
+/// tap: a stereo output tap is stereo, a six-lane tap six channels, so the
+/// sink must be built to match (`Recorder::start` refuses a mismatch).
 ///
 /// Like every [`AudioIn`] it carries no sample rate: the tap runs at the
 /// graph's rate, so build the sink at that rate or the file plays at the wrong
@@ -39,55 +40,52 @@ use tutti_types::{ChannelLayout, Samples};
 /// ```no_run
 /// use tutti_io::{BitDepth, Recorder, TapIn, WavOut};
 ///
-/// # fn go(tap: &tutti_metering::AudioTap) -> tutti_io::Result<()> {
-/// let src = TapIn::new(tap.open().expect("tap is free"));
+/// # fn go(reader: tutti_graph::TapReader) -> tutti_io::Result<()> {
+/// let src = TapIn::new(reader);
 /// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
-/// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs
+/// let rec = Recorder::start(src, wav)?; // a stereo tap and a stereo sink pair
 /// // ... later ...
 /// rec.finish()
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct TapIn {
-    cons: TapCons,
+    reader: TapReader,
 }
 
 impl TapIn {
-    /// Wraps the consumer half of an opened analysis tap.
+    /// Wraps a tap's reader.
     ///
-    /// Takes the consumer by value because a ring has exactly one reader, and
-    /// `AudioTap::open` refuses while a consumer is live.
-    pub fn new(cons: TapCons) -> Self {
-        Self { cons }
+    /// Takes the reader by value because a tap has exactly one.
+    pub fn new(reader: TapReader) -> Self {
+        Self { reader }
     }
 }
 
 impl AudioIn for TapIn {
     /// The graph does not end.
     ///
-    /// An empty tap means the callback has not pushed since the last poll — the
-    /// audio thread was between blocks, or the tap was only just opened. It
-    /// never means "finished", the way a decoded file's exhaustion does. A
-    /// consumer that read this zero as end-of-stream would stop recording
-    /// within a block of starting, which is exactly the mistake
-    /// [`OnEmpty`] exists to make unrepresentable.
+    /// An empty tap means the graph has not rendered since the last poll — the
+    /// audio thread was between blocks, or the tap was only just opened (it
+    /// flows from the commit that carries it). It never means "finished", the
+    /// way a decoded file's exhaustion does. A consumer that read this zero as
+    /// end-of-stream would stop recording within a block of starting, which is
+    /// exactly the mistake [`OnEmpty`] exists to make unrepresentable.
     const ON_EMPTY: OnEmpty = OnEmpty::Starved;
 
-    /// Always stereo: the tap ring's element is `(f32, f32)`, so the width is a
-    /// property of this *code*, not of any data flowing through it — exactly the
-    /// case a fixed layout still fits. Widening it means widening the lock-free
-    /// ring element in `tutti-metering`'s `AudioTap`, which is a separate change.
+    /// As wide as the tap: one channel a lane.
     fn layout(&self) -> ChannelLayout {
-        ChannelLayout::STEREO
+        self.reader.layout()
     }
 
-    /// Pop up to `out.len() / 2` FRAMES into `out`, returning the FRAME count.
+    /// Pop up to `out.len() / width` FRAMES into `out`, returning the FRAME
+    /// count.
     ///
-    /// `out` is flat interleaved stereo — two samples per frame — so the return
-    /// is half its filled length, never the sample count. A short or zero count
-    /// is normal for a live source; the pump parks and retries.
+    /// `out` is flat interleaved — `width` samples per frame — so the return
+    /// is the filled length over the width, never the sample count. A short or
+    /// zero count is normal for a live source; the pump parks and retries.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
-        self.cons.pop_into(out)
+        self.reader.pop_into(out)
     }
 }
 

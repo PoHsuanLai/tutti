@@ -11,11 +11,11 @@ Four live pieces, and recording is just a pump between two of them:
 - `MicMonitorNode` — the read side, a graph node over a device-filled
   ring, so a live input can sit anywhere in the graph. Inserted unforkable: an
   export of a graph holding the live mic is refused, naming it.
-- `TapIn` — the *other* read side: the analysis tap's consumer end adapted to
-  `AudioIn`, so what the graph is playing records through the same pump that
-  records a microphone. `AudioTap` itself is `tutti-metering`'s (the audio callback
-  pushes into it); this is only the adapter that lets it meet the I/O
-  vocabulary.
+- `TapIn` — the *other* read side: a tap's `TapReader` adapted to `AudioIn`,
+  so what the graph is producing records through the same pump that records a
+  microphone. The tap itself is `tutti-graph`'s (an op in the compiled plan, on
+  any ports, at any width); this is only the adapter that lets its reader meet
+  the I/O vocabulary, as wide as the tap.
 - `WavOut` — the write side, an `AudioOut` sink.
 - `Recorder` — `pump(src, sink)` on its own thread, plus the stop policy and the
   finalize-exactly-once guarantee that `pump` itself deliberately leaves out.
@@ -57,7 +57,7 @@ vocabulary and its live impls from one place.
 ```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-metering  AudioTap
+tutti-graph    TapReader
     ↑
 tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
                Wave, FileIn, the decoder
@@ -71,23 +71,50 @@ and `bevy-tutti` for both.
 
 ## Example — recording what the graph is playing
 
-The tap path end to end, and it needs no device: `tutti-metering`'s `AudioTap` is
-pushed by the audio callback, `TapIn` is its consumer end as an `AudioIn`, and
+The tap path end to end, and it needs no device: a tap on the graph's two
+outputs fills as the graph renders, `TapIn` is its reader as an `AudioIn`, and
 `pump` moves one block into a `WavOut`. Swap `TapIn` for `tutti_cpal::MicIn` and
 the same three lines record a microphone — that interchangeability is the reason
 the traits exist.
 
 ```rust
-use tutti_metering::AudioTap;
+use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, TapAlign, TapId};
 use tutti_types::Samples;
 use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
 
-let tap = AudioTap::new();
-let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
+/// A stereo source: 0.25 on the left, -0.25 on the right.
+struct Tone;
+impl Node for Tone {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        io.output(0).fill(0.25);
+        io.output(1).fill(-0.25);
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
 
-// The callback pushes an interleaved stereo block.
-let block = [0.25f32, -0.25, 0.5, -0.5, 0.75, -0.75];
-tap.push(&block);
+// A tap on both of the graph's outputs, copied as the graph renders.
+let (mut editor, mut executor) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+editor.insert(NodeKey(1), "tone", Unforkable(Tone));
+let out = |port| Source::Node(OutPort { node: NodeKey(1), port });
+editor.spec_mut().topology.outputs = vec![out(0), out(1)];
+let reader = editor.open_tap(TapId(0), vec![out(0), out(1)], TapAlign::ToOutput, Samples(1024));
+editor.commit().expect("compiles");
+executor.apply_pending();
+editor.collect();
+let mut src = TapIn::new(reader);
+
+// The audio callback renders three frames.
+let mut left = [0.0f32; 3];
+let mut right = [0.0f32; 3];
+let transport = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 
 let dir = tempfile::tempdir().expect("temp dir");
 let path = dir.path().join("take.wav");

@@ -4405,7 +4405,6 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
- "tutti-metering",
  "tutti-types",
 ]
 

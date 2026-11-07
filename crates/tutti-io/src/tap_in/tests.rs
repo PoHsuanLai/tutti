@@ -1,28 +1,86 @@
 use super::*;
-use tutti_metering::AudioTap;
+use tutti_graph::{Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_types::graph::{OutPort, Source};
+use tutti_types::{Beat, Bpm, NodeKey, SampleRate, TapAlign, TapId};
 
-/// An opened tap plus its consumer, fed through the real
-/// `AudioTap::push` — the same call the audio callback makes.
-///
-/// Built this way rather than from a hand-split `HeapRb` so the tests
-/// exercise the production path: `push` takes flat interleaved samples and
-/// pairs them into the ring, which is the conversion the first test below
-/// is actually about.
-fn tap_with(frames: &[(f32, f32)]) -> TapIn {
-    let tap = AudioTap::new();
-    let cons = tap.open().expect("a fresh tap opens");
-    let flat: Vec<f32> = frames.iter().flat_map(|&(l, r)| [l, r]).collect();
-    tap.push(&flat);
-    TapIn::new(cons)
+/// A stereo source that plays `frames` in order, then silence: the graph the
+/// tap copies out of.
+struct Play {
+    frames: Vec<(f32, f32)>,
+    at: usize,
 }
 
-/// Frames the callback pushed come back out in order, interleaved L then R.
+impl Node for Play {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let n = io.output(0).len();
+        for k in 0..n {
+            let (l, r) = self.frames.get(self.at + k).copied().unwrap_or_default();
+            io.output(0)[k] = l;
+            io.output(1)[k] = r;
+        }
+        self.at += n;
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+const BLOCK: usize = 512;
+
+/// The tap's reader over a graph that has rendered `frames`, through the real
+/// tap op the audio thread runs: the executor copies the source's two
+/// channels into the tap's lanes, and the reader interleaves them.
+fn tap_with(frames: &[(f32, f32)]) -> TapIn {
+    let (mut ed, mut exec): (Editor, Executor) =
+        Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    ed.insert(
+        NodeKey(1),
+        "play",
+        Unforkable(Play {
+            frames: frames.to_vec(),
+            at: 0,
+        }),
+    );
+    let port = |port| {
+        Source::Node(OutPort {
+            node: NodeKey(1),
+            port,
+        })
+    };
+    ed.spec_mut().topology.outputs = vec![port(0), port(1)];
+    let reader = ed.open_tap(
+        TapId(0),
+        vec![port(0), port(1)],
+        TapAlign::ToOutput,
+        Samples(frames.len().max(1)),
+    );
+    ed.commit().expect("compiles");
+    exec.apply_pending();
+    ed.collect();
+    let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let mut left = [0.0f32; BLOCK];
+    let mut right = [0.0f32; BLOCK];
+    for block in frames.chunks(BLOCK) {
+        let mut outs: [&mut [f32]; 2] = [&mut left[..block.len()], &mut right[..block.len()]];
+        exec.process(block.len(), &t, &[], &mut outs);
+    }
+    TapIn::new(reader)
+}
+
+/// Frames the graph rendered come back out in order, interleaved L then R.
 ///
-/// The tap stores `(f32, f32)` and `AudioIn` speaks a flat interleaved
+/// The tap keeps one ring a lane and `AudioIn` speaks a flat interleaved
 /// slice; this is the conversion, so a transposition here would silently
 /// swap every recording's channels.
+///
+/// Mutation (run, recorded here): swap the two lanes in `TapReader::pop_into`
+/// (`skip(width - 1 - channel)`) -> the channels come back swapped and the
+/// first assertion fails.
 #[test]
-fn pushed_frames_come_back_in_order_and_channel_side() {
+fn rendered_frames_come_back_in_order_and_channel_side() {
     let frames: Vec<(f32, f32)> = (0..4).map(|i| (i as f32, -(i as f32))).collect();
     let mut tap = tap_with(&frames);
     let mut out = [0.0f32; 8 * 2];
@@ -86,4 +144,28 @@ fn a_tap_is_accepted_where_a_live_source_is_required() {
     fn takes_a_live_source<I: AudioIn + Send + 'static>(_: I) {}
 
     takes_a_live_source(tap_with(&[]));
+}
+
+/// Its layout is the tap's width, not a fixed stereo: a six-lane tap is a
+/// six-channel source.
+///
+/// Mutation (run, recorded here): `TapIn::layout` returning
+/// `ChannelLayout::STEREO` -> a one-lane and a six-lane tap read as stereo
+/// and this fails.
+#[test]
+fn the_layout_follows_the_taps_width() {
+    let (mut ed, _exec): (Editor, Executor) =
+        Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
+    for width in [1usize, 2, 6] {
+        let reader = ed.open_tap(
+            TapId(width as u32),
+            vec![Source::Zero; width],
+            TapAlign::Raw,
+            Samples(8),
+        );
+        assert_eq!(
+            TapIn::new(reader).layout(),
+            ChannelLayout::from_count(width as u16)
+        );
+    }
 }

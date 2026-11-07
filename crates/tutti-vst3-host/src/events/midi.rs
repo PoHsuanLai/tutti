@@ -99,10 +99,10 @@ impl MidiEncoder {
     fn voice2(&self, offset: i32, channel: MidiChannel, voice: Voice2) -> Option<Event> {
         let ch = channel.get();
         match voice {
-            // A MIDI 2.0 Note On at velocity 0 is a Note Off here, as it
-            // always has been (M2-104 §7.4.2 keeps it a Note On; that is for
-            // the translation stage). A widened MIDI 1.0 Note On at velocity
-            // 0 never gets here: it arrives as a Note Off.
+            // A MIDI 2.0 Note On at velocity 0 is sent as a Note Off at
+            // release velocity 0, though M2-104 §7.4.2 keeps it a Note On. A
+            // widened MIDI 1.0 Note On at velocity 0 never gets here: it
+            // arrives as a Note Off.
             Voice2::NoteOn {
                 note, velocity: 0, ..
             } => Some(note_off(offset, ch, note, 0)),
@@ -229,9 +229,9 @@ impl MidiEncoder {
 ///
 /// The bank's two bytes are read the way `MidiEvent::program_change` writes
 /// them: it puts the 14-bit bank's low 7 bits in the byte M2-104 §7.4.9 calls
-/// the MSB, and this host has always sent that byte as CC 32. A packet from
-/// another source, which follows the specification, therefore has its bank
-/// bytes swapped here, as before this reads through `Message`.
+/// the MSB, so that byte (`Bank::msb`) is sent as CC 32 and `Bank::lsb` as
+/// CC 0. A packet that follows the specification therefore has its bank
+/// bytes swapped here.
 pub(super) fn bank_program(event: &MidiEvent) -> Option<[[u8; 3]; 3]> {
     let Ok(Message::Midi2(
         address,

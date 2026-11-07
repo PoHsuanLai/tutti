@@ -2,7 +2,8 @@ use super::*;
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
 use tutti_ump::{
-    CCNumber, Message, MidiChannel, MidiGroup, System, Ump, Voice2, decode as decode_ump,
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, System, Ump, Voice2,
+    decode as decode_ump,
 };
 use tutti_vst3_ffi::EventList;
 
@@ -773,7 +774,7 @@ fn harmony_values_round_trip_through_a_list() {
 /// / poly-pressure MIDI message it stands for.
 #[test]
 fn legacy_cc_out_decodes_to_midi() {
-    use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kPitchBend};
+    use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
     // Plain CC 74 = 100 on channel 3.
     let cc = Event::at(5, Payload::LegacyCcOut(legacy_cc(74, 3, 100, 0)));
@@ -800,6 +801,26 @@ fn legacy_cc_out_decodes_to_midi() {
         }
         other => panic!("expected PitchBend, got {other:?}"),
     }
+
+    // Poly pressure: value = note, value2 = pressure, widened from 7 bits.
+    let pp = Event::at(
+        0,
+        Payload::LegacyCcOut(legacy_cc(kCtrlPolyPressure as u8, 3, 60, 0x21)),
+    );
+    let pp_m = pp.to_midi().unwrap();
+    assert_eq!(
+        decode_ump(Ump(pp_m.data)),
+        Ok(Message::Midi2(
+            Address {
+                group: MidiGroup::FIRST,
+                channel: MidiChannel::of(3)
+            },
+            Voice2::PolyPressure {
+                note: NoteNumber::new(60).unwrap(),
+                value: 0x4200_0000
+            }
+        ))
+    );
 
     // Aftertouch (channel pressure).
     let at = Event::at(
@@ -835,8 +856,8 @@ fn harmony_events_are_not_midi() {
 mod message {
     use super::*;
     use tutti_ump::{
-        Address, Attribute, Bank, Flex, NoteNumber, Sysex7Packet, SysexStatus, U7, U14, Utility,
-        Voice1,
+        Address, Attribute, Bank, Data128, Flex, NoteNumber, Sysex7Packet, Sysex8Packet,
+        SysexStatus, U7, U14, Utility, Voice1,
     };
 
     fn address(channel: u8) -> Address {
@@ -891,8 +912,7 @@ mod message {
     }
 
     /// A MIDI 2.0 Note On at velocity 0 stays a Note Off at release velocity
-    /// 0, as it always has been here (M2-104 §7.4.2 keeps it a Note On; that is
-    /// for the translation stage).
+    /// 0, though M2-104 §7.4.2 keeps it a Note On.
     ///
     /// Mutation (run): deleting the velocity-0 arm of `voice2` → a Note On at
     /// velocity 0.0 → fails.
@@ -997,6 +1017,15 @@ mod message {
                 Sysex7Packet::new(SysexStatus::Start, &[1, 2, 3]).unwrap(),
             )),
         ];
+        // Only the first two are packets `decode` cannot frame; the rest are
+        // defined messages.
+        for (i, event) in sinks.iter().enumerate() {
+            assert_eq!(
+                decode_ump(Ump(event.data)).is_err(),
+                i < 2,
+                "{event:?} decodes as the wrong kind"
+            );
+        }
         for event in sinks {
             assert!(encode(&event).is_none(), "{event:?} reached the plugin");
         }
@@ -1087,6 +1116,115 @@ mod message {
         );
     }
 
+    /// Packets written out as M2-104 words, with unequal data bytes, give
+    /// exactly the VST3 bytes below. Channel 3 throughout, group 0.
+    ///
+    /// Mutations (run), each failing this test: a MIDI 1.0 Program Change
+    /// sent as `program ^ 1`; a MIDI 1.0 Channel Pressure sent as 0.
+    #[test]
+    fn spec_words_give_the_exact_midi1_bytes() {
+        let bytes =
+            |words: &[u32]| data_bytes(&encode(&MidiEvent::from_ump(0, words)).expect("carried"));
+        // MT 2: status in bits 23-20, channel 19-16, data bytes 15-8 and 7-0.
+        assert_eq!(
+            bytes(&[0x20C3_0900]),
+            [0xC3, 9, 0],
+            "MIDI 1.0 Program Change"
+        );
+        assert_eq!(
+            bytes(&[0x20D3_4500]),
+            [0xD3, 0x45, 0],
+            "MIDI 1.0 Channel Pressure"
+        );
+        assert_eq!(
+            bytes(&[0x20B3_4A64]),
+            [0xB3, 74, 100],
+            "MIDI 1.0 Control Change"
+        );
+        assert_eq!(
+            bytes(&[0x20E3_0140]),
+            [0xE3, 0x01, 0x40],
+            "MIDI 1.0 Pitch Bend"
+        );
+        // MT 4: the 32-bit value is in word 1; 14-bit bend 0x141 is its top
+        // 14 bits.
+        assert_eq!(
+            bytes(&[0x40C3_0000, 0x0900_0000]),
+            [0xC3, 9, 0],
+            "MIDI 2.0 Program Change"
+        );
+        assert_eq!(
+            bytes(&[0x40D3_0000, 0x8800_0000]),
+            [0xD3, 0x44, 0],
+            "MIDI 2.0 Channel Pressure"
+        );
+        assert_eq!(
+            bytes(&[0x40B3_4A00, 0xC800_0000]),
+            [0xB3, 74, 100],
+            "MIDI 2.0 Control Change"
+        );
+        assert_eq!(
+            bytes(&[0x40E3_0000, 0x0504_0000]),
+            [0xE3, 0x41, 0x02],
+            "MIDI 2.0 Pitch Bend"
+        );
+    }
+
+    /// Per-note pressure and controllers written out as words. The type ids
+    /// are the SDK's (volume 0, pan 1, brightness 5), not the host's table.
+    ///
+    /// Mutations (run), each failing this test: Registered Brightness mapped
+    /// to Pan; Registered Volume mapped to Pan; Registered Pan mapped to
+    /// Volume; Assignable index 7 mapped to Pan; the MIDI 2.0 Poly Pressure
+    /// value sent as 0.
+    #[test]
+    fn spec_words_give_the_exact_note_events() {
+        let event = |words: &[u32]| encode(&MidiEvent::from_ump(0, words)).expect("an event");
+        let expression_type = |words: &[u32]| match event(words).payload {
+            Payload::ExpressionValue(e) => (e.typeId, e.noteId),
+            other => panic!("expected an expression, got {other:?}"),
+        };
+        // Registered Per-Note Controller (status 0): note 60, controller in
+        // bits 7-0 of word 0.
+        assert_eq!(
+            expression_type(&[0x4003_3C07, 0x8000_0000]),
+            (0, note_id_for(3, 60))
+        );
+        assert_eq!(
+            expression_type(&[0x4003_3C0A, 0x8000_0000]),
+            (1, note_id_for(3, 60))
+        );
+        assert_eq!(
+            expression_type(&[0x4003_3C4A, 0x8000_0000]),
+            (5, note_id_for(3, 60))
+        );
+        assert!(encode(&MidiEvent::from_ump(0, &[0x4003_3C01, 0x8000_0000])).is_none());
+        // Assignable Per-Note Controller (status 1).
+        assert_eq!(
+            expression_type(&[0x4013_3C07, 0x8000_0000]),
+            (0, note_id_for(3, 60))
+        );
+        assert_eq!(
+            expression_type(&[0x4013_3C0A, 0x8000_0000]),
+            (1, note_id_for(3, 60))
+        );
+        assert_eq!(
+            expression_type(&[0x4013_3C4A, 0x8000_0000]),
+            (5, note_id_for(3, 60))
+        );
+        // Poly Pressure (status A): MIDI 2.0 carries 32 bits; MIDI 1.0 0x21
+        // widens to 0x4200_0000.
+        let Payload::PolyPressure(p) = event(&[0x40A3_3C00, 0x4000_0000]).payload else {
+            panic!("expected poly pressure");
+        };
+        assert_eq!((p.channel, p.pitch), (3, 60));
+        assert_eq!(p.pressure, u32_to_unit_f32(0x4000_0000));
+        let Payload::PolyPressure(p) = event(&[0x20A3_3C21]).payload else {
+            panic!("expected poly pressure");
+        };
+        assert_eq!(p.pressure, u32_to_unit_f32(0x4200_0000));
+    }
+
     /// A banked Program Change is Bank Select, Bank Select LSB and the
     /// Program Change. The bank is read the way `MidiEvent::program_change`
     /// writes it (see `bank_program`), so bank `0x0085` is CC 0 = 1 and CC 32
@@ -1144,18 +1282,21 @@ mod message {
     }
 
     /// **Every kind of message is read without allocating.** Each packet kind
-    /// goes through the encoder, the bank split, the output decode and the
-    /// mapping inside `assert_no_alloc`. The VST3 host has no worker pool: the
-    /// calling thread is the only participant.
+    /// goes through the encoder, the bank split and the output decode inside
+    /// `assert_no_alloc`, and each packet is checked to decode to the kind it
+    /// stands for, so a malformed packet cannot stand in for a kind. The VST3
+    /// host has no worker pool: the calling thread is the only participant.
     ///
-    /// Mutation (run): a `Box::new(message)` in `MidiEncoder::message` →
-    /// `assert_no_alloc` aborts.
+    /// Mutations (run): a `Box::new(message)` in `MidiEncoder::message`, one
+    /// in `system_bytes`, and one in `widen_midi1` → `assert_no_alloc` aborts
+    /// each time.
     #[test]
     fn every_kind_of_message_is_read_without_allocating() {
         let ch = address(4);
         let messages = [
             Message::Utility(Utility::Noop),
             Message::System(MidiGroup::FIRST, System::SongPosition(U14::MAX)),
+            Message::System(MidiGroup::FIRST, System::TimingClock),
             Message::Midi1(
                 ch,
                 Voice1::NoteOn {
@@ -1223,10 +1364,45 @@ mod message {
                     value: 0x1000_0000,
                 },
             ),
+            Message::Flex(MidiGroup::FIRST, Flex::SetTempo(50_000_000)),
+            Message::Data128(
+                MidiGroup::FIRST,
+                Data128::Sysex8(Sysex8Packet::new(SysexStatus::Complete, 1, &[1, 2, 3]).unwrap()),
+            ),
         ];
-        let mut events: Vec<MidiEvent> = messages.iter().map(|m| packet(*m)).collect();
-        events.push(MidiEvent::from_ump(0, &[0x6000_0000]));
-        let raw = Event::at(1, Payload::Data(Data::inline(0, [0x90, 60, 0])));
+        let mut events = Vec::new();
+        for message in messages {
+            let event = packet(message);
+            assert_eq!(decode_ump(Ump(event.data)), Ok(message), "{message:?}");
+            events.push(event);
+        }
+        // A Stream message, spelled out: an Endpoint Discovery.
+        let discovery = MidiEvent::from_ump(0, &[0xF000_0101, 0x1F, 0, 0]);
+        assert!(matches!(
+            decode_ump(Ump(discovery.data)),
+            Ok(Message::Stream(_))
+        ));
+        events.push(discovery);
+        // A packet `decode` cannot frame.
+        let unknown = MidiEvent::from_ump(0, &[0x6000_0000]);
+        assert!(decode_ump(Ump(unknown.data)).is_err());
+        events.push(unknown);
+
+        // The plugin-output side: raw MIDI 1.0 bytes in a Data event.
+        let raw: Vec<Event> = [
+            [0x90, 60, 0],
+            [0x91, 60, 100],
+            [0xB2, 7, 99],
+            [0xE3, 1, 64],
+            [0xF2, 2, 1],
+            [0xF8, 0, 0],
+        ]
+        .into_iter()
+        .map(|bytes| Event::at(1, Payload::Data(Data::inline(0, bytes))))
+        .collect();
+        for event in &raw {
+            assert!(event.to_midi().is_some(), "{event:?} did not decode");
+        }
         let legacy = Event::at(2, Payload::LegacyCcOut(legacy_cc(74, 3, 100, 0)));
         let mut encoder = MidiEncoder::default();
         assert_no_alloc::assert_no_alloc(|| {
@@ -1234,7 +1410,9 @@ mod message {
                 let _ = encoder.encode(event);
                 let _ = midi::bank_program(event);
             }
-            let _ = raw.to_midi();
+            for event in &raw {
+                let _ = event.to_midi();
+            }
             let _ = legacy.to_midi();
         });
     }

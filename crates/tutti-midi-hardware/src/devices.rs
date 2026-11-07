@@ -115,15 +115,24 @@ impl ChangeSink {
     /// does reaches every subscriber and wakes a waiting
     /// [`DeviceEvents::recv_timeout`].
     pub fn send(&self, change: OsChange) {
+        self.send_all([change]);
+    }
+
+    /// Reports `changes` in order under one hold of the state, so no
+    /// [`Devices::list`] or [`Devices::subscribe`] sees between them: a device
+    /// reported gone and present again is never missing from the list.
+    pub fn send_all(&self, changes: impl IntoIterator<Item = OsChange>) {
         let mut state = self.shared.state();
-        if let Some(event) = state.table.apply(change) {
-            // A subscriber that has dropped leaves the list.
-            state.subscribers.retain(|queue| {
-                queue
-                    .upgrade()
-                    .inspect(|queue| queue.push(event.clone()))
-                    .is_some()
-            });
+        for change in changes {
+            if let Some(event) = state.table.apply(change) {
+                // A subscriber that has dropped leaves the list.
+                state.subscribers.retain(|queue| {
+                    queue
+                        .upgrade()
+                        .inspect(|queue| queue.push(event.clone()))
+                        .is_some()
+                });
+            }
         }
     }
 }
@@ -170,7 +179,7 @@ impl core::fmt::Debug for ChangeSink {
 /// exited, so two looks that straddle both see one handle. A handle that now
 /// names another identity is a different device, and so is one the OS says
 /// departed (`departed`): each is reported gone before it is reported present
-/// again. Where the identity is the name (ALSA), a rename is therefore a
+/// again. A report is applied under one hold of the state. Where the identity is the name (ALSA), a rename is therefore a
 /// removal and an addition, and closes a port held on the device; where it
 /// survives a rename (CoreMIDI's unique id), the device is `Changed`.
 #[cfg_attr(
@@ -218,14 +227,15 @@ impl Reporter {
             .iter()
             .map(|d| (d.handle, d.identity.clone()))
             .collect();
-        for (handle, identity) in &self.known {
-            if now.get(handle) != Some(identity) || departed(*handle) {
-                self.sink.send(OsChange::Gone(*handle));
-            }
-        }
-        for device in present {
-            self.sink.send(OsChange::Present(device));
-        }
+        let gone = self
+            .known
+            .iter()
+            .filter(|&(handle, identity)| now.get(handle) != Some(identity) || departed(*handle))
+            .map(|(handle, _)| OsChange::Gone(*handle));
+        let changes: Vec<_> = gone
+            .chain(present.into_iter().map(OsChange::Present))
+            .collect();
+        self.sink.send_all(changes);
         self.known = now;
     }
 }

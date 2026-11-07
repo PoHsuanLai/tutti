@@ -6,7 +6,10 @@
 //! shutdown. On an event it enumerates again and reports the difference, so it
 //! reads from the event only which client or port left, so a handle the kernel
 //! hands to a new device is told from the one it had. A burst of events is one
-//! enumeration, and an event it misses is covered by the next.
+//! enumeration, and an event it misses is covered by the next. A read of the
+//! queue that follows the enumeration and finds events enumerates again
+//! (`settle`), so the exits it reports belong to the enumeration they are
+//! reported with.
 //!
 //! Enumeration runs on the watch's own client. A client opened to enumerate would
 //! announce its own start, port and exit to this very port, and the watch would
@@ -33,6 +36,8 @@ pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 const EAGAIN: i32 = -11;
 /// Read errors in a row a drain puts up with before it stops.
 const MAX_DRAIN_ERRORS: usize = 8;
+/// Looks a settle takes before it reports the last one.
+const MAX_SETTLE: usize = 8;
 /// Linux truncates a thread name to 15 bytes.
 const THREAD_NAME: &str = "tutti-devwatch";
 
@@ -82,10 +87,48 @@ impl Departed {
     }
 }
 
+/// What one read of the announce queue found.
+#[derive(Debug, Default)]
+struct Drained {
+    /// What left the sequencer.
+    departed: Vec<Departed>,
+    /// Whether the queue held any event at all.
+    any: bool,
+}
+
+/// Looks at the sequencer until a look is followed by a read that finds
+/// nothing, and returns that look with every departure read on the way.
+///
+/// An exit read from the queue may already be in a look taken before the read:
+/// the kernel queues it, a client takes the number, and the look sees the new
+/// client while the exit is still unread. A read that follows a look and finds
+/// nothing proves no event was queued before the look, so that look and the
+/// departures read before it agree, and a departure names a device the previous
+/// settled look held. A read that finds events looks again, up to
+/// [`MAX_SETTLE`] times: a sequencer that never quiets reports the last look
+/// with what was read.
+fn settle<T>(
+    first: Drained,
+    mut drain: impl FnMut() -> Drained,
+    look: impl Fn() -> T,
+) -> (T, Vec<Departed>) {
+    let mut departed = first.departed;
+    let mut seen = look();
+    for _ in 0..MAX_SETTLE {
+        let more = drain();
+        if !more.any {
+            break;
+        }
+        departed.extend(more.departed);
+        seen = look();
+    }
+    (seen, departed)
+}
+
 /// Why `Announce::wait` returned.
 enum Woken {
-    /// The sequencer announced something; these left it.
-    Announced(Vec<Departed>),
+    /// The sequencer announced something.
+    Announced(Drained),
     Stopped,
 }
 
@@ -183,10 +226,9 @@ impl Announce {
         }
     }
 
-    /// Reads every queued event, returning what left; the client is
-    /// non-blocking.
-    fn drain(&self) -> Vec<Departed> {
-        let mut departed = Vec::new();
+    /// Reads every queued event; the client is non-blocking.
+    fn drain(&self) -> Drained {
+        let mut found = Drained::default();
         let mut errors = ErrorRun::default();
         loop {
             let mut event: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
@@ -195,7 +237,7 @@ impl Announce {
             let rc = unsafe { sys::snd_seq_ump_event_input(self.seq.raw(), &mut event) };
             if rc < 0 {
                 if rc == EAGAIN {
-                    return departed;
+                    return found;
                 }
                 // An overrun drops announcements; the read goes on past it, and
                 // the enumeration that follows every drain finds what changed
@@ -203,7 +245,7 @@ impl Announce {
                 // cannot). A descriptor that keeps failing ends the drain.
                 tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
                 if errors.failed() {
-                    return departed;
+                    return found;
                 }
                 continue;
             }
@@ -211,12 +253,13 @@ impl Announce {
             if event.is_null() {
                 continue;
             }
+            found.any = true;
             // SAFETY: non-null, and valid until the next `input`; copied out.
             let (kind, data) = unsafe { ((*event).type_, (*event).ump[0].to_ne_bytes()) };
             let (client, port) = (c_int::from(data[0]), c_int::from(data[1]));
             match kind {
-                sys::SND_SEQ_EVENT_CLIENT_EXIT => departed.push(Departed::Client(client)),
-                sys::SND_SEQ_EVENT_PORT_EXIT => departed.push(Departed::Port(client, port)),
+                sys::SND_SEQ_EVENT_CLIENT_EXIT => found.departed.push(Departed::Client(client)),
+                sys::SND_SEQ_EVENT_PORT_EXIT => found.departed.push(Departed::Port(client, port)),
                 _ => {}
             }
         }
@@ -272,12 +315,12 @@ pub(super) fn start(
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
                     match announce.wait() {
-                        Ok(Woken::Announced(departed)) => {
+                        Ok(Woken::Announced(first)) => {
                             #[cfg(test)]
                             WAKES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            reporter.report(snapshot(&announce.seq), |id| {
-                                departed.iter().any(|d| d.names(id))
-                            });
+                            let (present, departed) =
+                                settle(first, || announce.drain(), || snapshot(&announce.seq));
+                            reporter.report(present, |id| departed.iter().any(|d| d.names(id)));
                         }
                         Ok(Woken::Stopped) => return None,
                         Err(e) => return Some(e),

@@ -121,10 +121,9 @@ fn removed(id: DeviceId) -> impl Fn(&DeviceEvent) -> bool {
     move |e| matches!(e, DeviceEvent::Removed(i) if i.id == id)
 }
 
-/// Runs `open` until it succeeds. The kernel can announce the exit of a client
-/// number's previous owner after a new client has taken it; the watch then
-/// re-reports the device (`Removed`, `Added`, the same id) and the id is
-/// unlisted for a moment, so an open in that moment is refused.
+/// Runs `open` until it succeeds, for an open that lands in the moment a
+/// device is being replaced (an exit announcement the sequencer's queue
+/// overran is the one thing the watch cannot pair with its look).
 fn when_listed<T>(devices: &Watched, open: impl Fn() -> crate::Result<T>) -> T {
     let deadline = Instant::now() + PATIENCE;
     loop {
@@ -201,10 +200,17 @@ fn watch_threads() -> usize {
 // - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
 //   fails.
 //
-// The kernel can announce a client's exit after a new client has taken its
-// number, and the watch then re-reports the new device (`Removed`, `Added`, the
-// same id). Parallel runs hit it, so these tests read ids from the list or retry
-// an open (`when_listed`) where it would matter.
+// - `watch::settle` taking one look, the order the watch had before (a drain, a
+//   look): `a_device_that_takes_a_departed_clients_number_is_added_once` fails
+//   when four copies of it run at once (3 of 4 failed, 12 of 12 pass with the
+//   fix); alone and idle the race is not hit and it passes. The review that
+//   found the bug saw the extra `Removed` in 139 of 300 cycles.
+//
+// The kernel announces a client's exit after a new client may have taken its
+// number; the watch pairs each look with the exits read before it (`settle`),
+// so a reused number is one removal and one addition. These tests still read
+// ids from the list or retry an open (`when_listed`) where a dropped
+// announcement could matter.
 
 /// A client that appears is listed with its identity.
 #[test]
@@ -403,15 +409,19 @@ fn the_engines_own_clients_are_not_listed() {
 }
 
 /// The engine's clients are told by their ports, not their names: a device may
-/// be called `tutti-in`. Mutation: skipping clients whose name starts with
-/// `tutti-` hides it.
+/// be called `tutti-in`. The name carries the process id, as every device
+/// here does, so a parallel copy of the suite does not share it: the engine's
+/// own client is `tutti-in` with that prefix, and a name that starts with it is
+/// what a skip by name would hide. Mutation: skipping clients whose name starts
+/// with `tutti-` hides it.
 #[test]
 fn a_device_called_like_an_engine_client_is_listed() {
     let devices = Watched::open();
-    let _device = plug("tutti-in");
+    let name = format!("tutti-in-{}", std::process::id());
+    let _device = plug(&name);
     let device = info(until(
         &devices,
-        |e| matches!(e, DeviceEvent::Added(i) if i.id.identity() == &Identity::alsa("tutti-in", "port")),
+        |e| matches!(e, DeviceEvent::Added(i) if i.id.identity() == &Identity::alsa(&name, "port")),
     ));
     assert!(devices.list().contains(&device));
 }
@@ -538,4 +548,42 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
     }
     let opened = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst) - opens;
     assert_eq!(opened, 0, "{opened} sequencer clients opened for 1000 asks");
+}
+
+/// A client that takes the number of one that just exited is a new device, not
+/// a device that comes and goes: the exit the kernel announces for the old
+/// owner arrives after the look that already shows the new one, and the new
+/// device must be added once and never removed while it lives. One `Devices`,
+/// `A` dropped and `B` plugged at once, `B` held for 150 ms.
+///
+/// Mutation: see the record above (`watch::settle` taking one look reports
+/// `Added, Removed, Added` for `B`, under load).
+#[test]
+fn a_device_that_takes_a_departed_clients_number_is_added_once() {
+    let devices = Watched::open();
+    let mut a = plug(&unique("flap-a"));
+    for cycle in 0..40 {
+        let name = unique(&format!("flap-b-{cycle}"));
+        drop(a);
+        let b = plug(&name);
+        let end = Instant::now() + Duration::from_millis(150);
+        let mut seen = Vec::new();
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            seen.extend(devices.wait(left));
+        }
+        let of_b: Vec<_> = seen
+            .iter()
+            .filter(|e| e.info().name.starts_with(&format!("{name}:")))
+            .map(|e| matches!(e, DeviceEvent::Added(_)))
+            .collect();
+        assert_eq!(of_b, [true], "cycle {cycle}: events for the live device");
+        assert!(
+            devices
+                .list()
+                .iter()
+                .any(|d| d.name.starts_with(&format!("{name}:"))),
+            "cycle {cycle}"
+        );
+        a = b;
+    }
 }

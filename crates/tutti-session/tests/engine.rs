@@ -18,8 +18,9 @@
 
 use std::sync::Arc;
 
+use tutti_graph::Op;
 use tutti_nodes::MetronomeMode;
-use tutti_nodes::testing::assert_golden;
+use tutti_nodes::testing::{Const, assert_golden};
 use tutti_session::{GraphSource, Session};
 use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -331,4 +332,137 @@ fn an_offline_render_feeds_the_load_meter() {
         .build_detached(SampleRate(RATE))
         .expect("builds");
     assert!(detached.load_meter().is_none());
+}
+
+/// An offline session's master meter is the engine's: [`Session::render`]
+/// feeds it (enabled from the build), as a device callback would, and a
+/// detached session, which has no engine, has none.
+///
+/// Mutation (run, recorded here): `SessionBuilder::session` leaving `meter` at
+/// `None` for an offline engine -> `expect` fails. `Engine` not measuring in
+/// `process` -> the peak reads 0.0 (`tutti-engine`'s `master_meter` tests).
+#[test]
+fn an_offline_render_feeds_the_master_meter() {
+    let mut s = offline();
+    let meter = s.master_meter().expect("an offline engine").clone();
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph().set_output_source(1, GraphSource::Node(dc, 0));
+    s.update();
+    let mut block = vec![0.0f32; 128 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    let r = meter.get();
+    assert!((r.peak_left.get() - 0.5).abs() < 1e-6, "{r:?}");
+    assert!((r.rms_right.get() - 0.5).abs() < 1e-6, "{r:?}");
+    let detached = Session::builder()
+        .build_detached(SampleRate(RATE))
+        .expect("builds");
+    assert!(detached.master_meter().is_none());
+}
+
+/// A tap on an offline session's outputs is fed by [`Session::render`]: a
+/// 64-frame block leaves 64 frames in the tap, each the output's analytic
+/// value (a constant 0.5 on the left, silence on the right), in order.
+///
+/// Mutation (run, recorded here): `Graph::open_tap` not marking the graph
+/// edited -> `update` sends no plan and the tap stays empty.
+#[test]
+fn an_offline_render_feeds_an_output_tap() {
+    let mut s = offline();
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    // The tap is the only edit of the second update.
+    s.update();
+    let mut tap = s.graph().open_output_tap(Samples(1_024));
+    assert_eq!(tap.width(), 2);
+    s.update();
+    let mut block = vec![0.0f32; 64 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+
+    assert_eq!(tap.available(), Samples(64));
+    let mut got = vec![f32::NAN; 64 * 2];
+    assert_eq!(tap.pop_into(&mut got), Samples(64));
+    assert!(got.chunks_exact(2).all(|f| f == [0.5, 0.0]), "{got:?}");
+    assert_eq!(tap.take_lost(), Samples(0));
+}
+
+/// An output tap follows the outputs when they are re-wired: lane 0 reads
+/// the new source from the next commit on.
+///
+/// Mutation (run, recorded here): delete `follow_outputs()` from
+/// `Graph::set_output_source` -> the tap keeps reading the old source and the
+/// second half reads 0.5.
+#[test]
+fn an_output_tap_follows_a_rewired_output() {
+    let mut s = offline();
+    let (a, _) = s.graph().insert(Const::mono(0.5));
+    let (b, _) = s.graph().insert(Const::mono(0.25));
+    s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    let mut tap = s.graph().open_output_tap(Samples(1_024));
+    s.update();
+    let mut block = vec![0.0f32; 64 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.graph().set_output_source(0, GraphSource::Node(b, 0));
+    s.update();
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+
+    let mut got = vec![f32::NAN; 128 * 2];
+    assert_eq!(tap.pop_into(&mut got), Samples(128));
+    let left: Vec<f32> = got.iter().step_by(2).copied().collect();
+    assert!(left[..64].iter().all(|&x| x == 0.5), "before: {left:?}");
+    assert!(left[64..].iter().all(|&x| x == 0.25), "after: {left:?}");
+}
+
+/// A tap whose reader was dropped is closed by the next `Reclaim` phase and
+/// leaves the plan at the commit after it.
+///
+/// Mutation (run, recorded here): delete `self.graph.reap_taps()` from the
+/// `Phase::Reclaim` arm -> the plan keeps its tap ops.
+#[test]
+fn a_dropped_reader_leaves_the_plan_at_the_reclaim_phase() {
+    let taps = |s: &Session| {
+        s.graph_ref()
+            .sent_plan()
+            .expect("a plan was sent")
+            .ops()
+            .iter()
+            .filter(|op| matches!(op, Op::Tap { .. }))
+            .count()
+    };
+    let mut s = offline();
+    let tap = s.graph().open_output_tap(Samples(64));
+    s.update();
+    assert_eq!(taps(&s), 2, "one op a lane while it is open");
+    drop(tap);
+    s.update();
+    assert_eq!(
+        taps(&s),
+        2,
+        "the reclaim of this update closed it; the plan is the last commit's"
+    );
+    s.update();
+    assert_eq!(taps(&s), 0, "closed");
+}
+
+/// A detached session renders by hand ([`Session::render_frame`]) and its
+/// taps are fed too: the tap is an op in the plan, not the engine's.
+///
+/// Mutation (run, recorded here): `Session::render_frame_at` rendering
+/// without committing first -> the tap is not in the executor's plan.
+#[test]
+fn a_detached_render_feeds_a_tap() {
+    let mut s = Session::builder()
+        .outputs_floor(1)
+        .build_detached(SampleRate(RATE))
+        .expect("builds");
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    let mut tap = s.graph().open_output_tap(Samples(16));
+    let mut frame = [0.0f32];
+    for _ in 0..3 {
+        s.render_frame(&mut frame);
+    }
+    let mut got = [f32::NAN; 3];
+    assert_eq!(tap.pop_into(&mut got), Samples(3));
+    assert_eq!(got, [0.5; 3]);
 }

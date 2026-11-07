@@ -1601,7 +1601,8 @@ impl Graph {
     /// This is the signal the graph produces, before the engine's declick
     /// fader and the fold to the device's width.
     pub fn open_output_tap(&mut self, capacity: Samples) -> TapReader {
-        let outputs: Vec<GraphSource> = (0..self.outputs()).map(|c| self.output_source(c)).collect();
+        let outputs: Vec<GraphSource> =
+            (0..self.outputs()).map(|c| self.output_source(c)).collect();
         let reader = self.open_tap(&outputs, TapAlign::ToOutput, capacity);
         self.output_taps.insert(reader.id(), reader.width());
         reader

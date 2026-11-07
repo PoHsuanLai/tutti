@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tutti_graph::PrerollTable;
-use tutti_metering::{AudioTap, MasterMeter};
+use tutti_metering::MasterMeter;
 use tutti_nodes::ClickSettings;
 use tutti_transport::Transport;
 use tutti_types::{NodeKey, Samples};
@@ -581,8 +581,8 @@ pub struct Session {
     pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
     pub(crate) load: Option<tutti_metering::LoadMeter>,
-    pub(crate) meter: MasterMeter,
-    pub(crate) tap: AudioTap,
+    /// The engine's master meter, offline or on a device; `None` detached.
+    pub(crate) meter: Option<MasterMeter>,
     pub(crate) click: Option<NodeKey>,
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
@@ -953,9 +953,13 @@ impl Session {
         &self.click_settings
     }
 
-    /// The master meter the device callback feeds.
-    pub fn master_meter(&self) -> &MasterMeter {
-        &self.meter
+    /// The master meter: the peak and RMS of each block the engine renders,
+    /// after the declick, on a stereo fold of the output buffer. Fed by every
+    /// block the device callback (or, offline, [`render`](Self::render))
+    /// renders, and enabled from the build; `None` on a detached session,
+    /// which has no engine.
+    pub fn master_meter(&self) -> Option<&MasterMeter> {
+        self.meter.as_ref()
     }
 
     /// The engine's DSP-load meter: each block's render time against its
@@ -966,11 +970,6 @@ impl Session {
     /// which has no engine.
     pub fn load_meter(&self) -> Option<&tutti_metering::LoadMeter> {
         self.load.as_ref()
-    }
-
-    /// The tap the device callback pushes to, closed until opened.
-    pub fn tap(&self) -> &AudioTap {
-        &self.tap
     }
 
     /// The engine's MIDI nodes, when the builder inserted them.

@@ -4414,9 +4414,6 @@ name = "tutti-metering"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
- "parking_lot",
- "ringbuf",
- "thiserror 2.0.21",
  "tutti-types",
 ]
 

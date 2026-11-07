@@ -42,11 +42,11 @@ use std::sync::Arc;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, Transport,
+    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, Transport,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{ChannelLayout, SampleRate, Seconds, UnitAddr};
+use tutti_types::{ChannelLayout, SampleRate, Seconds, TapAlign, TapId, UnitAddr};
 use tutti_types::{Compensation, Samples, Tail};
 use tutti_types::{
     NodeKey,
@@ -336,6 +336,11 @@ pub struct Graph {
     /// there and the host did not wire itself, which are all a change of the
     /// feeds may take away. Every other edge on the input is the host's.
     fed_edges: BTreeMap<NodeKey, Vec<EventSource>>,
+    /// The id the next tap takes.
+    next_tap: u32,
+    /// The taps that copy the graph's outputs ([`open_output_tap`](Self::open_output_tap)),
+    /// by the channels they were opened with: their sources follow the outputs.
+    output_taps: BTreeMap<TapId, usize>,
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
     next_crossfade: u64,
@@ -460,6 +465,8 @@ impl Graph {
             render_worker_start: None,
             feeds: BTreeMap::new(),
             fed_edges: BTreeMap::new(),
+            next_tap: 0,
+            output_taps: BTreeMap::new(),
             parked: VecDeque::new(),
             next_crossfade: 0,
             #[cfg(feature = "plugin")]
@@ -1523,6 +1530,7 @@ impl Graph {
     /// If `channel` is past the global outputs.
     pub fn set_output_source(&mut self, channel: usize, source: GraphSource) {
         self.editor.spec_mut().topology.outputs[channel] = Self::lower(source);
+        self.follow_outputs();
         self.edited = true;
     }
 
@@ -1547,7 +1555,90 @@ impl Graph {
                 })
             };
         }
+        self.follow_outputs();
         self.edited = true;
+    }
+
+    // --- Taps ---
+
+    /// Copies `sources`, one lane each, out of the graph into a ring the
+    /// returned reader drains: a tap on any ports, at any width. The tap is
+    /// compiled by the next commit and fed by every block that renders after
+    /// it (a device, [`Session::render`](crate::Session::render) and
+    /// [`Session::render_frame`](crate::Session::render_frame) alike).
+    /// `capacity` is each lane's ring in frames; what the reader does not
+    /// drain in time is counted ([`TapReader::take_lost`]).
+    ///
+    /// [`TapAlign::ToOutput`] delays each lane by the compensation an output
+    /// of the same source gets, so it lines up with what the outputs carry;
+    /// [`TapAlign::Raw`] reads the source as it leaves its node. A tap sees
+    /// the signal before the engine's declick fader.
+    ///
+    /// Dropping the reader leaves the tap open until
+    /// [`close_tap`](Self::close_tap) or the session's next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
+    pub fn open_tap(
+        &mut self,
+        sources: &[GraphSource],
+        align: TapAlign,
+        capacity: Samples,
+    ) -> TapReader {
+        let id = TapId(self.next_tap);
+        self.next_tap += 1;
+        let sources = sources.iter().copied().map(Self::lower).collect();
+        let reader = self.editor.open_tap(id, sources, align, capacity);
+        self.edited = true;
+        reader
+    }
+
+    /// A tap on the graph's global outputs, aligned: lane `c` is output
+    /// channel `c` as the outputs carry it. Its sources follow the outputs
+    /// when they are re-wired ([`set_output_source`](Self::set_output_source),
+    /// [`set_outputs_from`](Self::set_outputs_from)); its width is the
+    /// output count when it was opened, and a later
+    /// [`widen_outputs`](Self::widen_outputs) does not widen it.
+    ///
+    /// This is the signal the graph produces, before the engine's declick
+    /// fader and the fold to the device's width.
+    pub fn open_output_tap(&mut self, capacity: Samples) -> TapReader {
+        let outputs: Vec<GraphSource> = (0..self.outputs()).map(|c| self.output_source(c)).collect();
+        let reader = self.open_tap(&outputs, TapAlign::ToOutput, capacity);
+        self.output_taps.insert(reader.id(), reader.width());
+        reader
+    }
+
+    /// Closes a tap: its ops leave the plan at the next commit and the ring
+    /// is freed on this side. Closing a closed tap does nothing.
+    pub fn close_tap(&mut self, id: TapId) {
+        self.output_taps.remove(&id);
+        self.editor.close_tap(id);
+        self.edited = true;
+    }
+
+    /// Closes the taps whose readers were dropped, and returns how many.
+    /// The session's [`Reclaim`](crate::Phase::Reclaim) phase runs it.
+    pub(crate) fn reap_taps(&mut self) -> usize {
+        let reaped = self.editor.reap_taps();
+        if reaped > 0 {
+            let open = &self.editor.spec().topology.taps;
+            self.output_taps.retain(|id, _| open.contains_key(id));
+            self.edited = true;
+        }
+        reaped
+    }
+
+    /// Points each output tap's lanes at the outputs as they are now.
+    fn follow_outputs(&mut self) {
+        if self.output_taps.is_empty() {
+            return;
+        }
+        let spec = self.editor.spec_mut();
+        let outputs = spec.topology.outputs.clone();
+        for (id, &width) in &self.output_taps {
+            if let Some(tap) = spec.topology.taps.get_mut(id) {
+                tap.sources = outputs.iter().copied().take(width).collect();
+            }
+        }
     }
 
     // --- Shape ---

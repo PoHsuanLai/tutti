@@ -169,6 +169,55 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
+/// The master meter on the audio thread: the stereo measure and the wide
+/// device's fold into its scratch never allocate, and the meter really reads
+/// (a gated-off meter would pass by measuring nothing).
+///
+/// Mutation (run, recorded here): `Vec::with_capacity(1)` in `Heard::measure`
+/// -> the gate panics.
+#[test]
+fn the_master_meter_is_allocation_free() {
+    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_transport::MotionEvent;
+    use tutti_types::NodeKey;
+    use tutti_types::graph::{OutPort, Source};
+
+    for width in [2usize, 6] {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(
+            SampleRate(48_000.0),
+            tutti_types::Samples(512),
+        ));
+        ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
+        ed.spec_mut().topology.outputs = (0..2)
+            .map(|port| {
+                Source::Node(OutPort {
+                    node: NodeKey(1),
+                    port,
+                })
+            })
+            .collect();
+        ed.commit().expect("commits");
+        let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+        engine.master_meter().enable();
+        let _ = transport.motion.try_send(MotionEvent::Play);
+
+        let mut output = vec![0.0f32; 1024 * width];
+        let layout = ChannelLayout::from(width);
+        engine.process(&mut InterleavedMut::new(&mut output, layout));
+        ed.collect();
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..50 {
+                engine.process(&mut InterleavedMut::new(&mut output, layout));
+            }
+        });
+        assert!(
+            engine.master_meter().get().peak_left.get() > 0.0,
+            "width {width}: the meter read nothing"
+        );
+    }
+}
+
 /// The metronome on the graph: `ClickNode` and a node walking its
 /// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
 /// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing

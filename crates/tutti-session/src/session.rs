@@ -63,7 +63,9 @@ pub enum Phase {
     /// request and port set. A value a block still held when it was
     /// replaced stays retired until a scan after the block ends; a cell
     /// that is not published again gets that scan here. A lock and a
-    /// length check per cell when nothing is retired.
+    /// length check per cell when nothing is retired. It also closes the
+    /// graph's taps whose readers were dropped
+    /// ([`Graph::open_tap`](crate::Graph::open_tap)).
     Reclaim,
 }
 
@@ -749,7 +751,9 @@ impl Session {
             }
             Phase::Reclaim => {
                 // Any thread that owns the session: what it frees is
-                // tables, meters, programs and clips, never a unit.
+                // tables, meters, programs and clips, never a unit. A tap
+                // whose reader was dropped goes out of the next plan.
+                self.graph.reap_taps();
                 self.reclaim();
             }
         }

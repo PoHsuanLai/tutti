@@ -100,7 +100,7 @@ jobs:
       # And `tutti-midi-protocol`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-plugin-db`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_db catalog database facts fs pedal record scanner
+      - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
       # And `tutti-rt`, which keeps its modules private: the root names every item.
@@ -263,7 +263,7 @@ jobs:
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
-      #   tutti-plugin-db/json — `JsonCatalog` and its tests
+      #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
       #                         `clap_*`, `plugin_param_delivery*` and
       #                         `vst2_in_process*` suites): no other job turns

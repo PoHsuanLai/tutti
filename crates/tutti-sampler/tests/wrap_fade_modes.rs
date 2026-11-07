@@ -40,7 +40,11 @@ fn tone() -> Arc<Wave> {
 fn graph(wave: &Arc<Wave>, workers: usize) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        let pool = WorkerPool::builder()
+            .num_threads(workers)
+            .build()
+            .expect("spawn the render helpers");
+        exec.set_pool(Some(Arc::new(pool)));
     }
     let mut outputs = Vec::new();
     for k in 0..READS {

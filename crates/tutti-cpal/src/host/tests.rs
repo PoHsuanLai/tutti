@@ -38,9 +38,15 @@ fn an_unreachable_host_is_refused_rather_than_substituted() {
     );
 }
 
-/// `Option<usize>` converts to the matching selector.
+/// A name selects the first device of that name; an id keeps its order.
 #[test]
-fn an_optional_index_maps_to_the_selector_it_used_to_mean() {
-    assert_eq!(DeviceSelector::from(None), DeviceSelector::Default);
-    assert_eq!(DeviceSelector::from(Some(3)), DeviceSelector::Index(3));
+fn a_named_selector_is_the_first_device_of_that_name() {
+    assert_eq!(
+        DeviceSelector::named("USB"),
+        DeviceSelector::Id(DeviceId::nth("USB", 0))
+    );
+    assert_ne!(
+        DeviceSelector::named("USB"),
+        DeviceSelector::Id(DeviceId::nth("USB", 1))
+    );
 }

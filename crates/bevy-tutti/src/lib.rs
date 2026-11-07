@@ -227,7 +227,8 @@ pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingP
 
 // Engine types. The graph itself is `graph::AudioGraphRes`.
 pub use engine::{
-    Device, DeviceInfo, DeviceRestart, DeviceSelector, restart_device, restart_device_on,
+    Backoff, Device, DeviceId, DeviceInfo, DevicePolicy, DeviceRestart, DeviceRestarted,
+    DeviceSelector, Direction, restart_device, restart_device_on,
 };
 
 // The crate error, at the crate root: its public position and its file
@@ -236,7 +237,9 @@ mod error;
 pub use error::{Error, Result};
 
 pub use engine::AudioEngineState;
-pub use engine::{AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKind};
+pub use engine::{
+    AudioDeviceEvent, AudioDeviceFault, AudioDeviceState, StreamFault, StreamFaultKind,
+};
 
 /// Everything a typical host needs, in one import.
 pub mod prelude {
@@ -248,8 +251,9 @@ pub mod prelude {
         crossfade_audio_node, engine_ready,
     };
     pub use crate::{
-        AudioDeviceFault, AudioDeviceState, AudioEngineState, ChannelCompensation, Device,
-        DeviceInfo, GraphLatency, LatencyCompensationPlugin, TuttiPlugin,
+        AudioDeviceEvent, AudioDeviceFault, AudioDeviceState, AudioEngineState,
+        ChannelCompensation, Device, DeviceInfo, GraphLatency, LatencyCompensationPlugin,
+        TuttiPlugin,
     };
 
     #[cfg(feature = "export")]

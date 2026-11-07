@@ -63,6 +63,12 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
                 .idle(std::time::Duration::from_micros(50))
                 .start_handler(|_| crate::server::raise_to_realtime("a clap.thread-pool helper"))
                 .build()
+                .inspect_err(|e| {
+                    tracing::warn!(
+                        "clap.thread-pool: a {participants}-thread pool was refused, \
+                         requests are refused: {e}"
+                    );
+                })
                 .ok()
                 .map(std::sync::Arc::new)
         })

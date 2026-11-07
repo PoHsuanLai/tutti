@@ -466,6 +466,9 @@ impl Graph {
             .num_threads(n)
             .thread_name(move |i| format!("{name}-{i}"))
             .build()
+            .inspect_err(|e| {
+                tracing::warn!("graph: a {n}-thread worker pool was refused, rendering alone: {e}");
+            })
             .ok()?;
         Some(Arc::new(pool))
     }

@@ -245,10 +245,15 @@ impl WorkerPoolBuilder {
     }
 
     /// A hook each helper runs once on its own thread before taking work,
-    /// with its index (`1..num_threads`) — where a host raises the thread's
-    /// priority to the audio callback's or joins its audio workgroup. Under a
-    /// real-time callback the helpers must run at its priority (see the
-    /// module docs, "Priority").
+    /// with the helper's index (`1..num_threads`; the caller is 0) — where a
+    /// host raises the thread's priority to the audio callback's or joins its
+    /// audio workgroup. Under a real-time callback the helpers must run at
+    /// its priority (see the module docs, "Priority").
+    ///
+    /// A hook that panics ends only its own helper: `build` still returns
+    /// `Ok`, and jobs run on the remaining threads. A hook that blocks keeps
+    /// its helper from ever taking work and makes dropping the pool wait for
+    /// it; `build` does not wait for hooks.
     #[must_use]
     pub fn start_handler(mut self, hook: impl Fn(usize) + Send + Sync + 'static) -> Self {
         self.start_handler = Some(Arc::new(hook));
@@ -564,6 +569,46 @@ mod tests {
         let mut names = names.lock().unwrap().clone();
         names.sort();
         assert_eq!(names, ["custom-1", "custom-2"]);
+    }
+
+    /// A helper whose start handler panics ends alone: the pool is built, a
+    /// job closes without waiting for it, and the other helper still joins
+    /// (as participant 1: the gate numbers participants by arrival).
+    ///
+    /// Mutation: run the hook in `build` on the caller instead of on the
+    /// helper -> the panic escapes `build` -> fails. Mutation: `Pool::run`
+    /// waiting for every helper to arrive -> the first job never closes ->
+    /// times out (not run: it needs a change to `tutti-rt`'s gate).
+    #[test]
+    fn a_panicking_start_handler_leaves_a_working_pool() {
+        let pool = WorkerPool::builder()
+            .num_threads(3)
+            .start_handler(|i| {
+                if i == 1 {
+                    panic!("start handler of helper 1");
+                }
+            })
+            .spin_budget(Duration::from_micros(10))
+            .idle(Duration::from_micros(10))
+            .build()
+            .expect("a worker pool");
+        let mask = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // The gate hands out participant indices in arrival order, so the one
+        // live helper is participant 1.
+        while mask.load(Ordering::Relaxed) & 0b010 == 0 && Instant::now() < deadline {
+            pool.run(3, &|i| {
+                mask.fetch_or(1 << i, Ordering::Relaxed);
+                if i == 0 {
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_micros(200) {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+        }
+        let mask = mask.load(Ordering::Relaxed);
+        assert_eq!(mask, 0b011, "the caller and the one live helper ran");
     }
 
     /// Zero threads, the default, is one per available core.

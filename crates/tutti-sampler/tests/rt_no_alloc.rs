@@ -470,6 +470,66 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     ragged_at_512(free);
 }
 
+/// A node placed at beat 0 under a transport looping beats 0.125 to 0.376,
+/// in ragged blocks that cut the loop's wraps (and so the crossfade) at
+/// every offset: nothing allocates, and the crossfade ran: no step across a
+/// wrap is a cut's (a 440 Hz tone steps 0.49 there).
+fn wraps_without_allocating<N: Node>(node: N) {
+    use tutti_graph::{LoopRange, Transport};
+    const WRAPS: usize = 4;
+    let region = tutti_types::LoopRange::new(0.125, 0.376).expect("a loop");
+    let looping = LoopRange {
+        start: Beat::new(0.125),
+        end: Beat::new(0.376),
+    };
+    let node = tutti_graph::contract::prepared(node, RATE, 64);
+    let mut direct = Direct::new(node, RATE, 512);
+    let mut clock = tutti_types::FrameClock::new(Beat::new(0.0), Bpm::new(120.0), RATE);
+    let mut heard = Vec::with_capacity(70_000);
+    let mut step = |i: usize, direct: &mut Direct<N>, heard: &mut Vec<f32>| -> bool {
+        let len = RAGGED[i % RAGGED.len()];
+        let before = clock.beat();
+        direct.set_transport(Transport::new(true, Bpm::new(120.0), before, Some(looping)));
+        direct.set_block_len(len);
+        direct.block();
+        heard.extend_from_slice(direct.output(0));
+        clock.advance(tutti_types::Samples(len), Some(region));
+        clock.beat() < before
+    };
+    for i in 0..64 {
+        step(i, &mut direct, &mut Vec::with_capacity(512));
+    }
+    let mut wraps = 0;
+    assert_no_alloc::assert_no_alloc(|| {
+        for i in 0..400 {
+            wraps += usize::from(step(i, &mut direct, &mut heard));
+        }
+    });
+    assert!(wraps >= WRAPS, "the run wraps ({wraps})");
+    let widest = heard
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max);
+    assert!(widest < 0.06, "a step of {widest}: the wrap is a cut");
+}
+
+/// A loop wrap's crossfade does not allocate, through a pool, a
+/// `VoiceNode` and a bare `MemorySource`: the tail lanes are sized in
+/// `prepare`.
+///
+/// Mutation (run): a `Vec` built per call in `MemorySource::render_placed`'s
+/// tail read (`views` collected into a `Vec`) → all three abort. Mutation
+/// (run): `crossfade_wraps` never called → each fails its step check.
+#[test]
+fn a_loop_wrap_crossfade_is_allocation_free() {
+    let wave = sine_wave(2.0, 48_000.0);
+    let mut pool = VoicePool::new();
+    pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
+    wraps_without_allocating(pool);
+    wraps_without_allocating(VoiceNode::new(placed_voice(&wave, 1.0)));
+    wraps_without_allocating(MemorySource::placed(wave.clone(), Beat::new(0.0), None));
+}
+
 /// The `VoiceCommand::UpdateStretch` drain is allocation-free.
 ///
 /// Draining an `UpdateStretch` calls `PlaybackSlot::set_stretch`, which flips the

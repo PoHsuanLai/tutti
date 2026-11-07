@@ -9,14 +9,12 @@
 
 use std::ops::Range;
 
-use crate::lanes::{BlockScratch, accumulate, scale};
+use crate::lanes::{BlockScratch, accumulate, audible, scale};
 use crate::nonempty;
 use crate::stretch;
 
 use super::clock::BlockClock;
-use super::interp::Gate;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
-use tutti_graph::CrossfadeCurve;
 use tutti_types::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, StretchFactor};
 
 /// A [`Voice`] plus the resident time-stretch DSP processor, and the read that
@@ -321,7 +319,7 @@ impl PlaybackSlot {
             return;
         }
         let direction = self.voice.play.direction;
-        let gain = self.voice.play.gain.get();
+        let gain = audible(self.voice.play.gain.get());
         let (VoiceSource::Memory(sampler), Some(unit)) =
             (&mut self.voice.source, self.stretch.as_mut())
         else {
@@ -413,7 +411,7 @@ impl PlaybackSlot {
     ) -> Piece {
         let frames = range.len();
         let direction = self.voice.play.direction;
-        let gain = self.voice.play.gain.get();
+        let gain = audible(self.voice.play.gain.get());
         // Route through the filter only when the intent asks for it AND a unit
         // is resident; a missing unit reads dry rather than silent.
         let stretching = self.needs_stretch() && self.stretch.is_some();
@@ -504,58 +502,17 @@ impl PlaybackSlot {
                 // `MemorySource::placed_positions`. Stepping by the gate's
                 // rate read a 24 kHz file on a 48 kHz clock one file frame per
                 // output frame, then jumped back at every block.
-                let sounds =
-                    sampler.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
-                // A loop wrap's crossfade in the piece: the voice's tail past
-                // the loop's end sounds under the loop's start (below).
-                let fades = clock.fades();
-                // With no position, every frame reads +0.0, gained to ±0.0
-                // by a finite gain (an infinite or NaN one makes NaNs, which
-                // are read).
-                if !sounds && gain.is_finite() && !fades {
-                    return Piece::Silent;
-                }
-                sampler.read_placed_lanes(positions, direction, out.lanes_mut(), n, gather);
-                for lane in out.lanes_mut().iter_mut().take(n) {
-                    scale(&mut lane[..frames], gain);
-                }
-                if fades {
-                    let span = sampler.placed_tail(clock, range.clone(), positions);
-                    let first = span.as_ref().map_or(0, |s| s.start);
-                    let mut tail = raw.lanes_mut().each_mut().map(|lane| {
-                        lane.get_mut(span.clone().unwrap_or(0..0))
-                            .unwrap_or_default()
-                    });
-                    // Only the frames the tail sounds over are read.
-                    if let Some(span) = &span {
-                        sampler.read_placed_lanes(
-                            &positions[span.clone()],
-                            direction,
-                            &mut tail,
-                            n,
-                            gather,
-                        );
-                        for lane in tail.iter_mut().take(n) {
-                            scale(lane, gain);
-                        }
-                    }
-                    let blended = sampler.gate(ReadRate::UNITY).is_some_and(|gate| {
-                        crossfade_wraps(
-                            clock,
-                            range,
-                            gate,
-                            first,
-                            &*positions,
-                            &tail,
-                            out.lanes_mut(),
-                            n,
-                        )
-                    });
-                    if !blended && !sounds && gain.is_finite() {
-                        return Piece::Silent;
-                    }
-                }
-                Piece::Ready
+                sampler.render_placed(
+                    clock,
+                    range,
+                    direction,
+                    gain,
+                    n,
+                    positions,
+                    gather,
+                    out.lanes_mut(),
+                    raw.lanes_mut(),
+                )
             }
             (VoiceSource::Disk(reader), _) => {
                 // Unity, every block: the stretch rate belongs to the filter
@@ -577,56 +534,6 @@ impl PlaybackSlot {
             }
         }
     }
-}
-
-/// Blend a wrap crossfade's tail into the loop's start, for a voice with a
-/// tail (`Gate::tail_sounds`; a voice without one is untouched). Returns
-/// whether any run was blended. Where the tail has ended inside the fade
-/// (`positions` empty), the head finishes its ramp alone.
-/// `tail` holds the frames from `first`; `range` is the piece, whose first
-/// frame is lane frame 0.
-///
-/// A head in the middle of a sound is `head * g_in + tail * g_out` at
-/// [`CrossfadeCurve`]'s equal-power gains: the two are different stretches
-/// of the source, which add in power. A head that is the clip's own start
-/// (`Gate::begins_with_loop`) keeps unity, `head + tail * g_out`: its attack
-/// is not ramped, and the join steps as the clip's first pass does. Both
-/// sounding at full level, correlated, the sum peaks at the two together.
-#[allow(clippy::too_many_arguments)]
-fn crossfade_wraps(
-    clock: &BlockClock<'_>,
-    range: Range<usize>,
-    gate: Gate,
-    first: usize,
-    positions: &[Option<SamplePosition>],
-    tail: &[&mut [f32]],
-    head: &mut [Vec<f32>],
-    n: usize,
-) -> bool {
-    let base = range.start;
-    let mut blended = false;
-    for run in clock.runs_in(range) {
-        let Some(wrap) = run.wrap else { continue };
-        if !gate.tail_sounds(&run, &wrap) {
-            continue;
-        }
-        blended = true;
-        let own_start = gate.begins_with_loop(&run, &wrap);
-        let end = run.end.min(run.start + wrap.left());
-        for at in run.start..end {
-            let i = at - base;
-            let (g_in, g_out) =
-                CrossfadeCurve::EqualPower.gains(wrap.ago + at - run.start, wrap.len);
-            let g_in = if own_start { 1.0 } else { g_in };
-            // A tail that has ended leaves the head to finish its ramp.
-            let sounding = positions[i].is_some();
-            for (h, t) in head.iter_mut().zip(tail).take(n) {
-                let tail = if sounding { t[i - first] * g_out } else { 0.0 };
-                h[i] = h[i] * g_in + tail;
-            }
-        }
-    }
-    blended
 }
 
 /// What [`PlaybackSlot::render_lanes`] left for its piece.

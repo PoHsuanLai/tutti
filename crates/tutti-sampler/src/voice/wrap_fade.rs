@@ -1,6 +1,7 @@
 //! A placed memory voice across a transport loop wrap: the tail it was
 //! playing past the loop's end fades out under the loop's start, over
-//! `clock::WRAP_FADE`, instead of cutting.
+//! `clock::WRAP_FADE`, instead of cutting. Each test runs on both hosts of
+//! the read: a `VoicePool` slot and a bare `MemorySource` node.
 //!
 //! The source is a pure tone, so the render is continuous but for the wrap:
 //! the largest step between neighbouring samples is bounded analytically, and
@@ -16,6 +17,7 @@ use tutti_types::{
 
 use super::clock::WRAP_FADE;
 use super::memory_source::MemorySource;
+use super::node::VoiceNode;
 use super::pool::VoicePool;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
 
@@ -52,20 +54,65 @@ fn region(start: f64, end: f64) -> LoopRange {
     LoopRange::new(start, end).expect("a loop")
 }
 
-/// A pool of placed voices behind a host clock that loops.
+/// What renders the voice: a pool slot, or the source as a graph node.
+#[derive(Clone, Copy, Debug)]
+enum Host {
+    Pool,
+    Node,
+    Voice,
+}
+
+enum Hosted {
+    Pool(VoicePool),
+    Node(MemorySource),
+    Voice(Option<VoiceNode>),
+}
+
+/// Runs a test on each [`Host`], as `name::pool` and `name::node`.
+macro_rules! on_each_host {
+    ($($name:ident),* $(,)?) => {$(
+        mod $name {
+            #[test]
+            fn pool() {
+                super::$name(super::Host::Pool)
+            }
+            #[test]
+            fn node() {
+                super::$name(super::Host::Node)
+            }
+            #[test]
+            fn voice() {
+                super::$name(super::Host::Voice)
+            }
+        }
+    )*};
+}
+
+/// One placed voice behind a host clock that loops.
 struct Rig {
-    pool: VoicePool,
+    host: Hosted,
+    max_block: usize,
     clock: FrameClock,
     looping: Option<LoopRange>,
     frame: u64,
 }
 
 impl Rig {
-    fn new(looping: Option<LoopRange>, max_block: usize) -> Self {
-        let mut pool = VoicePool::with_channels(None, ChannelLayout::STEREO).expect("stereo");
-        pool.prepare(&Prepare::new(SampleRate(SR), Samples(max_block)));
+    fn new(host: Host, looping: Option<LoopRange>, max_block: usize) -> Self {
+        let host = match host {
+            Host::Pool => {
+                let mut pool =
+                    VoicePool::with_channels(None, ChannelLayout::STEREO).expect("stereo");
+                pool.prepare(&Prepare::new(SampleRate(SR), Samples(max_block)));
+                Hosted::Pool(pool)
+            }
+            // Placed by `place`.
+            Host::Voice => Hosted::Voice(None),
+            Host::Node => Hosted::Node(MemorySource::new(Arc::new(Wave::new(2, SR)))),
+        };
         Self {
-            pool,
+            host,
+            max_block,
             clock: FrameClock::new(Beat::new(0.0), Bpm::new(120.0), SampleRate(SR)),
             looping,
             frame: 0,
@@ -91,15 +138,46 @@ impl Rig {
             Beat::new(start),
             duration.map(BeatDuration::new),
         );
-        source.set_render_rate(SampleRate(SR));
-        self.pool.insert_voice(
-            SlotId(id),
-            Voice {
-                source: VoiceSource::Memory(source),
-                play,
-                channel_index: None,
-            },
-        );
+        match &mut self.host {
+            Hosted::Pool(pool) => {
+                source.set_render_rate(SampleRate(SR));
+                pool.insert_voice(
+                    SlotId(id),
+                    Voice {
+                        source: VoiceSource::Memory(source),
+                        play,
+                        channel_index: None,
+                    },
+                );
+            }
+            Hosted::Voice(slot) => {
+                let mut node = VoiceNode::new(Voice {
+                    source: VoiceSource::Memory(source),
+                    play,
+                    channel_index: None,
+                });
+                node.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
+                *slot = Some(node);
+            }
+            Hosted::Node(node) => {
+                source.set_gain(play.gain);
+                source.set_loop_setting(play.loop_);
+                source.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
+                *node = source;
+            }
+        }
+    }
+
+    /// One block under `env`.
+    fn drive(&mut self, env: &Env) -> Vec<Vec<f32>> {
+        match &mut self.host {
+            Hosted::Pool(pool) => contract::drive_input(pool, env, &[], &[], &[]).audio,
+            Hosted::Node(node) => contract::drive_input(node, env, &[], &[], &[]).audio,
+            Hosted::Voice(node) => {
+                let node = node.as_mut().expect("placed");
+                contract::drive_input(node, env, &[], &[], &[]).audio
+            }
+        }
     }
 
     fn transport(&self, playing: bool) -> Transport {
@@ -126,7 +204,7 @@ impl Rig {
             changes,
             play: tutti_graph::PlayClock::ZERO,
         };
-        let out = contract::drive_input(&mut self.pool, &env, &[], &[], &[]).audio;
+        let out = self.drive(&env);
         self.frame += len as u64;
         self.clock.advance(Samples(len), self.looping);
         out
@@ -215,12 +293,11 @@ fn the_fade_is_five_milliseconds() {
 /// wrap steps by 0.4 or more → fails. Mutation (run): `Wrap::after` always
 /// `None` (the fade dropped at the first block edge) → fails at the 64 and 100
 /// frame blocks, where the fade crosses edges → fails.
-#[test]
-fn a_tone_has_no_cut_at_the_wrap_at_any_block_length() {
+fn a_tone_has_no_cut_at_the_wrap_at_any_block_length(host: Host) {
     for channels in [1, 2] {
         for block in [64, 100, 480, 1000] {
             let w = wave(channels, 4 * FPB, tone);
-            let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+            let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
             rig.place(1, &w, 0.0, None);
             let out = rig.run(2 * WRAP, block);
             for (c, lane) in out.iter().enumerate() {
@@ -250,10 +327,9 @@ fn a_tone_has_no_cut_at_the_wrap_at_any_block_length() {
 ///
 /// Mutation (run): the blend starting a frame early (`first` one less in
 /// `crossfade_wraps`'s tail read) → the formula frames are off → fails.
-#[test]
-fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it() {
+fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it(host: Host) {
     let w = wave(1, 4 * FPB, tone);
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     let out = rig.run(WRAP + FADE + 8, 480);
     for (i, s) in out[0].iter().enumerate().take(WRAP) {
@@ -282,13 +358,12 @@ fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it() {
 ///
 /// Mutation (run): `CrossfadeCurve::EqualAmplitude` in `crossfade_wraps` →
 /// the energy is 0.67 of the steady tone's → fails.
-#[test]
-fn the_fade_holds_the_energy_of_unrelated_material() {
+fn the_fade_holds_the_energy_of_unrelated_material(host: Host) {
     let w = wave(1, 4 * FPB, |_, i| {
         let f = if i < WRAP { 1_000.0 } else { 3_000.0 };
         tone(f, i)
     });
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     let out = rig.run(WRAP + FADE, 1000);
     let energy: f32 = out[0][WRAP..WRAP + FADE].iter().map(|s| s * s).sum();
@@ -304,11 +379,10 @@ fn the_fade_holds_the_energy_of_unrelated_material() {
 ///
 /// Mutation (run): `place_tail` not gating on the window (`e` taken as `a`) →
 /// the loop's start is crossfaded with a tone it was not playing → fails.
-#[test]
-fn a_voice_that_is_not_playing_across_the_wrap_is_untouched() {
+fn a_voice_that_is_not_playing_across_the_wrap_is_untouched(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     // One beat of a loop of 1.3: it ends 0.3 beats before the wrap.
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, Some(1.0));
     let out = rig.run(WRAP + 2 * FADE, 1000);
     for (i, s) in out[0].iter().enumerate().take(FPB) {
@@ -329,11 +403,10 @@ fn a_voice_that_is_not_playing_across_the_wrap_is_untouched() {
 ///
 /// Mutation (run): the tail read gated out when the head is silent
 /// (`!sounds` returning `Silent` before the tail) → the voice cuts → fails.
-#[test]
-fn a_tail_with_no_loop_start_under_it_fades_out() {
+fn a_tail_with_no_loop_start_under_it_fades_out(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     // Placed at beat 1 for ever: the loop's start (beat 0) is before it.
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 1.0, None);
     let out = rig.run(WRAP + FADE + 8, 1000);
     let step = max_step(&out[0], WRAP - 4, WRAP + FADE + 4);
@@ -347,11 +420,10 @@ fn a_tail_with_no_loop_start_under_it_fades_out() {
 ///
 /// Mutation (run): `place_tail` skipping the `reached` check → a ghost of the
 /// voice's first 120 frames under the loop's start → fails.
-#[test]
-fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost() {
+fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost(host: Host) {
     for start in [LOOP_BEATS, LOOP_BEATS + 0.005] {
         let w = wave(1, 4 * FPB, tone);
-        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
         rig.place(1, &w, start, None);
         let out = rig.run(WRAP + 2 * FADE, 1000);
         assert!(out[0].iter().all(|&s| s == 0.0), "a voice at beat {start}");
@@ -364,11 +436,11 @@ fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost() {
 ///
 /// Mutation (run): `Wrap::new` not halving (`pass` for `pass / 2.0`) → the
 /// fade runs the whole pass and the second half is blended → fails.
-#[test]
-fn a_loop_shorter_than_the_fade_fades_over_half_a_pass() {
+fn a_loop_shorter_than_the_fade_fades_over_half_a_pass(host: Host) {
     // 0.005 beats: 120 frames, from the middle of the source.
     let w = wave(1, FPB, tone);
     let mut rig = Rig::new(
+        host,
         Some(region(LOOP_START_BEATS, LOOP_START_BEATS + 0.005)),
         1000,
     );
@@ -394,10 +466,9 @@ fn a_loop_shorter_than_the_fade_fades_over_half_a_pass() {
 /// across a seek (the `broke` reset removed) → the seek's target is blended
 /// with a tail → fails; across a stop (the `!rolls` reset removed) → the
 /// restart blends → fails.
-#[test]
-fn a_seek_or_a_stop_during_the_fade_ends_it() {
+fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     let w = wave(1, 4 * FPB, tone);
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
     // Block of 400: the wrap is at frame 100, a seek to beat 2 at 150.
@@ -411,7 +482,7 @@ fn a_seek_or_a_stop_during_the_fade_ends_it() {
         );
     }
 
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
     let stopped = Transport::new(false, Bpm(120.0), Beat(0.01), None);
@@ -428,10 +499,33 @@ fn a_seek_or_a_stop_during_the_fade_ends_it() {
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };
-    let out = contract::drive_input(&mut rig.pool, &env, &[], &[], &[]).audio;
+    let out = rig.drive(&env);
     let first = (at.get() * FPB as f64).round() as usize;
     for (k, s) in out[0].iter().enumerate() {
         assert_eq!(s.to_bits(), tone(437.3, first + k).to_bits());
+    }
+}
+
+/// A NaN or infinite gain is silence, never NaN, on every host, in frames
+/// inside and outside the voice's window (it starts 100 frames into the run
+/// and the run crosses a wrap).
+///
+/// Mutation (run): `audible` returning the gain unguarded -> the frames
+/// outside the window are inf * 0.0 = NaN and those inside are NaN -> fails
+/// on each host.
+fn a_non_finite_gain_renders_silence(host: Host) {
+    for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let w = wave(1, 4 * FPB, tone);
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let play = Playback {
+            gain: tutti_types::Amplitude(gain),
+            ..Playback::default()
+        };
+        rig.place_with(1, &w, 100.0 / FPB as f64, None, play);
+        let out = rig.run(WRAP + 2 * FADE, 480);
+        for lane in &out {
+            assert!(lane.iter().all(|&s| s == 0.0), "{host:?}, gain {gain}");
+        }
     }
 }
 
@@ -465,12 +559,11 @@ fn equal_power(k: usize) -> (f32, f32) {
 /// curves differ by up to 0.2 of the gap). Mutation (run): the gain index one
 /// frame late (`wrap.ago + at - run.start + 1`) → fails (a step of 1.6e-3
 /// against a tolerance of 1e-6).
-#[test]
-fn the_gains_are_the_equal_power_curve_frame_for_frame() {
+fn the_gains_are_the_equal_power_curve_frame_for_frame(host: Host) {
     for channels in [1, 2] {
         for block in [7, 64, 100, 480, 1000] {
             let w = steps(channels, 0.25, 0.5);
-            let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+            let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
             rig.place(1, &w, 0.0, None);
             let out = rig.run(WRAP + FADE + 16, block);
             for (c, lane) in out.iter().enumerate() {
@@ -499,10 +592,9 @@ fn the_gains_are_the_equal_power_curve_frame_for_frame() {
 /// Mutation (run): `crossfade_wraps` skipping the frames without a tail
 /// (`continue` on `positions[i].is_none()`) → the head is unscaled from frame
 /// 100 and steps from 0.59 times the head to the head → fails.
-#[test]
-fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp() {
+fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp(host: Host) {
     let w = steps(1, 0.25, 0.5);
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, Some(LOOP_BEATS + 100.0 / FPB as f64));
     let out = rig.run(WRAP + FADE + 16, 1000);
     for k in 0..FADE {
@@ -526,11 +618,10 @@ fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp() {
 /// `g_in` → fails. Mutation (run): `begins_with_loop` always `true` → the
 /// sustained-tone tests (`a_tone_has_no_cut…`, the energy and the gain
 /// tests) fail.
-#[test]
-fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity() {
+fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity(host: Host) {
     for lag in [0usize, 100] {
         let w = wave(1, 4 * FPB, tone);
-        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
         rig.place(1, &w, LOOP_START_BEATS + lag as f64 / FPB as f64, None);
         let out = rig.run(WRAP + FADE + 16, 480);
         // The first pass: the clip from its first frame.
@@ -567,13 +658,12 @@ fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity() {
 /// Mutation (run): `EqualAmplitude` in `crossfade_wraps` → the gain sum is 1
 /// everywhere → fails. Mutation (run): unity applied to a mid-sound head →
 /// the sum at mid-fade is 1.5 rather than root 2 → fails.
-#[test]
-fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone() {
+fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone(host: Host) {
     // 440 Hz is a whole number of cycles over the 30 000 frame loop, so the
     // tail and the loop's start are the same samples.
     let cosine = |_, i: usize| AMP * (std::f64::consts::TAU * 440.0 * i as f64 / SR).cos() as f32;
     let w = wave(1, 4 * FPB, cosine);
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     let out = rig.run(WRAP + FADE, 1000);
     let (mut peak, mut mean) = (0.0f32, 0.0f32);
@@ -593,7 +683,7 @@ fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone()
         "mean {mean}"
     );
 
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, LOOP_START_BEATS, None);
     let out = rig.run(WRAP + FADE, 1000);
     let top = out[0][WRAP..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -615,8 +705,7 @@ fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone()
 /// Mutation (run): `Wrap::left` returning `len` (the fade not shortened by
 /// `ago`) → the fade outlasts its frames and the tail read runs off its span
 /// → fails (a panic).
-#[test]
-fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded() {
+fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded(host: Host) {
     let w = wave(1, 4 * FPB, tone);
     for (tempo, edit) in [
         (90.0, Some(region(LOOP_START_BEATS, LOOP_BEATS))),
@@ -627,7 +716,7 @@ fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded() {
         ),
         (120.0, None),
     ] {
-        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
         rig.place(1, &w, 0.0, None);
         rig.run(WRAP - 50, 1000);
         let mut out = rig.block_changed(400, 150, tempo, edit);
@@ -655,11 +744,10 @@ fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded() {
 ///
 /// Mutation (run): `begins_with_loop` testing the loop's start frame itself
 /// (no `- 1 / fpb`) → the voice a frame before it reads as unity → fails.
-#[test]
-fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start() {
+fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start(host: Host) {
     for (lag, own) in [(-1i32, false), (0, true), (1, true)] {
         let w = steps_at(1, 0.25, 0.5, LS - 100);
-        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
         rig.place(1, &w, LOOP_START_BEATS + f64::from(lag) / FPB as f64, None);
         let out = rig.run(WRAP + FADE, 1000);
         for k in 0..FADE {
@@ -689,10 +777,9 @@ fn the_unity_rule_is_decided_to_the_frame_at_the_loop_start() {
 ///
 /// Mutation (run): `begins_with_loop` always `true` → the head is unity →
 /// fails.
-#[test]
-fn a_voice_with_its_own_loop_is_judged_by_its_window() {
+fn a_voice_with_its_own_loop_is_judged_by_its_window(host: Host) {
     let w = steps(1, 0.25, 0.5);
-    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     let play = Playback {
         loop_: super::memory_source::LoopSetting::On {
             start: tutti_types::SamplePosition(20_000.0),
@@ -710,3 +797,22 @@ fn a_voice_with_its_own_loop_is_judged_by_its_window() {
     }
     assert!(out[0][WRAP..].iter().all(|s| s.is_finite() && *s <= 0.75));
 }
+
+on_each_host!(
+    a_non_finite_gain_renders_silence,
+    a_tone_has_no_cut_at_the_wrap_at_any_block_length,
+    the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it,
+    the_fade_holds_the_energy_of_unrelated_material,
+    a_voice_that_is_not_playing_across_the_wrap_is_untouched,
+    a_tail_with_no_loop_start_under_it_fades_out,
+    a_voice_that_begins_after_the_loop_ends_leaves_no_ghost,
+    a_loop_shorter_than_the_fade_fades_over_half_a_pass,
+    a_seek_or_a_stop_during_the_fade_ends_it,
+    the_gains_are_the_equal_power_curve_frame_for_frame,
+    a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp,
+    a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity,
+    an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone,
+    a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded,
+    the_unity_rule_is_decided_to_the_frame_at_the_loop_start,
+    a_voice_with_its_own_loop_is_judged_by_its_window,
+);

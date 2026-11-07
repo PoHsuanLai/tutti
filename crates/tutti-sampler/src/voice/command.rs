@@ -490,7 +490,8 @@ impl VoiceNodeHandle {
         self.placement.reclaim()
     }
 
-    /// Sets the voice's gain, from the node's next block on. A write to a
+    /// Sets the voice's gain, from the node's next block on; a NaN or infinite gain
+    /// is silence. A write to a
     /// shared cell: never lost, never queued.
     pub fn set_gain(&self, gain: Amplitude) {
         self.params.set(tutti_types::UnitParam::Volume, gain.get());

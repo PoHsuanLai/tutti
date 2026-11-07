@@ -12,8 +12,10 @@ Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 
 [`Devices`] lists the MIDI devices and keeps the list current while it lives:
 `open()` starts a watch, and dropping the value stops it. Each device has a
-[`DeviceId`] that survives what the OS lets it survive, and `open_input` takes
-that id.
+[`DeviceId`] and `open_input` takes that id. An id names a device within a run:
+its identity is what the OS lets survive a restart, and the ordinal after it only
+tells alike devices apart (unplug two identical keyboards and plug them back in
+the other order, and their ordinals swap).
 
 ```rust,no_run
 use std::time::Duration;
@@ -28,7 +30,7 @@ for event in devices.wait(Duration::from_secs(5)) {
     match event {
         DeviceEvent::Added(device) => println!("plugged in: {}", device.name),
         DeviceEvent::Removed(device) => println!("gone: {}", device.name),
-        DeviceEvent::Changed(device) => println!("renamed: {}", device.name),
+        DeviceEvent::Changed(device) => println!("changed: {}", device.name),
     }
 }
 # Ok::<(), tutti_midi_hardware::Error>(())
@@ -38,10 +40,16 @@ for event in devices.wait(Duration::from_secs(5)) {
   device that vanishes is noticed when the kernel says so. A [`DeviceId`] is the
   client and port name plus an ordinal for identical devices; the client number
   is a handle to the current connection and not part of it. A client number the
-  kernel hands to a new device straight after an old one exits is treated as a
-  new device.
-- **macOS:** a thread runs a CoreMIDI client's run loop for its setup
-  notifications. A [`DeviceId`] is the endpoint's `MIDIUniqueID`.
+  kernel hands to a new device straight after an old one exits is a new device,
+  told by the exit announcement. A device that keeps its client number and
+  changes its name is `Changed` and keeps its id, whose identity keeps the old
+  name.
+- **macOS:** one process-wide CoreMIDI client runs its run loop on one thread
+  for setup notifications, and each [`Devices`] registers with it. A
+  [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author; see
+  doc 017.
+- If the watch ends on its own, [`Devices::watch_failure`] says why and the list
+  stays as it was.
 - **Windows (and Linux without alsa-lib 1.2.10):** the list is empty and stays
   so, as enumeration is; opening reports [`Error::Unsupported`].
 

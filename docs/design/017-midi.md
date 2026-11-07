@@ -308,7 +308,8 @@ impl DeviceTable {
   give the changes since the last call.
 - `DeviceTable` is pure. It takes an `OsChange` from the backend and returns the
   event, if the change alters the table. A repeat of a known state returns `None`.
-- `DeviceId` is stable across a restart (above).
+- `DeviceId` is stable across a restart where the OS gives something to hold; an
+  ordinal tells alike devices apart within a run ("Built", below).
 - `FakeBackend` has `plug()` and `unplug()`, so a test drives hot-plug with no
   device.
 
@@ -319,15 +320,26 @@ and `Connection` will add `tutti-ump`). `Devices` is in `tutti-midi-hardware`,
 over a `Watch` the backend returns from `MidiEndpoints::watch`.
 
 - **Linux.** A thread subscribes to `System:Announce` and blocks in `poll` on the
-  sequencer's descriptors and a stop descriptor. On any announcement it
-  enumerates again and reports the difference; it never reads what the event
-  says. Dropping `Devices` closes the stop descriptor and joins the thread.
-  Tested against the real sequencer: user-space clients appear and exit, and the
-  tests see `Added` and `Removed` (suite `sequencer-tests`). The watch client is
-  a UMP client like the enumerating one, so it needs the same kernel.
-- **macOS.** A thread creates a CoreMIDI client with a notification block and
-  runs its run loop; a setup notification triggers the same re-enumeration.
-  Compiled and linted for `aarch64-apple-darwin` from Linux; never run.
+  sequencer's descriptors and a stop descriptor. On an announcement it
+  enumerates again, on its own client, and reports the difference. It reads from
+  an event only which client or port exited. Enumerating on a client of its own
+  matters: a client opened to enumerate announces its start, port and exit to the
+  watch, which then wakes itself without end (measured before the fix: about
+  20,000 wakes a second, and the same flood to every other subscriber).
+  `MidiEndpoints::inputs` and `outputs` use one enumerating client held for the
+  backend's life, for the same reason. The engine's own pump and output ports are
+  not subscribable by others (no `SUBS_*` capability), so no process lists them as
+  devices. Dropping `Devices` closes the stop descriptor and joins the thread.
+  Tested against the real sequencer with user-space clients as devices (suite
+  `sequencer-tests`). The watch client is a UMP client like the enumerating one,
+  so it needs the same kernel.
+- **macOS.** One process-wide CoreMIDI client with a notification block, on one
+  thread that runs its run loop for the life of the process; each `Devices` is a
+  registration with it, removed on drop. (coremidi 0.9.2's `Client` never
+  disposes on drop, so a client per `Devices` would leak one.) A run loop that
+  returns at once is rested four times a second, not spun. Compiled and linted
+  for `aarch64-apple-darwin` from Linux; its test runs only on macOS CI, and
+  none of this has been run by the author.
 - **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
   watches nothing, as it enumerates nothing. Opening reports `Unsupported`.
 - **`DeviceId`** is an `Identity` and an ordinal. `Identity` is the Product
@@ -335,11 +347,32 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   backend produces a Product Instance Id yet: alsa-lib 1.2.16 has no getter for
   one and CoreMIDI offers its unique id. The ordinal is the lowest one no listed
   device with that identity holds, so two identical keyboards are `#0` and `#1`
-  and a freed ordinal comes back. A rename is `Changed` and keeps the id.
+  and a freed ordinal comes back.
+  **An ordinal names a device within a run, not a physical unit.** Unplug A (`#0`)
+  and B (`#1`) and plug B back first, and B is `#0`; seeding follows the OS's
+  order, which can change between boots. An id whose identity no other device
+  shares (`#0` of a one-of-a-kind name, a CoreMIDI unique id) names the same
+  device again; an ordinal above 0 does not, and a saved one can reach another
+  unit.
+- **Rename.** A handle that stays while its name changes is the same device
+  renamed: `Changed`, with the id it had (so on ALSA the id keeps the old name,
+  and a new device of the new name takes `#0` of it). ALSA keeps a client's
+  number across `snd_seq_set_client_name`, and the watch tells a reuse from a
+  rename by the exit announcement, not by the name. A held port stays open
+  through a rename.
 - **A reused handle is a new device.** ALSA gives a new client the number of one
-  that just exited, so two enumerations can see one handle for two devices. The
-  backend's `Reporter` sends `Gone` for a handle whose identity changed, before
-  the `Present` of the new one.
+  that just exited, so two enumerations can see one handle for two devices, the
+  same name or not. The announcements say which client or port exited; the
+  `Reporter` sends `Gone` for such a handle before the `Present` of the new one,
+  so a held input is closed. The limit: an exit announcement the kernel's queue
+  dropped, followed by an identical device taking the number, goes unseen and
+  leaves a dead subscription listed as connected. Opening reads the handle
+  after looking it up, not under the list's lock, so a handle reused in between
+  opens the new device; the `Removed` that follows is how a holder finds out.
+- **A watch that dies says so.** An error or a panic in the watch thread sets
+  `Devices::watch_failure` (and is logged); the list is then the last it saw.
+  The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`
+  logs it.
 - **Session.** `Phase::Poll` reads `Devices::poll`, reports each event as
   `SessionEvent::MidiDevice`, and closes a held input or output whose device was
   removed, reporting `MidiInputLost` or `MidiOutputLost` after it
@@ -358,9 +391,9 @@ Deviations from the sketch above:
   crate does not.
 
 Not built: the flush of held notes when a device is lost (§8.3). Nothing at the
-input edge tracks held notes yet, so the retired port discards what it had queued
-and releases nothing. A device removed while a note is held leaves it sounding
-until the node that tracks notes exists.
+input edge tracks held notes yet. The retired port discards the UMPs queued in it
+at removal, and releases nothing: a device removed while a note is held leaves it
+sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
@@ -422,7 +455,7 @@ no code with MIDI.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph, `#![forbid(unsafe_code)]` | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-midi-hardware` | Transport | OS backends, no graph; `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |

@@ -355,7 +355,8 @@ impl PluginAudio for Vst2Instance {
         self.finish_refusals();
         refusal.map_or(Ok(()), |reason| {
             Err(PluginError::Other(format!(
-                "VST2 plugin refused sample rate {rate}: {reason}"
+                "VST2 plugin refused sample rate {rate} ({}): {reason}",
+                standing(self.is_active(), previous.rate())
             )))
         })
     }

@@ -14,8 +14,8 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
 use tutti_plugin_types::{
-    Control, Normalized, ParamId, PluginError, Prepare, RenderMode, SampleFormat, SampleRate,
-    Samples,
+    Control, MaxBlock, Normalized, ParamId, PluginError, Prepare, RenderMode, SampleFormat,
+    SampleRate, Samples,
 };
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, LoadOptions, ParameterChanges, ProcessFailed, ProcessMode,
@@ -46,12 +46,11 @@ fn render_mode(mode: ProcessMode) -> RenderMode {
 }
 
 fn prepare_for<T: Vst3Sample>(rate: f64, frames: usize, mode: ProcessMode) -> Prepare {
-    Prepare {
-        rate: SampleRate(rate),
-        max_block: Samples(frames),
-        format: format_of::<T>(),
-        mode: render_mode(mode),
-    }
+    let block = MaxBlock::new(Samples(frames)).expect("a block of at least one frame");
+    Prepare::new(SampleRate(rate), block)
+        .expect("a positive finite rate")
+        .with_format(format_of::<T>())
+        .with_mode(render_mode(mode))
 }
 
 /// Activation at a rate and block size, on a loaded plugin.
@@ -228,7 +227,7 @@ impl<T: Vst3Sample> Active<T> {
 
     /// The rate this activation runs at.
     pub fn sample_rate(&self) -> f64 {
-        self.prepare.rate.0
+        self.prepare.rate().0
     }
 
     /// Ends the activation: the plugin comes back deactivated.
@@ -268,11 +267,13 @@ impl<T: Vst3Sample> Active<T> {
 
     /// [`reconfigure`](Self::reconfigure) at a new rate.
     pub fn set_sample_rate(&mut self, rate: f64) -> Result<(), PluginError> {
-        if rate == self.prepare.rate.0 {
+        if rate == self.prepare.rate().0 {
             return Ok(());
         }
-        let mut wanted = self.prepare;
-        wanted.rate = SampleRate(rate);
+        let wanted = self
+            .prepare
+            .with_rate(SampleRate(rate))
+            .expect("a positive finite rate");
         self.reconfigure(wanted)
     }
 
@@ -314,7 +315,7 @@ impl ParamExt for Vst3Loaded {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        Control::set_parameter(self, ParamId::new(id), Normalized::new(value));
+        Control::set_parameter(self, ParamId::new(id), Normalized::clamped(value));
     }
 }
 
@@ -324,7 +325,7 @@ impl ParamExt for Vst3Controller {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        Control::set_parameter(self, ParamId::new(id), Normalized::new(value));
+        Control::set_parameter(self, ParamId::new(id), Normalized::clamped(value));
     }
 }
 

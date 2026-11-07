@@ -103,8 +103,9 @@
 //!   [`Latency`](tutti_types::Latency), which a musical delay in `Samples` or
 //!   `Seconds` cannot be passed as, so the graph's delay compensation (PDC)
 //!   never drags parallel paths behind an echo.
-//! - **Blocks never exceed [`MaxBlock`]**, which is obtainable only from
-//!   [`Prepare`]; every [`Io`] is at most that long, so a node never clamps.
+//! - **Blocks never exceed the [`MaxBlock`](tutti_types::MaxBlock) a node was
+//!   prepared with** ([`Prepare::max_block`]); every [`Io`] is at most that long,
+//!   so a node that sizes its scratch from it never clamps.
 //! - **Block offsets are not frames.** An event carries an [`Offset`] inside
 //!   its block, a different type from an absolute
 //!   [`Frame`](tutti_types::Frame); the two convert only through the block's
@@ -265,7 +266,7 @@ pub use io::{Channel, Inputs, Io, Outputs, PortKind};
 pub use loss::EventLoss;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
-    MaxBlock, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,
+    Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,
     TransportChange, TransportChangeRejected, TransportChanges,
 };
 pub use par::Pool;

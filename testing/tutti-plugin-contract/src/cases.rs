@@ -19,7 +19,7 @@ fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
 }
 
 fn write<C: Control + ?Sized>(c: &mut C, param: Param, value: f64) {
-    c.set_parameter(param.id(), Normalized::new(value));
+    c.set_parameter(param.id(), Normalized::clamped(value));
 }
 
 fn activate<L: Loaded>(loaded: L, block: usize) -> Active<L> {

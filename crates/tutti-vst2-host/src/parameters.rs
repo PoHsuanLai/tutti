@@ -132,7 +132,7 @@ impl Vst2Loaded {
         }
         self.params
             .get_parameter(index)
-            .map(|v| Normalized::new(f64::from(v)))
+            .map(|v| Normalized::clamped(f64::from(v)))
     }
 
     /// Returns a descriptor for every parameter, as the format-neutral

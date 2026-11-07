@@ -71,7 +71,7 @@ impl Mode {
     /// The normalized value of the mode parameter that selects it.
     #[must_use]
     pub fn value(self) -> Normalized {
-        Normalized::new(f64::from(self.index()) / 4.0)
+        Normalized::clamped(f64::from(self.index()) / 4.0)
     }
 }
 

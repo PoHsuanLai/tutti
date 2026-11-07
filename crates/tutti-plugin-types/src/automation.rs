@@ -15,8 +15,9 @@ pub struct ParameterPoint {
     pub sample_offset: i32,
     /// The automated value, on the host's `0..=1` scale.
     ///
-    /// **[`Normalized`] clamps silently.** Anything outside `0..=1` saturates at
-    /// the nearest bound with no error and no log line, so a producer that
+    /// **Out-of-range input is clamped silently** (by [`Normalized::clamped`] at
+    /// construction, and when a point is decoded off the wire): anything outside
+    /// `0..=1` saturates at the nearest bound with no error and no log line, so a producer that
     /// encodes data on some other scale here reads back as a run of `1.0` that
     /// looks like a legitimate parameter sweep. Values must already be
     /// normalized before they reach this field.
@@ -28,7 +29,26 @@ pub struct ParameterPoint {
     /// AU against the range it cached at load, CLAP against its `ranges` map.
     ///
     /// [`PluginParams::get_parameter`]: crate::PluginParams::get_parameter
+    #[cfg_attr(feature = "serde", serde(with = "clamped_on_decode"))]
     pub value: Normalized,
+}
+
+/// A point's value is encoded as its `f64` and clamped onto `0..=1` on decode,
+/// like every other `Normalized` on the IPC wire: a corrupt peer's value is
+/// pinned instead of failing the whole block's message.
+#[cfg(feature = "serde")]
+mod clamped_on_decode {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::Normalized;
+
+    pub(super) fn serialize<S: Serializer>(value: &Normalized, s: S) -> Result<S::Ok, S::Error> {
+        value.get().serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Normalized, D::Error> {
+        Ok(Normalized::clamped(f64::deserialize(d)?))
+    }
 }
 
 /// A point at `sample_offset` for `value`, **silently clamped onto `0..=1`**
@@ -36,7 +56,7 @@ pub struct ParameterPoint {
 fn point(sample_offset: i32, value: f64) -> ParameterPoint {
     ParameterPoint {
         sample_offset,
-        value: Normalized::new(value),
+        value: Normalized::clamped(value),
     }
 }
 
@@ -824,7 +844,7 @@ mod serde_tests {
                     (0..13).map(|k| {
                         bincode::serialize(&ParameterPoint {
                             sample_offset: k * 4 + id % 4,
-                            value: crate::Normalized::new(0.25),
+                            value: crate::Normalized::of(0.25),
                         })
                         .expect("serialize")
                     }),
@@ -1315,7 +1335,7 @@ mod carried_tests {
         assert_eq!(changes.points_overflowed(), 0);
         let carried = ParameterPoint {
             sample_offset: 0,
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         let all = assert_no_alloc::assert_no_alloc(|| {
             (0..PARAMS).all(|i| changes.prepend_carried(i, carried))
@@ -1354,7 +1374,7 @@ mod carried_tests {
         }
         let carried = ParameterPoint {
             sample_offset: 0,
-            value: Normalized::new(0.25),
+            value: Normalized::of(0.25),
         };
         assert!(!changes.prepend_carried(0, carried));
         assert!(!changes.prepend_carried(1, carried));
@@ -1365,5 +1385,33 @@ mod carried_tests {
             .map(|p| (p.sample_offset, p.value.get()))
             .collect();
         assert_eq!(points, vec![(5, 0.5), (9, 0.75), (12, 1.0)]);
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod wire_tests {
+    use super::*;
+
+    /// **A point decodes clamped, at its usual width**: an out-of-range value off
+    /// the wire is pinned, the point still decodes, and its bytes are those of a
+    /// plain `i32` and `f64`.
+    ///
+    /// Mutation (run): `clamped_on_decode::deserialize` returning
+    /// `Normalized::of(0.5)` -> the 7.5 case fails; its `serialize` writing an
+    /// `f32` -> the length assertion fails.
+    #[test]
+    fn a_decoded_point_is_clamped() {
+        let mut bytes = bincode::serialize(&ParameterPoint {
+            sample_offset: 3,
+            value: Normalized::of(0.5),
+        })
+        .unwrap();
+        assert_eq!(bytes.len(), 4 + 8);
+        for (raw, want) in [(7.5f64, 1.0), (-3.0, 0.0), (f64::NAN, 0.0), (0.25, 0.25)] {
+            bytes[4..].copy_from_slice(&raw.to_le_bytes());
+            let point: ParameterPoint = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(point.sample_offset, 3);
+            assert_eq!(point.value, Normalized::clamped(want), "{raw}");
+        }
     }
 }

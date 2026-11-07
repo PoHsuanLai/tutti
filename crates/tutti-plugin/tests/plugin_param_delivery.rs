@@ -178,7 +178,7 @@ fn an_edit_on_the_plugin_survives_a_held_host_value() {
     ));
     handle.params().set_parameter_value(
         ParamId::new((p as i32) as u32),
-        tutti_plugin::handles::Normalized::new(0.75),
+        tutti_plugin::handles::Normalized::of(0.75),
     );
     assert!(
         until(SETTLE, || {}, || read(&handle, p) == Some(0.75)),
@@ -272,7 +272,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     // The edit, behind the node's back.
     probe.handle.params().set_parameter_value(
         GAIN,
-        tutti_plugin::handles::Normalized::new(f64::from(gain_at(-15.0))),
+        tutti_plugin::handles::Normalized::clamped(f64::from(gain_at(-15.0))),
     );
     assert!(
         until(

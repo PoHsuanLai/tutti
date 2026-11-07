@@ -62,19 +62,15 @@ below.
 `no_run`: the load needs a real VST2 binary on disk.
 
 ```rust,no_run
-use tutti_plugin_types::{Loaded, Prepare, RenderMode, SampleFormat, SampleRate, Samples};
+use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate, Samples};
 use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 
 let plugin = Vst2Loaded::load("/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst")?;
 let (inputs_width, outputs_width) = plugin.pins();
 
 // The rate, block size and precision are the activation's.
-let Ok((mut processor, controller)) = plugin.activate(Prepare {
-    rate: SampleRate(48_000.0),
-    max_block: Samples(512),
-    format: SampleFormat::Float32,
-    mode: RenderMode::Realtime,
-}) else {
+let Ok((mut processor, controller)) = plugin.activate(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+    .expect("a real rate")) else {
     panic!("the plugin refused to run");
 };
 
@@ -123,7 +119,7 @@ for info in plugin.parameters() {
 
 // A normalized `0..=1` value, written to the parameter at position 0.
 let first = plugin.parameters()[0].id;
-plugin.set_parameter(first, Normalized::new(0.5));
+plugin.set_parameter(first, Normalized::of(0.5));
 # Ok(()) }
 ```
 

@@ -652,14 +652,14 @@ fn parameter_state_round_trips() {
     let _guard = lock_probe();
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.25)));
-    assert!(instance.write_parameter(pid(1), Normalized::new(0.75)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.25)));
+    assert!(instance.write_parameter(pid(1), Normalized::of(0.75)));
 
     let state = instance.save_state().expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\0");
 
-    assert!(instance.write_parameter(pid(0), Normalized::new(0.9)));
-    assert!(instance.write_parameter(pid(1), Normalized::new(0.1)));
+    assert!(instance.write_parameter(pid(0), Normalized::of(0.9)));
+    assert!(instance.write_parameter(pid(1), Normalized::of(0.1)));
 
     instance
         .load_state(&state)
@@ -1023,7 +1023,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
 
     // Move every parameter well away from where it started.
     for p in &before {
-        assert!(instance.write_parameter(p.id, Normalized::new(0.9)));
+        assert!(instance.write_parameter(p.id, Normalized::of(0.9)));
     }
 
     let after = instance.parameter_list();
@@ -1073,7 +1073,7 @@ fn parameter_set_get_roundtrip() {
     };
     let write = |i, v| {
         assert!(
-            instance.write_parameter(pid(i), Normalized::new(v)),
+            instance.write_parameter(pid(i), Normalized::clamped(v)),
             "the probe must expose setParameter"
         );
     };

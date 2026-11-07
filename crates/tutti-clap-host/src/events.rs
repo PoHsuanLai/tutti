@@ -1738,7 +1738,7 @@ impl OutputEventList {
                 sample_offset: i32::try_from(e.header.time).unwrap_or(i32::MAX),
                 // Inbound from the plugin: clamped at the boundary, since a
                 // plugin's output event is as untrusted as any other input.
-                value: Normalized::new(e.value),
+                value: Normalized::clamped(e.value),
             };
             // Outbound: a CLAP id is opaque, so it is tagged as such rather
             // than travelling as a number the receiver has to guess about.

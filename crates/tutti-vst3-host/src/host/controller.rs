@@ -361,7 +361,7 @@ impl Vst3Loaded {
         tutti_plugin_types::assert_main_thread();
         super::shell::warm_retirement();
         super::shell::reap();
-        let mode = if prepare.mode.is_offline() {
+        let mode = if prepare.mode().is_offline() {
             ProcessMode::Offline
         } else {
             ProcessMode::Realtime
@@ -369,16 +369,17 @@ impl Vst3Loaded {
         // What an earlier rejoin carried over reaches the plugin in the first
         // block, unless this activation is refused, which keeps it.
         let carried = std::mem::take(&mut self.carried);
-        let staged = match Staged::<T>::stage(self, prepare.rate.0, prepare.max_block.0, mode) {
-            Ok(staged) => staged,
-            Err((mut plugin, error)) => {
-                plugin.carried = carried;
-                return Err(Refused {
-                    plugin: Some(plugin),
-                    reason: plugin_error(error),
-                });
-            }
-        };
+        let staged =
+            match Staged::<T>::stage(self, prepare.rate().0, prepare.max_block().get(), mode) {
+                Ok(staged) => staged,
+                Err((mut plugin, error)) => {
+                    plugin.carried = carried;
+                    return Err(Refused {
+                        plugin: Some(plugin),
+                        reason: plugin_error(error),
+                    });
+                }
+            };
         let Staged { loaded, audio, .. } = staged;
         // The plugin may announce its latency from inside `setActive`; the
         // figure is read right after every activation, so the announcement is
@@ -526,7 +527,7 @@ impl Loaded for Vst3Loaded {
     const RESTARTS: RestartRules = RestartRules::VST3;
 
     fn activate(self, prepare: Prepare) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>> {
-        match prepare.format {
+        match prepare.format() {
             SampleFormat::Float64 => self
                 .activate_typed::<f64>(prepare)
                 .map(|(p, c)| (ProcessorAny::F64(p), c)),

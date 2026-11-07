@@ -287,12 +287,12 @@ mod tests {
         let requests = [
             HostMessage::GetParameterText {
                 param_id: ParamId::new(0x8000_0001),
-                value: Normalized::new(0.375),
+                value: Normalized::of(0.375),
             },
             // The other addressing model, which VST2 uses.
             HostMessage::GetParameterText {
                 param_id: ParamId::new(3),
-                value: Normalized::new(1.0),
+                value: Normalized::of(1.0),
             },
             HostMessage::GetParameterValueFromText {
                 param_id: ParamId::new(7),
@@ -319,7 +319,7 @@ mod tests {
             },
             BridgeMessage::ParameterText { text: None },
             BridgeMessage::ParameterValueFromText {
-                value: Some(Normalized::new(0.375)),
+                value: Some(Normalized::of(0.375)),
             },
             BridgeMessage::ParameterValueFromText { value: None },
             BridgeMessage::SampleRateSet {
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(
             tag(&bincode::serialize(&HostMessage::GetParameterText {
                 param_id: ParamId::new(0),
-                value: Normalized::new(0.0),
+                value: Normalized::of(0.0),
             })
             .expect("serialize")),
             V16_LAST_REQUEST_TAG + 1,

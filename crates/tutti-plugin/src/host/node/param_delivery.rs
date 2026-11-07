@@ -714,7 +714,7 @@ impl ParamDelivery {
             self.counters.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
-        self.place(i, offset, Normalized::new(f64::from(value)).get(), grid);
+        self.place(i, offset, Normalized::clamped(f64::from(value)).get(), grid);
         true
     }
 

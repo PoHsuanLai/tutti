@@ -100,7 +100,10 @@ fn from_midi1_bytes_on_hostile_bytes_is_allocation_free() {
     ];
     assert_no_alloc::assert_no_alloc(|| {
         for bytes in hostile {
-            assert!(MidiEvent::from_midi1_bytes(0, bytes).is_none(), "{bytes:02X?}");
+            assert!(
+                MidiEvent::from_midi1_bytes(0, bytes).is_none(),
+                "{bytes:02X?}"
+            );
         }
         assert!(MidiEvent::from_midi1_bytes(3, &[0x90, 60, 100]).is_some());
     });

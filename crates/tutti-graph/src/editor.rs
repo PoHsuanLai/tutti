@@ -56,7 +56,7 @@ use std::sync::Arc;
 use ringbuf::traits::{Consumer, Producer};
 use tutti_types::graph::{Edge, FeedbackFrom, NodeSpec, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{Latency, NodeKey};
+use tutti_types::{Latency, NodeKey, Samples, TapAlign, TapId, TapSpec};
 
 use tutti_types::At;
 
@@ -70,8 +70,10 @@ use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
 use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::plan::TapLaneKey;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, GraphInvalid, GraphSpec};
+use crate::tap::{TapLane, TapReader};
 
 /// Why [`Editor::commit`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -340,7 +342,9 @@ pub struct Editor {
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
     /// Tap producers opened since the last commit, sent with the next.
-    pending_taps: Vec<(crate::plan::TapLaneKey, crate::tap::TapLane)>,
+    pending_taps: Vec<(TapLaneKey, TapLane)>,
+    /// Each open tap's reader, to see which were dropped.
+    tap_readers: BTreeMap<TapId, std::sync::Weak<()>>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -438,34 +442,50 @@ impl Editor {
     /// compiles to nothing, so a closed tap costs the audio thread nothing.
     pub fn open_tap(
         &mut self,
-        id: tutti_types::TapId,
-        sources: Vec<tutti_types::graph::Source>,
-        align: tutti_types::TapAlign,
-        capacity: tutti_types::Samples,
-    ) -> crate::tap::TapReader {
-        let (reader, lanes) = crate::tap::TapReader::pair(sources.len(), capacity.0.max(1));
+        id: TapId,
+        sources: Vec<Source>,
+        align: TapAlign,
+        capacity: Samples,
+    ) -> TapReader {
+        let (reader, lanes) = TapReader::pair(id, sources.len(), capacity);
         self.pending_taps.retain(|(k, _)| k.tap != id);
-        for (lane, l) in lanes.into_iter().enumerate() {
-            self.pending_taps.push((
-                crate::plan::TapLaneKey {
-                    tap: id,
-                    lane: lane as u16,
-                },
-                l,
-            ));
-        }
+        self.pending_taps.extend(
+            lanes
+                .into_iter()
+                .enumerate()
+                .map(|(lane, l)| (TapLaneKey { tap: id, lane }, l)),
+        );
+        self.tap_readers.insert(id, reader.watch());
         self.spec_mut()
             .topology
             .taps
-            .insert(id, tutti_types::TapSpec { sources, align });
+            .insert(id, TapSpec { sources, align });
         reader
     }
 
     /// Removes a tap: its ops leave the plan at the next commit and its
     /// producers are freed on the control side.
-    pub fn close_tap(&mut self, id: tutti_types::TapId) {
+    pub fn close_tap(&mut self, id: TapId) {
         self.pending_taps.retain(|(k, _)| k.tap != id);
+        self.tap_readers.remove(&id);
         self.spec_mut().topology.taps.remove(&id);
+    }
+
+    /// Closes every tap whose [`TapReader`] was dropped, and returns how many.
+    /// A dropped reader leaves its tap open (the audio thread then writes
+    /// nothing for it); this is the control-side tick that takes it out of the
+    /// plan. Moves the spec only when it closes one.
+    pub fn reap_taps(&mut self) -> usize {
+        let gone: Vec<TapId> = self
+            .tap_readers
+            .iter()
+            .filter(|(_, alive)| alive.strong_count() == 0)
+            .map(|(&id, _)| id)
+            .collect();
+        for &id in &gone {
+            self.close_tap(id);
+        }
+        gone.len()
     }
 
     /// An empty graph, and the executor that will run it, both for
@@ -497,6 +517,7 @@ impl Editor {
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
             pending_taps: Vec::new(),
+            tap_readers: BTreeMap::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             committed: None,

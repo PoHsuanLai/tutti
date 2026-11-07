@@ -186,10 +186,13 @@ use crate::node::{
 };
 use crate::par::{Block, Par, Pool};
 use crate::param::{ParamInput, ParamState};
-use crate::plan::{DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, UnitIdx};
+use crate::plan::{
+    DelayKey, Delta, Direct, FeedbackKey, Form, NodeRec, Op, Plan, TapLaneKey, UnitIdx,
+};
 use crate::play::{PlayClock, PlayReader, PlayState};
 use crate::slots::{AudioSlots, EventSlots, SlotFlags, borrow_events, event_pair};
 use crate::spec::{EventIn, EventOut};
+use crate::tap::TapLane;
 use tutti_types::PlayReading;
 
 /// Events per block an event output port holds when its node declares no
@@ -338,7 +341,7 @@ pub(crate) struct Commit {
     spare_held: Vec<Tables>,
     old_state: Option<State>,
     /// Tap producers the editor opened since the last commit, by lane.
-    taps: Vec<(crate::plan::TapLaneKey, crate::tap::TapLane)>,
+    taps: Vec<(TapLaneKey, TapLane)>,
 }
 
 impl Drop for Commit {
@@ -356,7 +359,7 @@ impl Commit {
         delta: Delta,
         mut units: BTreeMap<NodeKey, Box<dyn Node>>,
         mut params: impl FnMut(NodeKey, usize, usize) -> ParamState,
-        taps: Vec<(crate::plan::TapLaneKey, crate::tap::TapLane)>,
+        taps: Vec<(TapLaneKey, TapLane)>,
     ) -> Box<Commit> {
         let wanted = delta
             .insert
@@ -644,7 +647,7 @@ struct State {
     audio_fb: Vec<Option<AudioRing>>,
     event_fb: Vec<Option<EventFifo>>,
     /// One producer per planned tap lane (`None`: nobody opened it).
-    taps: Vec<Option<crate::tap::TapLane>>,
+    taps: Vec<Option<TapLane>>,
     inject: Vec<Inject>,
     has_inject: Vec<bool>,
     /// Plan units with a scheduled command landing this block.
@@ -1173,7 +1176,7 @@ impl Executor {
         plan: &Plan,
         old_plan: Option<&Plan>,
         departed: &mut Gone,
-        opened: &mut Vec<(crate::plan::TapLaneKey, crate::tap::TapLane)>,
+        opened: &mut Vec<(TapLaneKey, TapLane)>,
     ) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
@@ -1284,10 +1287,10 @@ impl Executor {
         // newly opened one arrives in the commit. A producer the new plan does
         // not name stays in the old state (or the commit) and is freed on the
         // control side with it.
-        let old_taps: BTreeMap<crate::plan::TapLaneKey, usize> = old_plan
+        let old_taps: BTreeMap<TapLaneKey, usize> = old_plan
             .map(|p| p.taps.iter().enumerate().map(|(i, k)| (*k, i)).collect())
             .unwrap_or_default();
-        let taps: Vec<Option<crate::tap::TapLane>> = plan
+        let taps: Vec<Option<TapLane>> = plan
             .taps
             .iter()
             .map(|k| {

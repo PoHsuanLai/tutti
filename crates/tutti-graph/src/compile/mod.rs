@@ -937,7 +937,6 @@ pub fn compile(
     let mut tap_lanes: Vec<TapLaneKey> = Vec::new();
     for (&tap, spec) in &topology.taps {
         for (lane, source) in spec.sources.iter().enumerate() {
-            let lane = lane as u16;
             let (mut src, dep) = match *source {
                 Source::Node(p) => (ARef::Val(audio_out_val[&p]), departure(dense[&p.node])),
                 Source::Global(ch) => (ARef::Val(global_val[&ch]), Latency::ZERO),

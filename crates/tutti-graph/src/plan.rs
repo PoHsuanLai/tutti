@@ -133,7 +133,7 @@ pub enum DelayKey {
         /// The tap.
         tap: tutti_types::TapId,
         /// The lane within it.
-        lane: u16,
+        lane: usize,
         /// What feeds it.
         from: Source,
     },
@@ -146,7 +146,7 @@ pub struct TapLaneKey {
     /// The tap.
     pub tap: tutti_types::TapId,
     /// The lane within it.
-    pub lane: u16,
+    pub lane: usize,
 }
 
 /// One PDC delay in a plan.

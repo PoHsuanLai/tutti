@@ -1,6 +1,7 @@
 //! Taps as plan ops: any port, any width, aligned by the compiler or raw,
 //! lossless below the ring's capacity and counted above it, bit-identical on
-//! the parallel executor, and allocation-free on every participant.
+//! the parallel executor, and allocation-free on every participant. A closed
+//! tap compiles to no op, and a render is the same with a tap open or closed.
 
 mod common;
 
@@ -8,7 +9,7 @@ use assert_no_alloc::AllocDisabler;
 use common::{Kind, TestNode, prepare};
 use tutti_graph::{
     Editor, Executor, ForkCause, ForkMode, ForkSource, ForkTarget, Forked, IntoNode, Node,
-    NodeParts, TapReader, Transport,
+    NodeParts, Op, TapReader, Transport,
 };
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, Samples, TapAlign, TapId};
@@ -120,11 +121,33 @@ fn rig(workers: usize, no_alloc: bool) -> Rig {
     }
 }
 
+/// The graph input at frame `t`.
+fn input_at(t: u64) -> f32 {
+    ((t * 7919) % 211) as f32 / 211.0 - 0.5
+}
+
+/// What chain `k` plays at frame `t` once aligned: the input, `LATENCY` frames
+/// late (every chain is compensated up to the slowest), through its gain.
+const LATENCY: u64 = 5 * (CHAINS - 1);
+
+fn gain_of(k: u64) -> f32 {
+    0.5 + k as f32 / 10.0
+}
+
+/// Chain `k` as it leaves its node, `delay` frames behind the input.
+fn chain_at(k: u64, delay: u64, t: u64) -> f32 {
+    t.checked_sub(delay)
+        .map_or(0.0, |u| input_at(u) * gain_of(k))
+}
+
+/// The aligned signal of chain `k`: what its output channel carries.
+fn aligned_at(k: u64, t: u64) -> f32 {
+    chain_at(k, LATENCY, t)
+}
+
 /// One block; returns the output channels.
 fn block(r: &mut Rig, n: usize, frame: u64) -> Vec<Vec<f32>> {
-    let input: Vec<f32> = (0..n)
-        .map(|k| (((frame + k as u64) * 7919) % 211) as f32 / 211.0 - 0.5)
-        .collect();
+    let input: Vec<f32> = (0..n).map(|k| input_at(frame + k as u64)).collect();
     let mut chans = vec![vec![0.0f32; n]; CHAINS as usize];
     let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
     let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
@@ -141,7 +164,7 @@ fn block(r: &mut Rig, n: usize, frame: u64) -> Vec<Vec<f32>> {
 fn drain(tap: &mut TapReader, into: &mut Vec<f32>) {
     let mut buf = vec![0.0f32; tap.width() * 4096];
     loop {
-        let n = tap.pop_into(&mut buf).0;
+        let n = tap.pop_into(&mut buf).get();
         if n == 0 {
             break;
         }
@@ -149,10 +172,33 @@ fn drain(tap: &mut TapReader, into: &mut Vec<f32>) {
     }
 }
 
-/// Renders `blocks` of 100 frames with an aligned six-lane tap on the outputs'
-/// sources, a raw two-lane tap and a one-lane aligned tap on a single port.
-/// Returns (outputs per channel, aligned tap, raw tap, single tap) interleaved.
-fn run(r: &mut Rig, blocks: usize) -> (Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<f32>, u64) {
+fn commit(r: &mut Rig) {
+    r.ed.commit().expect("compiles");
+    r.exec.apply_pending();
+    r.ed.collect();
+}
+
+/// What a run read: the output channels and each tap, interleaved.
+#[derive(Debug, PartialEq)]
+struct Read {
+    outputs: Vec<Vec<f32>>,
+    /// The six outputs' sources, aligned.
+    aligned: Vec<f32>,
+    /// Chains 0 and 5, raw.
+    raw: Vec<f32>,
+    /// Chain 2, aligned.
+    single: Vec<f32>,
+    /// `Global(0)` and a `Zero` lane, aligned.
+    edges: Vec<f32>,
+    lost: usize,
+}
+
+const BLOCK: usize = 100;
+
+/// Renders `blocks` blocks with an aligned six-lane tap on the outputs'
+/// sources, a raw two-lane tap on chains 0 and 5, a one-lane aligned tap on
+/// chain 2 and an aligned tap on the graph input and on silence.
+fn run(r: &mut Rig, blocks: usize) -> Read {
     let cap = Samples(1 << 16);
     let mut aligned =
         r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, cap);
@@ -160,161 +206,296 @@ fn run(r: &mut Rig, blocks: usize) -> (Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<f3
         r.ed.open_tap(TapId(2), vec![r.gains[0], r.gains[5]], TapAlign::Raw, cap);
     let mut single =
         r.ed.open_tap(TapId(3), vec![r.gains[2]], TapAlign::ToOutput, cap);
-    r.ed.commit().expect("compiles");
-    r.exec.apply_pending();
-    r.ed.collect();
-    let mut outputs = vec![Vec::new(); CHAINS as usize];
-    let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
-    let mut lost = 0;
+    let mut edges = r.ed.open_tap(
+        TapId(4),
+        vec![Source::Global(0), Source::Zero],
+        TapAlign::ToOutput,
+        cap,
+    );
+    commit(r);
+    assert_eq!(r.exec.is_parallel(), r.gated, "a pool was set iff gated");
+    let mut read = Read {
+        outputs: vec![Vec::new(); CHAINS as usize],
+        aligned: Vec::new(),
+        raw: Vec::new(),
+        single: Vec::new(),
+        edges: Vec::new(),
+        lost: 0,
+    };
     for i in 0..blocks {
-        let ch = block(r, 100, i as u64 * 100);
-        for (o, x) in outputs.iter_mut().zip(ch) {
+        let chans = block(r, BLOCK, (i * BLOCK) as u64);
+        for (o, x) in read.outputs.iter_mut().zip(chans) {
             o.extend(x);
         }
-        drain(&mut aligned, &mut a);
-        drain(&mut raw, &mut b);
-        drain(&mut single, &mut c);
-        lost += aligned.take_lost().0 + raw.take_lost().0 + single.take_lost().0;
+        drain(&mut aligned, &mut read.aligned);
+        drain(&mut raw, &mut read.raw);
+        drain(&mut single, &mut read.single);
+        drain(&mut edges, &mut read.edges);
+        read.lost += [&aligned, &raw, &single, &edges]
+            .iter()
+            .map(|t| t.take_lost().get())
+            .sum::<usize>();
         r.ed.collect();
     }
-    (outputs, a, b, c, lost as u64)
+    read
 }
 
 fn lane(interleaved: &[f32], width: usize, c: usize) -> Vec<f32> {
     interleaved.iter().skip(c).step_by(width).copied().collect()
 }
 
-/// An aligned tap of the outputs' sources is the output, sample for sample, on
-/// every channel (the compiler gave it the same compensation); a raw tap is
-/// the source before alignment, so it differs by the channel's compensation; a
-/// one-lane tap on one port works at any width.
+fn frames(blocks: usize) -> impl Iterator<Item = u64> {
+    0..(blocks * BLOCK) as u64
+}
+
+/// Every tap equals the analytic signal of what it names, at any width: an
+/// aligned tap of the outputs' sources is each output channel (the compiler
+/// gave it the compensation an output gets), a raw one is the source as it
+/// leaves its node, a global input and silence work as sources, and the
+/// outputs themselves are untouched by all four taps being open.
 ///
-/// Mutation (run): skip the `DelayKey::Tap` delay in `compile` (emit the tap
-/// unaligned) -> the aligned comparison fails on the delayed channels.
+/// Mutation (run, recorded here): skip the `DelayKey::Tap` delay in
+/// `compile` (emit the tap unaligned) -> the aligned lanes of chains 0 to 4
+/// and the single lane fail, the raw lanes and the outputs still pass.
+/// Mutation (run): `TapAlign::Raw` treated as `ToOutput` -> the raw lane 0
+/// fails.
 #[test]
 fn a_tap_is_aligned_by_the_compiler_and_any_width() {
     let mut r = rig(1, false);
-    let (outputs, aligned, raw, single, lost) = run(&mut r, 8);
-    assert_eq!(lost, 0);
-    for (c, output) in outputs.iter().enumerate() {
-        assert_eq!(&lane(&aligned, 6, c), output, "aligned lane {c}");
+    let read = run(&mut r, 8);
+    assert_eq!(read.lost, 0);
+    for k in 0..CHAINS {
+        let want: Vec<f32> = frames(8).map(|t| aligned_at(k, t)).collect();
+        assert_eq!(read.outputs[k as usize], want, "output {k}");
+        assert_eq!(lane(&read.aligned, 6, k as usize), want, "aligned lane {k}");
     }
-    assert_eq!(lane(&single, 1, 0), outputs[2]);
-    // Raw lane 0 is chain 0 (latency 0 of 25, so the output delayed it by
-    // 25): the tap is ahead of the output by exactly that.
-    let raw0 = lane(&raw, 2, 0);
-    assert_eq!(
-        raw0[..raw0.len() - 25],
-        outputs[0][25..],
-        "raw is ahead by the compensation"
-    );
-    // Raw lane 1 is the slowest chain: no compensation, same as its output.
-    assert_eq!(lane(&raw, 2, 1), outputs[5]);
+    let want: Vec<f32> = frames(8).map(|t| aligned_at(2, t)).collect();
+    assert_eq!(lane(&read.single, 1, 0), want);
+    // Chain 0 has no latency of its own: raw, it is ahead of its output by
+    // the whole compensation. Chain 5 is the slowest: raw is its output.
+    let raw0: Vec<f32> = frames(8).map(|t| chain_at(0, 0, t)).collect();
+    let raw5: Vec<f32> = frames(8).map(|t| chain_at(5, LATENCY, t)).collect();
+    assert_eq!(lane(&read.raw, 2, 0), raw0);
+    assert_eq!(lane(&read.raw, 2, 1), raw5);
+    // The global input is a source like any other: aligned, it is delayed by
+    // the whole compensation, as an output wired straight to it would be. A
+    // `Zero` lane is silence.
+    let input: Vec<f32> = frames(8)
+        .map(|t| t.checked_sub(LATENCY).map_or(0.0, input_at))
+        .collect();
+    assert_eq!(lane(&read.edges, 2, 0), input);
+    assert!(lane(&read.edges, 2, 1).iter().all(|&x| x == 0.0));
 }
 
 /// The parallel render, outputs and every tap, is bit-identical to the serial
-/// one, with every participant inside `assert_no_alloc`.
+/// one at several worker counts, with every participant inside
+/// `assert_no_alloc`, and the serial render itself is the analytic one.
 ///
-/// Mutation (run): drop the `Op::Tap` arm in `par.rs` -> the parallel taps are
-/// empty and the comparison fails.
+/// Mutation (run, recorded here): drop the `Op::Tap` arm in `par.rs` (a
+/// `todo`-free no-op) -> the parallel taps are empty and the comparison fails.
 #[test]
 fn the_parallel_taps_are_bit_identical_and_allocation_free() {
     let mut s = rig(1, false);
-    let serial = run_gated(&mut s);
+    let serial = run(&mut s, 8);
+    assert!(
+        serial.aligned.iter().any(|&x| x != 0.0),
+        "the tap carries signal"
+    );
     for workers in [2, 3, 4] {
         let mut p = rig(workers, true);
-        let par = run_gated(&mut p);
+        let par = run(&mut p, 8);
         assert_eq!(serial, par, "{workers} workers");
     }
 }
 
-fn run_gated(r: &mut Rig) -> (Vec<Vec<f32>>, Vec<f32>, Vec<f32>, Vec<f32>, u64) {
-    // The commit allocates and runs outside the gate; the blocks run inside.
-    let cap = Samples(1 << 16);
-    let mut aligned =
-        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, cap);
-    let mut raw =
-        r.ed.open_tap(TapId(2), vec![r.gains[0], r.gains[5]], TapAlign::Raw, cap);
-    let mut single =
-        r.ed.open_tap(TapId(3), vec![r.gains[2]], TapAlign::ToOutput, cap);
-    r.ed.commit().expect("compiles");
-    r.exec.apply_pending();
-    r.ed.collect();
-    assert_eq!(r.exec.is_parallel(), r.gated, "a pool was set iff gated");
-    let mut outputs = vec![Vec::new(); CHAINS as usize];
-    let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
-    for i in 0..8 {
-        let ch = block(r, 100, i as u64 * 100);
-        for (o, x) in outputs.iter_mut().zip(ch) {
-            o.extend(x);
-        }
-        drain(&mut aligned, &mut a);
-        drain(&mut raw, &mut b);
-        drain(&mut single, &mut c);
-    }
-    assert!(a.iter().any(|&x| x != 0.0), "the tap carries signal");
-    (outputs, a, b, c, 0)
+/// The plan's tap ops: one per lane while open, none once closed, and a closed
+/// plan has the ops of a graph that never had a tap.
+///
+/// Mutation (run, recorded here): emit the `Op::Tap` loop over every spec ever
+/// opened (keep closed taps in a side list) -> the closed count is nonzero.
+/// Mutation (run): skip the aligned delay's removal on a `Raw` tap (always
+/// emit a `Delay`) -> the raw plan has more ops than `base + lanes`.
+#[test]
+fn a_closed_tap_leaves_no_op() {
+    let ops = |r: &Rig| {
+        let plan = r.ed.base().expect("a plan was sent");
+        let taps = plan
+            .ops()
+            .iter()
+            .filter(|o| matches!(o, Op::Tap { .. }))
+            .count();
+        (plan.ops().len(), taps)
+    };
+    let mut r = rig(1, false);
+    commit(&mut r);
+    let (never, none) = ops(&r);
+    assert_eq!(none, 0);
+
+    let tap = r.ed.open_tap(
+        TapId(1),
+        vec![r.gains[0], r.gains[5]],
+        TapAlign::Raw,
+        Samples(64),
+    );
+    commit(&mut r);
+    assert_eq!(ops(&r), (never + 2, 2), "a raw tap is one op a lane");
+
+    r.ed.close_tap(tap.id());
+    commit(&mut r);
+    assert_eq!(
+        ops(&r),
+        (never, 0),
+        "closed: the plan of a graph with no tap"
+    );
+    assert!(r.ed.base().expect("plan").ops().len() == never);
+
+    // An aligned tap of a delayed source also carries its delay.
+    let _aligned =
+        r.ed.open_tap(TapId(2), vec![r.gains[0]], TapAlign::ToOutput, Samples(64));
+    commit(&mut r);
+    assert_eq!(
+        ops(&r),
+        (never + 2, 1),
+        "a tap op and the delay that aligns it"
+    );
 }
 
-/// A slow reader loses frames and is told how many; a tap that is closed is
-/// not in the plan at all and the audio thread does no work for it.
+/// A slow reader loses frames and is told how many, once for the tap whatever
+/// its width; a closed tap receives nothing more.
 ///
-/// Mutation (run): drop the `fetch_add` in `tap_op` -> `take_lost` reads 0.
+/// Mutation (run, recorded here): drop the `fetch_add` in `tap_op` ->
+/// `take_lost` reads 0. Mutation (run): give every lane the counter (`lost:
+/// Some(..)` for all) -> the six-lane tap reports 900.
 #[test]
-fn a_full_ring_counts_what_it_lost_and_a_closed_tap_leaves_no_op() {
+fn a_full_ring_counts_what_it_lost_and_a_closed_tap_receives_nothing() {
     let mut r = rig(1, false);
     let tap =
-        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(150));
-    r.ed.commit().expect("compiles");
-    r.exec.apply_pending();
-    r.ed.collect();
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::Raw, Samples(150));
+    commit(&mut r);
     for i in 0..3 {
         block(&mut r, 100, i * 100);
     }
     // 300 frames pushed into a 150-frame ring that nobody drained.
-    assert_eq!(tap.take_lost().0, 150);
-    assert_eq!(tap.available().0, 150);
-    assert_eq!(tap.take_lost().0, 0, "reading clears");
-    r.ed.close_tap(TapId(1));
-    r.ed.commit().expect("compiles");
-    r.exec.apply_pending();
-    r.ed.collect();
+    assert_eq!(tap.take_lost().get(), 150);
+    assert_eq!(tap.available().get(), 150);
+    assert_eq!(tap.take_lost().get(), 0, "reading clears");
+    r.ed.close_tap(tap.id());
+    commit(&mut r);
     block(&mut r, 100, 300);
     assert_eq!(
-        tap.available().0,
+        tap.available().get(),
         150,
         "nothing more arrived after the close"
     );
-    assert_eq!(tap.take_lost().0, 0);
+    assert_eq!(tap.take_lost().get(), 0);
+}
+
+/// A read is whole frames: a buffer that ends mid-frame leaves its tail as it
+/// was, and the reader says how wide it is.
+///
+/// Mutation (run, recorded here): `out.len() / width` -> `out.len()` -> the
+/// read overruns the buffer's whole frames and the sentinel tail changes.
+#[test]
+fn a_read_is_whole_frames() {
+    let mut r = rig(1, false);
+    let mut tap =
+        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(256));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    assert_eq!(tap.width(), 3);
+    assert_eq!(tap.layout(), ChannelLayout::from_count(3));
+    assert_eq!(tap.available().get(), 100);
+    let mut out = [f32::MAX; 8];
+    assert_eq!(tap.pop_into(&mut out).get(), 2, "two whole frames of three");
+    assert_eq!(out[6..], [f32::MAX; 2], "the partial tail is untouched");
+    assert_eq!(tap.available().get(), 98);
+}
+
+/// A reader dropped first costs nothing and frees nothing on the audio thread:
+/// the tap stays in the plan writing nowhere, the editor reaps it, and the
+/// commit that removes it retires the ring with the old state. The ring and
+/// its producer are freed at the editor's collect, never in a block (a lane's
+/// drop is a debug panic inside one).
+///
+/// Mutation (run, recorded here): in `Executor::rebuild`, `old.taps.clear()`
+/// -> the commit's apply drops the lanes on the audio side and the test
+/// panics with "a tap lane dropped on the audio thread".
+#[test]
+fn a_reader_dropped_first_is_reaped_and_freed_on_the_control_side() {
+    let mut r = rig(1, true);
+    let tap =
+        r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(64));
+    commit(&mut r);
+    drop(tap);
+    // Rendering with nobody reading: no write, no panic, no allocation.
+    for i in 0..3 {
+        block(&mut r, 100, i * 100);
+    }
+    assert_eq!(r.ed.reap_taps(), 1);
+    assert_eq!(r.ed.reap_taps(), 0, "reaped once");
+    r.ed.commit().expect("compiles");
+    r.exec.apply_pending();
+    assert_eq!(
+        r.ed.base()
+            .expect("plan")
+            .ops()
+            .iter()
+            .filter(|o| matches!(o, Op::Tap { .. }))
+            .count(),
+        0
+    );
+    r.ed.collect();
+    block(&mut r, 100, 300);
+}
+
+/// The reader is control-side state: dropping it inside a block is a debug
+/// panic, as for a unit.
+///
+/// Mutation (run, recorded here): delete the `check_outside` in
+/// `TapReader::drop` -> no panic, the test fails.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "a tap reader dropped on the audio thread")]
+fn a_reader_dropped_on_the_audio_thread_panics() {
+    let mut r = rig(1, false);
+    let tap =
+        r.ed.open_tap(TapId(1), vec![r.gains[0]], TapAlign::Raw, Samples(8));
+    let _inside = tutti_rt::RtScope::enter();
+    drop(tap);
 }
 
 /// An export forks the graph: the fork carries no tap, so the live consumer
-/// never sees offline audio; the export opens its own tap on the fork, and
-/// because its loop drains between blocks (no deadline) nothing is lost.
+/// never sees offline audio; the export opens its own tap on the fork and,
+/// because its loop drains between blocks (no deadline), loses nothing.
 ///
 /// The fork carries no tap by construction: `fork_gather` copies the live
 /// topology's inputs, outputs and edges piecewise into the fork's editor, never
-/// its taps, so the one-line `taps: BTreeMap::new()` in the fork's spec literal
-/// is only what the struct needs (a mutation copying the live taps there left
-/// this test passing, which is the point: nothing downstream reads them).
+/// its taps, so the `taps: BTreeMap::new()` in the fork's spec literal is only
+/// what the struct needs.
+///
+/// Mutation (run, recorded here): copy `live.topology.taps` into the fork's
+/// literal in `fork.rs` -> the fork's spec is not empty and the first
+/// assertion fails.
 #[test]
 fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
     let mut r = rig(1, false);
     let live =
         r.ed.open_tap(TapId(1), r.gains.clone(), TapAlign::ToOutput, Samples(1024));
-    r.ed.commit().expect("compiles");
-    r.exec.apply_pending();
-    r.ed.collect();
+    commit(&mut r);
 
     let (mut fed, fexec) =
         r.ed.fork(ForkTarget::Master, ForkMode::Offline, prepare(MAX_BLOCK))
             .expect("forks");
     assert!(
         fed.spec().topology.taps.is_empty(),
-        "fork_has_no_tap: the live tap is not in the fork"
+        "the live tap is not in the fork"
     );
-    let gains = r.gains.clone();
-    let mut mine = fed.open_tap(TapId(1), gains, TapAlign::ToOutput, Samples(MAX_BLOCK));
+    let mut mine = fed.open_tap(
+        TapId(1),
+        r.gains.clone(),
+        TapAlign::ToOutput,
+        Samples(MAX_BLOCK),
+    );
     fed.commit().expect("compiles");
     let mut f = Rig {
         ed: fed,
@@ -331,57 +512,14 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
         drain(&mut mine, &mut got);
     }
     assert_eq!(
-        mine.take_lost().0,
+        mine.take_lost().get(),
         0,
-        "an offline loop that drains per block loses nothing"
+        "a loop that drains per block loses nothing"
     );
     assert_eq!(got.len(), 20 * MAX_BLOCK * CHAINS as usize);
-    assert_eq!(live.available().0, 0, "the live tap saw none of the export");
-}
-
-/// Cost, not correctness: nanoseconds per block with no tap, with a two-lane
-/// open tap drained every block, and the same block through today's
-/// `AudioTap` is measured in `tutti-metering`. Run in release:
-/// `cargo test --release -p tutti-graph --test tap -- --ignored --nocapture`.
-#[test]
-#[ignore = "a measurement"]
-fn tap_cost_per_block() {
-    fn time(with_tap: Option<TapAlign>, frames: usize) -> f64 {
-        let (mut ed, mut exec) = Editor::new(prepare(frames));
-        let gains = build(&mut ed);
-        let mut tap = with_tap
-            .map(|align| ed.open_tap(TapId(1), vec![gains[0], gains[1]], align, Samples(8192)));
-        ed.commit().expect("compiles");
-        exec.apply_pending();
-        ed.collect();
-        let input = vec![0.1f32; frames];
-        let mut chans = vec![vec![0.0f32; frames]; CHAINS as usize];
-        let mut sink = vec![0.0f32; 2 * frames];
-        let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
-        let mut best = f64::MAX;
-        for _ in 0..7 {
-            let start = std::time::Instant::now();
-            for _ in 0..20_000 {
-                let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-                exec.process(frames, &t, &[&input], &mut outs);
-                if let Some(tap) = tap.as_mut() {
-                    let (a, b) = sink.split_at_mut(frames);
-                    tap.pop_lane(0, a);
-                    tap.pop_lane(1, b);
-                }
-            }
-            best = best.min(start.elapsed().as_nanos() as f64 / 20_000.0);
-        }
-        best
-    }
-    for frames in [64, 256] {
-        let off = time(None, frames);
-        for align in [TapAlign::Raw, TapAlign::ToOutput] {
-            let on = time(Some(align), frames);
-            println!(
-                "{frames} frames: no tap {off:.0} ns, two-lane {align:?} tap + drain {on:.0} ns, +{:.0} ns",
-                on - off
-            );
-        }
-    }
+    assert_eq!(
+        live.available().get(),
+        0,
+        "the live tap saw none of the export"
+    );
 }

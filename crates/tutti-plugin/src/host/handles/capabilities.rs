@@ -34,6 +34,16 @@ use crate::protocol::{
 };
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize};
 
+/// What the audio path has made of the blocks it sent a plugin, ever
+/// ([`HostParams::block_counts`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BlockCounts {
+    /// Blocks it gave up waiting for.
+    pub abandoned: u64,
+    /// Replies it took, on time or owed.
+    pub replies: u64,
+}
+
 /// Parameter catalog, live-value reads and writes, and the backend's liveness.
 ///
 /// Every backend implements this; [`PluginHandle::params`](super::control_handle::PluginHandle::params)
@@ -132,6 +142,23 @@ pub trait HostParams: Send + Sync {
     /// refused. Defaults to `None`: an in-process backend cannot refuse.
     fn rate_refusal(&self) -> Option<(SampleRate, String)> {
         None
+    }
+
+    /// Blocks the audio path gave up waiting for, and replies it took (on
+    /// time or late), over the backend's life: a plugin that stays alive but
+    /// never returns from `process()` shows as the first growing while the
+    /// second does not, and nowhere else.
+    ///
+    /// Defaults to zeros: an in-process backend has no budget to miss.
+    fn block_counts(&self) -> BlockCounts {
+        BlockCounts::default()
+    }
+
+    /// Ends the plugin's server process, latching `cause` as the reason the
+    /// plugin is dead (unless it already died of something else). Defaults
+    /// to nothing: an in-process backend has no process to end.
+    fn terminate(&self, cause: &str) {
+        let _ = cause;
     }
 
     /// How many parameter-change events the plugin sent that the host lost,

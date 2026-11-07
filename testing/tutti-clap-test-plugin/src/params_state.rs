@@ -1049,6 +1049,7 @@ unsafe extern "C" fn state_context_load(
     // REFUSAL: refuse *before* reading, so `load_calls` / `last_load_context`
     // record only the calls the probe actually serviced — a host that falls
     // back to the plain `state.load` then shows up as a load at context 0.
+    crate::subprocess::die_if_state_load_crashes();
     if crate::refusal::refuse_context_load() {
         return false;
     }

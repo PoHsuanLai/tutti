@@ -182,6 +182,22 @@ impl AudioBridge {
         self.lifecycle.set_rate_timeout(timeout);
     }
 
+    /// Blocks the bridge thread abandoned and replies it took (on time, or
+    /// owed and taken back off the socket), ever. The bridge thread writes
+    /// them and any thread reads them: relaxed atomics, no lock, no
+    /// allocation.
+    pub fn block_counts(&self) -> crate::host::handles::BlockCounts {
+        let (abandoned, replies) = self.channels.block_counts();
+        crate::host::handles::BlockCounts { abandoned, replies }
+    }
+
+    /// Latches `cause` as the reason the bridge is dead (the first cause
+    /// wins), so a host that ends the server itself reads the reason it
+    /// gave.
+    pub fn mark_crashed(&self, cause: &str) {
+        self.lifecycle.mark_crashed(cause);
+    }
+
     /// How many replies the bridge thread has taken back off the socket after
     /// abandoning the blocks that asked for them.
     ///

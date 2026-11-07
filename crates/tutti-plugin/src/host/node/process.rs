@@ -61,6 +61,16 @@ impl ProcessGuard {
         process.as_mut()?.try_wait().ok().flatten()
     }
 
+    /// Kills the server without waiting for it, so the bridge thread reads an
+    /// EOF and the socket closes. [`Drop`] reaps it. Not for the audio thread
+    /// (a lock and a syscall).
+    pub(crate) fn terminate(&self) {
+        let mut process = self.process.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(process) = process.as_mut() {
+            let _ = process.kill();
+        }
+    }
+
     /// Test-only: create a guard without a real subprocess. Used by
     /// `PluginHandle::from_bridge_and_metadata` in mock-server tests.
     #[cfg(test)]

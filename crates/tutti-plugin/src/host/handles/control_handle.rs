@@ -6,7 +6,8 @@
 
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode, HostState,
+    BlockCounts, HostAutomationState, HostEditor, HostParams, HostPresets, HostRenderMode,
+    HostState,
 };
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
@@ -537,6 +538,21 @@ impl PluginHandle {
     #[must_use]
     pub fn is_crashed(&self) -> bool {
         self.params.is_crashed()
+    }
+
+    /// Blocks the audio path abandoned and replies it took. See
+    /// [`HostParams::block_counts`]. Atomic reads.
+    #[must_use]
+    pub fn block_counts(&self) -> BlockCounts {
+        self.params.block_counts()
+    }
+
+    /// Ends the plugin's server process. The bridge then latches `cause`
+    /// (unless it died of something else first), so [`status`](Self::status)
+    /// turns [`Dead`](PluginStatus::Dead) as for any crash. Nothing for an
+    /// in-process plugin. Not for the audio thread.
+    pub fn terminate(&self, cause: &str) {
+        self.params.terminate(cause);
     }
 
     /// How many parameter-change events the plugin sent that the host lost,

@@ -134,6 +134,18 @@ pub struct TuttiPlugin {
     /// one per core. The render is the same sample for sample whatever the
     /// count.
     pub render_workers: usize,
+    /// What a hosted plugin's death or hang does
+    /// ([`tutti_session::RecoveryPolicy`]). `Some` by default: the plugin is
+    /// reloaded at its entity with its last snapshot, and the entity is told
+    /// ([`PluginReloading`](crate::plugin_host::PluginReloading),
+    /// [`PluginRecovered`](crate::plugin_host::PluginRecovered),
+    /// [`PluginGaveUp`](crate::plugin_host::PluginGaveUp)). `None`: the entity
+    /// loses its `AudioNode` and `PluginHealth` reads `Dead`, for a host that
+    /// asks the user first. It covers out-of-process plugins loaded through
+    /// `PluginRequest`, not in-process VST2 plugins or ones inserted with
+    /// `insert_plugin`/`host_plugin`.
+    #[cfg(feature = "plugin")]
+    pub plugin_recovery: Option<tutti_session::RecoveryPolicy>,
 }
 
 impl Default for TuttiPlugin {
@@ -145,6 +157,8 @@ impl Default for TuttiPlugin {
             outputs: 2,
             disabled: false,
             render_workers: 1,
+            #[cfg(feature = "plugin")]
+            plugin_recovery: Some(tutti_session::RecoveryPolicy::default()),
         }
     }
 }

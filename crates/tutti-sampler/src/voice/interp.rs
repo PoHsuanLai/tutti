@@ -24,8 +24,8 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_dsp::cubic_hermite;
 use tutti_types::{
-    Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition, SampleRate, Samples, TimelineSegment,
-    fold_frame, snap_to_whole_frame,
+    Beat, BeatDuration, Bpm, ChannelLayout, Fold, Frame, ReadRate, SamplePosition, SampleRate,
+    Samples, TimelineSegment, fold_frame, snap_to_whole_frame,
 };
 
 use super::clock::{BlockClock, Run, Wrap};
@@ -369,14 +369,16 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 ///
 /// # Channel policy
 ///
-/// One rule: a mono source has no channel identity and fans to every channel;
-/// anything else has one and folds through [`fold_frame`].
+/// One rule: a mono source is placed by [`MonoSpread`] (the centre of a
+/// destination that has one, else the front pair); anything else has a
+/// channel identity and folds through [`fold_frame`].
 ///
-/// - mono wave → N-wide frame: fans to all N. A mono sample is a point
-///   source whose speaker placement is the panner's job, not the reader's, so
-///   dropping it into channel 0 alone would be wrong. This is also what the
-///   stereo kernel always did (mono duplicated to both sides), so the behaviour
-///   at width 2 is unchanged.
+/// - mono wave → N-wide frame: [`Fold`]'s lone-centre rule, built once as a
+///   [`MonoSpread::to`]: the centre channel of a 6, 8 or 12-wide frame
+///   (nothing in the others), left and right of a stereo one (as the stereo
+///   kernel always did), the one channel of a mono one. A width the engine has
+///   no order for (3, 4, 5, 7, 9 to 11, 13 and up) has no centre to name, so
+///   the sample fans to every channel, as it did before.
 /// - wider wave → narrower frame: [`fold_frame`], i.e. the ITU-R BS.775
 ///   matrix at width 2. Front-pair passthrough would silently drop the centre
 ///   (dialogue) and the surrounds (ambience). The engine already owns these
@@ -388,7 +390,7 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 ///   it into the centre and surrounds would smear that image and invent phantom
 ///   centre content.
 #[inline]
-pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
+pub fn read_frame(wave: &Arc<Wave>, mono: &MonoSpread, position: f64, out: &mut [f32]) {
     if out.is_empty() {
         return;
     }
@@ -402,7 +404,7 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
     // Every channel index `interpolate_taps` asks for is `< src_ch`, which is
     // what keeps `Wave::at` — an unchecked `self.vec[channel][index]` — from
     // panicking; `tap_indices` keeps the frame index in bounds.
-    interpolate_taps(src_ch, frac, out, |c, t| wave.at(c, taps[t]));
+    interpolate_taps(src_ch, mono, frac, out, |c, t| wave.at(c, taps[t]));
 }
 
 /// The four frames [`read_frame`] interpolates `position` from, in a source
@@ -465,6 +467,7 @@ pub(crate) fn split_position(position: f64) -> (usize, f32) {
 #[inline]
 pub(crate) fn read_looped_frame(
     wave: &Arc<Wave>,
+    mono: &MonoSpread,
     span: &LoopSpan,
     pos: f64,
     looped: bool,
@@ -480,7 +483,7 @@ pub(crate) fn read_looped_frame(
         return;
     }
     let (taps, frac) = span.taps(len, pos, looped);
-    interpolate_taps(src_ch, frac, out, |c, t| {
+    interpolate_taps(src_ch, mono, frac, out, |c, t| {
         let tap = taps[t];
         let tail = wave.at(c, tap.frame);
         match tap.fade {
@@ -488,6 +491,109 @@ pub(crate) fn read_looped_frame(
             None => tail,
         }
     });
+}
+
+/// Where a mono source goes in a frame of some width.
+///
+/// A mono sample has no channel identity of its own, so the reader asks the
+/// engine's one rule ([`Fold`]'s: a lone centre feeds the destination's centre
+/// if it has one, else its front left and right) rather than copying it to every
+/// channel. Built once per reader, on the control side
+/// ([`to`](Self::to) allocates); [`frame`](Self::frame) and
+/// [`lane`](Self::lane) are allocation-free.
+///
+/// The destination is taken to be the engine's own order for its width
+/// ([`Fold::assuming_smpte`]): a voice's outputs are a count, and the count is
+/// all there is to go on. A width with no order (3, 4, 5, 7, 9 to 11, 13 and up)
+/// has no centre to name, so the sample goes to every channel, as it always
+/// did; so does a width of one or two, where the rule is exactly that, and a
+/// frame of any width other than the one the spread was built for. A width past
+/// [`MAX_SAMPLER_CHANNELS`] is built for that many, the most a reader writes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonoSpread {
+    /// `None`: to every channel. Otherwise the fold of one channel into the
+    /// destination.
+    fold: Option<Fold>,
+}
+
+impl MonoSpread {
+    /// A mono sample to every channel of the frame.
+    pub const FAN: Self = Self { fold: None };
+
+    /// The spread of a mono source into a frame of `width` channels.
+    ///
+    /// Control side: it allocates.
+    #[must_use]
+    pub fn to(width: ChannelLayout) -> Self {
+        // A reader never emits past `MAX_SAMPLER_CHANNELS` (the channels above
+        // it are silent), so the spread is of the frame it does emit: for a
+        // 12-wide node, the 8-wide one, whose centre is the same channel.
+        let width = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
+        // One and two channels are the fan exactly (the centre of a mono frame
+        // is its channel, a stereo frame's front pair is all of it); the
+        // `fan_is_the_fold_at_one_and_two` test pins that.
+        if width.count() <= 2 {
+            return Self::FAN;
+        }
+        Self {
+            fold: Fold::assuming_smpte(ChannelLayout::MONO, width).ok(),
+        }
+    }
+
+    /// The fold, if `width` is the one it was built for. A frame of another
+    /// width has no centre this spread knows, so it fans.
+    #[inline]
+    fn fold_for(&self, width: usize) -> Option<&Fold> {
+        self.fold
+            .as_ref()
+            .filter(|fold| usize::from(fold.dst_layout().count()) == width)
+    }
+
+    /// Writes the mono sample `v` into `out`, every element.
+    #[inline]
+    pub(crate) fn frame(&self, v: f32, out: &mut [f32]) {
+        match self.fold_for(out.len()) {
+            Some(fold) => fold.frame(&[v], out),
+            None => out.fill(v),
+        }
+    }
+
+    /// Spreads the mono block in `lanes[0][range]` over the first `width`
+    /// lanes, in place: lane `c`'s `range` is what [`frame`](Self::frame)
+    /// writes at channel `c` for each of the mono samples, bit for bit.
+    /// `scratch` (at least `range.len()` long) holds the mono block while lane
+    /// 0 is itself rewritten, which a centre-only spread silences.
+    ///
+    /// # Panics
+    ///
+    /// If `scratch` is short.
+    #[inline]
+    pub(crate) fn lanes<L: AsMut<[f32]>>(
+        &self,
+        lanes: &mut [L],
+        width: usize,
+        range: Range<usize>,
+        scratch: &mut [f32],
+    ) {
+        let fold = self.fold_for(width);
+        let lanes = &mut lanes[..width];
+        match fold {
+            None => {
+                let (first, rest) = lanes.split_at_mut(1);
+                let first = &first[0].as_mut()[range.clone()];
+                for lane in rest {
+                    lane.as_mut()[range.clone()].copy_from_slice(first);
+                }
+            }
+            Some(fold) => {
+                let mono = &mut scratch[..range.len()];
+                mono.copy_from_slice(&lanes[0].as_mut()[range.clone()]);
+                for (c, lane) in lanes.iter_mut().enumerate() {
+                    fold.planar_channel(|_| &*mono, c, &mut lane.as_mut()[range.clone()]);
+                }
+            }
+        }
+    }
 }
 
 /// Interpolate one frame into `out` from four taps of a `src_ch`-wide source
@@ -499,6 +605,7 @@ pub(crate) fn read_looped_frame(
 #[inline]
 pub(crate) fn interpolate_taps(
     src_ch: usize,
+    mono: &MonoSpread,
     frac: f32,
     out: &mut [f32],
     sample: impl Fn(usize, usize) -> f32,
@@ -508,9 +615,9 @@ pub(crate) fn interpolate_taps(
     let tap =
         |c: usize| cubic_hermite(sample(c, 0), sample(c, 1), sample(c, 2), sample(c, 3), frac);
 
-    // Mono fans out. Bound: `c` is unused, only channel 0 is read.
+    // Mono is placed by the spread. Bound: only channel 0 is read.
     if src_ch == 1 {
-        out.fill(tap(0));
+        mono.frame(tap(0), out);
         return;
     }
 
@@ -542,12 +649,12 @@ pub(crate) fn interpolate_taps(
 }
 
 /// Stereo shim over [`read_frame`]: returns the interpolated `(left, right)`
-/// pair for a fixed 2-channel read. Same channel policy — a mono wave fans to
-/// both sides, a wider one folds through the ITU-R BS.775 matrix.
+/// pair for a fixed 2-channel read. Same channel policy — a mono wave is both
+/// sides, a wider one folds through the ITU-R BS.775 matrix.
 #[inline]
 pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
     let mut out = [0.0f32; 2];
-    read_frame(wave, position, &mut out);
+    read_frame(wave, &MonoSpread::FAN, position, &mut out);
     (out[0], out[1])
 }
 
@@ -556,6 +663,12 @@ mod tests {
     use super::*;
     use tutti_graph::{Env, Offset, Transport, TransportChanges};
     use tutti_types::{PlaybackRate, SrcRatio};
+
+    /// [`super::read_frame`] with the spread a reader of `out`'s width has.
+    fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
+        let mono = MonoSpread::to(ChannelLayout::from(out.len()));
+        super::read_frame(wave, &mono, position, out);
+    }
 
     /// A position a hair under a whole frame reads that frame exactly.
     /// Its fraction rounds to 1.0 in `f32`; the kernel at `t` = 1.0 returns
@@ -825,16 +938,75 @@ mod tests {
         );
     }
 
-    /// Mono has no channel identity, so it fans to every channel of a wide frame.
+    /// Mono has no channel identity, so `Fold`'s lone-centre rule places it: the
+    /// centre of a 6 or 8-wide frame and nowhere else (the 12-wide node's is the
+    /// 8-wide spread, in `memory_source`'s test), both sides of a stereo one, and
+    /// every channel where the engine has no order (3, 4, 5, 7), where there is
+    /// no centre to name.
+    ///
+    /// Mutation (run): `MonoSpread::to` returning `FAN` for every width fails
+    /// the 6, 8 and 12 rows (the silent channels); returning the fold for
+    /// widths without an order is `NoSmpteOrder`, mapped by `.ok()` to the fan,
+    /// and dropping the `.ok()` fallback for `Self::FAN` would panic there.
     #[test]
-    fn mono_wave_fans_to_every_channel_of_a_six_wide_frame() {
+    fn a_mono_wave_is_the_centre_of_a_wide_frame_and_a_fan_where_there_is_none() {
         let w = mono_ramp();
-        let mut out = [0.0f32; 6];
-        read_frame(&w, 8.0, &mut out);
-        assert!(out[0].abs() > 0.0, "mono read produced silence");
-        for c in 1..6 {
-            assert_eq!(out[c], out[0], "channel {c} did not receive the mono fan");
+        let mut mono = [0.0f32; 1];
+        read_frame(&w, 8.0, &mut mono);
+        assert!(mono[0].abs() > 0.0, "mono read produced silence");
+        for width in 1usize..=MAX_SAMPLER_CHANNELS {
+            let mut out = vec![9.0f32; width];
+            read_frame(&w, 8.0, &mut out);
+            let centre = matches!(width, 6 | 8).then_some(2);
+            for (c, &s) in out.iter().enumerate() {
+                let carries = centre.is_none() || centre == Some(c);
+                assert_eq!(
+                    s,
+                    if carries { mono[0] } else { 0.0 },
+                    "width {width}, channel {c}: {out:?}"
+                );
+            }
         }
+    }
+
+    /// The spread is `Fold`'s rule and not a copy of it: for every width the
+    /// engine has an order for, `frame` writes what the fold of a lone centre
+    /// into that order writes, and `lanes` writes the same bits block-wise.
+    /// The widths below three (where the spread is the fan, to save the
+    /// fold's dispatch) are in the comparison.
+    ///
+    /// Mutation (run): `lanes` reading the scratch with an off-by-one
+    /// (`scratch[1..]`) breaks the block rows; `frame` writing `v * 0.5` breaks
+    /// the first.
+    #[test]
+    fn the_spread_is_the_fold_of_a_lone_centre() {
+        let v = 0.3f32;
+        for width in [1u16, 2, 6, 8] {
+            let layout = ChannelLayout::from(width);
+            let fold = Fold::assuming_smpte(ChannelLayout::MONO, layout).unwrap();
+            let spread = MonoSpread::to(layout);
+            let mut by_fold = vec![0.0f32; usize::from(width)];
+            fold.frame(&[v], &mut by_fold);
+            let mut by_spread = vec![9.0f32; usize::from(width)];
+            spread.frame(v, &mut by_spread);
+            assert_eq!(by_fold, by_spread, "width {width}: frame");
+
+            // The block form: three frames, lane 0 holding the mono block.
+            let mono = [v, -v, 2.0 * v];
+            let mut lanes: Vec<Vec<f32>> = (0..width)
+                .map(|c| if c == 0 { mono.to_vec() } else { vec![9.0; 3] })
+                .collect();
+            let mut scratch = [0.0f32; 3];
+            spread.lanes(&mut lanes, usize::from(width), 0..3, &mut scratch);
+            for (i, &m) in mono.iter().enumerate() {
+                let mut want = vec![0.0f32; usize::from(width)];
+                fold.frame(&[m], &mut want);
+                let got: Vec<f32> = lanes.iter().map(|l| l[i]).collect();
+                assert_eq!(got, want, "width {width}, frame {i}: lanes");
+            }
+        }
+        // A width with no order is the fan.
+        assert_eq!(MonoSpread::to(ChannelLayout::from(5u16)), MonoSpread::FAN);
     }
 
     /// Stereo *does* have a channel identity, so it occupies the front pair and

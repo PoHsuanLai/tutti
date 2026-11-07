@@ -1315,3 +1315,54 @@ fn a_placed_fork_reads_the_renders_transport() {
     let out = block(&mut fork, Some(&transport), 2);
     assert!((out[0].0 - 11_026.0).abs() < 1e-3, "{:?}", out[0]);
 }
+
+/// A mono wave in a node of some width goes where `Fold`'s lone-centre rule
+/// puts it: the centre of a 6, 8 or 12-wide node (and only there), both sides
+/// of a stereo one, and every channel of a width the engine has no order for
+/// (3, 4, 5, 7), as before. Free-running and placed read it through different
+/// paths (a frame at a time, a block of lanes); both give the same planes.
+///
+/// The wave is `1, 2, 3, ...`, and an unlooped read at unity rate away from
+/// the ends is the sample itself, so frame `i` of a lane that carries it is
+/// `i + 1`.
+///
+/// Mutation (run): `MonoSpread::to` returning `FAN` for every width (the old
+/// fan-out) fails the 6, 8 and 12 rows on the silent lanes; the lane path
+/// leaving lane 0 as the mono block (skipping the rewrite in
+/// `MonoSpread::lanes`) fails the centre-only rows in the placed read;
+/// `lanes` with the scratch copy taken after lane 0 is rewritten reads zeros
+/// for the centre and fails them.
+#[test]
+fn a_mono_wave_goes_to_the_centre_of_a_node_that_has_one() {
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    for (width, centre) in [
+        (1usize, Some(0)),
+        (2, None),
+        (3, None),
+        (4, None),
+        (5, None),
+        (6, Some(2)),
+        (7, None),
+        (8, Some(2)),
+        (12, Some(2)),
+    ] {
+        let mut free = MemorySource::with_channels(ramp_wave(64, SR), width);
+        let mut placed =
+            MemorySource::with_channels(ramp_wave(64, SR), width).placed_at(VoiceWindow::default());
+        let free = planes(&mut free, None, 8);
+        let placed = planes(&mut placed, Some(&transport), 8);
+        for (what, out) in [("free-running", free), ("placed", placed)] {
+            assert_eq!(out.len(), width);
+            for (c, plane) in out.iter().enumerate() {
+                let carries = centre.is_none() || centre == Some(c);
+                for (i, &s) in plane.iter().enumerate() {
+                    let want = if carries { (i + 1) as f32 } else { 0.0 };
+                    assert!(
+                        (s - want).abs() < 1e-3,
+                        "{what}, width {width}, channel {c}, frame {i}: {s} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+}

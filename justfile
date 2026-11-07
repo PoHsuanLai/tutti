@@ -389,7 +389,7 @@ check-paths *ARGS:
 
 lint:
     cargo fmt --all --check
-    cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
+    cargo clippy --locked --workspace --all-targets -- -D warnings
 
 # Typecheck and lint the Windows cfg paths, from Linux or macOS.
 #
@@ -428,7 +428,7 @@ check-windows:
     export CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
-    win --workspace --all-targets --exclude tutti-rustysynth \
+    win --workspace --all-targets \
         --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
@@ -446,15 +446,13 @@ check-windows:
 # the crates' internals carry doc comments with links too, and a link that only
 # breaks in a private item rots until someone reads the private docs.
 doc:
-    RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps \
-        --exclude tutti-rustysynth
+    RUSTDOCFLAGS="-D warnings --document-private-items" cargo doc --locked --workspace --no-deps
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p tutti-graph --no-deps --features contract
     RUSTDOCFLAGS="-D warnings" cargo doc --locked -p bevy-tutti --no-deps --features full,plugin
     scripts/check-doc-features.sh
     # The docs.rs build: nightly, `--cfg docsrs`, so `doc_cfg` must parse and
     # every feature badge must render. The nightly is dated, as in CI.
-    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps \
-        --exclude tutti-rustysynth
+    RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly-2026-10-14 doc --locked --workspace --no-deps
 
 # Clippy with `--cfg loom` on the crates that carry loom models. The flag swaps
 # the atomics and constants those crates use, so code that is clean in a normal

@@ -1,0 +1,23 @@
+[package]
+name = "tutti-sf2"
+version = "0.0.1"
+authors = ["Nobuaki Tanaka"]
+edition.workspace = true
+rust-version.workspace = true
+description = "A SoundFont 2 (.sf2) file as data: presets, instruments, sample headers and sample data, with no synthesizer"
+readme = "README.md"
+repository.workspace = true
+license = "MIT"
+keywords = ["soundfont", "sf2", "audio", "parser"]
+categories = ["multimedia::audio", "parser-implementations"]
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tutti-ump = { path = "../tutti-ump", default-features = false }
+
+[dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }

@@ -108,11 +108,11 @@ def rel(p):
 # layer. Derived from the real edges; see CLAUDE.md.
 LAYERS = [
     # no workspace dependency at all
-    ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
-    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
+    ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
+    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device", "tutti-sf2"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
      "tutti-codec"],
-    ["tutti-transport", "tutti-plugin-types"],
+    ["tutti-transport", "tutti-plugin-types", "tutti-rustysynth"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
      "tutti-clap-ffi", "tutti-vst3-ffi", "tutti-au-host", "tutti-vst2-host",
      "tutti-plugin-db"],

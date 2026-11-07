@@ -5,15 +5,21 @@ authors = ["Nobuaki Tanaka"]
 edition.workspace = true
 rust-version.workspace = true
 
-description = "A SoundFont MIDI synthesizer written in pure Rust (tutti's fork of rustysynth, with Clone support)"
+description = "A SoundFont synthesizer in pure Rust, tutti's port of rustysynth"
 readme = "README.md"
-repository = "https://github.com/PoHsuanLai/Tutti"
+repository.workspace = true
 license = "MIT"
 keywords = ["soundfont", "midi", "synthesizer", "audio", "music"]
 categories = ["multimedia::audio"]
 
-[features]
-default = []
+[lints]
+workspace = true
 
 [dependencies]
-thiserror = { version = "2", default-features = false, optional = true }
+tutti-sf2 = { path = "../tutti-sf2" }
+tutti-types = { path = "../tutti-types", default-features = false }
+tutti-ump = { path = "../tutti-ump", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }

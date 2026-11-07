@@ -23,7 +23,7 @@ pub use settings::Settings;
 mod fork;
 mod node;
 
-pub use tutti_rustysynth::{SoundFont, SoundFontError};
+pub use tutti_sf2::{SoundFont, SoundFontError};
 
 use std::sync::Arc;
 use tutti_midi_protocol::{narrow_bend, narrow_value, narrow_velocity, widen};
@@ -129,15 +129,14 @@ impl SoundFontUnit {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` and
+    /// Returns [`Error::Synthesizer`] if RustySynth refuses the `SoundFont` and
     /// [`Settings`] pair.
     pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
-        let synthesizer = Synthesizer::new(&soundfont, &settings.to_rustysynth())
-            .map_err(|e| Error::SoundFont(e.to_string()))?;
+        let synthesizer = Synthesizer::new(&soundfont, &settings.to_rustysynth())?;
 
         Ok(Self {
+            sample_rate: synthesizer.sample_rate(),
             synthesizer,
-            sample_rate: SampleRate::from(settings.hz().max(0) as u32),
             left_buffer: Vec::new(),
             right_buffer: Vec::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
@@ -152,7 +151,7 @@ impl SoundFontUnit {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SoundFont`] if RustySynth refuses the `SoundFont` at
+    /// Returns [`Error::Synthesizer`] if RustySynth refuses the `SoundFont` at
     /// that rate (outside 16 to 192 kHz).
     pub fn with_preset(
         soundfont: Arc<SoundFont>,
@@ -182,17 +181,13 @@ impl SoundFontUnit {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SoundFont`] if RustySynth refuses the rate (outside
+    /// Returns [`Error::Synthesizer`] if RustySynth refuses the rate (outside
     /// 16–192 kHz).
     pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        let hz = settings::hz(sample_rate);
-        let synthesizer = self
-            .synthesizer
-            .with_sample_rate(hz)
-            .map_err(|e| Error::SoundFont(e.to_string()))?;
+        let synthesizer = self.synthesizer.with_sample_rate(sample_rate)?;
         Ok(Self {
+            sample_rate: synthesizer.sample_rate(),
             synthesizer,
-            sample_rate: SampleRate::from(hz.max(0) as u32),
             left_buffer: vec![0.0; self.left_buffer.len()],
             right_buffer: vec![0.0; self.right_buffer.len()],
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
@@ -209,18 +204,13 @@ impl SoundFontUnit {
     /// These are MIDI 1.0 values, as RustySynth takes them. A `velocity` of 0
     /// reads as a note-off.
     pub fn note_on(&mut self, channel: MidiChannel, key: NoteNumber, velocity: U7) {
-        self.synthesizer.note_on(
-            i32::from(channel.get()),
-            i32::from(key.get()),
-            i32::from(velocity.get()),
-        );
+        self.synthesizer.note_on(channel, key, velocity);
     }
 
     /// Releases a note directly, bypassing MIDI. Prefer the node's MIDI event
     /// input; see [`note_on`](Self::note_on).
     pub fn note_off(&mut self, channel: MidiChannel, key: NoteNumber) {
-        self.synthesizer
-            .note_off(i32::from(channel.get()), i32::from(key.get()));
+        self.synthesizer.note_off(channel, key);
     }
 
     /// Selects the preset a channel plays, bypassing MIDI.
@@ -229,12 +219,7 @@ impl SoundFontUnit {
     /// before inserting the unit; once in a graph, send a program change on the
     /// event input instead.
     pub fn program_change(&mut self, channel: MidiChannel, program: U7) {
-        self.synthesizer.process_midi_message(
-            i32::from(channel.get()),
-            0xC0,
-            i32::from(program.get()),
-            0,
-        );
+        self.synthesizer.program_change(channel, program);
     }
 
     /// Renders `range` of the scratch buffers, advancing the synthesizer by
@@ -303,7 +288,6 @@ impl SoundFontUnit {
     /// Applied: Note On, Note Off, Control Change, Pitch Bend, Program Change.
     /// The rest has no RustySynth setter and is dropped, arm by arm below.
     fn voice2(&mut self, channel: MidiChannel, voice: Voice2) {
-        let ch = i32::from(channel.get());
         match voice {
             // Native MIDI 2.0 velocity 0 is a Note Off here, as it always has
             // been (M2-104 7.4.2 keeps it a Note On; that is for the
@@ -311,39 +295,25 @@ impl SoundFontUnit {
             // never gets here: it arrives as a `NoteOff`.
             Voice2::NoteOn {
                 note, velocity: 0, ..
-            } => self.synthesizer.note_off(ch, i32::from(note.get())),
+            } => self.synthesizer.note_off(channel, note),
             Voice2::NoteOn { note, velocity, .. } => {
                 // A nonzero 16-bit velocity below 0x0200 narrows to 0, which
                 // RustySynth reads as a Note Off: floor it at 1.
-                let velocity = narrow_velocity(velocity).get().max(1);
-                self.synthesizer
-                    .note_on(ch, i32::from(note.get()), i32::from(velocity));
+                let velocity = U7::new(narrow_velocity(velocity).get().max(1)).unwrap_or(U7::MAX);
+                self.synthesizer.note_on(channel, note, velocity);
             }
             // Release velocity is not used: RustySynth's `note_off` has no such
             // argument.
-            Voice2::NoteOff { note, .. } => self.synthesizer.note_off(ch, i32::from(note.get())),
+            Voice2::NoteOff { note, .. } => self.synthesizer.note_off(channel, note),
             Voice2::ControlChange { controller, value } => {
-                self.synthesizer.process_midi_message(
-                    ch,
-                    0xB0,
-                    i32::from(controller.get()),
-                    i32::from(narrow_value(value).get()),
-                );
+                self.synthesizer
+                    .control_change(channel, controller, narrow_value(value));
             }
-            Voice2::PitchBend(bend) => {
-                let bend = narrow_bend(bend);
-                self.synthesizer.process_midi_message(
-                    ch,
-                    0xE0,
-                    i32::from(bend.lsb().get()),
-                    i32::from(bend.msb().get()),
-                );
-            }
+            Voice2::PitchBend(bend) => self.synthesizer.pitch_bend(channel, narrow_bend(bend)),
             // The program only: a bank would need Bank Select state, and
             // RustySynth takes its bank from the SoundFont's current one.
             Voice2::ProgramChange { program, .. } => {
-                self.synthesizer
-                    .process_midi_message(ch, 0xC0, i32::from(program.get()), 0);
+                self.synthesizer.program_change(channel, program);
             }
             // RustySynth exposes no setter for pressure, so it is dropped
             // rather than approximated.
@@ -373,11 +343,11 @@ impl SoundFontUnit {
     /// scratch buffers are fully rewritten by every block, and rustysynth
     /// owns the only surviving chunk cursor.
     pub(crate) fn release_all(&mut self) {
-        (0..16).for_each(|channel| {
-            (0..128).for_each(|key| {
+        for channel in (0..MidiChannel::COUNT).filter_map(MidiChannel::new) {
+            for key in (0..=NoteNumber::MAX.get()).filter_map(NoteNumber::new) {
                 self.synthesizer.note_off(channel, key);
-            });
-        });
+            }
+        }
     }
 }
 

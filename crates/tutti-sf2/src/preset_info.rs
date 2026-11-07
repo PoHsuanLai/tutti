@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 
 #[non_exhaustive]
@@ -19,13 +17,13 @@ pub(crate) struct PresetInfo {
 
 impl PresetInfo {
     fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let name = BinaryReader::read_fixed_length_string(reader, 20)?;
-        let patch_number = BinaryReader::read_u16(reader)? as i32;
-        let bank_number = BinaryReader::read_u16(reader)? as i32;
-        let zone_start_index = BinaryReader::read_u16(reader)? as i32;
-        let library = BinaryReader::read_i32(reader)?;
-        let genre = BinaryReader::read_i32(reader)?;
-        let morphology = BinaryReader::read_i32(reader)?;
+        let name = reader.read_fixed_length_string(20)?;
+        let patch_number = reader.read_u16()? as i32;
+        let bank_number = reader.read_u16()? as i32;
+        let zone_start_index = reader.read_u16()? as i32;
+        let library = reader.read_i32()?;
+        let genre = reader.read_i32()?;
+        let morphology = reader.read_i32()?;
 
         Ok(Self {
             name,

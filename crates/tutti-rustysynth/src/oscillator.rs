@@ -1,7 +1,5 @@
-#![allow(dead_code)]
-
-use crate::loop_mode::LoopMode;
 use crate::synthesizer_settings::SynthesizerSettings;
+use tutti_sf2::LoopMode;
 
 // In this class, fixed-point numbers are used for speed-up.
 // A fixed-point number is expressed by Int64, whose lower 24 bits represent the fraction part,
@@ -37,7 +35,7 @@ impl Oscillator {
 
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
-            synthesizer_sample_rate: settings.sample_rate,
+            synthesizer_sample_rate: settings.hz(),
             loop_mode: LoopMode::NoLoop,
             sample_sample_rate: 0,
             start: 0,
@@ -53,7 +51,6 @@ impl Oscillator {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         &mut self,
         loop_mode: LoopMode,

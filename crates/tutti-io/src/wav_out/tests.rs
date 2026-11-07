@@ -47,125 +47,6 @@ fn wav_out_writes_incrementally_and_finalizes() {
     assert_eq!(reader.len() as usize, block.len() * blocks);
 }
 
-/// A stereo source folded into a mono sink must AVERAGE `(l + r) * 0.5`,
-/// not drop the right channel.
-///
-/// Asymmetric inputs are what make the two distinguishable — with
-/// `[0.5, 0.5]` a dropped channel and an average agree, which is exactly how
-/// a channel-dropping mono fold survives a suite that already covers mono.
-#[test]
-fn folding_to_mono_averages_rather_than_dropping_the_right_channel() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("fold_mono.wav");
-
-    let mut sink = WavOut::create(&path, 48_000.0, ChannelLayout::MONO, BitDepth::Float32)
-        .expect("sink should open");
-    // L=0.5 R=0.9 → average 0.7. Dropping R would write 0.5.
-    sink.write_folding(&[0.5, 0.9, 1.0, 0.0], ChannelLayout::STEREO);
-    sink.finalize().unwrap();
-
-    let mut reader = hound::WavReader::open(&path).unwrap();
-    let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
-    assert_eq!(samples.len(), 2, "two stereo frames → two mono samples");
-    assert!(
-        (samples[0] - 0.7).abs() < 1e-6,
-        "expected the AVERAGE 0.7, got {} — the right channel was dropped",
-        samples[0]
-    );
-    assert!(
-        (samples[1] - 0.5).abs() < 1e-6,
-        "expected 0.5, got {}",
-        samples[1]
-    );
-}
-
-/// A 5.1 frame folded to stereo or mono must keep the centre and surrounds,
-/// not truncate to channels 0/1.
-///
-/// A centre-only frame is the sharpest case: truncation writes pure
-/// silence, so the assertion is "any signal at all reached the file". This
-/// is the same fold the mic callback applies, exercised at the one seam
-/// that needs no hardware.
-#[test]
-fn folding_a_surround_frame_keeps_the_centre_and_surrounds() {
-    let dir = tempfile::tempdir().unwrap();
-
-    // 5.1, energy ONLY in the centre (idx 2). FL FR C LFE SL SR.
-    let centre_only = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
-
-    // → stereo: centre must reach BOTH sides at −3 dB.
-    let stereo_path = dir.path().join("surround_to_stereo.wav");
-    let mut stereo = WavOut::create(
-        &stereo_path,
-        48_000.0,
-        ChannelLayout::STEREO,
-        BitDepth::Float32,
-    )
-    .expect("sink should open");
-    stereo.write_folding(&centre_only, ChannelLayout::from(6u16));
-    stereo.finalize().unwrap();
-
-    let mut reader = hound::WavReader::open(&stereo_path).unwrap();
-    let s: Vec<f32> = reader.samples::<f32>().map(|x| x.unwrap()).collect();
-    assert_eq!(s.len(), 2);
-    assert!(
-        s[0] > 0.1 && s[1] > 0.1,
-        "the centre channel (dialogue) was truncated away: {s:?}"
-    );
-    assert!(
-        (s[0] - s[1]).abs() < 1e-6,
-        "a centre source must fold symmetrically"
-    );
-
-    // → mono: still non-silent. A rear-only 7.1 frame likewise.
-    let mono_path = dir.path().join("surround_to_mono.wav");
-    let mut mono = WavOut::create(&mono_path, 48_000.0, ChannelLayout::MONO, BitDepth::Float32)
-        .expect("sink should open");
-    // 7.1 with energy only in the rears (idx 6, 7) — front-pair truncation
-    // would write silence here too.
-    let rears_only = [0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
-    mono.write_folding(&rears_only, ChannelLayout::from(8u16));
-    mono.finalize().unwrap();
-
-    let mut reader = hound::WavReader::open(&mono_path).unwrap();
-    let m: Vec<f32> = reader.samples::<f32>().map(|x| x.unwrap()).collect();
-    assert_eq!(m.len(), 1);
-    assert!(
-        m[0] > 0.1,
-        "the surround channels were truncated away: got {}",
-        m[0]
-    );
-}
-
-/// `write_folding` never emits a short frame, whatever the widths.
-///
-/// Alignment is the invariant a fold must not trade away: a frame short by
-/// even one sample rotates every channel for the rest of the file, which
-/// reads as "the recording is subtly wrong" rather than as an error.
-#[test]
-fn folding_always_emits_whole_frames() {
-    let dir = tempfile::tempdir().unwrap();
-    for (src_w, dst_w) in [(2u16, 6u16), (6, 2), (1, 4), (6, 1), (2, 12)] {
-        let path = dir.path().join(format!("align_{src_w}_{dst_w}.wav"));
-        let dst = ChannelLayout::from(dst_w);
-        let mut sink =
-            WavOut::create(&path, 48_000.0, dst, BitDepth::Float32).expect("sink should open");
-
-        const FRAMES: usize = 7; // odd, so a stride slip cannot alias
-        let src = vec![0.25f32; FRAMES * src_w as usize];
-        sink.write_folding(&src, ChannelLayout::from(src_w));
-        sink.finalize().unwrap();
-
-        let reader = hound::WavReader::open(&path).unwrap();
-        assert_eq!(reader.spec().channels, dst_w);
-        assert_eq!(
-            reader.len() as usize,
-            FRAMES * dst_w as usize,
-            "{src_w}ch → {dst_w}ch must write whole frames"
-        );
-    }
-}
-
 /// A 6-channel sink must write SIX samples per frame, matching the header it
 /// declared. If the header takes the layout width while `write` emits two,
 /// a reader interleave-misaligns and the channels rotate by `2 mod 6` every
@@ -193,38 +74,6 @@ fn six_channel_sink_writes_six_samples_per_frame() {
         128 * 6,
         "128 frames of 6 channels must write 768 samples, not 256"
     );
-    let _ = std::fs::remove_file(&path);
-}
-
-/// A stereo source folded into a wider declared width produces a well-formed
-/// file: it zero-fills the channels it cannot supply rather than emitting
-/// short frames, and never synthesises an upmix.
-#[test]
-fn stereo_write_into_a_wide_sink_stays_frame_aligned() {
-    let dir = std::env::temp_dir();
-    let path = dir.join("tutti_wav_out_stereo_into_quad.wav");
-    let _ = std::fs::remove_file(&path);
-
-    let mut sink =
-        WavOut::create(&path, 48_000.0, 4u16, BitDepth::Float32).expect("create 4ch sink");
-    let frames: Vec<f32> = std::iter::repeat_n([0.25f32, -0.25], 16)
-        .flatten()
-        .collect();
-    sink.write_folding(&frames, ChannelLayout::STEREO);
-    AudioOut::finalize(sink).expect("finalize");
-
-    let mut reader = hound::WavReader::open(&path).expect("reopen");
-    assert_eq!(reader.spec().channels, 4);
-    assert_eq!(
-        reader.len() as usize,
-        16 * 4,
-        "must be a whole number of frames"
-    );
-    let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
-    assert!((samples[0] - 0.25).abs() < 1e-6);
-    assert!((samples[1] + 0.25).abs() < 1e-6);
-    assert_eq!(samples[2], 0.0, "unsupplied channels are silent");
-    assert_eq!(samples[3], 0.0);
     let _ = std::fs::remove_file(&path);
 }
 
@@ -470,54 +319,46 @@ fn a_plain_header_is_left_alone() {
 /// The write that would pass the frame limit stops the sink; `finalize`
 /// reports a typed [`DataLimitExceeded`] and the file holds exactly the
 /// frames under the limit, with correct header sizes and mask. Later writes
-/// are ignored, and a folded write is limited the same way.
+/// are ignored.
 ///
 /// The limit is lowered through `with_max_frames_for_test`; the real one,
 /// `wav::max_data_frames`, is pinned in `tutti-types`.
 ///
 /// Mutation: changing `>=` to `>` in `begin_frame` writes four frames and
 /// fails the length assertion; deleting the `begin_frame` call in
-/// `write_interleaved` writes all eight and fails it too; deleting the one
-/// in `write_folding` fails the folded half.
+/// `write_interleaved` writes all eight and fails it too.
 #[test]
 fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();
-    for folded in [false, true] {
-        let path = dir.path().join(format!("limit_{folded}.wav"));
-        let mut sink = WavOut::create(&path, 48_000.0, 6u16, BitDepth::Int24)
-            .unwrap()
-            .with_max_frames_for_test(3);
-        // Eight frames, in two writes, the limit falling in the first.
-        let block: Vec<f32> = (0..5 * 6).map(|i| i as f32 * 0.001).collect();
-        if folded {
-            sink.write_folding(&block, ChannelLayout::from(6u16));
-            sink.write_folding(&block[..3 * 6], ChannelLayout::from(6u16));
-        } else {
-            sink.write_interleaved(&block);
-            sink.write_interleaved(&block[..3 * 6]);
-        }
-        assert!(sink.first_error.is_some());
+    let path = dir.path().join("limit.wav");
+    let mut sink = WavOut::create(&path, 48_000.0, 6u16, BitDepth::Int24)
+        .unwrap()
+        .with_max_frames_for_test(3);
+    // Eight frames, in two writes, the limit falling in the first.
+    let block: Vec<f32> = (0..5 * 6).map(|i| i as f32 * 0.001).collect();
+    sink.write_interleaved(&block);
+    sink.write_interleaved(&block[..3 * 6]);
+    assert!(sink.first_error.is_some());
 
-        let err = sink.finalize().expect_err("the limit must be reported");
-        let limit = err
-            .get_ref()
-            .and_then(|e| e.downcast_ref::<DataLimitExceeded>())
-            .expect("the typed error rides out of finalize");
-        assert_eq!(limit.limit_frames, 3);
+    let err = sink.finalize().expect_err("the limit must be reported");
+    let limit = err
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<DataLimitExceeded>())
+        .expect("the typed error rides out of finalize");
+    assert_eq!(limit.limit_frames, 3);
 
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(
-            u32::from_le_bytes(bytes[64..68].try_into().unwrap()),
-            3 * 6 * 3,
-            "data chunk holds three whole frames"
-        );
-        assert_eq!(bytes.len(), 68 + 3 * 6 * 3);
-        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x60F);
-        let mut reader = hound::WavReader::open(&path).unwrap();
-        assert_eq!(reader.len(), 18);
-        let first: i32 = reader.samples::<i32>().next().unwrap().unwrap();
-        assert_eq!(first, 0, "the prefix is the start of the take");
-    }
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(
+        u32::from_le_bytes(bytes[64..68].try_into().unwrap()),
+        3 * 6 * 3,
+        "data chunk holds three whole frames"
+    );
+    assert_eq!(bytes.len(), 68 + 3 * 6 * 3);
+    assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 0x60F);
+    let mut reader = hound::WavReader::open(&path).unwrap();
+    assert_eq!(reader.len(), 18);
+    let first: i32 = reader.samples::<i32>().next().unwrap().unwrap();
+    assert_eq!(first, 0, "the prefix is the start of the take");
 }
 
 /// A take that ends exactly at the limit is not an error.

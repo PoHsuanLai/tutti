@@ -1,4 +1,5 @@
 use super::*;
+use crate::FormatWriter;
 use crate::test_sink::Full;
 use std::io::Cursor;
 use tutti_types::{ChannelTopology, SampleRate};
@@ -20,7 +21,7 @@ fn ramp(channels: u16, frames: usize) -> Vec<f32> {
 }
 
 fn write_all(spec: &Spec, samples: &[f32]) -> Vec<u8> {
-    let mut w = Writer::create(spec, wav_pcm(spec), Cursor::new(Vec::new())).unwrap();
+    let mut w = WavWriter::create(spec, wav_pcm(spec), Cursor::new(Vec::new())).unwrap();
     w.write(Interleaved::new(samples, spec.layout)).unwrap();
     w.finish().unwrap().into_inner()
 }
@@ -167,9 +168,8 @@ fn a_topology_sets_the_mask_and_must_match_the_width() {
         ..spec(2, Pcm::Int24)
     };
     let mut sink = Cursor::new(Vec::new());
-    let err = Writer::create(&wrong, Pcm::Int24, &mut sink)
-        .err()
-        .expect("a quad topology is not stereo");
+    let err = WavWriter::create(&wrong, Pcm::Int24, &mut sink)
+        .expect_err("a quad topology is not stereo");
     assert!(
         matches!(err, Error::Spec(SpecError::TopologyWidth { .. })),
         "{err}"
@@ -189,7 +189,7 @@ fn a_zero_rate_is_refused() {
             rate: SampleRate(rate),
             ..spec(2, Pcm::Int16)
         };
-        let err = Writer::create(&s, Pcm::Int16, Cursor::new(Vec::new()))
+        let err = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new()))
             .err()
             .unwrap_or_else(|| panic!("{rate} Hz was accepted"));
         assert!(
@@ -210,7 +210,7 @@ fn a_zero_rate_is_refused() {
 #[test]
 fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
     let s = spec(2, Pcm::Int16);
-    let mut w = Writer::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
+    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
     w.limit_frames(5);
     let block = ramp(2, 3);
     w.write(Interleaved::new(&block, s.layout)).unwrap();
@@ -225,7 +225,7 @@ fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
     );
 
     // The block that crosses it is written up to the limit.
-    let mut w = Writer::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
+    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
     w.limit_frames(5);
     let eight = ramp(2, 8);
     let err = w
@@ -252,7 +252,7 @@ fn the_limit_stops_at_a_whole_frame_and_a_take_ending_on_it_is_clean() {
 #[test]
 fn the_limit_only_comes_down() {
     let s = spec(2, Pcm::Int16);
-    let mut w = Writer::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
+    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
     let real = w.max_frames;
     w.limit_frames(u64::MAX);
     assert_eq!(w.max_frames, real);
@@ -293,7 +293,7 @@ fn the_frame_limit_fits_both_32_bit_sizes() {
 #[test]
 fn a_trailing_partial_frame_is_not_written() {
     let s = spec(2, Pcm::Int16);
-    let mut w = Writer::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
+    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
     w.write(Interleaved::new(&[0.5, 0.5, 0.5], s.layout))
         .unwrap();
     let bytes = w.finish().unwrap().into_inner();
@@ -314,7 +314,7 @@ fn a_trailing_partial_frame_is_not_written() {
 #[test]
 fn a_full_disk_mid_take_fails_the_write_that_hit_it() {
     let s = spec(2, Pcm::Int16);
-    let mut w = Writer::create(&s, Pcm::Int16, Full::holding(44 + 6 * 4)).unwrap();
+    let mut w = WavWriter::create(&s, Pcm::Int16, Full::holding(44 + 6 * 4)).unwrap();
     w.write(Interleaved::new(&ramp(2, 4), s.layout)).unwrap();
     let err = w
         .write(Interleaved::new(&ramp(2, 6), s.layout))

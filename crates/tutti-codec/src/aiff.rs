@@ -12,19 +12,32 @@
 use crate::error::{Codec, Error, Result, SpecError};
 use crate::pcm::{Pcm, f32_to_i16, f32_to_i24};
 use crate::spec::Spec;
+use crate::writer::FormatWriter;
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
 use std::io::{Seek, Write};
 use tutti_types::Interleaved;
 
-pub(crate) struct Writer<W: Write + Seek> {
+/// Writes an AIFF (or AIFF-C) file through the [`FormatWriter`] contract.
+pub struct AiffWriter<W: Write + Seek> {
     writer: AifcWriter<W>,
     pcm: Pcm,
     ints: Vec<i32>,
     shorts: Vec<i16>,
 }
 
-impl<W: Write + Seek> Writer<W> {
-    pub(crate) fn create(spec: &Spec, pcm: Pcm, sink: W) -> Result<Self> {
+impl<W: Write + Seek> std::fmt::Debug for AiffWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiffWriter").finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Seek> AiffWriter<W> {
+    /// Starts the file in `sink`, writing its header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Encoder::create`](crate::Encoder::create).
+    pub fn create(spec: &Spec, pcm: Pcm, sink: W) -> Result<Self> {
         spec.header_rate()?;
         let channels = spec.channels()?;
         let info = AifcWriteInfo {
@@ -57,8 +70,12 @@ impl<W: Write + Seek> Writer<W> {
             shorts: Vec::new(),
         })
     }
+}
 
-    pub(crate) fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+impl<W: Write + Seek> FormatWriter for AiffWriter<W> {
+    type Sink = W;
+
+    fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         // `aifc` takes an interleaved sample run, which is the shape the block
         // already has.
         let buf = block.samples();
@@ -78,7 +95,7 @@ impl<W: Write + Seek> Writer<W> {
         .map_err(|e| Error::encoding(Codec::Aiff, format!("write failed: {e:?}")))
     }
 
-    pub(crate) fn finish(mut self) -> Result<W> {
+    fn finish(mut self) -> Result<Self::Sink> {
         self.writer
             .finalize()
             .map_err(|e| Error::encoding(Codec::Aiff, format!("finalization failed: {e:?}")))?;

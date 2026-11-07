@@ -5,12 +5,15 @@ use crate::error::{Error, Result};
 use crate::format::Format;
 use crate::spec::Spec;
 use crate::staged::Staged;
+#[cfg(codec)]
+use crate::writer::FormatWriter;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use tutti_types::{ChannelLayout, Interleaved};
 
-/// Writes blocks of audio as one file of a [`Format`].
+/// Writes blocks of audio as one file of a [`Format`]: the [`FormatWriter`] of
+/// whichever format the [`Spec`] names, behind one type.
 ///
 /// An encoder takes what it is given: the pipeline that feeds it pulls,
 /// resamples and dithers, and hands over blocks already at the [`Spec`]'s rate
@@ -60,13 +63,13 @@ impl<W: Write + Seek + Send + 'static> std::fmt::Debug for Encoder<W> {
 
 enum Inner<W: Write + Seek + Send + 'static> {
     #[cfg(feature = "wav")]
-    Wav(crate::wav::Writer<W>),
+    Wav(crate::WavWriter<W>),
     #[cfg(feature = "aiff")]
-    Aiff(Box<crate::aiff::Writer<W>>),
+    Aiff(Box<crate::AiffWriter<W>>),
     #[cfg(feature = "flac")]
-    Flac(Box<crate::flac::Writer<W>>),
+    Flac(Box<crate::FlacWriter<W>>),
     #[cfg(feature = "vorbis")]
-    Vorbis(Box<crate::vorbis::Writer<W>>),
+    Vorbis(Box<crate::VorbisWriter<W>>),
     // No format feature: `Format` has no value, so neither has this.
     #[cfg(not(codec))]
     Never(std::convert::Infallible, std::marker::PhantomData<W>),
@@ -77,19 +80,19 @@ impl<W: Write + Seek + Send + 'static> Inner<W> {
     fn open(spec: &Spec, sink: W) -> Result<Self> {
         match spec.format {
             #[cfg(feature = "wav")]
-            Format::Wav(pcm) => Ok(Self::Wav(crate::wav::Writer::create(spec, pcm, sink)?)),
+            Format::Wav(pcm) => Ok(Self::Wav(crate::WavWriter::create(spec, pcm, sink)?)),
             #[cfg(feature = "aiff")]
-            Format::Aiff(pcm) => Ok(Self::Aiff(Box::new(crate::aiff::Writer::create(
+            Format::Aiff(pcm) => Ok(Self::Aiff(Box::new(crate::AiffWriter::create(
                 spec, pcm, sink,
             )?))),
             #[cfg(feature = "flac")]
-            Format::Flac { depth, level } => Ok(Self::Flac(Box::new(crate::flac::Writer::create(
+            Format::Flac { depth, level } => Ok(Self::Flac(Box::new(crate::FlacWriter::create(
                 spec, depth, level, sink,
             )?))),
             #[cfg(feature = "vorbis")]
-            Format::Vorbis { quality } => Ok(Self::Vorbis(Box::new(
-                crate::vorbis::Writer::create(spec, quality, sink)?,
-            ))),
+            Format::Vorbis { quality } => Ok(Self::Vorbis(Box::new(crate::VorbisWriter::create(
+                spec, quality, sink,
+            )?))),
         }
     }
 }
@@ -229,5 +232,5 @@ impl Encoder<BufWriter<File>> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, codec))]
 mod tests;

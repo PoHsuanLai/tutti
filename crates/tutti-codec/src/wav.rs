@@ -21,6 +21,7 @@ mod mask;
 use crate::error::{Error, Result, SpecError};
 use crate::pcm::{Pcm, Sample};
 use crate::spec::Spec;
+use crate::writer::FormatWriter;
 use mask::{channel_mask, default_channel_mask};
 use std::io::{Seek, SeekFrom, Write};
 use tutti_types::{ChannelLayout, Interleaved};
@@ -109,8 +110,8 @@ impl Header {
     }
 }
 
-/// A WAV file being written.
-pub(crate) struct Writer<W> {
+/// Writes a WAV file through the [`FormatWriter`] contract.
+pub struct WavWriter<W> {
     sink: W,
     pcm: Pcm,
     layout: ChannelLayout,
@@ -123,8 +124,19 @@ pub(crate) struct Writer<W> {
     bytes: Vec<u8>,
 }
 
-impl<W: Write + Seek> Writer<W> {
-    pub(crate) fn create(spec: &Spec, pcm: Pcm, mut sink: W) -> Result<Self> {
+impl<W> std::fmt::Debug for WavWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WavWriter").finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Seek> WavWriter<W> {
+    /// Starts the file in `sink`, writing its header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Encoder::create`](crate::Encoder::create).
+    pub fn create(spec: &Spec, pcm: Pcm, mut sink: W) -> Result<Self> {
         let rate = spec.header_rate()?.get();
         let mask = match &spec.topology {
             Some(t) if t.layout() != spec.layout => {
@@ -149,13 +161,17 @@ impl<W: Write + Seek> Writer<W> {
             bytes: Vec::new(),
         })
     }
+}
+
+impl<W: Write + Seek> FormatWriter for WavWriter<W> {
+    type Sink = W;
 
     /// Lowers the frame limit; it never raises it.
-    pub(crate) fn limit_frames(&mut self, frames: u64) {
+    fn limit_frames(&mut self, frames: u64) {
         self.max_frames = self.max_frames.min(frames);
     }
 
-    pub(crate) fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+    fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         let room = self.max_frames - self.frames;
         let fits = (block.len() as u64).min(room) as usize;
         let samples = &block.samples()[..fits * block.stride()];
@@ -179,7 +195,7 @@ impl<W: Write + Seek> Writer<W> {
 
     /// Back-patches the RIFF and `data` sizes, then flushes and returns the
     /// sink, positioned at the end of the file.
-    pub(crate) fn finish(mut self) -> Result<W> {
+    fn finish(mut self) -> Result<Self::Sink> {
         let data = self.frames * frame_bytes(self.layout, self.pcm);
         // Both fit a `u32`: `max_frames` keeps the data under `MAX_DATA_BYTES`.
         let data = data as u32;

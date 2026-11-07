@@ -18,6 +18,7 @@ impl Full {
         }
     }
 
+    #[cfg_attr(not(feature = "wav"), allow(dead_code))]
     pub(crate) fn bytes(&self) -> &[u8] {
         self.inner.get_ref()
     }

@@ -6,6 +6,7 @@ use tutti_types::SampleRate;
 
 /// Every format this build writes, at 16 bits where it has a width, with the
 /// name its file would carry.
+#[allow(clippy::vec_init_then_push)]
 fn formats() -> Vec<(&'static str, Format)> {
     #[allow(unused_mut)]
     let mut all: Vec<(&'static str, Format)> = Vec::new();
@@ -40,7 +41,7 @@ fn spec(format: Format, channels: u16) -> Spec {
 fn saw(channels: u16, frames: usize) -> Vec<f32> {
     (0..frames * usize::from(channels))
         .map(|i| {
-            let noise = (i as u64 * i as u64 * 2_654_435_761 >> 11) % 32_768;
+            let noise = ((i as u64 * i as u64 * 2_654_435_761) >> 11) % 32_768;
             (i % 128) as f32 / 128.0 - 0.5 + noise as f32 / 32_768.0 / 4.0
         })
         .collect()

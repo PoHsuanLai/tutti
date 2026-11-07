@@ -7,6 +7,8 @@
 
 #[cfg(feature = "aiff")]
 mod aiff;
+#[cfg(all(test, codec))]
+mod contract;
 mod encoder;
 mod error;
 #[cfg(feature = "flac")]
@@ -21,9 +23,19 @@ mod test_sink;
 mod vorbis;
 #[cfg(feature = "wav")]
 mod wav;
+mod writer;
 
+#[cfg(feature = "aiff")]
+pub use aiff::AiffWriter;
 pub use encoder::Encoder;
 pub use error::{Codec, Error, Result, SpecError};
+#[cfg(feature = "flac")]
+pub use flac::FlacWriter;
 pub use format::{FlacLevel, Format, Quality, QualityOutOfRange};
 pub use pcm::{IntDepth, Pcm, Sample};
 pub use spec::Spec;
+#[cfg(feature = "vorbis")]
+pub use vorbis::VorbisWriter;
+#[cfg(feature = "wav")]
+pub use wav::WavWriter;
+pub use writer::FormatWriter;

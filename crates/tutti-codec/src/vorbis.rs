@@ -21,6 +21,7 @@
 use crate::error::{Codec, Error, Result, SpecError};
 use crate::format::Quality;
 use crate::spec::Spec;
+use crate::writer::FormatWriter;
 use std::io::{Seek, Write};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::mpsc;
@@ -31,7 +32,8 @@ use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoder, VorbisEncoderBui
 /// Blocks in flight between the caller and the encoder thread.
 const QUEUE: usize = 4;
 
-pub(crate) struct Writer<W> {
+/// Writes an Ogg Vorbis file through the [`FormatWriter`] contract.
+pub struct VorbisWriter<W> {
     /// Closed to end the thread.
     jobs: Option<mpsc::SyncSender<Vec<f32>>>,
     /// Block buffers back from the thread, for reuse.
@@ -39,8 +41,19 @@ pub(crate) struct Writer<W> {
     thread: Option<JoinHandle<Result<W>>>,
 }
 
-impl<W: Write + Seek + Send + 'static> Writer<W> {
-    pub(crate) fn create(spec: &Spec, quality: Quality, sink: W) -> Result<Self> {
+impl<W> std::fmt::Debug for VorbisWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VorbisWriter").finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Seek + Send + 'static> VorbisWriter<W> {
+    /// Starts the file in `sink`, writing its header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Encoder::create`](crate::Encoder::create).
+    pub fn create(spec: &Spec, quality: Quality, sink: W) -> Result<Self> {
         let rate = spec.header_rate()?;
         let channels = spec.channels()?;
         let ch = u8::try_from(channels).ok().and_then(NonZeroU8::new).ok_or(
@@ -76,7 +89,19 @@ impl<W: Write + Seek + Send + 'static> Writer<W> {
         }
     }
 
-    pub(crate) fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+    fn join(&mut self) -> Result<W> {
+        self.jobs = None;
+        let thread = self.thread.take().ok_or_else(stopped)?;
+        thread
+            .join()
+            .map_err(|_| Error::encoding(Codec::Ogg, "the encoder thread panicked"))?
+    }
+}
+
+impl<W: Write + Seek + Send + 'static> FormatWriter for VorbisWriter<W> {
+    type Sink = W;
+
+    fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         // An EMPTY block is vorbis's end-of-stream signal, and a resampler
         // legitimately flushes one after its last real block. Passing it
         // through closes the stream early and leaves the encoder writing
@@ -95,17 +120,9 @@ impl<W: Write + Seek + Send + 'static> Writer<W> {
         }
     }
 
-    pub(crate) fn finish(mut self) -> Result<W> {
+    fn finish(mut self) -> Result<Self::Sink> {
         self.jobs = None;
         self.join()
-    }
-
-    fn join(&mut self) -> Result<W> {
-        self.jobs = None;
-        let thread = self.thread.take().ok_or_else(stopped)?;
-        thread
-            .join()
-            .map_err(|_| Error::encoding(Codec::Ogg, "the encoder thread panicked"))?
     }
 }
 

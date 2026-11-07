@@ -20,6 +20,7 @@ use crate::error::{Codec, Error, Result};
 use crate::format::FlacLevel;
 use crate::pcm::IntDepth;
 use crate::spec::Spec;
+use crate::writer::FormatWriter;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::{BitRepr, Frame, Stream, StreamInfo};
 use flacenc::config::Encoder as EncoderConfig;
@@ -39,7 +40,8 @@ use tutti_types::Interleaved;
 const BLOCK_SIZE: usize = 4096;
 
 /// A FLAC file being written.
-pub(crate) struct Writer<W: Write + Seek> {
+/// Writes a FLAC file through the [`FormatWriter`] contract.
+pub struct FlacWriter<W: Write + Seek> {
     sink: W,
     frames: FrameWriter,
     depth: IntDepth,
@@ -48,13 +50,19 @@ pub(crate) struct Writer<W: Write + Seek> {
     channels: usize,
 }
 
-impl<W: Write + Seek> Writer<W> {
-    pub(crate) fn create(
-        spec: &Spec,
-        depth: IntDepth,
-        level: FlacLevel,
-        mut sink: W,
-    ) -> Result<Self> {
+impl<W: Write + Seek> std::fmt::Debug for FlacWriter<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FlacWriter").finish_non_exhaustive()
+    }
+}
+
+impl<W: Write + Seek> FlacWriter<W> {
+    /// Starts the file in `sink`, writing its header.
+    ///
+    /// # Errors
+    ///
+    /// As [`Encoder::create`](crate::Encoder::create).
+    pub fn create(spec: &Spec, depth: IntDepth, level: FlacLevel, mut sink: W) -> Result<Self> {
         let rate = spec.header_rate()?.get() as usize;
         let channels = usize::from(spec.channels()?);
         let bits = usize::from(depth.bits());
@@ -86,8 +94,12 @@ impl<W: Write + Seek> Writer<W> {
             channels,
         })
     }
+}
 
-    pub(crate) fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+impl<W: Write + Seek> FormatWriter for FlacWriter<W> {
+    type Sink = W;
+
+    fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         let mut samples = block.samples();
         while !samples.is_empty() {
             let take = (BLOCK_SIZE * self.channels - self.pcm.len()).min(samples.len());
@@ -103,7 +115,7 @@ impl<W: Write + Seek> Writer<W> {
         Ok(())
     }
 
-    pub(crate) fn finish(mut self) -> Result<W> {
+    fn finish(mut self) -> Result<Self::Sink> {
         if !self.pcm.is_empty() {
             self.frames.block(&self.pcm, &mut self.sink)?;
         }

@@ -571,9 +571,9 @@ fn floor_div_rem(value: BeatDuration, unit: BeatDuration) -> (i64, BeatDuration)
     let rem = value - unit * quotient;
     // Rounding can put the remainder of a position a hair off a boundary on
     // the wrong side of it: `unit` itself (a tiny negative `value`), or just
-    // under zero (a `value / unit` that rounds up to a whole number). Either
-    // way the position belongs to the unit below the boundary, at its last
-    // representable offset.
+    // under zero (a `value / unit` that rounds up to a whole number, which no
+    // searched input does). Either way the position belongs to the unit below
+    // the boundary, at its last representable offset.
     if rem >= unit {
         (quotient as i64, BeatDuration(unit.get().next_down()))
     } else if rem < BeatDuration(0.0) {
@@ -888,9 +888,13 @@ mod tests {
     ///
     /// Mutation (run): drop the `rem >= unit` arm of `floor_div_rem` → the
     /// remainder rounds up to the whole bar, the beat index is 4 and the
-    /// `debug_assert` in `bar_position_within` fires → fails. Mutation (run):
-    /// drop the `rem < 0` arm → `beat_at(3.0 - 1e-16 · k)` style inputs that
-    /// round the quotient up give a negative fraction → fails.
+    /// `debug_assert` in `bar_position_within` fires → fails.
+    ///
+    /// Not covered: the `rem < 0` arm, for a quotient that rounds up to a
+    /// whole number. A search over bar lengths of 3 to 63 beats and the
+    /// doubles just under their multiples found no such input (the lengths are
+    /// powers of two times a count), so dropping the arm survives. It stays
+    /// because `floor_div_rem` takes any span.
     #[test]
     fn a_position_just_before_a_bar_line_stays_in_the_bar_before() {
         let sig = TimeSignature::default();

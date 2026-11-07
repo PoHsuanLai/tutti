@@ -297,6 +297,68 @@ fn process_with_midi_does_not_allocate() {
     });
 }
 
+/// Steady-state `process` with **one packet of every message kind** must not
+/// allocate: each is decoded, converted (or refused) and staged inside the
+/// gate. MIDI 1.0 and 2.0 channel voice, a banked Program Change, the per-note
+/// bend sensitivity, System, Utility, SysEx7, SysEx8, Flex, Stream, and a
+/// packet `decode` cannot frame.
+///
+/// Mutation (run): a `Box::new(0u8)` planted in the host's `from_voice2` →
+/// the gate aborts.
+#[test]
+fn process_with_every_message_kind_does_not_allocate() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+
+    let packets: Vec<MidiEvent> = [
+        [0x0000_0000u32, 0, 0, 0],
+        [0x1000_F800, 0, 0, 0],
+        [0x1000_F280, 0, 0, 0],
+        [0x2091_3C40, 0, 0, 0],
+        [0x2081_3C40, 0, 0, 0],
+        [0x20A1_3C40, 0, 0, 0],
+        [0x20B1_0740, 0, 0, 0],
+        [0x20C1_0500, 0, 0, 0],
+        [0x20D1_4000, 0, 0, 0],
+        [0x20E1_0040, 0, 0, 0],
+        [0x3001_0102, 0x0304_0506, 0, 0],
+        [0x4091_3C00, 0xC000_0000, 0, 0],
+        [0x4081_3C00, 0x4000_0000, 0, 0],
+        [0x40A1_3C00, 0x8000_0000, 0, 0],
+        [0x40B1_0700, 0x8000_0000, 0, 0],
+        [0x40C1_0001, (5 << 24) | (1 << 8) | 2, 0, 0],
+        [0x40D1_0000, 0x8000_0000, 0, 0],
+        [0x40E1_0000, 0x8000_0000, 0, 0],
+        [0x4061_3C00, 0x8000_0000, 0, 0],
+        [0x4001_3C07, 0x8000_0000, 0, 0],
+        [0x4011_3C4A, 0x8000_0000, 0, 0],
+        [0x4021_0007, 24 << 25, 0, 0],
+        [0x4031_0102, 0x8000_0000, 0, 0],
+        [0x40F1_3C01, 0, 0, 0],
+        [0x5000_0000, 0, 0, 0],
+        [0xD010_0000, 0, 0, 0],
+        [0xF000_0000, 0, 0, 0],
+        [0x6000_0000, 0, 0, 0],
+    ]
+    .iter()
+    .map(|words| MidiEvent::from_ump(2, words))
+    .collect();
+
+    let ctx = ClapProcessContext {
+        midi: &packets,
+        transport: Some(&transport),
+        ..Default::default()
+    };
+    drive(&mut inst, &mut bufs, 4, &ctx).expect("warm-up blocks should succeed");
+
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, 128, &ctx).expect("steady-state blocks should succeed");
+    });
+}
+
 // ===========================================================================
 // Process-status transitions.
 //

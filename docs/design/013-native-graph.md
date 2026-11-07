@@ -19,6 +19,10 @@ and `bevy-tutti`'s systems collect their declarations and call it. With
 distinguishes anything: the design's title and this file's name keep it,
 but the code and the crate docs say "the graph" (see
 [Rewrite order, by payoff](#rewrite-order-by-payoff)).
+`tutti-core` has since been split: `Transport`, `TransportClock` and the clocks
+are `tutti-transport`'s, the meters `tutti-metering`'s, `Engine` `tutti-engine`'s,
+and `MAX_ROOT_CHANNELS` `tutti-graph`'s. Where the record below says
+`tutti-core`, it means the crate as it was then.
 The work that does not need the graph is in too: the misreported-latency
 fixes (#3), shrinking the surface (#14, see
 [below](#shrink-the-surface-no-behaviour-change)), the re-exports (#6),
@@ -750,7 +754,7 @@ that the running plan holds the edit.
   (they first ran through the deleted `Legacy` adapter): the
   three misreported latencies were already fixed on main, and the rows now
   hold them.
-- **Engine level** (`tutti-core`, `tests/graph_contract.rs`): through
+- **Engine level** (`tutti-engine`, `tests/graph_contract.rs`): through
   `Engine::with_graph`, a transport started by `MotionFsm::schedule(At::Frame)`
   mid-block and notes at `At::Beat` 0, 0.001 and ½ into a direct and a
   PDC'd `Pulse` land on their frames and leave the engine together, under a
@@ -1166,7 +1170,7 @@ Seven gaps had to close before the flip:
    clamped. The reference interpreter reads latency from the spec, as the
    compiler does.
 5. **`TransportClock` cannot sit inside a graph engine**, yet ClickNode and
-   hosts read its `BEAT_PORTS`. `EnvClock` (tutti-core,
+   hosts read its `BEAT_PORTS`. `EnvClock` (tutti-transport,
    beside `TransportClock`) is a native `Node` that emits the same
    `BEAT_PORTS` samples from each block's `Env`: per segment, the host's
    beat stepped frame by frame with the clock's own arithmetic
@@ -1354,7 +1358,7 @@ nothing to move):
 | `VbapPannerNode` | tutti-spatial | azimuth, elevation, spread, width (the inner panner holds none; the node passes them in per block) | detaches all | yes | `vbap` |
 | `HrtfBinauralNode` | tutti-spatial | azimuth, elevation, blend | detaches all | yes | `hrtf` |
 | `ClickNode` | tutti-nodes | `Arc<ClickSettings>` (volume, mode, meter); the live transport's play, count-in and record flags | fresh settings at the current values; flags frozen | yes | `click::…::isolate_snapshots_settings_and_session_flags` |
-| `TransportClock` | tutti-core | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
+| `TransportClock` | tutti-transport | tempo, pause, seek, loop, writeback, steady time | `ClockLinks::severed`: tempo snapshotted, a fork always rolls | yes | `clock::…::isolate_snapshots_the_tempo` |
 | `MemorySource` | tutti-sampler | gain; the live timeline (re-pointed by `rebind_offline`) | detaches gain | yes | `isolate_snapshots_gain` |
 | `stretch::Unit` | tutti-sampler | the vocoder bank (stretch and pitch cells are private per clone) | fresh bank | yes | `isolate_snapshots_stretch_and_pitch` |
 | `VoiceNode` | tutti-sampler | command channel, cursor, its voice and stretch | severs all | as its voice | — (controls arrive as commands; `a_render_clone_steals_no_commands`) |
@@ -1559,7 +1563,7 @@ re-rated. `RenderGraph::fork` turns `ForkError::NotForkable { key }` into
 `RenderGraph::reported_latency` / `reported_tail` answer for either
 backend: the graph's from `Plan::total_latency` and `graph_tail` over its
 topology, and they go into `RenderConfig` as before, so trim and tail are
-one code path. Glue in tutti-core: `RenderClock` gained a **required**
+one code path. Glue in tutti-transport: `RenderClock` gained a **required**
 `graph_block` (a moving clock that defaulted to "stopped at 0" would desync
 the graph's `Env` from its clip readers silently) and a provided
 `render_graph` — snapshot, `process_with_changes`, advance — which
@@ -3161,7 +3165,7 @@ dependency, with export as its degenerate case.
 
 **The load meter decides whether render-ahead is worth building.**
 `Engine::process` (and `process_segment`) times each call against its
-block's budget (`frames / sample_rate`) into a `tutti_core::LoadMeter`,
+block's budget (`frames / sample_rate`) into a `tutti_metering::LoadMeter`,
 read through `Engine::load_meter`, `Session::load_meter` and
 `AudioGraphRes::load_meter`: the last block's load, a mean smoothed over
 0.3 s, the peak since the last `take` (`peek` reads without taking), the
@@ -3494,7 +3498,7 @@ Evidence:
 - **Real time.** `tests/rt_no_alloc.rs` runs each of its four executor
   gates on a four-participant pool whose every participant, helpers
   included, runs inside `assert_no_alloc` (which also refuses frees);
-  `tutti-core`'s `rt_no_alloc_engine` does the same through `Engine` on a
+  `tutti-engine`'s `rt_no_alloc_engine` does the same through `Engine` on a
   real `WorkerPool`, including blocks that wake parked helpers; `alloc_budget`
   bounds what the parallel state costs per plan on the control side. The
   helpers' idle loop between jobs is outside the gates (it touches atomics
@@ -3768,7 +3772,7 @@ Decisions:
    is clearly right; the plugin crate's automation path is under separate
    review.
 
-   Evidence: each crate's `tests/cost_classes.rs` (tutti-core,
+   Evidence: each crate's `tests/cost_classes.rs` (tutti-nodes,
    tutti-sampler, tutti-polysynth, tutti-spatial, tutti-midi-runtime)
    builds a dozen or more of its nodes as siblings beside two `Heavy`
    ones, at a block short enough for a `Moderate` stereo node to fall
@@ -4601,7 +4605,7 @@ all three into fresh `Vec`s to keep only the restart flags.
   `the_caller_yields_after_the_pools_budget` and
   `the_close_yields_after_the_gates_budget` give an hour's budget and step
   the clock by the default per read, so a wait that used the default
-  instead of its pool's gives way early; `tutti-core`'s
+  instead of its pool's gives way early; `tutti-graph`'s
   `the_in_job_waits_are_the_builders`; and `tests/parallel.rs`'s
   `the_executor_waits_by_its_pools_budget`, where a helper on a pool with
   an hour's budget enters while the caller runs a 50 ms task and must stay
@@ -4866,7 +4870,7 @@ vocoder retirement channel for voices the pool removes.
   `Env::transport_at` of each chunk's first frame, plus the meter, onto the
   ABI snapshot. No `Arc<dyn Timeline>`, no `BeatCursor`, no rebind for a fork:
   an offline fork's `Env` is the render's. `tutti_graph::Transport` gained a
-  `recording` flag (additive; tutti-core's engine sets it) because the ABIs
+  `recording` flag (additive; tutti-engine's engine sets it) because the ABIs
   carry it. The continuous-sample counter is the node's own `SteadyTime`
   (frames rendered; `Env`'s frame restarts at a re-prepare). Project-time
   samples, the host clock and the MIDI clock: [below](#plugin-transport-project-time-host-clock-midi-clock-editor-scale).
@@ -4974,8 +4978,8 @@ no node holds a `Timeline`. What that left behind is gone:
   timeline each `rebind_offline` read; no `ForkSource` read it after those
   went (the plugin and VST2 forks and the disk voice match only the
   variant). `ForkMode` lost its lifetime.
-- **`Timeline`, `OfflineClock` and `OfflineTransport` are tutti-core's
-  again** (`tutti_core::transport`): tutti-graph no longer names them, so
+- **`Timeline`, `OfflineClock` and `OfflineTransport` are tutti-transport's
+  again** (`tutti_transport`): tutti-graph no longer names them, so
   tutti-types does not hold them. `OfflineTransport` is what an export hands
   its `PrepareEdit` (`PreparedGraph::ctx`), still built only from an
   `OfflineClock`.

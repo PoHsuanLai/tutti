@@ -48,7 +48,6 @@
 
 use std::sync::Arc;
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock,
     GRAPH_MAX_BLOCK, Normalize, RenderConfig, RenderGraph, Rendered, Resample,
@@ -58,6 +57,7 @@ use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
 };
 use tutti_nodes::testing::{Const, Osc, assert_golden};
+use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Amplitude, Beat, Bpm, Hz, SampleRate};
 use tutti_types::{Db, Samples};
 

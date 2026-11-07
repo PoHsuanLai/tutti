@@ -1046,7 +1046,7 @@ fn controller_only_ui_state_survives_a_save_and_restore() {
 
 /// The host must report the plugin's latency, so an embedder can compensate.
 ///
-/// Delay compensation itself lives in `tutti-core` (`LatencyGraph` /
+/// Delay compensation itself lives in `tutti-graph` (`LatencyGraph` /
 /// `Compensation` / `PdcDelay` — explicit and opt-in over the whole graph), not
 /// in this crate. What *this* crate owns is the number PDC is fed, so that is
 /// what this asserts: the reported figure equals what the plugin declares, and

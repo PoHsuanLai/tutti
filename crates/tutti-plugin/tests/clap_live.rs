@@ -1,5 +1,5 @@
 //! **A live plugin keeps in step with the device.** The reference CLAP
-//! plugin in a real `plugin-server`, rendered by tutti-core's `Engine` exactly
+//! plugin in a real `plugin-server`, rendered by tutti-engine's `Engine` exactly
 //! as a device drives it — one call per callback, the callbacks paced to real
 //! time — at 480-, 1024- and 441-frame device quanta.
 //!
@@ -27,9 +27,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tutti_core::{Engine, Transport};
+use tutti_engine::Engine;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_plugin::server::RING_SLOTS;
+use tutti_transport::Transport;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut};
 use tutti_types::{NodeKey, SampleRate, Samples, Tail};

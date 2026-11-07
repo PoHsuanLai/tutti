@@ -59,7 +59,7 @@ pub fn collect_graph(
 /// compensation of the plan it sent.
 ///
 /// The commit accepts a changed global output arity, so a master layout change
-/// may alter it; `tutti_core`'s `Engine::process_segment` states the
+/// may alter it; `tutti_engine`'s `Engine::process_segment` states the
 /// RT-buffer contract this relies on.
 ///
 /// **The figures go out with every plan**, whether or not the host added
@@ -114,7 +114,7 @@ mod tests {
     use std::sync::Arc;
 
     use bevy_app::App;
-    use tutti_core::MeterSlot;
+    use tutti_transport::MeterSlot;
     use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     use crate::graph::AudioGraphRes;

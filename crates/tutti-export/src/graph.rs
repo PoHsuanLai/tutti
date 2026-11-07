@@ -74,8 +74,8 @@ pub const GRAPH_MAX_BLOCK: Samples = Samples(1024);
 /// A clip reader reads the transport at any frame of its block from its
 /// `Env`.
 ///
-/// [`RenderClock::graph_block`]: tutti_core::transport::RenderClock::graph_block
-/// [`RenderClock::render_graph`]: tutti_core::transport::RenderClock::render_graph
+/// [`RenderClock::graph_block`]: tutti_transport::RenderClock::graph_block
+/// [`RenderClock::render_graph`]: tutti_transport::RenderClock::render_graph
 ///
 /// # Latency and tail
 ///

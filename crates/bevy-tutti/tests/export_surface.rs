@@ -412,7 +412,7 @@ fn a_prepare_hook_reaches_the_graph_that_gets_rendered() {
 /// a 120 BPM playhead that nothing advances.
 #[test]
 fn the_prepare_hook_sees_the_callers_timeline() {
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, node) = app_with_engine_on();
 
@@ -443,7 +443,7 @@ fn the_prepare_hook_sees_the_callers_timeline() {
             // `--all-features`, where it then reads as redundant — so it is
             // allowed rather than removed; deleting it breaks the default build.
             #[allow(unused_imports)]
-            use tutti_core::Timeline;
+            use tutti_transport::Timeline;
             SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
             SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
         }
@@ -476,7 +476,7 @@ fn the_prepare_hook_sees_the_callers_timeline() {
 /// request's → the hook sees 120 BPM, not 90.
 #[test]
 fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, _node) = app_with_engine_on();
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -497,7 +497,7 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
         let hook = Arc::clone(&hook);
         move |prepared: PreparedGraph<'_>| {
             #[allow(unused_imports)]
-            use tutti_core::Timeline;
+            use tutti_transport::Timeline;
             *hook.lock().unwrap() = Some(prepared.ctx.tempo().get().round() as usize);
         }
     });

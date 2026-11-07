@@ -134,7 +134,7 @@ unchanged, so it never reaches their state.
 The `tutti` crate re-exports this one as `tutti::nodes`; `bevy-tutti`,
 `tutti-spatial`, `tutti-polysynth`, `tutti-export` and `tutti-plugin` build on
 it. It re-exports the unit types (`Hz`, `Db`, `Seconds`, …) and `Param` from
-`tutti-core`.
+`tutti-types`.
 
 ## Features
 

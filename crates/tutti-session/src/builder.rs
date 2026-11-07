@@ -3,9 +3,11 @@
 
 use std::sync::Arc;
 
-use tutti_core::{AudioTap, MAX_ROOT_CHANNELS, MasterMeter, Transport};
+use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::PrerollTable;
+use tutti_metering::{AudioTap, MasterMeter};
 use tutti_nodes::{ClickNode, ClickSettings};
+use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
@@ -239,7 +241,7 @@ impl SessionBuilder {
     fn session(
         &self,
         parts: Parts,
-        engine: Option<tutti_core::Engine>,
+        engine: Option<tutti_engine::Engine>,
         streamer: bool,
     ) -> Result<Session> {
         #[cfg(feature = "sampler")]

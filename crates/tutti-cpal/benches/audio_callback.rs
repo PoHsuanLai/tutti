@@ -18,18 +18,23 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::{AudioTap, Engine};
-use tutti_core::{MasterMeter, Transport};
 use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
+use tutti_metering::AudioTap;
+use tutti_metering::MasterMeter;
 use tutti_nodes::testing::Osc;
+use tutti_transport::Transport;
 use tutti_types::SampleRate;
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, InterleavedMut, NodeKey, Samples};
 
 const SR: f64 = 48_000.0;
 
-fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<tutti_core::TapCons>) {
+fn state(
+    outputs: usize,
+    tap_open: bool,
+) -> (Arc<AudioCallbackState>, Option<tutti_metering::TapCons>) {
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(512)));
     ed.insert(NodeKey(1), "sine", Osc::sine(Hz(440.0)));
     ed.spec_mut().topology.outputs = vec![

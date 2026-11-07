@@ -13,10 +13,10 @@
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use tutti_core::transport::{Timeline, Transport};
 use tutti_nodes::ClickState;
+use tutti_transport::{Timeline, Transport};
 
-/// The live transport. Newtype over tutti-core's [`Transport`] — every method
+/// The live transport. Newtype over tutti-transport's [`Transport`] — every method
 /// below is the engine's, reached through the `Deref`.
 ///
 /// Three fields carry everything:
@@ -27,10 +27,10 @@ use tutti_nodes::ClickState;
 /// - **`.settings`** — values. `set_tempo`, `set_beat`, `set_recording`, and the
 ///   reads beside them.
 /// - **the loop region** — the engine's. Edit it by scheduling a
-///   [`LoopEdit`](tutti_core::transport::LoopEdit) with `motion.schedule(At::NextBlock, ..)`;
+///   [`LoopEdit`](tutti_transport::LoopEdit) with `motion.schedule(At::NextBlock, ..)`;
 ///   it changes whole, at a block boundary or the frame named.
 ///   `motion.loop_region()` reads what the engine last applied, as a
-///   [`LoopRegion`](tutti_core::transport::LoopRegion): the bounds (kept while
+///   [`LoopRegion`](tutti_transport::LoopRegion): the bounds (kept while
 ///   disarmed) and whether looping is armed. A brace mid-drag is the UI's own
 ///   state: [`LoopRange::new`](tutti_types::LoopRange::new) refuses
 ///   an inverted pair, so the engine only ever holds a valid one.
@@ -88,7 +88,7 @@ impl TransportRes {
         Arc::new(self.0.clone())
     }
 
-    /// Returns a [`TransportState`](tutti_core::transport::TransportState)
+    /// Returns a [`TransportState`](tutti_transport::TransportState)
     /// handle: [`timeline`](Self::timeline) plus the
     /// live-session facts a plain timeline has no vocabulary for: whether the
     /// transport is recording, its loop region, and free-running stream time.
@@ -101,7 +101,7 @@ impl TransportRes {
     /// `Timeline`, so an offline render (a `Timeline`-only implementor) cannot
     /// be passed where this is wanted, which is the point: it has no answer for
     /// "am I recording".
-    pub fn transport_state(&self) -> Arc<dyn tutti_core::transport::TransportState> {
+    pub fn transport_state(&self) -> Arc<dyn tutti_transport::TransportState> {
         Arc::new(self.0.clone())
     }
 }

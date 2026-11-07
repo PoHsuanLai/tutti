@@ -12,7 +12,7 @@
 //! than reachable and inert:
 //!
 //! ```no_run
-//! # use tutti_core::ProjectMeter;
+//! # use tutti_transport::ProjectMeter;
 //! # use tutti_plugin::handles::PluginClient;
 //! # fn ex(client: &mut PluginClient, meter: ProjectMeter) {
 //! // `None` for a plugin that declined transport, so the install is not
@@ -77,7 +77,7 @@ impl TransportView<'_> {
     /// Install the project meter the snapshot's signature and bar are read
     /// from: the node's meter follows it (see
     /// [`PluginMeter`](super::PluginMeter)), so a later edit reaches it.
-    pub fn set_meter(&mut self, meter: tutti_core::ProjectMeter) {
+    pub fn set_meter(&mut self, meter: tutti_transport::ProjectMeter) {
         self.0.set_meter(meter);
     }
 

@@ -16,7 +16,7 @@ tutti = { version = "0.0.1", features = ["device", "wav"] }
 
 ## Quick start
 
-Build a graph, hand its executor to an [`Engine`](crate::core::Engine), and
+Build a graph, hand its executor to an [`Engine`](crate::engine::Engine), and
 render a block. No device is needed: this is exactly what the audio callback
 does once per buffer.
 
@@ -64,11 +64,13 @@ instead, turn on `export` and a codec: see `examples/headless_export.rs`.
   edit a live one through its `Editor`. Every change is compiled on the
   control thread and handed to the `Executor` with `commit`, so the audio
   thread never allocates or locks.
-- **The engine** ([`core`](crate::core)): [`Engine`](crate::core::Engine)
+- **The engine** ([`engine`](crate::engine)): [`Engine`](crate::engine::Engine)
   renders the executor once per device buffer, folds its output to the
   device width, and applies transport commands on their frame.
-  [`Transport`](crate::core::Transport) holds tempo, loop and play state;
-  nodes read the playhead per frame from their block's `Env`.
+  [`Transport`](crate::transport::Transport) ([`transport`](crate::transport))
+  holds tempo, loop and play state; nodes read the playhead per frame from
+  their block's `Env`. Level meters and the analysis tap are
+  [`metering`](crate::metering)'s.
 - **The vocabulary** ([`types`](crate::types)): unit newtypes (`Hz`, `Db`,
   `Beat`, `Samples`, …), channel layouts, interleaved buffer views, and the
   real-time primitives the other crates share.
@@ -82,7 +84,9 @@ Most of what a host names is in [`prelude`](crate::prelude).
 
 | module | crate | what it is | feature |
 |---|---|---|---|
-| `tutti::core` | `tutti-core` | the engine: `Engine`, `Transport`, metering, delay compensation | always |
+| `tutti::engine` | `tutti-engine` | the per-block graph render: `Engine` | always |
+| `tutti::transport` | `tutti-transport` | `Transport`, tempo, loop, motion state machine, timed commands, offline timeline | always |
+| `tutti::metering` | `tutti-metering` | `MasterMeter`, `AudioTap`, `LoadMeter` | always |
 | `tutti::types` | `tutti-types` | units, channel layouts, buffer views, RT primitives | always |
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |
@@ -132,7 +136,7 @@ None are on by default.
 Every item is a `pub use` of another crate, and the crate's own test enforces
 it. A convenience constructor or wrapper belongs in the crate that owns the
 thing it wires — device bootstrap in `tutti-cpal`, graph logic in
-`tutti-graph` or `tutti-core` — where both `tutti` and `bevy-tutti` get it.
+`tutti-graph` or `tutti-engine` — where both `tutti` and `bevy-tutti` get it.
 
 ## License
 

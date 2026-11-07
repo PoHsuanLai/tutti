@@ -32,10 +32,10 @@ actionable and "0.9% of the block budget" is. Criterion's `elem/s` divided by
 Cost of `Engine::process` against the number of DSP nodes in the graph, at a
 64-frame block.
 
-The bench moved from `tutti-core` to `tutti-nodes`
+The bench moved from `tutti-engine` to `tutti-nodes`
 when its graph switched from fundsp's `lowpass_hz`/`bell_hz`/`pan` to the
-engine's own `SvfFilterNode`/`EqBandNode`/`BusStripNode` — `tutti-core` cannot
-depend on the crate those live in. **The figures below were recorded on the
+engine's own `SvfFilterNode`/`EqBandNode`/`BusStripNode` — `tutti-engine` has only a
+dev edge to the crate those live in. **The figures below were recorded on the
 fundsp graph** and have not been re-measured since; the "nodes" column now
 counts `SvfFilterNode`s, whose per-node cost is not the same number.
 
@@ -214,7 +214,7 @@ A FLAC export is ~98% encoder and ~2% engine. **Never gate the `encode` group**
 ## What is gated, and what is not
 
 **Gated**, in the ordinary test job:
-`crates/tutti-core/tests/alloc_budget.rs`. Allocation counts and bytes
+`crates/tutti-engine/tests/alloc_budget.rs`. Allocation counts and bytes
 are machine-independent, so a budget on them is a real regression gate that
 survives a shared vCPU.
 

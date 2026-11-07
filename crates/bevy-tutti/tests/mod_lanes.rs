@@ -32,10 +32,10 @@ use bevy_tutti::modulation::{
     Adsr, Automation, AutomationTake, Follower, Lfo, Macro, ModRange, ModRoute, ModSource, Mods,
     ModulationRefused, NoteEnvelope, ParamRef, TuttiModulationPlugin,
 };
-use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
 use tutti_nodes::ReconcileError;
 use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, RecordMode};
+use tutti_transport::Transport;
 use tutti_types::{Amplitude, Beat, BeatDuration, Bpm, Depth, Hz, SampleRate, Seconds, UnitParam};
 
 use common::probe::{Held, ProbeUnit, Pulse};
@@ -259,8 +259,8 @@ fn an_export_is_the_live_render_on_a_native_param() {
         ExportTarget,
     };
     use std::sync::Mutex;
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_export::{AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig};
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, mut side) = app(2);
     app.add_plugins(ExportPlugin);

@@ -19,10 +19,10 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
 // `SessionNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
-use tutti_core::LoopEdit;
-use tutti_core::transport::Transport;
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::LoopEdit;
+use tutti_transport::Transport;
 use tutti_types::{At, Hz, LoopRange, Q};
 
 const SAMPLE_RATE: f64 = 48_000.0;
@@ -57,7 +57,7 @@ fn main() {
 /// Everything transport-shaped goes through `TransportRes`'s `Deref`.
 ///
 /// There is no wrapper for any of this — `TransportRes` is a newtype over
-/// tutti-core's `Transport`, so a host calls the engine's own API. Note every
+/// tutti-transport's `Transport`, so a host calls the engine's own API. Note every
 /// setter takes `&self` (the state is atomics), which is why `Res` suffices and
 /// why `Res<TransportRes>` never triggers Bevy change detection: a host that
 /// wants "did the tempo change this frame" diffs it itself.

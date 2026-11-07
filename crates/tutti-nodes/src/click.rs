@@ -32,12 +32,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use tutti_core::{ProjectMeter, Transport};
 use tutti_graph::{
     Cx, Env, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, Prepare,
     Shape, Status,
 };
 use tutti_rt::Reader;
+use tutti_transport::{ProjectMeter, Transport};
 use tutti_types::AtomicF32;
 use tutti_types::value::{Amplitude, Beat, Hz, Phase, PhaseIncrement, Samples, Seconds};
 use tutti_types::{ChannelLayout, Tail};

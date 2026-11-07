@@ -26,10 +26,11 @@
 
 use std::sync::Arc;
 
-use tutti_core::{Engine, FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport};
+use tutti_engine::Engine;
 use tutti_graph::{CrossfadeCurve, Editor, Fade, Prepare};
 use tutti_io::Wave;
 use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
+use tutti_transport::{FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{
     At, Beat, Cents, ChannelLayout, Frame, InterleavedMut, LoopRange, NodeKey, SampleRate, Samples,

@@ -1,8 +1,8 @@
 use super::*;
 use crate::GRAPH_MAX_BLOCK;
 use crate::control::{Pass, Progress};
-use tutti_core::transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::GraphBuilder;
+use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate};
 

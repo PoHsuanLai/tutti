@@ -332,7 +332,7 @@ mod audio_param {
     use bevy_tutti::modulation::{
         Macro, ModRange, ModRoute, ModSource, ParamRef, TuttiModulationPlugin,
     };
-    use tutti_core::transport::Transport;
+    use tutti_transport::Transport;
     use tutti_types::{Drive, Hz, UnitParam};
     // Only the modulation tests below use these.
     use tutti_nodes::DistortionNode;

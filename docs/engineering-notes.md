@@ -27,7 +27,7 @@ So `--no-default-features` does **not** test this — it drops the codec and mid
 features instead. Name the feature:
 
 ```bash
-cargo check -p tutti-core
+cargo check -p tutti-transport -p tutti-metering -p tutti-engine
 ```
 
 ## The import-path gate
@@ -105,7 +105,9 @@ crates/             everything shipped, directory name = package name
                     #   `unsafe` runtime structure, every loom model, `ArcLend`.
   tutti-graph       # The graph: `Node` contract, Topology->Plan compiler (PDC),
                     #   executor. Design doc 013.
-  tutti-core        # Engine runtime (Engine, Transport, Metering)
+  tutti-transport   # Transport: tempo, loop, motion state machine, timed commands
+  tutti-metering    # MasterMeter, AudioTap, LoadMeter
+  tutti-engine      # Engine: the per-block graph render over a transport
   tutti-cpal        # Device layer: CPAL stream, RT callback, driver lifecycle
   tutti-io          # I/O edge: mic monitor node, WavOut, Recorder, and the file
                     #   side (Wave, FileIn, the symphonia decoder). Device-free,
@@ -461,8 +463,8 @@ param takes nothing. `P` is a packed `UnitAddr` (index in the high byte, the
 plain `{ UnitParam::X as u16 }` and a node with several names the others with
 `{ UnitAddr::new(UnitParam::X, i).to_u16() }` (doc 013, "Param addresses").
 `AudioNode`, the component wrapping a `NodeKey`, is `bevy-tutti`'s; the engine
-and `tutti-session` key a node by `NodeKey`, and `tutti-core` has no `bevy`
-feature.
+and `tutti-session` key a node by `NodeKey`, and `tutti-transport`,
+`tutti-metering` and `tutti-engine` have no `bevy` feature.
 
 The session runs a frame as the phases of `tutti_session::PHASES`, and
 `bevy-tutti` schedules each in a `SessionPhaseSystems(Phase)` set chained
@@ -592,7 +594,7 @@ knowing because the same shapes recur:
   reports a healthy plugin as corrupt. See the bundle rule below.
 
 **One live platform difference remains, and it is not a bug.**
-`tutti-core`'s `render_is_bit_identical_to_the_audionode_era` is gated off MSVC.
+`tutti-nodes`'s `render_is_bit_identical_to_the_audionode_era` is gated off MSVC.
 The digest pins this crate's DSP against a refactor; it cannot pin it across C
 runtimes. Every operation in `generate_click` is one IEEE-754 requires to be
 correctly rounded *except* `sin`, which is libm quality-of-implementation and
@@ -693,8 +695,8 @@ comments and docs, and treat it as a bug when you find it:
   device into `tutti-io` and the offline path.)
   `crates/tutti/tests/no_logic.rs` enforces this by reading `lib.rs`, and
   `scripts/check-canonical-paths.sh` additionally requires every whole-crate
-  re-export there to be aliased (`pub use tutti_core as core`), so
-  `tutti::tutti_core::…` is unspellable.
+  re-export there to be aliased (`pub use tutti_engine as engine`), so
+  `tutti::tutti_engine::…` is unspellable.
 
   `bevy-tutti` does **not** depend on `tutti`, deliberately: it would keep
   its direct edges anyway for their `bevy` features, ending with two edges to

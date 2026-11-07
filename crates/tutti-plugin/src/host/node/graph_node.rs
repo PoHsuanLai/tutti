@@ -80,7 +80,7 @@ impl Node for PluginClient<Bound> {
     /// when a chunk begins, for the frames from the call's first to the
     /// chunk's last, and re-based to the chunk (`PluginChunks`): right
     /// wherever the timeline stands at the call's first frame, which a host
-    /// that moves it once per block (tutti-core's engine,
+    /// that moves it once per block (tutti-engine's engine,
     /// `RenderClock::render_graph`) keeps, in whole blocks as in shorter
     /// passes. The transport itself is read from `Env`.
     /// The cost: a transport command scheduled inside a block reaches those

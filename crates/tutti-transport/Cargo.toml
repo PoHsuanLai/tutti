@@ -1,0 +1,34 @@
+[package]
+name = "tutti-transport"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Playback transport for the Tutti audio engine: tempo, loop, motion state machine, timed commands, offline timeline, project meter"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-transport"
+readme = "README.md"
+publish = false
+keywords = ["audio", "transport", "real-time", "daw"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# `ClockLinks::bare`, for `tutti-engine`'s unit tests.
+test-support = []
+
+[dependencies]
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+# `RenderClock` hands a block's transport to the graph's executor.
+tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
+tutti-rt = { path = "../tutti-rt" }
+
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

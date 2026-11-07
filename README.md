@@ -30,7 +30,7 @@ Every crate sits in one of four tiers, and the arrows only ever point down.
   dsp/       midi/        plugin/         io            export
    │          │             │              │              │
    └──────────┴──────┬──────┴──────────────┴──────────────┘
-                 tutti-core                the graph runtime
+                 tutti-engine              the graph render
                      │
                  tutti-types               the shared vocabulary
 ```
@@ -42,9 +42,9 @@ the dependency-free `arc-lend` crate), the one sanctioned way to hand
 non-scalar state to the audio thread: the audio thread only borrows, so it
 never frees. `tutti-graph` is
 the graph: the `Node` contract, a compiler from a `Topology` to an immutable
-plan (latency compensation included), and the executor. `tutti-core` builds the
-runtime on both: the `Engine` that renders the graph, `Transport`, and
-metering.
+plan (latency compensation included), and the executor. `tutti-engine` builds the
+runtime on both: the `Engine` that renders the graph, over the `Transport` of
+`tutti-transport` and the meters of `tutti-metering`.
 
 **The edges.** `tutti-cpal` is the only path to a sound card. `tutti-io` is the
 live edge — a microphone monitor, a WAV sink, `Recorder`. `tutti-export` is its

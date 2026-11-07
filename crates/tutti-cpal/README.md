@@ -3,7 +3,7 @@
 The CPAL device layer: the seam between Tutti's audio graph and a sound card.
 
 Device enumeration, output stream lifecycle, the real-time callback body, and
-microphone capture. `tutti-core` knows how to render a block; this crate knows
+microphone capture. `tutti-engine` knows how to render a block; this crate knows
 how to open a device, hand it blocks on time, and pull audio back in from a
 microphone. It is the only Tutti crate that links a platform audio API, so a
 headless render, an offline export or a test never pulls one in.
@@ -33,7 +33,9 @@ both to a [`TuttiDriver`] with [`TuttiDriver::new`]:
 ```rust,no_run
 use std::sync::Arc;
 use tutti_types::graph::{OutPort, Source};
-use tutti_core::{AudioTap, Engine, MasterMeter, Transport};
+use tutti_metering::{AudioTap, MasterMeter};
+use tutti_engine::Engine;
+use tutti_transport::Transport;
 use tutti_types::{Hz, NodeKey, Samples};
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
@@ -93,7 +95,7 @@ block. Its buffers are sized once at stream start to [`MAX_FRAMES`] frames; a
 larger callback is clamped and its tail silenced rather than reallocating. Every
 other method runs on the control thread.
 
-This crate does not own the graph (rendering a block is `tutti-core`'s) or
+This crate does not own the graph (rendering a block is `tutti-engine`'s) or
 recording (the pump that drives a mic into a file is `tutti_io::Recorder`,
 which is device-free).
 

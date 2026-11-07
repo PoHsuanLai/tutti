@@ -6,9 +6,9 @@
 
 mod common;
 
-use tutti_core::MotionEvent;
 use tutti_mod::Lfo;
 use tutti_session::{GraphSource, ParamRef, Session};
+use tutti_transport::MotionEvent;
 use tutti_types::{BeatDuration, Depth, ParamAddr, UnitAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 

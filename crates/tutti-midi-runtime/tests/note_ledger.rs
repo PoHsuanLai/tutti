@@ -37,10 +37,10 @@ use std::sync::{Arc, Mutex};
 use tutti_graph::contract::Direct;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkCause, ForkMode,
-    ForkSource, ForkTarget, Forked, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
-    Transport, Unforkable,
+    ForkSource, ForkTarget, Forked, IntoNode, Io, LoopRange, Node, NodeParts, Offset, Prepare,
+    Shape, Status, Transport, Unforkable,
 };
-use tutti_midi_runtime::{MidiClipNode, NoteLedger, TimedMidiEvent};
+use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_midi_types::MidiEvent;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, Latency, NodeKey, SampleRate, Samples};
@@ -80,6 +80,8 @@ struct Tally {
     orphans: usize,
     ons: usize,
     offs: usize,
+    /// Events that are not note messages.
+    others: usize,
     off_frames: Vec<u64>,
 }
 
@@ -130,6 +132,8 @@ impl Node for Sink {
             } else if (w[0] >> 20) & 0xf == 0x9 {
                 t.ons += 1;
                 t.held.insert(key);
+            } else {
+                t.others += 1;
             }
         }
         if self.audio_out {
@@ -808,4 +812,373 @@ fn a_reset_node_forgets_the_notes_it_held() {
     };
     assert_eq!(stop_after(false), 1, "the stop ends the held note");
     assert_eq!(stop_after(true), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Counting a refusal exactly.
+// ---------------------------------------------------------------------------
+
+enum Act {
+    Send(Ump, Option<u32>),
+    Release,
+}
+
+/// Plays `blocks[k]` through a ledger on block `k`, into a port of 8 events
+/// (room for 17 note-offs), every action on the block's first frame.
+struct Probe {
+    ledger: NoteLedger<u32>,
+    blocks: Vec<Vec<Act>>,
+    k: usize,
+}
+
+impl Node for Probe {
+    fn shape(&self) -> Shape {
+        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+            .with_events(0, 1)
+            .with_event_capacity(8)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let Some(first) = cx.env.offset(0) else {
+            return Status::Modified;
+        };
+        let mut sending = self.ledger.block(io.event_out(0), first);
+        for act in self.blocks.get(self.k).into_iter().flatten() {
+            match act {
+                Act::Send(ump, owner) => sending.send(first, *ump, *owner),
+                Act::Release => sending.release_all(first),
+            }
+        }
+        self.k += 1;
+        Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// Fills the probe's port for the rest of the block with 8 controllers and 9
+/// offs of keys the ledger does not know (which pass), the port's 17, then
+/// sends `then`.
+fn filled(then: Vec<Act>) -> Vec<Act> {
+    (0..8)
+        .map(|v| Act::Send(ump_cc(v), None))
+        .chain((100..109).map(|n| Act::Send(ump_off(n), None)))
+        .chain(then)
+        .collect()
+}
+
+/// What a probe's sink heard, and the executor's counts.
+fn probe(capacity: usize, blocks: Vec<Vec<Act>>) -> (Shared, u64, u64) {
+    let n = blocks.len() as u64 + 1;
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    ed.insert(
+        NodeKey(1),
+        "probe",
+        Unforkable(Probe {
+            ledger: NoteLedger::new(capacity),
+            blocks,
+            k: 0,
+        }),
+    );
+    let tally = sink(&mut ed, 2);
+    connect(&mut ed, 1, 2);
+    ed.commit().unwrap();
+    run(&mut exec, 0, n, 64);
+    (tally, exec.dropped_event_count(), exec.lost_event_count())
+}
+
+fn send(n: u32, on: bool, owner: u32) -> Act {
+    Act::Send(if on { ump_on(n) } else { ump_off(n) }, Some(owner))
+}
+
+/// Note 1 holds key 60. In block 1 the port is full and note 2 takes the key:
+/// the off that ends note 1 is refused (counted, 1), note 2 does not start
+/// (withheld, counted, 2). In block 2 the off is paid (given back) and note 3
+/// starts and ends on the key, which note 2's off then finds still marked, so
+/// it is withheld and counted (3). Two events are lost: note 2's on and off.
+///
+/// Mutation (run): `pay` dropping a row that is still marked refused
+/// (`!taken` for `!taken || e.refused`), `forget_if_idle` ignoring `refused`,
+/// and `Sending::on` not marking the key when the old note's off is refused
+/// each make note 2's off go uncounted → 2 dropped, 1 lost → fails.
+#[test]
+fn a_refused_mark_outlives_the_off_that_was_paid_and_the_note_that_used_the_key() {
+    let (tally, dropped, lost) = probe(
+        8,
+        vec![
+            vec![send(60, true, 1)],
+            filled(vec![send(60, true, 2)]),
+            vec![send(60, true, 3), send(60, false, 3), send(60, false, 2)],
+        ],
+    );
+    let t = tally.lock().unwrap();
+    assert_eq!(t.ons, 2, "notes 1 and 3");
+    assert!(t.held.is_empty());
+    assert_eq!((dropped, lost), (3, 2));
+}
+
+/// As above, but note 1's own off arrives in the same full block: refused
+/// again (3), and the same loss as the one owed, so it is given back at
+/// once. Paid in block 2 (given back), note 2's off withheld (4). Lost: 2.
+///
+/// Mutation (run): `owe` without its `recovered()` → lost is 3 → fails.
+#[test]
+fn an_off_refused_twice_is_one_loss() {
+    let (tally, dropped, lost) = probe(
+        8,
+        vec![
+            vec![send(60, true, 1)],
+            filled(vec![send(60, true, 2), send(60, false, 1)]),
+            vec![send(60, false, 2)],
+        ],
+    );
+    assert!(tally.lock().unwrap().held.is_empty());
+    assert_eq!((dropped, lost), (4, 2));
+}
+
+/// A table of one key. Note 2 takes key 60 in a full port (note 1's off owed,
+/// the key marked refused) and a release then finds the port still full: the
+/// row stays for the owed off but loses its mark. Once the off is paid the
+/// row is gone, so a note on another key starts. A row that kept its mark
+/// would fill the table for good.
+///
+/// Mutation (run): `release_all` without `e.refused = false` → note 61 is
+/// withheld, the sink hears 1 note-on → fails.
+#[test]
+fn a_release_clears_the_mark_of_a_row_that_stays_owed() {
+    let (tally, ..) = probe(
+        1,
+        vec![
+            vec![send(60, true, 1)],
+            filled(vec![send(60, true, 2), Act::Release]),
+            vec![send(61, true, 4)],
+        ],
+    );
+    let t = tally.lock().unwrap();
+    assert_eq!(t.ons, 2, "note 1, then note 4 on another key");
+}
+
+/// An untagged source (a relay) has a note-on refused behind a full port.
+/// Its table holds 6 keys, so 6 of the 8 ons leave a refused row and 2 are
+/// withheld. The offs of the 6 find their rows: cleared, swallowed and
+/// counted like a tagged off; the offs of the other 2 have no row and pass.
+/// Six new keys then all start: the table has room again.
+///
+/// Counted: 32 controllers refused, 8 note-ons (6 refused by the port, 2
+/// withheld), 6 offs withheld: 46, none given back.
+///
+/// Mutation (run): the untagged off leaving the refused row (as before) → the
+/// new keys are withheld → fails.
+#[test]
+fn an_untagged_off_settles_the_row_of_a_refused_on() {
+    let script = vec![
+        (0..40).map(ump_cc).chain((0..8).map(ump_on)).collect(),
+        (0..8).map(ump_off).collect(),
+        (10..16).map(ump_on).collect(),
+    ];
+    let relay = Relay {
+        ledger: Some(NoteLedger::new(6)),
+        capacity: 8,
+    };
+    let (tally, exec) = through(script, relay, 6);
+    let t = tally.lock().unwrap();
+    assert_eq!((t.others, t.ons), (8, 6));
+    assert_eq!(t.orphans, 2, "the two offs with no row pass");
+    assert_eq!(exec.dropped_event_count(), 46);
+    assert_eq!(exec.lost_event_count(), 46);
+}
+
+// ---------------------------------------------------------------------------
+// The release ticket.
+// ---------------------------------------------------------------------------
+
+/// 600 notes sound; the port takes 296 note-offs a block (256 and its room).
+/// A ticket asked then is not drained while offs are owed, so a caller that
+/// cuts at the first answer cannot strand them: it is drained in the block
+/// that puts the last one on the port.
+///
+/// Mutation (run): the node answering right after `release_all`, owed offs or
+/// not → `drained` is `Ok` after the first block with 304 notes still held →
+/// fails.
+#[test]
+fn a_ticket_is_drained_only_when_every_off_is_on_the_port() {
+    let key = |i: u32| (MidiChannel::of((i / 128) as u8), (i % 128) as u8);
+    let events: Vec<TimedMidiEvent> = (0..600u32)
+        .flat_map(|i| {
+            let (c, n) = key(i);
+            [
+                at(
+                    u64::from(i),
+                    MidiEvent::note_on(MidiGroup::FIRST, c, n, 0xFFFF),
+                ),
+                at(100_000, MidiEvent::note_off(MidiGroup::FIRST, c, n, 0)),
+            ]
+        })
+        .collect();
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+    let controls = ed.insert(NodeKey(1), "clip", MidiClipNode::new(events));
+    let a = sink(&mut ed, 2);
+    connect(&mut ed, 1, 2);
+    ed.commit().unwrap();
+    let mut f = run(&mut exec, 0, 10, 64);
+    assert_eq!(a.lock().unwrap().held.len(), 600);
+    let mut ticket = Some(controls.release_held());
+    for (held, last) in [(304, false), (8, false), (0, true)] {
+        f = run(&mut exec, f, 1, 64);
+        assert_eq!(a.lock().unwrap().held.len(), held);
+        match ticket.take().expect("kept until drained").drained() {
+            Ok(_) => assert!(last, "drained with {held} notes still held"),
+            Err(t) => {
+                assert!(!last, "not drained with every off sent");
+                ticket = Some(t);
+            }
+        }
+    }
+}
+
+/// A ticket is a snapshot. The clip is not stopped: a second note starts at
+/// frame 700, after the block that answers (frames 512 to 767 here, the
+/// answer on its first frame), and re-aiming the clip then leaves it on A,
+/// with B hearing an off for a note it never started. A caller stops the
+/// clip first.
+#[test]
+fn a_ticket_does_not_stop_the_clip() {
+    let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
+    let controls = ed.insert(
+        NodeKey(1),
+        "clip",
+        MidiClipNode::new([
+            at(0, on(60)),
+            at(700, on(61)),
+            at(100_000, off(60)),
+            at(100_001, off(61)),
+        ]),
+    );
+    let a = sink(&mut ed, 2);
+    let b = sink(&mut ed, 3);
+    connect(&mut ed, 1, 2);
+    ed.commit().unwrap();
+    let mut exec = exec;
+    let f = run(&mut exec, 0, 2, 256);
+    let ticket = controls.release_held();
+    let f = run(&mut exec, f, 1, 256);
+    let _proof = ticket.drained().expect("answered on frame 512");
+    let f = run(&mut exec, f, 1, 256);
+    rewire(&mut ed, &mut exec, f);
+    assert_eq!(a.lock().unwrap().held.len(), 1, "note 61 is stranded on A");
+    assert_eq!(b.lock().unwrap().orphans, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Exact loss counts, whatever the clip does.
+// ---------------------------------------------------------------------------
+
+/// Notes that never overlap on a key, with controllers among them, bunched on
+/// a few frames so that a block holds more than the port takes. Returns the
+/// events, the note-ons and the controllers.
+fn spread_clip(r: &mut Rng) -> (Vec<TimedMidiEvent>, usize, usize) {
+    let bunches = [0u64, 10, 70, 500];
+    let mut free = std::collections::HashMap::new();
+    let mut events = Vec::new();
+    let notes = 200 + r.below(500);
+    for _ in 0..notes {
+        let key = (r.below(3) as u8, r.below(4) as u8, r.below(24) as u8);
+        let next = free.entry(key).or_insert(0u64);
+        let start = (*next).max(bunches[r.below(4) as usize]);
+        let end = start + 1 + r.below(300);
+        *next = end + 1;
+        let (g, c, n) = (MidiGroup::of(key.0), MidiChannel::of(key.1), key.2);
+        events.push(at(start, MidiEvent::note_on(g, c, n, 0xFFFF)));
+        events.push(at(end, MidiEvent::note_off(g, c, n, 0)));
+    }
+    let ccs = 100 + r.below(300);
+    for v in 0..ccs {
+        let f = bunches[r.below(4) as usize];
+        let cc = MidiEvent::cc(
+            MidiGroup::FIRST,
+            MidiChannel::FIRST,
+            CCNumber::of(7),
+            v as u32,
+        );
+        events.push(at(f, cc));
+    }
+    (events, notes as usize, ccs as usize)
+}
+
+/// Frames to play a clip through: past its last event, to a block edge.
+fn span(events: &[TimedMidiEvent]) -> u64 {
+    let last = events
+        .iter()
+        .map(|e| (e.beat.0 * FPB).round() as u64)
+        .max()
+        .unwrap_or(0);
+    (last / 64 + 2) * 64
+}
+
+/// Plays `events` for `passes` passes of a loop (none: straight through),
+/// then stops for 12 blocks.
+fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
+    let len = span(events);
+    let lp = (passes > 1).then(|| LoopRange {
+        start: Beat(0.0),
+        end: beat_of(len),
+    });
+    for f in 0..len * passes {
+        if f % 64 == 0 {
+            let t = Transport::new(true, Bpm(120.0), beat_of(f % len), lp);
+            exec.process(64, &t, &[], &mut []);
+        }
+    }
+    (0..12).for_each(|_| exec.process(64, &stopped(0), &[], &mut []));
+}
+
+/// A clip whose notes never overlap on a key, played straight through, looped
+/// and replaced, loses exactly what it could not deliver: every note-on the
+/// sink did not hear is one loss, and so is its note-off (withheld, counted
+/// once), and every controller it did not hear is one. Offs the port refused
+/// are given back when they go out. After the stop nothing sounds, every
+/// note-on has its note-off, no off is orphaned, and a release ticket is
+/// drained.
+///
+/// Mutation (run): `owe` without `recovered()` and the other counting
+/// mutations of the two tests above → the totals differ → fails.
+#[test]
+fn the_loss_count_is_exact_through_loops_replacements_and_tickets() {
+    let mut refused = 0;
+    for seed in 1..=300u64 {
+        let mut r = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let (first, ons1, ccs1) = spread_clip(&mut r);
+        let passes = 1 + r.below(2);
+        let (second, ons2, ccs2) = spread_clip(&mut r);
+        let replace = r.below(2) == 0;
+        let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let controls: MidiClipControls =
+            ed.insert(NodeKey(1), "clip", MidiClipNode::new(first.clone()));
+        let tally = sink(&mut ed, 2);
+        connect(&mut ed, 1, 2);
+        ed.commit().unwrap();
+        play(&mut exec, &first, passes);
+        let (mut ons, mut ccs) = (ons1 * passes as usize, ccs1 * passes as usize);
+        if replace {
+            controls.set_events(second.clone());
+            play(&mut exec, &second, 1);
+            ons += ons2;
+            ccs += ccs2;
+        }
+        let ticket = controls.release_held();
+        exec.process(64, &stopped(0), &[], &mut []);
+        ticket.drained().expect("nothing is held, nothing owed");
+        let t = tally.lock().unwrap();
+        assert!(t.held.is_empty(), "seed {seed}");
+        assert_eq!(t.ons, t.offs, "seed {seed}");
+        assert_eq!(t.orphans, 0, "seed {seed}");
+        let undelivered = (ons - t.ons) as u64;
+        let controllers = (ccs - t.others) as u64;
+        assert_eq!(
+            exec.lost_event_count(),
+            2 * undelivered + controllers,
+            "seed {seed}"
+        );
+        refused += exec.dropped_event_count();
+    }
+    assert!(refused > 0, "no event was ever refused");
 }

@@ -41,9 +41,9 @@ for event in devices.wait(Duration::from_secs(5)) {
   client and port name plus an ordinal for identical devices; the client number
   is a handle to the current connection and not part of it. A client number the
   kernel hands to a new device straight after an old one exits is a new device,
-  told by the exit announcement. A device that keeps its client number and
-  changes its name is `Changed` and keeps its id, whose identity keeps the old
-  name.
+  told by the exit announcement. On ALSA the name is the identity, so a renamed
+  device is `Removed` and then `Added` under the new name, which closes a port
+  held on it; `Changed` is for backends whose identity survives a rename.
 - **macOS:** one process-wide CoreMIDI client runs its run loop on one thread
   for setup notifications, and each [`Devices`] registers with it. A
   [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author; see

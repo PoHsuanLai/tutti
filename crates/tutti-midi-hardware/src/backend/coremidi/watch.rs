@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use core_foundation::runloop::CFRunLoop;
@@ -43,27 +43,51 @@ type Notify = Box<dyn FnMut() + Send>;
 
 /// The watches registered with the process-wide client.
 struct Hub {
-    watches: Mutex<Vec<(u64, Notify)>>,
+    watches: Mutex<Vec<Registered>>,
     next: AtomicU64,
 }
 
+/// One watch: how to run its enumeration, and where to say it failed.
+struct Registered {
+    key: u64,
+    notify: Notify,
+    sink: ChangeSink,
+}
+
 impl Hub {
-    fn watches(&self) -> MutexGuard<'_, Vec<(u64, Notify)>> {
+    fn watches(&self) -> MutexGuard<'_, Vec<Registered>> {
         self.watches.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Runs every registered watch's enumeration.
+    /// Runs every registered watch's enumeration. A watch whose enumeration
+    /// panics is failed and dropped from the hub: the panic does not unwind
+    /// into CoreMIDI's block.
     fn notify(&self) {
-        for (_, watch) in self.watches().iter_mut() {
-            watch();
-        }
+        self.watches().retain_mut(|watch| {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (watch.notify)()));
+            if run.is_err() {
+                watch.sink.fail("the CoreMIDI watch panicked".into());
+            }
+            run.is_ok()
+        });
     }
 }
 
-/// The hub, or why there is none (CoreMIDI refused the client).
-fn hub() -> &'static std::result::Result<&'static Hub, String> {
-    static HUB: OnceLock<std::result::Result<&'static Hub, String>> = OnceLock::new();
-    HUB.get_or_init(|| {
+/// The hub, started on first use, or why there is none (CoreMIDI refused the
+/// client). A refusal is not kept: the next watch tries again.
+fn hub() -> std::result::Result<&'static Hub, String> {
+    static HUB: Mutex<Option<&'static Hub>> = Mutex::new(None);
+    let mut slot = HUB.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(hub) = *slot {
+        return Ok(hub);
+    }
+    let started = start_hub()?;
+    *slot = Some(started);
+    Ok(started)
+}
+
+fn start_hub() -> std::result::Result<&'static Hub, String> {
+    {
         let hub: &'static Hub = Box::leak(Box::new(Hub {
             watches: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
@@ -74,6 +98,8 @@ fn hub() -> &'static std::result::Result<&'static Hub, String> {
             .spawn(move || {
                 let client =
                     Client::new_with_notifications("tutti-midi-watch", move |n: &Notification| {
+                        eprintln!("DIAG notification {n:?}"); // DIAG
+                        NOTIFICATIONS.fetch_add(1, Ordering::SeqCst); // DIAG
                         if matches!(
                             n,
                             Notification::SetupChanged
@@ -101,7 +127,7 @@ fn hub() -> &'static std::result::Result<&'static Hub, String> {
             Ok(Err(status)) => Err(format!("CoreMIDI client status {status}")),
             Err(_) => Err("the CoreMIDI watch thread ended at once".into()),
         }
-    })
+    }
 }
 
 /// A registration with the hub. Dropping it removes the registration, and
@@ -115,31 +141,34 @@ impl Watch for CoreMidiWatch {}
 
 impl Drop for CoreMidiWatch {
     fn drop(&mut self) {
-        self.hub.watches().retain(|(key, _)| *key != self.key);
+        self.hub.watches().retain(|watch| watch.key != self.key);
     }
 }
 
 /// Seeds `sink` with `snapshot()`, then reports it again on each notification
 /// that the device setup changed, until the returned watch drops. Where CoreMIDI
-/// refuses a client the watch reports nothing, as enumeration lists nothing.
+/// refuses a client the watch reports nothing, as enumeration lists nothing, and
+/// says so through [`ChangeSink::fail`].
 pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result<Box<dyn Watch>> {
     let hub = match hub() {
-        Ok(hub) => *hub,
+        Ok(hub) => hub,
         Err(why) => {
-            tracing::debug!("CoreMIDI device watch: {why}");
+            sink.fail(why);
             return Ok(Box::new(NoWatch));
         }
     };
+    let failures = sink.clone();
     let mut reporter = Reporter::new(sink);
     // Registered while the hub is locked, so a notification cannot slip between
     // the first look and the registration.
     let mut watches = hub.watches();
     reporter.seed(snapshot());
     let key = hub.next.fetch_add(1, Ordering::Relaxed);
-    watches.push((
+    watches.push(Registered {
         key,
-        Box::new(move || reporter.report(snapshot(), |_| false)),
-    ));
+        notify: Box::new(move || reporter.report(snapshot(), |_| false)),
+        sink: failures,
+    });
     drop(watches);
     Ok(Box::new(CoreMidiWatch { hub, key }))
 }
@@ -147,7 +176,7 @@ pub(super) fn start(sink: ChangeSink, snapshot: fn() -> Vec<OsDevice>) -> Result
 /// How many watches are registered, for the test that one drops.
 #[cfg(test)]
 pub(super) fn registered() -> usize {
-    hub().as_ref().map_or(0, |hub| hub.watches().len())
+    hub().map_or(0, |hub| hub.watches().len())
 }
 
 #[cfg(test)]

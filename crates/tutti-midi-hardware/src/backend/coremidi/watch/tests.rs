@@ -29,7 +29,7 @@ fn until(devices: &Devices, want: impl Fn(&DeviceEvent) -> bool) -> DeviceEvent 
 fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let name = format!("tutti-test-{}", std::process::id());
     // DIAG
-    eprintln!("DIAG hub: {:?}", hub().as_ref().map(|_| ()));
+    eprintln!("DIAG hub: {:?}", hub().map(|_| ()));
     eprintln!(
         "DIAG dest count before: {}",
         coremidi::Destinations::count()
@@ -38,7 +38,7 @@ fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let devices = Devices::open().unwrap();
     eprintln!(
         "DIAG hub after open: {:?}, registered {}",
-        hub().as_ref().map(|_| ()),
+        hub().map(|_| ()),
         registered()
     );
     eprintln!("DIAG initial list: {:?}", devices.list());

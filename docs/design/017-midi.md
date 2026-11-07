@@ -337,7 +337,7 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   thread that runs its run loop for the life of the process; each `Devices` is a
   registration with it, removed on drop. (coremidi 0.9.2's `Client` never
   disposes on drop, so a client per `Devices` would leak one.) A run loop that
-  returns at once is rested four times a second, not spun. Compiled and linted
+  returns at once is rested four times a second, not spun. A panic in a watch's enumeration is caught, fails that watch (`watch_failure`, as on Linux) and leaves the others; a refused client fails the watch the same way and is retried by the next. Compiled and linted
   for `aarch64-apple-darwin` from Linux; its test runs only on macOS CI, and
   none of this has been run by the author.
 - **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
@@ -354,26 +354,37 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   shares (`#0` of a one-of-a-kind name, a CoreMIDI unique id) names the same
   device again; an ordinal above 0 does not, and a saved one can reach another
   unit.
-- **Rename.** A handle that stays while its name changes is the same device
-  renamed: `Changed`, with the id it had (so on ALSA the id keeps the old name,
-  and a new device of the new name takes `#0` of it). ALSA keeps a client's
-  number across `snd_seq_set_client_name`, and the watch tells a reuse from a
-  rename by the exit announcement, not by the name. A held port stays open
-  through a rename.
+- **Rename.** Where the identity is the name (ALSA), a renamed device is a
+  different device: `Removed`, then `Added` under the new name, and a port held
+  on the old one is closed. A handle that stays under another name is not
+  taken for the same device, because the kernel gives a number to a new client
+  as readily as it keeps one for a renamed client, and a dropped announcement
+  would otherwise leave a dead subscription listed as live under a stale name.
+  `Changed` is for a backend whose identity survives a rename (CoreMIDI's unique
+  id) and for a direction change. A client that makes its port before it names
+  itself is listed once under `Client-N` and then removed and added under its
+  name.
 - **A reused handle is a new device.** ALSA gives a new client the number of one
-  that just exited, so two enumerations can see one handle for two devices, the
-  same name or not. The announcements say which client or port exited; the
-  `Reporter` sends `Gone` for such a handle before the `Present` of the new one,
-  so a held input is closed. The limit: an exit announcement the kernel's queue
-  dropped, followed by an identical device taking the number, goes unseen and
-  leaves a dead subscription listed as connected. The reverse also happens: the
-  kernel can announce the exit of a number's previous owner after a new client
-  has taken it, and the new device is then reported `Removed` and `Added` with
-  the same id (a held input on it is closed). Both need a number reused within
-  microseconds; the second showed up only when tests started and stopped
-  clients in parallel. Opening reads the handle
-  after looking it up, not under the list's lock, so a handle reused in between
-  opens the new device; the `Removed` that follows is how a holder finds out.
+  that just exited, so two enumerations can see one handle for two devices. A
+  different identity on a handle is enough to tell. For an identical device the
+  announcements are the only evidence: they say which client or port exited,
+  and the `Reporter` sends `Gone` for such a handle before the `Present` of the
+  new one, so a held input is closed. Limits: an exit announcement the kernel
+  dropped (an overrun is read past, and the enumeration after it still runs)
+  goes unseen when an identical device then takes the number, which leaves a dead
+  subscription listed as connected. The reverse also happens: the kernel can
+  announce the exit of a number's previous owner after a new client has taken it,
+  and the new device is then reported `Removed` and `Added` with the same id
+  (a held input on it is closed). Both need a number reused within microseconds;
+  the second showed up only when tests started and stopped clients in parallel.
+  Opening reads the handle after looking it up, not under the list's lock, so a
+  handle reused in between opens the new device; the `Removed` that follows is
+  how a holder finds out.
+- **What CI runs.** None of the ALSA watch runs in CI: the runner has no
+  `snd-seq` (see CLAUDE.md), so the real-sequencer suite, and with it the
+  announcement parsing, `Departed` and the `catch_unwind` around the watch
+  thread, run only on a developer's machine. CI runs the `Reporter` and
+  `Devices` tests over the fake backend and compiles and lints the rest.
 - **A watch that dies says so.** An error or a panic in the watch thread sets
   `Devices::watch_failure` (and is logged); the list is then the last it saw.
   The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`

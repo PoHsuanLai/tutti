@@ -401,7 +401,9 @@ impl Engine {
         // (`apply_pending` racing a callback): this block is silent.
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.load.borrow_mut().record_silenced();
+            if let Some(mut load) = self.load.try_borrow_mut() {
+                load.record_silenced();
+            }
             return;
         };
         let g = &mut *graph;
@@ -459,7 +461,9 @@ impl Engine {
         // reached only under the graph borrow (here, or `apply_pending`'s).
         let Some(mut graph) = self.graph.try_borrow_mut() else {
             output.fill(0.0);
-            self.load.borrow_mut().record_silenced();
+            if let Some(mut load) = self.load.try_borrow_mut() {
+                load.record_silenced();
+            }
             return;
         };
         let g = &mut *graph;

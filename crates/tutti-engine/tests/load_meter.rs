@@ -118,7 +118,7 @@ fn the_budget_is_the_whole_calls_frames_across_graph_blocks() {
 /// Recording the load is allocation-free: the gate runs `process` and
 /// `process_segment` (each recording a block) and the reads.
 ///
-/// Mutation (run): a `Vec` allocated in `LoadMeter::record` → the gate
+/// Mutation (run): a `Vec` allocated in `LoadRecorder::record` → the gate
 /// panics → fails.
 #[test]
 fn recording_the_load_is_allocation_free() {

@@ -51,6 +51,7 @@ pub use virtual_source::UmpVirtualSource;
 /// on first use and kept for the life of the process; a failed creation is not
 /// cached, so a later call retries.
 pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::OSStatus> {
+    hub_first();
     static CLIENT: std::sync::Mutex<Option<&'static Client>> = std::sync::Mutex::new(None);
     let mut slot = CLIENT
         .lock()
@@ -58,12 +59,21 @@ pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::
     if let Some(client) = *slot {
         return Ok(client);
     }
-    // CoreMIDI sends notifications to the run loop of the process's first client,
-    // so the device watch's client must be created before this one.
-    let _ = watch::hub();
     let client: &'static Client = Box::leak(Box::new(Client::new("tutti-midi")?));
     *slot = Some(client);
     Ok(client)
+}
+
+/// Starts the device watch's client. CoreMIDI sends notifications to the run
+/// loop of the process's first client, so every place this backend creates a
+/// client (`shared_client`, `virtual_source::shared_raw_client`) calls this
+/// first, before taking its own lock.
+///
+/// Rule: nothing the hub thread runs may call back into those two functions
+/// (they wait for the hub to start, and the hub thread's `snapshot` is
+/// `CoreMidiEndpoints::devices`, which builds no client), or startup deadlocks.
+pub(crate) fn hub_first() {
+    let _ = watch::hub();
 }
 
 /// CoreMIDI's `kMIDIProtocol_2_0`, as `kMIDIPropertyProtocolID` reports it.
@@ -161,7 +171,8 @@ impl CoreMidiEndpoints {
 }
 
 impl CoreMidiEndpoints {
-    /// Every device now.
+    /// Every device now. Run by the hub thread: it must not create a client
+    /// (`hub_first`).
     fn devices() -> Vec<OsDevice> {
         let this = Self { client: None };
         os_devices(&this.inputs(), &this.outputs())

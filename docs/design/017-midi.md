@@ -343,8 +343,11 @@ over a `Watch` the backend returns from `MidiEndpoints::watch`.
   for every endpoint added or removed in the process; with the engine's shared
   client created first on another thread, it never fired in four seconds and the
   hub's loop had no source (`run_current` returned at once), and the callback did
-  fire on that other thread when it ran its own loop. So `shared_client` starts
-  the hub before it creates its own client. A host that creates a CoreMIDI client
+  fire on that other thread when it ran its own loop. So both places this backend
+  creates a client (`shared_client` and the raw client of `UmpVirtualSource`) call
+  `hub_first`, which starts the hub, before taking their own locks. Nothing the
+  hub thread runs may reach those two (its enumeration builds no client), or
+  startup would wait on itself. A host that creates a CoreMIDI client
   earlier still takes the notifications away, and a hub whose loop has nothing to
   wait for also looks again once a second (a hot-plug is then found in about a
   second); the same look backs up a missed notification. A run loop that

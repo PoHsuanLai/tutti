@@ -73,3 +73,23 @@ fn notifications_reach_the_hub_when_the_shared_client_is_created() {
     }
     drop(destination);
 }
+
+/// As above, with a virtual source first: its raw client is the other creation
+/// site. Mutation: no `hub_first()` in `shared_raw_client` leaves `CALLBACKS`
+/// at 0 here (the same ordering failure measured for `shared_client`).
+#[test]
+fn notifications_reach_the_hub_when_a_virtual_source_comes_first() {
+    use crate::backend::coremidi::UmpVirtualSource;
+    let name = format!("tutti-source-{}", std::process::id());
+    let before = CALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
+    let source = UmpVirtualSource::new(&name).expect("creates");
+    let deadline = Instant::now() + PATIENCE;
+    while CALLBACKS.load(std::sync::atomic::Ordering::Relaxed) == before {
+        assert!(
+            Instant::now() < deadline,
+            "no notification reached the hub's client"
+        );
+        std::thread::park_timeout(Duration::from_millis(50));
+    }
+    drop(source);
+}

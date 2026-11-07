@@ -17,7 +17,7 @@
 //! (13 fires in a few seconds); with another client created first, on the
 //! calling thread, it never fired in four seconds, and fired when that thread
 //! ran its own run loop. So the hub starts before any other client the backend
-//! creates (`shared_client` starts it), and a host that creates a client of its
+//! creates (`hub_first`, called by both creation sites, starts it), and a host that creates a client of its
 //! own earlier still takes the notifications. The hub thread therefore also looks
 //! again once a second whenever its loop has nothing to wait for (a loop with no
 //! source returns at once), which finds a hot-plug in about a second in that

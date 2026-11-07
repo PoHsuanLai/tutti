@@ -128,6 +128,10 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
             .iter()
             .map(|&s| a(s, false))
             .collect(),
+        Op::Meter { srcs, .. } => plan.audio_list[srcs.range()]
+            .iter()
+            .map(|&s| a(s, false))
+            .collect(),
         // A capture feeds a delay's state, not a slot.
         Op::Capture { src, .. } => vec![a(src, false)],
         Op::EventCapture { src, .. } => vec![e(src, false)],
@@ -676,6 +680,12 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
             Op::Tap { tap, .. } => {
                 if tap as usize >= plan.taps.len() {
                     return Err(VerifyError(format!("a tap op names tap {tap}")));
+                }
+                None
+            }
+            Op::Meter { meter, .. } => {
+                if meter as usize >= plan.meters.len() {
+                    return Err(VerifyError(format!("a meter op names meter {meter}")));
                 }
                 None
             }

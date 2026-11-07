@@ -188,6 +188,17 @@ const COPY: Work = Work {
     per_frame: 1,
 };
 
+/// A level meter's op over `lanes` channels: per lane the scan reads every
+/// frame (an absolute value, a maximum and a square-and-add, about twice a
+/// copy's per-frame work) and folds the block into its cell (a fence and a few
+/// stores, about a copy's fixed cost).
+const fn meter_work(lanes: u64) -> Work {
+    Work {
+        fixed: COPY.fixed * lanes,
+        per_frame: 2 * COPY.per_frame * lanes,
+    }
+}
+
 /// An event op (a merge, an event delay, an event capture).
 const EVENTS: Work = Work {
     fixed: 100,
@@ -203,6 +214,7 @@ pub(crate) fn op_work(op: &Op, shapes: &[Shape]) -> Work {
         | Op::Output { .. }
         | Op::Capture { .. }
         | Op::Tap { .. } => COPY,
+        Op::Meter { srcs, .. } => meter_work(u64::from(srcs.len)),
         Op::EventDelay { .. } | Op::EventMerge { .. } | Op::EventCapture { .. } => EVENTS,
         Op::Node { unit, .. } => node_work(&shapes[unit as usize]),
     }

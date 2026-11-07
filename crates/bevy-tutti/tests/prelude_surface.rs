@@ -112,7 +112,7 @@ fn _surface_compiles() {
     // --- The disk-streaming handle. ---
     //
     // `DiskStreamerRes` is named for what it holds, like every sibling resource
-    // (`AudioGraphRes`, over the graph, `MeteringRes(MasterMeter)`,
+    // (`AudioGraphRes`, over the graph, `MeteringRes(MeterReader)`,
     // `TransportRes(Transport)`): a host that cannot guess the name cannot ask
     // for the resource.
     // A `DiskStreamer` needs a butler thread, so constructing one here would be

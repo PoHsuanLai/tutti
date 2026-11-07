@@ -179,6 +179,33 @@ fn an_enabled_meter_reads_the_block_with_the_tap_closed() {
     }
 }
 
+/// **A stereo callback at the `MAX_FRAMES` ceiling reads its analytic
+/// level**: a constant 0.5 reads 0.5 as both peak and RMS. (A wide device's
+/// fold is not a passthrough, so its figure is the fold's, pinned by
+/// `a_wide_device_meters_a_fold_not_the_first_two_channels`.)
+///
+/// Mutation (run): doubling the buffer handed to `meter_output` in
+/// `block.rs` → the peak reads 1.0 → fails. The metered length is pinned by
+/// `tutti-metering`'s `a_block_past_8192_frames_is_metered_whole`.
+#[test]
+fn a_full_block_reads_its_analytic_level() {
+    let (writer, meter) = tutti_metering::MasterMeter::pair();
+    meter.enable();
+    let state = support::dc_state_metered(0.5, 2, writer);
+    let mut block = OutputBlock::new(state, ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; MAX_FRAMES * 2];
+    block.render(&mut out);
+    let r = meter.get();
+    for (what, got) in [
+        ("peak left", r.peak_left),
+        ("peak right", r.peak_right),
+        ("rms left", r.rms_left),
+        ("rms right", r.rms_right),
+    ] {
+        assert!((got.get() - 0.5).abs() < 1e-6, "{what} read {}", got.get());
+    }
+}
+
 /// **The stereo memcpy shortcut is bit-equal to the general fold.**
 ///
 /// `block.rs` claims the `layout == STEREO` branch "is a deliberate

@@ -23,10 +23,10 @@
 //! by rendering nothing.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_cpal::{AudioCallbackState, MAX_FRAMES, process_audio};
+use tutti_cpal::{AudioCallbackState, MAX_FRAMES, OutputBlock, process_audio};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
-use tutti_metering::{AudioTap, MasterMeter};
+use tutti_metering::{AudioTap, MasterMeter, MeterWriter};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
@@ -47,6 +47,10 @@ const SAMPLE_RATE: f64 = 48_000.0;
 /// rather than shared because that one is `#[cfg(test)]`-private to the unit
 /// binary, and every type it needs is public.
 fn rolling_state() -> (Transport, AudioCallbackState) {
+    rolling_state_with(MasterMeter::pair().0, AudioTap::new())
+}
+
+fn rolling_state_with(writer: MeterWriter, tap: AudioTap) -> (Transport, AudioCallbackState) {
     let transport = Transport::new(SAMPLE_RATE);
 
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(SAMPLE_RATE), Samples(512)));
@@ -79,7 +83,7 @@ fn rolling_state() -> (Transport, AudioCallbackState) {
     // Every commit is sent; the editor only has to outlive the engine's
     // setup. Leaked like the fixtures in `support`, for the same reason.
     Box::leak(Box::new(ed));
-    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new());
+    let state = AudioCallbackState::new(engine, writer, tap);
 
     transport.settings.set_tempo(120.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
@@ -186,4 +190,31 @@ fn process_audio_across_block_sizes_is_allocation_free() {
             }
         }
     });
+}
+
+/// The whole output callback, with the meter enabled and the tap open, must
+/// not allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
+/// block (so the gate ran the metering pass).
+///
+/// Mutation (run): a `Vec::with_capacity(1)` in `MeterWriter::measure`
+/// aborts it.
+#[test]
+fn a_metered_and_tapped_callback_is_allocation_free() {
+    let (writer, meter) = MasterMeter::pair();
+    meter.enable();
+    let tap = AudioTap::new();
+    let _consumer = tap.open().expect("a fresh tap opens");
+    let (_transport, state) = rolling_state_with(writer, tap);
+    let mut block = OutputBlock::new(std::sync::Arc::new(state), ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; MAX_FRAMES * 2];
+    for _ in 0..4 {
+        block.render(&mut out);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..16 {
+            block.render(&mut out);
+        }
+    });
+    assert!(meter.get().peak_left.get() > 0.0, "the meter read nothing");
 }

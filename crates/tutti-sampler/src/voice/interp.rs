@@ -28,7 +28,7 @@ use tutti_types::{
     fold_frame, snap_to_whole_frame,
 };
 
-use super::clock::{BlockClock, Run};
+use super::clock::{BlockClock, Run, Wrap};
 use super::loop_span::{LoopSpan, blend};
 use super::memory_source::VoiceWindow;
 use crate::MAX_SAMPLER_CHANNELS;
@@ -163,6 +163,36 @@ impl Gate {
         SamplePosition(snap_to_whole_frame(position))
     }
 
+    /// Whether the voice was sounding on the loop's last frame, so that a
+    /// wrap has a tail to fade out: one that begins at or after the loop's
+    /// end never played in the loop, one that ended before it has nothing
+    /// to fade.
+    pub(crate) fn tail_sounds(&self, run: &Run, wrap: &Wrap) -> bool {
+        let Some(fpb) = run.frames_per_beat() else {
+            return false;
+        };
+        let last =
+            run.beat_at(run.start) + wrap.back - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
+        let tempo = run.tempo();
+        self.reached(last, tempo, self.window.start)
+            && self
+                .window
+                .duration
+                .is_none_or(|d| !self.reached(last, tempo, self.window.start + d))
+    }
+
+    /// Whether the voice begins on or after the loop's start, so that at a
+    /// wrap its head is the clip's own start rather than the middle of a
+    /// sound. Decided from the window alone: a voice that began on the
+    /// loop's last frame or before it is mid-sound.
+    pub(crate) fn begins_with_loop(&self, run: &Run, wrap: &Wrap) -> bool {
+        let Some(fpb) = run.frames_per_beat() else {
+            return false;
+        };
+        let before = run.beat_at(run.start) - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
+        !self.reached(before, run.tempo(), self.window.start)
+    }
+
     /// The first block frame in `from..to` of `run` whose beat has reached
     /// `target`, or `to` when none has. The beat never falls inside a run,
     /// so the answer is found from the closed-form estimate by stepping.
@@ -276,14 +306,7 @@ pub(crate) fn place_tail(
         let Some(wrap) = run.wrap else { continue };
         let (a, b) = (run.start, run.end.min(run.start + wrap.left()));
         let (window, tempo) = (gate.window, run.tempo());
-        let Some(fpb) = run.frames_per_beat() else {
-            continue;
-        };
-        // Only a voice that was sounding on the loop's last frame has a tail:
-        // one that would begin at or after the loop's end never played in
-        // the loop.
-        let ended = run.beat_at(a) + wrap.back - BeatDuration::new((wrap.ago + 1) as f64 / fpb);
-        if !gate.reached(ended, tempo, window.start) {
+        if !gate.tail_sounds(&run, &wrap) {
             continue;
         }
         let x = match window.duration {

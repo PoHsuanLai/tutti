@@ -14,6 +14,7 @@ use crate::nonempty;
 use crate::stretch;
 
 use super::clock::BlockClock;
+use super::interp::Gate;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
 use tutti_graph::CrossfadeCurve;
 use tutti_types::{Cents, ChannelLayout, ReadRate, SamplePosition, SampleRate, StretchFactor};
@@ -518,33 +519,41 @@ impl PlaybackSlot {
                 for lane in out.lanes_mut().iter_mut().take(n) {
                     scale(&mut lane[..frames], gain);
                 }
-                if fades && let Some(span) = sampler.placed_tail(clock, range.clone(), positions) {
+                if fades {
+                    let span = sampler.placed_tail(clock, range.clone(), positions);
+                    let first = span.as_ref().map_or(0, |s| s.start);
+                    let mut tail = raw.lanes_mut().each_mut().map(|lane| {
+                        lane.get_mut(span.clone().unwrap_or(0..0))
+                            .unwrap_or_default()
+                    });
                     // Only the frames the tail sounds over are read.
-                    let mut tail = raw
-                        .lanes_mut()
-                        .each_mut()
-                        .map(|lane| lane.get_mut(span.clone()).unwrap_or_default());
-                    sampler.read_placed_lanes(
-                        &positions[span.clone()],
-                        direction,
-                        &mut tail,
-                        n,
-                        gather,
-                    );
-                    for lane in tail.iter_mut().take(n) {
-                        scale(lane, gain);
+                    if let Some(span) = &span {
+                        sampler.read_placed_lanes(
+                            &positions[span.clone()],
+                            direction,
+                            &mut tail,
+                            n,
+                            gather,
+                        );
+                        for lane in tail.iter_mut().take(n) {
+                            scale(lane, gain);
+                        }
                     }
-                    crossfade_wraps(
-                        clock,
-                        range,
-                        span.start,
-                        &*positions,
-                        &tail,
-                        out.lanes_mut(),
-                        n,
-                    );
-                } else if !sounds && gain.is_finite() {
-                    return Piece::Silent;
+                    let blended = sampler.gate(ReadRate::UNITY).is_some_and(|gate| {
+                        crossfade_wraps(
+                            clock,
+                            range,
+                            gate,
+                            first,
+                            &*positions,
+                            &tail,
+                            out.lanes_mut(),
+                            n,
+                        )
+                    });
+                    if !blended && !sounds && gain.is_finite() {
+                        return Piece::Silent;
+                    }
                 }
                 Piece::Ready
             }
@@ -570,39 +579,54 @@ impl PlaybackSlot {
     }
 }
 
-/// Blend a wrap crossfade's tail into the loop's start: frame `i` of each
-/// crossfade is `head * g_in + tail * g_out` at the equal-power gains, where
-/// the tail sounds (`positions`), so a voice with no tail there is untouched.
+/// Blend a wrap crossfade's tail into the loop's start, for a voice with a
+/// tail (`Gate::tail_sounds`; a voice without one is untouched). Returns
+/// whether any run was blended. Where the tail has ended inside the fade
+/// (`positions` empty), the head finishes its ramp alone.
 /// `tail` holds the frames from `first`; `range` is the piece, whose first
 /// frame is lane frame 0.
 ///
-/// Equal power, [`CrossfadeCurve`]'s: the tail and the loop's start are
-/// different stretches of the source, which add in power.
+/// A head in the middle of a sound is `head * g_in + tail * g_out` at
+/// [`CrossfadeCurve`]'s equal-power gains: the two are different stretches
+/// of the source, which add in power. A head that is the clip's own start
+/// (`Gate::begins_with_loop`) keeps unity, `head + tail * g_out`: its attack
+/// is not ramped, and the join steps as the clip's first pass does. Both
+/// sounding at full level, correlated, the sum peaks at the two together.
+#[allow(clippy::too_many_arguments)]
 fn crossfade_wraps(
     clock: &BlockClock<'_>,
     range: Range<usize>,
+    gate: Gate,
     first: usize,
     positions: &[Option<SamplePosition>],
     tail: &[&mut [f32]],
     head: &mut [Vec<f32>],
     n: usize,
-) {
+) -> bool {
     let base = range.start;
+    let mut blended = false;
     for run in clock.runs_in(range) {
         let Some(wrap) = run.wrap else { continue };
+        if !gate.tail_sounds(&run, &wrap) {
+            continue;
+        }
+        blended = true;
+        let own_start = gate.begins_with_loop(&run, &wrap);
         let end = run.end.min(run.start + wrap.left());
         for at in run.start..end {
             let i = at - base;
-            if positions[i].is_none() {
-                continue;
-            }
             let (g_in, g_out) =
                 CrossfadeCurve::EqualPower.gains(wrap.ago + at - run.start, wrap.len);
+            let g_in = if own_start { 1.0 } else { g_in };
+            // A tail that has ended leaves the head to finish its ramp.
+            let sounding = positions[i].is_some();
             for (h, t) in head.iter_mut().zip(tail).take(n) {
-                h[i] = h[i] * g_in + t[i - first] * g_out;
+                let tail = if sounding { t[i - first] * g_out } else { 0.0 };
+                h[i] = h[i] * g_in + tail;
             }
         }
     }
+    blended
 }
 
 /// What [`PlaybackSlot::render_lanes`] left for its piece.

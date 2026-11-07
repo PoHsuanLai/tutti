@@ -23,8 +23,11 @@ const SR: f64 = 48_000.0;
 /// Frames in a beat at 120 BPM.
 const FPB: usize = 24_000;
 /// The loop: 1.3 beats, so no tone divides it.
-const LOOP_BEATS: f64 = 1.3;
-const WRAP: usize = 31_200;
+const LOOP_BEATS: f64 = 1.75;
+/// The loop starts mid-source, so a voice placed at 0 is mid-sound at the wrap.
+const LOOP_START_BEATS: f64 = 0.5;
+const LS: usize = 12_000;
+const WRAP: usize = 42_000;
 const AMP: f32 = 0.5;
 const FADE: usize = 240;
 
@@ -93,7 +96,7 @@ impl Rig {
             start: r.start(),
             end: r.end(),
         });
-        Transport::new(playing, Bpm(120.0), self.clock.beat(), looping)
+        Transport::new(playing, self.clock.tempo(), self.clock.beat(), looping)
     }
 
     /// One block of `len` frames; `change` is a transport change inside it.
@@ -115,6 +118,33 @@ impl Rig {
         let out = contract::drive_input(&mut self.pool, &env, &[], &[], &[]).audio;
         self.frame += len as u64;
         self.clock.advance(Samples(len), self.looping);
+        out
+    }
+
+    /// One block of `len` frames whose transport changes at `at` to `tempo`
+    /// and `looping`, the host clock following it.
+    fn block_changed(
+        &mut self,
+        len: usize,
+        at: usize,
+        tempo: f64,
+        looping: Option<LoopRange>,
+    ) -> Vec<Vec<f32>> {
+        let mut here = self.clock;
+        here.advance(Samples(at), self.looping);
+        let to = Transport::new(
+            true,
+            Bpm(tempo),
+            here.beat(),
+            looping.map(|r| tutti_graph::LoopRange {
+                start: r.start(),
+                end: r.end(),
+            }),
+        );
+        let out = self.block(len, Some((at, to)));
+        self.clock = to.clock(SampleRate(SR));
+        self.looping = looping;
+        self.clock.advance(Samples(len - at), looping);
         out
     }
 
@@ -179,7 +209,7 @@ fn a_tone_has_no_cut_at_the_wrap_at_any_block_length() {
     for channels in [1, 2] {
         for block in [64, 100, 480, 1000] {
             let w = wave(channels, 4 * FPB, tone);
-            let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+            let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
             rig.place(1, &w, 0.0, None);
             let out = rig.run(2 * WRAP, block);
             for (c, lane) in out.iter().enumerate() {
@@ -212,14 +242,14 @@ fn a_tone_has_no_cut_at_the_wrap_at_any_block_length() {
 #[test]
 fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it() {
     let w = wave(1, 4 * FPB, tone);
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     let out = rig.run(WRAP + FADE + 8, 480);
     for (i, s) in out[0].iter().enumerate().take(WRAP) {
         assert_eq!(s.to_bits(), tone(437.3, i).to_bits(), "frame {i}");
     }
     let x = 1.0 / (FADE + 1) as f32 * std::f32::consts::FRAC_PI_2;
-    let want = x.sin() * tone(437.3, 0) + x.cos() * tone(437.3, WRAP);
+    let want = x.sin() * tone(437.3, LS) + x.cos() * tone(437.3, WRAP);
     assert!(
         (out[0][WRAP] - want).abs() < 1e-5,
         "{} vs {want}",
@@ -229,7 +259,7 @@ fn the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it() {
     for k in 0..8 {
         assert_eq!(
             out[0][WRAP + FADE + k].to_bits(),
-            tone(437.3, FADE + k).to_bits()
+            tone(437.3, LS + FADE + k).to_bits()
         );
     }
 }
@@ -247,7 +277,7 @@ fn the_fade_holds_the_energy_of_unrelated_material() {
         let f = if i < WRAP { 1_000.0 } else { 3_000.0 };
         tone(f, i)
     });
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     let out = rig.run(WRAP + FADE, 1000);
     let energy: f32 = out[0][WRAP..WRAP + FADE].iter().map(|s| s * s).sum();
@@ -267,7 +297,7 @@ fn the_fade_holds_the_energy_of_unrelated_material() {
 fn a_voice_that_is_not_playing_across_the_wrap_is_untouched() {
     let w = wave(1, 4 * FPB, tone);
     // One beat of a loop of 1.3: it ends 0.3 beats before the wrap.
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, Some(1.0));
     let out = rig.run(WRAP + 2 * FADE, 1000);
     for (i, s) in out[0].iter().enumerate().take(FPB) {
@@ -275,7 +305,11 @@ fn a_voice_that_is_not_playing_across_the_wrap_is_untouched() {
     }
     assert!(out[0][FPB + 8..WRAP].iter().all(|&s| s == 0.0));
     for k in 0..2 * FADE {
-        assert_eq!(out[0][WRAP + k].to_bits(), tone(437.3, k).to_bits(), "{k}");
+        assert_eq!(
+            out[0][WRAP + k].to_bits(),
+            tone(437.3, LS + k).to_bits(),
+            "{k}"
+        );
     }
 }
 
@@ -288,7 +322,7 @@ fn a_voice_that_is_not_playing_across_the_wrap_is_untouched() {
 fn a_tail_with_no_loop_start_under_it_fades_out() {
     let w = wave(1, 4 * FPB, tone);
     // Placed at beat 1 for ever: the loop's start (beat 0) is before it.
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 1.0, None);
     let out = rig.run(WRAP + FADE + 8, 1000);
     let step = max_step(&out[0], WRAP - 4, WRAP + FADE + 4);
@@ -306,7 +340,7 @@ fn a_tail_with_no_loop_start_under_it_fades_out() {
 fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost() {
     for start in [LOOP_BEATS, LOOP_BEATS + 0.005] {
         let w = wave(1, 4 * FPB, tone);
-        let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
         rig.place(1, &w, start, None);
         let out = rig.run(WRAP + 2 * FADE, 1000);
         assert!(out[0].iter().all(|&s| s == 0.0), "a voice at beat {start}");
@@ -321,17 +355,23 @@ fn a_voice_that_begins_after_the_loop_ends_leaves_no_ghost() {
 /// fade runs the whole pass and the second half is blended → fails.
 #[test]
 fn a_loop_shorter_than_the_fade_fades_over_half_a_pass() {
-    // 0.005 beats: 120 frames.
+    // 0.005 beats: 120 frames, from the middle of the source.
     let w = wave(1, FPB, tone);
-    let mut rig = Rig::new(Some(region(0.0, 0.005)), 1000);
+    let mut rig = Rig::new(
+        Some(region(LOOP_START_BEATS, LOOP_START_BEATS + 0.005)),
+        1000,
+    );
     rig.place(1, &w, 0.0, None);
-    let out = rig.run(1000, 1000);
+    let out = rig.run(LS + 1000, 1000);
     let bound = step_bound(437.3, 60);
-    let step = max_step(&out[0], 130, 1000);
+    let step = max_step(&out[0], LS + 130, LS + 1000);
     assert!(step <= bound, "step {step} > {bound}");
     for pass in 1..8 {
         for k in 60..120 {
-            assert_eq!(out[0][120 * pass + k].to_bits(), tone(437.3, k).to_bits());
+            assert_eq!(
+                out[0][LS + 120 * pass + k].to_bits(),
+                tone(437.3, LS + k).to_bits()
+            );
         }
     }
 }
@@ -346,7 +386,7 @@ fn a_loop_shorter_than_the_fade_fades_over_half_a_pass() {
 #[test]
 fn a_seek_or_a_stop_during_the_fade_ends_it() {
     let w = wave(1, 4 * FPB, tone);
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
     // Block of 400: the wrap is at frame 100, a seek to beat 2 at 150.
@@ -360,7 +400,7 @@ fn a_seek_or_a_stop_during_the_fade_ends_it() {
         );
     }
 
-    let mut rig = Rig::new(Some(region(0.0, LOOP_BEATS)), 1000);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
     rig.place(1, &w, 0.0, None);
     rig.run(WRAP - 100, 1000);
     let stopped = Transport::new(false, Bpm(120.0), Beat(0.01), None);
@@ -381,5 +421,206 @@ fn a_seek_or_a_stop_during_the_fade_ends_it() {
     let first = (at.get() * FPB as f64).round() as usize;
     for (k, s) in out[0].iter().enumerate() {
         assert_eq!(s.to_bits(), tone(437.3, first + k).to_bits());
+    }
+}
+
+/// A mono wave of a constant that steps at the wrap: `before` below `WRAP`,
+/// `after` from it, per channel `c` offset by `0.1 * c`. Every read is exact.
+fn steps(channels: usize, before: f32, after: f32) -> Arc<Wave> {
+    let mut w = Wave::new(channels, SR);
+    for i in 0..4 * FPB {
+        let v = if i < WRAP { before } else { after };
+        let frame: Vec<f32> = (0..channels).map(|c| v + 0.1 * c as f32).collect();
+        w.push_frame(&frame);
+    }
+    Arc::new(w)
+}
+
+fn equal_power(k: usize) -> (f32, f32) {
+    tutti_graph::CrossfadeCurve::EqualPower.gains(k, FADE)
+}
+
+/// The gains of the crossfade, frame for frame: a mid-sound head (0.25) and
+/// the tail past the loop's end (0.5) are `g_in * 0.25 + g_out * 0.5` on each
+/// of the 240 frames after the wrap, in mono and stereo, at any block length,
+/// and the loop's start alone from there.
+///
+/// Mutation (run): a linear `g_in = x` in `crossfade_wraps` → fails (the
+/// curves differ by up to 0.2 of the gap). Mutation (run): the gain index one
+/// frame late (`wrap.ago + at - run.start + 1`) → fails (a step of 1.6e-3
+/// against a tolerance of 1e-6).
+#[test]
+fn the_gains_are_the_equal_power_curve_frame_for_frame() {
+    for channels in [1, 2] {
+        for block in [7, 64, 100, 480, 1000] {
+            let w = steps(channels, 0.25, 0.5);
+            let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+            rig.place(1, &w, 0.0, None);
+            let out = rig.run(WRAP + FADE + 16, block);
+            for (c, lane) in out.iter().enumerate() {
+                let off = if channels == 2 { 0.1 * c as f32 } else { 0.0 };
+                assert_eq!(lane[WRAP - 1], 0.25 + off);
+                for k in 0..FADE {
+                    let (g_in, g_out) = equal_power(k);
+                    let want = g_in * (0.25 + off) + g_out * (0.5 + off);
+                    assert!(
+                        (lane[WRAP + k] - want).abs() < 1e-6,
+                        "{channels} ch, block {block}, lane {c}, frame {k}: {} vs {want}",
+                        lane[WRAP + k]
+                    );
+                }
+                for &s in &lane[WRAP + FADE..] {
+                    assert_eq!(s, 0.25 + off);
+                }
+            }
+        }
+    }
+}
+
+/// A tail that ends inside the fade (the voice is 100 frames longer than the
+/// loop) leaves the head to finish the ramp it began: no pop to unity.
+///
+/// Mutation (run): `crossfade_wraps` skipping the frames without a tail
+/// (`continue` on `positions[i].is_none()`) → the head is unscaled from frame
+/// 100 and steps from 0.59 times the head to the head → fails.
+#[test]
+fn a_tail_that_ends_inside_the_fade_leaves_the_head_to_finish_its_ramp() {
+    let w = steps(1, 0.25, 0.5);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    rig.place(1, &w, 0.0, Some(LOOP_BEATS + 100.0 / FPB as f64));
+    let out = rig.run(WRAP + FADE + 16, 1000);
+    for k in 0..FADE {
+        let (g_in, g_out) = equal_power(k);
+        let tail = if k < 100 { g_out * 0.5 } else { 0.0 };
+        let want = g_in * 0.25 + tail;
+        assert!(
+            (out[0][WRAP + k] - want).abs() < 1e-6,
+            "frame {k}: {} vs {want}",
+            out[0][WRAP + k]
+        );
+    }
+}
+
+/// The head is the clip's own start (the voice begins on the loop's start, or
+/// a few frames into the fade): it keeps unity, so the render after the wrap
+/// is the first pass's attack plus the tail's fade-out, whose gain is the
+/// curve's `g_out`. Subtract the tail and what is left is the first pass.
+///
+/// Mutation (run): `begins_with_loop` always `false` → the head is ramped by
+/// `g_in` → fails. Mutation (run): `begins_with_loop` always `true` → the
+/// sustained-tone tests (`a_tone_has_no_cut…`, the energy and the gain
+/// tests) fail.
+#[test]
+fn a_clip_that_starts_with_the_loop_keeps_its_attack_at_unity() {
+    for lag in [0usize, 100] {
+        let w = wave(1, 4 * FPB, tone);
+        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        rig.place(1, &w, LOOP_START_BEATS + lag as f64 / FPB as f64, None);
+        let out = rig.run(WRAP + FADE + 16, 480);
+        // The first pass: the clip from its first frame.
+        for k in 0..FADE + 16 {
+            assert_eq!(out[0][LS + lag + k].to_bits(), tone(437.3, k).to_bits());
+        }
+        for k in 0..FADE {
+            let (_, g_out) = equal_power(k);
+            // The clip's tail, a loop's length on.
+            let tail = tone(437.3, WRAP - LS + k - lag);
+            let head = if k >= lag { tone(437.3, k - lag) } else { 0.0 };
+            let got = out[0][WRAP + k];
+            assert!(
+                (got - g_out * tail - head).abs() < 1e-5,
+                "lag {lag}, frame {k}: {got}"
+            );
+        }
+        for k in FADE..FADE + 16 {
+            assert_eq!(
+                out[0][WRAP + k].to_bits(),
+                tone(437.3, k - lag).to_bits(),
+                "lag {lag}, frame {k}"
+            );
+        }
+    }
+}
+
+/// An in-phase join (head and tail the same signal) sums the two gains, which
+/// peak at root 2 mid-fade (+3.01 dB) and average 4/pi (+2.1 dB) against the
+/// level of either. A head that is the clip's own start sums at unity: both
+/// near full level at the join, the peak is the two together, twice the
+/// tone's amplitude. Nothing clips or limits it.
+///
+/// Mutation (run): `EqualAmplitude` in `crossfade_wraps` → the gain sum is 1
+/// everywhere → fails. Mutation (run): unity applied to a mid-sound head →
+/// the sum at mid-fade is 1.5 rather than root 2 → fails.
+#[test]
+fn an_in_phase_join_peaks_at_three_decibels_and_a_clip_start_at_twice_the_tone() {
+    // 440 Hz is a whole number of cycles over the 30 000 frame loop, so the
+    // tail and the loop's start are the same samples.
+    let cosine = |_, i: usize| AMP * (std::f64::consts::TAU * 440.0 * i as f64 / SR).cos() as f32;
+    let w = wave(1, 4 * FPB, cosine);
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    rig.place(1, &w, 0.0, None);
+    let out = rig.run(WRAP + FADE, 1000);
+    let (mut peak, mut mean) = (0.0f32, 0.0f32);
+    for k in 0..FADE {
+        let (g_in, g_out) = equal_power(k);
+        let want = (g_in + g_out) * cosine(0.0, LS + k);
+        assert!((out[0][WRAP + k] - want).abs() < 1e-5, "frame {k}");
+        peak = peak.max(g_in + g_out);
+        mean += (g_in + g_out) / FADE as f32;
+    }
+    assert!(
+        (peak - std::f32::consts::SQRT_2).abs() < 1e-3,
+        "peak {peak}"
+    );
+    assert!(
+        (mean - 4.0 / std::f32::consts::PI).abs() < 5e-3,
+        "mean {mean}"
+    );
+
+    let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+    rig.place(1, &w, LOOP_START_BEATS, None);
+    let out = rig.run(WRAP + FADE, 1000);
+    let top = out[0][WRAP..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(
+        top > 2.0 * AMP * 0.9999 && top <= 2.0 * AMP * 1.0001,
+        "peak {top}, twice the tone's {AMP} is {}",
+        2.0 * AMP
+    );
+}
+
+/// A tempo change or a loop edit inside a fade, and a new wrap during one,
+/// leave the output finite and inside twice the tone's amplitude. The tail's
+/// origin is re-derived from the new tempo with the wrap's loop length in
+/// beats, so it jumps where the tempo changes (a glitch the size of the
+/// change, for the rest of the fade); a loop edit does not move it. A
+/// sample-rate change mid-fade keeps the fade's length in frames, so it runs
+/// for that many frames at the new rate.
+///
+/// Mutation (run): `Wrap::left` returning `len` (the fade not shortened by
+/// `ago`) → the fade outlasts its frames and the tail read runs off its span
+/// → fails (a panic).
+#[test]
+fn a_tempo_change_a_loop_edit_or_a_new_wrap_in_a_fade_stays_bounded() {
+    let w = wave(1, 4 * FPB, tone);
+    for (tempo, edit) in [
+        (90.0, Some(region(LOOP_START_BEATS, LOOP_BEATS))),
+        (120.0, Some(region(LOOP_START_BEATS, 1.81))),
+        (
+            150.0,
+            Some(region(LOOP_START_BEATS, LOOP_START_BEATS + 0.004)),
+        ),
+        (120.0, None),
+    ] {
+        let mut rig = Rig::new(Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        rig.place(1, &w, 0.0, None);
+        rig.run(WRAP - 50, 1000);
+        let mut out = rig.block_changed(400, 150, tempo, edit);
+        out[0].extend(rig.run(2000, 333)[0].iter());
+        assert!(
+            out[0]
+                .iter()
+                .all(|s| s.is_finite() && s.abs() <= 2.0 * AMP + 1e-3),
+            "tempo {tempo}, edit {edit:?}"
+        );
     }
 }

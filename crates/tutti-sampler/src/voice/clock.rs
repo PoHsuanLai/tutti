@@ -39,6 +39,22 @@
 //! is on the same frame it was. It outlasts the block ([`Clock`] carries it)
 //! and a seek or a stop ends it.
 //!
+//! The head is the clip's own start when the voice begins on or after the
+//! loop's start; it then keeps unity (the tail fades out under it, and any
+//! step at the join is the clip's own). Otherwise it is mid-sound, and the
+//! two cross at equal power: an in-phase join sums the gains, up to root 2
+//! (+3.01 dB) mid-fade and 4/pi (+2.1 dB) on average; a unity head peaks at
+//! twice a tone when head and tail are both near full level. Nothing limits
+//! it. A clip that starts before the loop's start with an attack exactly on
+//! it is mid-sound to this, which reads the voice's position and not its
+//! audio, and gets the ramp.
+//!
+//! A tempo change inside a fade re-derives the tail's position from the new
+//! tempo and the wrap's loop length in beats, so the tail jumps there (a
+//! glitch of the size of the change, for the rest of the fade); a loop edit
+//! does not move it, and a new wrap restarts the fade. The fade's length is
+//! a frame count at the wrap's rate, so a rate change inside it runs those
+//! frames at the new rate.
 //! A seek at a block's first frame to exactly where the playhead would have
 //! been anyway is invisible here (the `Env` says only where the playhead
 //! is), and so not a jump: nothing buffered is stale after it. A seek inside
@@ -212,14 +228,13 @@ fn region(t: &Transport) -> Option<LoopRange> {
 /// `to` puts it. Only a rolling transport jumps (a stop, and a seek while
 /// stopped, do not); a loop wrap always does.
 fn breaks(prev: Next, to: &Transport, rate: SampleRate) -> bool {
-    if !rolls(to) {
-        return false;
-    }
-    if prev.wrapped {
-        return true;
-    }
+    rolls(to) && (prev.wrapped || !continues(prev, to, rate))
+}
+
+/// Whether `to` is where the playhead would have been at `prev`.
+fn continues(prev: Next, to: &Transport, rate: SampleRate) -> bool {
     let fpb = rate.get() * 60.0 / to.tempo.get();
-    ((to.beat() - prev.beat).get() * fpb).abs() > CONTINUES_WITHIN
+    ((to.beat() - prev.beat).get() * fpb).abs() <= CONTINUES_WITHIN
 }
 
 /// The beat `clock` reads `k` frames on, no loop.
@@ -281,11 +296,13 @@ impl Clock {
         let jump = self
             .next
             .is_some_and(|n| breaks(n, &env.transport, env.sample_rate));
-        // A crossfade goes on across a block edge, unless a seek broke it;
-        // a wrap on the edge starts one.
+        // A crossfade goes on across a block edge, unless a seek broke it
+        // (a wrap on the edge is a jump, but a seek after it is not the
+        // wrap); a wrap on the edge starts one.
         let wrap = self
             .next
             .filter(|n| !jump || n.wrapped)
+            .filter(|n| !rolls(&env.transport) || continues(*n, &env.transport, env.sample_rate))
             .and_then(|n| n.wrap);
         let mut block = BlockClock {
             env,
@@ -775,5 +792,18 @@ mod tests {
             Wrap::new(loop_of(1.0), Bpm(120.0), fast).map(|w| w.len),
             Some(480)
         );
+    }
+
+    /// A seek on the block right after an edge wrap is a seek, not the wrap:
+    /// it starts no crossfade (the wrap's own jump is not a seek's).
+    ///
+    /// Mutation (run): `observe` without the `continues` filter on the carried
+    /// crossfade → the seek's block fades a ghost tail → fails.
+    #[test]
+    fn a_seek_right_after_an_edge_wrap_starts_no_crossfade() {
+        let mut clock = Clock::new();
+        clock.observe(&env(looping(24_000.0 - 64.0), &[]));
+        let e = env(looping(5_000.0), &[]);
+        assert_eq!(fades(&clock.observe(&e)), [None]);
     }
 }

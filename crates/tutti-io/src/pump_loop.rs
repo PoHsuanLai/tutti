@@ -1,7 +1,7 @@
 //! The pump loop and the drivers that run it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tutti_types::Samples;
@@ -63,17 +63,27 @@ pub struct PumpLoop<I, O, S = f32> {
     /// Set by the first [`PumpPass::Failed`]; the [`Recorder`] holds the other
     /// end.
     failed: Arc<AtomicBool>,
+    /// Frames the source discarded, summed ([`AudioIn::take_lost`]); the
+    /// [`Recorder`] holds the other end.
+    lost: Arc<AtomicU64>,
 }
 
 impl<I, O, S> PumpLoop<I, O, S> {
     /// A loop over `src` and `sink` moving at most `scratch.len()` samples per
     /// pass, raising `failed` when a pass fails.
-    pub(crate) fn new(src: I, sink: O, scratch: Vec<S>, failed: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(
+        src: I,
+        sink: O,
+        scratch: Vec<S>,
+        failed: Arc<AtomicBool>,
+        lost: Arc<AtomicU64>,
+    ) -> Self {
         Self {
             src,
             sink,
             scratch,
             failed,
+            lost,
         }
     }
 }
@@ -101,6 +111,8 @@ where
     /// source has failed and is drained, which is [`Failed`](PumpPass::Failed).
     pub fn pump_once(&mut self) -> PumpPass {
         let mut n = pump(&mut self.src, &mut self.sink, &mut self.scratch);
+        self.lost
+            .fetch_add(self.src.take_lost().get() as u64, Ordering::Relaxed);
         // A source can push its last frames and then fail between the poll that
         // came back empty and this check. The failure flag is read after the
         // empty poll, so every frame pushed before it is visible to a second

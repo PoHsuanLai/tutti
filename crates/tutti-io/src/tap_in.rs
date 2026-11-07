@@ -31,6 +31,19 @@ use tutti_types::{ChannelLayout, Samples};
 /// tap: a stereo output tap is stereo, a six-lane tap six channels, so the
 /// sink must be built to match (`Recorder::start` refuses a mismatch).
 ///
+/// **A tap that falls behind loses frames, and the recording closes up over
+/// the gap.** The rings are bounded (the capacity named at `open_tap`); what
+/// the pump does not drain in time is dropped and counted. The file is then
+/// shorter than the take by [`Recorder::lost`](crate::Recorder::lost) frames,
+/// with no marker in the audio. A host that cares reads that count when the
+/// take ends (`AudioPump`'s `PumpFinished` carries it too).
+///
+/// **A tap is the graph's signal before the engine's declick fader.** A
+/// transport-gated source (a clip, the click, a sampler voice) ends on the
+/// stop's frame, so a take across a stop has a step there where the device
+/// output has faded; a source that keeps running has none. Start and stop the
+/// recording around transport stops if that matters.
+///
 /// Like every [`AudioIn`] it carries no sample rate: the tap runs at the
 /// graph's rate, so build the sink at that rate or the file plays at the wrong
 /// speed.
@@ -86,6 +99,13 @@ impl AudioIn for TapIn {
     /// zero count is normal for a live source; the pump parks and retries.
     fn poll_into(&mut self, out: &mut [f32]) -> Samples {
         self.reader.pop_into(out)
+    }
+
+    /// The frames the tap's rings refused since the last call: the pump did
+    /// not drain them in time. A [`Recorder`](crate::Recorder) sums them
+    /// ([`lost`](crate::Recorder::lost)); the recording closes up over each gap.
+    fn take_lost(&mut self) -> Samples {
+        self.reader.take_lost()
     }
 }
 

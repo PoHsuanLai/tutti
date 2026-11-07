@@ -383,7 +383,13 @@ fn a_decode_fault_reads_as_failed_through_the_trait() {
         let src = FileIn::open(path).expect("open");
         let sink = Discard(src.layout());
         let scratch = vec![0.0f32; 1024 * usize::from(src.layout().count())];
-        let mut pump = crate::pump_loop::PumpLoop::new(src, sink, scratch, Default::default());
+        let mut pump = crate::pump_loop::PumpLoop::new(
+            src,
+            sink,
+            scratch,
+            Default::default(),
+            Default::default(),
+        );
         loop {
             match pump.pump_once() {
                 crate::pump_loop::PumpPass::Wrote(_) => {}

@@ -138,8 +138,8 @@ fn _surface_compiles() {
         // The sink's width must match the source's: the tap's own layout, not a
         // bare `2`. `Recorder::start` rejects a mismatch outright, and `pump`
         // debug-asserts it.
-        let wav = WavOut::create(&path, 48_000.0, reader.layout(), Pcm::Float32)
-            .expect("sink opens");
+        let wav =
+            WavOut::create(&path, 48_000.0, reader.layout(), Pcm::Float32).expect("sink opens");
         AudioPump::start(TapIn::new(reader), wav, Samples(1024))
     }
 

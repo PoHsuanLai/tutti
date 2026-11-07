@@ -39,7 +39,7 @@
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
-use tutti_io::{AudioIn, Pcm, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+use tutti_io::{AudioIn, ManualDriver, Pcm, PumpPass, Recorder, TapIn, WavOut};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
 
@@ -243,4 +243,37 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
              bursts did not concatenate"
         );
     }
+}
+
+/// **A recording through a tap that fell behind reports the gap, and the file
+/// closes up over it.** The ring holds 512 frames and 2048 are rendered before
+/// the pump runs, so the first 512 are kept and 1536 are lost. The recorder
+/// counts them; the file holds the 512 and is shorter than the take by the
+/// lost frames, with nothing in the audio to mark where.
+///
+/// Mutation (run, recorded here): delete `TapIn::take_lost` (the trait's
+/// zero default) -> `lost()` reads 0 and the first assertion fails. Delete the
+/// `fetch_add` in `PumpLoop::pump_once` -> the same.
+#[test]
+fn a_gap_in_a_take_is_counted_and_the_file_closes_up_over_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gappy.wav");
+    let (mut graph, reader) = graph_tap(512);
+    let src = TapIn::new(reader);
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
+    let (driver, pump) = ManualDriver::new();
+    let rec = Recorder::start_with(src, sink, driver).expect("pairs");
+
+    graph.render(2048);
+    let moved = pump.pump_until_dry(64);
+    assert_eq!(moved, Samples(512));
+    assert_eq!(rec.lost(), Samples(1536), "rendered = recorded + lost");
+    rec.finish().expect("finalizes");
+
+    let reader = hound::WavReader::open(&path).expect("readable");
+    assert_eq!(
+        reader.len() as usize,
+        512 * 2,
+        "the file is the frames that arrived"
+    );
 }

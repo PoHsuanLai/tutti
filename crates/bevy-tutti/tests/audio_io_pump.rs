@@ -36,7 +36,7 @@ mod audio_pump {
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
     // need to name `tutti-metering` or `tutti-io` to write a pump, and this pins that.
-    use bevy_tutti::io::{AudioIn, Pcm, ChannelLayout, OnEmpty, Samples, WavOut};
+    use bevy_tutti::io::{AudioIn, ChannelLayout, OnEmpty, Pcm, Samples, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -311,13 +311,8 @@ mod audio_pump {
 
         let mut app = app();
         // A stereo source into a six-channel sink.
-        let wide = WavOut::create(
-            &path,
-            SAMPLE_RATE,
-            ChannelLayout::from(6u16),
-            Pcm::Float32,
-        )
-        .expect("sink should open");
+        let wide = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::from(6u16), Pcm::Float32)
+            .expect("sink should open");
         let entity = app
             .world_mut()
             .spawn(AudioPump::start(
@@ -510,7 +505,7 @@ mod master_record {
 
     use bevy_app::prelude::*;
     use bevy_tutti::graph::{AudioGraphRes, AudioPump, AudioPumpAppExt, GraphSource};
-    use bevy_tutti::io::{Pcm, ChannelLayout, Samples, TapIn, WavOut};
+    use bevy_tutti::io::{ChannelLayout, Pcm, Samples, TapIn, WavOut};
     use tutti_nodes::testing::Const;
 
     const SAMPLE_RATE: f64 = 48_000.0;
@@ -611,6 +606,51 @@ mod master_record {
         for (i, pair) in samples.as_chunks::<2>().0.iter().enumerate() {
             assert_eq!(pair, &[0.5, 0.25], "frame {i}");
         }
+    }
+
+    /// A recording that fell behind says so: the pump's finish message carries
+    /// the frames the tap lost (the file closes up over them).
+    ///
+    /// Mutation (run, recorded here): `drain_audio_pumps` writing
+    /// `Samples::ZERO` for `lost` -> the message says 0 and this fails.
+    #[test]
+    fn a_recording_that_fell_behind_reports_what_it_lost() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gappy.wav");
+        let mut graph = graph();
+        // A 64-frame ring, 256 frames rendered before the pump runs.
+        let src = TapIn::new(graph.graph().open_output_tap(Samples(64)));
+        let mut frame = [0.0f32; 2];
+        for _ in 0..256 {
+            graph.render_frame(&mut frame);
+        }
+        let mut app = app();
+        let pump = app
+            .world_mut()
+            .spawn(AudioPump::start(src, sink(&path), Samples(512)))
+            .id();
+        for _ in 0..4 {
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        for p in app.world_mut().query::<&AudioPump>().iter(app.world()) {
+            p.stop();
+        }
+        let mut lost = None;
+        for _ in 0..200 {
+            app.update();
+            lost = app
+                .world()
+                .resource::<bevy_ecs::message::Messages<bevy_tutti::graph::PumpFinished>>()
+                .iter_current_update_messages()
+                .find(|done| done.entity == pump)
+                .map(|done| done.lost);
+            if lost.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(lost, Some(Samples(256 - 64)));
     }
 
     /// A tap that has not been rendered into starves the pump rather than

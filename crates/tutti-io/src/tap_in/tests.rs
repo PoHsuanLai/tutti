@@ -34,6 +34,11 @@ const BLOCK: usize = 512;
 /// tap op the audio thread runs: the executor copies the source's two
 /// channels into the tap's lanes, and the reader interleaves them.
 fn tap_with(frames: &[(f32, f32)]) -> TapIn {
+    tap_with_ring(frames, frames.len().max(1))
+}
+
+/// [`tap_with`], the rings holding `ring` frames.
+fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapIn {
     let (mut ed, mut exec): (Editor, Executor) =
         Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
     ed.insert(
@@ -55,7 +60,7 @@ fn tap_with(frames: &[(f32, f32)]) -> TapIn {
         TapId(0),
         vec![port(0), port(1)],
         TapAlign::ToOutput,
-        Samples(frames.len().max(1)),
+        Samples(ring),
     );
     ed.commit().expect("compiles");
     exec.apply_pending();
@@ -168,4 +173,15 @@ fn the_layout_follows_the_taps_width() {
             ChannelLayout::from_count(width as u16)
         );
     }
+}
+
+/// The frames a tap's rings refused are the source's `take_lost`, once.
+///
+/// Mutation (run, recorded here): `TapIn::take_lost` returning the trait's
+/// zero -> this fails.
+#[test]
+fn a_tap_reports_the_frames_it_lost() {
+    let mut tap = tap_with_ring(&[(1.0, 1.0); 8], 5);
+    assert_eq!(tap.take_lost(), Samples(3));
+    assert_eq!(tap.take_lost(), Samples::ZERO, "reading clears");
 }

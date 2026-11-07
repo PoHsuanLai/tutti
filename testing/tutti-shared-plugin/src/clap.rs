@@ -65,6 +65,7 @@ unsafe extern "C" fn note_ports_count(_p: *const clap_plugin, is_input: bool) ->
     u32::from(is_input)
 }
 unsafe extern "C" fn latency_get(p: *const clap_plugin) -> u32 {
+    // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`.
     unsafe { inst(p) }.core.latency()
 }
 unsafe extern "C" fn tail_get(_p: *const clap_plugin) -> u32 {
@@ -101,6 +102,7 @@ unsafe extern "C" fn ports_get(
     if index != 0 || info.is_null() {
         return false;
     }
+    // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call (checked non-null above).
     let info = unsafe { &mut *info };
     info.id = if is_input { 700 } else { 701 };
     info.name = [0; CLAP_NAME_SIZE];
@@ -126,6 +128,7 @@ unsafe extern "C" fn note_ports_get(
     if index != 0 || !is_input || info.is_null() {
         return false;
     }
+    // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call (checked non-null above).
     let info = unsafe { &mut *info };
     info.id = 800;
     info.supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
@@ -166,6 +169,7 @@ unsafe extern "C" fn params_info(
     if info.is_null() {
         return false;
     }
+    // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call (checked non-null above).
     let info = unsafe { &mut *info };
     info.id = index;
     info.flags = CLAP_PARAM_IS_AUTOMATABLE
@@ -176,7 +180,7 @@ unsafe extern "C" fn params_info(
         };
     info.cookie = ptr::null_mut();
     info.name = [0; CLAP_NAME_SIZE];
-    let name: &[u8] = [b"level".as_slice(), b"aux", b"mode"][index as usize];
+    let name = core::NAMES[index as usize].as_bytes();
     for (d, s) in info.name.iter_mut().zip(name) {
         *d = *s as c_char;
     }
@@ -188,6 +192,7 @@ unsafe extern "C" fn params_info(
 }
 
 unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64) -> bool {
+    // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`. `out` is checked non-null.
     match unsafe { inst(p) }.core.param(id) {
         Some(v) if !out.is_null() => {
             unsafe { *out = v };
@@ -209,6 +214,7 @@ unsafe extern "C" fn params_to_text(
     }
     let text = format!("{v:.3}\0");
     let n = text.len().min(cap as usize);
+    // SAFETY, for this function's `unsafe` blocks: `buf` has room for `cap` bytes (non-null and non-empty checked above); the copy is bounded by `cap`.
     unsafe {
         ptr::copy_nonoverlapping(text.as_ptr() as *const c_char, buf, n);
         *buf.add(n - 1) = 0;
@@ -225,6 +231,7 @@ unsafe extern "C" fn params_from_text(
     if core::default_of(id).is_none() || text.is_null() || out.is_null() {
         return false;
     }
+    // SAFETY, for this function's `unsafe` blocks: `text` is a NUL-terminated string and `out` an out-pointer, both checked non-null above.
     match unsafe { CStr::from_ptr(text) }
         .to_string_lossy()
         .trim()
@@ -240,6 +247,7 @@ unsafe extern "C" fn params_from_text(
 
 /// Decodes one input event into the core's vocabulary.
 unsafe fn decode(h: *const clap_event_header) -> Option<Ev> {
+    // SAFETY, for this function's `unsafe` blocks: `h` was handed out by the host's event list; the header's type says which event struct it starts.
     let hdr = unsafe { &*h };
     if hdr.space_id != CLAP_CORE_EVENT_SPACE_ID {
         return None;
@@ -293,6 +301,7 @@ unsafe extern "C" fn params_flush(
     input: *const clap_input_events,
     _out: *const clap_output_events,
 ) {
+    // SAFETY, for this function's `unsafe` blocks: the host's event list, and its `size` and `get` callbacks, are valid for the call; `get(i)` is called with `i < size`.
     let me = unsafe { inst(p) };
     let Some(input) = (unsafe { input.as_ref() }) else {
         return;
@@ -315,6 +324,7 @@ static STATE: clap_plugin_state = clap_plugin_state {
 };
 
 unsafe extern "C" fn state_save(p: *const clap_plugin, s: *const clap_ostream) -> bool {
+    // SAFETY, for this function's `unsafe` blocks: `s` is the host's stream, valid for the call; `write` is its callback and gets a live slice.
     let bytes = unsafe { inst(p) }.core.save();
     let Some(write) = (unsafe { s.as_ref() }).and_then(|s| s.write) else {
         return false;
@@ -337,6 +347,7 @@ unsafe extern "C" fn state_save(p: *const clap_plugin, s: *const clap_ostream) -
 }
 
 unsafe extern "C" fn state_load(p: *const clap_plugin, s: *const clap_istream) -> bool {
+    // SAFETY, for this function's `unsafe` blocks: `s` is the host's stream, valid for the call; `read` is its callback and gets a live buffer.
     let Some(read) = (unsafe { s.as_ref() }).and_then(|s| s.read) else {
         return false;
     };
@@ -361,9 +372,11 @@ unsafe extern "C" fn init(_p: *const clap_plugin) -> bool {
     true
 }
 unsafe extern "C" fn destroy(p: *const clap_plugin) {
+    // SAFETY, for this function's `unsafe` blocks: `plugin_data` is the `Box<Inst>` that `create` leaked; `destroy` is its one release.
     drop(unsafe { Box::from_raw((*p).plugin_data as *mut Inst) });
 }
 unsafe extern "C" fn activate(p: *const clap_plugin, rate: f64, _min: u32, max: u32) -> bool {
+    // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`.
     let me = unsafe { inst(p) };
     me.core.prepare(
         &mut me.dsp.lock().unwrap_or_else(|e| e.into_inner()),
@@ -378,6 +391,7 @@ unsafe extern "C" fn start_processing(_p: *const clap_plugin) -> bool {
 }
 unsafe extern "C" fn stop_processing(_p: *const clap_plugin) {}
 unsafe extern "C" fn reset(p: *const clap_plugin) {
+    // SAFETY, for this function's `unsafe` blocks: the host passes the plugin this file created (`plugin_data` is its `Inst`), valid until `destroy`.
     let me = unsafe { inst(p) };
     me.core
         .reset(&mut me.dsp.lock().unwrap_or_else(|e| e.into_inner()));
@@ -390,6 +404,7 @@ unsafe fn run<S: Sample>(
     table: unsafe fn(&clap_audio_buffer) -> *mut *mut S,
 ) {
     let frames = p.frames_count as usize;
+    // SAFETY, for this function's `unsafe` blocks: the buffer tables are valid for the call; every channel holds `frames` samples and `nin`/`nout` bound the tables.
     let (ib, ob) = unsafe { (&*p.audio_inputs, &*p.audio_outputs) };
     let (ti, to) = unsafe { (table(ib), table(ob)) };
     let (nin, nout) = (
@@ -426,6 +441,7 @@ unsafe extern "C" fn process(
     plugin: *const clap_plugin,
     process: *const clap_process,
 ) -> clap_process_status {
+    // SAFETY, for this function's `unsafe` blocks: the process struct and what it points to (buffers, event list) are valid for the call; a channel holds `frames` samples (clap.h).
     let me = unsafe { inst(plugin) };
     let p = unsafe { &*process };
     if p.audio_inputs_count == 0 || p.audio_outputs_count == 0 {
@@ -456,6 +472,7 @@ unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) ->
     if id.is_null() {
         return ptr::null();
     }
+    // SAFETY, for this function's `unsafe` blocks: `id` is a NUL-terminated string (checked non-null above).
     let id = unsafe { CStr::from_ptr(id) };
     let table: &'static dyn Fn() -> *const c_void = if id == CLAP_EXT_AUDIO_PORTS {
         &|| &AUDIO_PORTS as *const _ as *const c_void
@@ -500,6 +517,7 @@ unsafe extern "C" fn create(
     _host: *const clap_host,
     id: *const c_char,
 ) -> *const clap_plugin {
+    // SAFETY, for this function's `unsafe` blocks: `id` is a NUL-terminated string (checked non-null above).
     if id.is_null() || unsafe { CStr::from_ptr(id) } != ID {
         return ptr::null();
     }
@@ -535,6 +553,7 @@ static FACTORY: clap_plugin_factory = clap_plugin_factory {
 };
 
 unsafe extern "C" fn get_factory(id: *const c_char) -> *const c_void {
+    // SAFETY, for this function's `unsafe` blocks: `id` is a NUL-terminated string (checked non-null above).
     if !id.is_null() && unsafe { CStr::from_ptr(id) } == CLAP_PLUGIN_FACTORY_ID {
         &FACTORY as *const _ as *const c_void
     } else {

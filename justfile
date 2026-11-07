@@ -118,11 +118,12 @@ check-features:
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
 
 # Run the suites `just test` leaves dark. See check-features for which.
-# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs and
-# `tutti-session/clap`'s plugin suite and `tutti`'s §5.2 example, which spawn it; CLAP
-# only, as in CI, so no VST3 SDK is needed.
+# The plugin-server build is for `bevy-tutti/plugin`'s plugin_capture.rs,
+# `tutti-session/clap`'s plugin suite, `tutti`'s §5.2 example and
+# `tutti-plugin-contract`'s server suite, which spawn it; it needs the VST3 SDK
+# submodules, as in CI.
 test-features:
-    cargo build --locked -p tutti-plugin-server --no-default-features --features clap
+    cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
     cargo nextest run --locked -p tutti-cpal --features capture
     cargo nextest run --locked -p bevy-tutti --features audio-io
     cargo nextest run --locked -p bevy-tutti --features soundfont
@@ -399,6 +400,8 @@ lint:
 # `<string.h>`. `tutti-vst3-host`'s `conformance` feature (on in its own tests
 # and `tutti-plugin-server`'s) compiles and links the `audio-probe` DLL against
 # the SDK's Win32 sources. That is why the CI job runs on `windows-latest`.
+# `tutti-shared-plugin-vst3-cpp` compiles the SDK's Win32 sources too, and
+# `tutti-plugin-contract` links it, so both are left to CI's native job.
 # Their lib targets are still checked below where they can be.
 # `au` is macOS-only and compiles to nothing here.
 check-windows:
@@ -412,7 +415,9 @@ check-windows:
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
     win --workspace --all-targets --exclude tutti-rustysynth \
         --exclude tutti-export --exclude tutti --exclude bevy-tutti \
-        --exclude tutti-vst3-host --exclude tutti-plugin-server
+        --exclude tutti-vst3-host --exclude tutti-plugin-server \
+        --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
+    win -p tutti-shared-plugin --all-targets
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets

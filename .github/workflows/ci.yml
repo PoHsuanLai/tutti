@@ -221,7 +221,10 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     steps:
+      # The VST3 shells and the C++ witness build against the SDK submodules.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
@@ -235,7 +238,11 @@ jobs:
     env:
       TUTTI_GOLDEN: require
     steps:
+      # The submodules are the VST3 SDK: `tutti-plugin-contract` builds the VST3
+      # shells and the C++ witness against it.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Install Linux audio deps
         run: |
           sudo apt-get update
@@ -299,7 +306,8 @@ jobs:
       #                         the features on, so none of them ran. Only
       #                         `real_plugin_pressure` did, by name.
       #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
-      #                         mode and transcript through a real plugin-server
+      #                         mode and transcript through a real plugin-server,
+      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin)
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
       #                         (`headless_modulation`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
@@ -331,11 +339,9 @@ jobs:
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
       # binary, which no test build produces (it would be a dependency cycle through
       # `tutti-plugin`), so it is built here, before the tests, as the `test`
-      # job does. CLAP only: that is the format the reference plugin is, and the
-      # default features would pull the VST3 SDK submodules this checkout does
-      # not fetch.
-      - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap and tutti/clap spawn it)
-        run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap
+      # job does. Without `au`, which is macOS-only.
+      - name: Build plugin-server (bevy-tutti/plugin, tutti-session/clap, tutti/clap and the plugin contract spawn it)
+        run: cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst2,vst3
 
       - name: Test
         run: |

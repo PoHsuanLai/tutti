@@ -7,3 +7,5 @@
 pub mod core;
 
 mod clap;
+mod vst2;
+mod vst3;

@@ -91,6 +91,9 @@ members = [
     # One test plugin (a format-free core, a shell per format) and the contract
     # every format's host runs against it.
     "testing/tutti-shared-plugin",
+    # The same spec as a C++ VST3 plugin on the Steinberg SDK classes, a binding
+    # check the Rust shells (which share the `vst3` crate with the host) cannot be.
+    "testing/tutti-shared-plugin-vst3-cpp",
     "testing/tutti-plugin-contract",
     # The Bevy adapter — the one member that mandates Bevy, and the umbrella the
     # engine is consumed through: it depends on the subsystem crates directly

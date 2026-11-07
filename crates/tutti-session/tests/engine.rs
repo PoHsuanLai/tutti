@@ -387,6 +387,8 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     let (a, _) = s.graph().insert(Const::mono(0.5));
     let (b, _) = s.graph().insert(Const::mono(0.25));
     s.graph().set_output_source(0, GraphSource::Node(a, 0));
+    // The meters are the only edit of the second update.
+    s.update();
     let mut track = s.graph().open_node_meter(a);
     let mut other = s
         .graph()

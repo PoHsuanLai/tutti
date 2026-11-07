@@ -22,6 +22,8 @@ taking the unit vocabulary.
 - **`SplitMut`/`SplitRw`**, **`TaskGraph`**, **`JobGate`**, **`BlockWaits`** — the
   parallel executor's claims, task list, job lending and wait settings.
 - **`with_no_denormals`** — runs a closure with subnormals flushed to zero and restores the mode after, unwinding included.
+- **`level_cell()`** — a peak and an energy the audio thread folds each block
+  into and one reader takes whole since its last take (a level meter's lane).
 - **`ArcLend`/`Loan`/`Reader`** — the publish cell, re-exported from `arc-lend`:
   a control thread publishes non-scalar state, the audio thread only borrows it.
 

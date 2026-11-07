@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::error::SoundFontError;
 use crate::instrument_info::InstrumentInfo;
 use crate::instrument_region::InstrumentRegion;
@@ -57,12 +55,12 @@ impl Instrument {
     }
 
     /// Gets the name of the instrument.
-    pub fn get_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Gets the regions of the instrument.
-    pub fn get_regions(&self) -> &[InstrumentRegion] {
+    pub fn regions(&self) -> &[InstrumentRegion] {
         &self.regions[..]
     }
 }

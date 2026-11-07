@@ -1,9 +1,7 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
 use crate::LoopMode;
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
 use crate::instrument::Instrument;
@@ -13,7 +11,7 @@ use crate::soundfont_info::SoundFontInfo;
 use crate::soundfont_parameters::SoundFontParameters;
 use crate::soundfont_sampledata::SoundFontSampleData;
 
-/// Parsed SoundFont (.sf2) containing samples, instruments, and presets.
+/// A parsed SoundFont (.sf2): its samples, instruments and presets.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct SoundFont {
@@ -26,15 +24,22 @@ pub struct SoundFont {
 }
 
 impl SoundFont {
+    /// Reads a SoundFont from `reader`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SoundFontError`] if the stream cannot be read, is not a
+    /// SoundFont 2 file, has compressed samples, or has a region that reaches
+    /// outside the sample data.
     pub fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let chunk_id = BinaryReader::read_four_cc(reader)?;
+        let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"RIFF" {
             return Err(SoundFontError::RiffChunkNotFound);
         }
 
-        let _size = BinaryReader::read_i32(reader)?;
+        let _size = reader.read_i32()?;
 
-        let form_type = BinaryReader::read_four_cc(reader)?;
+        let form_type = reader.read_four_cc()?;
         if form_type != b"sfbk" {
             return Err(SoundFontError::InvalidRiffChunkType {
                 expected: FourCC::from_bytes(*b"sfbk"),
@@ -66,11 +71,11 @@ impl SoundFont {
         // https://github.com/sinshu/rustysynth/pull/51
         for instrument in &self.instruments {
             for region in &instrument.regions {
-                let start = region.get_sample_start();
-                let end = region.get_sample_end();
-                let start_loop = region.get_sample_start_loop();
-                let end_loop = region.get_sample_end_loop();
-                let loop_mode = region.get_sample_modes();
+                let start = region.sample_start();
+                let end = region.sample_end();
+                let start_loop = region.sample_start_loop();
+                let end_loop = region.sample_end_loop();
+                let loop_mode = region.sample_modes();
 
                 if start < 0
                     || start_loop < 0
@@ -88,30 +93,39 @@ impl SoundFont {
         Ok(())
     }
 
-    pub fn get_info(&self) -> &SoundFontInfo {
+    /// The file's INFO list.
+    #[must_use]
+    pub fn info(&self) -> &SoundFontInfo {
         &self.info
     }
 
-    pub fn get_bits_per_sample(&self) -> i32 {
+    /// The bit depth of the sample data.
+    #[must_use]
+    pub fn bits_per_sample(&self) -> i32 {
         self.bits_per_sample
     }
 
-    pub fn get_wave_data(&self) -> &[i16] {
+    /// The 16-bit sample data every sample header indexes into.
+    #[must_use]
+    pub fn wave_data(&self) -> &[i16] {
         &self.wave_data[..]
     }
 
-    /// Gets the samples of the SoundFont.
-    pub fn get_sample_headers(&self) -> &[SampleHeader] {
+    /// The samples of the SoundFont.
+    #[must_use]
+    pub fn sample_headers(&self) -> &[SampleHeader] {
         &self.sample_headers[..]
     }
 
-    /// Gets the presets of the SoundFont.
-    pub fn get_presets(&self) -> &[Preset] {
+    /// The presets of the SoundFont.
+    #[must_use]
+    pub fn presets(&self) -> &[Preset] {
         &self.presets[..]
     }
 
-    /// Gets the instruments of the SoundFont.
-    pub fn get_instruments(&self) -> &[Instrument] {
+    /// The instruments of the SoundFont.
+    #[must_use]
+    pub fn instruments(&self) -> &[Instrument] {
         &self.instruments[..]
     }
 }

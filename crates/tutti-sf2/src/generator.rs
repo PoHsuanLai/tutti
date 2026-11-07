@@ -1,8 +1,7 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::{binary_reader::BinaryReader, error::SoundFontError};
+use crate::binary_reader::ReadExt;
+use crate::error::SoundFontError;
 
 #[derive(Clone, Copy)]
 #[non_exhaustive]
@@ -13,8 +12,8 @@ pub(crate) struct Generator {
 
 impl Generator {
     fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let generator_type = BinaryReader::read_u16(reader)?;
-        let value = BinaryReader::read_u16(reader)?;
+        let generator_type = reader.read_u16()?;
+        let value = reader.read_u16()?;
 
         Ok(Self {
             generator_type,

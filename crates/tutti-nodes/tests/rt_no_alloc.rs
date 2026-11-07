@@ -146,9 +146,9 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
 }
 
 /// `DownmixNode::process` folds each output channel over whole slices with
-/// `tutti_types::fold_planar_channel`, whose table of input channels is a
-/// stack array rather than a collected `Vec`, so the fold at any width
-/// allocates nothing.
+/// `tutti_types::Fold::planar_channel`, which reads the stored matrix and
+/// keeps its group scratch on the stack, so the fold at any width allocates
+/// nothing.
 /// Driven alone in a graph (`BlockRig`).
 ///
 /// 6→2 is the shape that matters: it is the only one where the fold does real
@@ -165,7 +165,8 @@ fn downmix_process_is_allocation_free() {
     use tutti_nodes::DownmixNode;
     use tutti_types::{ChannelLayout, SampleRate};
 
-    let node = DownmixNode::new(ChannelLayout::from(6u16), ChannelLayout::STEREO);
+    let node =
+        DownmixNode::assuming_smpte(ChannelLayout::from(6u16), ChannelLayout::STEREO).unwrap();
     let (mut rig, ()) = BlockRig::new(node, SampleRate(48_000.0), 64);
     for (c, x) in rig.inputs_mut().iter_mut().enumerate() {
         x.fill(0.1 * (c + 1) as f32);

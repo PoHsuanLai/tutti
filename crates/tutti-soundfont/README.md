@@ -112,7 +112,7 @@ send MIDI on its event input.
 - No MIDI device I/O: that is `tutti-midi-hardware`; the message types are
   `tutti-midi-types`.
 
-`SoundFont` and `SoundFontError` are re-exported from RustySynth, so decoding a file needs no direct `rustysynth` dependency.
+`SoundFont` and `SoundFontError` are re-exported from `tutti-sf2`, so decoding a file needs no direct dependency on it.
 The `tutti` crate re-exports this one as `tutti::soundfont` behind its
 `soundfont` feature, and `bevy-tutti` uses it behind the same feature.
 

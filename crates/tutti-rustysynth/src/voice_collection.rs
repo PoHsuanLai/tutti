@@ -1,9 +1,7 @@
-#![allow(dead_code)]
-
 use crate::channel::Channel;
-use crate::instrument_region::InstrumentRegion;
 use crate::synthesizer_settings::SynthesizerSettings;
 use crate::voice::Voice;
+use tutti_sf2::InstrumentRegion;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -32,7 +30,7 @@ impl VoiceCollection {
     ) -> Option<&mut Voice> {
         // If an exclusive class is assigned to the region, find a voice with the same class.
         // If found, reuse it to avoid playing multiple voices with the same class at a time.
-        let exclusive_class = region.get_exclusive_class();
+        let exclusive_class = region.exclusive_class();
         if exclusive_class != 0 {
             for i in 0..self.active_voice_count {
                 let voice = &self.voices[i];

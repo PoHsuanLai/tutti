@@ -516,6 +516,16 @@ mod tests {
         );
     }
 
+    /// A discrete channel names no VST3 bit, so it refuses like an unknown one.
+    ///
+    /// Mutation (run): `to_arrangement` skipping non-table speakers instead of
+    /// refusing returns a shorter arrangement and fails this.
+    #[test]
+    fn a_discrete_channel_is_refused() {
+        let topology = ChannelTopology::new([Speaker::FrontLeft, Speaker::Discrete]);
+        assert_eq!(to_arrangement(&topology), None);
+    }
+
     /// A repeated speaker refuses, since a set cannot hold one twice.
     #[test]
     fn a_duplicate_speaker_is_refused() {

@@ -1,8 +1,8 @@
-//! The crate's error type. RustySynth's `SynthesizerError` stops here, as a
-//! string. The crate root re-exports `SoundFont` and `SoundFontError` (what
-//! `SoundFont::new` returns) from RustySynth.
+//! The crate's error type. The crate root re-exports `SoundFont` and
+//! `SoundFontError` (what `SoundFont::new` returns) from `tutti-sf2`.
 
 use thiserror::Error;
+use tutti_rustysynth::SynthesizerError;
 
 /// `Result` with this crate's [`enum@Error`] as the failure type.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -18,10 +18,8 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// RustySynth refused the `SoundFont` and [`Settings`](crate::Settings) pair.
-    ///
-    /// Carries a string so the forked `SynthesizerError` is not part of this
-    /// crate's error surface.
+    /// The synthesizer refused the [`Settings`](crate::Settings), or the rate
+    /// a graph runs at.
     #[error("SoundFont error: {0}")]
-    SoundFont(String),
+    Synthesizer(#[from] SynthesizerError),
 }

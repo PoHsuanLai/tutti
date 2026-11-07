@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::f32::consts;
 
 use crate::bi_quad_filter::BiQuadFilter;
@@ -93,7 +91,7 @@ impl Voice {
             mod_lfo: Lfo::new(settings),
             oscillator: Oscillator::new(settings),
             filter: BiQuadFilter::new(settings),
-            block: vec![0_f32; settings.block_size],
+            block: vec![0_f32; settings.block_len()],
             previous_mix_gain_left: 0_f32,
             previous_mix_gain_right: 0_f32,
             current_mix_gain_left: 0_f32,
@@ -123,7 +121,7 @@ impl Voice {
             smoothed_cutoff: 0_f32,
             voice_state: VoiceState::Playing,
             voice_length: 0,
-            min_voice_length: (settings.sample_rate / 500) as usize,
+            min_voice_length: (settings.hz() / 500) as usize,
         }
     }
 

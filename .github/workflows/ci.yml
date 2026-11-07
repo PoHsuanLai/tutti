@@ -112,6 +112,9 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-codec`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
+      # And `tutti-sf2` and `tutti-rustysynth`: modules private, the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_sf2 binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
+      - run: scripts/check-canonical-paths.sh tutti_rustysynth array_math bi_quad_filter channel chorus envelope_stage error lfo modulation_envelope oscillator region_ex region_pair reverb soundfont_math synthesizer synthesizer_settings voice voice_collection volume_envelope
       # And `tutti-tempo`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment
       # And `tutti-voicing`, which keeps its modules private.
@@ -169,9 +172,7 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      # `tutti-rustysynth` is excluded: it is a fork of upstream rustysynth that
-      # carries pre-existing lint debt, which is not paid here.
-      - run: cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # One format at a time: a test helper or a match that only the other
       # formats use is dead or irrefutable here, and the workspace run (every
       # format on) cannot see it.
@@ -205,7 +206,7 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - name: Workspace
-        run: cargo clippy --locked --workspace --all-targets --exclude tutti-rustysynth -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       # The workspace run builds each crate with the features the workspace
       # unifies to, which leaves tutti-plugin's format features and
       # clap-extras dark. `au` is macOS-only and compiles to nothing here.
@@ -694,7 +695,7 @@ jobs:
       # `--document-private-items`: the crates' internals carry doc comments
       # with links too, and one that only breaks in a private item rots
       # unseen.
-      - run: cargo doc --locked --workspace --no-deps --exclude tutti-rustysynth
+      - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
       # `tutti_graph::contract` (doc 013 §6's harness) is behind the
@@ -721,7 +722,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-14
-      - run: cargo +nightly-2026-10-14 doc --locked --workspace --no-deps --exclude tutti-rustysynth
+      - run: cargo +nightly-2026-10-14 doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings --cfg docsrs
 

@@ -1,7 +1,6 @@
 use std::fmt::{Debug, Display, Formatter, Result, Write};
 
-/// Reperesents the FourCC.
-/// This is used for error reporting when the binary format is invalid.
+/// A RIFF four-character code, as an error reports it.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct FourCC([u8; 4]);
 
@@ -15,6 +14,8 @@ impl FourCC {
         Self(bytes)
     }
 
+    /// The four bytes, with any non-printable byte shown as `?`.
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 4] {
         &self.0
     }

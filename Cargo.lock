@@ -4856,6 +4856,7 @@ dependencies = [
 name = "tutti-types"
 version = "0.0.1"
 dependencies = [
+ "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
  "criterion",

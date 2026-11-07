@@ -4785,7 +4785,7 @@ slices are ignored on every path, and fewer is a caller bug (a
 |---|---|
 | `ChannelSumNode` | A fan-in `Sum` op: an accumulate kernel, or in-place aliasing of the first input |
 | `ParamShaperNode` + `ParamSumNode` + `AtomicSourceNode`, and most of `bevy-tutti/src/modulation/audio_rate.rs`, `ParamPorts` index arithmetic, the `mod_*`/`with_param_inputs` construction flags on 8 node types, and the ECS `ShaperShaping` diff | A **compiler-owned modulation input** on each param port: base = the `Controls` param; offsets = N shaped sources through one fused `ParamMod` op (sum + shape LUT + clamp over slices). **An unconnected param port resolves to its base value, not 0**, so base chains and the born-with-ports trade-off go away. `Shape` declares param ports by `UnitParam` |
-| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by a `fold_planar_channel` kernel in `tutti-types` |
+| `DownmixNode` | Channel-count coercion on an edge whose layouts disagree (Web Audio's rule), backed by `tutti_types::Fold`, built from two `ChannelTopology` values |
 | `EqBandNode` | `Svf` with bell/shelf types plus `Status::Bypass` (with a crossfade) |
 | `TransportClock`, `BeatWindow`/`BeatCursor` state | The engine's `TransportClock` advances the transport once per block and the executor hands every node an `Env` (`transport_at`, `segments`, `for_each_beat`; the segment generation in place of `transport_epoch`). `BeatCursor`/`BeatWindow` and all 8 `rebind_offline` impls are gone |
 | `TransportSource` (plugin) | A pure function of `Env` plus the meter (`transport_source::from_env`) |

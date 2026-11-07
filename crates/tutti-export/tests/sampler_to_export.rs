@@ -52,8 +52,8 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, RenderConfig,
-    RenderGraph, render_to_file,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, Pcm, RenderConfig, RenderGraph,
+    render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_io::Wave;
@@ -137,7 +137,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     )
 }
 
-fn config(format: AudioFormat) -> ExportConfig {
+fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: SampleRate(SR),
@@ -146,7 +146,6 @@ fn config(format: AudioFormat) -> ExportConfig {
         },
         encode: EncodeConfig {
             format,
-            bit_depth: BitDepth::Float32,
             channels: ChannelLayout::STEREO,
             topology: None,
         },
@@ -247,7 +246,13 @@ fn window(x: &[f32]) -> &[f32] {
 fn render_and_measure(dir: &std::path::Path, name: &str, stretch: f32, cents: f32) -> (f64, f64) {
     let (graph, clock) = voice_graph(stretch, cents);
     let path = dir.join(format!("{name}.wav"));
-    render_to_file(graph, &config(AudioFormat::Wav), clock.as_ref(), &path).unwrap();
+    render_to_file(
+        graph,
+        &config(Format::Wav(Pcm::Float32)),
+        clock.as_ref(),
+        &path,
+    )
+    .unwrap();
     let left = read_left(&path);
     let w = window(&left);
     (dominant_hz(w), rms(w))
@@ -380,8 +385,7 @@ fn a_sampler_render_survives_integer_quantization() {
     let (graph, clock) = voice_graph(1.0, 1200.0);
     let path = d.path().join("int16.wav");
 
-    let mut cfg = config(AudioFormat::Wav);
-    cfg.encode.bit_depth = BitDepth::Int16;
+    let mut cfg = config(Format::Wav(Pcm::Int16));
     cfg.dither = Dither::Triangular; // the default a real export uses
 
     render_to_file(graph, &cfg, clock.as_ref(), &path).unwrap();

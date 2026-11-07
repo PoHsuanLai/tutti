@@ -82,7 +82,7 @@
 //!     let mic = MicIn::open(None, rate).expect("a capture device at the graph rate");
 //!     // Paired at the one place both halves are in scope, so the sink cannot
 //!     // declare a rate the source does not produce.
-//!     let wav = mic.matching_sink(path, BitDepth::Float32).expect("sink opens");
+//!     let wav = mic.matching_sink(path, Pcm::Float32).expect("sink opens");
 //!     commands.spawn(AudioPump::start(mic, wav, Samples(1024)));
 //! }
 //! ```
@@ -118,7 +118,7 @@
 //!     // counted (`TapReader::take_lost`), not blocked on.
 //!     let reader = graph.graph().open_output_tap(Samples(144_000));
 //!     // The sink is as wide as the tap; the rate is `AudioConfig`'s.
-//!     let wav = WavOut::create(&path.0, config.sample_rate, reader.layout(), BitDepth::Float32)
+//!     let wav = WavOut::create(&path.0, config.sample_rate, reader.layout(), Pcm::Float32)
 //!         .expect("a writable path");
 //!     commands.spawn(AudioPump::start(TapIn::new(reader), wav, Samples(1024)));
 //! }
@@ -151,13 +151,13 @@
 pub use tutti_cpal::MicIn;
 pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 
-// The vocabulary those types speak. `BitDepth` selects a sink's on-disk width;
+// The vocabulary those types speak. `Pcm` selects a sink's on-disk width;
 // `OnEmpty` is what a source says a 0-frame poll means, which is why a pump
 // takes no policy argument; `ChannelLayout` is the *channel* width, which the
 // I/O traits carry at runtime rather than as a const parameter — so a host
 // building a source or a sink needs it named here, not fetched from `tutti-metering`.
 // `Samples` is the frame count `poll_into` and `pump` return, and the unit an
 // `AudioPump`'s capacity is given in — the same "needs it named here" reason.
-pub use tutti_types::pcm::BitDepth;
+pub use tutti_io::Pcm;
 pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 pub use tutti_types::{ChannelLayout, Samples};

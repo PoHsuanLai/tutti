@@ -19,8 +19,8 @@
 //! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, RenderConfig,
-    RenderGraph, Resample, render_to_file,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, Pcm, Quality,
+    RenderConfig, RenderGraph, Resample, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -91,7 +91,21 @@ fn near_nyquist_graph() -> RenderGraph {
     built(g)
 }
 
-fn base(format: AudioFormat, bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
+/// The container `ext` names at `depth`, or `None` where it cannot hold it:
+/// FLAC has no float width.
+fn container(ext: &str, depth: Pcm) -> Option<Format> {
+    match ext {
+        "wav" => Some(Format::Wav(depth)),
+        "aiff" => Some(Format::Aiff(depth)),
+        "flac" => depth.int_depth().map(|depth| Format::Flac {
+            depth,
+            level: FlacLevel::default(),
+        }),
+        _ => None,
+    }
+}
+
+fn base(format: Format, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
@@ -100,7 +114,6 @@ fn base(format: AudioFormat, bit_depth: BitDepth, channels: ChannelLayout) -> Ex
         },
         encode: EncodeConfig {
             format,
-            bit_depth,
             channels,
             topology: None,
         },
@@ -134,7 +147,7 @@ fn main() -> tutti_export::Result<()> {
     write(
         "dry.wav".into(),
         tone_graph(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO),
     )?;
 
     // ---- format x depth --------------------------------------------------
@@ -144,25 +157,21 @@ fn main() -> tutti_export::Result<()> {
     // its samples, wrote the wrong depth, or byte-swapped shows up as a level or
     // waveform difference, none of which changes the file's length.
     //
-    // FLAC + Float32 is omitted deliberately — it is a documented hard error,
-    // and `tests/roundtrip.rs` asserts that it errors rather than downgrading.
-    for (fmt, ext) in [
-        (AudioFormat::Wav, "wav"),
-        (AudioFormat::Flac(Default::default()), "flac"),
-        (AudioFormat::Aiff, "aiff"),
-    ] {
+    // FLAC + Float32 is omitted: `Format::Flac` holds integer widths only, so
+    // there is no such file to ask for.
+    for ext in ["wav", "flac", "aiff"] {
         for (depth, tag) in [
-            (BitDepth::Int16, "i16"),
-            (BitDepth::Int24, "i24"),
-            (BitDepth::Float32, "f32"),
+            (Pcm::Int16, "i16"),
+            (Pcm::Int24, "i24"),
+            (Pcm::Float32, "f32"),
         ] {
-            if matches!(fmt, AudioFormat::Flac(_)) && depth == BitDepth::Float32 {
+            let Some(fmt) = container(ext, depth) else {
                 continue;
-            }
+            };
             write(
                 format!("fmt_{ext}_{tag}.{ext}"),
                 tone_graph(),
-                &base(fmt, depth, ChannelLayout::STEREO),
+                &base(fmt, ChannelLayout::STEREO),
             )?;
         }
     }
@@ -173,8 +182,9 @@ fn main() -> tutti_export::Result<()> {
         "fmt_ogg.ogg".into(),
         tone_graph(),
         &base(
-            AudioFormat::OggVorbis(Default::default()),
-            BitDepth::Int24,
+            Format::Vorbis {
+                quality: Quality::default(),
+            },
             ChannelLayout::STEREO,
         ),
     )?;
@@ -186,15 +196,12 @@ fn main() -> tutti_export::Result<()> {
     // than to a spectral tolerance, and the level is chosen so rounding and
     // truncation disagree (0.7 x 32767 = 22936.9).
     for (level, tag) in [(0.7f32, "p70"), (-0.7, "n70")] {
-        for (fmt, ext) in [
-            (AudioFormat::Wav, "wav"),
-            (AudioFormat::Flac(Default::default()), "flac"),
-            (AudioFormat::Aiff, "aiff"),
-        ] {
+        for ext in ["wav", "flac", "aiff"] {
+            let fmt = container(ext, Pcm::Int16).expect("every container holds 16 bits");
             write(
                 format!("dc_{tag}_{ext}_i16.{ext}"),
                 dc_graph(level),
-                &base(fmt, BitDepth::Int16, ChannelLayout::STEREO),
+                &base(fmt, ChannelLayout::STEREO),
             )?;
         }
     }
@@ -209,7 +216,7 @@ fn main() -> tutti_export::Result<()> {
         (Dither::Rectangular, "rect"),
         (Dither::Triangular, "tri"),
     ] {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Int16, ChannelLayout::STEREO);
+        let mut cfg = base(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
         cfg.dither = mode;
         write(format!("dither_{tag}.wav"), dc_graph(0.25), &cfg)?;
     }
@@ -225,7 +232,7 @@ fn main() -> tutti_export::Result<()> {
         (96_000.0, "96k"),
         (22_050.0, "22k05"),
     ] {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_types::SampleRate(target)));
         write(format!("resample_{tag}.wav"), tone_graph(), &cfg)?;
     }
@@ -233,7 +240,7 @@ fn main() -> tutti_export::Result<()> {
     // The anti-alias case. 18 kHz downsampled to 22.05 k is above the new
     // Nyquist and must be attenuated, not folded down to ~4 kHz.
     {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
         cfg.resample = Some(Resample::to(tutti_types::SampleRate(22_050.0)));
         write(
             "resample_alias_22k05.wav".into(),
@@ -245,7 +252,7 @@ fn main() -> tutti_export::Result<()> {
     // Every chunk-size preset at one ratio, so a preset that degrades the
     // conversion is visible rather than assumed equivalent.
     for (i, chunk) in tutti_export::ChunkSize::PRESETS.iter().enumerate() {
-        let mut cfg = base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::STEREO);
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
         cfg.resample = Some(Resample {
             target_rate: tutti_types::SampleRate(44_100.0),
             chunk: *chunk,
@@ -261,21 +268,17 @@ fn main() -> tutti_export::Result<()> {
     write(
         "chan_mono.wav".into(),
         mono_graph(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::MONO),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::MONO),
     )?;
     write(
         "chan_mono_to_quad.wav".into(),
         mono_graph(),
-        &base(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::QUAD),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::QUAD),
     )?;
     write(
         "chan_stereo_to_51.wav".into(),
         tone_graph(),
-        &base(
-            AudioFormat::Wav,
-            BitDepth::Float32,
-            ChannelLayout::from(6u16),
-        ),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::from(6u16)),
     )?;
 
     println!("\n{count} cases written to {}", dir.display());

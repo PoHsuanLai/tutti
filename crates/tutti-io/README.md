@@ -35,7 +35,7 @@ And the file side, which needs no device either:
 - `can_decode` / `decodable_extensions` — which formats *this build* reads.
 
 The traits this crate implements are re-exported from its root (`pump`,
-`AudioIn`, `AudioOut`, `OnEmpty`, `BitDepth`), so a consumer reaches the
+`AudioIn`, `AudioOut`, `OnEmpty`, `Pcm`), so a consumer reaches the
 vocabulary and its live impls from one place.
 
 ## What this crate does not own
@@ -82,7 +82,7 @@ use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unfor
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, TapAlign, TapId};
 use tutti_types::Samples;
-use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
+use tutti_io::{pump, AudioIn, AudioOut, Pcm, TapIn, WavOut};
 
 /// A stereo source: 0.25 on the left, -0.25 on the right.
 struct Tone;
@@ -118,7 +118,7 @@ executor.process(3, &transport, &[], &mut [&mut left[..], &mut right[..]]);
 
 let dir = tempfile::tempdir().expect("temp dir");
 let path = dir.path().join("take.wav");
-let mut wav = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32)
+let mut wav = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32)
     .expect("sink opens");
 assert_eq!(src.layout(), AudioOut::layout(&wav), "pump requires equal widths");
 

@@ -293,7 +293,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
 /// use tutti_types::graph::{OutPort, Source};
 /// use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
-/// use tutti_io::{BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+/// use tutti_io::{Pcm, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 ///
 /// /// A stereo source: 0.5 on the left, -0.5 on the right.
 /// struct Tone;
@@ -321,7 +321,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// editor.collect();
 /// let src = TapIn::new(reader);
 /// let dir = tempfile::tempdir()?;
-/// let wav = WavOut::create(dir.path().join("take.wav"), 48_000.0, 2u16, BitDepth::Float32)?;
+/// let wav = WavOut::create(dir.path().join("take.wav"), 48_000.0, 2u16, Pcm::Float32)?;
 ///
 /// let (driver, pump) = ManualDriver::new();
 /// let rec = Recorder::start_with(src, wav, driver)?;

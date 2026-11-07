@@ -148,7 +148,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     };
     use bevy_tutti::modulation::{Lfo, ModRange, ModRoute, ModSource};
     use std::sync::{Arc, Mutex};
-    use tutti_export::{AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig};
+    use tutti_export::{EncodeConfig, ExportConfig, Format, Pcm, RenderConfig};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, Depth, Hz};
 
@@ -196,8 +196,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels: tutti_types::ChannelLayout::STEREO,
             topology: None,
         },

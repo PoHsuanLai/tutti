@@ -39,7 +39,7 @@
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, Transport, Unforkable,
 };
-use tutti_io::{AudioIn, BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+use tutti_io::{AudioIn, Pcm, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{Beat, Bpm, ChannelLayout, NodeKey, SampleRate, Samples, TapAlign, TapId};
 
@@ -143,7 +143,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
         "the tap has two lanes; the sink below is built to match"
     );
 
-    let sink = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(src, sink, driver).expect("stereo source into a stereo sink");
@@ -212,7 +212,7 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
 
     let (mut graph, reader) = graph_tap(2 * 512);
     let src = TapIn::new(reader);
-    let sink = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(src, sink, driver).expect("stereo source into a stereo sink");

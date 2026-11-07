@@ -36,7 +36,7 @@ mod audio_pump {
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
     // need to name `tutti-metering` or `tutti-io` to write a pump, and this pins that.
-    use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, Samples, WavOut};
+    use bevy_tutti::io::{AudioIn, Pcm, ChannelLayout, OnEmpty, Samples, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -104,7 +104,7 @@ mod audio_pump {
     }
 
     fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("sink should open")
     }
 
@@ -315,7 +315,7 @@ mod audio_pump {
             &path,
             SAMPLE_RATE,
             ChannelLayout::from(6u16),
-            BitDepth::Float32,
+            Pcm::Float32,
         )
         .expect("sink should open");
         let entity = app
@@ -475,7 +475,7 @@ mod audio_pump {
             frames: frames(128),
             pos: 0,
         };
-        let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        let wav = WavOut::create(&path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("could not create WAV");
         let pump = app
             .world_mut()
@@ -510,13 +510,13 @@ mod master_record {
 
     use bevy_app::prelude::*;
     use bevy_tutti::graph::{AudioGraphRes, AudioPump, AudioPumpAppExt, GraphSource};
-    use bevy_tutti::io::{BitDepth, ChannelLayout, Samples, TapIn, WavOut};
+    use bevy_tutti::io::{Pcm, ChannelLayout, Samples, TapIn, WavOut};
     use tutti_nodes::testing::Const;
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
     fn sink(path: &PathBuf) -> WavOut {
-        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, BitDepth::Float32)
+        WavOut::create(path, SAMPLE_RATE, ChannelLayout::STEREO, Pcm::Float32)
             .expect("sink should open")
     }
 

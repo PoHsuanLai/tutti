@@ -118,7 +118,7 @@ reports the result.
 app.add_audio_pump::<f32>();
 
 let mic = MicIn::open(None, config.sample_rate)?;
-let wav = mic.matching_sink(&path, BitDepth::Float32)?;
+let wav = mic.matching_sink(&path, Pcm::Float32)?;
 let pump = commands.spawn(AudioPump::start(mic, wav, Samples(1024))).id();
 ```
 

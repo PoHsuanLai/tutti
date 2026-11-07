@@ -1,10 +1,11 @@
 use super::*;
 use crate::config::EncodeConfig;
+use crate::{Format, Pcm, Quality};
 
-fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
+fn config(dither: Dither, format: Format) -> ExportConfig {
     ExportConfig {
         encode: EncodeConfig {
-            bit_depth,
+            format,
             ..Default::default()
         },
         dither,
@@ -12,11 +13,15 @@ fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
     }
 }
 
+fn wav(pcm: Pcm) -> Format {
+    Format::Wav(pcm)
+}
+
 /// At `Float32` nothing may be added at all — the guard whose absence makes
 /// `1 << 31` overflow to a negative LSB.
 #[test]
 fn float32_is_never_dithered() {
-    let mut d = DitherState::for_config(&config(Dither::Triangular, BitDepth::Float32));
+    let mut d = DitherState::for_config(&config(Dither::Triangular, wav(Pcm::Float32)));
     assert!(d.lsb.is_none());
     let mut samples = [0.5f32; 16];
     d.apply(&mut samples);
@@ -27,14 +32,18 @@ fn float32_is_never_dithered() {
     );
 }
 
-/// An Ogg export at the default integer depth and dither adds nothing.
+/// An Ogg export with dither on adds nothing.
 ///
-/// Mutation (run): drop the `OggVorbis` arm in `for_config` and the noise
-/// reaches the samples.
+/// Mutation (run): make `Format::int_depth` return `Some(IntDepth::default())`
+/// for `Vorbis` and the noise reaches the samples.
 #[test]
 fn ogg_is_never_dithered() {
-    let mut cfg = config(Dither::Triangular, BitDepth::Int24);
-    cfg.encode.format = AudioFormat::OggVorbis(Default::default());
+    let cfg = config(
+        Dither::Triangular,
+        Format::Vorbis {
+            quality: Quality::default(),
+        },
+    );
     let mut d = DitherState::for_config(&cfg);
     assert!(d.is_off());
     let mut samples = [0.5f32; 16];
@@ -44,7 +53,7 @@ fn ogg_is_never_dithered() {
 
 #[test]
 fn off_is_a_no_op() {
-    let mut d = DitherState::for_config(&config(Dither::Off, BitDepth::Int16));
+    let mut d = DitherState::for_config(&config(Dither::Off, wav(Pcm::Int16)));
     let mut samples = [0.25f32, -0.25, 0.25, -0.25, 0.25, -0.25, 0.25, -0.25];
     d.apply(&mut samples);
     assert_eq!(
@@ -57,8 +66,8 @@ fn off_is_a_no_op() {
 /// would be a bug, and a wrong-sign or wrong-scale LSB shows up here.
 #[test]
 fn noise_stays_within_one_lsb() {
-    for depth in [BitDepth::Int16, BitDepth::Int24] {
-        let mut d = DitherState::for_config(&config(Dither::Triangular, depth));
+    for depth in [Pcm::Int16, Pcm::Int24] {
+        let mut d = DitherState::for_config(&config(Dither::Triangular, wav(depth)));
         let lsb = d.lsb.expect("integer depths dither");
         assert!(lsb > 0.0, "LSB must be positive, got {lsb}");
         let mut samples = [0.0f32; 512];
@@ -75,7 +84,7 @@ fn noise_stays_within_one_lsb() {
 /// to the block grid, and the one a width-aware rewrite could break.
 #[test]
 fn the_noise_sequence_is_continuous_across_blocks() {
-    let cfg = config(Dither::Triangular, BitDepth::Int16);
+    let cfg = config(Dither::Triangular, wav(Pcm::Int16));
 
     let mut whole = [0.0f32; 16];
     DitherState::for_config(&cfg).apply(&mut whole);
@@ -96,8 +105,8 @@ fn the_noise_sequence_is_continuous_across_blocks() {
 /// back from the implementation.
 #[test]
 fn the_lsb_matches_the_bit_depth() {
-    let d16 = DitherState::for_config(&config(Dither::Triangular, BitDepth::Int16));
-    let d24 = DitherState::for_config(&config(Dither::Triangular, BitDepth::Int24));
+    let d16 = DitherState::for_config(&config(Dither::Triangular, wav(Pcm::Int16)));
+    let d24 = DitherState::for_config(&config(Dither::Triangular, wav(Pcm::Int24)));
     assert_eq!(d16.lsb, Some(1.0 / 32768.0));
     assert_eq!(d24.lsb, Some(1.0 / 8388608.0));
 }

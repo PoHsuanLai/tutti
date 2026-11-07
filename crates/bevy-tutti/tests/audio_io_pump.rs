@@ -35,7 +35,7 @@ mod audio_pump {
 
     use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
     // Through `bevy_tutti::io`, not the engine crates directly: a host should not
-    // need to name `tutti-core` or `tutti-io` to write a pump, and this pins that.
+    // need to name `tutti-metering` or `tutti-io` to write a pump, and this pins that.
     use bevy_tutti::io::{AudioIn, BitDepth, ChannelLayout, OnEmpty, Samples, WavOut};
 
     const SAMPLE_RATE: f64 = 48_000.0;

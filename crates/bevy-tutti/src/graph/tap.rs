@@ -11,7 +11,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::AudioTap;
+use tutti_metering::AudioTap;
 
 /// The master output's lock-free analysis tap.
 ///
@@ -21,7 +21,7 @@ use tutti_core::AudioTap;
 /// something an ECS resource can hold for you.
 ///
 /// One consumer at a time: `open()` on a live tap returns
-/// [`TapBusy`](tutti_core::TapBusy) instead of minting a second ring,
+/// [`TapBusy`](tutti_metering::TapBusy) instead of minting a second ring,
 /// so a system that opens for recording cannot silently kill a system that
 /// opened for analysis. `close()` first to hand it over deliberately.
 ///

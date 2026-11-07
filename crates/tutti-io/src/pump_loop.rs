@@ -290,7 +290,7 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// # Examples
 ///
 /// ```
-/// use tutti_core::AudioTap;
+/// use tutti_metering::AudioTap;
 /// use tutti_types::Samples;
 /// use tutti_io::{BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 ///

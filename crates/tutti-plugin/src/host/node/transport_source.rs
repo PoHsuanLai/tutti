@@ -721,7 +721,7 @@ mod tests {
         Rate(f64),
     }
 
-    /// The transport as the engine keeps it (tutti-core's `TransportClock`):
+    /// The transport as the engine keeps it (tutti-transport's `TransportClock`):
     /// a [`FrameClock`] that a seek seats, a tempo or rate change starts a
     /// new segment on, a loop wraps, and a stop only stops counting. Each
     /// block's transport and changes are counted ones, as the engine's

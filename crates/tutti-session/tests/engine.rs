@@ -18,10 +18,10 @@
 
 use std::sync::Arc;
 
-use tutti_core::MotionEvent;
 use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::assert_golden;
 use tutti_session::{GraphSource, Session};
+use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
@@ -62,8 +62,8 @@ fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
                 .motion
                 .try_send(MotionEvent::Locate {
                     beat: tutti_types::Beat(0.75),
-                    fade: tutti_core::FadeOut::Immediate,
-                    then: tutti_core::Then::Keep,
+                    fade: tutti_transport::FadeOut::Immediate,
+                    then: tutti_transport::Then::Keep,
                 })
                 .expect("room");
         }

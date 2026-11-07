@@ -178,7 +178,7 @@ pub struct Bound {
     /// [`PluginMeter::reader`]), registered at bind: the one cell the node reads the project meter from, once per
     /// block. Installing or clearing a meter publishes into it; nothing
     /// swaps it.
-    meter: tutti_core::MeterSlotReader,
+    meter: tutti_transport::MeterSlotReader,
     /// The meter the transport snapshot reads when none is installed on the
     /// controls: built once here, on the control thread, because building a
     /// `MeterMap` allocates.
@@ -673,7 +673,7 @@ impl<S> PluginClient<S> {
     ///
     /// The transport itself needs no install: the node reads it from each
     /// block. See [`PluginControls::set_meter`].
-    pub fn set_meter(&self, meter: tutti_core::ProjectMeter) {
+    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) {
         self.controls.set_meter(meter);
     }
 

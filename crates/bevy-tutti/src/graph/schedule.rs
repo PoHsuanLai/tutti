@@ -224,9 +224,9 @@ mod tests {
             use tutti_nodes::{SvfFilterNode, SvfType};
             use tutti_types::{Depth, Hz, Q, UnitParam};
 
-            app.insert_resource(crate::graph::TransportRes(
-                tutti_core::transport::Transport::new(48_000.0),
-            ));
+            app.insert_resource(crate::graph::TransportRes(tutti_transport::Transport::new(
+                48_000.0,
+            )));
             app.add_plugins(TuttiModulationPlugin);
             let filter = app
                 .world_mut()

@@ -1,9 +1,9 @@
 use super::*;
-use tutti_core::Engine;
-use tutti_core::{MotionEvent, Transport};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{Beat, BeatDuration};
 use tutti_types::{Hz, Q};
@@ -89,7 +89,9 @@ fn test_transport_loop_wrapping() {
         .motion
         .schedule(
             tutti_types::At::NextBlock,
-            tutti_core::LoopEdit::over(tutti_types::LoopRange::new(0.0, 4.0).expect("ordered")),
+            tutti_transport::LoopEdit::over(
+                tutti_types::LoopRange::new(0.0, 4.0).expect("ordered"),
+            ),
         )
         .expect("room");
     let _ = transport.motion.try_send(MotionEvent::Play);

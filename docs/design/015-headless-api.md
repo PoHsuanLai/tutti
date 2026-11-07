@@ -351,7 +351,7 @@ plugin crates, and `core/` is the floor.
 
 | Edge | Always or feature | Why |
 |---|---|---|
-| `tutti-types`, `tutti-graph`, `tutti-core` | always | the graph, engine and transport |
+| `tutti-types`, `tutti-graph`, `tutti-transport`, `tutti-metering`, `tutti-engine` | always | the graph, transport, meters and engine |
 | `tutti-nodes` | always | click, control lanes, `Modulation` |
 | `tracing` | always | logging; what `GraphRuntime`'s `bevy_log` calls become |
 | `tutti-cpal` | `device` | the sound card; off means offline only, with no ALSA headers |
@@ -518,7 +518,7 @@ device.stop(); device.start()?;
 ```
 
 - `build_offline` builds everything but the stream. The host pulls blocks
-  with `s.render(&mut out)` (it calls `Engine::process`, in `tutti-core`), so
+  with `s.render(&mut out)` (it calls `Engine::process`, in `tutti-engine`), so
   the offline path never links `tutti-cpal`.
 - `build_device` opens the device first, reads its `OutputSpec` and builds
   the graph at that rate, as `build_into` does.
@@ -1043,13 +1043,13 @@ midi = ["dep:tutti-midi-types", "dep:tutti-midi-file", "dep:tutti-midi-runtime",
   `default = ["session"]` never turns on `device`, and a headless default
   build links neither `tutti-cpal` nor ALSA.
 - **The cost of the default** is the session's own code. Its always-on
-  edges (`tutti-types`, `tutti-graph`, `tutti-core`, `tutti-nodes`) are
+  edges (`tutti-types`, `tutti-graph`, `tutti-transport`, `tutti-metering`, `tutti-engine`, `tutti-nodes`) are
   already always-on edges of `tutti`; `tracing` is the one new crate.
 - The comment in `crates/tutti/Cargo.toml` that reads "`default = []`, as
   on every other member" is replaced by the one above.
 - `full` is unchanged, and the plugin formats stay opt-in.
 
-**Organisation.** The root has the aliased crate modules (`tutti::core`,
+**Organisation.** The root has the aliased crate modules (`tutti::engine`,
 `tutti::graph`, `tutti::session`, …) and one prelude.
 
 The prelude is the session plus the vocabulary a session host writes
@@ -1879,7 +1879,7 @@ No question is open. The user decided:
 
 1. **The name:** `tutti-session`, with `Session`, re-exported as
    `tutti::session`. The alternatives each collided with something:
-   `tutti-engine` with `tutti_core::Engine`, `tutti-host` with the plugin
+   `tutti-engine`, which since became the crate holding `Engine`, `tutti-host` with the plugin
    and cpal hosts, `tutti-app` with Bevy's `App`, and `tutti-runtime` with
    `tutti-midi-runtime`. "Session" means a running engine here, not a saved
    project (§10).

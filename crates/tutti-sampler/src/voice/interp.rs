@@ -44,7 +44,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// # A placed voice has no position of its own
 ///
 /// Position is derived from the playhead, never accumulated here — the same
-/// model `tutti_core`'s transport uses, where the engine's `TransportClock` is
+/// model `tutti_transport`'s transport uses, where the engine's `TransportClock` is
 /// the one thing that advances time (it counts frames and derives the beat
 /// from them) and every node reads the result from its block's `Env`. A
 /// voice that also carried a read cursor would be a second, competing clock,

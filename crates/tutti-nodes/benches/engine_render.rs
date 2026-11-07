@@ -1,10 +1,9 @@
 //! The graph render, per block — the engine's hot path.
 //!
-//! `Engine::process` is `tutti-core`'s, but the graph it renders here is built
+//! `Engine::process` is `tutti-engine`'s, but the graph it renders here is built
 //! from this crate's nodes (`Osc`, `EqBandNode`, `BusStripNode`,
 //! `SvfFilterNode`), so the numbers are for the filters the engine ships. That
-//! is why the bench lives here: `tutti-core` cannot depend on this crate
-//! without a cycle.
+//! is why the bench lives here: `tutti-engine` does not depend on this crate.
 //!
 //! # Reading these numbers
 //!
@@ -47,11 +46,12 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::Transport;
-use tutti_core::{Engine, MotionEvent};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
+use tutti_transport::MotionEvent;
+use tutti_transport::Transport;
 use tutti_types::Samples;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};

@@ -303,7 +303,7 @@ plugin-server-release:
 # features instead and proves nothing. Naming the feature is what tests both
 # sides.
 check-bevy-free:
-    cargo check --locked -p tutti-core
+    cargo check --locked -p tutti-transport -p tutti-metering -p tutti-engine
     cargo check --locked -p tutti-types
     cargo check --locked -p tutti-types --features bevy
     # The facade, and the assertion the two `cargo check`s above cannot make.

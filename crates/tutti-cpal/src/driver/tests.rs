@@ -1,7 +1,9 @@
 use super::*;
 use crate::{AudioEngine, ManualStreamDriver, OutputSpec};
-use tutti_core::{AudioTap, Engine, MasterMeter, Transport};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
+use tutti_metering::{AudioTap, MasterMeter};
+use tutti_transport::Transport;
 use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 fn spec_at(rate: f64) -> OutputSpec {

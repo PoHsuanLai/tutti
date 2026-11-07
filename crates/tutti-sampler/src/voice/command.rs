@@ -327,7 +327,7 @@ pub(crate) struct Queued {
 
 /// A [`VoiceCommand`] never reached the pool, and the work it carried is gone.
 ///
-/// Modelled on [`QueueFull`](tutti_core::transport::QueueFull) one crate down:
+/// Modelled on `tutti_transport::QueueFull`:
 /// the two failures are told apart because a caller acts on them differently,
 /// and the lost command rides along so it can be retried or logged with its
 /// contents rather than as an anonymous count.

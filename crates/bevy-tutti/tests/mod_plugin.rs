@@ -30,9 +30,9 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::modulation::{ParamRef, TuttiModulationPlugin};
 use bevy_tutti::plugin_host::{PluginLoadTerminated, PluginRequest, TuttiHostingPlugin};
-use tutti_core::transport::Transport;
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
+use tutti_transport::Transport;
 use tutti_types::SampleRate;
 
 const RATE: f64 = 48_000.0;
@@ -148,8 +148,8 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     };
     use bevy_tutti::modulation::{Lfo, ModRange, ModRoute, ModSource};
     use std::sync::{Arc, Mutex};
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_export::{AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig};
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, Depth, Hz};
 
     const BLOCK: usize = 1024;

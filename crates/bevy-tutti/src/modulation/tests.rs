@@ -7,8 +7,8 @@ use std::sync::Arc;
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
-use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
+use tutti_transport::Transport;
 use tutti_types::{Beat, Bpm, Depth, Hz, SampleRate, UnitParam};
 
 use super::{Lfo, ModRange, ModRoute, Mods, ParamRef, TuttiModulationPlugin};

@@ -45,8 +45,8 @@ use bevy_tutti::graph::{
 };
 use bevy_tutti::modulation::TuttiModulationPlugin;
 use bevy_tutti::modulation::{Macro, ModRange, ModRoute, ModSource, ParamRef};
-use tutti_core::transport::Transport;
 use tutti_nodes::{DistortionNode, ShapeKind};
+use tutti_transport::Transport;
 use tutti_types::AtomicF32;
 use tutti_types::{Depth, UnitParam};
 

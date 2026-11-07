@@ -17,13 +17,15 @@ categories = ["multimedia::audio"]
 # Everything else is a feature, because a headless consumer that only bounces
 # a file should not link ALSA, and one that only reads a .mid should not link
 # CoreMIDI.
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-transport = { path = "../tutti-transport" }
+tutti-metering = { path = "../tutti-metering" }
+tutti-engine = { path = "../tutti-engine" }
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # The audio graph: what an export renders, and what `Engine` runs.
-# tutti-core already depends on it, so naming it here links nothing new.
+# `tutti-engine` already depends on it, so naming it here links nothing new.
 tutti-graph = { path = "../tutti-graph" }
 
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }

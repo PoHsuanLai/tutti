@@ -21,13 +21,13 @@ use bevy_tutti::graph::{
     AudioConfig, AudioGraphRes, GraphReconcilePlugin, SessionNode, SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::midi::{MidiSourceInstall, TuttiMidiPlugin};
-use tutti_core::transport::Transport;
 use tutti_graph::{
     Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, Unforkable,
 };
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{PolySynth, SynthConfig};
+use tutti_transport::Transport;
 use tutti_types::{Beat, BeatDuration, Bpm, NodeKey, SampleRate};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};

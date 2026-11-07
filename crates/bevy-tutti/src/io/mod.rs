@@ -153,7 +153,7 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 // `OnEmpty` is what a source says a 0-frame poll means, which is why a pump
 // takes no policy argument; `ChannelLayout` is the *channel* width, which the
 // I/O traits carry at runtime rather than as a const parameter — so a host
-// building a source or a sink needs it named here, not fetched from `tutti-core`.
+// building a source or a sink needs it named here, not fetched from `tutti-metering`.
 // `Samples` is the frame count `poll_into` and `pump` return, and the unit an
 // `AudioPump`'s capacity is given in — the same "needs it named here" reason.
 pub use tutti_types::pcm::BitDepth;

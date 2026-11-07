@@ -272,7 +272,7 @@ impl Plugin {
     /// Returns `false` if the plugin declared it does not want a transport
     /// snapshot.
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
-    pub fn set_meter(&self, meter: tutti_core::ProjectMeter) -> bool {
+    pub fn set_meter(&self, meter: tutti_transport::ProjectMeter) -> bool {
         if !self.accepts(Features::TRANSPORT) {
             return false;
         }
@@ -306,8 +306,8 @@ impl Plugin {
     #[must_use = "a false return means the plugin declined this input and nothing was installed"]
     pub fn set_transport_source(
         &mut self,
-        reader: tutti_core::transport::Transport,
-        meter: tutti_core::ProjectMeter,
+        reader: tutti_transport::Transport,
+        meter: tutti_transport::ProjectMeter,
     ) -> bool {
         let _ = reader;
         self.set_meter(meter)

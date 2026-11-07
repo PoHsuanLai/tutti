@@ -57,7 +57,7 @@ use crate::SessionNode;
 
 /// The largest block a device's graph is prepared for.
 ///
-/// A device block longer than this is rendered by `tutti_core::Engine` as
+/// A device block longer than this is rendered by `tutti_engine::Engine` as
 /// consecutive graph blocks of at most this many frames, so it bounds the
 /// arena, not the device. 1024 frames covers every buffer size a DAW offers
 /// by default.
@@ -487,11 +487,11 @@ impl Graph {
     /// editor to what the engine can render.
     pub(crate) fn engine(
         &mut self,
-        transport: &tutti_core::Transport,
-    ) -> Result<tutti_core::Engine, tutti_core::GraphEngineError> {
+        transport: &tutti_transport::Transport,
+    ) -> Result<tutti_engine::Engine, tutti_engine::GraphEngineError> {
         let mut exec = self.take_executor();
         exec.set_pool(self.render_pool("tutti-worker"));
-        tutti_core::Engine::new(transport, &mut self.editor, exec)
+        tutti_engine::Engine::new(transport, &mut self.editor, exec)
     }
 
     /// Re-prepare every node for `rate`, keeping the block and the quantum.

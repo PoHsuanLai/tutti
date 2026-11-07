@@ -62,9 +62,7 @@ mod soundfont_spawn {
         app.add_plugins((bevy_app::TaskPoolPlugin::default(), AssetPlugin::default()));
 
         app.insert_resource(AudioGraphRes::headless(0, 2));
-        app.insert_resource(TransportRes(tutti_core::transport::Transport::new(
-            SAMPLE_RATE,
-        )));
+        app.insert_resource(TransportRes(tutti_transport::Transport::new(SAMPLE_RATE)));
         app.insert_resource(AudioConfig {
             sample_rate: tutti_types::SampleRate(SAMPLE_RATE),
             channels: tutti_types::ChannelLayout::STEREO,
@@ -272,10 +270,10 @@ mod midi_soundfont_audio {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{LiveMidi, LiveMidiInput, MidiSourceInstall, TuttiMidiPlugin};
-    use tutti_core::transport::Transport;
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_transport::Transport;
     use tutti_types::{Beat, BeatDuration, SampleRate};
     use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -533,11 +531,11 @@ mod midi_route {
     use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
     use bevy_tutti::midi::{MidiEngineNodes, MidiRouteRule, TuttiMidiPlugin};
-    use tutti_core::transport::Transport;
     use tutti_midi_runtime::MidiInputNode;
     use tutti_midi_types::MidiIn;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_transport::Transport;
     use tutti_types::SampleRate;
     use tutti_ump::{MidiChannel, MidiGroup};
 

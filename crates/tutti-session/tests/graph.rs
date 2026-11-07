@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_graph::CrossfadeCurve;
+use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::{
     Cx, ForkByClone, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
     Unforkable,
@@ -733,7 +733,7 @@ fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
 /// the project meter → fails.
 #[test]
 fn an_update_frees_what_a_block_held_across_a_replacement() {
-    use tutti_core::MeterSlot;
+    use tutti_transport::MeterSlot;
     use tutti_types::{Beat, MeterChange, MeterMap, TimeSignature};
 
     let mut s = detached(1);

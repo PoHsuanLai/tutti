@@ -19,7 +19,7 @@ and `bevy-tutti`'s systems collect their declarations and call it. With
 distinguishes anything: the design's title and this file's name keep it,
 but the code and the crate docs say "the graph" (see
 [Rewrite order, by payoff](#rewrite-order-by-payoff)).
-`tutti-core` has since been split: `Transport`, `TransportClock` and the clocks
+`tutti-core` has since been split: `Transport`, `TransportAudio` and the clocks
 are `tutti-transport`'s, the meters `tutti-metering`'s, `Engine` `tutti-engine`'s,
 and `MAX_ROOT_CHANNELS` `tutti-graph`'s. Where the record below says
 `tutti-core`, it means the crate as it was then.
@@ -348,7 +348,8 @@ the race. Every type below exists because the audit found the bug it prevents.
 | **A frame-count type at the `AudioIn`/`AudioOut` edge** | Bare `usize` from `poll_into` (`io.rs:158`) | A frames/samples mix-up: a 6-channel loop wrapping at a sixth of its length (CLAUDE.md) |
 | **`ForkMode::Offline(&OfflineTransport)`**, with `Timeline` and `OfflineTransport` moved down to tutti-types so tutti-graph can name them. `ForkMode::Offline` now carries nothing: every node reads `Env`. `Timeline`/`OfflineClock`/`OfflineTransport` live in `tutti_core::transport`; an `OfflineTransport` is still built only from an `OfflineClock` (what an export hands its `PrepareEdit`; see [below](#nodes-read-time-from-env-the-offline-timeline-leaves-the-fork)) | `ForkMode::Offline(&dyn Any)`, downcast by every unit (tutti-graph could not name tutti-core's type) | A context of the wrong type (a reference to a reference, the timeline inside it): every downcast failed and every rebind silently did nothing, so transport-aware units exported against a playhead nothing advanced. Now `E0308` (smart types 2). And `OfflineTransport` is a newtype built only from an `OfflineClock` (a marker the live `Transport` cannot carry, by the orphan rule), so the live playhead cannot be passed as the render's timeline either (`E0277`) |
 | **`Timeline::segment_generation() -> u64`**, required; `FrameClock::generation` moves on at every segment restart (seek, tempo or rate change, loop wrap) and at a play start, published by the engine's clock before the beat | A playhead read as a bare beat, with no way to tell a jump that lands on the same beat from no jump | The sampler's seat running on through a seek to the beat it stood on, or a one-block transport loop, instead of re-seating (`interp.rs` `Seat`, both tiers) |
-| **The transport's one playhead writer**: `Transport::clock_links() -> Result<ClockLinks, PlayheadClaimed>`, handed out once per transport (every clone shares the claim) and given back when its last holder drops; the writer half of `ClockLinks` is private | A "must not" in `Engine::new`'s docs, which nothing enforced | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::PlayheadClaimed` at the second `Engine::new`. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`) are crate-private too (`E0616` outside), so the only store from outside is the writer's `ClockLinks::set_playhead` |
+| **The transport's one audio side**: `Transport::audio(rate) -> Result<TransportAudio, AudioTaken>`, taken once per transport (every clone shares the claim, which is the motion machine's home) and given back when it drops. It owns the motion machine, the playhead clock, the pending commands and the inputs a block reads; its methods (`gather`, `begin_block`, `fire`, `advance`, `publish_position`, `follow_rate`) are the block's steps, and the clock, the inputs, the pending list and the machine are crate-private | A "must not" in `Engine::new`'s docs, which nothing enforced; then two claims (`PlayheadClaimed`, `MotionHeld`) and four separately claimed pieces glued by call order in the engine | Two engines (two clocks) over one transport, both consuming every seek and both writing the playhead. Now `GraphEngineError::TransportHeld` at the second `Engine::new`. No drop order to keep (the claim is the machine's home), no hand-released credit (`ScheduleAudio::take` is the only way a command leaves the list), no way to read the inputs twice in a block or settle a fade late. (`EnvClock` never was a writer: it reads each block's `Env` and shares nothing.) The readout cells (`TransportSettings::beat`, `segment_generation`, `paused`, ...) are crate-private too (`E0616` outside), so the only store from outside is `TransportAudio::set_playhead` |
+| **One transport command queue**: `MotionFsm::try_send(event)` is `schedule(At::NextBlock, event)`; the untimed queue and `MotionAudio::drain` are gone | Two queues, the untimed one drained first | A stop sent with `schedule(At::NextBlock, ..)` and then a play sent with `try_send` ended stopped. Commands due on one frame now apply in send order across both calls. `try_send` still returns `QueueFull` with the event handed back, but it draws on the schedule's 64 credits, so commands waiting for a beat count against it |
 | **No `IntoNode` for a bare `Node`**: every insert says whether it forks — `ForkByClone(n)`, `Unforkable(n)`, or the node's own `IntoNode`; `IntoNode::into_parts` is required | The blanket `impl<N: Node> IntoNode for N` (and one for `Box<dyn Node>`): no controls, no fork source, nothing said | A finding of #38's review (an `EnvClock` inserted unforkable broke every export, found only when one ran), and the impl slot a node type needs for its own fork source (#51's `PluginNode` wrapper). Inserting a bare node is `E0277` |
 
 **Smart types 2: #51 and #48.**
@@ -385,10 +386,10 @@ the race. Every type below exists because the audit found the bug it prevents.
   sharing one cannot alias it. The transport's motion machine is not one of
   them: `MotionFsm` is its `Clone` control handle (send and schedule
   commands, read the published motion), and the FSM is a plain field of
-  its audio half, `MotionAudio`, which the engine owns in its render state
-  and drives through `&mut`. The FSM waits in a capacity-one
-  `ArrayQueue` on the handle while no engine holds it; an engine takes it
-  under its playhead claim and its drop hands it back, so a later engine
+  its audio half, `MotionAudio`, which `TransportAudio` owns and the engine
+  drives through `&mut`. The FSM waits in a capacity-one
+  `ArrayQueue` on the handle while no engine holds it; taking it is the
+  transport's one claim and its drop hands it back, so a later engine
   resumes the same state.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
@@ -507,8 +508,9 @@ place that loses precision to be written out explicitly:
 
    **Transport commands.** `MotionFsm::schedule(At,
    TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`), a
-   tempo or a loop change. No untimed overload: the old `try_send` and
-   settings stores still work and mean `At::NextBlock`. The queue is a
+   tempo or a loop change. No untimed overload: `try_send` is `schedule` at
+   `At::NextBlock`, on the same queue, so it keeps send order with timed
+   commands, and the settings stores are values read once per block. The queue is a
    preallocated ring of `SCHEDULE_CAPACITY` (64) with a credit count, so
    `schedule` refuses (`ScheduleFull`, command handed back) rather than
    drops; `cancel_scheduled` takes pending ones back. Each block, the engine
@@ -556,7 +558,7 @@ place that loses precision to be written out explicitly:
        over one fade: the new position's audio after a seek; after a stop,
        whatever still sounds while stopped (live input, tails), so the
        output never returns with a step;
-     - with **no lead time** (`At::NextBlock`, an untimed `try_send`, a late
+     - with **no lead time** (`At::NextBlock`, `try_send`, a late
        command) the jump is on the block's first frame, the gain is zero
        there (the old audio's abrupt end, accepted: nothing can fade audio
        already delivered) and the new audio fades in.
@@ -2624,7 +2626,7 @@ never touches the live ring; a free-running source follows a relayed seek).
     frame clock, so the beat steps at the new rate through the silent block;
     on `Net` the block a re-rated net is pumped. On both, the engine's frame
     clock and every scheduled `At::Frame` transport command move to the same
-    wall-clock time (nearest frame; `Schedule::rescale`), #16's rule. The
+    wall-clock time (nearest frame; `ScheduleAudio::rescale`), #16's rule. The
     boundary is the send order at `Transport::set_sample_rate`
     (`Schedule::mark_rate_change`): a command scheduled after the restart
     set the new rate is already in its frames and is not rescaled again.
@@ -2973,10 +2975,10 @@ store between pieces. Decisions:
   through `Legacy` and `Limits` for one id; the docs now say "must not" and
   why (two clocks both consume a seek and both write the playhead).
   *Superseded (smart types 2):* the claim is on the transport, not the
-  graph — `Transport::clock_links` hands the writer out once, and a second
-  engine is `GraphEngineError::PlayheadClaimed` (§5).
+  graph — `Transport::audio` hands the audio side out once, and a second
+  engine is `GraphEngineError::TransportHeld` (§5).
 - **`TransportClock` stays**: it is the engine's own clock
-  (`GraphRender::clock`, driven by `begin`/`advance`). Its `AudioUnit` half
+  (`TransportAudio`'s clock, driven by `begin_block`/`advance`). Its `AudioUnit` half
   (the beat on ports inside a `Net`) now runs only in its own tests and a
   `Net` a caller builds; it goes with `Net`, and `EnvClock` is the
   graph's.

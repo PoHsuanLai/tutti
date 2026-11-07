@@ -341,8 +341,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   depends on `tutti-types` alone; `tutti-transport` on `tutti-types`,
   `tutti-rt` and `tutti-graph`; `tutti-engine` on those and the two crates
   above, with a dev edge to `tutti-nodes` for the `ClickNode` tests.
-  `Control`, `MotionAudio`, `Schedule` and `Scheduled` are public because the
-  engine drives them across the crate edge; a host does not name them.
+  `TransportAudio` (`Transport::audio`, taken once) is the audio side the
+  engine drives across the crate edge; the clock, control inputs and pending
+  list behind it are crate-private.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is

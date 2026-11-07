@@ -94,6 +94,10 @@ use crate::play::PlayClock;
 use crate::spec::{EventEdge, EventIn, EventOut, ValidGraph};
 use crate::time::Offset;
 use tutti_types::PlayReading;
+use tutti_ump::{
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice1,
+    Voice2, decode,
+};
 
 /// One param port's state, as the reference keeps it.
 #[derive(Default)]
@@ -170,6 +174,10 @@ pub struct Reference {
     fb_audio: BTreeMap<(OutPort, u32, Samples), VecDeque<f32>>,
     fb_event: BTreeMap<(EventIn, EventOut, u32, Samples), RefFifo>,
     inject: BTreeMap<EventIn, Vec<Event>>,
+    /// The keys each tracked event output holds (see `Executor`'s
+    /// `held.rs`; written here from `decode`, sharing none of its code).
+    held: BTreeMap<EventOut, RefHeld>,
+    tracked: BTreeSet<EventOut>,
     /// Scheduled commands not yet due, in scheduling order.
     scheduled: Vec<RefCommand>,
     next_id: u64,
@@ -294,6 +302,8 @@ impl Reference {
             fb_audio: BTreeMap::new(),
             fb_event: BTreeMap::new(),
             inject: BTreeMap::new(),
+            held: BTreeMap::new(),
+            tracked: BTreeSet::new(),
             scheduled: Vec::new(),
             next_id: 0,
             cancelled: 0,
@@ -505,6 +515,25 @@ impl Reference {
         fades: &BTreeMap<NodeKey, crate::Fade>,
     ) {
         let t = graph.topology();
+        // Keys whose unit is not the one running now: removed, or replaced.
+        let gone: BTreeSet<NodeKey> = self
+            .units
+            .iter()
+            .filter(|(k, (g, _))| !t.nodes.contains_key(k) || *g != graph.generation(**k))
+            .map(|(&k, _)| k)
+            .collect();
+        let replaced: BTreeSet<NodeKey> = gone
+            .iter()
+            .copied()
+            .filter(|k| t.nodes.contains_key(k))
+            .collect();
+        let mut departed: BTreeMap<EventOut, RefHeld> = BTreeMap::new();
+        for from in self.held.keys().copied().collect::<Vec<_>>() {
+            if gone.contains(&from.node) {
+                departed.insert(from, self.held.remove(&from).expect("listed"));
+            }
+        }
+        self.tracked.retain(|f| !gone.contains(&f.node));
         // A node whose declared latency changed without a new generation
         // (`Editor::set_latency`) has its crossfade cut: both units of a
         // fade must share the latency the graph compensates. Derived here
@@ -749,6 +778,47 @@ impl Reference {
         for (k, f) in &self.fb_event {
             if reset || !fb_event_keys.contains(k) {
                 flush(k.0, relative(f));
+            }
+        }
+        // Keys held on an edge that ended go to the sink that lost it, after
+        // everything flushed to it.
+        let old_edges = self.graph.as_ref().map(edges_of).unwrap_or_default();
+        let new_edges = edges_of(graph);
+        for &(from, at) in &old_edges {
+            let in_new = new_edges.contains(&(from, at));
+            if (in_new && !gone.contains(&from.node))
+                || replaced.contains(&at.node)
+                || !survives(&at)
+            {
+                continue;
+            }
+            let held = if gone.contains(&from.node) {
+                departed.get(&from)
+            } else {
+                self.held.get(&from)
+            };
+            let Some(h) = held else { continue };
+            // A replaced source whose edge and delay go on: the close
+            // travels the delay, behind what is in flight.
+            let key = DelayKey::Event { at, from };
+            if in_new
+                && delays.contains_key(&key)
+                && let Some(f) = self.event_lines.get_mut(&key)
+            {
+                let at_now = f.clock;
+                let offs = h.closing(Offset::ZERO);
+                f.pending.extend(offs.into_iter().map(|e| (at_now, e)));
+                continue;
+            }
+            let list = inject.entry(at).or_default();
+            let end = list.iter().map(|e| e.offset).max().unwrap_or(Offset::ZERO);
+            list.extend(h.closing(end));
+            list.sort_by_key(|e| e.offset);
+        }
+        for (&node, (_, unit)) in &self.units {
+            let shape = unit.shape();
+            for port in (0..shape.event_out).filter(|_| shape.note_events) {
+                self.tracked.insert(EventOut { node, port });
             }
         }
         self.inject = inject;
@@ -1233,13 +1303,14 @@ impl Reference {
             );
         }
         for (port, e) in ev_bufs.into_iter().enumerate() {
-            events.insert(
-                EventOut {
-                    node: key,
-                    port: port as u16,
-                },
-                e,
-            );
+            let from = EventOut {
+                node: key,
+                port: port as u16,
+            };
+            if self.tracked.contains(&from) {
+                self.held.entry(from).or_default().observe(&e);
+            }
+            events.insert(from, e);
         }
     }
 }
@@ -1416,6 +1487,145 @@ impl Reference {
 }
 
 /// Apply a node's status to the outputs it was handed.
+/// `(MIDI 2.0, group, channel, note)`.
+type RefNote = (bool, u8, u8, u8);
+
+#[derive(Debug, Default)]
+struct RefHeld {
+    notes: BTreeSet<RefNote>,
+    /// `(MIDI 2.0, group, channel)` with the pedal down.
+    pedals: BTreeSet<(bool, u8, u8)>,
+}
+
+enum RefKey {
+    On(RefNote),
+    Off(RefNote),
+    Pedal(bool, u8, u8, bool),
+}
+
+fn ref_key(e: &Event) -> Option<RefKey> {
+    let EventKind::Midi(u) = e.kind else {
+        return None;
+    };
+    match decode(u).ok()? {
+        Message::Midi1(a, v) => {
+            let (g, c) = (a.group.get(), a.channel.get());
+            match v {
+                Voice1::NoteOn { note, velocity } if velocity.get() == 0 => {
+                    Some(RefKey::Off((false, g, c, note.get())))
+                }
+                Voice1::NoteOn { note, .. } => Some(RefKey::On((false, g, c, note.get()))),
+                Voice1::NoteOff { note, .. } => Some(RefKey::Off((false, g, c, note.get()))),
+                Voice1::ControlChange { controller, value } if controller.get() == 64 => {
+                    Some(RefKey::Pedal(false, g, c, value.get() >= 64))
+                }
+                _ => None,
+            }
+        }
+        Message::Midi2(a, v) => {
+            let (g, c) = (a.group.get(), a.channel.get());
+            match v {
+                Voice2::NoteOn { note, .. } => Some(RefKey::On((true, g, c, note.get()))),
+                Voice2::NoteOff { note, .. } => Some(RefKey::Off((true, g, c, note.get()))),
+                Voice2::ControlChange { controller, value } if controller.get() == 64 => {
+                    Some(RefKey::Pedal(true, g, c, value >= 0x8000_0000))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+impl RefHeld {
+    fn observe(&mut self, events: &[Event]) {
+        for e in events {
+            match ref_key(e) {
+                Some(RefKey::On(k)) => {
+                    self.notes.insert(k);
+                }
+                Some(RefKey::Off(k)) => {
+                    self.notes.remove(&k);
+                }
+                Some(RefKey::Pedal(m2, g, c, down)) => {
+                    if down {
+                        self.pedals.insert((m2, g, c));
+                    } else {
+                        self.pedals.remove(&(m2, g, c));
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Pedals up, then every note off, at one offset.
+    fn closing(&self, offset: Offset) -> Vec<Event> {
+        let mut out = Vec::new();
+        let addr = |g: u8, c: u8| Address {
+            group: MidiGroup::of(g),
+            channel: MidiChannel::of(c),
+        };
+        for &(m2, g, c) in &self.pedals {
+            let cc = CCNumber::of(64);
+            let msg = if m2 {
+                Message::Midi2(
+                    addr(g, c),
+                    Voice2::ControlChange {
+                        controller: cc,
+                        value: 0,
+                    },
+                )
+            } else {
+                Message::Midi1(
+                    addr(g, c),
+                    Voice1::ControlChange {
+                        controller: cc,
+                        value: U7::new(0).unwrap(),
+                    },
+                )
+            };
+            out.push(Event {
+                offset,
+                kind: EventKind::Midi(Ump::from(msg)),
+            });
+        }
+        for &(m2, g, c, n) in &self.notes {
+            let note = NoteNumber::new(n).unwrap();
+            let msg = if m2 {
+                Message::Midi2(
+                    addr(g, c),
+                    Voice2::NoteOff {
+                        note,
+                        velocity: 0,
+                        attribute: Attribute::None,
+                    },
+                )
+            } else {
+                Message::Midi1(
+                    addr(g, c),
+                    Voice1::NoteOff {
+                        note,
+                        velocity: U7::new(0).unwrap(),
+                    },
+                )
+            };
+            out.push(Event {
+                offset,
+                kind: EventKind::Midi(Ump::from(msg)),
+            });
+        }
+        out
+    }
+}
+
+fn edges_of(g: &ValidGraph) -> BTreeSet<(EventOut, EventIn)> {
+    g.events()
+        .iter()
+        .flat_map(|(&at, v)| v.iter().map(move |e| (e.from(), at)))
+        .collect()
+}
+
 fn settle(status: Status, ins: &[Vec<f32>], outs: &mut [Vec<f32>]) {
     match status {
         Status::Modified | Status::Masked { .. } => {}

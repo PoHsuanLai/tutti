@@ -28,13 +28,15 @@ use tutti_graph::{
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
 use tutti_ump::Ump;
 
-/// A MIDI 1.0 note-on, middle C: the event every event row is excited by.
-const NOTE_ON: EventKind = EventKind::Midi(Ump([0x2090_3c64, 0, 0, 0]));
+/// A MIDI 1.0 volume controller (CC 7): the event every event row is excited
+/// by. It is not a held key, so a recompile that replaces the feeder closes
+/// nothing at the sink.
+const PULSE: EventKind = EventKind::Midi(Ump([0x20b0_0764, 0, 0, 0]));
 
-fn note() -> Excite {
+fn pulse() -> Excite {
     Excite::Event {
         port: 0,
-        kind: NOTE_ON,
+        kind: PULSE,
     }
 }
 
@@ -42,7 +44,7 @@ fn pulse_row() -> Row {
     Row::new(
         "Pulse",
         || Box::new(Pulse::new(Latency::ZERO)),
-        note(),
+        pulse(),
         Detect::Exact(vec![1.0]),
     )
 }
@@ -51,7 +53,7 @@ fn latent_pulse_row() -> Row {
     Row::new(
         "Pulse, 37 frames of latency",
         || Box::new(Pulse::new(Latency::new(Samples(37)))),
-        note(),
+        pulse(),
         Detect::Exact(vec![1.0]),
     )
     .with_expected_latency(Samples(37))
@@ -66,7 +68,7 @@ fn chunked_pulse_row() -> Row {
     Row::new(
         "Pulse at Frames(8), own grid",
         || Box::new(Pulse::new(Latency::ZERO).with_resolution(Resolution::Frames(8))),
-        note(),
+        pulse(),
         Detect::Exact(vec![1.0]),
     )
 }
@@ -76,7 +78,7 @@ fn block_pulse_row() -> Row {
     Row::new(
         "Pulse at Block",
         || Box::new(Pulse::new(Latency::ZERO).with_resolution(Resolution::Block)),
-        note(),
+        pulse(),
         Detect::Exact(vec![1.0]),
     )
 }
@@ -203,7 +205,7 @@ fn liar_row(declared: usize, actual: u64, resolution: Resolution, timing: Timing
     Row::new(
         "liar",
         move || Liar::boxed(declared, actual, resolution, timing),
-        note(),
+        pulse(),
         Detect::Exact(vec![1.0]),
     )
 }

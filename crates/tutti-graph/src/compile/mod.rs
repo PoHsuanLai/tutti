@@ -1288,6 +1288,15 @@ pub fn compile(
             })
             .collect(),
         delays: em.delays,
+        event_edges: {
+            let mut v: Vec<(EventOut, EventIn)> = graph
+                .events()
+                .iter()
+                .flat_map(|(&at, edges)| edges.iter().map(move |e| (e.from(), at)))
+                .collect();
+            v.sort();
+            v
+        },
         units,
         store_len,
         order: order.iter().map(|&n| keys[n]).collect(),

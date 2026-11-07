@@ -817,6 +817,10 @@ pub struct Plan {
     pub(crate) ops: Vec<Op>,
     pub(crate) audio_list: Vec<u32>,
     pub(crate) event_list: Vec<u32>,
+    /// Every event edge, `(source port, sink port)`, direct and feedback,
+    /// sorted: what the executor compares across a commit to close the held
+    /// keys of an edge that ended (`held.rs`).
+    pub(crate) event_edges: Vec<(EventOut, EventIn)>,
     pub(crate) op_succ: Csr,
     pub(crate) tasks: Vec<Span>,
     pub(crate) task_ops: Vec<u32>,

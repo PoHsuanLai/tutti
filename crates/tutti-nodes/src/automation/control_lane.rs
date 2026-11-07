@@ -974,6 +974,7 @@ impl Node for ControlLaneNode {
             .with_event_capacity(LANE_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)
             .with_tail(Tail::Unbounded)
+            .with_no_note_events()
     }
 
     fn prepare(&mut self, _: &Prepare) {

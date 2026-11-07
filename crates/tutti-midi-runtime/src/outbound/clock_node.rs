@@ -78,6 +78,7 @@ impl Node for ClockNode {
             // Event-only: a few pulses a block, nothing per frame (measured
             // about 0.3 µs a block at any length; a gain's 256 frames, 0.2).
             .with_cost(tutti_graph::Cost::Light)
+            .with_no_note_events()
     }
 
     fn prepare(&mut self, p: &Prepare) {

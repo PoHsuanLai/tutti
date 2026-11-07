@@ -122,6 +122,11 @@ required-features = ["modulation"]
 name = "indexed_params"
 required-features = ["modulation"]
 
+# A held key across a retarget and a re-route.
+[[test]]
+name = "held_keys"
+required-features = ["midi"]
+
 # Clips, live inputs, routes and the hardware out (`Session::midi`).
 [[test]]
 name = "midi"

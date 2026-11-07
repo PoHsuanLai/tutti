@@ -163,6 +163,7 @@ use crate::cost::Schedule;
 use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::fade::CrossfadeCurve;
+use crate::held::Held;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
@@ -321,6 +322,8 @@ pub(crate) struct Commit {
     /// that crossfades in over one already at its key, which keeps its own
     /// (the port's modulation runs on across a replace).
     spare_params: Vec<ParamState>,
+    /// Held-key tables the executor let go of, freed on the control side.
+    spare_held: Vec<Vec<Option<Held>>>,
     old_state: Option<State>,
 }
 
@@ -390,6 +393,7 @@ impl Commit {
         // brings its own.
         let spare_params =
             Vec::with_capacity(incoming.len() + delta.retire.len() + delta.replace.len());
+        let delta_units = delta.retire.len() + delta.replace.len();
         Box::new(Self {
             seq,
             suspend: None,
@@ -398,6 +402,7 @@ impl Commit {
             incoming,
             retired,
             spare_params,
+            spare_held: Vec::with_capacity(delta_units),
             old_state: None,
         })
     }
@@ -415,6 +420,7 @@ impl Commit {
             incoming: Vec::new(),
             retired: Vec::with_capacity(units),
             spare_params: Vec::with_capacity(units),
+            spare_held: Vec::with_capacity(units),
             old_state: None,
         })
     }
@@ -553,6 +559,9 @@ pub(crate) struct Unit {
     queued: Option<Box<Crossfade>>,
     /// Its declared params' modulation state and per-frame buffers.
     params: ParamState,
+    /// Per event output port, the keys it started and has not ended
+    /// (`held.rs`); `None` for a port that carries no notes.
+    held: Vec<Option<Held>>,
 }
 
 impl Unit {
@@ -566,8 +575,17 @@ impl Unit {
             fade: None,
             queued: None,
             params,
+            held: Vec::new(),
         }
     }
+}
+
+/// What a commit takes away from the keys held at a node: the tables of the
+/// keys retired or replaced, and the keys replaced.
+#[derive(Default)]
+struct Gone {
+    held: Vec<(NodeKey, Vec<Option<Held>>)>,
+    replaced: Vec<NodeKey>,
 }
 
 pub(crate) enum Ring {
@@ -676,6 +694,9 @@ pub struct Executor {
     /// lands. Not before: until then the device may still hand blocks sized
     /// for the old one (a shrinking `MaxBlock` must not fail them).
     next_prepare: Option<Prepare>,
+    /// The held-key tables of the units a re-prepare checked out, for the
+    /// resume commit to hand back.
+    parked: Vec<(NodeKey, Vec<Option<Held>>)>,
     /// The sample rate changed in a re-prepare: the next rebuild carries no
     /// time-based state (see `Editor::reprepare`).
     reset_time: bool,
@@ -766,6 +787,7 @@ impl Executor {
             applied: 0,
             suspended: false,
             next_prepare: None,
+            parked: Vec::new(),
             reset_time: false,
             history: TransportHistory::new(),
             play: PlayState::new(ends.play),
@@ -946,6 +968,7 @@ impl Executor {
                     cut_fades(&mut unit, &mut self.fade_back);
                     c.retired.push((u.key, unit.node));
                     c.spare_params.push(unit.params);
+                    self.parked.push((u.key, unit.held));
                 }
             }
             let (old, new) = (
@@ -982,6 +1005,24 @@ impl Executor {
             "a plan compiled for another Prepare: every unit is prepared for the executor's"
         );
 
+        // A key retired or replaced leaves its held keys behind: the rebuild
+        // below closes them on the edges they were held on.
+        let mut departed = Gone::default();
+        for p in c
+            .delta
+            .retire
+            .iter()
+            .chain(c.delta.replace.iter().map(|(old, _)| old))
+        {
+            if let Some(u) = self
+                .store
+                .get_mut(p.idx.0 as usize)
+                .and_then(Option::as_mut)
+            {
+                departed.held.push((p.key, std::mem::take(&mut u.held)));
+            }
+        }
+        departed.replaced = c.delta.replace.iter().map(|(_, new)| new.key).collect();
         // A retired key, or one replaced without a fade, goes whole: its
         // unit and any crossfade running or waiting there. A key replaced
         // with a fade stays, for the incoming unit to fade in over it.
@@ -1065,7 +1106,8 @@ impl Executor {
         c.incoming = incoming;
 
         let old_plan = self.plan.take();
-        let new_state = self.rebuild(&plan, old_plan.as_deref());
+        let new_state = self.rebuild(&plan, old_plan.as_deref(), &mut departed);
+        c.spare_held.extend(departed.held.drain(..).map(|(_, k)| k));
         self.suspended = false;
         self.reset_time = false;
         let old_state = std::mem::replace(&mut self.state, new_state);
@@ -1076,7 +1118,7 @@ impl Executor {
 
     /// The state for `plan`, carrying what survives out of `self.state`
     /// (which keeps what does not, to be retired with it).
-    fn rebuild(&mut self, plan: &Plan, old_plan: Option<&Plan>) -> State {
+    fn rebuild(&mut self, plan: &Plan, old_plan: Option<&Plan>, departed: &mut Gone) -> State {
         let cap = self.event_cap;
         let max_block = self.prepare.max_block().get();
         // After a sample-rate change nothing time-based carries: every ring
@@ -1107,7 +1149,7 @@ impl Executor {
                     .map_or(cap, |n| n.get() as usize),
             )
         };
-        let rings: Vec<Option<Ring>> = plan
+        let mut rings: Vec<Option<Ring>> = plan
             .delays
             .iter()
             .map(|d| {
@@ -1222,6 +1264,86 @@ impl Executor {
                 }
             }
         }
+        // A re-prepare's tables go back to the units that come back; the
+        // others are as retired.
+        for (key, held) in std::mem::take(&mut self.parked) {
+            let same = |a: Option<&Plan>| a.and_then(|p| p.unit(key)).map(|u| u.generation);
+            let back = (same(old_plan) == same(Some(plan)))
+                .then(|| plan.units.binary_search_by_key(&key, |u| u.key).ok())
+                .flatten()
+                .and_then(|i| self.store[plan.units[i].idx.0 as usize].as_mut());
+            match back {
+                Some(u) => u.held = held,
+                None => departed.held.push((key, held)),
+            }
+        }
+        // Keys held on an edge that ended go to the sink that lost it, after
+        // everything flushed to that sink (the offs of notes whose ons were in
+        // flight). See `held.rs`.
+        if let Some(op) = old_plan {
+            let source_gone = |n: NodeKey| departed.held.iter().any(|(k, _)| *k == n);
+            let held_of = |from: EventOut| -> Option<&Held> {
+                let held = match departed.held.iter().find(|(k, _)| *k == from.node) {
+                    Some((_, held)) => held,
+                    None => {
+                        let i = plan
+                            .units
+                            .binary_search_by_key(&from.node, |u| u.key)
+                            .ok()?;
+                        &self.store[plan.units[i].idx.0 as usize].as_ref()?.held
+                    }
+                };
+                held.get(from.port as usize)?.as_ref()
+            };
+            let mut closing: BTreeMap<(u32, u16), Vec<Event>> = BTreeMap::new();
+            for e in &op.event_edges {
+                let &(from, at) = e;
+                let in_plan = plan.event_edges.binary_search(e).is_ok();
+                if (in_plan && !source_gone(from.node)) || departed.replaced.contains(&at.node) {
+                    continue;
+                }
+                let (Some(u), Some(h)) = (sink_of(at), held_of(from)) else {
+                    continue;
+                };
+                if h.is_empty() {
+                    continue;
+                }
+                // A replaced source whose edge (and its delay) goes on: the
+                // close travels the delay, behind what is in flight.
+                let delay = plan
+                    .delays
+                    .iter()
+                    .position(|d| d.key == DelayKey::Event { at, from });
+                if in_plan && let Some(Some(Ring::Event(f))) = delay.map(|i| &mut rings[i]) {
+                    let mut offs = Vec::new();
+                    h.close_into(&mut offs);
+                    f.push(&offs);
+                } else {
+                    h.close_into(closing.entry((u, at.port)).or_default());
+                }
+            }
+            for (k, mut offs) in closing {
+                let end = flushed
+                    .get(&k)
+                    .and_then(|v| v.iter().map(|e| e.offset).max())
+                    .unwrap_or(crate::time::Offset::ZERO);
+                for e in &mut offs {
+                    e.offset = end;
+                }
+                flushed.entry(k).or_default().extend(offs);
+            }
+        }
+        // A port that carries notes is tracked from its unit's first block, so
+        // an edge added later knows what the port already holds.
+        for pu in plan.units.iter().filter(|u| u.shape.note_events) {
+            if let Some(u) = self.store[pu.idx.0 as usize].as_mut() {
+                u.held.resize_with(pu.shape.event_out as usize, || None);
+                for h in &mut u.held {
+                    h.get_or_insert_with(Held::new);
+                }
+            }
+        }
+
         // A FIFO carried across a commit that lowered its bound (a source
         // now declaring a smaller rate, a shorter delay, a larger
         // `MaxBlock`) can hold more than the bound its output slot was
@@ -1460,6 +1582,7 @@ impl Executor {
                 applied,
                 suspended: _,
                 next_prepare: _,
+                parked: _,
                 reset_time: _,
                 history,
                 play,
@@ -2320,6 +2443,16 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     u.last_quiet = !(aout.is_empty() && eout.is_empty())
         && aout.iter().all(|&s| st.flags.get(s) & SILENT != 0)
         && eout.iter().all(|&s| st.events.ev(s).is_empty());
+    for (held, &s) in u.held.iter_mut().zip(eout) {
+        let events = st.events.ev(s);
+        match held {
+            Some(h) => h.observe(events),
+            None => debug_assert!(
+                !Held::any_key(events),
+                "a node that declared no note events wrote one"
+            ),
+        }
+    }
 }
 
 /// A [`Form::Direct`] node op with `I` inputs and `O` outputs: its port

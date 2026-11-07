@@ -156,6 +156,7 @@ impl Node for EnvelopeFollowerNode {
             .with_events(0, 1)
             .with_event_capacity(FOLLOWER_EVENT_CAPACITY)
             .with_cost(Cost::Moderate)
+            .with_no_note_events()
     }
 
     fn prepare(&mut self, prepare: &Prepare) {

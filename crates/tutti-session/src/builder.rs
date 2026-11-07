@@ -330,7 +330,7 @@ impl SessionBuilder {
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
             engine,
-            meter: MasterMeter::new(),
+            meter: MasterMeter::default(),
             tap: AudioTap::new(),
             click: parts.click,
             click_settings: parts.click_settings,
@@ -491,10 +491,12 @@ impl SessionBuilder {
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
         // Consumers read the meter directly, so it measures from the start.
-        session.meter.enable();
+        let (writer, meter) = MasterMeter::pair();
+        meter.enable();
+        session.meter = meter;
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(
             engine,
-            session.meter.clone(),
+            writer,
             session.tap.clone(),
         ));
         start(&mut audio_engine, Arc::clone(&state))?;

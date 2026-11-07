@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tutti_cpal::{AudioCallbackState, OutputSpec};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
-use tutti_metering::{AudioTap, MasterMeter};
+use tutti_metering::{AudioTap, MasterMeter, MeterWriter};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
@@ -71,7 +71,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
         );
         fan(ed, filter, outputs);
     });
-    let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
+    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, AudioTap::new());
 
     transport.settings.set_tempo(120.0);
     let _ = transport.motion.try_send(MotionEvent::Play);
@@ -92,19 +92,23 @@ pub fn dc_state(level: f32, outputs: usize) -> Arc<AudioCallbackState> {
     });
     Arc::new(AudioCallbackState::new(
         engine,
-        MasterMeter::new(),
+        MasterMeter::pair().0,
         AudioTap::new(),
     ))
 }
 
-/// [`dc_state`] with `meter` as the master meter and the tap left closed:
-/// the caller keeps a clone of `meter` to enable it and read it back.
-pub fn dc_state_metered(level: f32, outputs: usize, meter: MasterMeter) -> Arc<AudioCallbackState> {
+/// [`dc_state`] with `writer` as the master meter's writer and the tap left
+/// closed: the caller keeps the reading half to enable it and read it back.
+pub fn dc_state_metered(
+    level: f32,
+    outputs: usize,
+    writer: MeterWriter,
+) -> Arc<AudioCallbackState> {
     let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
         ed.insert(NodeKey(1), "dc", Const::mono(level));
         fan(ed, NodeKey(1), outputs);
     });
-    Arc::new(AudioCallbackState::new(engine, meter, AudioTap::new()))
+    Arc::new(AudioCallbackState::new(engine, writer, AudioTap::new()))
 }
 
 /// A graph emitting `level` on exactly one output channel, silence on the
@@ -136,7 +140,7 @@ pub fn dc_on_channel(
     });
     let tap = AudioTap::new();
     let cons = tap.open().expect("a fresh tap opens");
-    let state = AudioCallbackState::new(engine, MasterMeter::new(), tap);
+    let state = AudioCallbackState::new(engine, MasterMeter::pair().0, tap);
     (Arc::new(state), cons)
 }
 

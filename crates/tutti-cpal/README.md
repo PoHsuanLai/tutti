@@ -60,7 +60,7 @@ editor.commit()?;
 let engine = Engine::new(&transport, &mut editor, executor)?;
 let state = Arc::new(AudioCallbackState::new(
     engine,
-    MasterMeter::new(),
+    MasterMeter::pair().0,
     AudioTap::new(),
 ));
 

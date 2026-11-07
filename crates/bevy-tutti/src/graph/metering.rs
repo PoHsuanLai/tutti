@@ -31,10 +31,9 @@
 //! assert!(!app.world().resource::<MeteringRes>().is_enabled());
 //! ```
 //!
-//! What that saves is smaller than the switch suggests, which is worth knowing
-//! before reaching for it. The stereo *fold* of the device buffer happens in the
-//! CPAL callback before `meter_output` is reached, so it runs either way; the
-//! switch skips only the deinterleave and the amplitude scan inside it.
+//! With the switch off and the tap closed the CPAL callback skips both the
+//! stereo fold of the device buffer and the amplitude pass; an open tap runs
+//! the fold either way.
 //!
 //! The analysis tap ([`AudioTapRes`](super::AudioTapRes)) defaults the other
 //! way — closed until a host opens it — because its cost is a full buffer copy

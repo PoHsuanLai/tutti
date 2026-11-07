@@ -1,38 +1,52 @@
 //! The legacy MIDI CC a plugin sends to the host, as a `MidiEvent`.
 
-use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_protocol::widen;
+use tutti_ump::{
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1,
+};
 use tutti_vst3_ffi::sdk_enum_i32;
 use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
 use super::{LegacyCcOut, MidiEvent};
 
-/// The UMP message a [`LegacyCcOut`] stands for. `controlNumber` is a VST3
-/// `ControllerNumbers` index: 0-127 are real CCs, and the synthetic slots above
-/// are pitch bend, channel pressure and poly-pressure, with `value2` supplying
-/// the second data byte for the first and last.
+/// The low 7 bits of a VST3 `i8` data field.
+fn data_byte(raw: i8) -> U7 {
+    // Masked to 7 bits, so the fallback is never taken.
+    U7::new(raw.cast_unsigned() & 0x7F).unwrap_or(U7::MAX)
+}
+
+/// The UMP message a [`LegacyCcOut`] stands for, as a MIDI 1.0 message widened
+/// to MIDI 2.0 (M2-104 App. D.3). `controlNumber` is a VST3 `ControllerNumbers`
+/// index: 0-127 are real CCs, and the synthetic slots above are pitch bend,
+/// channel pressure and poly-pressure, with `value2` supplying the second data
+/// byte for the first and last.
 pub(super) fn decode(e: &LegacyCcOut, frame: u32) -> Option<MidiEvent> {
-    let channel = MidiChannel::masked(e.channel as u8);
-    let v1 = (e.value as u8) & 0x7F;
-    let v2 = (e.value2 as u8) & 0x7F;
+    let address = Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::masked(e.channel as u8),
+    };
+    let v1 = data_byte(e.value);
+    let v2 = data_byte(e.value2);
     let control = i32::from(e.controlNumber);
 
-    let event = if control == sdk_enum_i32(kPitchBend) {
+    let voice = if control == sdk_enum_i32(kPitchBend) {
         // 14-bit: LSB = value, MSB = value2.
-        let bend = u16::from(v1) | (u16::from(v2) << 7);
-        MidiEvent::pitch_bend(MidiGroup::FIRST, channel, midi1_pitch_bend_to_midi2(bend))
+        let bend = u16::from(v1.get()) | (u16::from(v2.get()) << 7);
+        Voice1::PitchBend(U14::new(bend)?)
     } else if control == sdk_enum_i32(kAfterTouch) {
-        MidiEvent::channel_pressure(MidiGroup::FIRST, channel, midi1_cc_to_midi2(v1))
+        Voice1::ChannelPressure(v1)
     } else if control == sdk_enum_i32(kCtrlPolyPressure) {
         // value = note, value2 = pressure.
-        MidiEvent::poly_pressure(MidiGroup::FIRST, channel, v1, midi1_cc_to_midi2(v2))
+        Voice1::PolyPressure {
+            note: NoteNumber::new(v1.get())?,
+            pressure: v2,
+        }
     } else {
-        MidiEvent::cc(
-            MidiGroup::FIRST,
-            channel,
-            CCNumber::new(e.controlNumber)?,
-            midi1_cc_to_midi2(v1),
-        )
+        Voice1::ControlChange {
+            controller: CCNumber::new(e.controlNumber)?,
+            value: v1,
+        }
     };
-    Some(event.with_frame_offset(frame))
+    let ump = Ump::from(Message::Midi2(address, widen(voice)));
+    Some(MidiEvent::from_ump(frame, ump.words()))
 }

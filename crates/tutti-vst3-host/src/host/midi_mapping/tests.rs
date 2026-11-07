@@ -846,3 +846,33 @@ fn a_route_overflow_drops_the_open_sysex() {
     assert!(sysex_in(&list).is_empty(), "no message with a gap in it");
     assert_eq!(list.sysex_dropped(), 1);
 }
+
+/// A MIDI 1.0 controller and a MIDI 2.0 one map to the same slot, and a
+/// packet that is not channel voice, or that `decode` cannot frame, maps to
+/// nothing.
+///
+/// Mutation (run): the `Err(Unknown(_))` arm of `midi_to_mapped_controller`
+/// returning `Some((0, 1, 0.0))` → the reserved packet maps → fails; dropping
+/// the `widen` of a `Midi1` message → the MIDI 1.0 CC is `None` → fails.
+#[test]
+fn a_packet_is_mapped_by_what_it_decodes_to() {
+    use tutti_ump::{Address, Message, U7, Ump, Voice1};
+
+    let address = Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::of(2),
+    };
+    let packet = |message| MidiEvent::from_ump(0, Ump::from(message).words());
+    let one_cc = packet(Message::Midi1(
+        address,
+        Voice1::ControlChange {
+            controller: CCNumber::MOD_WHEEL,
+            value: U7::MAX,
+        },
+    ));
+    // Full scale widens to 0xFFFF_FFFF, which is exactly 1.0.
+    assert_eq!(mapped(&one_cc), Some((2, 1, 1.0)));
+    assert_eq!(mapped(&MidiEvent::timing_clock(MidiGroup::FIRST)), None);
+    assert_eq!(mapped(&MidiEvent::from_ump(0, &[0x6000_0000])), None);
+    assert_eq!(mapped(&MidiEvent::from_ump(0, &[0x4070_0000, 0])), None);
+}

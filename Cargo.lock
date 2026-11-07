@@ -4836,6 +4836,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-host",
+ "tutti-midi-protocol",
  "tutti-midi-types",
  "tutti-plugin-types",
  "tutti-rt",

@@ -24,6 +24,9 @@ use vst3::Steinberg::Vst::{
     ParamID,
 };
 
+use tutti_midi_protocol::widen;
+use tutti_ump::{Message, Ump, Unknown, Voice2, decode};
+
 use crate::events::{InputEvents, Stager};
 use crate::types::{MidiEvent, ParameterChanges};
 use tutti_plugin_types::MIDI_STACK_CAPACITY;
@@ -141,39 +144,61 @@ impl MidiCcMapping {
 /// a VST3 `IMidiMapping` parameter expects, or `None` if the event is not a
 /// mappable controller (CC / channel pressure / pitch bend).
 ///
-/// The event is matched on `midi2`'s Channel Voice 2 vocabulary via
-/// [`tutti_midi_types::normalize`], so MIDI-2 controllers keep their full width
-/// here; values are normalized to the VST3 host contract at this edge:
+/// The packet is read through [`decode`]; a MIDI 1.0 message is widened
+/// ([`widen`]) so MIDI-2 controllers keep their full width here. The group is
+/// ignored: `IMidiMapping` is addressed by bus and channel only. Values are
+/// normalized to the VST3 host contract at this edge:
 /// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
 pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize, f64)> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u32_to_unit_f32};
-    use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
-    use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
-    let normalized = tutti_midi_types::normalize(event);
-    let UmpMessage::ChannelVoice2(cv2) = UmpMessage::try_from(normalized.data_words()).ok()? else {
-        return None;
+    let (channel, voice) = match decode(Ump(event.data)) {
+        Ok(Message::Midi1(address, voice)) => (address.channel, widen(voice)),
+        Ok(Message::Midi2(address, voice)) => (address.channel, voice),
+        // Not channel voice, or a packet `decode` cannot frame: there is no
+        // controller in it, and the caller keeps the event as MIDI.
+        Ok(
+            Message::Utility(_)
+            | Message::System(..)
+            | Message::Sysex7(..)
+            | Message::Data128(..)
+            | Message::Flex(..)
+            | Message::Stream(_),
+        )
+        | Err(Unknown(_)) => return None,
     };
-    let channel = u8::from(cv2.channel());
-    match cv2 {
-        Cv2::ControlChange(m) => Some((
+    let channel = channel.get();
+    match voice {
+        Voice2::ControlChange { controller, value } => Some((
             channel,
-            u8::from(m.control()) as usize,
-            f64::from(u32_to_unit_f32(m.control_change_data())),
+            usize::from(controller.get()),
+            f64::from(u32_to_unit_f32(value)),
         )),
-        Cv2::ChannelPressure(m) => Some((
+        Voice2::ChannelPressure(pressure) => Some((
             channel,
             CTRL_AFTERTOUCH,
-            f64::from(u32_to_unit_f32(m.channel_pressure_data())),
+            f64::from(u32_to_unit_f32(pressure)),
         )),
-        Cv2::ChannelPitchBend(m) => {
+        Voice2::PitchBend(bend) => {
             // Signed [-1, 1] (center 0) → unit [0, 1] (center 0.5).
-            let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+            let value = bend_u32_to_signed_f32(bend);
             Some((channel, CTRL_PITCH_BEND, (f64::from(value) + 1.0) / 2.0))
         }
-        _ => None,
+        // No `IMidiMapping` slot: the caller keeps these as MIDI.
+        Voice2::RegisteredPerNote { .. }
+        | Voice2::AssignablePerNote { .. }
+        | Voice2::Registered { .. }
+        | Voice2::Assignable { .. }
+        | Voice2::RelativeRegistered { .. }
+        | Voice2::RelativeAssignable { .. }
+        | Voice2::PerNotePitchBend { .. }
+        | Voice2::NoteOff { .. }
+        | Voice2::NoteOn { .. }
+        | Voice2::PolyPressure { .. }
+        | Voice2::ProgramChange { .. }
+        | Voice2::PerNoteManagement { .. } => None,
     }
 }
 
@@ -185,7 +210,7 @@ pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize,
 /// The caller owns clearing/seeding `out_params` and clearing `out_filtered`
 /// before the call (the audio path clears in place to stay allocation-free);
 /// this routine only appends. Decoding goes through
-/// [`tutti_midi_types::convert`], so MIDI-2 controllers keep their full width.
+/// [`midi_to_mapped_controller`], so MIDI-2 controllers keep their full width.
 ///
 /// Allocation-free given pre-warmed `out_*` capacity — the inner loop only
 /// pushes into existing storage.

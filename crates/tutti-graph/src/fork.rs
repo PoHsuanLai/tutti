@@ -972,9 +972,11 @@ impl Editor {
                     .collect(),
                 outputs,
                 inputs: live.topology.inputs,
-                // A fork carries no tap: the live consumer's ring is the live
-                // executor's, and an export opens its own on the fork.
+                // A fork carries no tap and no meter: the live consumer's ring
+                // and cells are the live executor's, and an export opens its
+                // own on the fork.
                 taps: BTreeMap::new(),
+                meters: BTreeMap::new(),
             },
             events: live
                 .events

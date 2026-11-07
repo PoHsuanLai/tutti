@@ -280,6 +280,7 @@ pub(crate) struct Block<'b, 'o> {
     pub(crate) audio_fb: &'b mut [Option<crate::kernels::AudioRing>],
     pub(crate) event_fb: &'b mut [Option<crate::kernels::EventFifo>],
     pub(crate) taps: &'b mut [Option<crate::tap::TapWriter>],
+    pub(crate) meters: &'b [Option<crate::meter::MeterWriter>],
     pub(crate) inject: &'b mut [Inject],
     pub(crate) has_inject: &'b mut [bool],
     pub(crate) has_due: &'b mut [bool],
@@ -308,6 +309,8 @@ struct Shared<'s, 'o> {
     audio_fb: SplitMut<'s, Option<crate::kernels::AudioRing>>,
     event_fb: SplitMut<'s, Option<crate::kernels::EventFifo>>,
     taps: SplitMut<'s, Option<crate::tap::TapWriter>>,
+    /// Atomics only, one writer a lane by construction: shared, no claim.
+    meters: &'s [Option<crate::meter::MeterWriter>],
     inject: SplitMut<'s, Inject>,
     inject_spans: &'s [Span],
     has_inject: SplitMut<'s, bool>,
@@ -375,6 +378,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             audio_fb: SplitMut::new(b.audio_fb, audio_fb),
             event_fb: SplitMut::new(b.event_fb, event_fb),
             taps: SplitMut::new(b.taps, taps),
+            meters: b.meters,
             inject: SplitMut::new(b.inject, inject),
             inject_spans,
             has_inject: SplitMut::new(b.has_inject, has_inject),
@@ -540,6 +544,20 @@ impl Shared<'_, '_> {
                         view: self.arena.view(held_audio),
                     };
                     crate::tap::tap_op(tap, &a, &self.plan.audio_list[srcs.range()], frames);
+                }
+            }
+            Op::Meter { meter, srcs } => {
+                if let Some(meter) = self.meters[meter as usize].as_ref() {
+                    let a = ArenaView {
+                        view: self.arena.view(held_audio),
+                    };
+                    crate::meter::meter_op(
+                        meter,
+                        &a,
+                        flags,
+                        &self.plan.audio_list[srcs.range()],
+                        frames,
+                    );
                 }
             }
             Op::Capture { feedback, src } => {

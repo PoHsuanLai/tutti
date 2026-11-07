@@ -21,9 +21,9 @@
 //! | `frame < rendered_frames` → `true` (no tail silencing) | `an_oversized_callback_silences_its_tail` |
 //! | drop `.min(MAX_FRAMES)` | `an_oversized_callback_silences_its_tail` (index panic) |
 //!
-//! The master meter's tests (the stereo fold of a wide device, the analytic
+//! The master meter's tests (the centre of a wide device, the analytic
 //! level, enabled against disabled) are `tutti-engine`'s `tests/master_meter.rs`:
-//! the engine feeds the meter, not this callback.
+//! the meter is an op in the graph's plan, not this callback's.
 
 mod support;
 

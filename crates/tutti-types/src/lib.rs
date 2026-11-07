@@ -89,7 +89,7 @@ pub use tail::{GraphTail, TailGraph, graph_tail};
 // and `Invalid` stay module-qualified, because each is a generic word that reads
 // wrong unprefixed — `graph::Source` is an edge's origin, and a root `Source`
 // beside `io::AudioIn` would be read as an input device.
-pub use graph::{NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
+pub use graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId, TapSpec, Topology, Valid};
 
 // Musical meter.
 pub use meter::{

@@ -155,7 +155,7 @@ pub(crate) fn build_with(
         crate::graph::latency::ChannelCompensation(std::sync::Arc::clone(session.compensation()));
     let transport = session.transport().clone();
     let metronome = std::sync::Arc::clone(session.click_settings());
-    let meter = session.master_meter().cloned();
+    let meter = session.take_master_meter();
     let click = session.click_node();
     #[cfg(feature = "sampler")]
     let disk_streamer = session.take_disk_streamer();
@@ -181,8 +181,8 @@ pub(crate) fn build_with(
             click: click_entity,
         });
     }
-    // Consumers read `MeteringRes::get()` directly; the session enabled it.
-    // A device session always has an engine, so always a meter.
+    // Consumers read `MeteringRes` directly; the graph enabled it.
+    // A session always declares one.
     if let Some(meter) = meter {
         world.insert_resource(MeteringRes(meter));
     }
@@ -230,9 +230,9 @@ mod tests {
     /// `the_session_publishes_the_meter_and_taps_its_callback_feeds`) pins that
     /// the meter and taps are the callback's.
     ///
-    /// Mutation (run, recorded here): `build_into` inserting
-    /// `MeteringRes(MasterMeter::default())` instead of the session's meter ->
-    /// the level reads 0.0.
+    /// Mutation (run, recorded here): `build_into` inserting a
+    /// `MeteringRes` over a reader of a meter nothing feeds (a detached
+    /// session's) instead of the session's own -> the level reads 0.0.
     #[test]
     fn the_engine_publishes_the_meter_and_taps_its_callback_feeds() {
         use crate::graph::{AudioGraphRes, MeteringRes};
@@ -268,7 +268,9 @@ mod tests {
         let mut got = [f32::NAN; 128];
         assert_eq!(tap.pop_into(&mut got), tutti_types::Samples(64));
         assert!(got.as_chunks::<2>().0.iter().all(|f| *f == [0.5, 0.0]));
-        let level = app.world().resource::<MeteringRes>().get().peak_left.get();
+        let level = app.world_mut().resource_mut::<MeteringRes>().read()[0]
+            .peak
+            .get();
         assert!(
             (level - 0.5).abs() < 1e-6,
             "the callback's block was measured: {level}"

@@ -742,9 +742,7 @@ mod tests {
         for len in [1usize, 6, 7, 40, 200] {
             let host = make_host(TransportWriter::new().reader(), 48_000.0);
             let body: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-            let mut message = vec![0xF0];
-            message.extend_from_slice(&body);
-            message.push(0xF7);
+            let message: Vec<u8> = tutti_ump::frame(&body).collect();
             // The plugin's own buffer, alive for the callback only.
             let mut wire = message.clone();
             let mut event = sysex_event(13, &mut wire);

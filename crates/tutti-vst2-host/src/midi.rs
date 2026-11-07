@@ -912,10 +912,7 @@ mod tests {
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
-        let mut v = vec![0xF0];
-        v.extend_from_slice(payload);
-        v.push(0xF7);
-        v
+        tutti_ump::frame(payload).collect()
     }
 
     /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one

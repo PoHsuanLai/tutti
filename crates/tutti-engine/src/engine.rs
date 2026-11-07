@@ -85,8 +85,8 @@ use tutti_rt::AudioThreadCell;
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
-    Control, FadeOut, MotionAudio, MotionEvent, MotionState, SCHEDULE_CAPACITY, Schedule,
-    Scheduled, TransportClock, TransportCommand,
+    AudioTaken, FadeOut, MotionEvent, SCHEDULE_CAPACITY, Scheduled, TransportAudio,
+    TransportCommand,
 };
 use tutti_types::{At, Frame};
 use tutti_types::{InterleavedMut, SampleRate, Samples, Seconds};
@@ -106,16 +106,11 @@ pub enum GraphEngineError {
     /// than [`MAX_ROOT_CHANNELS`] global outputs, or a `MaxBlock` above the
     /// block capacity.
     Limits(CommitError),
-    /// Another clock already writes `transport`'s playhead: an engine built
-    /// over it (or over a clone of it) is still alive. Two engines on one
-    /// transport would both consume every seek and both write the playhead
-    /// ([`Transport::clock_links`](tutti_transport::Transport::clock_links)).
-    PlayheadClaimed(tutti_transport::PlayheadClaimed),
-    /// `transport`'s motion machine is held by another engine, though its
-    /// playhead is not: the transport shares its `motion` handle with
-    /// another transport (`transport.motion = other.motion.clone()`) whose
-    /// engine is alive.
-    MotionHeld,
+    /// Another engine holds `transport`'s audio side (its motion machine,
+    /// playhead and commands): one built over it, or over a clone of it, is
+    /// still alive. Two would both consume every seek and both write the
+    /// playhead ([`Transport::audio`](tutti_transport::Transport::audio)).
+    TransportHeld(AudioTaken),
 }
 
 impl core::fmt::Display for GraphEngineError {
@@ -123,11 +118,7 @@ impl core::fmt::Display for GraphEngineError {
         match self {
             Self::NotAPair => f.write_str("the executor is not the editor's"),
             Self::Limits(e) => write!(f, "the graph is past the engine's limits: {e}"),
-            Self::PlayheadClaimed(e) => write!(f, "{e}"),
-            Self::MotionHeld => f.write_str(
-                "the transport's motion machine is held by another engine \
-                 (its `motion` handle is shared with another transport)",
-            ),
+            Self::TransportHeld(e) => write!(f, "{e}"),
         }
     }
 }
@@ -166,10 +157,6 @@ type GraphTransport = tutti_graph::Transport;
 /// is the pure render — useful to drive directly in a test or an offline pass,
 /// where transport motion and declicking are not in play.
 pub struct Engine {
-    /// The transport's values, which the walk reads and a command writes.
-    settings: tutti_transport::TransportSettings,
-    /// The transport's timestamped commands.
-    timed: Schedule,
     graph: AudioThreadCell<GraphRender>,
     /// Cached from the transport so the fade path avoids a double deref.
     fader: AudioThreadCell<Fader>,
@@ -183,7 +170,6 @@ pub struct Engine {
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
-            .field("settings", &self.settings)
             .field("graph", &self.graph)
             .field("fader", &self.fader)
             .field("capacity", &self.capacity)
@@ -195,15 +181,12 @@ impl std::fmt::Debug for Engine {
 /// The graph's executor, the clock that feeds its `Env`, and the
 /// planar scratch its outputs land in before the fold.
 struct GraphRender {
-    /// The transport's motion machine. Handed back to the transport by this
-    /// struct's `Drop`, before `clock` releases its playhead claim.
-    motion: MotionAudio,
     exec: Executor,
-    /// The engine's playhead. The graph reads the transport from `Env`, so
-    /// the engine drives the clock itself ([`TransportClock::begin`] /
-    /// [`TransportClock::advance`]); every node reads what it publishes
-    /// from its block's `Env`.
-    clock: TransportClock,
+    /// The transport's audio side: motion machine, playhead clock and
+    /// commands. The graph reads the transport from `Env`, so the engine
+    /// drives the clock itself; every node reads what it publishes from its
+    /// block's `Env`.
+    transport: TransportAudio,
     /// `MAX_ROOT_CHANNELS` planar channels of `stride` frames each.
     scratch: Vec<f32>,
     stride: usize,
@@ -294,13 +277,10 @@ impl Engine {
         }
         // Before the limits, which change the editor: a refused engine
         // leaves it as it was.
-        let links = transport
-            .clock_links()
-            .map_err(GraphEngineError::PlayheadClaimed)?;
-        let motion = transport
-            .motion
-            .audio()
-            .ok_or(GraphEngineError::MotionHeld)?;
+        let rate = executor.prepare().sample_rate();
+        let audio = transport
+            .audio(rate)
+            .map_err(GraphEngineError::TransportHeld)?;
         // Mid re-prepare, the editor's `Prepare` is the one the executor will
         // adopt, and may be the larger.
         let stride = capacity
@@ -313,17 +293,13 @@ impl Engine {
                 max_block: stride,
             })
             .map_err(GraphEngineError::Limits)?;
-        let rate = executor.prepare().sample_rate();
         // Seeded from the executor; no test here can cover it, since the
         // executor is always fresh at `Engine::new`.
         let dropped_seen = executor.dropped_event_count();
         Ok(Self {
-            settings: transport.settings.clone(),
-            timed: transport.motion.timed().clone(),
             graph: AudioThreadCell::new(GraphRender {
-                motion,
                 exec: executor,
-                clock: TransportClock::new(links, rate),
+                transport: audio,
                 scratch: vec![0.0; MAX_ROOT_CHANNELS * stride],
                 stride,
                 playhead: Playhead::new(),
@@ -406,11 +382,10 @@ impl Engine {
         let mut done = 0;
         let mut budget = Seconds(0.0);
         while done < frames {
-            let (bound, rate) = g.settle(&self.timed);
+            let (bound, rate) = g.settle();
             let len = (frames - done).min(bound);
             budget += Samples(len).to_seconds(rate);
-            let control = Control::read(&self.settings, g.motion.loop_region());
-            let t = g.clock.begin(&control, true);
+            let t = g.transport.begin_block();
             // Kept current, so a later `process` tells a late beat from one
             // jumped over across this block too.
             g.playhead.observe(&Env {
@@ -421,7 +396,7 @@ impl Engine {
                 changes: TransportChanges::NONE,
                 play: tutti_graph::PlayClock::ZERO,
             });
-            g.clock.advance(len, &t);
+            g.transport.advance(len, &t);
             g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
             done += len;
         }
@@ -461,24 +436,20 @@ impl Engine {
             return;
         };
         let g = &mut *graph;
-        g.motion.drain();
         let mut done = 0;
         let mut budget = Seconds(0.0);
         while done < frames {
-            let (bound, rate) = g.settle(&self.timed);
+            let (bound, rate) = g.settle();
             let len = (frames - done).min(bound);
             budget += Samples(len).to_seconds(rate);
             let frame0 = g.exec.frame();
             let mut pieces = GraphPieces {
-                clock: &mut g.clock,
-                settings: &self.settings,
-                control: Control::read(&self.settings, g.motion.loop_region()),
                 changes: TransportChanges::NONE,
             };
             let aim = self.fader.borrow().aim;
             let walk = self.walk(
                 Track {
-                    motion: &mut g.motion,
+                    transport: &mut g.transport,
                     playhead: &mut g.playhead,
                 },
                 frame0,
@@ -515,92 +486,85 @@ impl Engine {
         mut aim: Option<Frame>,
         pieces: &mut impl Pieces,
     ) -> Walk {
-        let Track { motion, playhead } = track;
-        let schedule = &self.timed;
+        let Track {
+            transport,
+            playhead,
+        } = track;
         let fade = fade_frames(rate);
         let mut walk = Walk {
-            start: pieces.begin(None),
+            start: transport.begin_block(),
             gain: GainPlan::new(),
         };
-        // An untimed declicked command drained at the block's start has no
-        // lead time: it lands at the first frame.
-        if settle_declick(motion, &mut walk.gain, 0) {
-            aim = None;
-        }
         let mut t = walk.start;
         let mut cursor = 0;
         // The playhead as of the start of the current piece. Each piece is
         // observed with its real length once it is cut; before that, a copy
         // observes it with the rest of the block, to answer `crossed`.
         let mut base = *playhead;
-        schedule.with_pending(|pending| {
-            loop {
-                let env = Env {
-                    frame: frame0 + Samples(cursor),
-                    sample_rate: rate,
-                    block_len: Samples(frames - cursor),
-                    transport: t,
-                    changes: TransportChanges::NONE,
-                    play: tutti_graph::PlayClock::ZERO,
+        transport.gather();
+        loop {
+            let env = Env {
+                frame: frame0 + Samples(cursor),
+                sample_rate: rate,
+                block_len: Samples(frames - cursor),
+                transport: t,
+                changes: TransportChanges::NONE,
+                play: tutti_graph::PlayClock::ZERO,
+            };
+            // The next declicked command ahead, within one fade of the end of
+            // this block: the fade-out that ends on its frame may start here.
+            let next = lead_target(transport.pending(), &env, fade);
+            if next != aim {
+                walk.gain.push(cursor, Gain::Aim(next));
+                aim = next;
+            }
+            let mut ph = base;
+            ph.observe(&env);
+            // The earliest command due from the cursor on; send order breaks
+            // ties.
+            let mut best: Option<(usize, usize, bool)> = None;
+            for (i, cmd) in transport.pending().iter().enumerate() {
+                let (k, late) = match (cmd.at(), env.due(cmd.at())) {
+                    (_, Due::In(k)) => (k.index(), false),
+                    (At::Frame(_), Due::Late) => (0, true),
+                    (At::Beat(b), _) if ph.crossed(b.get()) => (0, true),
+                    _ => continue,
                 };
-                // The next declicked command ahead, within one fade of the end of
-                // this block: the fade-out that ends on its frame may start here.
-                let next = lead_target(pending, &env, fade);
-                if next != aim {
-                    walk.gain.push(cursor, Gain::Aim(next));
-                    aim = next;
-                }
-                let mut ph = base;
-                ph.observe(&env);
-                // The earliest command due from the cursor on; send order breaks
-                // ties.
-                let mut best: Option<(usize, usize, bool)> = None;
-                for (i, cmd) in pending.iter().enumerate() {
-                    let (k, late) = match (cmd.at, env.due(cmd.at)) {
-                        (_, Due::In(k)) => (k.index(), false),
-                        (At::Frame(_), Due::Late) => (0, true),
-                        (At::Beat(b), _) if ph.crossed(b.get()) => (0, true),
-                        _ => continue,
-                    };
-                    let earlier = best.is_none_or(|(bk, bi, _)| {
-                        k < bk || (k == bk && cmd.seq() < pending[bi].seq())
-                    });
-                    if earlier {
-                        best = Some((k, i, late));
-                    }
-                }
-                let Some((k, i, late)) = best else { break };
-                let at = cursor + k;
-                if at > cursor {
-                    if !pieces.room() {
-                        // No more cuts fit this block: the rest wait for the
-                        // next one, where they land late.
-                        break;
-                    }
-                    base.observe(&Env {
-                        block_len: Samples(at - cursor),
-                        ..env
-                    });
-                    pieces.run(cursor, at, &t);
-                    cursor = at;
-                }
-                let cmd = pending.swap_remove(i);
-                motion.apply(cmd.command);
-                schedule.release(1);
-                if late {
-                    schedule.count_late();
-                }
-                if settle_declick(motion, &mut walk.gain, cursor) {
-                    // A jump clears the fader's aim.
-                    aim = None;
-                }
-                t = pieces.begin(Some(&cmd.command));
-                match Offset::new(cursor, Samples(frames)) {
-                    Some(o) if cursor > 0 => pieces.change(o, t),
-                    _ => walk.start = t,
+                let earlier = best.is_none_or(|(bk, bi, _)| {
+                    k < bk || (k == bk && cmd.seq() < transport.pending()[bi].seq())
+                });
+                if earlier {
+                    best = Some((k, i, late));
                 }
             }
-        });
+            let Some((k, i, late)) = best else { break };
+            let at = cursor + k;
+            if at > cursor {
+                if !pieces.room() {
+                    // No more cuts fit this block: the rest wait for the
+                    // next one, where they land late.
+                    break;
+                }
+                base.observe(&Env {
+                    block_len: Samples(at - cursor),
+                    ..env
+                });
+                transport.advance(at - cursor, &t);
+                pieces.ran();
+                cursor = at;
+            }
+            let (applied, now) = transport.fire(i, late);
+            if applied.declicked() {
+                // A jump clears the fader's aim.
+                walk.gain.push(cursor, Gain::Jump);
+                aim = None;
+            }
+            t = now;
+            match Offset::new(cursor, Samples(frames)) {
+                Some(o) if cursor > 0 => pieces.change(o, t),
+                _ => walk.start = t,
+            }
+        }
         base.observe(&Env {
             frame: frame0 + Samples(cursor),
             sample_rate: rate,
@@ -610,7 +574,8 @@ impl Engine {
             play: tutti_graph::PlayClock::ZERO,
         });
         *playhead = base;
-        pieces.run(cursor, frames, &t);
+        transport.advance(frames - cursor, &t);
+        pieces.ran();
         walk
     }
 
@@ -652,39 +617,15 @@ impl Engine {
     /// [`process_segment`]: Self::process_segment
     pub fn apply_pending(&self) -> bool {
         let graph = &mut *self.graph.borrow_mut();
-        graph.settle(&self.timed);
+        graph.settle();
         graph.exec.pending_prepare().is_none() && graph.exec.plan().is_some()
     }
 }
 
-/// The motion machine chose a declick for the command just applied at
-/// `at`: the transport has already moved (the machine applies a fade's
-/// outcome at once), so the fade is the engine's, as gain. Mark the jump
-/// (the fade-out, if it had lead time, ends here; the fade-in starts
-/// here) and settle the machine.
-/// Returns whether it marked one.
-fn settle_declick(motion: &mut MotionAudio, gain: &mut GainPlan, at: usize) -> bool {
-    if is_declicking(motion.motion()) {
-        motion.complete_declick();
-        gain.push(at, Gain::Jump);
-        return true;
-    }
-    false
-}
-
-/// Whether `motion` is a fade in progress.
-#[inline]
-fn is_declicking(motion: MotionState) -> bool {
-    matches!(
-        motion,
-        MotionState::DeclickToStop | MotionState::DeclickToLocate
-    )
-}
-
-/// The render state a block's walk moves: the motion machine its commands
-/// go through, and the playhead it observes.
+/// The render state a block's walk moves: the transport its commands go
+/// through, and the playhead it observes.
 struct Track<'a> {
-    motion: &'a mut MotionAudio,
+    transport: &'a mut TransportAudio,
     playhead: &'a mut Playhead,
 }
 
@@ -736,8 +677,8 @@ fn lead_target(pending: &[Scheduled], env: &Env, fade: usize) -> Option<Frame> {
     };
     pending
         .iter()
-        .filter(|c| declicks(&c.command) && !matches!(c.at, At::NextBlock))
-        .filter_map(|c| match look.due(c.at) {
+        .filter(|c| declicks(&c.command()) && !matches!(c.at(), At::NextBlock))
+        .filter_map(|c| match look.due(c.at()) {
             Due::In(k) if k.index() > 0 => Some(look.frame_at(k)),
             _ => None,
         })
@@ -881,49 +822,24 @@ impl Fader {
     }
 }
 
-/// What a block walk does with each piece between its cuts. A trait, with
+/// What a block walk reports as it cuts the block into pieces. A trait, with
 /// one implementation in the engine ([`GraphPieces`]), so a test can wrap it
 /// and stage a control-thread store between pieces deterministically.
 trait Pieces {
-    /// The transport from the current frame on: at the block's start
-    /// (`after` is `None`), or after applying `after` there.
-    fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport;
-    /// Run frames `start..end` of the block under `t`.
-    fn run(&mut self, start: usize, end: usize, t: &GraphTransport);
+    /// A piece of the block has just run.
+    fn ran(&mut self) {}
     /// Whether another cut fits in this block.
     fn room(&self) -> bool;
     /// Record the transport changing to `t` at `at`.
     fn change(&mut self, at: Offset, t: GraphTransport);
 }
 
-/// Advance the engine's clock over each piece, and collect the cuts for the
-/// block's `Env`; the render happens once, after.
-struct GraphPieces<'a> {
-    clock: &'a mut TransportClock,
-    settings: &'a tutti_transport::TransportSettings,
-    /// The untimed inputs, read once at the walk's start; only an applied
-    /// command changes them.
-    control: Control,
+/// Collects the cuts for the block's `Env`; the render happens once, after.
+struct GraphPieces {
     changes: TransportChanges,
 }
 
-impl Pieces for GraphPieces<'_> {
-    fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport {
-        match after {
-            None => self.clock.begin(&self.control, true),
-            Some(command) => {
-                self.control.apply(command, self.settings);
-                // Only a motion command can have requested a seek.
-                let seeks = matches!(command, TransportCommand::Motion(_));
-                self.clock.begin(&self.control, seeks)
-            }
-        }
-    }
-
-    fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
-        self.clock.advance(end - start, t);
-    }
-
+impl Pieces for GraphPieces {
     fn room(&self) -> bool {
         !self.changes.is_full()
     }
@@ -932,20 +848,6 @@ impl Pieces for GraphPieces<'_> {
         // Cannot fail: `room` was checked before the cut, cuts come in time
         // order, and one at the same frame replaces.
         let _ = self.changes.push(at, t);
-    }
-}
-
-/// The motion machine goes back to the transport before any field drops,
-/// so before `clock` releases the playhead claim: the next engine to win
-/// that claim finds it, whatever order the fields are declared in.
-///
-/// Not covered by a test: the window between the two is inside one drop on
-/// one thread, and building an engine inside it takes a timed race. Moving
-/// `motion` after `clock` (run) passes every test, as it should; deleting
-/// this `hand_back` as well passes them too, for that reason.
-impl Drop for GraphRender {
-    fn drop(&mut self) {
-        self.motion.hand_back();
     }
 }
 
@@ -965,21 +867,17 @@ impl GraphRender {
     /// playhead by `old / new` of a frame per frame until the resume, a
     /// jump of the suspended stretch's worth — and the transport's
     /// frame-timed commands (`schedule`) move with the executor's.
-    fn settle(&mut self, schedule: &Schedule) -> (usize, SampleRate) {
+    fn settle(&mut self) -> (usize, SampleRate) {
         self.exec.apply_pending();
         let rate = self
             .exec
             .pending_prepare()
             .unwrap_or(self.exec.prepare())
             .sample_rate();
-        let was = self.clock.sample_rate();
-        if rate != was {
-            // A re-prepare changed the rate: the executor has rescaled its
-            // frame clock; the beat increment and the transport's own
-            // frame-timed commands follow.
-            self.clock.set_sample_rate(rate);
-            schedule.rescale(rate.get() / was.get());
-        }
+        // A re-prepare that changed the rate: the executor has rescaled its
+        // frame clock; the beat increment and the transport's own
+        // frame-timed commands follow.
+        self.transport.follow_rate(rate);
         let bound = self.exec.prepare().max_block().get();
         // The editor's limits keep every `MaxBlock` within the scratch.
         debug_assert!(bound <= self.stride, "MaxBlock {bound} past the scratch");
@@ -1028,7 +926,7 @@ impl GraphRender {
         // Published after the block, not by the walk before it: through the
         // block the live playhead still reads its first frame (the last
         // block's end), and it only moves forward.
-        self.clock.publish_position();
+        self.transport.publish_position();
         if width == 0 {
             block.fill(0.0);
             return;
@@ -1048,7 +946,6 @@ impl GraphRender {
 mod tests {
     use super::*;
     use tutti_graph::Prepare;
-    use tutti_transport::LoopRegion;
     use tutti_transport::{MotionEvent, Transport};
     use tutti_types::Bpm;
 
@@ -1056,16 +953,13 @@ mod tests {
     /// thread" while each piece runs: the store races the walk, staged
     /// deterministically.
     struct Racing<'a> {
-        inner: GraphPieces<'a>,
+        inner: GraphPieces,
         settings: &'a tutti_transport::TransportSettings,
     }
 
     impl Pieces for Racing<'_> {
-        fn begin(&mut self, after: Option<&TransportCommand>) -> GraphTransport {
-            self.inner.begin(after)
-        }
-        fn run(&mut self, start: usize, end: usize, t: &GraphTransport) {
-            self.inner.run(start, end, t);
+        fn ran(&mut self) {
+            self.inner.ran();
             self.settings.set_tempo(Bpm(200.0));
         }
         fn room(&self) -> bool {
@@ -1081,9 +975,8 @@ mod tests {
     /// start, and only the command's own effect (rolling). The store lands
     /// at the next block.
     ///
-    /// Mutation (run): re-read `Control::read` after a command in
-    /// `GraphPieces::begin` → the change carries
-    /// 200 BPM → fails.
+    /// Mutation (run): re-read the control inputs after a command in
+    /// `TransportAudio::fire` → the change carries 200 BPM → fails.
     #[test]
     fn an_untimed_store_during_the_walk_waits_for_the_next_block() {
         let transport = Transport::new(48_000.0);
@@ -1093,22 +986,10 @@ mod tests {
             .motion
             .schedule(At::Frame(Frame(100)), MotionEvent::Play)
             .expect("room");
-        // The engine holds the transport's one playhead writer; the walk
-        // under test needs a clock over the same inputs, not a second writer.
-        let mut clock = TransportClock::new(
-            tutti_transport::ClockLinks::bare(
-                std::sync::Arc::clone(&transport.settings.tempo),
-                std::sync::Arc::clone(&transport.settings.paused),
-            ),
-            48_000.0,
-        );
-        let settings = &engine.settings;
+        let settings = &transport.settings;
         let mut render = engine.graph.borrow_mut();
         let mut pieces = Racing {
             inner: GraphPieces {
-                clock: &mut clock,
-                settings,
-                control: Control::read(settings, LoopRegion::default()),
                 changes: TransportChanges::NONE,
             },
             settings,
@@ -1116,7 +997,7 @@ mod tests {
         let mut playhead = Playhead::new();
         let walk = engine.walk(
             Track {
-                motion: &mut render.motion,
+                transport: &mut render.transport,
                 playhead: &mut playhead,
             },
             Frame::ZERO,
@@ -1132,21 +1013,16 @@ mod tests {
         assert!(change.to.playing, "the command's effect");
         assert_eq!(change.to.tempo, Bpm(120.0), "not the racing store");
         // The next block reads it.
-        assert_eq!(
-            Control::read(settings, LoopRegion::default()).tempo,
-            Bpm(200.0)
-        );
+        assert_eq!(render.transport.begin_block().tempo, Bpm(200.0));
     }
 
     /// The audio thread is never the side that panics: a block that meets
     /// the graph held on the control side (`apply_pending` racing a callback)
-    /// renders silence and leaves the motion queue for the next block, which
+    /// renders silence and leaves the command queue for the next block, which
     /// applies it.
     ///
     /// Mutations (run): `process` on a panicking `borrow_mut` → panics →
-    /// fails; the refused block not zeroed → its `1.0`s survive → fails;
-    /// `drain` before the graph borrow → the Play applies in the refused
-    /// block → "the queued Play waits" fails.
+    /// fails; the refused block not zeroed → its `1.0`s survive → fails.
     #[test]
     fn a_block_refused_the_graph_is_silent_and_retries() {
         use tutti_types::ChannelLayout;
@@ -1174,10 +1050,8 @@ mod tests {
     ///
     /// Mutations (run): `MotionAudio::drop` not handing the FSM back → the
     /// second engine is refused → fails; handing a fresh FSM back → it is
-    /// `Stopped`, so the stop is a no-op → fails; `motion` declared after `clock` in
-    /// `GraphRender` does not fail here (the drop is single-threaded, so
-    /// nothing builds an engine between the two drops): the order is held
-    /// by its comment.
+    /// `Stopped`, so the stop is a no-op → fails. There is no drop order to
+    /// keep: the claim is the machine's home, so it comes back with it.
     #[test]
     fn a_later_engine_resumes_the_motion_machine() {
         use tutti_types::ChannelLayout;
@@ -1201,12 +1075,12 @@ mod tests {
     }
 
     /// A transport whose `motion` handle came from another transport shares
-    /// that one's motion machine but not its playhead claim: an engine over
-    /// it while the other's runs wins the claim and is refused the machine,
-    /// with an error that says so.
+    /// that one's motion machine, which is where the one claim is held: an
+    /// engine over it while the other's runs is refused.
     ///
-    /// Mutation (run): map the missing machine to `PlayheadClaimed` → the
-    /// error is not `MotionHeld` → fails.
+    /// Mutation (run): `Transport::audio` taking its claim on a flag of the
+    /// transport instead of the motion machine's home → the second engine
+    /// is built → fails.
     #[test]
     fn a_shared_motion_handle_is_refused_as_held() {
         let first = Transport::new(48_000.0);
@@ -1217,8 +1091,43 @@ mod tests {
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         assert!(matches!(
             Engine::new(&second, &mut ed, exec),
-            Err(GraphEngineError::MotionHeld)
+            Err(GraphEngineError::TransportHeld(_))
         ));
+    }
+
+    /// `try_send` and a `NextBlock` command are one queue, so they apply in
+    /// the order they were sent: a `Stop` then a `Play` ends rolling, a
+    /// `Play` then a `Stop` ends stopped.
+    ///
+    /// Mutation (run): break the walk's tie-break on `seq` (take the later
+    /// send first) → the stop-then-play case ends stopped → fails.
+    #[test]
+    fn try_send_and_a_next_block_command_apply_in_send_order() {
+        use tutti_types::ChannelLayout;
+        let run = |first_is_play: bool| {
+            let transport = Transport::new(48_000.0);
+            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+            let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+            let stop = MotionEvent::stop_unfaded();
+            if first_is_play {
+                transport.motion.try_send(MotionEvent::Play).expect("room");
+                transport
+                    .motion
+                    .schedule(At::NextBlock, stop)
+                    .expect("room");
+            } else {
+                transport
+                    .motion
+                    .schedule(At::NextBlock, stop)
+                    .expect("room");
+                transport.motion.try_send(MotionEvent::Play).expect("room");
+            }
+            let mut buf = vec![0.0f32; 64 * 2];
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            transport.motion.is_playing()
+        };
+        assert!(!run(true), "play then stop ends stopped");
+        assert!(run(false), "stop then play ends rolling");
     }
 
     /// A block with no declicked command in sight plans no gain event, and
@@ -1234,28 +1143,14 @@ mod tests {
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         let _ = transport.motion.try_send(MotionEvent::Play);
-        // The engine holds the transport's one playhead writer; the walk
-        // under test needs a clock over the same inputs, not a second writer.
-        let mut clock = TransportClock::new(
-            tutti_transport::ClockLinks::bare(
-                std::sync::Arc::clone(&transport.settings.tempo),
-                std::sync::Arc::clone(&transport.settings.paused),
-            ),
-            48_000.0,
-        );
-        let settings = &engine.settings;
         let mut render = engine.graph.borrow_mut();
-        render.motion.drain();
         let mut pieces = GraphPieces {
-            clock: &mut clock,
-            settings,
-            control: Control::read(settings, LoopRegion::default()),
             changes: TransportChanges::NONE,
         };
         let mut playhead = Playhead::new();
         let walk = engine.walk(
             Track {
-                motion: &mut render.motion,
+                transport: &mut render.transport,
                 playhead: &mut playhead,
             },
             Frame::ZERO,
@@ -1277,7 +1172,7 @@ mod tests {
             .expect("room");
         let walk = engine.walk(
             Track {
-                motion: &mut render.motion,
+                transport: &mut render.transport,
                 playhead: &mut playhead,
             },
             Frame::ZERO,
@@ -1370,13 +1265,12 @@ mod tests {
     /// [`block_with`] for a block of `want` frames (at most the bound).
     fn block_of(engine: &Engine, out_ch: usize, want: usize, between: impl FnOnce()) -> Vec<f32> {
         let mut g = engine.graph.borrow_mut();
-        let (bound, _) = g.settle(&engine.timed);
+        let (bound, _) = g.settle();
         assert!(bound >= want);
         let len = want;
         between();
-        let control = Control::read(&engine.settings, g.motion.loop_region());
-        let t = g.clock.begin(&control, true);
-        g.clock.advance(len, &t);
+        let t = g.transport.begin_block();
+        g.transport.advance(len, &t);
         let mut out = vec![-9.0f32; len * out_ch];
         g.render(&mut out, out_ch, 0, len, &t, &TransportChanges::NONE);
         out

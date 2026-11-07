@@ -95,7 +95,7 @@ fn test_transport_loop_wrapping() {
         )
         .expect("room");
     let _ = transport.motion.try_send(MotionEvent::Play);
-    transport.motion.seek.request(3.99);
+    let _ = transport.motion.try_send(MotionEvent::locate(Beat(3.99)));
 
     let frames = 1024;
     let mut output = vec![0.0f32; frames * 2];

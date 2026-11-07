@@ -1,12 +1,12 @@
-//! Timestamped transport commands: play, stop, seek, tempo and loop, each
-//! at an [`At`].
+//! Transport commands: play, stop, seek, tempo and loop, each at an [`At`].
 //!
 //! A command meant to happen during playback says when:
 //! [`MotionFsm::schedule`](super::MotionFsm::schedule) takes an `At` and
-//! there is no untimed overload of it. The untimed calls
-//! ([`MotionFsm::try_send`](super::MotionFsm::try_send), the
-//! [`TransportSettings`](super::TransportSettings) stores) still work, and
-//! mean what `At::NextBlock` means.
+//! there is no untimed overload of it. [`MotionFsm::try_send`](super::MotionFsm::try_send)
+//! is `schedule` at `At::NextBlock`, through the same queue, so commands
+//! apply in the order they were sent. The
+//! [`TransportSettings`](super::TransportSettings) stores are values read
+//! once per block, not commands.
 //!
 //! # The queue
 //!
@@ -27,8 +27,7 @@
 //! the engine cuts the block's *transport* there (see the engine docs). Late
 //! commands (a frame already past, a beat continuous playback already
 //! crossed) land at the start of the next block and are counted, never
-//! dropped. Nothing but an engine drains this queue; the motion machine's
-//! own drain applies only the untimed queue.
+//! dropped. Nothing but an engine drains this queue.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -38,7 +37,6 @@ use tutti_types::At;
 
 use super::loop_region::LoopEdit;
 use super::motion::MotionEvent;
-use tutti_rt::AudioThreadCell;
 use tutti_types::Bpm;
 
 /// Scheduled transport commands that may be in flight at once: sent and not
@@ -49,7 +47,7 @@ pub const SCHEDULE_CAPACITY: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TransportCommand {
     /// A motion change (play, stop, seek, scrub): the state machine decides
-    /// whether it applies, exactly as for an untimed
+    /// whether it applies, exactly as for
     /// [`try_send`](super::MotionFsm::try_send).
     Motion(MotionEvent),
     /// Set the tempo.
@@ -97,10 +95,8 @@ impl std::error::Error for ScheduleFull {}
 /// One command in flight.
 #[derive(Debug, Clone, Copy)]
 pub struct Scheduled {
-    /// When the command applies.
-    pub at: At,
-    /// What it does.
-    pub command: TransportCommand,
+    at: At,
+    command: TransportCommand,
     /// Send order: the tie-break between commands due on one frame, and what
     /// a cancel compares against.
     seq: u64,
@@ -112,6 +108,16 @@ pub struct Scheduled {
 }
 
 impl Scheduled {
+    /// When the command applies.
+    pub fn at(&self) -> At {
+        self.at
+    }
+
+    /// What it does.
+    pub fn command(&self) -> TransportCommand {
+        self.command
+    }
+
     /// The send order, the tie-break between commands due on one frame.
     pub fn seq(&self) -> u64 {
         self.seq
@@ -135,9 +141,6 @@ pub struct Schedule {
     /// flight is taken to be old (a graph re-rated without telling the
     /// transport).
     rescale_before: Arc<AtomicU64>,
-    /// The audio thread's list of commands pulled off the ring and not yet
-    /// due. Capacity `SCHEDULE_CAPACITY`, reserved here.
-    pending: Arc<AudioThreadCell<Vec<Scheduled>>>,
 }
 
 impl std::fmt::Debug for Schedule {
@@ -155,7 +158,6 @@ impl Schedule {
             cancel_before: Arc::new(AtomicU64::new(0)),
             late: Arc::new(AtomicU64::new(0)),
             rescale_before: Arc::new(AtomicU64::new(u64::MAX)),
-            pending: Arc::new(AudioThreadCell::new(Vec::with_capacity(SCHEDULE_CAPACITY))),
         }
     }
 
@@ -210,27 +212,6 @@ impl Schedule {
         self.late.load(Ordering::Relaxed)
     }
 
-    /// Counts one command that landed late.
-    pub fn count_late(&self) {
-        self.late.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Audio thread: move what was sent into the pending list, drop what was
-    /// cancelled, and run `f` over the list. Never allocates: the list was
-    /// reserved at [`SCHEDULE_CAPACITY`], and the credit keeps it under that.
-    pub fn with_pending<R>(&self, f: impl FnOnce(&mut Vec<Scheduled>) -> R) -> R {
-        let mut pending = self.pending.borrow_mut();
-        while let Some(cmd) = self.queue.pop() {
-            debug_assert!(pending.len() < pending.capacity(), "credit bounds the list");
-            pending.push(cmd);
-        }
-        let cancel_before = self.cancel_before.load(Ordering::Acquire);
-        let before = pending.len();
-        pending.retain(|c| c.seq >= cancel_before);
-        self.release(before - pending.len());
-        f(&mut pending)
-    }
-
     /// Control thread: the device rate is changing, and every command sent
     /// from here on is written in the new rate's frames. The boundary
     /// [`rescale`](Self::rescale) keeps to — the same rule as the
@@ -240,42 +221,95 @@ impl Schedule {
         self.rescale_before
             .store(self.next_seq.load(Ordering::Acquire), Ordering::Release);
     }
+}
 
-    /// Audio thread: the engine's frame clock moved to a rate `ratio` times
-    /// the old one (new / old), so every `At::Frame` command written at the
-    /// old rate moves to the same wall-clock time at the new rate, rounded
-    /// to the nearest frame. `At::Beat` and `At::NextBlock` are not in
-    /// frames and stay.
-    ///
-    /// "Written at the old rate" is a command sent before the last
-    /// `mark_rate_change`; one sent after it is
-    /// already in the new rate's frames and is left alone (rescaling it
-    /// would move it twice). With no mark, every command in flight is
-    /// taken to be old. The mark is consumed here, so a later re-rate the
-    /// transport was not told of rescales everything again (untested: every
-    /// path that re-rates here sets the transport's rate, which re-marks).
-    /// Never allocates (see
-    /// [`with_pending`](Self::with_pending)).
-    pub fn rescale(&self, ratio: f64) {
-        let before = self.rescale_before.swap(u64::MAX, Ordering::AcqRel);
-        self.with_pending(|pending| {
-            for cmd in pending.iter_mut() {
-                if cmd.seq >= before {
-                    continue;
-                }
-                if let At::Frame(_) = cmd.at {
-                    cmd.pos *= ratio;
-                    cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
-                }
-            }
-        });
+/// The audio thread's half of a [`Schedule`]: the commands pulled off the
+/// ring and not yet due, in a list reserved at [`SCHEDULE_CAPACITY`] and owned
+/// by the one value that walks them. Only a [`TransportAudio`](super::TransportAudio)
+/// holds one, so nothing else can reach the list, and a command leaves it
+/// only through [`take`](Self::take), which gives its credit back.
+pub(crate) struct ScheduleAudio {
+    shared: Schedule,
+    pending: Vec<Scheduled>,
+}
+
+impl ScheduleAudio {
+    pub(crate) fn new(shared: Schedule) -> Self {
+        Self {
+            shared,
+            pending: Vec::with_capacity(SCHEDULE_CAPACITY),
+        }
     }
 
-    /// `n` commands left the pending list: applied or cancelled.
-    pub fn release(&self, n: usize) {
+    /// Move what was sent into the pending list and drop what was cancelled.
+    /// Never allocates: the list was reserved at [`SCHEDULE_CAPACITY`], and
+    /// the credit keeps it under that.
+    pub(crate) fn gather(&mut self) {
+        while let Some(cmd) = self.shared.queue.pop() {
+            debug_assert!(
+                self.pending.len() < self.pending.capacity(),
+                "credit bounds the list"
+            );
+            self.pending.push(cmd);
+        }
+        let cancel_before = self.shared.cancel_before.load(Ordering::Acquire);
+        let before = self.pending.len();
+        self.pending.retain(|c| c.seq >= cancel_before);
+        self.shared.release(before - self.pending.len());
+    }
+
+    /// The commands sent and not yet applied, as of the last [`gather`](Self::gather).
+    pub(crate) fn pending(&self) -> &[Scheduled] {
+        &self.pending
+    }
+
+    /// Removes command `i` to apply it, giving its credit back, and counts
+    /// it late when it is. The one way out of the list, so a removal cannot
+    /// leak its credit or forget the count.
+    pub(crate) fn take(&mut self, i: usize, late: bool) -> Scheduled {
+        let command = self.pending.swap_remove(i);
+        self.shared.release(1);
+        if late {
+            self.shared.count_late();
+        }
+        command
+    }
+
+    /// The engine's frame clock moved to a rate `ratio` times the old one
+    /// (new / old), so every `At::Frame` command written at the old rate
+    /// moves to the same wall-clock time at the new rate, rounded to the
+    /// nearest frame. `At::Beat` and `At::NextBlock` are not in frames and
+    /// stay.
+    ///
+    /// "Written at the old rate" is a command sent before the last
+    /// `mark_rate_change`; one sent after it is already in the new rate's
+    /// frames and is left alone (rescaling it would move it twice). With no
+    /// mark, every command in flight is taken to be old. The mark is consumed
+    /// here. Never allocates.
+    pub(crate) fn rescale(&mut self, ratio: f64) {
+        let before = self.shared.rescale_before.swap(u64::MAX, Ordering::AcqRel);
+        self.gather();
+        for cmd in self.pending.iter_mut() {
+            if cmd.seq >= before {
+                continue;
+            }
+            if let At::Frame(_) = cmd.at {
+                cmd.pos *= ratio;
+                cmd.at = At::Frame(tutti_types::Frame(cmd.pos.round() as u64));
+            }
+        }
+    }
+}
+
+impl Schedule {
+    fn release(&self, n: usize) {
         if n > 0 {
             self.credit.fetch_sub(n, Ordering::AcqRel);
         }
+    }
+
+    fn count_late(&self) {
+        self.late.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -303,18 +337,17 @@ mod tests {
                 command: play
             })
         );
-        s.with_pending(|p| {
-            assert_eq!(p.len(), SCHEDULE_CAPACITY);
-            p.remove(0);
-        });
-        s.release(1);
+        let mut audio = ScheduleAudio::new(s.clone());
+        audio.gather();
+        assert_eq!(audio.pending().len(), SCHEDULE_CAPACITY);
+        audio.take(0, false);
         s.send(At::NextBlock, play).expect("one credit back");
     }
 
     /// Cancelling drops what was sent before it, frees its credit, and
     /// leaves later commands alone.
     ///
-    /// Mutation: skip `release` in `with_pending` → the credit stays held →
+    /// Mutation: skip `release` in `gather` → the credit stays held →
     /// `outstanding` is 3 → fails.
     #[test]
     fn cancel_drops_what_was_sent_before_it() {
@@ -324,10 +357,10 @@ mod tests {
         s.send(At::Frame(Frame(20)), play).expect("room");
         s.cancel_all();
         s.send(At::Frame(Frame(30)), play).expect("room");
-        s.with_pending(|p| {
-            assert_eq!(p.len(), 1);
-            assert_eq!(p[0].at, At::Frame(Frame(30)));
-        });
+        let mut audio = ScheduleAudio::new(s.clone());
+        audio.gather();
+        assert_eq!(audio.pending().len(), 1);
+        assert_eq!(audio.pending()[0].at(), At::Frame(Frame(30)));
         assert_eq!(s.outstanding(), 1);
     }
 }

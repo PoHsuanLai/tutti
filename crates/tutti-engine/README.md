@@ -18,8 +18,8 @@ which re-exports this crate as `tutti::engine`, or `bevy-tutti` for a Bevy app.
 ## What this crate does not own
 
 - **The transport.** `Transport`, its motion state machine and timed commands
-  are `tutti-transport`'s; the engine drives a `TransportClock` and applies what
-  the transport schedules.
+  are `tutti-transport`'s; the engine holds the transport's `TransportAudio` and
+  applies what the transport schedules.
 - **Metering.** `MasterMeter`, `AudioTap` and `LoadMeter` are `tutti-metering`'s;
   the engine writes the load meter once per block.
 - **MIDI.** `Engine` is MIDI-free; MIDI travels on the graph's event ports

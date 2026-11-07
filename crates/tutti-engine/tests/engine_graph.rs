@@ -1146,11 +1146,8 @@ fn a_tempo_wiggle_under_the_clock_hysteresis_does_not_move_the_beat() {
         .expect("the graph stopped");
     assert_eq!(stop, 240_000, "stops on beat 10's frame");
     assert_eq!(log[stop].1, 10.0, "and holds beat 10");
-    let in_force = transport
-        .settings
-        .tempo_in_force
-        .load(std::sync::atomic::Ordering::Acquire);
-    assert_eq!(in_force, 120.0, "the tempo in force");
+    let in_force = transport.settings.tempo_in_force();
+    assert_eq!(in_force, Bpm(120.0), "the tempo in force");
 }
 
 /// Ten minutes of 64-frame blocks, with a tempo change and a loop partway:
@@ -1409,20 +1406,19 @@ fn a_re_prepare_keeps_the_beat_and_a_frame_command_on_wall_clock_time() {
 
 /// **One engine per transport.** While an engine drives a transport's
 /// clock, a second engine over it — or over a clone of it, which shares the
-/// playhead — is refused with `PlayheadClaimed`, as is a bare second clock
-/// (`Transport::clock_links`); once the engine is dropped the transport
+/// playhead — is refused with `TransportHeld`, as is a second
+/// `Transport::audio`; once the engine is dropped the transport
 /// hands the claim out again. Two engines would both consume every seek
 /// and both write the playhead.
 ///
-/// Mutation (run): `PlayheadClaim::take` always succeeding → the second
-/// engine builds → fails. Mutation (run): `PlayheadClaim`'s `Drop` not
-/// giving the claim back → the engine after the drop is refused → fails.
-/// Mutation (run): `Engine::with_capacity` building its clock from severed
-/// links (no claim) → the second engine builds → fails.
+/// Mutation (run): `Transport::audio` popping the motion machine's home
+/// without leaving it empty → the second engine builds → fails. Mutation
+/// (run): `MotionAudio`'s `Drop` not handing the home back → the engine
+/// after the drop is refused → fails.
 #[test]
 fn a_transport_has_one_playhead_writer() {
     use tutti_engine::GraphEngineError;
-    use tutti_transport::PlayheadClaimed;
+    use tutti_transport::AudioTaken;
 
     let transport = Transport::new(SR);
     let (engine, _ed) = graph_engine(&transport, 256, Unforkable(Clocked), 3);
@@ -1431,10 +1427,10 @@ fn a_transport_has_one_playhead_writer() {
     let twin = transport.clone();
     assert_eq!(
         Engine::new(&twin, &mut ed, exec).err(),
-        Some(GraphEngineError::PlayheadClaimed(PlayheadClaimed)),
+        Some(GraphEngineError::TransportHeld(AudioTaken)),
         "a clone shares the playhead, so it shares the claim"
     );
-    assert_eq!(transport.clock_links().err(), Some(PlayheadClaimed));
+    assert_eq!(transport.audio(SR).err(), Some(AudioTaken));
 
     drop(engine);
     let (mut ed, exec) = Editor::new(prepare(256));

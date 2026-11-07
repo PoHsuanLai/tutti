@@ -3,20 +3,21 @@
 //! Split by *who decides*. [`TransportSettings`] holds the plain values (tempo,
 //! loop region, recording) that anyone may store into; [`MotionFsm`] holds the
 //! state machine that may reject or defer a play/stop/locate. [`Transport`] is
-//! the two halves as one handle, and [`TransportClock`] is the engine's
+//! the two halves as one handle, and [`TransportAudio`] holds the engine's
 //! playhead, which the graph reads from each block's `Env`.
 //!
 //! The traits below are the read side: [`Timeline`] is what a reader outside
 //! the graph consults (a node reads its block's `Env`)
 //! and [`RenderClock`] is what a renderer drives.
 //!
-//! `tutti-engine`'s `Engine` drives a [`TransportClock`] and applies the
-//! motion and timed commands; [`Control`], [`MotionAudio`], [`Schedule`] and
-//! [`Scheduled`] are the audio side it reads them through.
+//! `tutti-engine`'s `Engine` holds a [`TransportAudio`], the audio-thread side
+//! of a [`Transport`] (taken once): the clock, the motion machine and the
+//! timed commands behind one value that private fields keep in order.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod audio;
 #[cfg(test)]
 mod beat_walk;
 mod clock;
@@ -31,15 +32,14 @@ mod state;
 mod timed;
 mod timeline;
 
-pub use clock::{Control, TransportClock};
+pub use audio::{Applied, AudioTaken, TransportAudio};
 pub use handle::Transport;
 pub use loop_region::{LoopEdit, LoopRegion};
-pub use motion::{FadeOut, MotionAudio, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
+pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
-pub use state::{ClockLinks, PlayheadClaimed, SeekSlot};
-pub use timed::{SCHEDULE_CAPACITY, Schedule, ScheduleFull, Scheduled, TransportCommand};
+pub use timed::{SCHEDULE_CAPACITY, ScheduleFull, Scheduled, TransportCommand};
 
 pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 
@@ -59,8 +59,8 @@ pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 /// `Timeline`: a clock that does not move (`FrozenClock`) has a transport to
 /// report — stopped, at beat zero — without being a timeline anything reads.
 ///
-/// **Advance AFTER processing, never before.** `TransportClock` (the engine's
-/// clock, whose transport beat-driven nodes read from `Env`) is
+/// **Advance AFTER processing, never before.** The engine's clock (whose
+/// transport beat-driven nodes read from `Env`) is
 /// emit-then-advance: sample 0 of a block carries the block's start beat, and
 /// only then does the beat increment. A clock advanced ahead of the render
 /// sits one `beats_per_sample` off the transport its nodes read for the

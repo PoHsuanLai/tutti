@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use super::audio::{AudioTaken, TransportAudio};
 use super::motion::MotionFsm;
 use super::settings::TransportSettings;
-use super::state::{ClockLinks, PlayheadClaim, PlayheadClaimed};
 use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 
 /// The two halves of a transport, held together.
@@ -47,10 +47,6 @@ pub struct Transport {
     /// a clip reader's `Arc<dyn Timeline>`, the MIDI clock master — rather
     /// than only the handle it was called on.
     sample_rate: Arc<AtomicF64>,
-    /// Whether a clock holds this transport's playhead-writer claim
-    /// ([`clock_links`](Self::clock_links)). Shared by every clone, so the
-    /// one writer is one per transport, not per handle.
-    playhead_claimed: Arc<AtomicBool>,
 }
 
 impl Transport {
@@ -61,30 +57,29 @@ impl Transport {
             motion: MotionFsm::new(settings.clone()),
             settings,
             sample_rate: Arc::new(AtomicF64::new(sample_rate.into().get())),
-            playhead_claimed: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Everything a [`TransportClock`](super::TransportClock) shares with this
-    /// transport — the inputs it reads *and* the playhead it writes — for
-    /// the **one** clock that writes it.
-    ///
-    /// Both halves come from this one call on purpose. `settings.beat` is only
-    /// ever filled by the clock's position writeback, so a construction path
-    /// that supplies the inputs without the writeback yields a transport whose
-    /// playhead never moves.
+    /// The audio-thread side of this transport, for the **one** holder that
+    /// renders under it: the motion machine, the playhead clock and the
+    /// timed commands, taken together and handed back together when the
+    /// returned value drops.
     ///
     /// # Errors
     ///
-    /// Returns [`PlayheadClaimed`] while links from an earlier call are
-    /// alive (in a clock, or a clone of one), on this handle or any clone of
-    /// it: two clocks would both consume every seek and both write the
-    /// playhead. The claim is given back when the last holder of those links
-    /// is dropped (the engine that drove them), or never taken by links
-    /// [`severed`](ClockLinks::severed) from them.
-    pub fn clock_links(&self) -> Result<ClockLinks, PlayheadClaimed> {
-        let claim = PlayheadClaim::take(&self.playhead_claimed)?;
-        Ok(ClockLinks {
+    /// [`AudioTaken`] while an earlier value from this transport, or from a
+    /// clone of it, is alive: two would both consume every seek and both
+    /// write the playhead. There is one claim and one place it is held (the
+    /// motion machine's home), so no other half can be taken around it.
+    pub fn audio(&self, sample_rate: impl Into<SampleRate>) -> Result<TransportAudio, AudioTaken> {
+        TransportAudio::take(self, sample_rate.into())
+    }
+
+    /// The links a clock over this transport shares, writer half included.
+    /// Crate-private: [`audio`](Self::audio) is the only caller, and it only
+    /// calls with the motion machine in hand.
+    pub(crate) fn links(&self) -> super::state::ClockLinks {
+        super::state::ClockLinks {
             tempo: Arc::clone(&self.settings.tempo),
             paused: Arc::clone(&self.settings.paused),
             seek: self.motion.seek.clone(),
@@ -92,8 +87,7 @@ impl Transport {
             segment_generation: Some(Arc::clone(&self.settings.segment_generation)),
             steady_time: Some(Arc::clone(&self.settings.steady_time)),
             tempo_in_force: Some(Arc::clone(&self.settings.tempo_in_force)),
-            claim: Some(Arc::new(claim)),
-        })
+        }
     }
 
     /// The device rate this transport converts musical time against: the
@@ -165,6 +159,7 @@ impl super::Timeline for Transport {
 mod tests {
     use super::super::Timeline;
     use super::super::motion::MotionEvent;
+    use super::super::motion::harness::Audio;
     use super::*;
 
     #[test]
@@ -176,7 +171,7 @@ mod tests {
         assert_eq!(b.settings.tempo().get(), 140.0);
 
         let _ = a.motion.try_send(MotionEvent::Play);
-        b.motion.audio().expect("no engine holds it").drain();
+        Audio::of(&b.motion).drain();
         assert!(a.motion.is_playing(), "the FSM is shared, not copied");
     }
 
@@ -202,7 +197,7 @@ mod tests {
         t.settings.set_beat(8.0);
         t.settings.set_tempo(90.0);
         let _ = t.motion.try_send(MotionEvent::Play);
-        t.motion.audio().expect("no engine holds it").drain();
+        Audio::of(&t.motion).drain();
 
         // beat/tempo come from settings, is_playing from the FSM — the reason
         // this type exists.
@@ -214,7 +209,7 @@ mod tests {
     #[test]
     fn clock_inputs_track_live_edits() {
         let t = Transport::new(48000.0);
-        let inputs = t.clock_links().expect("the first clock");
+        let inputs = t.links();
 
         t.settings.set_tempo(160.0);
         assert_eq!(
@@ -224,7 +219,7 @@ mod tests {
         );
 
         let _ = t.motion.try_send(MotionEvent::locate(Beat(4.0)));
-        t.motion.audio().expect("no engine holds it").drain();
+        Audio::of(&t.motion).drain();
         assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }
 

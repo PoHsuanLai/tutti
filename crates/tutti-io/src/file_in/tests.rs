@@ -337,6 +337,68 @@ fn a_mid_stream_decode_error_keeps_the_frames_before_it() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// Through the trait alone, a cut FLAC yields its frames and then reads as
+/// failed, a whole file ends without failing, and a pump over the cut file
+/// finishes as `Failed` rather than `Ended`.
+///
+/// Mutation (run): removing the `is_failed` override from `impl AudioIn for
+/// FileIn` fails the failed assertions and the pump's `Failed` case.
+#[test]
+fn a_decode_fault_reads_as_failed_through_the_trait() {
+    fn frames_then_failed<I: AudioIn>(src: &mut I) -> (usize, bool) {
+        let mut buf = vec![0.0f32; 1024 * usize::from(src.layout().count())];
+        let mut frames = 0;
+        loop {
+            match src.poll_into(&mut buf).get() {
+                0 => return (frames, src.is_failed()),
+                n => frames += n,
+            }
+        }
+    }
+
+    let cut = truncated_asset("stereo.flac", 0.9);
+    let mut dec = FileIn::open(&cut).expect("a cut file still opens");
+    let total = dec.total_frames().expect("flac reports a length").get();
+    let (frames, failed) = frames_then_failed(&mut dec);
+    assert!(frames > 0 && frames < total, "{frames} of {total}");
+    assert!(failed);
+    dec.seek(Samples(0)).expect("seek");
+    assert!(!dec.is_failed(), "a seek clears the fault");
+
+    let (whole, failed) = frames_then_failed(&mut FileIn::open(asset("stereo.flac")).unwrap());
+    assert_eq!(whole, total);
+    assert!(!failed);
+
+    struct Discard(ChannelLayout);
+    impl tutti_types::AudioOut for Discard {
+        fn layout(&self) -> ChannelLayout {
+            self.0
+        }
+        fn write(&mut self, _: &[f32]) {}
+        fn finalize(self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let run = |path: &std::path::Path| {
+        let src = FileIn::open(path).expect("open");
+        let sink = Discard(src.layout());
+        let scratch = vec![0.0f32; 1024 * usize::from(src.layout().count())];
+        let mut pump = crate::pump_loop::PumpLoop::new(src, sink, scratch, Default::default());
+        loop {
+            match pump.pump_once() {
+                crate::pump_loop::PumpPass::Wrote(_) => {}
+                end => return end,
+            }
+        }
+    };
+    assert_eq!(run(&cut), crate::pump_loop::PumpPass::Failed);
+    assert_eq!(
+        run(&asset("stereo.flac")),
+        crate::pump_loop::PumpPass::Ended
+    );
+    let _ = std::fs::remove_file(&cut);
+}
+
 /// A finished file has no error to report.
 ///
 /// Mutation (run): `truncation` returning `true` fails this.

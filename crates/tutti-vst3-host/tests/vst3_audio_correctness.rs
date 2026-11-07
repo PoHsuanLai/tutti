@@ -75,7 +75,7 @@ fn sample_plugin_dir() -> String {
 /// Serialises every test that touches a plugin. It guards the process-wide
 /// `TUTTI_PROBE_MISBEHAVIOUR` variable some tests set (`set_var` is unsound
 /// while another thread reads the environment, and every probe instance reads
-/// it), not instance creation or module load, which are safe concurrently.
+/// it).
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {

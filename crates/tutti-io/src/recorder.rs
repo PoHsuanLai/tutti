@@ -243,10 +243,9 @@ impl Recorder {
     /// [`Error::Io`] if finalizing failed (for a WAV, the header was left
     /// unpatched and the file is unreadable) or the pump thread panicked.
     pub fn finish(mut self) -> Result<()> {
-        Ok(self
-            .finish_in_place()
+        self.finish_in_place()
             .unwrap_or(Ok(()))
-            .map_err(Error::from_take)?)
+            .map_err(Error::from_take)
     }
 
     /// Waits for a **finite** take to reach its own end, then finalizes.
@@ -270,10 +269,7 @@ impl Recorder {
     /// finalizing failed or the pump thread panicked.
     pub fn wait(mut self) -> Result<()> {
         // Not `finish_in_place`: that clears the stop flag and truncates the take.
-        Ok(self
-            .join_pump()
-            .unwrap_or(Ok(()))
-            .map_err(Error::from_take)?)
+        self.join_pump().unwrap_or(Ok(())).map_err(Error::from_take)
     }
 
     /// Signals the pump to stop, without waiting for it. Idempotent.

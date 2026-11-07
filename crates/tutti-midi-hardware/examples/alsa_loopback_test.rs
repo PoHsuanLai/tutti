@@ -23,7 +23,7 @@ use tutti_midi_hardware::{HardwareMidiDrain, HardwareMidiInputs, MidiEvent, Midi
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Pick the loopback endpoint. See the module doc for why this is not VirMIDI.
-fn pick(list: &[tutti_midi_hardware::EndpointInfo]) -> Option<&tutti_midi_hardware::EndpointInfo> {
+fn pick(list: &[tutti_midi_hardware::DeviceInfo]) -> Option<&tutti_midi_hardware::DeviceInfo> {
     list.iter().find(|e| e.name.contains("Midi Through"))
 }
 
@@ -31,7 +31,7 @@ fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));
     // The audio side's drain: what a `MidiInputNode` would own.
     let mut drain = HardwareMidiDrain::new(Arc::clone(&pm));
-    let io = MidiSession::new(pm.clone());
+    let io = MidiSession::new(pm.clone()).expect("open MIDI");
 
     let inputs = io.inputs();
     let outputs = io.outputs();
@@ -39,11 +39,11 @@ fn main() {
         eprintln!("ERROR: no `Midi Through` port. `sudo modprobe snd-seq-dummy`.");
         std::process::exit(1);
     };
-    println!("in : [{}] {}", inp.id.raw(), inp.name);
-    println!("out: [{}] {}", out.id.raw(), out.name);
+    println!("in : [{}] {}", inp.id, inp.name);
+    println!("out: [{}] {}", out.id, out.name);
 
-    io.connect_input(inp.id).expect("connect input");
-    io.connect_output(out.id).expect("connect output");
+    io.connect_input(&inp.id).expect("connect input");
+    io.connect_output(&out.id).expect("connect output");
     thread::sleep(Duration::from_millis(200));
 
     // Drain anything buffered before the test.
@@ -110,7 +110,7 @@ fn main() {
         println!("  FAIL: received {count}/10, all note_on={all_on}");
     }
 
-    io.disconnect_input(inp.id);
+    io.disconnect_input(&inp.id);
     io.disconnect_output();
 
     if failures == 0 {

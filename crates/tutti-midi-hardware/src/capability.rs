@@ -12,36 +12,9 @@
 //! [`Protocol`] and [`FunctionBlock`] are the MIDI 2.0 spec's own nouns from
 //! `tutti-midi-types` / `tutti-midi-runtime`, reused here rather than restated.
 
+use tutti_midi_device::{EndpointId, Identity};
 use tutti_midi_runtime::FunctionBlock;
 use tutti_midi_types::Protocol;
-
-/// A handle to one endpoint, opaque and backend-owned.
-///
-/// Deliberately **not** a bare index. CoreMIDI's `MIDIGetSource(i)` and ALSA's
-/// `(client, port)` pair are different shapes, and an index is only stable until
-/// the next hot-plug — the value that survives a device list refresh differs per
-/// OS. Keeping it opaque means a stale id fails to open rather than silently
-/// opening the *wrong device*, which is the failure a `usize` invites.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EndpointId {
-    /// Backend-defined. CoreMIDI stores a `MIDIUniqueID`; ALSA packs
-    /// `(client << 32) | port`.
-    raw: u64,
-}
-
-impl EndpointId {
-    /// Mint an id from a backend's own stable identifier.
-    #[must_use]
-    pub fn from_raw(raw: u64) -> Self {
-        Self { raw }
-    }
-
-    /// The backend's identifier. Meaningful only to the backend that minted it.
-    #[must_use]
-    pub fn raw(self) -> u64 {
-        self.raw
-    }
-}
 
 /// What an endpoint can carry.
 ///
@@ -124,6 +97,8 @@ impl UmpCapability {
 pub struct EndpointInfo {
     /// Opaque handle to open it by.
     pub id: EndpointId,
+    /// What the OS knows it by, for a [`DeviceId`](tutti_midi_device::DeviceId).
+    pub identity: Identity,
     /// Display name, as the OS reports it.
     pub name: String,
     /// What it can carry.

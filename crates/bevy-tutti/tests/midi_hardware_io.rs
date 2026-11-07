@@ -244,14 +244,21 @@ mod midi_session_without_hardware {
     use std::sync::Arc;
 
     use tutti_midi_hardware::test_support::FakeBackend;
-    use tutti_midi_hardware::{EndpointId, HardwareMidiInputs, MidiSession};
+    use tutti_midi_hardware::{DeviceId, HardwareMidiInputs, MidiSession};
     use tutti_midi_types::ump::MidiEvent;
     use tutti_ump::{MidiChannel, MidiGroup};
 
     fn session() -> (MidiSession, tutti_midi_hardware::test_support::FakeCounters) {
         let (backend, counters) = FakeBackend::build();
         let ports = Arc::new(HardwareMidiInputs::new(64));
-        (MidiSession::with_backend(backend, ports), counters)
+        (
+            MidiSession::with_backend(backend, ports).expect("the fake backend watches"),
+            counters,
+        )
+    }
+
+    fn input(s: &MidiSession, name: &str) -> DeviceId {
+        s.inputs().into_iter().find(|d| d.name == name).unwrap().id
     }
 
     /// A session enumerates, connects and sends, all without a device.
@@ -269,8 +276,8 @@ mod midi_session_without_hardware {
         assert_eq!(s.outputs().len(), 2);
 
         assert!(!s.is_any_input_connected());
-        s.connect_input(EndpointId::from_raw(1))
-            .expect("the fake list contains input 1");
+        s.connect_input(&input(&s, "Keystep Pro"))
+            .expect("the fake list contains Keystep Pro");
         assert!(s.is_any_input_connected());
         assert_eq!(
             counters.opens(),
@@ -278,8 +285,13 @@ mod midi_session_without_hardware {
             "connecting opens the port exactly once"
         );
 
-        s.connect_output(EndpointId::from_raw(10))
-            .expect("the fake list contains output 10");
+        let synth = s
+            .outputs()
+            .into_iter()
+            .find(|d| d.name == "Synth A")
+            .unwrap();
+        s.connect_output(&synth.id)
+            .expect("the fake list contains Synth A");
         let note = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
         assert_eq!(
             s.send(&[note, note]),
@@ -297,7 +309,11 @@ mod midi_session_without_hardware {
     #[test]
     fn connecting_an_absent_device_reports_it() {
         let (s, counters) = session();
-        assert!(s.connect_input(EndpointId::from_raw(999)).is_err());
+        // An id that was listed and is gone: the shape of a stale id.
+        let gone = input(&s, "IAC Bus 1");
+        counters.unplug(tutti_midi_hardware::EndpointId::from_raw(2));
+        s.devices().wait(std::time::Duration::from_secs(10));
+        assert!(s.connect_input(&gone).is_err());
         assert!(!s.is_any_input_connected());
         assert_eq!(counters.opens(), 0, "a refused connect opens nothing");
     }

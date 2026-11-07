@@ -38,8 +38,10 @@
 //! [`HardwareMidiInputs`]: crate::HardwareMidiInputs
 
 use crate::InputProducerHandle;
-use crate::capability::{EndpointId, EndpointInfo};
+use crate::capability::EndpointInfo;
+use crate::devices::ChangeSink;
 use crate::error::Result;
+use tutti_midi_device::EndpointId;
 use tutti_midi_types::MidiOut;
 
 /// An open input connection: a live subscription to one endpoint.
@@ -58,8 +60,32 @@ use tutti_midi_types::MidiOut;
 /// distinct thing to be even with no behaviour attached.
 pub trait InputConnection: Send {}
 
+/// A running watch over the OS's device list. Method-less like
+/// [`InputConnection`]: it is a lifetime. Dropping it stops the backend's
+/// thread and returns once the thread has ended, so no report reaches the sink
+/// afterwards.
+pub trait Watch: Send + Sync {}
+
+/// A watch that watches nothing: where no OS reports changes.
+#[derive(Debug)]
+pub(crate) struct NoWatch;
+
+impl Watch for NoWatch {}
+
 /// This OS's MIDI endpoints.
 pub trait MidiEndpoints: Send + Sync {
+    /// Starts reporting the device list to `sink`: every device present now,
+    /// seeded before this returns, then each change from a thread of the
+    /// backend's own.
+    ///
+    /// Where the OS cannot be asked (no sequencer to open) the watch reports
+    /// nothing, as [`inputs`](Self::inputs) lists nothing there.
+    ///
+    /// # Errors
+    ///
+    /// The platform error from starting the thread.
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>>;
+
     /// Endpoints that can send MIDI to this engine.
     ///
     /// A fresh snapshot per call — device lists go stale on hot-plug, and a

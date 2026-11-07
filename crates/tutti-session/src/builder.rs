@@ -26,13 +26,16 @@ use crate::{Result, Session};
 ///     .unwrap();
 /// assert_eq!(session.graph_ref().outputs(), 6);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SessionBuilder {
     inputs: usize,
     outputs_floor: usize,
     render_workers: usize,
     #[cfg(feature = "midi-hardware")]
     midi_hardware: bool,
+    /// The backend the OS MIDI layer runs over, if not the platform's.
+    #[cfg(feature = "midi-hardware")]
+    midi_backend: Option<MidiBackend>,
     #[cfg(feature = "midi")]
     mpe_mode: tutti_midi_types::MpeMode,
     #[cfg(feature = "modulation")]
@@ -43,6 +46,17 @@ pub struct SessionBuilder {
     recovery: Option<crate::RecoveryPolicy>,
 }
 
+/// A MIDI backend a host supplies, held until the session takes it.
+#[cfg(feature = "midi-hardware")]
+struct MidiBackend(Box<dyn tutti_midi_hardware::MidiEndpoints>);
+
+#[cfg(feature = "midi-hardware")]
+impl std::fmt::Debug for MidiBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiBackend").finish_non_exhaustive()
+    }
+}
+
 impl Default for SessionBuilder {
     fn default() -> Self {
         Self {
@@ -51,6 +65,8 @@ impl Default for SessionBuilder {
             render_workers: 1,
             #[cfg(feature = "midi-hardware")]
             midi_hardware: false,
+            #[cfg(feature = "midi-hardware")]
+            midi_backend: None,
             #[cfg(feature = "midi")]
             mpe_mode: tutti_midi_types::MpeMode::Disabled,
             #[cfg(feature = "modulation")]
@@ -111,6 +127,21 @@ impl SessionBuilder {
         self
     }
 
+    /// As [`midi_hardware`](Self::midi_hardware), over `backend` instead of the
+    /// platform's: a headless test's `FakeBackend`
+    /// (`tutti_midi_hardware::test_support`), whose `plug` and `unplug` drive
+    /// hot-plug with no device.
+    #[cfg(feature = "midi-hardware")]
+    #[must_use]
+    pub fn midi_hardware_over(
+        mut self,
+        backend: Box<dyn tutti_midi_hardware::MidiEndpoints>,
+    ) -> Self {
+        self.midi_hardware = true;
+        self.midi_backend = Some(MidiBackend(backend));
+        self
+    }
+
     /// The MPE mode the engine's MIDI input ingests in. Default `Disabled`.
     #[cfg(feature = "midi")]
     #[must_use]
@@ -164,22 +195,31 @@ impl SessionBuilder {
     /// device's callback `quantum` when known, `outputs` wide; insert the
     /// metronome and the engine's MIDI nodes.
     fn parts(
-        &self,
+        &mut self,
         rate: SampleRate,
         max_block: Samples,
         quantum: Option<Samples>,
         outputs: usize,
-    ) -> Parts {
+    ) -> Result<Parts> {
         // Built first so its port manager can feed the graph's MIDI input.
         #[cfg(feature = "midi-hardware")]
-        let midi_io = self.midi_hardware.then(|| {
+        let backend = self.midi_backend.take();
+        #[cfg(feature = "midi-hardware")]
+        let midi_io = self.midi_hardware.then(|| -> Result<_> {
             let ports = Arc::new(tutti_midi_hardware::HardwareMidiInputs::default());
             // It times each inbound event by turning a wall-clock delta into a
             // frame offset, which takes the device's real rate: told here,
             // before any callback runs.
             ports.set_sample_rate(rate);
-            tutti_midi_hardware::MidiSession::new(ports)
+            Ok(match backend {
+                Some(MidiBackend(backend)) => {
+                    tutti_midi_hardware::MidiSession::with_backend(backend, ports)?
+                }
+                None => tutti_midi_hardware::MidiSession::new(ports)?,
+            })
         });
+        #[cfg(feature = "midi-hardware")]
+        let midi_io = midi_io.transpose()?;
 
         let mut graph = Graph::new(self.inputs, outputs, rate, max_block, quantum);
         graph.set_render_workers(self.render_workers);
@@ -223,7 +263,7 @@ impl SessionBuilder {
             })
         };
 
-        Parts {
+        Ok(Parts {
             graph,
             transport,
             click: Some(click),
@@ -233,7 +273,7 @@ impl SessionBuilder {
             midi,
             #[cfg(feature = "midi-hardware")]
             midi_io,
-        }
+        })
     }
 
     /// The session over `parts`, `engine` its offline engine if any, with
@@ -307,10 +347,10 @@ impl SessionBuilder {
     ///
     /// # Errors
     ///
-    /// When the engine refuses the graph, or (`sampler`) the disk streamer
-    /// cannot start.
+    /// When the engine refuses the graph, (`midi-hardware`) the MIDI device
+    /// watch cannot start, or (`sampler`) the disk streamer cannot start.
     pub fn build_offline(
-        self,
+        mut self,
         rate: SampleRate,
         layout: ChannelLayout,
         max_block: Samples,
@@ -320,7 +360,7 @@ impl SessionBuilder {
             max_block,
             None,
             root_width(self.outputs_floor, layout),
-        );
+        )?;
         let engine = parts.graph.engine(&parts.transport)?;
         self.session(parts, Some(engine), true)
     }
@@ -402,7 +442,7 @@ impl SessionBuilder {
     /// oscillator off pitch.
     #[cfg(feature = "device")]
     fn build_on(
-        self,
+        mut self,
         mut audio_engine: tutti_cpal::AudioEngine,
         start: impl FnOnce(
             &mut tutti_cpal::AudioEngine,
@@ -415,7 +455,7 @@ impl SessionBuilder {
             LIVE_MAX_BLOCK,
             spec.quantum,
             root_width(self.outputs_floor, spec.channels),
-        );
+        )?;
         let engine = parts.graph.engine(&parts.transport)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(Arc::clone(engine.load_meter()));

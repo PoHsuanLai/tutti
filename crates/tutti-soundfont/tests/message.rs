@@ -13,6 +13,10 @@
 //! - `narrow_value` (in `tutti-midi-protocol`) shifting by 24 ->
 //!   `control_change_7_reaches_the_synth_at_its_value`;
 //! - the bend's LSB and MSB swapped -> `a_bend_reaches_the_synth_at_its_value`;
+//! - the bend's LSB argument replaced by 0 -> the same test (b = 127, 8319,
+//!   16383 and the rest differ from the centre by under 3.1 cents of LSB);
+//! - a Note On or a Note Off with a reserved attribute type dropped ->
+//!   `a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note`;
 //! - `Voice2::PolyPressure` made to release the note ->
 //!   `messages_with_no_synthesizer_setter_change_nothing`.
 
@@ -192,24 +196,41 @@ fn control_change_7_reaches_the_synth_at_its_value() {
     assert_eq!(held_rms(&[cc7_2(0), note]), 0.0);
 }
 
-/// The fundamental period, in frames, from the autocorrelation peak of `x`
-/// between `lo` and `hi`, refined by a parabola through the peak.
-fn period(x: &[f32], lo: usize, hi: usize) -> f32 {
-    let ac = |lag: usize| -> f32 { x.iter().zip(&x[lag..]).map(|(a, b)| a * b).sum() };
-    let (best, _) = (lo..hi)
-        .map(|lag| (lag, ac(lag)))
-        .fold((lo, f32::MIN), |m, c| if c.1 > m.1 { c } else { m });
+/// The fundamental period, in frames, of `x` (at least 8000 frames longer than
+/// the largest lag it tries). A coarse autocorrelation peak between `lo` and
+/// `hi` finds the period to a frame; the peak at `K` periods then finds it
+/// to `1/K` of that, refined by a parabola through the peak.
+fn period(x: &[f32], lo: usize, hi: usize) -> f64 {
+    const K: usize = 16;
+    let n = x.len() - 8_000;
+    let ac = |lag: usize| -> f64 {
+        x[..n]
+            .iter()
+            .zip(&x[lag..])
+            .map(|(a, b)| f64::from(*a) * f64::from(*b))
+            .sum()
+    };
+    let peak = |range: std::ops::Range<usize>| {
+        range
+            .map(|lag| (lag, ac(lag)))
+            .fold((0, f64::MIN), |m, c| if c.1 > m.1 { c } else { m })
+            .0
+    };
+    let coarse = peak(lo..hi);
+    let best = peak(K * coarse - 2 * K..K * coarse + 2 * K);
     let (a, b, c) = (ac(best - 1), ac(best), ac(best + 1));
-    best as f32 + 0.5 * (a - c) / (a - 2.0 * b + c)
+    (best as f64 + 0.5 * (a - c) / (a - 2.0 * b + c)) / K as f64
 }
 
 /// A pitch bend of `b` (14 bits) sounds `2 * (b - 8192) / 8192` semitones from
-/// the unbent note, at 0, the centre and the maximum, as a MIDI 1.0 bend and
-/// as a native 32-bit bend whose top 14 bits are `b`.
+/// the unbent note, as a MIDI 1.0 bend and as a native 32-bit bend whose top
+/// 14 bits are `b`. The pitch is measured to about 0.001% and held to 0.005%
+/// (0.09 cent), so the bend's low 7 bits (at most 3.1 cents) are seen: `b` includes values that
+/// differ from a centre or an edge only there.
 #[test]
 fn a_bend_reaches_the_synth_at_its_value() {
     let sustained = |events: &[MidiEvent]| {
-        let out = render(&mut unit(), events, 20_000);
+        let out = render(&mut organ(), events, 40_000);
         out[8_000..].to_vec()
     };
     let key = m2(Voice2::NoteOn {
@@ -218,8 +239,18 @@ fn a_bend_reaches_the_synth_at_its_value() {
         attribute: Attribute::None,
     });
     let still = period(&sustained(&[key]), 200, 500);
-    for b in [0u16, 4096, 8192, 12288, 16383] {
-        let want = 2.0_f32.powf(2.0 * (f32::from(b) - 8192.0) / 8192.0 / 12.0);
+    for b in [
+        0u16,
+        127,
+        4096,
+        8192,
+        8192 + 64,
+        8192 + 127,
+        12288,
+        16256,
+        16383,
+    ] {
+        let want = 2.0_f64.powf(2.0 * (f64::from(b) - 8192.0) / 8192.0 / 12.0);
         let cases = [
             ("7-bit", m1(Voice1::PitchBend(U14::new(b).unwrap()))),
             (
@@ -230,7 +261,7 @@ fn a_bend_reaches_the_synth_at_its_value() {
         for (name, bend) in cases {
             let got = still / period(&sustained(&[bend, key]), 200, 500);
             assert!(
-                (got / want - 1.0).abs() < 0.004,
+                (got / want - 1.0).abs() < 5e-5,
                 "{name} b={b}: {got} vs {want}"
             );
         }
@@ -300,5 +331,40 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
     for message in dropped {
         let got = render(&mut unit(), &[key, message], 8_192);
         assert_eq!(got, reference, "{message:?}");
+    }
+}
+
+/// A Note On or Note Off packet with a chosen attribute type, group 0 and
+/// channel 0: `decode` keeps an undefined type (M2-104 Table 8, 0x04 to 0xFF,
+/// "Reserved") as `Attribute::Reserved`.
+fn raw_note(on: bool, n: u8, attribute_type: u8, velocity: u16) -> MidiEvent {
+    let status: u32 = if on { 0x9 } else { 0x8 };
+    MidiEvent {
+        frame_offset: 0,
+        data: [
+            0x4000_0000 | status << 20 | u32::from(n) << 8 | u32::from(attribute_type),
+            u32::from(velocity) << 16 | 0x1234,
+            0,
+            0,
+        ],
+    }
+}
+
+/// M2-104 7.4.14 Table 8 marks attribute types 0x04 to 0xFF reserved for
+/// senders and says nothing of dropping the note; 7.1.1 has a receiver ignore
+/// reserved values. So the attribute is ignored and the note plays: a Note On
+/// of any reserved type sounds, and a Note Off of any releases the note.
+#[test]
+fn a_reserved_attribute_type_is_ignored_not_a_reason_to_drop_the_note() {
+    for kind in [4u8, 9, 255] {
+        let mut unit = organ();
+        let held = rms(&render(&mut unit, &[raw_note(true, 60, kind, 0xFFFF)], 22_050)[11_025..]);
+        assert!(held > 0.001, "type {kind}: the Note On was dropped");
+        render(&mut unit, &[raw_note(false, 60, kind, 0)], 44_100);
+        let after = rms(&render(&mut unit, &[], 1_000));
+        assert!(
+            after < held * 0.01,
+            "type {kind}: the Note Off was dropped: {after} against {held}"
+        );
     }
 }

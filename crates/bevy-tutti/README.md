@@ -71,10 +71,11 @@ Every subsystem is its own resource, so a system takes only what it needs:
 use bevy::prelude::*;
 use bevy_tutti::prelude::*;
 
-fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) {
+fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) -> Result {
     transport.settings.set_tempo(128.0);
-    let _ = transport.motion.try_send(MotionEvent::Play);
+    transport.motion.try_send(MotionEvent::Play)?;
     let _ = meter;
+    Ok(())
 }
 ```
 

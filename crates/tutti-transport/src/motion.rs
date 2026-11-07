@@ -7,13 +7,12 @@
 //! a `Stop` while rolling becomes a declick fade) and publishes the result to
 //! whoever needs it.
 //!
-//! Three published outputs, one per consumer:
+//! Two published outputs, one per consumer:
 //!
 //! | output | consumer | why it can't be read from the FSM directly |
 //! |---|---|---|
 //! | [`MotionFsm::motion`] | the UI | the FSM is the engine's |
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
-//! | `declick` ([`Declick`]) | `Engine` | read every buffer to shape gain |
 //!
 //! The settings half — tempo, recording — lives in
 //! [`TransportSettings`] and is not routed through
@@ -30,7 +29,7 @@ use crossbeam_queue::ArrayQueue;
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::loop_region::{LoopOwner, LoopReader, LoopRegion};
 use super::settings::TransportSettings;
-use super::state::{Declick, SeekSlot};
+use super::state::SeekSlot;
 use super::timed::{Schedule, ScheduleFull, TransportCommand};
 use std::sync::atomic::AtomicU8;
 use tutti_types::At;
@@ -45,8 +44,8 @@ pub use super::fsm::MotionState;
 /// adding a new motion verb does not double the event list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FadeOut {
-    /// Ramp out over the declick window, then complete the action. What a
-    /// user-facing button should almost always be.
+    /// Fade the audio out over the declick window. What a user-facing
+    /// button should almost always be.
     #[default]
     Declick,
     /// Take effect on the next buffer. Clicks unless output is already silent.
@@ -191,8 +190,6 @@ pub struct MotionFsm {
     motion: Arc<AtomicU8>,
     /// Pending absolute jump. Consumed by `TransportClock` once per buffer.
     pub seek: SeekSlot,
-    /// Fade contract with `Engine`.
-    pub declick: Declick,
     /// The FSM writes the playhead on a locate, and pausedness tracks motion,
     /// so it needs the settings it publishes into.
     settings: TransportSettings,
@@ -221,7 +218,6 @@ impl core::fmt::Debug for MotionFsm {
             .field("motion", &self.motion())
             .field("queued", &self.queue.len())
             .field("seek_pending", &self.seek.is_pending())
-            .field("declick_active", &self.declick.is_active())
             .finish_non_exhaustive()
     }
 }
@@ -241,7 +237,6 @@ impl MotionFsm {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
             motion: Arc::new(AtomicU8::new(MotionState::Stopped.into())),
             seek: SeekSlot::new(),
-            declick: Declick::new(),
             settings,
             timed: Schedule::new(),
             home,
@@ -275,7 +270,6 @@ impl MotionFsm {
             queue: Arc::clone(&self.queue),
             motion: Arc::clone(&self.motion),
             seek: self.seek.clone(),
-            declick: self.declick.clone(),
             settings: self.settings.clone(),
             home: Some(Arc::clone(&self.home)),
         })
@@ -451,7 +445,6 @@ pub struct MotionAudio {
     queue: Arc<ArrayQueue<MotionEvent>>,
     motion: Arc<AtomicU8>,
     seek: SeekSlot,
-    declick: Declick,
     settings: TransportSettings,
     /// Where the FSM goes back to; `None` once it has.
     home: Option<Arc<ArrayQueue<Home>>>,
@@ -555,25 +548,20 @@ impl MotionAudio {
             TransitionResult::MotionChanged(motion) => {
                 // A settled state change cancels any fade.
                 self.set_motion(motion);
-                self.declick.clear();
             }
             TransitionResult::DeclickStarted {
                 motion,
-                frames,
                 on_complete,
             } => {
                 // The transport stops or jumps **now**, on the command's
-                // frame; the fade is an audio-only concern. The
-                // output ramps to zero over `frames` from here, and the motion
-                // mirror reads the declick state until the fade completes.
+                // frame; the fade is an audio-only concern, the engine's. The
+                // motion mirror reads the declick state until the fade completes.
                 self.set_mirror(motion);
-                self.declick.start(frames);
                 self.apply_outcome(on_complete);
             }
             TransitionResult::Located { pos, motion } => {
                 self.locate_to(pos);
                 self.set_motion(motion);
-                self.declick.clear();
             }
         }
     }
@@ -598,17 +586,17 @@ impl MotionAudio {
         self.motion.store(motion.into(), Ordering::Release);
     }
 
-    /// Called by the engine when a declick fade reaches zero: settle the
+    /// Called by the engine once it has planned a declick's fade: settle the
     /// motion the fade was heading for.
     ///
-    /// The transport itself already stopped or jumped when the fade began
-    /// (see `publish`); what is left is the mirror and the parked outcome.
+    /// The transport itself already stopped or jumped when the command was
+    /// applied (see `publish`); what is left is the mirror and the parked
+    /// outcome.
     /// Driven by the outcome the FSM parked, not by reading the published
     /// mirror back: the mirror is a projection, so dispatching on it lets an
     /// FSM/mirror disagreement pass unnoticed.
     pub fn complete_declick(&mut self) {
         let outcome = self.fsm.complete_declick();
-        self.declick.clear();
         match outcome {
             None => {}
             Some(DeclickOutcome::Stop) => self.set_motion(MotionState::Stopped),
@@ -725,7 +713,6 @@ mod tests {
         let _ = m.try_send(MotionEvent::stop());
         a.drain();
         assert_eq!(m.motion(), MotionState::DeclickToStop);
-        assert!(m.declick.is_active(), "Stop must fade out");
 
         // The fade completing is what actually stops it.
         a.complete_declick();
@@ -736,7 +723,6 @@ mod tests {
         let _ = m.try_send(MotionEvent::stop_unfaded());
         a.drain();
         assert!(m.is_stopped(), "StopNow stops immediately");
-        assert!(!m.declick.is_active(), "StopNow must not fade");
     }
 
     #[test]
@@ -792,7 +778,6 @@ mod tests {
         a.drain();
 
         assert_eq!(m.motion(), MotionState::DeclickToLocate);
-        assert!(m.declick.is_active(), "the fade must be armed");
         assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands now");
         assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
         assert!(m.settings.is_paused(), "and the playhead holds there");
@@ -833,7 +818,6 @@ mod tests {
 
         assert!(m.is_stopped());
         assert_eq!(m.seek.take(), Some(Beat(0.0)));
-        assert!(!m.declick.is_active(), "nothing audible to fade");
     }
 
     #[test]

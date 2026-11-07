@@ -24,7 +24,7 @@ use tutti_transport::{Timeline, Transport};
 /// - **`.motion`** — transitions. `try_send(MotionEvent::Play)` and friends
 ///   *queue*; the audio thread drains them at the top of each block, so
 ///   `is_playing()` does not flip until something renders.
-/// - **`.settings`** — values. `set_tempo`, `set_beat`, `set_recording`, and the
+/// - **`.settings`** — values. `set_tempo`, `set_recording`, and the
 ///   reads beside them.
 /// - **the loop region** — the engine's. Edit it by scheduling a
 ///   [`LoopEdit`](tutti_transport::LoopEdit) with `motion.schedule(At::NextBlock, ..)`;
@@ -85,23 +85,6 @@ impl TransportRes {
     /// assert_eq!(app.world().resource::<Sequencer>().0.tempo(), Bpm(128.0));
     /// ```
     pub fn timeline(&self) -> Arc<dyn Timeline> {
-        Arc::new(self.0.clone())
-    }
-
-    /// Returns a [`TransportState`](tutti_transport::TransportState)
-    /// handle: [`timeline`](Self::timeline) plus the
-    /// live-session facts a plain timeline has no vocabulary for: whether the
-    /// transport is recording, its loop region, and free-running stream time.
-    ///
-    /// Same seam and same sharing as `timeline`; the difference is only how much
-    /// of the transport the consumer is allowed to ask about. Nothing in this
-    /// repository consumes it now (a graph node, a hosted plugin's included,
-    /// reads its block's `Env`); it is kept as public API for a host's own
-    /// sink that needs those extras. `TransportState` is a strict supertrait of
-    /// `Timeline`, so an offline render (a `Timeline`-only implementor) cannot
-    /// be passed where this is wanted, which is the point: it has no answer for
-    /// "am I recording".
-    pub fn transport_state(&self) -> Arc<dyn tutti_transport::TransportState> {
         Arc::new(self.0.clone())
     }
 }

@@ -93,3 +93,26 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
     assert!(!rendered.planes.is_empty());
     assert!(rendered.planes[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));
 }
+
+/// A timed transport program is spelled from the prelude alone: `At`,
+/// `TransportCommand`, and the time-signature trait with its `BarNumber`.
+///
+/// Mutation (run): dropping `At`, `TransportCommand`, `Meter` or `BarNumber`
+/// from `tutti::prelude` stops this file compiling.
+#[test]
+fn a_timed_transport_program_needs_only_the_prelude() {
+    let transport = Transport::new(48_000.0);
+    transport
+        .motion
+        .schedule(At::Frame(Frame(128)), MotionEvent::Play)
+        .expect("room");
+    transport
+        .motion
+        .schedule(At::NextBlock, TransportCommand::Tempo(Bpm(90.0)))
+        .expect("room");
+    assert_eq!(transport.motion.scheduled_outstanding(), 2);
+
+    let map = MeterMap::default();
+    let bar: BarNumber = map.bar_numbers()[0];
+    assert_eq!(Meter::bar_start(&map, bar), Beat(0.0));
+}

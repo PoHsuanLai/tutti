@@ -336,186 +336,186 @@ impl AudioPipeline {
 
         // Flush denormals to zero for the duration of this block. A plugin
         // whose tail decays toward silence can otherwise emit denormalized
-        // floats and spike CPU. Restored on drop at end of the block.
-        let _no_denorm = tutti_rt::ScopedNoDenormals::new();
+        // floats and spike CPU. The mode is restored when the closure ends.
+        tutti_rt::with_no_denormals(move || {
+            let start = std::time::Instant::now();
 
-        let start = std::time::Instant::now();
+            // Gate each best-effort input on the plugin's advertised features — the
+            // engine only hands a plugin what it asked to consume, keyed on the
+            // flag, never on the plugin's format. (The host already gates its sends
+            // the same way; gating here keeps the server-side context honest even if
+            // an over-eager payload arrives.)
+            //
+            // Parameter automation is the exception: the host sends it *universally*
+            // (every plugin has automatable params, regardless of whether it
+            // advertises `PARAM_AUTOMATION`), so it
+            // is forwarded unconditionally to match. Gating it on `PARAM_AUTOMATION`
+            // here would silently drop automation for any plugin that leaves that
+            // optional flag unset — host says send, server throws it away.
+            let features = plugin.loaded().features;
+            let mut ctx = ProcessContext::new().midi(block.midi);
+            if let Some(ref ex) = block.extras {
+                ctx = ctx.params(ex.param_changes);
+                if features.contains(Features::NOTE_EXPRESSION) {
+                    ctx = ctx.note_expression(ex.note_expression);
+                }
+                if features.contains(Features::TRANSPORT) {
+                    ctx = ctx.transport(ex.transport);
+                }
+                if features.contains(Features::SEQUENCER_CONTEXT) {
+                    ctx = ctx.expressive(ExpressiveContext {
+                        chords: Some(ex.chords),
+                        scales: Some(ex.scales),
+                        expr_texts: Some(ex.expr_texts),
+                        expr_ints: Some(ex.expr_ints),
+                    });
+                }
+            }
 
-        // Gate each best-effort input on the plugin's advertised features — the
-        // engine only hands a plugin what it asked to consume, keyed on the
-        // flag, never on the plugin's format. (The host already gates its sends
-        // the same way; gating here keeps the server-side context honest even if
-        // an over-eager payload arrives.)
-        //
-        // Parameter automation is the exception: the host sends it *universally*
-        // (every plugin has automatable params, regardless of whether it
-        // advertises `PARAM_AUTOMATION`), so it
-        // is forwarded unconditionally to match. Gating it on `PARAM_AUTOMATION`
-        // here would silently drop automation for any plugin that leaves that
-        // optional flag unset — host says send, server throws it away.
-        let features = plugin.loaded().features;
-        let mut ctx = ProcessContext::new().midi(block.midi);
-        if let Some(ref ex) = block.extras {
-            ctx = ctx.params(ex.param_changes);
-            if features.contains(Features::NOTE_EXPRESSION) {
-                ctx = ctx.note_expression(ex.note_expression);
-            }
-            if features.contains(Features::TRANSPORT) {
-                ctx = ctx.transport(ex.transport);
-            }
-            if features.contains(Features::SEQUENCER_CONTEXT) {
-                ctx = ctx.expressive(ExpressiveContext {
-                    chords: Some(ex.chords),
-                    scales: Some(ex.scales),
-                    expr_texts: Some(ex.expr_texts),
-                    expr_ints: Some(ex.expr_ints),
-                });
-            }
-        }
-
-        let sample_rate = clock.sample_rate;
-        debug_assert!(num_channels <= MAX_CHANNELS, "channel count > 16");
-        // Per-direction channel widths, clamped to the slice-table capacity.
-        let in_n = total_in.min(MAX_CHANNELS);
-        let out_n = total_out.min(MAX_CHANNELS);
-        // Set false by any channel whose write into the slab failed. Publishing
-        // a slot whose later channels never landed is worse than not publishing
-        // at all: the host's sequence check would pass and it would read the
-        // previous occupant's samples in those channels — half this block
-        // spliced onto half another, which sounds almost right.
-        let mut all_channels_written = true;
-        // Split the two fields apart so the render arms can hold `buffers`
-        // mutably while also handing `plugin_output` to the plugin. Cleared
-        // once, here: `process` fills it and every early return below leaves it
-        // empty rather than carrying the previous block's events.
-        let Self {
-            buffers,
-            plugin_output,
-            failed_blocks,
-            ..
-        } = self;
-        plugin_output.clear();
-        match &mut *buffers {
-            AudioBuffers::F32 { input, output } => {
-                // Read every input bus's channels from this block's input slot.
-                // The flat order IS bus order — the host crate splits it back
-                // into per-bus `AudioBusBuffers`.
-                for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
-                    if inputs_ready {
-                        let _ = shm.read_input_into::<f32>(seq, ch, &mut chan[..num_samples]);
-                    } else {
+            let sample_rate = clock.sample_rate;
+            debug_assert!(num_channels <= MAX_CHANNELS, "channel count > 16");
+            // Per-direction channel widths, clamped to the slice-table capacity.
+            let in_n = total_in.min(MAX_CHANNELS);
+            let out_n = total_out.min(MAX_CHANNELS);
+            // Set false by any channel whose write into the slab failed. Publishing
+            // a slot whose later channels never landed is worse than not publishing
+            // at all: the host's sequence check would pass and it would read the
+            // previous occupant's samples in those channels — half this block
+            // spliced onto half another, which sounds almost right.
+            let mut all_channels_written = true;
+            // Split the two fields apart so the render arms can hold `buffers`
+            // mutably while also handing `plugin_output` to the plugin. Cleared
+            // once, here: `process` fills it and every early return below leaves it
+            // empty rather than carrying the previous block's events.
+            let Self {
+                buffers,
+                plugin_output,
+                failed_blocks,
+                ..
+            } = self;
+            plugin_output.clear();
+            match &mut *buffers {
+                AudioBuffers::F32 { input, output } => {
+                    // Read every input bus's channels from this block's input slot.
+                    // The flat order IS bus order — the host crate splits it back
+                    // into per-bus `AudioBusBuffers`.
+                    for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
+                        if inputs_ready {
+                            let _ = shm.read_input_into::<f32>(seq, ch, &mut chan[..num_samples]);
+                        } else {
+                            chan[..num_samples].fill(0.0);
+                        }
+                    }
+                    for chan in output.iter_mut().take(out_n) {
                         chan[..num_samples].fill(0.0);
                     }
-                }
-                for chan in output.iter_mut().take(out_n) {
-                    chan[..num_samples].fill(0.0);
-                }
-                // Stack-allocated slice tables — no per-block Vec::collect.
-                // The helper builds the `AudioBuffer` internally so its
-                // four field lifetimes unify in a single inner scope.
-                let processed = with_audio_buffer_f32(
-                    &input[..in_n],
-                    &mut output[..out_n],
-                    num_samples,
-                    sample_rate,
-                    |buf| plugin.process(buf, &ctx, plugin_output),
-                );
-                if let Err(error) = processed {
-                    note_failed_block(failed_blocks, &error);
-                    plugin_output.clear();
-                    all_channels_written = false;
-                } else {
-                    // Sanitize before it leaves the subprocess: a misbehaving
-                    // plugin can emit NaN/Inf that would otherwise poison the
-                    // entire downstream graph. Unconditional — this is a
-                    // production hazard, and a finite-check per sample is cheap
-                    // on an already memory-bound path.
-                    for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
-                        for s in &mut chan[..num_samples] {
-                            if !s.is_finite() {
-                                *s = 0.0;
+                    // Stack-allocated slice tables — no per-block Vec::collect.
+                    // The helper builds the `AudioBuffer` internally so its
+                    // four field lifetimes unify in a single inner scope.
+                    let processed = with_audio_buffer_f32(
+                        &input[..in_n],
+                        &mut output[..out_n],
+                        num_samples,
+                        sample_rate,
+                        |buf| plugin.process(buf, &ctx, plugin_output),
+                    );
+                    if let Err(error) = processed {
+                        note_failed_block(failed_blocks, &error);
+                        plugin_output.clear();
+                        all_channels_written = false;
+                    } else {
+                        // Sanitize before it leaves the subprocess: a misbehaving
+                        // plugin can emit NaN/Inf that would otherwise poison the
+                        // entire downstream graph. Unconditional — this is a
+                        // production hazard, and a finite-check per sample is cheap
+                        // on an already memory-bound path.
+                        for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
+                            for s in &mut chan[..num_samples] {
+                                if !s.is_finite() {
+                                    *s = 0.0;
+                                }
                             }
-                        }
-                        if shm
-                            .write_output::<f32>(seq, ch, &chan[..num_samples])
-                            .is_err()
-                        {
-                            all_channels_written = false;
+                            if shm
+                                .write_output::<f32>(seq, ch, &chan[..num_samples])
+                                .is_err()
+                            {
+                                all_channels_written = false;
+                            }
                         }
                     }
                 }
-            }
-            AudioBuffers::F64 { input, output } => {
-                for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
-                    if inputs_ready {
-                        let _ = shm.read_input_into::<f64>(seq, ch, &mut chan[..num_samples]);
-                    } else {
+                AudioBuffers::F64 { input, output } => {
+                    for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
+                        if inputs_ready {
+                            let _ = shm.read_input_into::<f64>(seq, ch, &mut chan[..num_samples]);
+                        } else {
+                            chan[..num_samples].fill(0.0);
+                        }
+                    }
+                    for chan in output.iter_mut().take(out_n) {
                         chan[..num_samples].fill(0.0);
                     }
-                }
-                for chan in output.iter_mut().take(out_n) {
-                    chan[..num_samples].fill(0.0);
-                }
-                let processed = with_audio_buffer_f64(
-                    &input[..in_n],
-                    &mut output[..out_n],
-                    num_samples,
-                    sample_rate,
-                    |buf| plugin.process(buf, &ctx, plugin_output),
-                );
-                if let Err(error) = processed {
-                    note_failed_block(failed_blocks, &error);
-                    plugin_output.clear();
-                    all_channels_written = false;
-                } else {
-                    // Sanitize NaN/Inf — see the F32 arm above.
-                    for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
-                        for s in &mut chan[..num_samples] {
-                            if !s.is_finite() {
-                                *s = 0.0;
+                    let processed = with_audio_buffer_f64(
+                        &input[..in_n],
+                        &mut output[..out_n],
+                        num_samples,
+                        sample_rate,
+                        |buf| plugin.process(buf, &ctx, plugin_output),
+                    );
+                    if let Err(error) = processed {
+                        note_failed_block(failed_blocks, &error);
+                        plugin_output.clear();
+                        all_channels_written = false;
+                    } else {
+                        // Sanitize NaN/Inf — see the F32 arm above.
+                        for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
+                            for s in &mut chan[..num_samples] {
+                                if !s.is_finite() {
+                                    *s = 0.0;
+                                }
                             }
-                        }
-                        if shm
-                            .write_output::<f64>(seq, ch, &chan[..num_samples])
-                            .is_err()
-                        {
-                            all_channels_written = false;
+                            if shm
+                                .write_output::<f64>(seq, ch, &chan[..num_samples])
+                                .is_err()
+                            {
+                                all_channels_written = false;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Publish exactly once, after every output channel is in place. Until
-        // this store the host's sequence check fails and it emits silence — so a
-        // block that returned early above (an error path, no plugin loaded)
-        // correctly produces silence rather than stale audio, without needing to
-        // signal that separately.
-        //
-        // Two conditions gate it, and both are about *not writing into a slot
-        // that belongs to someone else*:
-        //
-        // - `inputs_ready` false means the host recycled this block's slot
-        //   before this point, so it has moved on and this reply is for a block
-        //   nobody is waiting for. `MAX_BEHIND` in the host's `dispatch` should
-        //   already have dropped the command, but that is the host's bound on
-        //   *sending*; this is the server's own check on *writing*, and the two
-        //   failed independently once already.
-        // - `all_channels_written` false means the slot is only partly filled.
-        //
-        // Either way the host reads a stale sequence and substitutes silence,
-        // which is the designed failure mode.
-        if inputs_ready && all_channels_written {
-            shm.publish_output(seq);
-        }
+            // Publish exactly once, after every output channel is in place. Until
+            // this store the host's sequence check fails and it emits silence — so a
+            // block that returned early above (an error path, no plugin loaded)
+            // correctly produces silence rather than stale audio, without needing to
+            // signal that separately.
+            //
+            // Two conditions gate it, and both are about *not writing into a slot
+            // that belongs to someone else*:
+            //
+            // - `inputs_ready` false means the host recycled this block's slot
+            //   before this point, so it has moved on and this reply is for a block
+            //   nobody is waiting for. `MAX_BEHIND` in the host's `dispatch` should
+            //   already have dropped the command, but that is the host's bound on
+            //   *sending*; this is the server's own check on *writing*, and the two
+            //   failed independently once already.
+            // - `all_channels_written` false means the slot is only partly filled.
+            //
+            // Either way the host reads a stale sequence and substitutes silence,
+            // which is the designed failure mode.
+            if inputs_ready && all_channels_written {
+                shm.publish_output(seq);
+            }
 
-        // The plugin's MIDI-out travels back to the host so it can re-enter
-        // routing, but it is *left in* `plugin_output` and read through
-        // `midi_out()` — moving it out here would take the buffer's capacity
-        // with it. `param_changes` / `note_expression` are still dropped (no
-        // host consumer yet). Audio was written back into the slab above.
-        Ok(AudioOutput {
-            latency_us: start.elapsed().as_micros() as u64,
+            // The plugin's MIDI-out travels back to the host so it can re-enter
+            // routing, but it is *left in* `plugin_output` and read through
+            // `midi_out()` — moving it out here would take the buffer's capacity
+            // with it. `param_changes` / `note_expression` are still dropped (no
+            // host consumer yet). Audio was written back into the slab above.
+            Ok(AudioOutput {
+                latency_us: start.elapsed().as_micros() as u64,
+            })
         })
     }
 }

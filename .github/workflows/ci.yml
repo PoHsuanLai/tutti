@@ -677,7 +677,7 @@ jobs:
         with:
           components: miri
       - uses: Swatinem/rust-cache@v2
-      # `denormals.rs`'s two tests are `#[cfg_attr(miri, ignore)]`d — they read
+      # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
       # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
       # rather than vanishing, so the run says what it did not cover. So are
       # `rt/parked.rs`'s two: a thousand-odd publishes each, against a retired

@@ -57,8 +57,10 @@ be checked against the tree.
   `SeqCst` fence pair, which is a *concurrency* property — so it is checked by
   a loom model run against the shipped code (`arc-lend/tests/loom.rs`) as
   well as by miri over the crate's concurrent stress test.
-- **`tutti-rt/src/denormals.rs`** — `read_mxcsr` and the FTZ/DAZ
-  set. x86 SSE control-register intrinsics; there is no safe spelling.
+- **`tutti-rt/src/denormals.rs`** — `with_no_denormals`: the MXCSR/FPCR
+  save, set and restore (`asm!`). There is no safe spelling of it. The function
+  is safe by a stated choice and restores on unwind; its `# Soundness` docs
+  say what that does and does not fix.
 - **`tutti-sampler/src/butler/prefetch.rs`** — `unsafe impl Send`/`Sync` on
   `SendProd`, the ring producer handed to the disk butler. The file says it
   "concentrates the unsafe impls in one place", which is the right shape.
@@ -132,7 +134,7 @@ would be a panic naming the slot rather than aliasing. Rule 4 below, applied.
   repeatedly, so — exactly as with `just check-jack` — CI is the first thing
   to run it. It cannot go everywhere:
   it does not execute FFI at all, and it cannot run x86 intrinsics, so
-  `denormals.rs`'s tests are `#[cfg_attr(miri, ignore)]`. What it does cover
+  `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`. What it does cover
   is the aliasing in `AudioThreadCell` and `ArcLend`'s reclamation, which is
   where a mistake would be silent. (It covered the pointer arithmetic in
   `tutti-node`'s planar buffers too, until doc 013 deleted them: a

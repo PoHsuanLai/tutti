@@ -8,7 +8,7 @@ use cpal::traits::DeviceTrait;
 use std::sync::Arc;
 use tutti_core::Engine;
 use tutti_core::{AudioTap, MasterMeter};
-use tutti_rt::ScopedNoDenormals;
+use tutti_rt::with_no_denormals;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
 
 use crate::block::OutputBlock;
@@ -63,8 +63,7 @@ impl AudioCallbackState {
 /// `tests/rt_no_alloc.rs` gates this against a disabled allocator.
 #[inline]
 pub fn process_audio(state: &AudioCallbackState, output: &mut InterleavedMut<'_>) {
-    let _no_denormals = ScopedNoDenormals::new();
-    state.engine.process(output);
+    with_no_denormals(|| state.engine.process(output));
 }
 
 /// An output device, its stream configuration, and the stream while it runs.

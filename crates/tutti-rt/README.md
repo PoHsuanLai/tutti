@@ -21,7 +21,7 @@ taking the unit vocabulary.
 - **`RtScope`** — a per-thread "inside a block" marker that a `Drop` impl checks.
 - **`SplitMut`/`SplitRw`**, **`TaskGraph`**, **`JobGate`**, **`BlockWaits`** — the
   parallel executor's claims, task list, job lending and wait settings.
-- **`ScopedNoDenormals`** — flushes subnormals to zero for the length of a block.
+- **`with_no_denormals`** — runs a closure with subnormals flushed to zero and restores the mode after, unwinding included.
 - **`ArcLend`/`Loan`/`Reader`** — the publish cell, re-exported from `arc-lend`:
   a control thread publishes non-scalar state, the audio thread only borrows it.
 

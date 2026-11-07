@@ -3,7 +3,7 @@
 
 //! Real-time-safe shared-memory primitives for the audio thread.
 //!
-//! Interior mutability, fixed-capacity buffers, and the denormals guard: each
+//! Interior mutability, fixed-capacity buffers, and the denormals flush: each
 //! is `#[no_alloc]`-safe on the audio path and carries no engine dependency.
 //!
 //! # How the buffers relate
@@ -56,8 +56,8 @@
 //! - [`BlockWaits`] — how long the audio thread and a helper each wait
 //!   inside a parallel block before giving way (yielding its core, leaving
 //!   the block): a pool's setting.
-//! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
-//!   duration of an audio block, then restores the FPU control register.
+//! - [`with_no_denormals`] — runs a closure with subnormals flushed to zero, then
+//!   restores the FPU control register, on unwind too.
 
 mod cell;
 mod denormals;
@@ -74,7 +74,7 @@ mod task_graph;
 mod vec;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
-pub use denormals::ScopedNoDenormals;
+pub use denormals::with_no_denormals;
 pub use edits::{EditReader, EditWriter, RingFull, edit_ring};
 pub use job_gate::JobGate;
 pub use packed_atomic::PackedAtomic;

@@ -518,7 +518,7 @@ impl MidiEvent {
                 frame_offset,
                 channel,
                 program: u8::from(m.program()),
-                bank: m.bank().map(u16::from),
+                bank: MidiEvent::program_change_bank_of(ev.data_words()),
             },
             Cv2::ChannelPressure(m) => MidiMessage::ChannelPressure {
                 frame_offset,

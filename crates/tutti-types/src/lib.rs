@@ -24,8 +24,8 @@ mod downmix;
 mod interleaved;
 mod topology;
 
-// Public: consumers spell `tutti_types::AudioIn` and the like through
-// these modules. Privatizing one here breaks that path.
+// Public: each holds items the root does not re-export (`graph::Source`,
+// `pcm::BitDepth`, everything in `wav`), spelled through the module path.
 pub mod graph;
 pub mod io;
 pub mod latency;
@@ -35,8 +35,8 @@ pub mod tail;
 pub mod wav;
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
-// addresses params without their unit types (tutti-graph's `ParamSet`) need
-// not depend on `atomic_float` itself.
+// addresses params without their unit types need not depend on `atomic_float`
+// itself.
 pub use atomic_float::AtomicF32;
 
 // Value vocabulary.

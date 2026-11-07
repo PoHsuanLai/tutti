@@ -1225,28 +1225,26 @@ mod message {
         assert_eq!(p.pressure, u32_to_unit_f32(0x4200_0000));
     }
 
-    /// A banked Program Change is Bank Select, Bank Select LSB and the
-    /// Program Change. The bank is read the way `MidiEvent::program_change`
-    /// writes it (see `bank_program`), so bank `0x0085` is CC 0 = 1 and CC 32
-    /// = 5, and a Program Change with no bank is not a bank.
+    /// A banked Program Change is Bank Select MSB, Bank Select LSB and the
+    /// Program Change (M2-104 Figure 64: MSB at bits 15-8, LSB at bits 7-0).
+    /// Bank `0x0085` is MSB 1 and LSB 5, so CC 0 = 1 and CC 32 = 5, and a
+    /// Program Change with no bank is not a bank.
     ///
     /// Mutation (run): swapping `bank.lsb` and `bank.msb` in `bank_program`
-    /// → CC 0 is 5 → fails.
+    /// → CC 0 is 5 → fails on both packets.
     #[test]
-    fn a_bank_is_read_the_way_the_constructor_writes_it() {
+    fn a_bank_is_msb_then_lsb() {
         let banked =
             MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085));
         assert_eq!(
             midi::bank_program(&banked),
             Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
-        // Built from spec words (MSB 2 at bits 15-8, LSB 5 at bits 7-0): this
-        // host sends the packet's LSB as CC 0 and its MSB as CC 32, so the
-        // halves arrive swapped until the constructor writes the spec layout.
+        // Spec words: MSB 2 at bits 15-8, LSB 5 at bits 7-0.
         let spec_words = MidiEvent::from_ump(0, &[0x41C1_0001, 0x0900_0205]);
         assert_eq!(
             midi::bank_program(&spec_words),
-            Some([[0xB1, 0, 5], [0xB1, 32, 2], [0xC1, 9, 0]])
+            Some([[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
         let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None);
         assert_eq!(midi::bank_program(&plain), None);

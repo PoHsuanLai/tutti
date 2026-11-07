@@ -25,7 +25,7 @@ impl LfoDrive {
         Self {
             rate: Param::new(rate),
             phase: Phase::START,
-            good_rate: LastGood::new(rate.get()),
+            good_rate: LastGood::new(rate.get(), 0.0),
         }
     }
 
@@ -133,9 +133,9 @@ impl LinearModMix {
             feedback: Param::new(feedback),
             mix: Param::new(mix),
             good: [
-                LastGood::new(depth.get()),
-                LastGood::new(feedback.get()),
-                LastGood::new(mix.get()),
+                LastGood::new(depth.get(), 0.0),
+                LastGood::new(feedback.get(), 0.0),
+                LastGood::new(mix.get(), 0.0),
             ],
         }
     }
@@ -207,9 +207,9 @@ impl TimeModMix {
             feedback: Param::new(feedback),
             mix: Param::new(mix),
             good: [
-                LastGood::new(depth.get()),
-                LastGood::new(feedback.get()),
-                LastGood::new(mix.get()),
+                LastGood::new(depth.get(), 0.0),
+                LastGood::new(feedback.get(), 0.0),
+                LastGood::new(mix.get(), 0.0),
             ],
         }
     }

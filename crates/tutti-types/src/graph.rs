@@ -1,9 +1,9 @@
 //! The audio graph as a **value**: build it, fold over it, compare it, hash it.
 //!
 //! [`Topology`] **is** the graph: nodes by stable [`NodeKey`], edges keyed by
-//! the sink port they feed, and the global outputs. `tutti-graph`'s compiler
-//! interprets it (a `Topology` in, an immutable plan out), and nothing reads a
-//! topology back out of a plan. Because it is a plain value, `Eq` compares two
+//! the sink port they feed, and the global outputs. A compiler interprets it (a
+//! `Topology` in, an immutable plan out), and nothing reads a topology back out
+//! of a plan. Because it is a plain value, `Eq` compares two
 //! graphs, `Hash` keys a cache on one, and every static property is a pure
 //! fold over it: evaluation order ([`Topology::topo_order`]), width agreement
 //! ([`Topology::validate`]), latency ([`latency::plan`](crate::latency::plan))
@@ -116,8 +116,7 @@ pub enum Source {
 /// period, and a bounce must sound like what was heard.
 ///
 /// A block cannot read samples it has not produced yet, so an interpreter
-/// needs `delay >= its maximum block`, and `tutti-graph` refuses to compile a
-/// shorter one. **An offline render must therefore be prepared with a maximum
+/// needs `delay >= its maximum block`, and a compiler refuses a shorter one. **An offline render must therefore be prepared with a maximum
 /// block no larger than the smallest feedback delay in the graph**; the
 /// compile error enforces it rather than silently changing the sound.
 /// [`one_block`](Self::one_block) spells the common case: a delay of one
@@ -223,8 +222,7 @@ impl ParamValue {
 ///
 /// The whole point of the split: a spec is `Clone + Eq + Hash` and carries no
 /// DSP state, so a test can compare two graphs and a recompile can diff them.
-/// The unit itself (a `tutti_graph::Node`) lives in the runtime, under the
-/// same `NodeKey`.
+/// The unit itself lives in the runtime, under the same `NodeKey`.
 ///
 /// Deliberately **not** `Ord`: [`Tail`] has no ordering upstream (`Unknown` and
 /// `Unbounded` are not points on a line), and inventing one here would be a

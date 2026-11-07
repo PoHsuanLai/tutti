@@ -226,12 +226,6 @@ impl MidiEncoder {
 /// The three messages a MIDI 2.0 Program Change with a valid bank stands for
 /// (M2-104 App. D): Bank Select MSB (CC 0), Bank Select LSB (CC 32), then the
 /// Program Change. `None` for anything else.
-///
-/// The bank's two bytes are read the way `MidiEvent::program_change` writes
-/// them: it puts the 14-bit bank's low 7 bits in the byte M2-104 §7.4.9 calls
-/// the MSB, so that byte (`Bank::msb`) is sent as CC 32 and `Bank::lsb` as
-/// CC 0. A packet that follows the specification therefore has its bank
-/// bytes swapped here.
 pub(super) fn bank_program(event: &MidiEvent) -> Option<[[u8; 3]; 3]> {
     let Ok(Message::Midi2(
         address,
@@ -245,8 +239,8 @@ pub(super) fn bank_program(event: &MidiEvent) -> Option<[[u8; 3]; 3]> {
     };
     let ch = address.channel.get();
     Some([
-        [0xB0 | ch, 0, bank.lsb.get()],
-        [0xB0 | ch, 32, bank.msb.get()],
+        [0xB0 | ch, 0, bank.msb.get()],
+        [0xB0 | ch, 32, bank.lsb.get()],
         [0xC0 | ch, program.get(), 0],
     ])
 }

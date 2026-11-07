@@ -117,3 +117,74 @@ fn implementing_audio_in_needs_nothing_beyond_the_prelude() {
     assert_eq!(buf, [0.0; 4]);
     assert_eq!(s.layout(), ChannelLayout::MONO);
 }
+
+/// Every name the prelude exports is also exported at the root, whether or not
+/// the lists above name it.
+///
+/// The `use ... as _` lines above only check the names they list, so a name
+/// added to the prelude and left off both lists would still pass. This reads
+/// `src/lib.rs` and compares the two `pub use` sets by identifier. It is
+/// textual: it strips `//` and `/* */` comments, sees `pub use` statements and
+/// no glob (`*`) re-export, treats any identifier in a root `pub use` as
+/// exported at the root, and does not follow `as` renames or macro-generated
+/// exports. A `//` inside a string literal in `lib.rs` would cut its line.
+///
+/// Mutation (run): add `pub use crate::graph::Source;` to the prelude → fails
+/// naming `Source`.
+#[test]
+fn every_prelude_name_is_exported_at_the_root() {
+    let lib = include_str!("../src/lib.rs");
+    let mut code: String = lib
+        .lines()
+        .map(|l| l.split("//").next().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    while let Some(i) = code.find("/*") {
+        let j = code[i..].find("*/").expect("a closed block comment") + i + 2;
+        code.replace_range(i..j, " ");
+    }
+    let modules: Vec<&str> = code
+        .split("mod ")
+        .skip(1)
+        .map(|rest| {
+            rest.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap()
+        })
+        .collect();
+    let start = code.find("pub mod prelude").expect("a prelude module");
+    let end = start + code[start..].find("\n}").expect("the prelude block ends");
+    let prelude = &code[start..end];
+    let root = format!("{}{}", &code[..start], &code[end..]);
+    assert!(
+        !prelude.contains("::*"),
+        "a glob re-export cannot be checked"
+    );
+
+    let names = |text: &str| -> Vec<String> {
+        let mut out = Vec::new();
+        for stmt in text.split("pub use ").skip(1) {
+            let stmt = stmt.split(';').next().unwrap();
+            for word in stmt.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+                let path_part =
+                    ["", "crate", "self", "super", "as"].contains(&word) || modules.contains(&word);
+                if !path_part {
+                    out.push(word.to_owned());
+                }
+            }
+        }
+        out
+    };
+    let at_root = names(&root);
+    let in_prelude = names(prelude);
+    assert!(
+        in_prelude.len() > 30,
+        "parsed too few prelude names: {in_prelude:?}"
+    );
+    for name in in_prelude {
+        assert!(
+            at_root.contains(&name),
+            "`{name}` is in the prelude but not at the crate root"
+        );
+    }
+}

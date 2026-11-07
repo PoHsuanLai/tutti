@@ -194,17 +194,34 @@ impl MidiEvent {
         program: u8,
         bank: Option<u16>,
     ) -> Self {
-        use midi2::channel_voice2::ProgramChange;
         debug_assert!(
             program < 128,
             "MIDI program {program} out of range (0..128)"
         );
-        let mut m = ProgramChange::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_program(u7::new(program & 0x7F));
-        m.set_bank(bank.map(|b| u14::new(b & 0x3FFF)));
-        Self::from_ump(0, m.data())
+        // M2-104 Figure 64: word 1 holds the Bank Valid bit at bit 0, word 2 the
+        // program (30-24), the bank MSB (14-8) and the bank LSB (6-0).
+        let (valid, msb, lsb) = match bank {
+            Some(b) => (1, u32::from((b >> 7) & 0x7F), u32::from(b & 0x7F)),
+            None => (0, 0, 0),
+        };
+        let w0 = (0x4u32 << 28)
+            | (u32::from(group.get()) << 24)
+            | (0xC << 20)
+            | (u32::from(channel.get()) << 16)
+            | valid;
+        let w1 = (u32::from(program & 0x7F) << 24) | (msb << 8) | lsb;
+        Self::from_ump(0, &[w0, w1])
+    }
+
+    /// The 14-bit bank (`MSB << 7 | LSB`) of a MIDI 2.0 Program Change's words
+    /// when its Bank Valid bit is set (M2-104 Figure 64).
+    #[inline]
+    pub(crate) fn program_change_bank_of(words: &[u32]) -> Option<u16> {
+        let (w0, w1) = (*words.first()?, *words.get(1)?);
+        if w0 & 1 == 0 {
+            return None;
+        }
+        Some((((w1 >> 8) & 0x7F) << 7 | (w1 & 0x7F)) as u16)
     }
 
     /// A MIDI 2.0 Channel Voice **Channel Pressure** (mono aftertouch), applying

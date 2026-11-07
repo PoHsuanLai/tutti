@@ -57,11 +57,11 @@ impl GateCore {
             kernel: GateKernel::new(attack, hold, release, SampleRate::DEFAULT),
             last_range: None,
             good: [
-                LastGood::new(threshold_db.get()),
-                LastGood::new(-80.0),
-                LastGood::new(attack.get()),
-                LastGood::new(hold.get()),
-                LastGood::new(release.get()),
+                LastGood::new(threshold_db.get(), 0.0),
+                LastGood::fixed(-80.0),
+                LastGood::new(attack.get(), 0.0),
+                LastGood::new(hold.get(), 0.0),
+                LastGood::new(release.get(), 0.0),
             ],
         }
     }

@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-midi-protocol"
 readme = "README.md"
+# Not published: whether and when this goes to crates.io is the maintainer's
+# call, not a side effect of a workspace change. Remove this line to publish.
+publish = false
 keywords = ["midi", "ump", "audio", "real-time"]
 categories = ["multimedia::audio"]
 

@@ -154,9 +154,9 @@ impl<F: Real> SvfFilterNode<F> {
             coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
             state: vec![[zero; 2]; n],
             good: [
-                LastGood::new(frequency.get()),
-                LastGood::new(q.get()),
-                LastGood::new(0.0),
+                LastGood::new(frequency.get(), 0.0),
+                LastGood::new(q.get(), Q::BUTTERWORTH.get()),
+                LastGood::fixed(0.0),
             ],
         }
     }
@@ -173,7 +173,7 @@ impl<F: Real> SvfFilterNode<F> {
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
-        self.good[2] = LastGood::new(db.get());
+        self.good[2] = LastGood::new(db.get(), 0.0);
         self.coeffs = SvfCoefficients::solve(
             self.filter_type,
             self.frequency.load(),
@@ -925,6 +925,40 @@ mod tests {
             run.ramped.coeffs == run.jumped.coeffs,
             "the block must end solved at the new cutoff"
         );
+    }
+
+    /// A NaN Q at construction is read as the Butterworth Q, not as 0, which
+    /// is below the type's floor. A low-pass at 800 Hz on an 800 Hz sine has a
+    /// steady-state gain of Q at the cutoff, so RMS is `0.7071 · 0.7071 = 0.5` (0.457 measured: the bilinear warp costs a few percent);
+    /// a later finite Q takes effect, and `reset` keeps the output finite.
+    ///
+    /// Mutation (run): the Q `LastGood` fallback `Q::BUTTERWORTH` → `0.0` → RMS
+    /// settles near 0.007 → fails.
+    #[test]
+    fn a_nan_q_at_construction_is_butterworth_and_recovers() {
+        let x = generate_sine(800.0, 44_100.0, 8 * 1024);
+        let mut f = prepared(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            800.0,
+            Q(f32::NAN),
+        ));
+        let mut last = Vec::new();
+        for block in x.chunks(1024) {
+            last = drive_block(&mut f, &[block]).remove(0);
+            assert!(last.iter().all(|s| s.is_finite()), "NaN Q");
+        }
+        let level = rms(&last);
+        assert!((level - 0.5).abs() < 0.05, "RMS {level}");
+        f.set_q(2.0);
+        for block in x.chunks(1024) {
+            last = drive_block(&mut f, &[block]).remove(0);
+            assert!(last.iter().all(|s| s.is_finite()), "after set_q");
+        }
+        let raised = rms(&last);
+        assert!(raised > 0.9, "Q 2 takes effect: {raised}");
+        Node::reset(&mut f);
+        let out = drive_block(&mut f, &[&x[..1024]]);
+        assert!(out[0].iter().all(|s| s.is_finite()), "after reset");
     }
 
     /// A NaN in a raw cell never reaches the filter state — not even in the

@@ -31,6 +31,7 @@ bitflags = "2"
 clap-sys = "0.5"
 thiserror = "2"
 tutti-clap-ffi = { path = "../tutti-clap-ffi" }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }

@@ -58,12 +58,12 @@ impl CompressorCore {
             kernel: CompressorKernel::new(attack, release, SampleRate::DEFAULT),
             last_makeup: None,
             good: [
-                LastGood::new(threshold_db.get()),
-                LastGood::new(0.0),
-                LastGood::new(ratio.get()),
-                LastGood::new(0.0),
-                LastGood::new(attack.get()),
-                LastGood::new(release.get()),
+                LastGood::new(threshold_db.get(), 0.0),
+                LastGood::fixed(0.0),
+                LastGood::new(ratio.get(), CompressionRatio::UNITY.get()),
+                LastGood::fixed(0.0),
+                LastGood::new(attack.get(), 0.0),
+                LastGood::new(release.get(), 0.0),
             ],
         }
     }
@@ -590,6 +590,38 @@ mod tests {
         let sc = vec![0.9f32; 1024];
         let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
         assert!(out[1023] < 0.5, "the loud sidechain reduced the tail");
+    }
+
+    /// A NaN ratio at construction is read as no compression, not as 0, which
+    /// is below the type's floor: the output stays finite, `reset` is not
+    /// needed to recover, and a later finite ratio takes effect.
+    ///
+    /// Mutation (run): the ratio's `LastGood` fallback `CompressionRatio::UNITY`
+    /// → `0.0` → the output is NaN from the first block and stays NaN after
+    /// `set_ratio(4.0)` → fails.
+    #[test]
+    fn a_nan_ratio_at_construction_is_finite_and_recovers() {
+        let mut comp = prepared_at(
+            CompressorNode::mono(-20.0, CompressionRatio(f32::NAN), 0.0001, 0.1),
+            RATE_44K,
+        );
+        let audio = vec![0.5f32; 256];
+        let sc = vec![0.9f32; 256];
+        for _ in 0..16 {
+            let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+            assert!(out.iter().all(|s| s.is_finite()), "NaN ratio");
+        }
+        comp.set_ratio(CompressionRatio(4.0));
+        let mut last = 0.5;
+        for _ in 0..16 {
+            let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+            assert!(out.iter().all(|s| s.is_finite()), "after set_ratio");
+            last = out[255];
+        }
+        assert!(last < 0.5, "the finite ratio compresses: {last}");
+        Node::reset(&mut comp);
+        let out = drive(&mut comp, RATE_44K, &[&audio, &sc], &[]).remove(0);
+        assert!(out.iter().all(|s| s.is_finite()), "after reset");
     }
 
     #[test]

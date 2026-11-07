@@ -217,7 +217,7 @@ impl ConvolverNode {
             frame: vec![0.0; width],
             mono: Vec::new(),
             last: None,
-            good: [LastGood::new(0.5), LastGood::new(1.0)],
+            good: [LastGood::fixed(0.5), LastGood::fixed(1.0)],
         }
     }
 

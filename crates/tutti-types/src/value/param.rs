@@ -99,9 +99,8 @@ impl<U: Unit<Raw = f32>> Param<U> {
     /// target) keeps it; this copy no longer sees their writes, and they no
     /// longer see this copy's.
     ///
-    /// A node's fork for an offline render (`tutti-graph`'s
-    /// `ParamNode::fork_fresh`) calls this on each control the node reads, so
-    /// the fork renders a snapshot of the controls taken at fork time rather
+    /// A node's fork for an offline render calls this on each control the node
+    /// reads, so the fork renders a snapshot of the controls taken at fork time rather
     /// than following live knob moves while it runs. Keeping the value is the
     /// point: a fork that snapped to a default would render something nobody
     /// heard. Control-thread only: it allocates, like [`Param::new`].

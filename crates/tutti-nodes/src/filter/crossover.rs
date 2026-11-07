@@ -26,7 +26,10 @@ impl Splits {
     pub(crate) fn new(frequencies: &[Hz]) -> Self {
         Self {
             cells: frequencies.iter().map(|&f| Param::new(f)).collect(),
-            good: frequencies.iter().map(|f| LastGood::new(f.get())).collect(),
+            good: frequencies
+                .iter()
+                .map(|f| LastGood::new(f.get(), 0.0))
+                .collect(),
         }
     }
 

@@ -4,8 +4,8 @@
 //! # What the oracle is, and why it is independent
 //!
 //! The oracle is [`symphonia`], a pure-Rust demuxer/decoder family that shares
-//! no code with this crate's encoders. `tutti-export` writes WAV with `hound`,
-//! FLAC with `flacenc`, AIFF with `aifc` and Ogg with `vorbis_rs`; symphonia
+//! no code with this crate's encoders. `tutti-export` writes WAV through
+//! `tutti-codec`'s own writer, FLAC with `flacenc`, AIFF with `aifc` and Ogg with `vorbis_rs`; symphonia
 //! reads all four with its own parsers, its own bit readers and its own scale
 //! conventions. It has no knowledge of tutti's quantizer, so a disagreement is
 //! evidence about the encoder rather than a shared bug reflected back.
@@ -50,8 +50,8 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, Flac, FrozenClock,
-    RenderConfig, RenderGraph, render_to_file,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, Pcm,
+    Quality, RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -90,7 +90,19 @@ fn sine_graph(freq: f32) -> RenderGraph {
     built(g)
 }
 
-fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
+/// FLAC at an integer `pcm` width and `level`.
+fn flac_format_at(pcm: Pcm, level: FlacLevel) -> Format {
+    Format::Flac {
+        depth: pcm.int_depth().expect("FLAC holds integer widths only"),
+        level,
+    }
+}
+
+fn flac_format(pcm: Pcm) -> Format {
+    flac_format_at(pcm, FlacLevel::default())
+}
+
+fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
@@ -99,7 +111,6 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
         },
         encode: EncodeConfig {
             format,
-            bit_depth,
             channels: ChannelLayout::STEREO,
             topology: None,
         },
@@ -182,31 +193,30 @@ fn rms(samples: &[f32]) -> f64 {
 ///
 /// This is the exact question the export README says the Rust suite cannot ask,
 /// and the one that caught a private FLAC quantizer that truncated where
-/// `tutti_types::pcm` rounds.
+/// `tutti_codec::Pcm` rounds.
 ///
-/// Mutation: `flac.rs`'s `f32_to_i32` swapped back to the historical
-/// truncating converter (`(clamped * 32767.0) as i32` in place of
-/// `tutti_types::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
-/// 22936 vs 22935. One LSB, which is the whole point: the float-tolerance
+/// The historical failure (not rerun): a private truncating converter
+/// (`(clamped * 32767.0) as i32` in FLAC in place of the shared rounding one)
+/// failed at sample 0 of the Int16 0.7 case, 22936 vs 22937. One LSB, which is the whole point: the float-tolerance
 /// draft of this test passed under exactly this mutation.
 #[test]
 fn flac_and_wav_agree_sample_for_sample() {
     let d = tempfile::tempdir().unwrap();
 
-    for bit_depth in [BitDepth::Int16, BitDepth::Int24] {
+    for bit_depth in [Pcm::Int16, Pcm::Int24] {
         for level in [0.0f32, 0.3, -0.3, 0.7] {
             let wav = d.path().join(format!("a_{bit_depth:?}_{level}.wav"));
             let flac = d.path().join(format!("a_{bit_depth:?}_{level}.flac"));
             render_to_file(
                 dc_graph(level),
-                &config(AudioFormat::Wav, bit_depth),
+                &config(Format::Wav(bit_depth)),
                 &FrozenClock,
                 &wav,
             )
             .unwrap();
             render_to_file(
                 dc_graph(level),
-                &config(AudioFormat::Flac(Default::default()), bit_depth),
+                &config(flac_format(bit_depth)),
                 &FrozenClock,
                 &flac,
             )
@@ -232,7 +242,7 @@ fn flac_and_wav_agree_sample_for_sample() {
             // absorb the decoder's own normalization is also wide enough to
             // swallow the bug. Quantize both back to integers and compare those.
             let scale = match bit_depth {
-                BitDepth::Int16 => 32_767.0f32,
+                Pcm::Int16 => 32_767.0f32,
                 _ => 8_388_607.0f32,
             };
             let q = |s: f32| (s * scale).round() as i64;
@@ -257,20 +267,20 @@ fn flac_and_wav_agree_sample_for_sample() {
 fn aiff_and_wav_agree_sample_for_sample() {
     let d = tempfile::tempdir().unwrap();
 
-    for bit_depth in [BitDepth::Int16, BitDepth::Int24] {
+    for bit_depth in [Pcm::Int16, Pcm::Int24] {
         for level in [0.3f32, -0.7] {
             let wav = d.path().join(format!("b_{bit_depth:?}_{level}.wav"));
             let aiff = d.path().join(format!("b_{bit_depth:?}_{level}.aiff"));
             render_to_file(
                 dc_graph(level),
-                &config(AudioFormat::Wav, bit_depth),
+                &config(Format::Wav(bit_depth)),
                 &FrozenClock,
                 &wav,
             )
             .unwrap();
             render_to_file(
                 dc_graph(level),
-                &config(AudioFormat::Aiff, bit_depth),
+                &config(Format::Aiff(bit_depth)),
                 &FrozenClock,
                 &aiff,
             )
@@ -282,7 +292,7 @@ fn aiff_and_wav_agree_sample_for_sample() {
             assert!(n > 1000, "{bit_depth:?} @ {level}: too little audio");
             // Integer comparison, for the reason given in the FLAC case.
             let scale = match bit_depth {
-                BitDepth::Int16 => 32_767.0f32,
+                Pcm::Int16 => 32_767.0f32,
                 _ => 8_388_607.0f32,
             };
             let q = |s: f32| (s * scale).round() as i64;
@@ -311,17 +321,16 @@ fn ogg_preserves_the_tone() {
     let ogg = d.path().join("tone.ogg");
     render_to_file(
         sine_graph(1000.0),
-        &config(AudioFormat::Wav, BitDepth::Float32),
+        &config(Format::Wav(Pcm::Float32)),
         &FrozenClock,
         &wav,
     )
     .unwrap();
     render_to_file(
         sine_graph(1000.0),
-        &config(
-            AudioFormat::OggVorbis(Default::default()),
-            BitDepth::Float32,
-        ),
+        &config(Format::Vorbis {
+            quality: Quality::default(),
+        }),
         &FrozenClock,
         &ogg,
     )
@@ -372,7 +381,7 @@ fn the_flac_compression_level_changes_the_size_not_the_samples() {
     let wav = d.path().join("s.wav");
     render_to_file(
         sine_graph(1_000.0),
-        &config(AudioFormat::Wav, BitDepth::Int16),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         &wav,
     )
@@ -381,25 +390,25 @@ fn the_flac_compression_level_changes_the_size_not_the_samples() {
     let q = |s: f32| (s * 32_767.0).round() as i64;
 
     let mut sizes = Vec::new();
-    for level in [0u8, 3, 5, 8] {
-        let flac = d.path().join(format!("s{level}.flac"));
+    for level in [
+        FlacLevel::Fastest,
+        FlacLevel::Medium,
+        FlacLevel::Standard,
+        FlacLevel::Best,
+    ] {
+        let flac = d.path().join(format!("s{level:?}.flac"));
         render_to_file(
             sine_graph(1_000.0),
-            &config(
-                AudioFormat::Flac(Flac {
-                    compression_level: level,
-                }),
-                BitDepth::Int16,
-            ),
+            &config(flac_format_at(Pcm::Int16, level)),
             &FrozenClock,
             &flac,
         )
         .unwrap();
         let (_, _, fs) = decode(&flac, "flac");
-        assert_eq!(fs.len(), ws.len(), "level {level}: length differs");
+        assert_eq!(fs.len(), ws.len(), "level {level:?}: length differs");
         assert!(
             ws.iter().zip(&fs).all(|(&a, &b)| q(a) == q(b)),
-            "level {level}: the FLAC does not hold the WAV's samples"
+            "level {level:?}: the FLAC does not hold the WAV's samples"
         );
         sizes.push(std::fs::metadata(&flac).unwrap().len());
     }
@@ -471,10 +480,7 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
             g.pipe_output(id);
             built(g)
         };
-        for (bit_depth, scale) in [
-            (BitDepth::Int16, 32_767.0f32),
-            (BitDepth::Int24, 8_388_607.0),
-        ] {
+        for (bit_depth, scale) in [(Pcm::Int16, 32_767.0f32), (Pcm::Int24, 8_388_607.0)] {
             for frames in [1usize, 15, 63, 64, 4095, 4096, 4097, 3 * 4096 + 17] {
                 let cfg = |format| ExportConfig {
                     render: RenderConfig {
@@ -485,7 +491,6 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
                     },
                     encode: EncodeConfig {
                         format,
-                        bit_depth,
                         channels: layout,
                         topology: None,
                     },
@@ -494,36 +499,34 @@ fn a_flac_decodes_to_exactly_the_rendered_frames_with_a_valid_md5() {
                 };
                 let tag = format!("w{width}_{bit_depth:?}_{frames}");
                 let wav = d.path().join(format!("{tag}.wav"));
-                render_to_file(graph(), &cfg(AudioFormat::Wav), &FrozenClock, &wav).unwrap();
+                render_to_file(graph(), &cfg(Format::Wav(bit_depth)), &FrozenClock, &wav).unwrap();
                 let (_, _, ws) = decode(&wav, "wav");
                 assert_eq!(
                     ws.len(),
                     frames * width,
                     "{tag}: the WAV is the analytic length"
                 );
-                for level in [0u8, 8] {
-                    let flac = d.path().join(format!("{tag}_{level}.flac"));
-                    let format = AudioFormat::Flac(Flac {
-                        compression_level: level,
-                    });
+                for level in [FlacLevel::Fastest, FlacLevel::Best] {
+                    let flac = d.path().join(format!("{tag}_{level:?}.flac"));
+                    let format = flac_format_at(bit_depth, level);
                     render_to_file(graph(), &cfg(format), &FrozenClock, &flac).unwrap();
                     let (fs, fc, md5_ok) = decode_flac_verified(&flac);
-                    assert_eq!(fc, width, "{tag} level {level}: width");
+                    assert_eq!(fc, width, "{tag} level {level:?}: width");
                     assert_eq!(
                         fs.len(),
                         frames * width,
-                        "{tag} level {level}: decoded {} frames, rendered {frames}",
+                        "{tag} level {level:?}: decoded {} frames, rendered {frames}",
                         fs.len() / width
                     );
                     let q = |s: f32| (s * scale).round() as i64;
                     assert!(
                         ws.iter().zip(&fs).all(|(&a, &b)| q(a) == q(b)),
-                        "{tag} level {level}: the FLAC does not hold the WAV's samples"
+                        "{tag} level {level:?}: the FLAC does not hold the WAV's samples"
                     );
                     assert_eq!(
                         md5_ok,
                         Some(true),
-                        "{tag} level {level}: the MD5 does not match"
+                        "{tag} level {level:?}: the MD5 does not match"
                     );
                 }
             }

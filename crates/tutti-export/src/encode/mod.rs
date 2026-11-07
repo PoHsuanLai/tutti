@@ -1,49 +1,34 @@
-//! The encode stage: each format drives the render to completion.
+//! The encode stage: the pipeline in front of the encoder.
 //!
-//! # Why the encoder pulls
+//! # Why the pipeline pulls
 //!
-//! The encoder drives the render rather than being fed by it: each format's
-//! `encode` takes the [`FrameSource`] (a live
-//! [`GraphSource`](crate::render::driver::GraphSource) or a rendered
-//! [`PlaneSource`]) and pulls it block by block
-//! through [`pump_blocks`], the one place the gate, the resample and the
-//! dither live. Every format streams, FLAC included (it encodes a frame per
-//! full block as it arrives), so there is no buffered-vs-streaming decision
-//! for a caller to get wrong.
+//! The pipeline drives the render rather than being fed by it: it takes the
+//! [`FrameSource`] (a live [`GraphSource`](crate::render::driver::GraphSource) or
+//! a rendered [`PlaneSource`]) and pulls it block by block through
+//! [`pump_blocks`], the one place the gate, the resample and the dither live,
+//! and hands each block to a `tutti_codec::Encoder`. An encoder only writes
+//! what it is given; this module is the one path through those stages that
+//! export has (the encoder types are public, and a caller using them directly
+//! does its own pulling). Every format streams, FLAC
+//! included (it encodes a frame per full block as it arrives), so there is no
+//! buffered-vs-streaming decision for a caller to get wrong.
 //!
-//! Every encoder is width-agnostic: the width comes from the caller's
-//! [`ChannelLayout`] at runtime, the render folds the
-//! graph onto it once, and the file header is simply that width. Nothing here is
-//! generic over the width — [`Interleaved`] carries
-//! it — so *any* width encodes.
-
-#[cfg(feature = "aiff")]
-pub(crate) mod aiff;
-#[cfg(feature = "flac")]
-pub(crate) mod flac;
-#[cfg(feature = "ogg")]
-pub(crate) mod ogg;
-#[cfg(feature = "wav")]
-pub(crate) mod wav;
+//! The width comes from the caller's [`ChannelLayout`] at runtime, the render
+//! folds the graph onto it once, and the file header is simply that width.
+//! Nothing here is generic over the width — [`Interleaved`] carries it — so
+//! *any* width encodes.
 
 use crate::config::ExportConfig;
 use crate::control::{Control, Outcome};
 use crate::error::Result;
-// `drive` and the buffer views are `pump_blocks`'s, and it carries the same
-// codec gate.
-use crate::Written;
-#[cfg(codec)]
 use crate::render::drive;
 use crate::render::{FrameSource, PlaneSource, RenderPlan};
+use crate::{Error, Written};
 use std::path::Path;
-#[cfg(codec)]
+use tutti_codec::{Encoder, Spec};
 use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
 
 /// The rate the file is written at: the resample target, else the render rate.
-///
-/// Along with [`encoder_rate`] and the [`Encoder`] trait, this serves the
-/// per-format arms only, so a build with no format feature has no caller.
-#[cfg_attr(not(codec), allow(dead_code))]
 pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
     config
         .resample
@@ -51,47 +36,62 @@ pub(crate) fn output_rate(config: &ExportConfig) -> tutti_types::SampleRate {
         .unwrap_or(config.render.sample_rate)
 }
 
-/// The output rate as the `u32` every codec header wants.
+/// A rate as the whole Hz the codec headers speak.
 ///
-/// The single narrowing point. hound, flacenc, vorbis and `aifc` all take an
-/// integer rate, and the resampler compares rates for *equality* to decide
-/// whether to convert at all — which a float would turn into an ULP coin-flip.
-/// The boundary is real; it just belongs in one named place rather than at five
-/// call sites, and it lives beside the encoders that need it rather than hanging
-/// off the config as behaviour.
-#[cfg_attr(not(codec), allow(dead_code))]
-pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
-    output_rate(config).get().round() as u32
+/// The resampler compares rates for *equality* to decide whether to convert at
+/// all, which a float would turn into an ULP coin-flip: two rates that write
+/// the same header are the same rate.
+fn whole_hz(rate: tutti_types::SampleRate) -> u32 {
+    rate.get().round() as u32
 }
 
-/// Drives a render to completion and writes a file.
-///
-/// `self` by value: an encoder finalizes exactly once, and taking ownership is
-/// what makes "finalize, then write more" unrepresentable rather than a runtime
-/// error.
-#[cfg_attr(not(codec), allow(dead_code))]
-pub(crate) trait Encoder {
-    /// `source_rate` is the rate the incoming frames are at, which is not
-    /// always `config.render.sample_rate` — `write_buffers` feeds frames
-    /// rendered elsewhere, carrying their own rate.
-    ///
-    /// Every implementation must go through [`pump_blocks`], which is where
-    /// the gate, the resample and the dither live. An encoder that pulls from
-    /// [`drive`] directly still takes its header rate from [`encoder_rate`], so
-    /// it writes un-resampled audio under a header claiming the target — a file
-    /// that plays back at the wrong speed and reports no error.
-    ///
-    /// The frame width is `config.encode.channels`, read at runtime; an
-    /// implementation that needs it derives the stride once at entry rather than
-    /// being generic over it.
-    fn encode(
-        self,
-        src: &mut dyn FrameSource,
-        source_rate: tutti_types::SampleRate,
-        plan: &RenderPlan,
-        config: &ExportConfig,
-        control: &mut Control<'_>,
-    ) -> Result<Outcome<()>>;
+/// What the file is written as: the config's format, width and speaker order at
+/// the output rate.
+fn spec(config: &ExportConfig) -> Spec {
+    Spec {
+        format: config.encode.format,
+        layout: config.encode.channels,
+        rate: output_rate(config),
+        topology: config.encode.topology.clone(),
+    }
+}
+
+/// Frames the file will hold for `plan` at the output rate, rounded up: the
+/// plan's kept frames, scaled only when the pipeline resamples (the condition
+/// [`pump_blocks`] uses).
+fn planned_frames(
+    plan: &RenderPlan,
+    source_rate: tutti_types::SampleRate,
+    config: &ExportConfig,
+) -> u64 {
+    let kept = plan.output_length.get() as u64;
+    if config.resample.is_none() {
+        return kept;
+    }
+    let (out, src) = (
+        f64::from(whole_hz(output_rate(config))),
+        source_rate.get().round(),
+    );
+    if src <= 0.0 || out == src {
+        return kept;
+    }
+    (kept as f64 * out / src).ceil() as u64
+}
+
+/// Refuses a render the format's file cannot hold, before any of it is
+/// rendered and before the path is touched.
+fn check_fits(
+    plan: &RenderPlan,
+    source_rate: tutti_types::SampleRate,
+    config: &ExportConfig,
+    max_frames: Option<u64>,
+) -> Result<()> {
+    match max_frames {
+        Some(limit_frames) if planned_frames(plan, source_rate, config) > limit_frames => {
+            Err(tutti_codec::Error::WavTooLarge { limit_frames }.into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Render `src` to `path` in the format `config` names.
@@ -99,7 +99,8 @@ pub(crate) trait Encoder {
 /// The render is written to a temporary file beside `path` and renamed over
 /// it when it finishes, so `path` holds either the previous file or a
 /// complete new one, never a partial render. A render that errors or that
-/// `control` stops leaves `path` untouched and removes the temporary.
+/// `control` stops leaves `path` untouched and removes the temporary: the
+/// encoder owns that cleanup.
 ///
 /// The rename replaces an existing file (on Windows too: `std::fs::rename`
 /// is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`), and replaces a symlink
@@ -113,16 +114,26 @@ pub(crate) fn encode_to_file(
     path: &Path,
     control: &mut Control<'_>,
 ) -> Result<Outcome<Written>> {
-    let staged = Staged::beside(path);
-    let outcome = encode_into(src, source_rate, plan, config, staged.path(), control)?;
+    let spec = spec(config);
+    check_fits(
+        plan,
+        source_rate,
+        config,
+        spec.format.max_frames(spec.layout),
+    )?;
+    let mut encoder = Encoder::create_file(&spec, path)?;
+    let outcome = pump_blocks(src, source_rate, plan, config, control, |block| {
+        encoder.write(block).map_err(Error::from)
+    })?;
     if outcome == Outcome::Cancelled {
         return Ok(Outcome::Cancelled);
     }
-    // Before the rename: a render that lost events is never put in place, and
-    // `path` keeps what it held (the staged file goes when `staged` drops).
+    // Before the file is put in place: a render that lost events is never
+    // written, and `path` keeps what it held (the encoder removes its file
+    // when it drops).
     let lost = src.lost_events();
     crate::render::check_loss(config.render.on_event_loss, lost)?;
-    staged.commit(path)?;
+    encoder.finish()?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     Ok(Outcome::Finished(Written {
         path: path.to_path_buf(),
@@ -131,164 +142,18 @@ pub(crate) fn encode_to_file(
     }))
 }
 
-/// A file being written beside its destination: removed when dropped unless
-/// [`commit`](Self::commit)ted. A leftover that cannot be removed is logged,
-/// not an error: the render's outcome is already decided.
-struct Staged {
-    temp: std::path::PathBuf,
-    kept: bool,
-}
-
-impl Staged {
-    fn beside(target: &Path) -> Self {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        let name = target
-            .file_name()
-            .map_or_else(|| "export".to_owned(), |n| n.to_string_lossy().into_owned());
-        let temp = target.with_file_name(format!(
-            ".{name}.{}.{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        Self { temp, kept: false }
-    }
-
-    fn path(&self) -> &Path {
-        &self.temp
-    }
-
-    /// Renames the temporary over `target`.
-    fn commit(mut self, target: &Path) -> std::io::Result<()> {
-        std::fs::rename(&self.temp, target)?;
-        self.kept = true;
-        Ok(())
-    }
-}
-
-impl Drop for Staged {
-    fn drop(&mut self) {
-        if self.kept {
-            return;
-        }
-        match std::fs::remove_file(&self.temp) {
-            Ok(()) => {}
-            // Never created: the encoder failed before it opened the file.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!(
-                "export: could not remove the unfinished file {}: {e}",
-                self.temp.display()
-            ),
-        }
-    }
-}
-
-/// Writes `src` to `path` in the format `config` names: the one dispatch. A format whose cargo feature is off is a clean
-/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
-/// silently degrades, and no arm rejects a format this build can actually
-/// write.
-// With no codec feature on, every arm of the match below is an early
-// `UnsupportedFormat` return — so the parameters go unread and the trailing
-// `Written` construction is unreachable. That is the intended behaviour of a
-// build that can write no formats, not dead code to prune.
-#[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
-fn encode_into(
-    src: &mut dyn FrameSource,
-    source_rate: tutti_types::SampleRate,
-    plan: &RenderPlan,
-    config: &ExportConfig,
-    path: &Path,
-    control: &mut Control<'_>,
-) -> Result<Outcome<()>> {
-    use crate::options::AudioFormat;
-    #[allow(
-        unused_imports,
-        reason = "named only by the `cfg(not(feature))` fallback arms; unused when every format feature is on"
-    )]
-    use crate::{Error, UnsupportedReason};
-
-    let outcome: Outcome<()> = match config.encode.format {
-        #[cfg(feature = "wav")]
-        AudioFormat::Wav => wav::WavEncoder::create(path, config, source_rate, plan)?.encode(
-            src,
-            source_rate,
-            plan,
-            config,
-            control,
-        )?,
-        #[cfg(not(feature = "wav"))]
-        AudioFormat::Wav => {
-            return Err(Error::UnsupportedFormat {
-                format: "WAV".into(),
-                reason: UnsupportedReason::FeatureDisabled,
-            });
-        }
-
-        #[cfg(feature = "flac")]
-        AudioFormat::Flac(opts) => flac::FlacEncoder::create(path, config, opts)?.encode(
-            src,
-            source_rate,
-            plan,
-            config,
-            control,
-        )?,
-        #[cfg(not(feature = "flac"))]
-        AudioFormat::Flac(_) => {
-            return Err(Error::UnsupportedFormat {
-                format: "FLAC".into(),
-                reason: UnsupportedReason::FeatureDisabled,
-            });
-        }
-
-        #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => aiff::AiffEncoder::create(path, config)?.encode(
-            src,
-            source_rate,
-            plan,
-            config,
-            control,
-        )?,
-        #[cfg(not(feature = "aiff"))]
-        AudioFormat::Aiff => {
-            return Err(Error::UnsupportedFormat {
-                format: "AIFF".into(),
-                reason: UnsupportedReason::FeatureDisabled,
-            });
-        }
-
-        #[cfg(feature = "ogg")]
-        AudioFormat::OggVorbis(opts) => ogg::OggEncoder::create(path, config, opts)?.encode(
-            src,
-            source_rate,
-            plan,
-            config,
-            control,
-        )?,
-        #[cfg(not(feature = "ogg"))]
-        AudioFormat::OggVorbis(_) => {
-            return Err(Error::UnsupportedFormat {
-                format: "OGG".into(),
-                reason: UnsupportedReason::FeatureDisabled,
-            });
-        }
-    };
-
-    Ok(outcome)
-}
-
 /// Pull every FRAME of the render through resample → dither, into `write`.
 ///
 /// `write` receives [`Interleaved`], which carries its own width, so the
 /// frame/sample distinction never has to be tracked by the caller.
 ///
-/// Every encoder goes through this. That is the point: this is where the
-/// gate, the resample and the dither live, so an encoder that skips it writes
-/// un-resampled audio under a resampled header.
+/// Every export goes through this. That is the point: this is where the
+/// gate, the resample and the dither live, so a file is never written
+/// un-resampled under a resampled header.
 ///
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
 /// that noise along with the signal and land it somewhere other than one LSB.
-#[cfg(codec)]
 pub(crate) fn pump_blocks<W>(
     src: &mut dyn FrameSource,
     source_rate: tutti_types::SampleRate,
@@ -311,17 +176,17 @@ where
     // Interleaved, so it is a flat sample buffer with `ch` samples per frame.
     let mut staging: Vec<f32> = Vec::new();
 
-    // Compare as the integer rate the codecs speak, via `encoder_rate` — the
-    // crate's single narrowing point. The comparison must not be a float one:
-    // these rates decide *whether to resample at all*, and an ULP apart would
-    // flip that coin. Two rates that write the same header are the same rate.
+    // Compare as the integer rate the codecs speak, via `whole_hz`. The
+    // comparison must not be a float one: these rates decide *whether to
+    // resample at all*, and an ULP apart would flip that coin. Two rates that
+    // write the same header are the same rate.
     //
     // `source_rate` is the PARAMETER, not `config.render.sample_rate`. Frames
     // handed to `write_buffers` already exist and carry their own rate, which
     // may not be the one the config was rendered at; reading it from the config
     // resamples from a rate the samples were never at.
     let mut resampler = match config.resample {
-        Some(r) if encoder_rate(config) != source_rate.get().round() as u32 => Some((
+        Some(r) if whole_hz(output_rate(config)) != whole_hz(source_rate) => Some((
             // The rates themselves stay `SampleRate`: only the *comparison*
             // narrows, and `Resampler::new` derives its ratio from values that
             // never did.
@@ -361,7 +226,6 @@ where
 
 /// Interleave the resampler's output planes, dither, hand them on, and clear
 /// the planes for the next push.
-#[cfg(codec)]
 fn emit_planes<W>(
     out: &mut [Vec<f32>],
     staging: &mut Vec<f32>,

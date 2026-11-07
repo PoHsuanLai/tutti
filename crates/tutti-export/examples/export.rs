@@ -11,8 +11,8 @@
 
 use tutti_dsp::{LoudnessConfig, measure_loudness};
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
-    render_to_buffers, render_to_file,
+    ChannelLayout, EncodeConfig, ExportConfig, FlacLevel, Format, IntDepth, Pcm, Quality,
+    RenderConfig, RenderGraph, render_to_buffers, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::{Const, Osc};
@@ -70,8 +70,10 @@ fn main() -> tutti_export::Result<()> {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Flac(Default::default()),
-            bit_depth: BitDepth::Int24,
+            format: Format::Flac {
+                depth: IntDepth::Int24,
+                level: FlacLevel::default(),
+            },
             ..Default::default()
         },
         ..Default::default()
@@ -84,12 +86,17 @@ fn main() -> tutti_export::Result<()> {
     let written = render_to_file(tone(), &config, &FrozenClock, dir.join("tone.flac"))?;
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
-    // Every format goes through the same call. FLAC streams through flacenc's
-    // pull API, Ogg and AIFF through their own incremental writers.
+    // Every format goes through the same call. Each is written block by
+    // block through `tutti-codec`'s encoder.
     for (format, ext) in [
-        (AudioFormat::Wav, "wav"),
-        (AudioFormat::OggVorbis(Default::default()), "ogg"),
-        (AudioFormat::Aiff, "aiff"),
+        (Format::Wav(Pcm::Int24), "wav"),
+        (
+            Format::Vorbis {
+                quality: Quality::default(),
+            },
+            "ogg",
+        ),
+        (Format::Aiff(Pcm::Int24), "aiff"),
     ] {
         let s = ExportConfig {
             encode: EncodeConfig {

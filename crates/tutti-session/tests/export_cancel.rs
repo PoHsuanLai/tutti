@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, GRAPH_MAX_BLOCK, Normalize,
-    Outcome, RenderConfig,
+    ChannelLayout, EncodeConfig, ExportConfig, Format, GRAPH_MAX_BLOCK, Normalize, Outcome, Pcm,
+    RenderConfig,
 };
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{
@@ -77,8 +77,7 @@ fn config() -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Int16,
+            format: Format::Wav(Pcm::Int16),
             channels: ChannelLayout::STEREO,
             topology: None,
         },

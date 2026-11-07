@@ -14,38 +14,21 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Creating, writing or finalizing the output file failed. Also carries the
-    /// codec libraries' own I/O faults, via the `From` impls below.
+    /// The sink failed: the output file could not be created, written (a full
+    /// disk) or moved into place.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
-
-    /// The requested [`AudioFormat`](crate::AudioFormat) cannot be written: its
-    /// cargo feature is off, its extension is unrecognised, or the format does
-    /// not support the configured bit depth (FLAC refuses `Float32`).
-    #[error("Unsupported format {format}: {reason}")]
-    UnsupportedFormat {
-        /// The format's name (`"FLAC"`); for an unrecognised extension, the
-        /// extension lowercased and without its dot, or `"(none)"` when the
-        /// path has none.
-        format: String,
-        /// Why it cannot be written.
-        reason: UnsupportedReason,
-    },
 
     /// A config field the encoder cannot act on. Caught before any frame is
     /// rendered.
     #[error("Invalid configuration: {0}")]
     InvalidConfig(#[from] ConfigError),
 
-    /// A codec rejected a block or failed to finalize its container.
-    /// `detail` is the library's own report.
-    #[error("{codec} encoding error: {detail}")]
-    Encoding {
-        /// The codec that failed.
-        codec: Codec,
-        /// The library's report.
-        detail: String,
-    },
+    /// The encoder refused the spec or a block: a spec the format cannot be
+    /// written for, a WAV file past its size limit, or a codec failure. The
+    /// file is removed. (The sink failing is [`Io`](Self::Io).)
+    #[error(transparent)]
+    Encode(tutti_codec::Error),
 
     /// The resampler could not be constructed for this rate pair, or rejected a
     /// chunk.
@@ -67,20 +50,6 @@ pub enum Error {
     /// widths could not express.
     #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
     UnsupportedChannels(u16),
-
-    /// The WAV file would exceed what its 32-bit sizes can describe (just under
-    /// 4 GiB; RF64 is not written). `limit_frames` is the most frames a file of
-    /// this width and depth holds. Raised before the file is created when the plan shows
-    /// it, otherwise at the frame that crosses the limit, and the partial file
-    /// is removed. Choose another format (FLAC, Ogg) or a shorter
-    /// span.
-    #[error(
-        "The export does not fit a WAV file (more than {limit_frames} frames; 32-bit sizes, just under 4 GiB)"
-    )]
-    WavTooLarge {
-        /// The frames a WAV of this width and depth can hold.
-        limit_frames: u64,
-    },
 
     /// A loudness measurement was asked for and could not be taken — EBU R128
     /// accepts 1–64 channels at 16 Hz–2.8 MHz.
@@ -169,14 +138,6 @@ pub enum ConfigError {
         /// The rate the render asks for, in Hz.
         render: f64,
     },
-    /// The channel topology and the file differ in width.
-    #[error("the topology is {topology:?} wide but the file has {file:?}")]
-    TopologyWidth {
-        /// The topology's layout.
-        topology: tutti_types::ChannelLayout,
-        /// The file's layout.
-        file: tutti_types::ChannelLayout,
-    },
     /// The export's target node has no audio outputs.
     #[error("export target node has no audio outputs")]
     TargetHasNoOutputs,
@@ -186,76 +147,13 @@ pub enum ConfigError {
     /// A prepare hook left the forked graph in a state that cannot commit.
     #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
     PrepareHookUncommittable(tutti_graph::CommitError),
-    /// More channels than the container's header can count.
-    #[error("{channels} channels exceed the format's limit of {max}")]
-    TooManyChannels {
-        /// The requested channel count.
-        channels: u16,
-        /// The most the format holds.
-        max: u16,
-    },
-    /// A sample rate of zero.
-    #[error("sample rate must be non-zero")]
-    ZeroSampleRate,
-    /// A channel count of zero.
-    #[error("channel count must be non-zero")]
-    ZeroChannels,
 }
 
-/// The codec behind an [`Error::Encoding`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Codec {
-    /// FLAC.
-    Flac,
-    /// AIFF and AIFF-C.
-    Aiff,
-    /// Ogg Vorbis.
-    Ogg,
-}
-
-impl std::fmt::Display for Codec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Flac => "FLAC",
-            Self::Aiff => "AIFF",
-            Self::Ogg => "Ogg",
-        })
-    }
-}
-
-/// Why an [`AudioFormat`](crate::AudioFormat) cannot be written
-/// ([`Error::UnsupportedFormat`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum UnsupportedReason {
-    /// The format's cargo feature is off in this build.
-    FeatureDisabled,
-    /// No format is written for the file extension.
-    UnknownExtension,
-    /// The format cannot hold the configured bit depth (FLAC refuses `Float32`).
-    BitDepth,
-}
-
-impl std::fmt::Display for UnsupportedReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::FeatureDisabled => "its cargo feature is not enabled",
-            Self::UnknownExtension => "the extension is not recognised",
-            Self::BitDepth => "it cannot hold the configured bit depth",
-        })
-    }
-}
-
-impl Error {
-    #[cfg_attr(
-        not(any(feature = "flac", feature = "aiff", feature = "ogg")),
-        expect(dead_code, reason = "only the flac, aiff and ogg encoders report this")
-    )]
-    pub(crate) fn encoding(codec: Codec, detail: impl Into<String>) -> Self {
-        Self::Encoding {
-            codec,
-            detail: detail.into(),
+impl From<tutti_codec::Error> for Error {
+    fn from(error: tutti_codec::Error) -> Self {
+        match error {
+            tutti_codec::Error::Io(e) => Self::Io(e),
+            other => Self::Encode(other),
         }
     }
 }
@@ -263,10 +161,3 @@ impl Error {
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error
 /// type.
 pub type Result<T> = std::result::Result<T, Error>;
-
-#[cfg(feature = "wav")]
-impl From<hound::Error> for Error {
-    fn from(e: hound::Error) -> Self {
-        Self::Io(io::Error::other(e))
-    }
-}

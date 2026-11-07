@@ -43,8 +43,8 @@
 #![cfg(feature = "wav")]
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, FrozenClock,
-    RenderConfig, RenderGraph, Resample, render_to_file,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, FrozenClock, Pcm, RenderConfig,
+    RenderGraph, Resample, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Osc;
@@ -82,8 +82,7 @@ fn config(freq_target: SampleRateTarget) -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth: BitDepth::Float32,
+            format: Format::Wav(Pcm::Float32),
             channels: ChannelLayout::STEREO,
             topology: None,
         },

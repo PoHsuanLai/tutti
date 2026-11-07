@@ -24,15 +24,13 @@ mod downmix;
 mod interleaved;
 mod topology;
 
-// Public: each holds items the root does not re-export (`graph::Source`,
-// `pcm::BitDepth`, everything in `wav`), spelled through the module path.
+// Public: each holds items the root does not re-export (`graph::Source`),
+// spelled through the module path.
 pub mod graph;
 pub mod io;
 pub mod latency;
 pub mod meter;
-pub mod pcm;
 pub mod tail;
-pub mod wav;
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
 // addresses params without their unit types need not depend on `atomic_float`
@@ -115,6 +113,3 @@ pub mod prelude {
 
     pub use crate::meter::{MeterMap, NoteValue, TimeSignature};
 }
-
-// PCM quantization.
-pub use pcm::{f32_to_i16, f32_to_i24};

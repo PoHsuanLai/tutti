@@ -66,7 +66,7 @@ use tutti_metering::AudioTap;
 /// fn record_master(tap: Res<AudioTapRes>, path: Res<TakePath>, mut commands: Commands) {
 ///     // `create` returns an `Option` — `None` is "the path could not be
 ///     // opened", which is the caller's to report.
-///     let wav = WavOut::create(&path.0, 48_000.0, ChannelLayout::STEREO, BitDepth::Float32)
+///     let wav = WavOut::create(&path.0, 48_000.0, ChannelLayout::STEREO, Pcm::Float32)
 ///         .expect("a writable path");
 ///     let src = TapIn::new(tap.open().expect("tap is free"));
 ///     commands.spawn(AudioPump::start(src, wav, Samples(1024)));

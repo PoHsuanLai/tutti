@@ -25,10 +25,6 @@ Use it directly when you need only the vocabulary (a crate that implements
   widths fold, and the matrix is not normalised (see `fold_frame`).
 - **`io`** — `AudioIn` / `AudioOut` and `pump`: the two traits every audio source
   and sink in the engine speaks (mic, file, disk, plugin boundary).
-- **`pcm`** — the canonical float→fixed-point quantization, shared by every codec
-  and sink so a recorded and an exported file quantize a sample identically.
-- **`wav`** — the WAV container facts two writers share: the speaker mask a
-  multichannel file declares, and the size limit of a data chunk.
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,
   `delays`) and how long a graph rings after its input stops (`TailGraph`,
   `graph_tail`), as pure graph math over any graph representation.
@@ -43,11 +39,10 @@ Use it directly when you need only the vocabulary (a crate that implements
 
 **The root is the API.** The common names are re-exported there, so
 `tutti_types::Bpm` and `tutti_types::AudioIn` resolve directly — import from the
-root, or from `prelude` for the common subset. Eight of the twelve modules are
-public (`value`, `graph`, `io`, `latency`, `meter`, `pcm`, `tail`, `wav`),
-because each holds items the root does not re-export (`graph::Source`,
-`pcm::BitDepth`, everything in `wav`); the other four (`channels`, `downmix`,
-`interleaved`, `topology`) are private and fully re-exported.
+root, or from `prelude` for the common subset. Six of the ten modules are
+public (`value`, `graph`, `io`, `latency`, `meter`, `tail`), because each holds
+items the root does not re-export (`graph::Source`); the other four (`channels`,
+`downmix`, `interleaved`, `topology`) are private and fully re-exported.
 
 ## What this crate does not own
 

@@ -29,7 +29,7 @@
 #![cfg(feature = "wav")]
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, FrozenClock,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, Format, FrozenClock, IntDepth, Pcm,
     RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
@@ -55,7 +55,7 @@ fn dc_graph(level: f32) -> RenderGraph {
     built(g)
 }
 
-fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
+fn config(dither: Dither, bit_depth: Pcm) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
@@ -63,8 +63,7 @@ fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth,
+            format: Format::Wav(bit_depth),
             channels: ChannelLayout::STEREO,
             topology: None,
         },
@@ -81,7 +80,7 @@ fn config(dither: Dither, bit_depth: BitDepth) -> ExportConfig {
 fn render_i16(dither: Dither, level: f32, path: &std::path::Path) -> Vec<i32> {
     render_to_file(
         dc_graph(level),
-        &config(dither, BitDepth::Int16),
+        &config(dither, Pcm::Int16),
         &FrozenClock,
         path,
     )
@@ -115,7 +114,7 @@ fn dither_off_leaves_a_constant_perfectly_flat() {
     );
     assert_eq!(
         first,
-        tutti_types::f32_to_i16(0.25) as i32,
+        IntDepth::Int16.quantize(0.25),
         "undithered quantization must match the engine's canonical converter"
     );
 }
@@ -293,7 +292,7 @@ fn float32_output_is_never_dithered_at_any_mode() {
         let path = d.path().join(format!("f32_{mode:?}.wav"));
         render_to_file(
             dc_graph(level),
-            &config(mode, BitDepth::Float32),
+            &config(mode, Pcm::Float32),
             &FrozenClock,
             &path,
         )
@@ -326,7 +325,7 @@ fn noise_scales_with_the_target_bit_depth() {
 
     render_to_file(
         dc_graph(level),
-        &config(Dither::Triangular, BitDepth::Int24),
+        &config(Dither::Triangular, Pcm::Int24),
         &FrozenClock,
         &path,
     )

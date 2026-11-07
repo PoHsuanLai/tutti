@@ -29,8 +29,8 @@
 #![cfg(all(feature = "wav", feature = "flac"))]
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, ExportConfig, FrozenClock,
-    RenderConfig, RenderGraph, render_to_file,
+    ChannelLayout, Dither, EncodeConfig, ExportConfig, FlacLevel, Format, FrozenClock, IntDepth,
+    Pcm, RenderConfig, RenderGraph, render_to_file,
 };
 use tutti_graph::GraphBuilder;
 use tutti_nodes::testing::Const;
@@ -59,7 +59,15 @@ fn dc_graph(level: f32) -> RenderGraph {
     built(g)
 }
 
-fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
+/// FLAC at an integer `pcm` width.
+fn flac(pcm: Pcm) -> Format {
+    Format::Flac {
+        depth: pcm.int_depth().expect("FLAC holds integer widths only"),
+        level: FlacLevel::default(),
+    }
+}
+
+fn config(format: Format) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: tutti_types::SampleRate(SR),
@@ -68,7 +76,6 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
         },
         encode: EncodeConfig {
             format,
-            bit_depth,
             channels: ChannelLayout::STEREO,
             topology: None,
         },
@@ -84,14 +91,14 @@ fn config(format: AudioFormat, bit_depth: BitDepth) -> ExportConfig {
 /// alone can move a sample by half an LSB, and the reader's own scale choice can
 /// account for another fraction. Anything looser would let a real scaling bug
 /// through; anything tighter would fail on correct code.
-fn lsb(bit_depth: BitDepth) -> f32 {
+fn lsb(bit_depth: Pcm) -> f32 {
     match bit_depth {
-        BitDepth::Int16 => 1.0 / 32_767.0,
-        BitDepth::Int24 => 1.0 / 8_388_607.0,
-        BitDepth::Float32 => 1.0 / 8_388_607.0, // exact in practice; kept for the table
-                                                // No `_` arm: `BitDepth` is deliberately not `#[non_exhaustive]`, so a
-                                                // fourth depth must fail to compile here rather than pick up a silent
-                                                // default. See the enum's docs in tutti-types::pcm.
+        Pcm::Int16 => 1.0 / 32_767.0,
+        Pcm::Int24 => 1.0 / 8_388_607.0,
+        Pcm::Float32 => 1.0 / 8_388_607.0, // exact in practice; kept for the table
+                                           // No `_` arm: `Pcm` is deliberately not `#[non_exhaustive]`, so a
+                                           // fourth depth must fail to compile here rather than pick up a silent
+                                           // default. See the enum's docs in tutti-types::pcm.
     }
 }
 
@@ -133,13 +140,13 @@ fn read_wav(path: &std::path::Path) -> (hound::WavSpec, Vec<f32>) {
 fn a_wav_round_trips_its_samples_at_every_depth() {
     let d = tempfile::tempdir().unwrap();
 
-    for bit_depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+    for bit_depth in [Pcm::Int16, Pcm::Int24, Pcm::Float32] {
         // Deliberately not a round binary fraction: 0.5 is exactly representable
         // at every depth and would hide a rounding-versus-truncation difference,
         // which is precisely one of the bugs this file is meant to catch.
         for level in [0.0f32, 0.3, -0.3, 0.75] {
             let path = d.path().join(format!("dc_{bit_depth:?}_{level}.wav"));
-            let cfg = config(AudioFormat::Wav, bit_depth);
+            let cfg = config(Format::Wav(bit_depth));
             render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
             let (spec, samples) = read_wav(&path);
@@ -175,10 +182,10 @@ fn a_wav_round_trips_its_samples_at_every_depth() {
 fn full_scale_does_not_wrap() {
     let d = tempfile::tempdir().unwrap();
 
-    for bit_depth in [BitDepth::Int16, BitDepth::Int24] {
+    for bit_depth in [Pcm::Int16, Pcm::Int24] {
         for level in [1.0f32, -1.0] {
             let path = d.path().join(format!("fs_{bit_depth:?}_{level}.wav"));
-            let cfg = config(AudioFormat::Wav, bit_depth);
+            let cfg = config(Format::Wav(bit_depth));
             render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
             let (_, samples) = read_wav(&path);
@@ -203,13 +210,13 @@ fn out_of_range_input_clamps_to_the_rail() {
 
     for (level, expect) in [(1.8f32, 1.0f32), (-1.8, -1.0)] {
         let path = d.path().join(format!("clamp_{level}.wav"));
-        let cfg = config(AudioFormat::Wav, BitDepth::Int16);
+        let cfg = config(Format::Wav(Pcm::Int16));
         render_to_file(dc_graph(level), &cfg, &FrozenClock, &path).unwrap();
 
         let (_, samples) = read_wav(&path);
         for (i, &s) in samples.iter().enumerate() {
             assert!(
-                (s - expect).abs() <= lsb(BitDepth::Int16),
+                (s - expect).abs() <= lsb(Pcm::Int16),
                 "{level} should clamp to {expect}, sample {i} came back as {s}"
             );
         }
@@ -218,7 +225,7 @@ fn out_of_range_input_clamps_to_the_rail() {
 
 /// Every integer encoder must quantize a given float to the same value.
 ///
-/// `tutti_types::pcm` exists precisely so "a recorded and an exported file
+/// `tutti_codec::Pcm` exists precisely so "a recorded and an exported file
 /// quantize a given sample identically" (its own module doc). A format carrying
 /// a private copy of that arithmetic can drift from the shared one silently —
 /// both files decode, both have the right length, and the samples differ.
@@ -235,7 +242,7 @@ fn wav_and_flac_quantize_a_sample_identically() {
     let wav_path = d.path().join("q.wav");
     render_to_file(
         dc_graph(level),
-        &config(AudioFormat::Wav, BitDepth::Int16),
+        &config(Format::Wav(Pcm::Int16)),
         &FrozenClock,
         &wav_path,
     )
@@ -245,26 +252,22 @@ fn wav_and_flac_quantize_a_sample_identically() {
     let flac_path = d.path().join("q.flac");
     render_to_file(
         dc_graph(level),
-        &config(AudioFormat::Flac(Default::default()), BitDepth::Int16),
+        &config(flac(Pcm::Int16)),
         &FrozenClock,
         &flac_path,
     )
     .unwrap();
 
     // Here: the WAV, read back with `hound`, must match the engine's canonical
-    // quantizer. The matching claim for FLAC is
-    // `quantization_matches_the_engines_canonical_converter` in
-    // `encode/flac.rs`, which compares its converter against the same helper
-    // at levels where rounding and truncation disagree, and
-    // `tests/oracle_decode.rs` decodes both files with symphonia and compares
-    // them sample for sample.
+    // quantizer. FLAC takes its samples from the same `IntDepth::quantize` (it
+    // has no converter of its own), and `tests/oracle_decode.rs` decodes both
+    // files with symphonia and compares them sample for sample.
     //
     // This pair caught a real divergence: FLAC carried a private converter that
-    // truncated (`as i32`) where `tutti_types::pcm` rounds, so 0.7 encoded as
-    // 22936 in a FLAC and 22937 in a WAV from the same render. Fixed by making
-    // the FLAC encoder call the shared helpers.
-    let canonical = tutti_types::f32_to_i16(level);
-    let from_wav = (wav[0] * 32_767.0).round() as i16;
+    // truncated (`as i32`) where the shared one rounds, so 0.7 encoded as
+    // 22936 in a FLAC and 22937 in a WAV from the same render.
+    let canonical = IntDepth::Int16.quantize(level);
+    let from_wav = (wav[0] * 32_767.0).round() as i32;
     assert_eq!(
         from_wav, canonical,
         "WAV diverged from the engine's canonical quantizer"
@@ -272,20 +275,6 @@ fn wav_and_flac_quantize_a_sample_identically() {
     assert_eq!(
         canonical, 22_937,
         "0.7 must round to 22937, not truncate to 22936"
-    );
-}
-
-/// FLAC cannot carry 32-bit float, and says so rather than writing something wrong.
-#[test]
-fn flac_rejects_float32_instead_of_silently_downgrading() {
-    let d = tempfile::tempdir().unwrap();
-    let path = d.path().join("f.flac");
-    let cfg = config(AudioFormat::Flac(Default::default()), BitDepth::Float32);
-
-    let err = render_to_file(dc_graph(0.5), &cfg, &FrozenClock, &path);
-    assert!(
-        err.is_err(),
-        "FLAC + Float32 must be a clean error, not a silent downgrade to 24-bit"
     );
 }
 
@@ -304,14 +293,14 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
     let id = g.add(Const::mono(0.5));
     g.pipe_output(id);
 
-    let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);
+    let mut cfg = config(Format::Wav(Pcm::Int24));
     cfg.encode.channels = ChannelLayout::QUAD;
     render_to_file(built(g), &cfg, &FrozenClock, &path).unwrap();
 
     let (spec, samples) = read_wav(&path);
     assert_eq!(spec.channels, 4);
 
-    let tol = lsb(BitDepth::Int24);
+    let tol = lsb(Pcm::Int24);
     for (i, frame) in samples.as_chunks::<4>().0.iter().enumerate() {
         assert!(
             (frame[0] - 0.5).abs() <= tol,
@@ -340,7 +329,7 @@ fn a_resampled_export_preserves_the_signal_not_just_the_frame_count() {
 
     for target in [48_000.0f64, 22_050.0] {
         let path = d.path().join(format!("rs_{target}.wav"));
-        let mut cfg = config(AudioFormat::Wav, BitDepth::Int24);
+        let mut cfg = config(Format::Wav(Pcm::Int24));
         cfg.resample = Some(tutti_export::Resample::to(tutti_types::SampleRate(target)));
         cfg.render.duration_seconds = 0.25;
 

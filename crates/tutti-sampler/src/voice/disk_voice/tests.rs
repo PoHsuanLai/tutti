@@ -464,6 +464,45 @@ fn clip_reader_silent_outside_window_audible_inside() {
     assert_eq!([out[0][0], out[1][0]], [0.0, 0.0], "after window → silence");
 }
 
+/// A NaN or infinite gain is silence on a disk voice, in a window it plays
+/// (a placed read, inside and outside it) and free-running: never NaN.
+///
+/// Mutation (run): `audible` returning its gain unguarded -> the placed read
+/// is NaN inside the window and inf * 0.0 = NaN outside it, and the
+/// free-running source is NaN -> fails.
+#[test]
+fn a_non_finite_gain_is_silence_on_a_disk_voice() {
+    let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
+    for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut reader = make_clip_reader_at(
+            &samples,
+            22_046,
+            Beat::new(4.0),
+            Some(BeatDuration::new(4.0)),
+        );
+        reader.set_gain(Amplitude(gain));
+        for beat in [0.0, 5.0, 9.0] {
+            transport.set_beat(Beat::new(beat));
+            let out = under(&mut reader, &transport, SR, 8);
+            assert!(
+                out.iter().flatten().all(|&s| s == 0.0),
+                "placed, beat {beat}, gain {gain}"
+            );
+        }
+
+        let samples: Vec<_> = (0..20).map(|_| (1.0f32, -1.0f32)).collect();
+        let mut source =
+            DiskSource::new(make_reader_with_samples(&samples), Arc::new(RtState::new()));
+        source.set_gain(Amplitude(gain));
+        let out = free(&mut source, 8);
+        assert!(
+            out.iter().flatten().all(|&s| s == 0.0),
+            "free-running, gain {gain}"
+        );
+    }
+}
+
 #[test]
 fn clip_reader_stopped_transport_is_silent() {
     let samples: Vec<_> = (1..32).map(|i| (i as f32, i as f32)).collect();

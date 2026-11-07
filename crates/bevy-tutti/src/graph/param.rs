@@ -11,7 +11,9 @@
 //! ```rust
 //! use bevy_app::prelude::*;
 //! use bevy_ecs::prelude::*;
-//! use bevy_tutti::graph::{AudioGraphRes, AudioParam, AudioParamAppExt, GraphReconcilePlugin};
+//! use bevy_tutti::graph::{
+//!     AudioGraphRes, AudioNode, AudioParam, AudioParamAppExt, GraphReconcilePlugin,
+//! };
 //! use bevy_tutti::AudioEngineState;
 //! use tutti_types::SampleRate;
 //! use tutti_types::{Drive, UnitParam};
@@ -39,7 +41,7 @@
 //! app.add_plugins(GraphReconcilePlugin);
 //! app.add_audio_param::<Drive, { UnitParam::Drive as u16 }>();
 //!
-//! let entity = app.world_mut().spawn((node, DriveParam::new(Drive(4.0)))).id();
+//! let entity = app.world_mut().spawn((AudioNode(node), DriveParam::new(Drive(4.0)))).id();
 //! app.update();
 //! // The write lands on the cell, which the node reads at the start of its
 //! // next block: render one.

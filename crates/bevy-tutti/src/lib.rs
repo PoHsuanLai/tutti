@@ -49,7 +49,7 @@
 //! let node = *app.world_mut().query::<&AudioNode>().single(app.world()).unwrap();
 //! let graph = app.world().resource::<AudioGraphRes>();
 //! // Read the edge back off the engine, not off the component.
-//! assert_eq!(graph.graph_ref().output_source(0), GraphSource::Node(node, 0));
+//! assert_eq!(graph.graph_ref().output_source(0), GraphSource::Node(node.0, 0));
 //! ```
 //!
 //! # Sub-plugins

@@ -77,7 +77,7 @@ use crate::graph::{AudioGraphRes, CapturedControls, NodeControls};
 /// let graph = app.world().resource::<AudioGraphRes>();
 /// // Port 0 of the filter is fed by the oscillator — the declaration reached
 /// // the engine. Without the `PortSources`, this would still read `Silence`.
-/// assert!(matches!(graph.graph_ref().source(filt, 0), GraphSource::Node(_, 0)));
+/// assert!(matches!(graph.graph_ref().source(filt.0, 0), GraphSource::Node(_, 0)));
 /// ```
 ///
 /// The entity is bound to the node via [`AudioNode`] only. A host that needs to

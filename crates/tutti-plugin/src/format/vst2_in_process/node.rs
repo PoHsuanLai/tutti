@@ -105,6 +105,7 @@ impl Node for InProcessVst2Client {
         };
         let midi = &mut self.midi;
         let intake = &mut self.intake;
+        intake.new_chunk();
         let mut midi_dropped = 0u64;
         param_input::take(
             events.as_slice(),

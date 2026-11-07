@@ -272,6 +272,7 @@ struct PluginChunks<'a> {
 impl Chunks for PluginChunks<'_> {
     fn begin(&mut self, at: usize, chunk: usize) {
         self.segments.begin(chunk);
+        self.intake.new_chunk();
         // What an earlier chunk could not send goes on this one's first frame.
         self.params.begin();
         let transport = match Offset::new(at, Samples(self.frames)) {

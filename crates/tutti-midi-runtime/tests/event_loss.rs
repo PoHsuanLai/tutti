@@ -442,3 +442,32 @@ fn a_block_past_the_cap_overflows_and_says_so() {
         "every event arrived or is counted"
     );
 }
+
+/// A release the port cannot hold counts every held note that got no
+/// note-off, not only the first push refused. 400 notes sound (two blocks of
+/// 200), the transport stops, and the release on the stop block writes 296
+/// note-offs (the port's 256 and its note-off room); the other 104 are owed.
+/// The block ends there: 104 held notes have no note-off, and the figure says
+/// 104, not 1. Sent on the next block, they are taken back.
+///
+/// Mutation: stop counting at the first refused push in `release` (return
+/// there, as it did) → 1 → fails.
+#[test]
+fn a_release_the_port_cannot_hold_counts_every_note_left_on() {
+    let events = (0..400).map(|i| at(if i < 200 { 10 } else { 70 }, on(i)));
+    let mut r = rig(events, 64);
+    let rolling = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    for k in 0..3u64 {
+        r.exec.process(64, &rolling(64 * k), &[], &mut []);
+    }
+    assert_eq!(r.tally.lock().unwrap().held.len(), 400);
+    // Stopped: the clip releases everything it holds.
+    let stopped = Transport::new(false, Bpm(120.0), beat_of(192), None);
+    r.exec.process(64, &stopped, &[], &mut []);
+    assert_eq!(r.tally.lock().unwrap().held.len(), 104, "296 ended");
+    assert_eq!(r.exec.dropped_event_count(), 104);
+    assert_eq!(r.exec.lost_event_count(), 104, "one per note left on");
+    r.exec.process(64, &stopped, &[], &mut []);
+    assert!(r.tally.lock().unwrap().held.is_empty());
+    assert_eq!(r.exec.lost_event_count(), 0, "all of them went out");
+}

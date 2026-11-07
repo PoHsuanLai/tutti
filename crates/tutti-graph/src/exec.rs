@@ -874,6 +874,15 @@ impl Executor {
         self.dropped.lost()
     }
 
+    /// Refusals a node took back so far (`EventWriter::recovered`): with
+    /// [`dropped_event_count`](Self::dropped_event_count), the two figures
+    /// [`lost_event_count`](Self::lost_event_count) is made of. Over a span,
+    /// the loss is the change in one less the change in the other, since a
+    /// recovery in the span may be of a refusal before it.
+    pub fn recovered_event_count(&self) -> u64 {
+        self.dropped.recovered()
+    }
+
     /// Scheduled commands that were already past due when the executor
     /// first saw them, and so landed at offset 0 of that block instead of on
     /// their frame. Never dropped — see [`Editor::schedule`](crate::Editor::schedule).

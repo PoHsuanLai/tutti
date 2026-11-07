@@ -99,6 +99,10 @@ impl Dropped {
         self.total
     }
 
+    pub(crate) fn recovered(&self) -> u64 {
+        self.recovered
+    }
+
     /// Refusals less recoveries.
     pub(crate) fn lost(&self) -> u64 {
         self.total.saturating_sub(self.recovered)
@@ -176,7 +180,7 @@ impl Dropped {
                 recovered,
             });
         } else {
-            self.unreported += u64::from(count);
+            self.unreported += u64::from(count.saturating_sub(recovered));
         }
     }
 
@@ -189,7 +193,7 @@ impl Dropped {
             if self.log.len() < self.log.capacity() {
                 self.log.push(e);
             } else {
-                self.unreported += u64::from(e.count);
+                self.unreported += u64::from(e.count.saturating_sub(e.recovered));
             }
         }
         other.reset();
@@ -209,7 +213,7 @@ impl Dropped {
                 Owner::Unit(u) => match plan.units().get(u as usize) {
                     Some(unit) => unit.key,
                     None => {
-                        self.unreported += u64::from(e.count);
+                        self.unreported += u64::from(e.count.saturating_sub(e.recovered));
                         continue;
                     }
                 },
@@ -222,7 +226,7 @@ impl Dropped {
                 recovered: e.recovered,
             };
             if tx.try_push(entry).is_err() {
-                self.unreported += u64::from(e.count);
+                self.unreported += u64::from(e.count.saturating_sub(e.recovered));
             }
         }
         if self.unreported != 0 {
@@ -276,5 +280,28 @@ mod tests {
         a.absorb(&mut b);
         assert_eq!((a.total(), a.lost(), a.unreported), (6, 5, 2));
         assert_eq!(b.total(), 0);
+    }
+
+    /// What the log cannot name is unreported net of what was recovered: a
+    /// refusal taken back is not a loss to report. A full log, then an entry
+    /// of 3 refused and 3 recovered, adds nothing; 3 refused and 1 recovered
+    /// adds 2; the same through `absorb`.
+    ///
+    /// Mutation: add `count`, not `count - recovered`, in `note` → 3 → fails;
+    /// the same in `absorb` → fails.
+    #[test]
+    fn unreported_is_net_of_recoveries() {
+        let mut d = Dropped::new();
+        for u in 0..LOG_CAPACITY as u32 {
+            d.at_port(u, 0, 1, 0);
+        }
+        d.at_port(99, 0, 3, 3);
+        assert_eq!(d.unreported, 0);
+        d.at_port(99, 0, 3, 1);
+        assert_eq!(d.unreported, 2);
+        let mut w = Dropped::new();
+        w.at_port(1, 0, 4, 4);
+        d.absorb(&mut w);
+        assert_eq!(d.unreported, 2);
     }
 }

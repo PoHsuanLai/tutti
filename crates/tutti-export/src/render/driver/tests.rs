@@ -273,3 +273,19 @@ fn plane_source_zero_fills_a_missing_channel_every_block() {
         assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
     }
 }
+
+/// A recovery of a refusal from before the render does not mask a loss in it:
+/// one refusal owed at the start, then one new refusal and one recovery (the
+/// older one, as the clip sends owed note-offs first): one event is lost. The
+/// old subtraction of `lost_event_count`s read 0.
+///
+/// Mutation: ignore `owed` in `lost_over` → 0 → fails.
+#[test]
+fn a_recovery_of_an_older_refusal_does_not_mask_a_new_loss() {
+    assert_eq!(lost_over((1, 0), (2, 1)), 1);
+    // The new refusal recovered too: nothing lost.
+    assert_eq!(lost_over((1, 0), (2, 2)), 0);
+    // Nothing owed: a recovery in the span is of a refusal in it.
+    assert_eq!(lost_over((4, 4), (6, 5)), 1);
+    assert_eq!(lost_over((0, 0), (3, 0)), 3);
+}

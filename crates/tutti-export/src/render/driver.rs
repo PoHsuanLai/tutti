@@ -108,8 +108,10 @@ pub(crate) struct GraphSource<'a> {
     planes: Vec<Vec<f32>>,
     max_block: usize,
     produced: Samples,
-    /// The executor's lost-event count when the render began.
-    lost_before: u64,
+    /// The executor's dropped and recovered counts when the render began;
+    /// kept apart, because a recovery in the render may be of a refusal
+    /// before it.
+    before: (u64, u64),
 }
 
 impl<'a> GraphSource<'a> {
@@ -140,7 +142,10 @@ impl<'a> GraphSource<'a> {
         // executor renders only what was. (Nothing commits during the render,
         // so the plan applied here is the one every block runs.)
         executor.apply_pending();
-        let lost_before = executor.lost_event_count();
+        let before = (
+            executor.dropped_event_count(),
+            executor.recovered_event_count(),
+        );
         let (global_inputs, outputs) = executor.plan().map_or_else(
             || {
                 let topology = &editor.spec().topology;
@@ -158,7 +163,7 @@ impl<'a> GraphSource<'a> {
             planes,
             max_block,
             produced: Samples(0),
-            lost_before,
+            before,
         })
     }
 }
@@ -222,9 +227,13 @@ impl FrameSource for GraphSource<'_> {
     }
 
     fn lost_events(&self) -> u64 {
-        self.executor
-            .lost_event_count()
-            .saturating_sub(self.lost_before)
+        lost_over(
+            self.before,
+            (
+                self.executor.dropped_event_count(),
+                self.executor.recovered_event_count(),
+            ),
+        )
     }
 }
 
@@ -260,6 +269,18 @@ pub(crate) fn with_source<R>(
             cause: fault.cause,
         })?;
     Ok((rendered, lost))
+}
+
+/// The events lost between two readings of the executor's `(dropped,
+/// recovered)` counts. A recovery can be of a refusal from before the first
+/// reading, so the refusals still owed then (`dropped - recovered`) are
+/// settled first: only recoveries past them took back a refusal made in the
+/// span.
+pub(crate) fn lost_over(before: (u64, u64), after: (u64, u64)) -> u64 {
+    let owed = before.0.saturating_sub(before.1);
+    let dropped = after.0.saturating_sub(before.0);
+    let recovered = after.1.saturating_sub(before.1).saturating_sub(owed);
+    dropped.saturating_sub(recovered)
 }
 
 /// Fails a render that lost events under `EventLossPolicy::Fail`

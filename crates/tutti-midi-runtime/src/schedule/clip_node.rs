@@ -690,20 +690,32 @@ impl HeldNotes {
             self.owed = false;
             return;
         }
+        // Once the port refuses one, the others are not tried (it is full),
+        // but each is owed and counted: a held note that gets no note-off is
+        // a lost event, whether or not its push was attempted. The refused
+        // push counted itself; the rest are withheld.
+        let mut full = false;
         for i in 0..self.bits.len() {
-            while self.bits[i] != 0 {
-                let n = self.bits[i].trailing_zeros();
-                if out.push(off_event(at, i / 16, i % 16, n)).is_err() {
-                    self.owed = true;
+            let mut rest = self.bits[i];
+            while rest != 0 {
+                let n = rest.trailing_zeros();
+                rest &= rest - 1;
+                if !full {
+                    if out.push(off_event(at, i / 16, i % 16, n)).is_ok() {
+                        if self.end(i, n) {
+                            out.recovered();
+                        }
+                        continue;
+                    }
+                    full = true;
                     self.owe(out, i, n);
-                    return;
-                }
-                if self.end(i, n) {
-                    out.recovered();
+                } else if self.pending[i] & (1u128 << n) == 0 {
+                    self.owe(out, i, n);
+                    out.withhold();
                 }
             }
         }
-        self.owed = false;
+        self.owed = full;
     }
 
     fn clear(&mut self) {

@@ -311,6 +311,7 @@ impl Node for NoteEnvelopeNode {
             .with_events(1, 1)
             .with_event_capacity(NOTE_ENVELOPE_EVENT_CAPACITY)
             .with_cost(Cost::Light)
+            .with_no_note_events()
     }
 
     fn prepare(&mut self, prepare: &Prepare) {

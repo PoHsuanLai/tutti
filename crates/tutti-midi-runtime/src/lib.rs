@@ -34,8 +34,8 @@ pub use outbound::{
     JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, MpeIngest, Translated,
 };
 pub use schedule::{
-    CLIP_EVENT_DENSITY, Drained, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode,
-    MidiClipControls, MidiClipNode, Releasing, TimedHarmony, TimedMidiEvent,
+    CLIP_EVENT_DENSITY, HARMONY_EVENT_DENSITY, HarmonyControls, HarmonyNode, MidiClipControls,
+    MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
 pub use split::{BlockSplitter, Overrun, Step};
 // The two capacity ceilings come along: a caller sizing its own SysEx buffer, or

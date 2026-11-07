@@ -137,6 +137,12 @@ pub struct Shape {
     /// a node that declares nothing is assumed worth a thread of its own.
     /// A speed hint only — it never changes a sample.
     pub cost: Cost,
+    /// Whether its event outputs may carry notes or a sustain pedal. The
+    /// executor tracks the keys such a port holds so that an edge that ends
+    /// can close them at its sink (see
+    /// [`with_no_note_events`](Self::with_no_note_events)). `true` unless set
+    /// otherwise: a node that declares nothing is assumed to carry them.
+    pub note_events: bool,
 }
 
 /// How finely a node honours event offsets: the timing it promises for what
@@ -197,6 +203,7 @@ impl Shape {
             event_resolution: Resolution::Sample,
             params: ParamPorts::NONE,
             cost: Cost::Heavy,
+            note_events: true,
         }
     }
 
@@ -309,6 +316,26 @@ impl Shape {
     #[must_use]
     pub const fn with_cost(mut self, cost: Cost) -> Self {
         self.cost = cost;
+        self
+    }
+
+    /// This shape, declaring that its event outputs never carry a note or a
+    /// sustain pedal (a clock, a segment stream), so the executor keeps no
+    /// held-key table for them. A node that then writes one trips a debug
+    /// assertion; in a release build nothing checks, and the note it starts is
+    /// never closed when its edge ends.
+    ///
+    /// ```
+    /// use tutti_graph::Shape;
+    /// use tutti_types::ChannelLayout;
+    /// let lane = Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+    ///     .with_events(0, 1)
+    ///     .with_no_note_events();
+    /// assert!(!lane.note_events);
+    /// ```
+    #[must_use]
+    pub const fn with_no_note_events(mut self) -> Self {
+        self.note_events = false;
         self
     }
 

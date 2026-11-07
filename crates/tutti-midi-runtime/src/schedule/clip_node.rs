@@ -130,10 +130,6 @@ struct Shared {
     /// reads it with `ArcLend::current`. The node never takes it.
     publish: Mutex<()>,
     next_generation: AtomicU64,
-    /// Release requests made through the controls, and how many the node has
-    /// answered ([`MidiClipControls::release_held`]).
-    asked: AtomicU64,
-    answered: AtomicU64,
 }
 
 impl Shared {
@@ -146,8 +142,6 @@ impl Shared {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&first))),
             publish: Mutex::new(()),
             next_generation: AtomicU64::new(1),
-            asked: AtomicU64::new(0),
-            answered: AtomicU64::new(0),
         })
     }
 
@@ -226,50 +220,6 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         .collect()
 }
 
-/// A request that one clip node end the notes it holds, made by
-/// [`MidiClipControls::release_held`]. It belongs to that node: only its
-/// [`drained`](Self::drained) can answer it.
-#[must_use = "cut the clip's edge only once `Releasing::drained` accepts the ticket"]
-pub struct Releasing {
-    shared: Arc<Shared>,
-    ticket: u64,
-}
-
-impl Releasing {
-    /// The proof that the node ended what it held when this was asked and owes
-    /// no note-off: every one is on its port. A note the clip starts after the
-    /// block that answered is not covered (see
-    /// [`MidiClipControls::release_held`]). An edit committed after this takes
-    /// effect at a later block than the one that answered.
-    ///
-    /// # Errors
-    ///
-    /// Returns the ticket while no block has answered it, or the port is still
-    /// refusing some of the note-offs.
-    pub fn drained(self) -> Result<Drained, Self> {
-        if self.shared.answered.load(Ordering::Acquire) >= self.ticket {
-            Ok(Drained(()))
-        } else {
-            Err(self)
-        }
-    }
-}
-
-impl std::fmt::Debug for Releasing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Releasing")
-            .field("ticket", &self.ticket)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Proof that a clip node ended the notes it held when a [`Releasing`] was
-/// asked and has none left to send: a snapshot, not a stop (see
-/// [`MidiClipControls::release_held`]).
-#[derive(Debug)]
-#[must_use = "this proves the clip's notes are ended; cut the edge with it in hand"]
-pub struct Drained(());
-
 /// The handle a host keeps on an inserted [`MidiClipNode`]: replace or clear
 /// the clip it plays. Control thread.
 #[derive(Clone)]
@@ -319,26 +269,6 @@ impl MidiClipControls {
         self.shared.cell.reclaim()
     }
 
-    /// Asks the node to end every note it holds, on the first frame of each
-    /// block until its note-offs are all on its port. A caller about to cut
-    /// the clip's edge to its sink waits for the ticket to be
-    /// [drained](Releasing::drained) first: after the cut the note-offs have
-    /// nowhere to go. The graph delivers events already on a delayed edge when
-    /// the edge goes, so no latency wait is needed.
-    ///
-    /// **The clip must be stopped first.** The ticket covers the notes held
-    /// when the node answers, not the ones the clip starts afterwards: a clip
-    /// that keeps rolling starts its next note after the answer, and cutting
-    /// then strands it. While the request is pending the node also ends what
-    /// it plays at each block's first frame. The node answers only while it is
-    /// processing blocks.
-    pub fn release_held(&self) -> Releasing {
-        Releasing {
-            shared: Arc::clone(&self.shared),
-            ticket: self.shared.asked.fetch_add(1, Ordering::AcqRel) + 1,
-        }
-    }
-
     /// How many events the clip holds.
     pub fn event_count(&self) -> usize {
         self.shared.current().events.len()
@@ -368,8 +298,6 @@ pub struct MidiClipNode {
     clip: Reader<ClipEvents>,
     /// The generation of the clip this node last played.
     generation: u64,
-    /// Release requests this node has answered.
-    answered: u64,
     play: Play,
     /// The declared event capacity, from the block the node was prepared for.
     capacity: u32,
@@ -406,7 +334,6 @@ impl MidiClipNode {
             clip: shared.cell.reader(),
             shared,
             generation,
-            answered: 0,
             play: Play {
                 walk: Walk::default(),
                 held: NoteLedger::new(LEDGER_CAPACITY),
@@ -475,20 +402,11 @@ impl Node for MidiClipNode {
         let mut playing = Playing {
             sending: held.block(io.event_out(0), first),
         };
-        let asked = self.shared.asked.load(Ordering::Acquire);
-        let asking = asked > self.answered;
-        if replaced || asking {
+        if replaced {
             playing.sending.release_all(first);
         }
         for (start, seg) in cx.env.segments() {
             walk.segment(&clip.events, cx.env, start, &seg, &mut playing);
-        }
-        // Answered once no note-off is owed, judged after the walk: a note the
-        // walk ended and the port refused is owed too. Until then the next
-        // block asks again.
-        if asking && playing.sending.owed() == 0 {
-            self.answered = asked;
-            self.shared.answered.store(asked, Ordering::Release);
         }
         Status::Modified
     }
@@ -533,8 +451,6 @@ impl ForkSource for ClipFork {
             cell: Arc::new(ArcLend::from_arc(Arc::clone(&clip))),
             publish: Mutex::new(()),
             next_generation: AtomicU64::new(0),
-            asked: AtomicU64::new(0),
-            answered: AtomicU64::new(0),
         });
         Ok(Forked::new(Box::new(MidiClipNode::over(shared))))
     }

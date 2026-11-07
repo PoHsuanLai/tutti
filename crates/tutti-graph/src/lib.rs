@@ -226,6 +226,7 @@ mod event;
 mod exec;
 mod fade;
 mod fork;
+mod held;
 mod history;
 mod io;
 mod kernels;

@@ -66,4 +66,4 @@ pub use message::{
 pub use midi_channel::MidiChannel;
 pub use midi_group::MidiGroup;
 pub use midi1::{Framed, Midi1Bytes, Midi1Parser, frame};
-pub use ump::Ump;
+pub use ump::{Key, KeyEvent, Ump};

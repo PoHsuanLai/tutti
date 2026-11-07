@@ -5163,6 +5163,23 @@ the one place that says what a ported node can rely on:
   recompile flushes its pending events to the sink (a note-off is never
   lost). With the event source nodes ported, this aligns plugin automation
   behind a latent path.
+- **Held keys.** The executor tracks the notes and sustain pedals each
+  event output of a note-carrying node holds (`Shape::note_events`, on unless
+  `with_no_note_events`; `held.rs`, a bitset over `tutti_ump::Key`, written by
+  the node's own op). A commit that removes an event edge, or replaces or
+  removes its source, sends the surviving sink the closing pedal-ups and
+  note-offs after the events a vanished delay flushed (through the delay when
+  the edge and its delay go on). A new edge sends nothing; a sink fed by
+  several sources cannot tell whose note a key is. A re-prepare parks the
+  tables with the executor; a fork starts with empty ones. A replace with a
+  fade while one runs waits in the unit's `queued` slot, and the running
+  replacement keeps writing, so its table stays; the waiting unit's tables
+  are allocated beside it (`held.rs`, `Keys`: `held`, `staged`, `owed`, with a
+  table of every way out), and when it takes over the two swap and the
+  keys of the unit that stopped are closed ahead of the next block, on the
+  unit's own output port (a hard replace or a cut closes them at the
+  commit; a re-prepare keeps them for the first block after the resume). A
+  block's slot takes only so many closes; the rest follow in the next blocks. The reference interpreter does not model a crossfade.
 - **Declared capacity.** `Shape::event_capacity` is the most events
   a node writes to each event output per block (`with_event_capacity(n)`;
   `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every

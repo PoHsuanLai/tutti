@@ -1,7 +1,7 @@
 //! Regression gate for `Engine::process` over a real chain of **this crate's**
 //! nodes.
 //!
-//! `tutti-core`'s `rt_no_alloc_engine` gates the engine with only its own nodes
+//! `tutti-engine`'s `rt_no_alloc_engine` gates the engine with only its own nodes
 //! in the graph (the beat clock, the metronome). This file wires an
 //! oscillator → bell EQ → mixer strip → lookahead limiter chain into the graph
 //! so the gate covers the per-buffer hot path through the nodes the engine
@@ -9,9 +9,8 @@
 //! `LimiterNode`, each a graph node. A regression in any of those — or
 //! in the executor's walk — shows up here as an allocation panic.
 //!
-//! It lives here rather than in `tutti-core` because `tutti-nodes →
-//! tutti-core` would make depending on this crate a cycle from `tutti-core`'s
-//! side.
+//! It lives here rather than in `tutti-engine` because the nodes under test
+//! are this crate's.
 //!
 //! The `rt_no_alloc*` files beside this one gate each node in isolation; this
 //! one gates them *inside the engine*, where the executor drives them through

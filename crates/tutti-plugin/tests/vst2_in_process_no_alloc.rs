@@ -1,7 +1,7 @@
 //! RT-safety regression: the in-process VST2 audio path must not
 //! allocate on the audio thread in steady state.
 //!
-//! Mirrors the harness in `tutti-core/tests/rt_no_alloc.rs`, and loads the
+//! Mirrors the harness in `tutti-metering/tests/rt_no_alloc.rs`, and loads the
 //! reference probe (`tutti-vst2-test-plugin`) built from this tree in the same
 //! `cargo test` invocation — the same plugin every other VST2 test here uses.
 //!

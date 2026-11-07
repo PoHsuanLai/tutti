@@ -537,7 +537,7 @@ mod tests {
     /// `MetronomeRes` writes the live node's settings cell, which the shadow
     /// detached from: metronome volume and mode are live-only, and a click is
     /// not part of an export. Its session flags are frozen at the
-    /// fork from the live transport, and tutti-core's
+    /// fork from the live transport, and tutti-transport's
     /// `isolate_snapshots_settings_and_session_flags` row pins that.
     ///
     /// Mutation (run): the export rendering its fork under a stopped

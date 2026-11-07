@@ -2,7 +2,7 @@
 //! a graph that renders.**
 //!
 //! Device-free, so it runs on every platform in CI. The smallest harness in
-//! the repo (`tutti-core/tests/root_channel_layouts.rs`) is the shape this
+//! the repo (`tutti-engine/tests/root_channel_layouts.rs`) is the shape this
 //! borrows — a graph, its editor and executor, an engine, one block, and an
 //! assertion that the block is not silence.
 //!
@@ -44,7 +44,7 @@ fn one_import_renders_a_block() {
 /// documented.
 ///
 /// Mirrors `bevy-tutti`'s `prelude_surface.rs`, which makes the same claim
-/// for the Bevy side. If `tutti-core`'s prelude ever narrowed, this names
+/// for the Bevy side. If `tutti-engine`'s prelude ever narrowed, this names
 /// which type went missing rather than failing somewhere downstream.
 #[test]
 fn the_measurement_vocabulary_arrives_and_converts() {

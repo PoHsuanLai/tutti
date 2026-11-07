@@ -15,7 +15,7 @@ together — an upper bound, not a block count:
 | `crates/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
 | `crates/tutti-plugin/` | 46 | shm slab, IPC transport |
 | `crates/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
-| `tutti-core`, `-rt`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
+| `tutti-engine`, `-transport`, `-metering`, `-rt`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
 | `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 14 | see below |
 | `crates/tutti-plugin-types/` | 7 | bundle/ABI value types |
 
@@ -40,7 +40,7 @@ be checked against the tree.
   `try_borrow_mut`); a conflicting borrow panics, or its `try_` form returns
   `None`, instead of aliasing. The word is what makes the `Sync` true; until
   the change that made it unconditional it was `#[cfg(debug_assertions)]`,
-  and safe code sharing a cell (`tutti_core::Engine::apply_pending` racing
+  and safe code sharing a cell (`tutti_engine::Engine::apply_pending` racing
   a callback's `Engine::process`) could make two `&mut T` in release. The audio thread and the
   VST3 COM entry points take the `try_` forms, so a conflict there is a
   skipped step or a failure code, never a panic. The RT-safe alternative to
@@ -67,7 +67,7 @@ be checked against the tree.
 - **`tutti-cpal`** — no longer a site. cpal's stream is not `Send` on every
   backend, so `CpalStream` and the mic handle hold a channel to an owner
   thread that creates and drops the stream (`owner.rs`), with no `unsafe`.
-- **`tutti-core/src/engine.rs`** — no longer a site. `Engine::apply_pending`
+- **`tutti-engine/src/engine.rs`** — no longer a site. `Engine::apply_pending`
   was an `unsafe fn` whose `unsafe` was a *contract*: it borrows the
   executor and the transport schedule the audio thread owns, from the
   control side, so a device restart can finish a graph re-prepare before the

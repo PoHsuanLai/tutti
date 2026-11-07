@@ -289,7 +289,7 @@ pub mod prelude {
     pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
     pub use crate::graph::AudioNode;
-    pub use tutti_engine::{Engine, Error};
+    pub use tutti_engine::prelude::*;
     pub use tutti_graph::CrossfadeCurve;
     pub use tutti_graph::MAX_ROOT_CHANNELS;
     /// A plain node's fork, said at insert: the wrappers that make any

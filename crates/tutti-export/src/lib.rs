@@ -31,7 +31,7 @@ pub(crate) mod render;
 
 pub use process::ChunkSize;
 /// The clock a render advances. Re-exported so callers can name it without
-/// depending on `tutti-core` directly; `FrozenClock` is the "this graph has no
+/// depending on `tutti-transport` directly; `FrozenClock` is the "this graph has no
 /// transport" answer.
 pub use tutti_transport::{FrozenClock, RenderClock};
 

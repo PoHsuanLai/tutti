@@ -5,7 +5,7 @@
 //!
 //! Use it directly to host audio processors ([`Node`]s) in a graph you build
 //! and edit at run time, or to write a node that runs inside the engine.
-//! `tutti-core`'s engine renders an [`Executor`] behind its device callback,
+//! `tutti-engine`'s engine renders an [`Executor`] behind its device callback,
 //! and the `tutti` facade re-exports this crate as `tutti::graph`.
 //!
 //! # Quick start

@@ -105,7 +105,7 @@ pub struct TapBusy;
 /// consumers.
 ///
 /// The producer half. Cheap to clone; the audio callback keeps one and pushes
-/// every buffer through it (see [`meter_output`]).
+/// every buffer through it (see [`meter_output`](crate::meter_output)).
 /// Two kinds of consumer read it, both off the audio thread: **analysis**
 /// (spectrum, pitch, transients) drains the ring directly, and **recording**
 /// goes through `tutti-io`'s `TapIn`, which adapts the consumer end into an

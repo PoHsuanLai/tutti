@@ -1,5 +1,5 @@
 //! **A live plugin keeps in step with the device.** The reference CLAP
-//! plugin in a real `plugin-server`, rendered by tutti-core's `Engine` exactly
+//! plugin in a real `plugin-server`, rendered by tutti-engine's `Engine` exactly
 //! as a device drives it — one call per callback, the callbacks paced to real
 //! time — at 480-, 1024- and 441-frame device quanta.
 //!

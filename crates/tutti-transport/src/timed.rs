@@ -248,7 +248,7 @@ impl Schedule {
     /// frames and stay.
     ///
     /// "Written at the old rate" is a command sent before the last
-    /// [`mark_rate_change`](Self::mark_rate_change); one sent after it is
+    /// `mark_rate_change`; one sent after it is
     /// already in the new rate's frames and is left alone (rescaling it
     /// would move it twice). With no mark, every command in flight is
     /// taken to be old. The mark is consumed here, so a later re-rate the

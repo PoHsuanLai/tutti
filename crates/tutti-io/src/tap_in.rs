@@ -1,6 +1,6 @@
 //! [`TapIn`] — the analysis tap's consumer end, as an [`AudioIn`].
 //!
-//! `AudioTap` (in `tutti-core`) is the RT-push half: the audio callback copies
+//! `AudioTap` (in `tutti-metering`) is the RT-push half: the audio callback copies
 //! every master block into a lock-free ring, and `AudioTap::open` hands back the
 //! consumer as a [`TapCons`] — perfectly usable by an analysis thread draining
 //! it directly, but *not* an [`AudioIn`], so on its own it can feed neither a
@@ -76,7 +76,7 @@ impl AudioIn for TapIn {
     /// Always stereo: the tap ring's element is `(f32, f32)`, so the width is a
     /// property of this *code*, not of any data flowing through it — exactly the
     /// case a fixed layout still fits. Widening it means widening the lock-free
-    /// ring element in `tutti-core`'s `AudioTap`, which is a separate change.
+    /// ring element in `tutti-metering`'s `AudioTap`, which is a separate change.
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }

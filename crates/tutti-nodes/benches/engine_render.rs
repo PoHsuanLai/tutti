@@ -1,10 +1,9 @@
 //! The graph render, per block — the engine's hot path.
 //!
-//! `Engine::process` is `tutti-core`'s, but the graph it renders here is built
+//! `Engine::process` is `tutti-engine`'s, but the graph it renders here is built
 //! from this crate's nodes (`Osc`, `EqBandNode`, `BusStripNode`,
 //! `SvfFilterNode`), so the numbers are for the filters the engine ships. That
-//! is why the bench lives here: `tutti-core` cannot depend on this crate
-//! without a cycle.
+//! is why the bench lives here: `tutti-engine` does not depend on this crate.
 //!
 //! # Reading these numbers
 //!

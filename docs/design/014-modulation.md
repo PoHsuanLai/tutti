@@ -300,7 +300,7 @@ is the curve's own segment, which has no in-flight start to glide from.
 
 **Beats.** `phase = frac(beat / per_cycle + offset)` from the transport's
 beat at the frame. The beat is closed form from the segment's frame count
-(`FrameClock`), live and offline alike (`crates/tutti-core/src/transport/offline.rs`,
+(`FrameClock`), live and offline alike (`crates/tutti-transport/src/offline.rs`,
 `OfflineTimeline::advance` and `beat`, with the test
 `a_block_on_a_beat_is_that_beat_exactly`), so it lands on the same bits at
 any block size. Seeks and loop wraps are followed; stopped, the beat holds.

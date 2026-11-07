@@ -103,6 +103,11 @@ jobs:
       - run: scripts/check-canonical-paths.sh tutti_plugin_db catalog database facts fs pedal record scanner
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
+      # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
+      # private, the root names every item.
+      - run: scripts/check-canonical-paths.sh tutti_transport clock fsm handle loop_region motion offline project_meter settings state timed timeline
+      - run: scripts/check-canonical-paths.sh tutti_metering amplitude load rt tap
+      - run: scripts/check-canonical-paths.sh tutti_engine engine error
       # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_rt cell denormals edits job_gate packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -390,7 +395,7 @@ jobs:
   # exactly once (`--test`) to prove the harnesses still work against the
   # current API, and compares nothing.
   #
-  # The real perf gate is `tutti-core/tests/alloc_budget.rs`, which runs in the
+  # The real perf gate is `tutti-engine/tests/alloc_budget.rs`, which runs in the
   # ordinary test job: allocation counts are machine-independent, so a budget
   # on them survives a noisy vCPU.
   #
@@ -564,7 +569,7 @@ jobs:
       # NOT test that — `bevy` is already off by default on every engine crate
       # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
-      - run: cargo check --locked -p tutti-core
+      - run: cargo check --locked -p tutti-transport -p tutti-metering -p tutti-engine
       - run: cargo check --locked -p tutti-types
       - run: cargo check --locked -p tutti-types --features bevy
 

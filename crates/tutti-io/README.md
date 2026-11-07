@@ -13,7 +13,7 @@ Four live pieces, and recording is just a pump between two of them:
   export of a graph holding the live mic is refused, naming it.
 - `TapIn` — the *other* read side: the analysis tap's consumer end adapted to
   `AudioIn`, so what the graph is playing records through the same pump that
-  records a microphone. `AudioTap` itself is `tutti-core`'s (the audio callback
+  records a microphone. `AudioTap` itself is `tutti-metering`'s (the audio callback
   pushes into it); this is only the adapter that lets it meet the I/O
   vocabulary.
 - `WavOut` — the write side, an `AudioOut` sink.
@@ -57,7 +57,7 @@ vocabulary and its live impls from one place.
 ```text
 tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
     ↑
-tutti-core     Engine, AudioTap
+tutti-metering  AudioTap
     ↑
 tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
                Wave, FileIn, the decoder
@@ -71,7 +71,7 @@ and `bevy-tutti` for both.
 
 ## Example — recording what the graph is playing
 
-The tap path end to end, and it needs no device: `tutti-core`'s `AudioTap` is
+The tap path end to end, and it needs no device: `tutti-metering`'s `AudioTap` is
 pushed by the audio callback, `TapIn` is its consumer end as an `AudioIn`, and
 `pump` moves one block into a `WavOut`. Swap `TapIn` for `tutti_cpal::MicIn` and
 the same three lines record a microphone — that interchangeability is the reason

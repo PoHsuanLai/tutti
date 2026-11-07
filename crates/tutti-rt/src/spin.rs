@@ -31,7 +31,7 @@
 //! threads of its own priority, so an equal-priority helper runs and
 //! finishes its task. It does nothing for a helper of lower priority (or a
 //! `SCHED_OTHER` one), which is why the pool's helpers must run at the
-//! caller's priority (`tutti-core`'s `pool.rs`, "Priority").
+//! caller's priority (`tutti-graph`'s `pool.rs`, "Priority").
 //!
 //! # What a yield costs
 //!

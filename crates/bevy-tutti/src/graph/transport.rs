@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tutti_nodes::ClickState;
 use tutti_transport::{Timeline, Transport};
 
-/// The live transport. Newtype over tutti-core's [`Transport`] — every method
+/// The live transport. Newtype over tutti-transport's [`Transport`] — every method
 /// below is the engine's, reached through the `Deref`.
 ///
 /// Three fields carry everything:

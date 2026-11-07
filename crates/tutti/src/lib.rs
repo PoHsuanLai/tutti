@@ -158,7 +158,7 @@ pub use tutti_plugin as plugin;
 /// `Phase` is the session's (`tutti_session::Phase`); the oscillator phase
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
-    pub use tutti_engine::{Engine, Error};
+    pub use tutti_engine::prelude::*;
     pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS};
     pub use tutti_metering::{
         AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,

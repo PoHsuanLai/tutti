@@ -83,7 +83,7 @@ fn the_facade_contains_no_code() {
          no logic — the package of this name that did was deleted in \
          4b5bd2fd. Whatever this wants to be belongs in the crate that owns \
          the thing it wires: device bootstrap in tutti-cpal, graph logic in \
-         tutti-core. See the module docs.",
+         tutti-engine. See the module docs.",
         offenders
             .iter()
             .map(|(n, s)| format!("  line {n}: {s}"))
@@ -94,7 +94,7 @@ fn the_facade_contains_no_code() {
 
 /// **Every whole-crate re-export must be aliased.**
 ///
-/// A bare `pub use tutti_core;` would let a consumer write
+/// A bare `pub use tutti_engine;` would let a consumer write
 /// `tutti::tutti_engine::Engine` — the redundant path
 /// `scripts/check-canonical-paths.sh` exists to prevent, in a shape its
 /// chained-path regex cannot see: that regex requires an underscore-bearing
@@ -119,8 +119,8 @@ fn every_crate_reexport_is_aliased() {
 
     assert!(
         bare.is_empty(),
-        "a whole-crate re-export must be aliased (`as core`, `as sampler`, …) \
-         so `tutti::tutti_core::…` is unspellable. Found:\n{}",
+        "a whole-crate re-export must be aliased (`as engine`, `as sampler`, …) \
+         so `tutti::tutti_engine::…` is unspellable. Found:\n{}",
         bare.iter()
             .map(|(n, l)| format!("  line {n}: {l}"))
             .collect::<Vec<_>>()

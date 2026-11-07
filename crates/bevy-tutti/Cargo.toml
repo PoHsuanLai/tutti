@@ -82,14 +82,14 @@ tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 # `.mid` needs no OS MIDI port.
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-features = false }
-# `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
-# builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
-# so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
-# itself ships no default features.
+# `json` is explicit: a host builds `PluginsRes` over the file-backed database
+# (`Plugins::load`), so it needs the ready-made file rather than an
+# app-supplied store. tutti-plugin itself ships no default features.
 tutti-plugin = { path = "../tutti-plugin", optional = true, features = [
     "json",
 ] }
-# The scan's progress and record types; the scanner itself runs in `tutti-plugin`.
+# The scan's progress types and the deltas a probe returns; the scanner itself
+# runs in `tutti-plugin`.
 tutti-plugin-db = { path = "../tutti-plugin-db", optional = true }
 tutti-plugin-server = { path = "../tutti-plugin-server", optional = true, default-features = false }
 

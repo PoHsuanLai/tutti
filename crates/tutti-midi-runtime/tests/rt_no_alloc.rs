@@ -97,7 +97,7 @@ impl MidiIn for BendRange {
             MidiChannel::of(2),
             tutti_midi_types::ump::RPN_BANK_MPE,
             tutti_midi_types::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-            tutti_midi_types::PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+            tutti_midi_types::PitchBendSensitivity::of(12).to_rpn_bits(),
         );
         1
     }

@@ -9,12 +9,12 @@
 use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
-use tutti_plugin::Result;
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
     AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
     ParameterQueue, SampleFormat, WindowHandle,
 };
+use tutti_plugin::{BridgeError, Result};
 
 /// A block's plugin MIDI-out for the wire. Already capped at
 /// `MIDI_STACK_CAPACITY` (the pipeline's list cannot hold more), so the reply
@@ -406,7 +406,10 @@ impl Session {
         preferred_format: SampleFormat,
     ) -> Result<Reaction> {
         let (plugin, descriptor, loaded, negotiated) =
-            Plugin::load(&path, sample_rate, block_size, preferred_format)?;
+            match Plugin::load(&path, sample_rate, block_size, preferred_format) {
+                Ok(loaded) => loaded,
+                Err(e) => return Ok(load_failure(&e).into()),
+            };
         self.clock = Clock {
             sample_rate,
             format: negotiated,
@@ -612,6 +615,16 @@ impl Session {
     }
 }
 
+/// The reply to a load that failed. The wire carries a message and no stage, so
+/// a loader failure keeps its stage in the text.
+fn load_failure(e: &BridgeError) -> BridgeMessage {
+    let message = match e {
+        BridgeError::LoadFailed { stage, reason, .. } => format!("{stage}: {reason}"),
+        other => other.to_string(),
+    };
+    BridgeMessage::Error { message }
+}
+
 // Tests — pure dispatch, no tokio, no sockets.
 
 #[cfg(test)]
@@ -619,12 +632,12 @@ mod tests {
     use super::*;
     // `Features` is named only by `load_clap_plugin_f64`, which carries the
     // same gate.
+    use tutti_plugin::LoadStage;
     #[cfg(feature = "clap")]
     use tutti_plugin::server::Features;
     use tutti_plugin::server::{
         MidiEventVec, NoteExpressionChanges, ParamId, ParameterChanges, TransportInfo,
     };
-    use tutti_plugin::{BridgeError, LoadStage};
 
     fn assert_none(r: Reaction) {
         assert!(matches!(r, Reaction::None), "got {r:?}");
@@ -812,7 +825,7 @@ mod tests {
     #[test]
     fn load_plugin_missing_path_errors() {
         let mut s = Session::new();
-        let err = s
+        let reply = s
             .handle(HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from("/nonexistent/path/plugin.vst3"),
                 sample_rate: tutti_plugin_types::SampleRate(44100.0),
@@ -820,14 +833,16 @@ mod tests {
                 preferred_format: SampleFormat::Float32,
                 shm_name: "x".into(),
             })
-            .unwrap_err();
-        match err {
-            BridgeError::LoadFailed { stage, reason, .. } => {
-                assert_eq!(stage, LoadStage::Scanning);
-                assert!(reason.contains("not found"));
+            .expect("a failed load is a reply, not a server error")
+            .into_reply();
+        match reply {
+            BridgeMessage::Error { message } => {
+                assert!(message.starts_with(&format!("{}:", LoadStage::Scanning)));
+                assert!(message.contains("not found"));
             }
-            other => panic!("expected LoadFailed, got {other:?}"),
+            other => panic!("expected Error, got {other:?}"),
         }
+        assert!(s.plugin.is_none());
     }
 
     // --------------------------------------------------------------------

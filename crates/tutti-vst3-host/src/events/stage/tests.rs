@@ -32,7 +32,7 @@ fn a_per_note_bend_range_outlives_its_block() {
         MidiChannel::FIRST,
         RPN_BANK_MPE,
         RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+        PitchBendSensitivity::of(24).to_rpn_bits(),
     )];
     stager.stage(
         &list,
@@ -102,7 +102,7 @@ fn vst3_and_clap_bend_one_stream_by_the_same_semitones() {
             MidiChannel::FIRST,
             RPN_BANK_MPE,
             RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
-            PitchBendSensitivity::from_semitones(24).to_rpn_bits(),
+            PitchBendSensitivity::of(24).to_rpn_bits(),
         ),
         bend(0),
         bend(1),

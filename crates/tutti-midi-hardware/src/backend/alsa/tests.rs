@@ -91,7 +91,7 @@ fn watch_threads() -> usize {
 }
 
 // Mutation record for this file, each seen to fail, then restored:
-// - `watch::start` returning `NoWatch` first: six of the seven fail (the
+// - `watch::start` returning `NoWatch` first: all six fail (the
 //   added and removed waits time out, and the thread count stays 0);
 // - `AlsaWatch::drop` forgetting the stop descriptor and not joining:
 //   `dropping_devices_ends_the_watch_thread` fails;
@@ -100,7 +100,6 @@ fn watch_threads() -> usize {
 //   `devices::tests::the_reporter_tells_a_reused_handle_from_the_device_it_replaced`
 //   covers it. Parallel runs of these tests hit that swap on their own
 //   (a client number freed by one test is taken by the next).
-//
 
 /// A client that appears is listed with its identity.
 #[test]

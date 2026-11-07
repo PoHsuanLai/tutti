@@ -57,12 +57,13 @@ use std::time::Instant;
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 #[cfg(doc)]
 use tutti_plugin::Liveness;
 use tutti_session::{
     GiveUp, Phase, PluginReloaded, PluginSnapshotTaken, SessionEvent, StateRestore,
 };
+use tutti_types::NodeKey;
 
 use crate::graph::{AudioGraphRes, CapturedControls};
 use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
@@ -246,7 +247,7 @@ pub fn plugin_health_poll(
     {
         let session = graph.bypass_change_detection().session();
         for (node, mut health) in &mut plugins.p0() {
-            let Some(hosted) = session.plugin(*node) else {
+            let Some(hosted) = session.plugin(node.0) else {
                 continue;
             };
             if health.status != *hosted.liveness() {
@@ -257,7 +258,7 @@ pub fn plugin_health_poll(
 
     // The entities the events name, looked up only when there are events
     // that name a node: most frames have none.
-    let named: HashSet<AudioNode> = events
+    let named: HashSet<NodeKey> = events
         .iter()
         .filter_map(|event| match event {
             SessionEvent::PluginDied { node, .. }
@@ -269,13 +270,13 @@ pub fn plugin_health_poll(
         })
         .collect();
     let mut entities = plugins.p1();
-    let by_node: HashMap<AudioNode, Entity> = if named.is_empty() {
+    let by_node: HashMap<NodeKey, Entity> = if named.is_empty() {
         HashMap::new()
     } else {
         entities
             .iter()
-            .filter(|(_, node, _)| named.contains(*node))
-            .map(|(entity, node, _)| (*node, entity))
+            .filter(|(_, node, _)| named.contains(&node.0))
+            .map(|(entity, node, _)| (node.0, entity))
             .collect()
     };
 
@@ -338,7 +339,7 @@ pub fn plugin_health_poll(
                 let controls = CapturedControls::for_hosted(hosted);
                 commands.entity(entity).queue(move |mut e: EntityWorldMut| {
                     e.insert(PluginEmitter { handle });
-                    controls.replace(&mut e, node);
+                    controls.replace(&mut e, AudioNode(node));
                 });
                 commands
                     .entity(entity)
@@ -423,7 +424,7 @@ pub fn plugin_state_snapshot(
         let session = graph.bypass_change_detection().session();
         if session.land_snapshot(taken) {
             health.last_snapshot = session
-                .plugin(*node)
+                .plugin(node.0)
                 .and_then(tutti_session::HostedPlugin::snapshot)
                 .map(<[u8]>::to_vec);
         }
@@ -530,7 +531,7 @@ mod tests {
             assert!(!graph.graph_ref().is_edited(), "precondition: committed");
             node
         };
-        app.world_mut().spawn(node);
+        app.world_mut().spawn(AudioNode(node));
         for _ in 0..3 {
             app.update();
         }
@@ -579,7 +580,11 @@ mod tests {
             node
         };
         app.world_mut()
-            .spawn((PluginEmitter { handle }, PluginHealth::default(), node))
+            .spawn((
+                PluginEmitter { handle },
+                PluginHealth::default(),
+                AudioNode(node),
+            ))
             .id()
     }
 

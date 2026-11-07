@@ -1,14 +1,14 @@
 //! `MidiEvent` to VST3 event and back.
 
-use tutti_midi_protocol::{narrow_bend, narrow_value, widen};
+use tutti_midi_protocol::{midi1, narrow, widen};
 use tutti_midi_types::PerNoteBendRanges;
 use tutti_midi_types::convert::{
     bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32, unit_f32_to_u16, unit_f32_to_u32,
 };
-use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for};
+use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue, note_id_for, unframed};
 use tutti_ump::{
-    Message, MidiChannel, MidiGroup, NoteNumber, RegisteredPerNoteController, SysexStatus, System,
-    U14, Ump, Unknown, Voice1, Voice2, decode as decode_ump,
+    Message, Midi1Bytes, Midi1Parser, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, Ump, Unknown, Voice1, Voice2, decode as decode_ump,
 };
 
 use super::{
@@ -69,23 +69,13 @@ impl MidiEncoder {
         match message {
             Message::Midi1(address, voice) => self.voice1(offset, address.channel, voice),
             Message::Midi2(address, voice) => self.voice2(offset, address.channel, voice),
-            Message::System(_, system) => Some(midi1_data(offset, system_bytes(system))),
+            Message::System(_, system) => Some(midi1_data(offset, system.bytes())),
             // VST3 wants a SysEx with its 0xF0 ... 0xF7 delimiters. A
             // single-packet message fits the inline bytes (at most 6 payload,
             // 8 framed); a packet of a multi-packet message cannot stand
             // alone, and the list reassembles those.
             Message::Sysex7(_, packet) => {
-                if packet.status() != SysexStatus::Complete {
-                    return None;
-                }
-                let payload = packet.bytes();
-                let mut framed = [0u8; Data::CAPACITY];
-                framed[0] = 0xF0;
-                for (slot, byte) in framed[1..].iter_mut().zip(payload) {
-                    *slot = byte.get();
-                }
-                framed[payload.len() + 1] = 0xF7;
-                let data = Data::new(K_DATA_TYPE_MIDI_SYSEX, &framed[..payload.len() + 2])?;
+                let data = Data::try_from_iter(K_DATA_TYPE_MIDI_SYSEX, packet.framed()?)?;
                 Some(Event::at(offset, Payload::Data(data)))
             }
             // Sinks: VST3 has no event for a clock, a stream message, flex
@@ -169,21 +159,15 @@ impl MidiEncoder {
             }
             // CC, channel pressure, channel pitch bend and program change
             // have no extra resolution VST3 can use: they ride the plugin's
-            // parameter funnel (`CcRoute`) or land as a raw Data event.
-            Voice2::ControlChange { controller, value } => Some(midi1_data(
-                offset,
-                [0xB0 | ch, controller.get(), narrow_value(value).get()],
-            )),
-            // The program only: a bank is three messages, staged by
-            // `bank_program`.
-            Voice2::ProgramChange { program, .. } => {
-                Some(midi1_data(offset, [0xC0 | ch, program.get(), 0]))
+            // parameter funnel (`CcRoute`) or land as a raw Data event. A
+            // Program Change sends its program only: a bank is three messages,
+            // staged by `bank_program`.
+            Voice2::ControlChange { .. }
+            | Voice2::ChannelPressure(_)
+            | Voice2::PitchBend(_)
+            | Voice2::ProgramChange { .. } => {
+                narrow(voice).map(|voice| midi1_data(offset, voice.bytes(channel)))
             }
-            Voice2::ChannelPressure(pressure) => Some(midi1_data(
-                offset,
-                [0xD0 | ch, narrow_value(pressure).get(), 0],
-            )),
-            Voice2::PitchBend(bend) => Some(midi1_data(offset, bend_bytes(ch, narrow_bend(bend)))),
             // Sinks: VST3 has no event for an RPN or NRPN (the per-note bend
             // sensitivity is consumed in `encode`), and per-note management
             // has nothing to act on.
@@ -200,7 +184,6 @@ impl MidiEncoder {
     /// carried as it came; a note or key pressure is widened to the full width
     /// VST3's `f32` takes.
     fn voice1(&self, offset: i32, channel: MidiChannel, voice: Voice1) -> Option<Event> {
-        let ch = channel.get();
         match voice {
             Voice1::NoteOn { .. } | Voice1::NoteOff { .. } | Voice1::PolyPressure { .. } => {
                 // Widened here, so a MIDI 1.0 Note On at velocity 0 is the Note
@@ -208,17 +191,10 @@ impl MidiEncoder {
                 // handles a MIDI 2.0 velocity of 0 itself.
                 self.voice2(offset, channel, widen(voice))
             }
-            Voice1::ControlChange { controller, value } => Some(midi1_data(
-                offset,
-                [0xB0 | ch, controller.get(), value.get()],
-            )),
-            Voice1::ProgramChange(program) => {
-                Some(midi1_data(offset, [0xC0 | ch, program.get(), 0]))
-            }
-            Voice1::ChannelPressure(pressure) => {
-                Some(midi1_data(offset, [0xD0 | ch, pressure.get(), 0]))
-            }
-            Voice1::PitchBend(bend) => Some(midi1_data(offset, bend_bytes(ch, bend))),
+            Voice1::ControlChange { .. }
+            | Voice1::ProgramChange(_)
+            | Voice1::ChannelPressure(_)
+            | Voice1::PitchBend(_) => Some(midi1_data(offset, voice.bytes(channel))),
         }
     }
 }
@@ -226,23 +202,15 @@ impl MidiEncoder {
 /// The three messages a MIDI 2.0 Program Change with a valid bank stands for
 /// (M2-104 App. D): Bank Select MSB (CC 0), Bank Select LSB (CC 32), then the
 /// Program Change. `None` for anything else.
-pub(super) fn bank_program(event: &MidiEvent) -> Option<[[u8; 3]; 3]> {
-    let Ok(Message::Midi2(
-        address,
-        Voice2::ProgramChange {
-            program,
-            bank: Some(bank),
-        },
-    )) = decode_ump(Ump(event.data))
-    else {
-        return None;
-    };
-    let ch = address.channel.get();
-    Some([
-        [0xB0 | ch, 0, bank.msb.get()],
-        [0xB0 | ch, 32, bank.lsb.get()],
-        [0xC0 | ch, program.get(), 0],
-    ])
+pub(super) fn bank_program(event: &MidiEvent) -> Option<[Midi1Bytes; 3]> {
+    let message = decode_ump(Ump(event.data)).ok().filter(|message| {
+        matches!(
+            message,
+            Message::Midi2(_, Voice2::ProgramChange { bank: Some(_), .. })
+        )
+    })?;
+    let mut messages = midi1(message);
+    Some([messages.next()?, messages.next()?, messages.next()?])
 }
 
 fn note_off(offset: i32, channel: u8, note: NoteNumber, velocity: u16) -> Event {
@@ -257,38 +225,13 @@ fn note_off(offset: i32, channel: u8, note: NoteNumber, velocity: u16) -> Event 
     )
 }
 
-/// The status and data bytes of a Pitch Bend.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "masked to 7 bits, so the narrowing cannot lose a bit the mask keeps"
-)]
-fn bend_bytes(channel: u8, bend: U14) -> [u8; 3] {
-    let bend = bend.get();
-    [0xE0 | channel, (bend & 0x7F) as u8, (bend >> 7) as u8]
-}
-
-/// A System message as its MIDI 1.0 bytes.
-fn system_bytes(system: System) -> [u8; 3] {
-    match system {
-        System::TimeCode(data) => [0xF1, data.get(), 0],
-        System::SongPosition(position) => {
-            let [_, lsb, msb] = bend_bytes(0, position);
-            [0xF2, lsb, msb]
-        }
-        System::SongSelect(song) => [0xF3, song.get(), 0],
-        System::TuneRequest => [0xF6, 0, 0],
-        System::TimingClock => [0xF8, 0, 0],
-        System::Start => [0xFA, 0, 0],
-        System::Continue => [0xFB, 0, 0],
-        System::Stop => [0xFC, 0, 0],
-        System::ActiveSensing => [0xFE, 0, 0],
-        System::Reset => [0xFF, 0, 0],
-    }
-}
-
-/// One MIDI-1 message as the Data event that carries it.
-pub(super) fn midi1_data(sample_offset: i32, bytes: [u8; 3]) -> Event {
-    Event::at(sample_offset, Payload::Data(Data::inline(0, bytes)))
+/// One MIDI-1 message as the Data event that carries it: its bytes padded to
+/// three.
+pub(super) fn midi1_data(sample_offset: i32, bytes: Midi1Bytes) -> Event {
+    Event::at(
+        sample_offset,
+        Payload::Data(Data::inline(0, bytes.padded())),
+    )
 }
 
 /// The VST3 note-expression dimension a MIDI-2 assignable per-note controller
@@ -385,13 +328,15 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
             // as is the raw channel-voice fallback's. Strip the delimiters and rebuild a
             // single packet; a message too long for one packet is dropped, not truncated.
             if bytes[0] == 0xF0 {
-                let inner = bytes.strip_prefix(&[0xF0]).unwrap_or(bytes);
-                let inner = inner.strip_suffix(&[0xF7]).unwrap_or(inner);
-                return MidiEvent::sysex7_single(MidiGroup::FIRST, inner)
+                return MidiEvent::sysex7_single(MidiGroup::FIRST, unframed(bytes))
                     .map(|m| m.with_frame_offset(frame));
             }
             // Widened to Channel Voice 2 here. System messages pass through unchanged.
-            return MidiEvent::from_midi1_bytes(frame, bytes).map(widen_midi1);
+            let message = Midi1Parser::message(MidiGroup::FIRST, bytes)?;
+            return Some(MidiEvent::from_ump(
+                frame,
+                Ump::from(widened(message)).words(),
+            ));
         }
         Payload::LegacyCcOut(e) => return super::legacy_cc::decode(e, frame),
         // A reassembled SysEx's bytes are in the list's buffer, which the list drains.
@@ -405,24 +350,12 @@ pub(super) fn decode(event: &Event) -> Option<MidiEvent> {
     Some(built.with_frame_offset(frame))
 }
 
-/// A MIDI 1.0 channel voice event as the MIDI 2.0 message that means the same
-/// (M2-104 App. D.3), so the engine sees one vocabulary whatever the source.
-/// Any other message is forwarded unchanged.
-fn widen_midi1(event: MidiEvent) -> MidiEvent {
-    match decode_ump(Ump(event.data)) {
-        Ok(Message::Midi1(address, voice)) => {
-            let ump = Ump::from(Message::Midi2(address, widen(voice)));
-            MidiEvent::from_ump(event.frame_offset, ump.words())
-        }
-        Ok(
-            Message::Utility(_)
-            | Message::System(..)
-            | Message::Sysex7(..)
-            | Message::Midi2(..)
-            | Message::Data128(..)
-            | Message::Flex(..)
-            | Message::Stream(_),
-        )
-        | Err(Unknown(_)) => event,
+/// A MIDI 1.0 channel voice message as the MIDI 2.0 message that means the
+/// same (M2-104 App. D.3), so the engine sees one vocabulary whatever the
+/// source. Any other message is forwarded unchanged.
+fn widened(message: Message) -> Message {
+    match message {
+        Message::Midi1(address, voice) => Message::Midi2(address, widen(voice)),
+        other => other,
     }
 }

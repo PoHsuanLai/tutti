@@ -104,17 +104,15 @@ impl MidiEvent {
 
     /// Builds a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
     /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
-    /// delimiters). Returns `None` if the payload exceeds one packet — use
-    /// [`Self::sysex7_fragments`] for longer messages.
+    /// delimiters; a byte's high bit is dropped). Returns `None` if the payload
+    /// exceeds one packet — use [`Self::sysex7_fragments`] for longer messages.
+    /// Never allocates.
     pub fn sysex7_single(group: MidiGroup, payload: &[u8]) -> Option<Self> {
         if payload.len() > 6 {
             return None;
         }
-        let mut m = Sysex7::<Vec<u32>>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_payload(payload.iter().map(|&b| u7::new(b & 0x7F)));
-        // A ≤6-byte payload is a single 2-word packet.
-        Some(MidiEvent::from_ump(0, &m.data()[..2]))
+        // A ≤6-byte payload is one `SINGLE` packet.
+        Self::sysex7_packets(group, payload).next()
     }
 
     /// Decodes a single SysEx 7-bit packet (UMP type 0x3) into its

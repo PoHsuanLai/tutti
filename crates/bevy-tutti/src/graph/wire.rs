@@ -95,7 +95,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_core::MAX_ROOT_CHANNELS;
 use tutti_types::ChannelLayout;
 
@@ -510,13 +510,14 @@ pub fn unwire_removed_sources(
         return;
     };
     let Some(mut graph) = graph else { return };
-    if !graph.graph_ref().contains(*node) {
+    let node = node.0;
+    if !graph.graph_ref().contains(node) {
         return;
     }
-    let claimed = declared.0.len().min(graph.graph_ref().node_inputs(*node));
+    let claimed = declared.0.len().min(graph.graph_ref().node_inputs(node));
     for port in 0..claimed {
-        if graph.graph_ref().source(*node, port) != GraphSource::Silence {
-            graph.graph().set_source(*node, port, GraphSource::Silence);
+        if graph.graph_ref().source(node, port) != GraphSource::Silence {
+            graph.graph().set_source(node, port, GraphSource::Silence);
         }
     }
 }

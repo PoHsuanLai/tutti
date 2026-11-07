@@ -48,7 +48,7 @@
 //! if two ops that share a slot ever ran at once (a compiler bug), the second
 //! claim panics — it is never a second reference. The task dispatch
 //! (`tutti_rt::TaskGraph`) and the pool handshake
-//! (`tutti_rt::JobGate`, used by `tutti_core::WorkerPool`) are loom-checked
+//! (`tutti_rt::JobGate`, used by `tutti_graph::WorkerPool`) are loom-checked
 //! there.
 //!
 //! # Real time
@@ -91,7 +91,7 @@ use crate::slots::{ArenaView, EventSlots, EventsView, SharedFlags};
 
 /// A pool of threads that runs a job on several of them — what the parallel
 /// executor (and a CLAP plugin's `clap.thread-pool` request) asks of a
-/// worker pool. `tutti_core::WorkerPool` implements it; a host with its own
+/// worker pool. `tutti_graph::WorkerPool` implements it; a host with its own
 /// pool (or a test) can too.
 ///
 /// # Contract

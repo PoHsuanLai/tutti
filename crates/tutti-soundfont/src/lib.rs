@@ -331,12 +331,12 @@ impl SoundFontUnit {
                 );
             }
             Voice2::PitchBend(bend) => {
-                let bend = narrow_bend(bend).get();
+                let bend = narrow_bend(bend);
                 self.synthesizer.process_midi_message(
                     ch,
                     0xE0,
-                    i32::from(bend & 0x7F),
-                    i32::from(bend >> 7),
+                    i32::from(bend.lsb().get()),
+                    i32::from(bend.msb().get()),
                 );
             }
             // The program only: a bank would need Bank Select state, and

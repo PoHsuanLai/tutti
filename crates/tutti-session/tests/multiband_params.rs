@@ -12,7 +12,7 @@
 
 use std::f64::consts::{PI, TAU};
 
-use tutti_core::{AudioNode, MotionEvent};
+use tutti_core::MotionEvent;
 #[cfg(feature = "modulation")]
 use tutti_mod::Lfo;
 use tutti_nodes::testing::Osc;
@@ -20,7 +20,7 @@ use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 #[cfg(feature = "modulation")]
 use tutti_session::ParamRef;
 use tutti_session::{GraphSource, Session};
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples};
 #[cfg(feature = "modulation")]
 use tutti_types::{BeatDuration, Depth};
 use tutti_types::{Db, Hz, UnitAddr, UnitParam};
@@ -57,7 +57,7 @@ fn expected(hz: f64, g0: f64, g1: f64) -> f64 {
 
 /// An offline stereo session with the rig wired to the outputs, and the
 /// node's controls.
-fn rig() -> (Session, AudioNode, MultibandControls) {
+fn rig() -> (Session, NodeKey, MultibandControls) {
     let mut s = Session::builder()
         .build_offline(SampleRate(RATE), ChannelLayout::STEREO, Samples(1_024))
         .expect("builds");

@@ -40,7 +40,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::AudioNode;
+use crate::graph::AudioNode;
 use tutti_plugin::handles::{PluginControls, PluginMeter};
 use tutti_types::NodeKey;
 

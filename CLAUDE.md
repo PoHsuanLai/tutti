@@ -17,7 +17,8 @@ only runtime (`AudioGraphRes` wraps a `tutti_session::Session`, whose graph
 holds the `Editor`; PDC is the compiler's, export forks the live graph with
 `Editor::fork`), and every node is a `tutti_graph::Node`. fundsp's `Net`,
 the vendored fork, `tutti-node` and its `AudioUnit` trait, `Setting` and
-the numeric tower are deleted; `AudioNode` wraps a `NodeKey`, and
+the numeric tower are deleted; the engine and `tutti-session` key a node by
+`NodeKey` (`AudioNode` is `bevy-tutti`'s component, wrapping one), and
 `tutti_types::latency` is a pure pass that is the compiler's own solve. A
 block's tasks can run on a worker pool (below); a cost model decides when
 that pays, and the compiler packs tasks too cheap to dispatch alone.
@@ -47,7 +48,7 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
 ## The parallel executor (doc 013)
 
 A block's tasks may run on several threads (`Executor::set_pool`,
-`tutti_core::WorkerPool`), and the render must stay bit-identical to the
+`tutti_graph::WorkerPool`), and the render must stay bit-identical to the
 serial one.
 
 - **A cheap node declares its cost** (`Shape::with_cost`: `Cost::Light`
@@ -163,9 +164,9 @@ just test-all                      # both
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
-- **Bevy-free floor:** five engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-core`, `tutti-types`, `tutti-io`, `tutti-mod`,
-  `tutti-sampler`); the rest have none, and `tutti-session`, `tutti-graph`
+- **Bevy-free floor:** four engine crates have an optional, off-by-default
+  `bevy` feature (`tutti-types`, `tutti-io`, `tutti-mod`, `tutti-sampler`); the
+  rest have none, and `tutti-session`, `tutti-graph`
   and `tutti-ump` must never grow one. `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
@@ -236,18 +237,25 @@ crates/          everything shipped; directory name = package name; no nesting
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
-                 needs); no dependencies but `bytemuck` (and optional `serde`)
+                 needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
+                 `frame` and `Midi1Parser`, the status bytes the hosts use
+                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
+                 until VST2 and AU move); no dependencies but `bytemuck` (and
+                 optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen` and the M2-115 scaling; depends on `tutti-ump` alone
+                 stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
+                 depends on `tutti-ump` alone
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
-                 executor + reference interpreter; `Engine` renders it
+                 executor + reference interpreter, the `WorkerPool` and the
+                 `PrerollTable`; `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
                  dynamics, convolver, delay lines, waveshapers
   tutti-mod      modulation compiler
-  tutti-core     graph runtime, transport, metering
+  tutti-core     graph runtime, transport, metering (the metronome node,
+                 `ClickNode`, is `tutti-nodes`')
   tutti-io       I/O edge: live + file decode
   tutti-cpal     device
   tutti-export   offline render
@@ -458,13 +466,13 @@ Scalars use `Param<U>`.
   commit compiles it iff the graph was edited (`Graph::is_edited`); PDC is
   the compiler's, and nothing is spliced into the graph.
 - A headless `Session` declares through its own spec, keyed by
-  `AudioNode`, and `Session::update()` commits iff the graph was edited.
+  `NodeKey`, and `Session::update()` commits iff the graph was edited.
 - A declaration may be partial: a port a short `PortSources` leaves out, and
   every output channel while `MasterSources` is empty, belong to whoever
   wires them through `AudioGraphRes`. The rebuild's debug check
   (`topology::disagreements`) compares only declared ports; never compare a
   whole-graph fold (a latency plan) against the value.
-- A declaration names an *entity*, the graph keys an `AudioNode`; re-binding
+- A declaration names an *entity*, the graph keys a `NodeKey`, which `bevy-tutti`'s `AudioNode` component holds; re-binding
   an entity to a new node re-derives its wires (`Changed<AudioNode>`).
 - Keys are sink ports, so fan-in cannot be represented. Summing is a node's
   job.

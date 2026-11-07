@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 
 use dashmap::DashMap;
 use thread_priority::ThreadPriority;
-use tutti_core::PrerollTable;
+use tutti_graph::PrerollTable;
 use tutti_types::SampleRate;
 
 use super::ButlerSender;

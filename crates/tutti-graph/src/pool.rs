@@ -3,7 +3,7 @@
 //!
 //! The graph defines what it needs of a pool (`tutti_graph::Pool`: run one
 //! job on the caller and up to `participants - 1` other threads, return when
-//! none is inside it); this is the engine's implementation. The handshake
+//! none is inside it); this is the implementation. The handshake
 //! that lends each block's borrowed job to the helpers is
 //! `tutti_rt::JobGate`, loom-checked there; this module adds only the
 //! threads and how they wait.
@@ -72,7 +72,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
-use tutti_graph::{BlockWaits, Pool};
+use crate::{BlockWaits, Pool};
 use tutti_rt::JobGate;
 
 /// A hook run once on each helper thread as it starts, with its index
@@ -154,7 +154,7 @@ impl Shared {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use tutti_core::WorkerPool;
+/// use tutti_graph::WorkerPool;
 ///
 /// let pool = Arc::new(WorkerPool::new(4)); // the caller and three helpers
 /// # let (_editor, mut executor) = tutti_graph::Editor::new(tutti_graph::Prepare::new(

@@ -382,6 +382,7 @@ fn data_len(status: u8) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::{SysExAssembler, SysExStep};
+    use tutti_ump::frame;
 
     /// Decode each packet in turn, then flush; one `Vec` per flush call.
     fn run(decoder: &mut Midi1Decoder, packets: &[(&[u8], u32)]) -> Vec<Vec<MidiEvent>> {
@@ -403,10 +404,7 @@ mod tests {
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
-        let mut v = vec![0xF0];
-        v.extend_from_slice(payload);
-        v.push(0xF7);
-        v
+        frame(payload).collect()
     }
 
     /// The messages a stream of UMP packets reassembles to.

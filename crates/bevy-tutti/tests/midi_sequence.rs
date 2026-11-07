@@ -28,7 +28,7 @@ use tutti_graph::{
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{PolySynth, SynthConfig};
-use tutti_types::{Beat, BeatDuration, Bpm, SampleRate};
+use tutti_types::{Beat, BeatDuration, Bpm, NodeKey, SampleRate};
 use tutti_ump::Ump;
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -247,9 +247,9 @@ fn a_re_bound_target_keeps_its_clip() {
 /// heard `[]`.
 #[test]
 fn a_target_removed_then_re_bound_keeps_its_clip() {
+    use bevy_tutti::graph::AudioNode;
     use bevy_tutti::graph::InsertAudioNode;
     use bevy_tutti::midi::SequencedClips;
-    use tutti_core::AudioNode;
 
     let mut app = app();
     let (tap, old) = spawn_tap(&mut app);
@@ -410,10 +410,11 @@ fn spawn_graph_synth(app: &mut App) -> Entity {
     entity
 }
 
-fn node_of(app: &App, entity: Entity) -> tutti_core::AudioNode {
-    *app.world()
-        .get::<tutti_core::AudioNode>(entity)
+fn node_of(app: &App, entity: Entity) -> NodeKey {
+    app.world()
+        .get::<bevy_tutti::graph::AudioNode>(entity)
         .expect("bound to a node")
+        .0
 }
 
 /// **`EventSources` wires a clip node's events to a synth's event input, and
@@ -504,7 +505,7 @@ fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
             .resource::<AudioGraphRes>()
             .graph_ref()
             .event_sources(node_of(&app, synth), 0),
-        vec![clip.into()]
+        vec![clip.0.into()]
     );
 
     app.world_mut()
@@ -529,7 +530,7 @@ fn an_install_on_a_graph_synth_plays_through_a_clip_node() {
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .contains(clip)
+            .contains(clip.0)
     );
 }
 
@@ -560,7 +561,7 @@ fn a_clip_node_goes_when_its_target_loses_its_node() {
         .expect("a clip node");
     app.world_mut()
         .entity_mut(synth)
-        .remove::<tutti_core::AudioNode>();
+        .remove::<bevy_tutti::graph::AudioNode>();
     // A rebuild runs when an install changes: write it back unchanged.
     let mut changed = app
         .world_mut()
@@ -573,7 +574,7 @@ fn a_clip_node_goes_when_its_target_loses_its_node() {
         !app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .contains(clip)
+            .contains(clip.0)
     );
 }
 
@@ -635,14 +636,14 @@ fn a_clip_goes_when_its_target_loses_its_node_with_no_install_edit() {
         .expect("a clip node");
     app.world_mut()
         .entity_mut(synth)
-        .remove::<tutti_core::AudioNode>();
+        .remove::<bevy_tutti::graph::AudioNode>();
     app.update();
     assert_eq!(app.world().resource::<SequencedClips>().node(synth), None);
     assert!(
         !app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .contains(clip)
+            .contains(clip.0)
     );
 }
 

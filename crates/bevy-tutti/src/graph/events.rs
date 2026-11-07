@@ -21,9 +21,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::graph::AudioNode;
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use tutti_core::AudioNode;
 
 use crate::graph::{AudioGraphRes, Feeder, GraphReconcileSystems, engine_ready};
 pub use tutti_session::EventSource;
@@ -170,21 +170,21 @@ pub fn reconcile(
         if let Some(&old) = last.bound.get(&entity)
             && old != sink
         {
-            graph.graph().move_feeds(old, sink);
+            graph.graph().move_feeds(old.0, sink.0);
         }
         bound.insert(entity, sink);
         let Some(sources) = sources else {
             if last.declared.contains(&entity) {
-                graph.graph().set_feed(sink, Feeder::Declared, Vec::new());
+                graph.graph().set_feed(sink.0, Feeder::Declared, Vec::new());
             }
             continue;
         };
         let sources: Vec<EventSource> = sources
             .0
             .iter()
-            .filter_map(|e| nodes.get(*e).ok().map(|&n| EventSource::from(n)))
+            .filter_map(|e| nodes.get(*e).ok().map(|n| EventSource::from(n.0)))
             .collect();
-        graph.graph().set_feed(sink, Feeder::Declared, sources);
+        graph.graph().set_feed(sink.0, Feeder::Declared, sources);
         declared.insert(entity);
     }
     last.bound = bound;

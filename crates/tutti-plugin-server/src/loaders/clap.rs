@@ -30,7 +30,7 @@ use crate::plugin::AsyncEvent;
 /// The engine's own pool lives in the host process, and a plugin's `process`
 /// runs here, in another: a request cannot reach it. So the server keeps a
 /// `WorkerPool` of its own, with its helpers raised to the audio thread's
-/// realtime priority, as `tutti_core::WorkerPool` requires of helpers. A
+/// realtime priority, as `tutti_graph::WorkerPool` requires of helpers. A
 /// plugin that does not implement the extension costs no threads.
 ///
 /// Sized by [`pool_participants`]: half the cores, at most 4, the server's
@@ -55,7 +55,7 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
             let participants = pool_participants(cores);
             (participants >= 2).then(|| {
                 std::sync::Arc::new(
-                    tutti_core::WorkerPool::builder(participants)
+                    tutti_graph::WorkerPool::builder(participants)
                         .name("tutti-clap-pool")
                         .spin_budget(std::time::Duration::from_micros(10))
                         .idle(std::time::Duration::from_micros(50))
@@ -77,7 +77,7 @@ fn pool_participants(cores: usize) -> usize {
 }
 
 /// [`thread_pool`]'s pool, once decided.
-static THREAD_POOL: std::sync::OnceLock<Option<std::sync::Arc<tutti_core::WorkerPool>>> =
+static THREAD_POOL: std::sync::OnceLock<Option<std::sync::Arc<tutti_graph::WorkerPool>>> =
     std::sync::OnceLock::new();
 
 /// A plugin that is open and not yet active.

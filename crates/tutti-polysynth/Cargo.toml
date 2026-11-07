@@ -46,9 +46,6 @@ tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]
-# The worker pool of `tests/cost_classes.rs`.
-tutti-core = { path = "../tutti-core", default-features = false }
-
 # The filter nodes the bank is compared against (`bank.rs`), and the mixing and
 # lane nodes of the integration tests. No cycle: `tutti-nodes` names no
 # synth crate.

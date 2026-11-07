@@ -504,9 +504,7 @@ fn test_output_events_push_sysex_with_data() {
 #[test]
 fn a_long_sysex_from_the_plugin_drains_whole() {
     let body: Vec<u8> = (0..40).map(|i| i as u8).collect();
-    let mut message = vec![0xF0];
-    message.extend_from_slice(&body);
-    message.push(0xF7);
+    let message: Vec<u8> = tutti_ump::frame(&body).collect();
     let mut output = OutputEventList::new();
     let list_ptr = raw_out(&mut output);
     let sysex = clap_event_midi_sysex {

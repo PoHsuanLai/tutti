@@ -1,4 +1,5 @@
 use super::*;
+use tutti_ump::MidiChannel;
 
 #[test]
 fn try_from_bytes_parses_and_errors() {

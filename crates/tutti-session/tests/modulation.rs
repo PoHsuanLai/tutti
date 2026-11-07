@@ -11,7 +11,7 @@ mod common;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use tutti_core::{AudioNode, MotionEvent};
+use tutti_core::MotionEvent;
 use tutti_graph::ForkByClone;
 use tutti_mod::{
     Declarations, Follower, Lfo, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl,
@@ -181,11 +181,11 @@ fn the_8_1_example_renders_its_analytic_values() {
 /// A host's keys: target key 1 names `node` once it is set; source 1 has
 /// no feed (an LFO).
 struct HostKeys {
-    node: Cell<Option<AudioNode>>,
+    node: Cell<Option<NodeKey>>,
 }
 
 impl ModKeys for HostKeys {
-    fn node(&self, target: u64) -> Option<AudioNode> {
+    fn node(&self, target: u64) -> Option<NodeKey> {
         (target == 1).then(|| self.node.get()).flatten()
     }
 
@@ -435,7 +435,7 @@ fn removing_a_node_forgets_its_declarations() {
 /// The key a session `ParamRef` names is its node's key bits.
 #[test]
 fn a_param_ref_round_trips_through_its_key() {
-    let node = AudioNode(NodeKey(42));
+    let node = NodeKey(42);
     let p = ParamRef::unit(node, UnitParam::Cutoff);
     assert_eq!(p.key().node, 42);
     assert_eq!(ParamRef::from_key(p.key()), p);

@@ -96,9 +96,9 @@ jobs:
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
+      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
       # And `tutti-midi-protocol`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_midi_protocol scale voice
+      - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-plugin-db`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
@@ -565,7 +565,6 @@ jobs:
       # that has one, so that flag drops the codec and midi features instead and proves
       # nothing. Naming the feature explicitly is what tests both sides.
       - run: cargo check --locked -p tutti-core
-      - run: cargo check --locked -p tutti-core --features bevy
       - run: cargo check --locked -p tutti-types
       - run: cargo check --locked -p tutti-types --features bevy
 

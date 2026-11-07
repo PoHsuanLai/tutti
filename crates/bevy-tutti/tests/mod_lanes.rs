@@ -23,6 +23,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::AudioEngineState;
+use bevy_tutti::graph::AudioNode;
 use bevy_tutti::graph::{
     AudioGraphRes, AudioParam, AudioParamAppExt, AudioSide, GraphReconcilePlugin, MasterSources,
     PortSource, SpawnAudioNode, TransportRes, crossfade_audio_node,
@@ -31,7 +32,6 @@ use bevy_tutti::modulation::{
     Adsr, Automation, AutomationTake, Follower, Lfo, Macro, ModRange, ModRoute, ModSource, Mods,
     ModulationRefused, NoteEnvelope, ParamRef, TuttiModulationPlugin,
 };
-use tutti_core::AudioNode;
 use tutti_core::transport::Transport;
 use tutti_graph::ForkByClone;
 use tutti_nodes::ReconcileError;
@@ -269,7 +269,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
         channels: tutti_types::ChannelLayout::STEREO,
     });
     app.insert_resource(bevy_tutti::graph::MetronomeRes(Arc::new(
-        tutti_core::transport::ClickState::new(),
+        tutti_nodes::ClickState::new(),
     )));
     app.add_audio_param::<Hz, { UnitParam::Cutoff as u16 }>();
     let a = spawn(&mut app, ProbeUnit::new(500.0));
@@ -420,7 +420,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
         app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .contains(AudioNode(node))
+            .contains(node)
     );
     let (_, lane) = state.lane(cutoff).expect("a lane");
     assert_eq!(
@@ -439,7 +439,7 @@ fn a_despawned_source_leaves_no_node_and_no_layer() {
         !app.world()
             .resource::<AudioGraphRes>()
             .graph_ref()
-            .contains(AudioNode(node)),
+            .contains(node),
         "its node is gone"
     );
     let (_, lane) = state.lane(cutoff).expect("the LFO keeps the lane");
@@ -894,7 +894,7 @@ fn a_host_edit_committed_for_a_target_publishes_its_latency() {
         graph.graph().set_node_params(probe, Some(params));
         probe
     };
-    let entity = app.world_mut().spawn(probe).id();
+    let entity = app.world_mut().spawn(AudioNode(probe)).id();
     let cutoff = ParamRef::unit(entity, UnitParam::Cutoff);
     let world = app.world_mut();
     world.spawn(ModRange::new(cutoff, 0.0, 1_000.0));

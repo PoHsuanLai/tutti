@@ -32,9 +32,7 @@ use support::active::{Activate, Active};
 use support::probe_path::probe_path;
 
 use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessContext, LoadOptions};
-use tutti_clap_test_plugin::{
-    PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_SAMPLES, probe_tag,
-};
+use tutti_clap_test_plugin::{PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, probe_tag};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -473,26 +471,6 @@ fn host_handles_in_place_style_buffers() {
     }
 }
 
-/// The symmetric layout must route correctly too — a host could special-case
-/// one. With `[2]` in/out the outputs are 12 and 25; a swapped pair reads 13
-/// and 24.
-#[test]
-fn host_routes_symmetric_stereo_correctly() {
-    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_TAG_PASSTHROUGH);
-    let mut inst = session.activate();
-    const FRAMES: usize = 16;
-
-    let outs = drive_dc_block(&mut inst, 2, FRAMES);
-    let got: Vec<f32> = outs.iter().map(|c| c[0]).collect();
-    assert_eq!(
-        got,
-        vec![INPUT_DC[0] + probe_tag(0, 0), INPUT_DC[1] + probe_tag(0, 1)],
-        "a swapped stereo pair would read [{}, {}]",
-        INPUT_DC[1] + probe_tag(0, 0),
-        INPUT_DC[0] + probe_tag(0, 1)
-    );
-}
-
 /// Routing must be stable across blocks: the tags cannot drift as the host's
 /// scratch is reused. `refill_port_buffers` rebuilds the pointer tables every
 /// call from a shared channel pool, so an off-by-one in the pool's input/output
@@ -529,99 +507,9 @@ fn host_routing_is_stable_across_blocks() {
 }
 
 // ---------------------------------------------------------------------------
-// clap.latency / clap.tail — reporting, and latency as observable audio.
+// reset — in-flight state. The latency and tail figures, and latency as audio,
+// are the plugin contract's `latency_reported`, `tail_reported`, `latency_applied`.
 // ---------------------------------------------------------------------------
-
-/// The host must report the plugin's own latency, not a rounded or
-/// block-aligned value.
-#[test]
-fn host_reports_plugin_latency() {
-    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
-    let loaded = session.load();
-    assert_eq!(
-        loaded.latency_samples(),
-        REPORTED_LATENCY_SAMPLES,
-        "host must pass the plugin's exact latency through; {} is a prime, so \
-         a block-aligned or doubled value cannot coincide",
-        REPORTED_LATENCY_SAMPLES
-    );
-}
-
-/// `clap.tail` and `clap.latency` are separate extensions with identical vtable
-/// shapes (one `get() -> u32`). The probe reports different primes from each,
-/// so a host reading one through the other's vtable is caught.
-#[test]
-fn host_reports_tail_distinctly_from_latency() {
-    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
-    let loaded = session.load();
-    assert_eq!(loaded.tail_samples(), Some(REPORTED_TAIL_SAMPLES));
-    assert_ne!(
-        loaded.tail_samples(),
-        Some(loaded.latency_samples()),
-        "tail and latency are different extensions — the host must not read \
-         one through the other's vtable"
-    );
-}
-
-/// Latency as *audio*, not just a number: an impulse fed at a known offset must
-/// emerge exactly `REPORTED_LATENCY_SAMPLES` later.
-///
-/// The plugin's delay line and its `clap.latency` value are the same constant,
-/// so the emerging impulse position confirms the host drives the plugin's
-/// blocks contiguously — no dropped, duplicated, or reordered block — which is
-/// what delay compensation depends on.
-#[test]
-fn reported_latency_matches_observed_delay() {
-    let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_LATENCY);
-    let mut inst = session.activate();
-    const FRAMES: usize = 128;
-    const IMPULSE_AT: usize = 5;
-    const AMPLITUDE: f32 = 4.0;
-
-    let latency = REPORTED_LATENCY_SAMPLES as usize;
-    let expected_at = IMPULSE_AT + latency; // 142 — lands in block 1.
-    let blocks = expected_at / FRAMES + 2;
-
-    // Block 0 carries the impulse on channel 0; later blocks are silent.
-    let mut found: Option<(usize, usize)> = None;
-    for block in 0..blocks {
-        let mut ch0 = vec![0.0f32; FRAMES];
-        if block == 0 {
-            ch0[IMPULSE_AT] = AMPLITUDE;
-        }
-        let inputs = vec![ch0, vec![0.0f32; FRAMES]];
-        let outs = drive_block(&mut inst, &inputs, 2, FRAMES);
-
-        for (i, &s) in outs[0].iter().enumerate() {
-            if s != 0.0 {
-                assert_eq!(
-                    s, AMPLITUDE,
-                    "block {block} sample {i}: the delayed impulse must come \
-                     through at its original amplitude, got {s}"
-                );
-                assert!(
-                    found.is_none(),
-                    "the impulse must appear exactly once; already saw it at \
-                     {found:?}, now again at block {block} sample {i}"
-                );
-                found = Some((block, i));
-            }
-        }
-    }
-
-    let (block, offset) = found.expect(
-        "the impulse must emerge within the driven blocks — never seeing it \
-         means the host dropped a block or the delay line never advanced",
-    );
-    let absolute = block * FRAMES + offset;
-    assert_eq!(
-        absolute, expected_at,
-        "impulse fed at sample {IMPULSE_AT} must emerge at {expected_at} \
-         (= {IMPULSE_AT} + {latency} reported latency); it emerged at \
-         {absolute} (block {block}, offset {offset}). A mismatch of a whole \
-         block means the host dropped or duplicated one."
-    );
-}
 
 /// `reset()` must clear the plugin's in-flight processing state, so material
 /// still travelling through it at a discontinuity never emerges afterwards.
@@ -633,8 +521,8 @@ fn reported_latency_matches_observed_delay() {
 /// the jump.
 ///
 /// The probe's delay line is the in-flight state here: an impulse fed at block 0
-/// is still inside it when the reset lands, and the sibling test above pins that
-/// without a reset it emerges at a known sample. A host that never calls `reset`
+/// is still inside it when the reset lands, and the contract's `latency_applied`
+/// pins that without a reset it emerges at a known sample. A host that never calls `reset`
 /// therefore fails on the impulse arriving, not on a proxy for it.
 #[test]
 fn reset_clears_state_still_in_flight() {

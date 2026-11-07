@@ -201,8 +201,11 @@ fn crossings(setup: impl FnOnce(&mut Synthesizer), bend: u16) -> usize {
 
 const BEND_MAX: u16 = 16_383;
 
-// Mutation (run, for each arm below): replacing the arm's call with `()` in
-// `control_change` fails the named test.
+// Mutations (all run, each fails the test named for the arm): the arm's call
+// replaced by `()` in `control_change` for 0x00, 0x01, 0x21, 0x06, 0x26, 0x07,
+// 0x27, 0x0A, 0x2A, 0x0B, 0x2B, 0x40, 0x5B, 0x5D, 0x63, 0x62, 0x65, 0x64, 0x78
+// and 0x79; 0x78 changed to `Stop::Release`; 0x7B changed to `Stop::Cut`; the
+// `_` arm changed to cut the channel.
 
 // Arm 0x07 (volume coarse) and 0x27 (fine).
 #[test]
@@ -378,7 +381,8 @@ fn cc_99_and_98_make_data_entry_ignore_the_rpn() {
 
 /// A SoundFont built here, because the reference one has no bank a melodic
 /// channel can reach but 0: preset 0 of bank 0 plays a looped sine, and preset
-/// 0 of bank 1 plays the same sample 144 dB down.
+/// 0 of bank 1 plays the same sample 144 dB down. The loud one answers
+/// velocities 0 to 63 only.
 fn two_bank_soundfont() -> Arc<SoundFont> {
     fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
         let mut bytes = id.to_vec();
@@ -418,9 +422,10 @@ fn two_bank_soundfont() -> Arc<SoundFont> {
     let pgen = words(&[41, 0, 41, 1, 0, 0]);
     let inst = |label: &str, bag: u16| [name(label), words(&[bag])].concat();
     let insts = [inst("loud", 0), inst("quiet", 1), inst("EOI", 2)].concat();
-    let ibag = words(&[0, 0, 2, 0, 5, 0]);
-    // sampleModes 1 (loop), sampleID 0; the quiet one adds initialAttenuation.
-    let igen = words(&[54, 1, 53, 0, 48, 1440, 54, 1, 53, 0, 0, 0]);
+    let ibag = words(&[0, 0, 3, 0, 6, 0]);
+    // sampleModes 1 (loop), sampleID 0. The loud one adds velRange 0 to 63, the
+    // quiet one initialAttenuation.
+    let igen = words(&[44, 63 << 8, 54, 1, 53, 0, 48, 1440, 54, 1, 53, 0, 0, 0]);
     let sample = |label: &str, start: u32, end: u32, rate: u32, pitch: u8| {
         let mut bytes = name(label);
         for v in [start, end, 100, 1900, rate] {
@@ -472,12 +477,30 @@ fn cc_0_selects_the_bank() {
         if let Some(bank) = bank {
             cc(&mut synthesizer, 0, bank);
         }
-        synthesizer.note_on(channel(0), key(69), velocity(127));
+        synthesizer.note_on(channel(0), key(69), velocity(40));
         energy(&mut synthesizer, 4096)
     };
     let loud = level(None);
-    assert!(loud > 100.0, "bank 0 plays the sine: {loud}");
+    assert!(loud > 20.0, "bank 0 plays the sine: {loud}");
     assert!(level(Some(1)) < loud * 0.01, "bank 1 is 144 dB down");
+}
+
+// The region's velocity range, through the public synthesizer: the loud zone
+// answers 0 to 63. Mutation (run): `InstrumentRegion::contains` ignoring the
+// velocity (the fixture has no velocity ranges, so only this catches it) makes
+// velocity 100 sound and fails the assertion.
+#[test]
+fn a_region_answers_only_the_velocities_of_its_range() {
+    let mut settings = SynthesizerSettings::new(RATE);
+    settings.enable_reverb_and_chorus = false;
+    let font = two_bank_soundfont();
+    let level = |velocity_value: u8| {
+        let mut synthesizer = Synthesizer::new(&font, &settings).unwrap();
+        synthesizer.note_on(channel(0), key(69), velocity(velocity_value));
+        energy(&mut synthesizer, 4096)
+    };
+    assert!(level(63) > 20.0, "the top of the range sounds");
+    assert_eq!(level(64), 0.0, "one past it finds no region");
 }
 
 // Arms 0x01 (modulation coarse) and 0x21 (fine): vibrato depth, at most 50

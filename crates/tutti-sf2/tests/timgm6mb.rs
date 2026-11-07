@@ -27,32 +27,63 @@ fn the_file_has_presets_instruments_and_samples() {
     );
 }
 
-// Mutation (run): returning `low..=low` from `generator_range` makes the
-// region's key range a single key, and fails the first two assertions.
+/// Instrument 0 of the fixture ("Flute TB"), decoded by hand from the file's
+/// `inst`, `ibag` and `igen` chunks with a separate script: ten regions, each
+/// a key range and a sample id, none with a velocity range.
+const FLUTE_TB: [(u8, u8, usize); 10] = [
+    (0, 60, 5),
+    (61, 65, 6),
+    (66, 68, 8),
+    (69, 71, 9),
+    (72, 76, 3),
+    (77, 80, 0),
+    (81, 84, 1),
+    (85, 89, 4),
+    (90, 94, 2),
+    (95, 108, 7),
+];
+
+// Mutation (run): `low..=high` -> `low..=low` in `generator_range` makes every
+// range a single key and fails the range comparison on the first region.
 #[test]
-fn a_region_contains_exactly_the_keys_and_velocities_of_its_ranges() {
+fn the_first_instrument_has_the_regions_decoded_from_the_file() {
     let soundfont = timgm6mb();
-    let mut checked = 0;
-    let mut widest = 0;
-    for instrument in soundfont.instruments() {
-        for region in instrument.regions() {
-            let (keys, velocities) = (region.key_range(), region.velocity_range());
-            assert!(keys.start() <= keys.end() && *keys.end() < 128);
-            widest = widest.max(keys.end() - keys.start());
-            for key in (0..=127).filter_map(NoteNumber::new) {
-                for velocity in [1, 64, 127] {
-                    let velocity = U7::new(velocity).unwrap();
-                    assert_eq!(
-                        region.contains(key, velocity),
-                        keys.contains(&key.get()) && velocities.contains(&velocity.get()),
-                    );
-                    checked += 1;
-                }
-            }
-        }
+    let flute = &soundfont.instruments()[0];
+    assert_eq!(flute.name(), "Flute TB");
+    let regions: Vec<_> = flute
+        .regions()
+        .iter()
+        .map(|r| (*r.key_range().start(), *r.key_range().end(), r.sample_id()))
+        .collect();
+    assert_eq!(regions, FLUTE_TB);
+    for region in flute.regions() {
+        assert_eq!(region.velocity_range(), 0..=127, "no velocity range: all");
     }
-    assert!(checked > 1000);
-    assert!(widest >= 12, "a sample spans an octave of keys, not one");
+}
+
+// Mutation (run): `contains` testing the key against `start..end` (exclusive)
+// fails at the last key of a range. The fixture has no velocity range, so the
+// velocity half of `contains` is covered by `tutti-rustysynth`'s
+// `a_region_answers_only_the_velocities_of_its_range`.
+#[test]
+fn a_region_contains_the_keys_and_velocities_of_the_decoded_ranges() {
+    let soundfont = timgm6mb();
+    let regions = soundfont.instruments()[0].regions();
+    let contains = |region: usize, key: u8, velocity: u8| {
+        regions[region].contains(NoteNumber::new(key).unwrap(), U7::new(velocity).unwrap())
+    };
+    // Region 1 is keys 61 to 65.
+    assert!(contains(1, 61, 1) && contains(1, 65, 127) && contains(1, 63, 64));
+    assert!(!contains(1, 60, 64) && !contains(1, 66, 64));
+    // Region 0 is keys 0 to 60, region 9 is 95 to 108: the ends of the file.
+    assert!(contains(0, 0, 64) && contains(0, 60, 64) && !contains(0, 61, 64));
+    assert!(contains(9, 95, 64) && contains(9, 108, 64) && !contains(9, 109, 64));
+    // Every key from 0 to 108 is in exactly one of the ten regions.
+    for key in 0..=108 {
+        let hits = (0..regions.len()).filter(|&r| contains(r, key, 64)).count();
+        assert_eq!(hits, 1, "key {key}");
+    }
+    assert!(!(0..regions.len()).any(|r| contains(r, 109, 64)));
 }
 
 #[test]

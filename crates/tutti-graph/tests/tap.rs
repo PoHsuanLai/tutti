@@ -728,3 +728,43 @@ fn opening_an_id_again_replaces_the_tap() {
         "the new reader got the second"
     );
 }
+
+/// A tap's lanes are fixed by how it was opened: editing `TapSpec::sources` to
+/// another length through the spec is refused at the commit (the writer the
+/// executor holds has that many rings), and opening the id again at another
+/// width replaces the tap at the new one, lanes and all.
+///
+/// Mutation (run, recorded here): delete `check_tap_widths` from `commit` ->
+/// the edited spec commits and the first assertion fails.
+#[test]
+fn a_tap_cannot_change_its_width_under_its_writer() {
+    let mut r = rig(1, false);
+    let _wide =
+        r.ed.open_tap(TapId(1), r.gains[..3].to_vec(), TapAlign::Raw, Samples(64));
+    commit(&mut r);
+    r.ed.spec_mut()
+        .topology
+        .taps
+        .get_mut(&TapId(1))
+        .expect("open")
+        .sources
+        .push(Source::Zero);
+    assert_eq!(
+        r.ed.commit(),
+        Err(tutti_graph::CommitError::TapWidth {
+            tap: TapId(1),
+            sources: 4,
+            opened: 3
+        })
+    );
+    // Reopening at width 1 replaces it, and the lanes are the new tap's.
+    let mut narrow =
+        r.ed.open_tap(TapId(1), vec![r.gains[2]], TapAlign::Raw, Samples(256));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    assert_eq!(narrow.width(), 1);
+    let mut got = vec![f32::NAN; 100];
+    assert_eq!(narrow.pop_into(&mut got).get(), 100);
+    let want: Vec<f32> = (0..100).map(|t| chain_at(2, 10, t)).collect();
+    assert_eq!(got, want);
+}

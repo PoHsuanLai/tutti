@@ -142,6 +142,18 @@ pub enum CommitError {
     /// verifier refuses ([`Plan::verify_fades`]). Nothing was
     /// sent.
     Fade(VerifyError),
+    /// A tap's lanes in the spec no longer match the width it was opened
+    /// with ([`Editor::open_tap`] fixed the reader's and the writer's width
+    /// there): the spec's `TapSpec::sources` was edited. Nothing was sent.
+    /// Close the tap and open another to change its width.
+    TapWidth {
+        /// The tap.
+        tap: TapId,
+        /// The lanes the spec names now.
+        sources: usize,
+        /// The lanes it was opened with.
+        opened: usize,
+    },
     /// No node at this key ([`Editor::set_latency`]).
     NoSuchNode {
         /// The key.
@@ -236,6 +248,15 @@ impl std::fmt::Display for CommitError {
                 write!(f, "node {} has no running unit to fade from", node.0)
             }
             Self::Fade(e) => write!(f, "{e}"),
+            Self::TapWidth {
+                tap,
+                sources,
+                opened,
+            } => write!(
+                f,
+                "tap {} names {sources} lanes but was opened with {opened}",
+                tap.0
+            ),
             Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
             Self::LatencyTooLong {
                 node,
@@ -343,7 +364,7 @@ pub struct Editor {
     /// Tap producers opened since the last commit, sent with the next.
     pending_taps: Vec<(TapId, TapWriter)>,
     /// Each open tap's reader, to see which were dropped.
-    tap_readers: BTreeMap<TapId, std::sync::Weak<()>>,
+    tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -458,7 +479,8 @@ impl Editor {
         let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
         self.pending_taps.retain(|(k, _)| *k != id);
         self.pending_taps.push((id, writer));
-        self.tap_readers.insert(id, reader.watch());
+        self.tap_readers
+            .insert(id, (reader.width(), reader.watch()));
         self.spec_mut()
             .topology
             .taps
@@ -474,6 +496,24 @@ impl Editor {
         self.spec_mut().topology.taps.remove(&id);
     }
 
+    /// Refuses a spec whose tap lanes disagree with the width the tap was
+    /// opened with: the writer the executor holds has that many rings.
+    fn check_tap_widths(&self) -> Result<(), CommitError> {
+        for (&tap, spec) in &self.spec.topology.taps {
+            match self.tap_readers.get(&tap) {
+                Some(&(opened, _)) if opened != spec.sources.len() => {
+                    return Err(CommitError::TapWidth {
+                        tap,
+                        sources: spec.sources.len(),
+                        opened,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Closes every tap whose [`TapReader`] was dropped, and returns how many.
     /// A dropped reader leaves its tap open (the audio thread then writes
     /// nothing for it); this is the control-side tick that takes it out of the
@@ -482,7 +522,7 @@ impl Editor {
         let gone: Vec<TapId> = self
             .tap_readers
             .iter()
-            .filter(|(_, alive)| alive.strong_count() == 0)
+            .filter(|(_, (_, alive))| alive.strong_count() == 0)
             .map(|(&id, _)| id)
             .collect();
         for &id in &gone {
@@ -1303,6 +1343,7 @@ impl Editor {
         // of that spec too.
         self.limits.block(prepare.max_block().get())?;
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        self.check_tap_widths()?;
         let valid = self.spec.validate().map_err(CommitError::Invalid)?;
         let (_, delta) = compile(&valid, &self.shapes, &prepare, self.base().map(|p| &**p))
             .map_err(CommitError::Compile)?;
@@ -1499,6 +1540,7 @@ impl Editor {
             return Err(CommitError::Backpressure);
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
+        self.check_tap_widths()?;
         if self.pending.is_empty()
             && self.pending_taps.is_empty()
             && self.fades.is_empty()

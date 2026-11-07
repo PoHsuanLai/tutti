@@ -85,8 +85,8 @@ use tutti_rt::AudioThreadCell;
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
-    AudioTaken, FadeOut, MotionEvent, SCHEDULE_CAPACITY, Scheduled, TransportAudio,
-    TransportCommand,
+    AudioTaken, FadeOut, IMMEDIATE_RESERVE, MotionEvent, SCHEDULE_CAPACITY, Scheduled,
+    TransportAudio, TransportCommand,
 };
 use tutti_types::{At, Frame};
 use tutti_types::{InterleavedMut, SampleRate, Samples, Seconds};
@@ -699,7 +699,7 @@ enum Gain {
 
 /// Capacity of a block's gain plan: an aim per walk step and a jump per
 /// command, bounded by the commands a block can apply.
-const GAIN_EVENTS: usize = 2 * (SCHEDULE_CAPACITY + 2);
+const GAIN_EVENTS: usize = 2 * (SCHEDULE_CAPACITY + IMMEDIATE_RESERVE + 2);
 
 /// A block's declick gain events, in offset order, on the stack.
 struct GainPlan {

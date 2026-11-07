@@ -10,12 +10,14 @@
 //!
 //! # The queue
 //!
-//! A preallocated MPMC ring of [`SCHEDULE_CAPACITY`] commands, and a
+//! A preallocated MPMC ring and a
 //! credit count beside it. A command holds one credit from `schedule` until
 //! the engine applies it (or it is cancelled), so there are never more than
-//! `SCHEDULE_CAPACITY` in flight: the ring's push cannot fail, and neither
+//! `SCHEDULE_CAPACITY` timed commands in flight, plus [`IMMEDIATE_RESERVE`]
+//! more that only `At::NextBlock` may take (a stop is never refused by a
+//! backlog of waiting commands): the ring's push cannot fail, and neither
 //! can the audio thread's move into its pending list, which is allocated
-//! at that size up front. With every credit held, `schedule` refuses the
+//! at the sum up front. With every credit held, `schedule` refuses the
 //! command and hands it back ([`ScheduleFull`]). That is the back-pressure:
 //! nothing is dropped on either side. A beat-timed command holds its credit
 //! while it waits for its beat, which is why
@@ -42,6 +44,14 @@ use tutti_types::Bpm;
 /// Scheduled transport commands that may be in flight at once: sent and not
 /// yet applied or cancelled.
 pub const SCHEDULE_CAPACITY: usize = 64;
+
+/// Credits only `At::NextBlock` commands (and so [`try_send`](super::MotionFsm::try_send))
+/// may take beyond [`SCHEDULE_CAPACITY`], so a backlog of commands waiting
+/// for a frame or a beat cannot refuse a stop button.
+pub const IMMEDIATE_RESERVE: usize = 8;
+
+/// Commands in flight at most: the ring and the pending list are sized to it.
+const IN_FLIGHT_MAX: usize = SCHEDULE_CAPACITY + IMMEDIATE_RESERVE;
 
 /// A transport change that can be scheduled for a time.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,7 +94,7 @@ impl core::fmt::Display for ScheduleFull {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
-            "{SCHEDULE_CAPACITY} transport commands in flight; {:?} at {:?} not sent",
+            "transport command queue full; {:?} at {:?} not sent",
             self.command, self.at
         )
     }
@@ -152,7 +162,7 @@ impl std::fmt::Debug for Schedule {
 impl Schedule {
     pub(crate) fn new() -> Self {
         Self {
-            queue: Arc::new(ArrayQueue::new(SCHEDULE_CAPACITY)),
+            queue: Arc::new(ArrayQueue::new(IN_FLIGHT_MAX)),
             credit: Arc::new(AtomicUsize::new(0)),
             next_seq: Arc::new(AtomicU64::new(0)),
             cancel_before: Arc::new(AtomicU64::new(0)),
@@ -165,7 +175,11 @@ impl Schedule {
     pub(crate) fn send(&self, at: At, command: TransportCommand) -> Result<(), ScheduleFull> {
         let mut held = self.credit.load(Ordering::Acquire);
         loop {
-            if held >= SCHEDULE_CAPACITY {
+            let limit = match at {
+                At::NextBlock => IN_FLIGHT_MAX,
+                _ => SCHEDULE_CAPACITY,
+            };
+            if held >= limit {
                 return Err(ScheduleFull { at, command });
             }
             match self.credit.compare_exchange_weak(
@@ -224,7 +238,7 @@ impl Schedule {
 }
 
 /// The audio thread's half of a [`Schedule`]: the commands pulled off the
-/// ring and not yet due, in a list reserved at [`SCHEDULE_CAPACITY`] and owned
+/// ring and not yet due, in a list reserved at its in-flight maximum and owned
 /// by the one value that walks them. Only a [`TransportAudio`](super::TransportAudio)
 /// holds one, so nothing else can reach the list, and a command leaves it
 /// only through [`take`](Self::take), which gives its credit back.
@@ -237,12 +251,12 @@ impl ScheduleAudio {
     pub(crate) fn new(shared: Schedule) -> Self {
         Self {
             shared,
-            pending: Vec::with_capacity(SCHEDULE_CAPACITY),
+            pending: Vec::with_capacity(IN_FLIGHT_MAX),
         }
     }
 
     /// Move what was sent into the pending list and drop what was cancelled.
-    /// Never allocates: the list was reserved at [`SCHEDULE_CAPACITY`], and
+    /// Never allocates: the list was reserved at its in-flight maximum, and
     /// the credit keeps it under that.
     pub(crate) fn gather(&mut self) {
         while let Some(cmd) = self.shared.queue.pop() {
@@ -321,14 +335,42 @@ mod tests {
     /// The credit is the back-pressure: with every one held the command is
     /// handed back, and applying one frees one.
     ///
-    /// Mutation: check `held > SCHEDULE_CAPACITY` → one more is taken, the
-    /// ring's push fails → panics instead of refusing → fails.
+    /// Mutation: check `held > limit` → one more is taken past the bound
+    /// → the refusal is not returned → fails.
     #[test]
     fn a_full_schedule_refuses_and_hands_the_command_back() {
         let s = Schedule::new();
         let play = TransportCommand::Motion(MotionEvent::Play);
         for i in 0..SCHEDULE_CAPACITY {
             s.send(At::Frame(Frame(i as u64)), play).expect("room");
+        }
+        let at = At::Frame(Frame(99));
+        assert_eq!(s.send(at, play), Err(ScheduleFull { at, command: play }));
+        let mut audio = ScheduleAudio::new(s.clone());
+        audio.gather();
+        assert_eq!(audio.pending().len(), SCHEDULE_CAPACITY);
+        audio.take(0, false);
+        s.send(at, play).expect("one credit back");
+    }
+
+    /// Timed commands cannot use the immediate reserve: the 65th is refused
+    /// while `IMMEDIATE_RESERVE` immediate commands still fit, and the next
+    /// is handed back.
+    ///
+    /// Mutation (run): the limit `IN_FLIGHT_MAX` for every `At` → the 65th
+    /// timed command is accepted → fails; `SCHEDULE_CAPACITY` for every `At`
+    /// → the first immediate command past 64 is refused → fails.
+    #[test]
+    fn immediate_commands_have_a_reserve_timed_ones_cannot_use() {
+        let s = Schedule::new();
+        let play = TransportCommand::Motion(MotionEvent::Play);
+        for i in 0..SCHEDULE_CAPACITY {
+            s.send(At::Beat(tutti_types::Beat(1000.0 + i as f64)), play)
+                .expect("room");
+        }
+        assert!(s.send(At::Frame(Frame(0)), play).is_err());
+        for _ in 0..IMMEDIATE_RESERVE {
+            s.send(At::NextBlock, play).expect("reserve");
         }
         assert_eq!(
             s.send(At::NextBlock, play),
@@ -337,11 +379,7 @@ mod tests {
                 command: play
             })
         );
-        let mut audio = ScheduleAudio::new(s.clone());
-        audio.gather();
-        assert_eq!(audio.pending().len(), SCHEDULE_CAPACITY);
-        audio.take(0, false);
-        s.send(At::NextBlock, play).expect("one credit back");
+        assert_eq!(s.outstanding(), SCHEDULE_CAPACITY + IMMEDIATE_RESERVE);
     }
 
     /// Cancelling drops what was sent before it, frees its credit, and

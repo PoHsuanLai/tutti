@@ -377,9 +377,12 @@ impl MotionFsm {
     /// available synchronously. Observe the outcome by reading
     /// [`MotionFsm::motion`] on a later frame.
     ///
-    /// With no engine running over the transport, events stay queued, and
-    /// past [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) in flight (timed
-    /// commands waiting for their time count) this returns [`QueueFull`].
+    /// With no engine running over the transport, events stay queued. Past
+    /// [`SCHEDULE_CAPACITY`](super::SCHEDULE_CAPACITY) in flight (timed
+    /// commands waiting for their time count) it may still use the
+    /// [`IMMEDIATE_RESERVE`](super::IMMEDIATE_RESERVE) credits only
+    /// `At::NextBlock` commands take, so a backlog of waiting commands cannot
+    /// refuse a stop; past those too this returns [`QueueFull`].
     ///
     /// RT-safe: lock-free, no allocation.
     ///
@@ -652,7 +655,7 @@ pub(crate) mod harness {
 mod tests {
     use super::harness::Audio;
     use super::*;
-    use crate::timed::SCHEDULE_CAPACITY;
+    use crate::timed::{IMMEDIATE_RESERVE, SCHEDULE_CAPACITY};
     use tutti_types::Beat;
 
     /// The control handle and the audio half the engine would own.
@@ -727,7 +730,7 @@ mod tests {
     #[test]
     fn send_reports_a_full_queue() {
         let (m, _a) = fsm();
-        for _ in 0..SCHEDULE_CAPACITY {
+        for _ in 0..SCHEDULE_CAPACITY + IMMEDIATE_RESERVE {
             assert!(m.try_send(MotionEvent::Play).is_ok());
         }
         assert_eq!(
@@ -739,27 +742,38 @@ mod tests {
         );
     }
 
-    /// `try_send` and `schedule` draw on the same credits: commands waiting
-    /// for their time fill the queue `try_send` uses, and the refusal still
+    /// A backlog of commands waiting for their time cannot refuse a stop:
+    /// `try_send` has the immediate reserve past the timed limit, applies in
+    /// send order after the waiting ones, and the reserve's own limit still
     /// hands the event back.
     ///
-    /// Mutation (run): `try_send` turning a refusal into `Ok` → the full
-    /// queue is not reported → fails.
+    /// Mutation (run): `Schedule::send` limiting every `At` to
+    /// `SCHEDULE_CAPACITY` → the stop is refused → fails; `try_send` turning
+    /// a refusal into `Ok` → the ninth immediate command is not reported →
+    /// fails.
     #[test]
-    fn commands_waiting_for_their_time_fill_the_queue_try_send_uses() {
+    fn a_backlog_of_timed_commands_does_not_refuse_a_stop() {
         let (m, mut a) = fsm();
+        m.try_send(MotionEvent::Play).expect("room");
+        a.drain();
+        assert!(m.is_playing());
         for _ in 0..SCHEDULE_CAPACITY {
             m.schedule(At::Beat(Beat(1000.0)), MotionEvent::Play)
                 .expect("room");
         }
+        for _ in 1..IMMEDIATE_RESERVE {
+            m.try_send(MotionEvent::Play).expect("reserve");
+        }
+        m.try_send(MotionEvent::stop_unfaded())
+            .expect("the last reserve credit takes the stop");
         assert_eq!(
             m.try_send(MotionEvent::Play),
             Err(QueueFull {
                 event: MotionEvent::Play
             })
         );
-        m.cancel_scheduled();
         a.drain();
+        assert!(m.is_stopped(), "the stop applied, last in send order");
         m.try_send(MotionEvent::Play)
             .expect("the engine took the credits back");
     }

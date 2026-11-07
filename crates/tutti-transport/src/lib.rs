@@ -39,7 +39,7 @@ pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use project_meter::{MeterSlot, MeterSlotCell, MeterSlotReader, ProjectMeter};
 pub use settings::TransportSettings;
-pub use timed::{SCHEDULE_CAPACITY, ScheduleFull, Scheduled, TransportCommand};
+pub use timed::{IMMEDIATE_RESERVE, SCHEDULE_CAPACITY, ScheduleFull, Scheduled, TransportCommand};
 
 pub use timeline::{OfflineClock, OfflineTransport, Timeline};
 

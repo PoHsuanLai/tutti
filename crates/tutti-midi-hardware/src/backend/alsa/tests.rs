@@ -349,3 +349,28 @@ fn a_watch_that_panics_reports_its_failure() {
     }
     assert!(devices.watch_failure().unwrap().contains("panicked"));
 }
+
+/// Asking the backend what a device can carry enumerates, and must not announce
+/// anything for it. Mutation: `AlsaEndpoints::list` opening a client per call
+/// (as before) adds hundreds of wakes.
+#[test]
+fn asking_for_capabilities_does_not_wake_the_watch() {
+    let devices = Devices::open().unwrap();
+    let name = unique("caps");
+    let _device = plug(&name);
+    let id = info(until(&devices, added(&name))).id;
+    // The first call opens the enumerating client, which announces itself once.
+    assert!(devices.capability(&id).is_some());
+    devices.wait(Duration::from_millis(300));
+    let before = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
+    for _ in 0..20 {
+        devices.capability(&id);
+    }
+    devices.wait(Duration::from_millis(500));
+    let after = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        after - before <= 3,
+        "{} wakes for 20 capability asks",
+        after - before
+    );
+}

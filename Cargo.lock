@@ -4307,6 +4307,7 @@ dependencies = [
  "tracing",
  "tutti-codec",
  "tutti-fixtures",
+ "tutti-nodes",
  "tutti-types",
  "vorbis_rs",
 ]

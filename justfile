@@ -106,6 +106,12 @@ check-features:
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features wav --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features aiff --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features flac --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features vorbis --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
     cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-hardware --features sequencer-tests --all-targets -- -D warnings
@@ -132,6 +138,14 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
+    # A `Format` variant exists only with its feature: each is tested alone (a
+    # workspace run has them all on, through tutti-export).
+    cargo nextest run --locked -p tutti-codec
+    cargo nextest run --locked -p tutti-codec --features wav
+    cargo nextest run --locked -p tutti-codec --features aiff
+    cargo nextest run --locked -p tutti-codec --features flac
+    cargo nextest run --locked -p tutti-codec --features vorbis
+    cargo nextest run --locked -p tutti-codec --all-features
     # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
     # dev-dependency turns it on); this step names it so tests/serde.rs still runs
     # if that edge goes away.
@@ -393,11 +407,12 @@ lint:
 # `_alloca`. Clippy never links, so the stub has only to let the C compile.
 #
 # This is the part of CI's `clippy (windows)` job that Linux can do: the
-# workspace minus five members, then the plugin crates with every format
-# feature. The excluded members cannot cross-compile, because they need a real
+# workspace minus the members that cannot cross-compile, then the plugin crates
+# with every format feature. The excluded members need a real
 # Windows C toolchain and headers, not a stub. `ogg_next_sys` (the vorbis codec,
-# via tutti-export, which `tutti` and `bevy-tutti` depend on) includes
-# `<string.h>`. `tutti-vst3-host`'s `conformance` feature (on in its own tests
+# via tutti-codec's `vorbis` feature, which tutti-export turns on and `tutti` and
+# `bevy-tutti` depend on) includes `<string.h>`. `tutti-codec` itself is checked
+# below with its other formats. `tutti-vst3-host`'s `conformance` feature (on in its own tests
 # and `tutti-plugin-server`'s) compiles and links the `audio-probe` DLL against
 # the SDK's Win32 sources. That is why the CI job runs on `windows-latest`.
 # `tutti-shared-plugin-vst3-cpp` compiles the SDK's Win32 sources too, and
@@ -414,10 +429,11 @@ check-windows:
     export CFLAGS_x86_64_pc_windows_msvc="-I$stub"
     win() { cargo clippy --locked --target x86_64-pc-windows-msvc "$@" -- -D warnings; }
     win --workspace --all-targets --exclude tutti-rustysynth \
-        --exclude tutti-export --exclude tutti --exclude bevy-tutti \
+        --exclude tutti-codec --exclude tutti-export --exclude tutti --exclude bevy-tutti \
         --exclude tutti-vst3-host --exclude tutti-plugin-server \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
     win -p tutti-shared-plugin --all-targets
+    win -p tutti-codec --features wav,aiff,flac,serde --all-targets
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets

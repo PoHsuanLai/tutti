@@ -228,3 +228,6 @@ impl Encoder<BufWriter<File>> {
         Ok(encoder)
     }
 }
+
+#[cfg(test)]
+mod tests;

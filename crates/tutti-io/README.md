@@ -78,7 +78,7 @@ the same three lines record a microphone — that interchangeability is the reas
 the traits exist.
 
 ```rust
-use tutti_core::AudioTap;
+use tutti_metering::AudioTap;
 use tutti_types::Samples;
 use tutti_io::{pump, AudioIn, AudioOut, BitDepth, TapIn, WavOut};
 

@@ -95,7 +95,7 @@ fn the_facade_contains_no_code() {
 /// **Every whole-crate re-export must be aliased.**
 ///
 /// A bare `pub use tutti_core;` would let a consumer write
-/// `tutti::tutti_core::Engine` — the redundant path
+/// `tutti::tutti_engine::Engine` — the redundant path
 /// `scripts/check-canonical-paths.sh` exists to prevent, in a shape its
 /// chained-path regex cannot see: that regex requires an underscore-bearing
 /// crate segment on both sides, and `tutti::` has none. Aliasing removes the

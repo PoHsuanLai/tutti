@@ -997,7 +997,7 @@ pub const MIN_EVENT_PORT_CAPACITY: u32 = 256;
 
 /// The most events per block [`EventDensity::capacity`] sizes a port for: one
 /// per frame of the engine's default largest block
-/// (`tutti_core::DEFAULT_BLOCK_CAPACITY`, 8192). A longer block does not get a
+/// (`tutti_engine::DEFAULT_BLOCK_CAPACITY`, 8192). A longer block does not get a
 /// larger port: a port is 32 bytes an event, 295 KB at the cap with its
 /// note-off room, and a PDC delay on it holds up to `3.75 ×` that again
 /// (about 2.5 MB: see `EventSlotCapacity::fifo`). Past the cap a port still

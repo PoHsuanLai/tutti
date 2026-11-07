@@ -19,10 +19,10 @@ use bevy_ecs::prelude::*;
 use bevy_tutti::prelude::*;
 // `SessionNode` is not imported here: the prelude carries it, because
 // `spawn_audio_node` is generic over it and a host needs to name it.
-use tutti_core::LoopEdit;
-use tutti_core::transport::Transport;
 use tutti_nodes::testing::{Osc, Through};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::LoopEdit;
+use tutti_transport::Transport;
 use tutti_types::{At, Hz, LoopRange, Q};
 
 const SAMPLE_RATE: f64 = 48_000.0;

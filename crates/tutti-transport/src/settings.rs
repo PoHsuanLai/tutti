@@ -1,0 +1,183 @@
+//! Plain shared transport state — the values, not the decisions.
+//!
+//! Nothing here goes through the command queue and nothing can reject a
+//! write: setting the tempo is a store, not a request. That is the whole
+//! distinction from [`MotionFsm`](super::MotionFsm), where the state machine
+//! decides whether a transition happens at all.
+//!
+//! Fields are public because there is nothing to encapsulate — each one is a
+//! lock-free cell shared between the UI thread and the audio thread, and a
+//! forwarding method would only rename it.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
+use tutti_types::{Beat, Bpm};
+
+/// Transport values shared between threads.
+///
+/// Clone shares every field — this is a handle, not a snapshot.
+#[derive(Clone, Debug)]
+pub struct TransportSettings {
+    /// Beats per minute. Read by the clock every buffer.
+    pub tempo: Arc<AtomicF64>,
+    /// The playhead, in beats. Written by `TransportClock` via its position
+    /// writeback (and by a locate, which moves the readout at once); read by
+    /// the UI and by pull-based sources through [`beat`](Self::beat).
+    ///
+    /// Crate-private, as is [`segment_generation`](Self::segment_generation):
+    /// only the transport's one playhead writer
+    /// ([`Transport::clock_links`](super::Transport::clock_links)) stores
+    /// them. A public cell was a second writer anyone could be:
+    ///
+    /// ```compile_fail,E0616
+    /// let t = tutti_transport::Transport::new(48_000.0);
+    /// t.settings.beat.store(8.0, std::sync::atomic::Ordering::Release);
+    /// ```
+    ///
+    /// A host that drives the playhead by hand takes the writer and stores
+    /// through it ([`ClockLinks::set_playhead`](super::ClockLinks::set_playhead)).
+    pub(crate) beat: Arc<AtomicF64>,
+    /// The segment the playhead is on
+    /// ([`Timeline::segment_generation`](super::Timeline::segment_generation)):
+    /// moves on at every seek, tempo or rate change, loop wrap and play
+    /// start. Written by `TransportClock` beside [`beat`](Self::beat), and
+    /// before it. Crate-private, like [`beat`](Self::beat):
+    ///
+    /// ```compile_fail,E0616
+    /// let t = tutti_transport::Transport::new(48_000.0);
+    /// t.settings.segment_generation.store(0, std::sync::atomic::Ordering::Release);
+    /// ```
+    pub(crate) segment_generation: Arc<AtomicU64>,
+    /// Whether the transport is armed and capturing. Read by the metronome's
+    /// `RecordingOnly` mode and by hosted plugins' transport snapshot.
+    pub recording: Arc<AtomicBool>,
+    /// Whether a count-in is running. Read independently of `recording` — the
+    /// metronome's `RecordingOnly` mode plays only when recording *and not* in
+    /// preroll, while `PrerollOnly` plays on exactly the opposite condition.
+    ///
+    /// No engine-side writer sets it; a host drives it around its own
+    /// count-in.
+    pub in_preroll: Arc<AtomicBool>,
+    /// Derived from motion by the engine's motion machine — the clock
+    /// reads it to decide whether to advance. Not set directly.
+    pub paused: Arc<AtomicBool>,
+    /// Free-running sample count since the stream started, written by
+    /// `TransportClock` every buffer.
+    ///
+    /// Unlike [`beat`](Self::beat) this never jumps: it ignores loops, seeks and
+    /// stops. Hosted plugins receive it as VST3's `continousTimeSamples` /
+    /// CLAP's `steady_time`, which free-running effects key off precisely
+    /// because the playhead is discontinuous.
+    pub steady_time: Arc<AtomicI64>,
+    /// The tempo the clock is actually running at: [`tempo`](Self::tempo)
+    /// as the clock last took it, which ignores wiggles smaller than its
+    /// hysteresis. Written by the clock; what a beat must be resolved with
+    /// to agree with it.
+    pub tempo_in_force: Arc<AtomicF64>,
+}
+
+impl TransportSettings {
+    /// Fresh settings: 120 BPM, beat 0, paused, not recording.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tempo: Arc::new(AtomicF64::new(120.0)),
+            beat: Arc::new(AtomicF64::new(0.0)),
+            segment_generation: Arc::new(AtomicU64::new(0)),
+            recording: Arc::new(AtomicBool::new(false)),
+            in_preroll: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(true)),
+            steady_time: Arc::new(AtomicI64::new(0)),
+            tempo_in_force: Arc::new(AtomicF64::new(120.0)),
+        }
+    }
+
+    /// Samples elapsed since the stream started. Free-running: never reset by a
+    /// loop, seek, or stop.
+    pub fn steady_time(&self) -> i64 {
+        self.steady_time.load(Ordering::Relaxed)
+    }
+
+    /// The tempo in force.
+    pub fn tempo(&self) -> Bpm {
+        Bpm(self.tempo.load(Ordering::Acquire))
+    }
+
+    /// Stores a new tempo. **Unclamped** — zero and negative values reach the
+    /// clock, which is why the derived conversions guard against them.
+    pub fn set_tempo(&self, bpm: impl Into<Bpm>) {
+        self.tempo.store(bpm.into().get(), Ordering::Release);
+    }
+
+    /// The playhead as last published by the clock.
+    pub fn beat(&self) -> Beat {
+        Beat(self.beat.load(Ordering::Acquire))
+    }
+
+    /// The playhead's segment generation as last published by the clock.
+    pub fn segment_generation(&self) -> u64 {
+        self.segment_generation.load(Ordering::Acquire)
+    }
+
+    /// Overwrite the published playhead: this crate's tests, which stand in
+    /// for the clock. Outside it, the writer is
+    /// [`ClockLinks::set_playhead`](super::ClockLinks::set_playhead).
+    #[cfg(test)]
+    pub(crate) fn set_beat(&self, beat: impl Into<Beat>) {
+        self.beat.store(beat.into().get(), Ordering::Release);
+    }
+
+    /// Whether the transport is armed and capturing.
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.recording.load(Ordering::Acquire)
+    }
+
+    /// Arm or disarm recording.
+    pub fn set_recording(&self, recording: bool) {
+        self.recording.store(recording, Ordering::Release);
+    }
+
+    /// Whether a count-in is running.
+    #[must_use]
+    pub fn is_in_preroll(&self) -> bool {
+        self.in_preroll.load(Ordering::Acquire)
+    }
+
+    /// Mark the count-in as running or finished.
+    pub fn set_in_preroll(&self, in_preroll: bool) {
+        self.in_preroll.store(in_preroll, Ordering::Release);
+    }
+
+    /// Whether the clock is holding position.
+    ///
+    /// Read-only here: the flag is derived from motion by
+    /// the engine's motion machine, so there is no setter to race it with.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
+}
+
+impl Default for TransportSettings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clone_shares_state() {
+        let a = TransportSettings::new();
+        let b = a.clone();
+
+        a.set_tempo(140.0);
+        assert_eq!(b.tempo().get(), 140.0, "clones must share, not copy");
+    }
+}

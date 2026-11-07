@@ -72,7 +72,7 @@ fn process_steady_state_does_not_allocate() {
 /// installed → this test trips the gate, the two without a meter pass.
 #[test]
 fn process_with_a_meter_does_not_allocate() {
-    use tutti_core::ProjectMeter;
+    use tutti_transport::ProjectMeter;
     use tutti_types::{Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();

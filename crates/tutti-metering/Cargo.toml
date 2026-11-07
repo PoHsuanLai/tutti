@@ -1,0 +1,30 @@
+[package]
+name = "tutti-metering"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "Level metering for the Tutti audio engine: master meter, analysis tap, load meter"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-metering"
+readme = "README.md"
+publish = false
+keywords = ["audio", "metering", "real-time", "daw"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+
+ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
+parking_lot = { version = "0.12", default-features = false }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

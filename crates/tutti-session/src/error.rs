@@ -10,14 +10,14 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Wraps an error from `tutti_core::Error`.
+    /// Wraps an error from `tutti_engine::Error`.
     #[error(transparent)]
-    Core(#[from] tutti_core::Error),
+    Core(#[from] tutti_engine::Error),
 
     /// The graph engine refused its graph: wraps
-    /// `tutti_core::GraphEngineError`.
+    /// `tutti_engine::GraphEngineError`.
     #[error("graph engine: {0}")]
-    Graph(#[from] tutti_core::GraphEngineError),
+    Graph(#[from] tutti_engine::GraphEngineError),
 
     /// The graph refused a re-prepare: a device restart asked for a block
     /// past the engine's capacity, came while another re-prepare was between

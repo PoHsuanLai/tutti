@@ -26,9 +26,9 @@ fn one_import_renders_a_block() {
         ))
         .expect("builds");
 
-    let transport = tutti::core::Transport::new(48_000.0);
+    let transport = tutti::transport::Transport::new(48_000.0);
     let engine =
-        tutti::core::Engine::new(&transport, &mut editor, executor).expect("within the limits");
+        tutti::engine::Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
     let mut out = vec![0.0f32; 256 * 2];
     engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
@@ -88,7 +88,7 @@ fn a_graph_bounces_to_buffers_through_the_facade() {
         },
         ..Default::default()
     };
-    let rendered = tutti::export::render_to_buffers(graph, &cfg, &tutti::core::FrozenClock)
+    let rendered = tutti::export::render_to_buffers(graph, &cfg, &tutti::transport::FrozenClock)
         .expect("a DC graph renders");
     assert!(!rendered.planes.is_empty());
     assert!(rendered.planes[0].iter().all(|&s| (s - 0.5).abs() < 1e-6));

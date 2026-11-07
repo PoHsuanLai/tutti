@@ -214,7 +214,7 @@ fn _surface_compiles() {
 #[test]
 fn the_timeline_handle_tracks_the_live_transport() {
     use bevy_tutti::graph::TransportRes;
-    use tutti_core::transport::Transport;
+    use tutti_transport::Transport;
 
     let res = TransportRes(Transport::new(48_000.0));
     let timeline = res.timeline();

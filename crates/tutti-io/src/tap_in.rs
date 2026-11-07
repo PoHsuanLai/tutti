@@ -18,7 +18,7 @@
 //! `matching_sink` here as there is on `MicIn`, because a tap has no device to
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
-use tutti_core::TapCons;
+use tutti_metering::TapCons;
 use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, Samples};
 
@@ -26,7 +26,7 @@ use tutti_types::{ChannelLayout, Samples};
 /// what the graph is playing.
 ///
 /// The audio callback copies every master block into a lock-free stereo ring
-/// ([`tutti_core::AudioTap`]); construct this with [`new`](Self::new) from what
+/// ([`tutti_metering::AudioTap`]); construct this with [`new`](Self::new) from what
 /// `AudioTap::open` returned, and drain it from a pump thread (for example a
 /// [`Recorder`](crate::Recorder)), never from the audio thread.
 ///
@@ -39,7 +39,7 @@ use tutti_types::{ChannelLayout, Samples};
 /// ```no_run
 /// use tutti_io::{BitDepth, Recorder, TapIn, WavOut};
 ///
-/// # fn go(tap: &tutti_core::AudioTap) -> tutti_io::Result<()> {
+/// # fn go(tap: &tutti_metering::AudioTap) -> tutti_io::Result<()> {
 /// let src = TapIn::new(tap.open().expect("tap is free"));
 /// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
 /// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs

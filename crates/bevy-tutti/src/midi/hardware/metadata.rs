@@ -35,7 +35,7 @@ const FLEX_GROUP: MidiGroup = MidiGroup::FIRST;
 /// # Describing state, not owning it
 ///
 /// [`Tempo`](Self::Tempo) and [`TimeSignature`](Self::TimeSignature) name values
-/// the [`Transport`](tutti_core::transport::Transport) also holds, which reads
+/// the [`Transport`](tutti_transport::Transport) also holds, which reads
 /// like a second writer and is not one: every arm of
 /// [`flex_metadata_broadcast_system`] builds a packet and queues it into the
 /// hardware-out mailbox. There is no path from here back into the transport, so

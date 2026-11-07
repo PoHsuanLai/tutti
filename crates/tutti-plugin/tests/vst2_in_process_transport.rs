@@ -16,13 +16,13 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use tutti_core::ProjectMeter;
 use tutti_graph::{
     Cx, Env, GraphBuilder, IntoNode, Io, LoopRange, Node, Offset, Prepare, Renderer, Shape, Status,
     Transport, TransportChanges, Unforkable,
 };
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, ChannelLayout, Frame, MeterChange, MeterMap, NoteValue, SampleRate,

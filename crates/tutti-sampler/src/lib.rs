@@ -31,12 +31,12 @@ pub use error::{Error, Result};
 
 /// Widest frame the sampler reads, interpolates, or emits, in channels.
 ///
-/// Equal to [`tutti_core::MAX_ROOT_CHANNELS`], the graph root's own ceiling,
+/// Equal to [`tutti_graph::MAX_ROOT_CHANNELS`], the graph root's own ceiling,
 /// and the two move together: a voice wider than the root can render is a
 /// voice nobody can hear, and letting the sampler exceed it would move the
 /// truncation silently downstream (to the root's fold) rather than reporting
 /// it here ([`PoolTooWide`]).
-pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::MAX_ROOT_CHANNELS;
+pub const MAX_SAMPLER_CHANNELS: usize = tutti_graph::MAX_ROOT_CHANNELS;
 
 /// Reject the empty layout for anything that is a graph node.
 ///

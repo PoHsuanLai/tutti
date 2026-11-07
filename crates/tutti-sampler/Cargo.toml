@@ -46,16 +46,10 @@ ogg = ["tutti-io/ogg"]
 files = ["wav", "flac", "mp3", "ogg"]
 
 [dependencies]
-# Base dependency - format features added above. `default-features = false`
-# matches every sibling and keeps this crate immune if tutti-core ever grows a
-# default — it has none today (`default = []`), so the flag currently
-# suppresses nothing.
-tutti-core = { path = "../tutti-core", default-features = false }
-
 # The file edge: `Wave` (the resident buffer a voice plays), and with a codec
 # feature the decoder the butler loads and streams through (`Wave::read`,
 # `Wave::read_metadata`, `FileIn`). No cycle: `tutti-io` names nothing above
-# `tutti-core`.
+# `tutti-metering`.
 tutti-io = { path = "../tutti-io" }
 
 # The graph: every node here is a `tutti_graph::Node`, reads
@@ -107,11 +101,14 @@ criterion.workspace = true
 # coverage it does not have, and one that silently does not run is the same
 # claim with fewer clues.
 tutti-sampler = { path = ".", features = ["test-support", "flac"] }
-# Stimulus nodes (`tutti_nodes::testing`). No cycle: `tutti-nodes` names
-# nothing above `tutti-core`.
+# Stimulus nodes (`tutti_nodes::testing`). `tutti-nodes` does not
+# depend on this crate.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # `contract` for the node harnesses (`drive_input`, `Direct`, `BlockRig`).
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+# The engine and transport the clock tests render through.
+tutti-engine = { path = "../tutti-engine" }
+tutti-transport = { path = "../tutti-transport" }
 # `ControlProgram`, for a control lane on a voice's gain port
 # (`voice_gain_survives_commit.rs`). No cycle: `tutti-mod` names no tutti
 # crate but `tutti-types`.

@@ -54,8 +54,8 @@ tutti-graph = { path = "../tutti-graph" }
 audio-automation = { workspace = true }
 
 # `ClickNode` reads the count-in flag off a `Transport` and follows a
-# `ProjectMeter`. `tutti-core` has a dev edge back to this crate.
-tutti-core = { path = "../tutti-core", default-features = false }
+# `ProjectMeter`.
+tutti-transport = { path = "../tutti-transport" }
 
 [dev-dependencies]
 # The tests' reference values (`sin`, `cos`, `tan`, `log10`, `pow`) call
@@ -80,11 +80,13 @@ wide = { version = "1.6", default-features = false }
 # `contract`: the graph's sample-accuracy contract harness, which
 # `tests/contract.rs` runs the latency-bearing nodes through.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
+# `Engine`, which the engine bench and `tests/rt_no_alloc_engine.rs` render the
+# nodes through.
+tutti-engine = { path = "../tutti-engine" }
 
 # The engine's graph-render bench. It measures `Engine::process`, which is
-# `tutti-core`'s, but it lives here because the graph it renders is built from
-# this crate's nodes and `tutti-core` cannot depend on them (the edge runs the
-# other way).
+# `tutti-engine`'s, but it lives here because the graph it renders is built from
+# this crate's nodes and `tutti-engine` has only a dev edge to them.
 [[bench]]
 name = "engine_render"
 harness = false

@@ -29,11 +29,15 @@ pub use tutti_session as session;
 // reachable through this crate, the redundant path it exists to catch cannot
 // be written in the first place. `bevy-tutti` aliases the same way.
 
-/// The engine (`tutti-core`): `Engine`, `Transport`, metering, delay
-/// compensation.
-// Shadows the `core` extern-prelude crate inside this crate only, which is
-// harmless because this crate has no code; `::core::` names the real one.
-pub use tutti_core as core;
+/// The engine (`tutti-engine`): `Engine`, the per-block graph render.
+pub use tutti_engine as engine;
+
+/// Playback transport (`tutti-transport`): tempo, loop, the motion state
+/// machine, timed commands, the offline timeline.
+pub use tutti_transport as transport;
+
+/// Level metering (`tutti-metering`): `MasterMeter`, `AudioTap`, `LoadMeter`.
+pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
 /// buffer views, the I/O edge traits.
@@ -154,14 +158,17 @@ pub use tutti_plugin as plugin;
 /// `Phase` is the session's (`tutti_session::Phase`); the oscillator phase
 /// unit is `tutti::types::Phase`.
 pub mod prelude {
-    pub use tutti_core::prelude::*;
-    pub use tutti_core::transport::{
-        FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
-        OfflineTimelineConfig, Then,
+    pub use tutti_engine::{Engine, Error};
+    pub use tutti_graph::{CrossfadeCurve, MAX_ROOT_CHANNELS};
+    pub use tutti_metering::{
+        AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
     };
-    pub use tutti_graph::CrossfadeCurve;
     pub use tutti_nodes::{ClickState, MetronomeMode};
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_transport::{
+        FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, OfflineTimeline,
+        OfflineTimelineConfig, Then, Timeline, Transport, TransportState,
+    };
     pub use tutti_types::LoopRange;
     pub use tutti_types::prelude::*;
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};

@@ -47,11 +47,12 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tutti_core::Transport;
-use tutti_core::{Engine, MotionEvent};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare, Unforkable};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
+use tutti_transport::MotionEvent;
+use tutti_transport::Transport;
 use tutti_types::Samples;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};

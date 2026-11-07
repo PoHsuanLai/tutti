@@ -167,10 +167,10 @@ mod tests {
     use crate::graph::{PendingCrossfades, SpawnAudioNode};
     use crate::{AudioEngineState, LatencyCompensationPlugin, TuttiPlugin};
     use bevy_app::App;
-    use tutti_core::MotionEvent;
     use tutti_cpal::{ManualStream, ManualStreamDriver};
     use tutti_nodes::LimiterNode;
     use tutti_nodes::testing::Osc;
+    use tutti_transport::MotionEvent;
     use tutti_types::{At, ChannelLayout, Db, Frame, Hz, SampleRate};
 
     const OLD: f64 = 44_100.0;
@@ -243,7 +243,7 @@ mod tests {
         (crossings[crossings.len() - 1] - crossings[0]) / (crossings.len() - 1) as f64
     }
 
-    fn transport(app: &App) -> tutti_core::Transport {
+    fn transport(app: &App) -> tutti_transport::Transport {
         app.world().resource::<TransportRes>().0.clone()
     }
 

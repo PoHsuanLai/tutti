@@ -313,11 +313,11 @@ mod tests {
     use crate::{AudioEngineState, TuttiPlugin};
     use bevy_app::App;
     use std::sync::{Arc, Mutex};
-    use tutti_core::MotionEvent;
-    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_cpal::{ManualStreamDriver, OutputSpec};
     use tutti_export::{ExportConfig, RenderConfig};
     use tutti_nodes::MetronomeMode;
+    use tutti_transport::MotionEvent;
+    use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate};
 
     const RATE: f64 = 48_000.0;

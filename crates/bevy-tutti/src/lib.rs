@@ -77,7 +77,7 @@
 //! ```rust
 //! # use bevy_ecs::prelude::*;
 //! # use bevy_tutti::prelude::*;
-//! # use tutti_core::transport::MotionEvent;
+//! # use tutti_transport::MotionEvent;
 //! fn control_audio(
 //!     transport: Res<TransportRes>,
 //!     mut graph: ResMut<AudioGraphRes>,
@@ -289,19 +289,22 @@ pub mod prelude {
     pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
     pub use crate::graph::AudioNode;
-    pub use tutti_core::prelude::*;
+    pub use tutti_engine::{Engine, Error};
     pub use tutti_graph::CrossfadeCurve;
+    pub use tutti_graph::MAX_ROOT_CHANNELS;
     /// A plain node's fork, said at insert: the wrappers that make any
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
+    pub use tutti_metering::{
+        AudioTap, LoadMeter, LoadReading, MasterMeter, MeterReading, TapBusy,
+    };
     pub use tutti_rt::{ArcLend, Loan, Reader};
+    pub use tutti_transport::{Timeline, Transport, TransportState};
     pub use tutti_types::prelude::*;
     pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
-    pub use tutti_core::transport::{
-        FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, Then,
-    };
     pub use tutti_nodes::{ClickState, MetronomeMode};
+    pub use tutti_transport::{FadeOut, LoopEdit, LoopRegion, MotionEvent, MotionState, Then};
     pub use tutti_types::LoopRange;
 }
 

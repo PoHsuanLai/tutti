@@ -82,7 +82,7 @@ documentation has that example.
 ## Channel ceiling
 
 `MAX_SAMPLER_CHANNELS` is the widest frame a voice reads or emits. It equals
-`tutti_core::MAX_ROOT_CHANNELS`, the graph root's width: a voice wider than the
+`tutti_graph::MAX_ROOT_CHANNELS`, the graph root's width: a voice wider than the
 root could render would be truncated downstream, so the sampler refuses it
 here instead (`VoicePool::with_channels` returns `PoolTooWide`).
 

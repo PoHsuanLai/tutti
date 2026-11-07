@@ -34,7 +34,11 @@ bevy_tasks.workspace = true
 # (The Asset derive on `WaveAsset` is `tutti-io/bevy`, enabled by `sampler`
 # below.) bevy-tutti supplies the node component, the reconcile systems and the
 # CPAL audio callback (src/engine/).
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-transport = { path = "../tutti-transport" }
+# Only the prelude names `Engine` and `Error`; bevy-tutti reaches the engine
+# through `tutti-session`.
+tutti-engine = { path = "../tutti-engine" }
+tutti-metering = { path = "../tutti-metering" }
 # `bevy` here is the `Reflect` derives only (no ECS surface). Needed
 # unconditionally, not just under `modulation`: `AudioConfig` reflects its
 # `ChannelLayout` field; ignoring it in reflection would reset a surround
@@ -255,7 +259,7 @@ hound = "3.5"
 tempfile = "3.8"
 # `AudioTap::open` hands back a `ringbuf` consumer. Naming its `Consumer` trait
 # is what lets the tap test pop the frames a simulated callback pushed, rather
-# than asserting only that an `is_open` flag flipped. Same version tutti-core
+# than asserting only that an `is_open` flag flipped. Same version tutti-metering
 # builds the ring with.
 ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `tests/plugin_capture.rs` loads the reference CLAP plugin through a real

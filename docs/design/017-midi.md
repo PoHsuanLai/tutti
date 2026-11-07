@@ -53,8 +53,8 @@ Three ways of reading a message compete. `MidiMessage` has 22 variants and almos
 no production consumer outside its crate; it has no group, mints a `NoteId` on
 decode, and repeats `frame_offset` in each variant. The polysynth, SoundFont,
 the CLAP host and the VST3 host now read `tutti_ump::Message` (stage 2); the VST3
-host still reaches `midi2` in `PerNoteBendRanges::observe`, `sysex7_payload` and
-`from_midi1_bytes`.
+host still reaches `midi2` through `tutti-midi-types`' `PerNoteBendRanges::observe`
+and `MidiEvent::from_midi1_bytes`.
 `tutti-graph` reads through
 `Ump::is_note_off` (one test kernel takes a data byte by hand); `clip_node`,
 `clip_file` and `tutti-midi-types`' `wire.rs` shift bits by hand. `MidiEvent::frame_offset`

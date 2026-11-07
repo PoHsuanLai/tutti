@@ -247,6 +247,13 @@ pub(crate) fn accumulate(dst: &mut [f32], src: &[f32]) {
     }
 }
 
+/// A gain as it multiplies audio: a NaN or infinite one is silence. Every
+/// place a voice's gain scales a sample reads it through this.
+#[inline]
+pub(crate) fn audible(gain: f32) -> f32 {
+    if gain.is_finite() { gain } else { 0.0 }
+}
+
 /// `lane[i] *= gain`: one voice gain over a lane.
 #[inline]
 pub(crate) fn scale(lane: &mut [f32], gain: f32) {

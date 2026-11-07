@@ -20,7 +20,7 @@ use tutti_types::SampleRate;
 use tutti_types::{Amplitude, Beat, Cents, ChannelLayout, SamplePosition, StretchFactor};
 
 use crate::voice::memory_source::MemorySourceConfig;
-use tutti_types::{Bpm, Samples};
+use tutti_types::{BeatDuration, Bpm, Samples};
 
 use crate::testing::MockTransport;
 
@@ -1776,21 +1776,20 @@ fn add(id: SlotId, voice: Voice) -> VoiceCommand {
     }
 }
 
-/// A voice out of its window adds nothing at a finite gain and NaN at
-/// an infinite one, as reading it would: its frames read +0.0, which a
-/// finite gain keeps a zero (and a zero added to the mix changes no bit)
-/// and an infinite one turns to NaN. A pool skips the read only in the
-/// first case.
+/// A voice out of its window adds nothing to the mix, at a finite gain and at
+/// an infinite or NaN one alike (a non-finite gain is silence), so the pool's
+/// skip of a voice with no position agrees with reading it, and the
+/// sounding voice beside it is intact.
 ///
 /// Exact, analytically: the sounding voice reads whole frames (44.1 kHz on
 /// both sides, from beat 0), where the cubic returns the frame, gained by
 /// 0.5.
 ///
-/// Mutation (run): the skip taken whatever the gain (the
-/// `gain.is_finite()` condition removed) → the infinite row reads the
-/// sounding voice alone → fails.
+/// Mutation (run): `audible` returning its gain unguarded -> the infinite and
+/// NaN rows read NaN from the voice that sounds for 20 frames -> fails. (The
+/// voice wholly out of its window is skipped, and so passes either way.)
 #[test]
-fn a_voice_out_of_its_window_adds_zero_at_a_finite_gain_and_nan_at_an_infinite_one() {
+fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     const BLOCK: usize = 64;
     let value = |i: usize| (i + 1) as f32 / 1024.0;
     let mut wave = Wave::zero(2, SR, 0.1);
@@ -1799,7 +1798,7 @@ fn a_voice_out_of_its_window_adds_zero_at_a_finite_gain_and_nan_at_an_infinite_o
         wave.set(1, i, -value(i));
     }
     let wave = Arc::new(wave);
-    let voice = |start: f64, gain: f32| {
+    let voice = |start: f64, len: Option<f64>, gain: f32| {
         let play = Playback {
             gain: Amplitude(gain),
             ..Playback::default()
@@ -1808,27 +1807,32 @@ fn a_voice_out_of_its_window_adds_zero_at_a_finite_gain_and_nan_at_an_infinite_o
             source: VoiceSource::Memory(MemorySource::placed(
                 Arc::clone(&wave),
                 Beat::new(start),
-                None,
+                len.map(BeatDuration::new),
             )),
             play,
             channel_index: None,
         }
     };
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-    for silent_gain in [3.0f32, f32::INFINITY] {
+    for silent_gain in [3.0f32, f32::INFINITY, f32::NAN] {
         let mut pool = VoicePool::with_channels(None, 2usize).expect("stereo");
-        pool.insert_voice(SlotId(0), voice(0.0, 0.5));
-        pool.insert_voice(SlotId(1), voice(1_000.0, silent_gain));
+        pool.insert_voice(SlotId(0), voice(0.0, None, 0.5));
+        pool.insert_voice(SlotId(1), voice(1_000.0, None, silent_gain));
+        // In its window for 20 frames, then out of it: audible only at a
+        // finite gain.
+        if !silent_gain.is_finite() {
+            pool.insert_voice(SlotId(2), voice(0.0, Some(20.0 / 22_050.0), silent_gain));
+        }
         let mut pool = crate::testing::prepared(pool, SR, BLOCK);
         let out = run(&mut pool, &t, SR, BLOCK);
         for (c, sign) in [(0, 1.0f32), (1, -1.0)] {
             for (i, &got) in out[c].iter().enumerate() {
-                if silent_gain.is_finite() {
-                    let want = sign * value(i) * 0.5;
-                    assert_eq!(got.to_bits(), want.to_bits(), "channel {c}, frame {i}");
-                } else {
-                    assert!(got.is_nan(), "channel {c}, frame {i}: {got}");
-                }
+                let want = sign * value(i) * 0.5;
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "channel {c}, frame {i}, gain {silent_gain}"
+                );
             }
         }
     }

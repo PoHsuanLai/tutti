@@ -199,7 +199,8 @@ impl VoiceSource {
 /// silence with nothing to point at. Ask the source for its placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Playback {
-    /// Output gain, applied after the source read. Linear, not decibels.
+    /// Output gain, applied after the source read. Linear, not decibels. A
+    /// NaN or infinite gain is silence.
     pub gain: Amplitude,
     /// Varispeed. Couples pitch to rate; unity is `PlaybackRate::UNITY`.
     pub speed: PlaybackRate,

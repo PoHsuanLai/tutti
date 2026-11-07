@@ -17,6 +17,7 @@ use tutti_types::{
 
 use super::clock::WRAP_FADE;
 use super::memory_source::MemorySource;
+use super::node::VoiceNode;
 use super::pool::VoicePool;
 use super::types::{Playback, SlotId, Voice, VoiceSource};
 
@@ -58,11 +59,13 @@ fn region(start: f64, end: f64) -> LoopRange {
 enum Host {
     Pool,
     Node,
+    Voice,
 }
 
 enum Hosted {
     Pool(VoicePool),
     Node(MemorySource),
+    Voice(Option<VoiceNode>),
 }
 
 /// Runs a test on each [`Host`], as `name::pool` and `name::node`.
@@ -76,6 +79,10 @@ macro_rules! on_each_host {
             #[test]
             fn node() {
                 super::$name(super::Host::Node)
+            }
+            #[test]
+            fn voice() {
+                super::$name(super::Host::Voice)
             }
         }
     )*};
@@ -100,6 +107,7 @@ impl Rig {
                 Hosted::Pool(pool)
             }
             // Placed by `place`.
+            Host::Voice => Hosted::Voice(None),
             Host::Node => Hosted::Node(MemorySource::new(Arc::new(Wave::new(2, SR)))),
         };
         Self {
@@ -142,7 +150,17 @@ impl Rig {
                     },
                 );
             }
+            Hosted::Voice(slot) => {
+                let mut node = VoiceNode::new(Voice {
+                    source: VoiceSource::Memory(source),
+                    play,
+                    channel_index: None,
+                });
+                node.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
+                *slot = Some(node);
+            }
             Hosted::Node(node) => {
+                source.set_gain(play.gain);
                 source.set_loop_setting(play.loop_);
                 source.prepare(&Prepare::new(SampleRate(SR), Samples(self.max_block)));
                 *node = source;
@@ -155,6 +173,10 @@ impl Rig {
         match &mut self.host {
             Hosted::Pool(pool) => contract::drive_input(pool, env, &[], &[], &[]).audio,
             Hosted::Node(node) => contract::drive_input(node, env, &[], &[], &[]).audio,
+            Hosted::Voice(node) => {
+                let node = node.as_mut().expect("placed");
+                contract::drive_input(node, env, &[], &[], &[]).audio
+            }
         }
     }
 
@@ -484,26 +506,25 @@ fn a_seek_or_a_stop_during_the_fade_ends_it(host: Host) {
     }
 }
 
-/// A bare node with a NaN or infinite gain renders silence, never NaN, in
-/// frames inside and outside its window (it starts 100 frames into the block
-/// and the block crosses a wrap).
+/// A NaN or infinite gain is silence, never NaN, on every host, in frames
+/// inside and outside the voice's window (it starts 100 frames into the run
+/// and the run crosses a wrap).
 ///
-/// Mutation (run): `block_gain` returning the gain unguarded -> the frames
-/// outside the window are inf * 0.0 = NaN, and those inside are NaN -> fails.
-#[test]
-fn a_node_with_a_non_finite_gain_renders_silence() {
+/// Mutation (run): `audible` returning the gain unguarded -> the frames
+/// outside the window are inf * 0.0 = NaN and those inside are NaN -> fails
+/// on each host.
+fn a_non_finite_gain_renders_silence(host: Host) {
     for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let w = wave(1, 4 * FPB, tone);
-        let mut rig = Rig::new(Host::Node, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
-        // Two thirds of a block after the start of the run.
-        rig.place(1, &w, 100.0 / FPB as f64, None);
-        let Hosted::Node(node) = &rig.host else {
-            unreachable!()
+        let mut rig = Rig::new(host, Some(region(LOOP_START_BEATS, LOOP_BEATS)), 1000);
+        let play = Playback {
+            gain: tutti_types::Amplitude(gain),
+            ..Playback::default()
         };
-        node.set_gain(tutti_types::Amplitude(gain));
+        rig.place_with(1, &w, 100.0 / FPB as f64, None, play);
         let out = rig.run(WRAP + 2 * FADE, 480);
         for lane in &out {
-            assert!(lane.iter().all(|&s| s == 0.0), "gain {gain}");
+            assert!(lane.iter().all(|&s| s == 0.0), "{host:?}, gain {gain}");
         }
     }
 }
@@ -778,6 +799,7 @@ fn a_voice_with_its_own_loop_is_judged_by_its_window(host: Host) {
 }
 
 on_each_host!(
+    a_non_finite_gain_renders_silence,
     a_tone_has_no_cut_at_the_wrap_at_any_block_length,
     the_fade_begins_on_the_wrap_frame_and_changes_nothing_before_it,
     the_fade_holds_the_energy_of_unrelated_material,

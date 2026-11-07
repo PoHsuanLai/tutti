@@ -38,7 +38,7 @@ use super::offline_read::OfflineRead;
 use super::types::Direction;
 use crate::butler::control::StreamOrigin;
 use crate::butler::{RegionId, RtState, SharedReader};
-use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES};
+use crate::lanes::{Gather, Lanes, UNPREPARED_FRAMES, audible};
 
 /// Frames a free-running block's positions are computed for at a time:
 /// `process` renders a longer block in pieces this long, so the positions
@@ -163,7 +163,7 @@ impl DiskSource {
         self.playing.load(Ordering::Relaxed)
     }
 
-    /// Publishes a new output gain, to the shared `RtState` (see `tutti_nodes`'
+    /// Publishes a new output gain (NaN or infinite: silence), to the shared `RtState` (see `tutti_nodes`'
     /// crate docs for why a control is never a field).
     pub fn set_gain(&self, gain: Amplitude) {
         if let Some(ref state) = self.shared_state {
@@ -206,7 +206,7 @@ impl DiskSource {
         let mut position = self.position.unwrap_or(ring.origin() as f64);
         let preroll = ring.preroll() as f64;
         let rate = state.read_rate().get();
-        let gain = state.gain().get();
+        let gain = audible(state.gain().get());
         let mut positions = [None; BLOCK_FRAMES];
         let mut done = 0;
         while done < size {
@@ -608,7 +608,7 @@ impl DiskVoice {
         };
     }
 
-    /// Publishes a new output gain. `&self`: the write lands in the shared
+    /// Publishes a new output gain (a NaN or infinite one is silence). `&self`: the write lands in the shared
     /// `RtState`, so no exclusivity is needed.
     pub fn set_gain(&self, gain: Amplitude) {
         self.shared_state.set_gain(gain);
@@ -774,7 +774,7 @@ impl DiskVoice {
         out: &mut Out<'_, F>,
     ) {
         let rate = self.step_rate();
-        let gain = self.shared_state.gain().get();
+        let gain = audible(self.shared_state.gain().get());
         // Borrowed beside `inner`, not cloned: `self` holds a strong
         // reference, so a clone only adds two atomic refcount updates.
         let state = &*self.shared_state;
@@ -813,7 +813,7 @@ impl DiskVoice {
         let gate = self.gate();
         let rate = self.step_rate();
         let direction = self.shared_state.direction();
-        let gain = self.shared_state.gain().get();
+        let gain = audible(self.shared_state.gain().get());
         let told_rate = self.sample_rate.is_some();
         place(clock, range.clone(), gate, rate, &mut positions[..frames]);
         let past = past_window(clock, range, gate);
@@ -969,7 +969,7 @@ impl std::fmt::Debug for DiskVoiceControls {
 }
 
 impl DiskVoiceControls {
-    /// Publishes a new output gain.
+    /// Publishes a new output gain; a NaN or infinite gain is silence.
     pub fn set_gain(&self, gain: Amplitude) {
         self.state.set_gain(gain);
     }

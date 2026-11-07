@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use crate::lanes::{BlockScratch, accumulate, scale};
+use crate::lanes::{BlockScratch, accumulate, audible, scale};
 use crate::nonempty;
 use crate::stretch;
 
@@ -319,7 +319,7 @@ impl PlaybackSlot {
             return;
         }
         let direction = self.voice.play.direction;
-        let gain = self.voice.play.gain.get();
+        let gain = audible(self.voice.play.gain.get());
         let (VoiceSource::Memory(sampler), Some(unit)) =
             (&mut self.voice.source, self.stretch.as_mut())
         else {
@@ -411,7 +411,7 @@ impl PlaybackSlot {
     ) -> Piece {
         let frames = range.len();
         let direction = self.voice.play.direction;
-        let gain = self.voice.play.gain.get();
+        let gain = audible(self.voice.play.gain.get());
         // Route through the filter only when the intent asks for it AND a unit
         // is resident; a missing unit reads dry rather than silent.
         let stretching = self.needs_stretch() && self.stretch.is_some();

@@ -26,7 +26,7 @@ use super::interp::{
 use super::loop_span::{LoopSpan, blend};
 use super::slot::Piece;
 use super::types::Direction;
-use crate::lanes::{Gather, Lane, UNPREPARED_FRAMES, scale};
+use crate::lanes::{Gather, Lane, UNPREPARED_FRAMES, audible, scale};
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 
 /// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
@@ -530,7 +530,7 @@ impl MemorySource {
         self.wave.duration()
     }
 
-    /// Publishes a new output gain.
+    /// Publishes a new output gain. A NaN or infinite gain is silence.
     ///
     /// `&self` and stored in a shared cell: a value stored by value here is
     /// written on a frontend clone and rendered from a different one. See the
@@ -1227,9 +1227,8 @@ impl MemorySource {
         let frames = range.len();
         let sounds = self.placed_positions(clock, range.clone(), ReadRate::UNITY, positions);
         let fades = clock.fades();
-        // With no position, every frame reads +0.0, gained to ±0.0 by a
-        // finite gain (an infinite or NaN one makes NaNs, which are read).
-        if !sounds && gain.is_finite() && !fades {
+        // With no position, every frame reads +0.0, gained to ±0.0.
+        if !sounds && !fades {
             return Piece::Silent;
         }
         self.read_placed_lanes(positions, direction, head, n, gather);
@@ -1259,7 +1258,7 @@ impl MemorySource {
         let blended = self.gate(ReadRate::UNITY).is_some_and(|gate| {
             crossfade_wraps(clock, range, gate, first, positions, &views, head, n)
         });
-        if !blended && !sounds && gain.is_finite() {
+        if !blended && !sounds {
             return Piece::Silent;
         }
         Piece::Ready
@@ -1350,11 +1349,10 @@ impl MemorySource {
     }
 
     /// The gain this block renders at: the driven port's, else the cell's.
-    /// A NaN or infinite one renders silence.
+    /// A NaN or infinite one is silence ([`audible`]).
     #[inline]
     fn block_gain(&self) -> f32 {
-        let gain = self.driven_gain.unwrap_or_else(|| self.gain.load()).get();
-        if gain.is_finite() { gain } else { 0.0 }
+        audible(self.driven_gain.unwrap_or_else(|| self.gain.load()).get())
     }
 
     /// Scale a frame by this unit's gain.

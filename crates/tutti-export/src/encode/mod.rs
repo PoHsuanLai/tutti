@@ -7,7 +7,9 @@
 //! a rendered [`PlaneSource`]) and pulls it block by block through
 //! [`pump_blocks`], the one place the gate, the resample and the dither live,
 //! and hands each block to a `tutti_codec::Encoder`. An encoder only writes
-//! what it is given, so none can skip those stages. Every format streams, FLAC
+//! what it is given; this module is the one path through those stages that
+//! export has (the encoder types are public, and a caller using them directly
+//! does its own pulling). Every format streams, FLAC
 //! included (it encodes a frame per full block as it arrives), so there is no
 //! buffered-vs-streaming decision for a caller to get wrong.
 //!

@@ -41,18 +41,25 @@ impl Spec {
 
     /// The rate as the integer every codec header wants.
     ///
-    /// The single narrowing point: hound's header, flacenc, vorbis all take an
-    /// integer rate. (AIFF states an extended float and takes
-    /// [`rate`](Self::rate) as it is.)
+    /// The one place a rate is checked, for every format: a header cannot hold
+    /// a rate that is not a whole number of Hz from 1 to `u32::MAX`, and an
+    /// out-of-range float would otherwise saturate or (AIFF) be written raw.
+    /// (AIFF states an extended float and writes [`rate`](Self::rate) as it is,
+    /// once it has passed this check.)
     ///
     /// # Errors
     ///
-    /// [`SpecError::ZeroSampleRate`] when the rate rounds to zero or is not
-    /// finite.
+    /// [`SpecError::SampleRate`] when the rate rounds to zero, exceeds
+    /// `u32::MAX` Hz or is not finite.
     pub fn header_rate(&self) -> Result<NonZeroU32> {
         let hz = self.rate.get().round();
-        // A float to int `as` saturates, and sends NaN to zero.
-        NonZeroU32::new(hz as u32).ok_or_else(|| SpecError::ZeroSampleRate.into())
+        if hz.is_finite() && hz <= f64::from(u32::MAX) {
+            // Finite and in range: the cast is exact.
+            if let Some(rate) = NonZeroU32::new(hz as u32) {
+                return Ok(rate);
+            }
+        }
+        Err(SpecError::SampleRate(self.rate.get()).into())
     }
 
     /// The width as a non-zero channel count.

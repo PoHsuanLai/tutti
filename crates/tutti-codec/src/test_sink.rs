@@ -43,3 +43,46 @@ impl Seek for Full {
         self.inner.seek(pos)
     }
 }
+
+/// Memory that refuses one `write` call, the `nth` (counting from 1), with a
+/// plain I/O error and works before and after: a failure that can be recovered
+/// from, unlike a full disk.
+pub(crate) struct Flaky {
+    inner: Cursor<Vec<u8>>,
+    nth: usize,
+    calls: usize,
+}
+
+impl Flaky {
+    pub(crate) fn failing_write(nth: usize) -> Self {
+        Self {
+            inner: Cursor::new(Vec::new()),
+            nth,
+            calls: 0,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.inner.get_ref().len()
+    }
+}
+
+impl Write for Flaky {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.calls += 1;
+        if self.calls == self.nth {
+            return Err(io::Error::other("one write refused"));
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for Flaky {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}

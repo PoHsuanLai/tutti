@@ -1,9 +1,9 @@
 //! The cases every [`FormatWriter`] must pass. A new format is one more
 //! `contract!` line and inherits all of them.
 
-use crate::test_sink::Full;
+use crate::test_sink::{Flaky, Full};
 use crate::{Format, FormatWriter, Result, Spec};
-use std::io::{Cursor, Seek, Write};
+use std::io::{BufWriter, Cursor, Seek, Write};
 use tutti_types::{ChannelLayout, Interleaved, SampleRate};
 
 fn spec(format: Format) -> Spec {
@@ -27,9 +27,11 @@ fn block(samples: &[f32]) -> Interleaved<'_> {
 
 /// Runs the cases against one format. `make` starts a writer of it in a sink;
 /// `deterministic` is whether the same input always gives the same bytes (Ogg
-/// stamps a random stream serial, so it does not).
+/// stamps a random stream serial, so it does not); `recovers` is whether a
+/// writer can close the file after its sink refused a write (FLAC cannot: the
+/// frame that was refused is gone, and the writer waits for it).
 macro_rules! contract {
-    ($name:ident, $format:expr, $deterministic:expr, $make:expr) => {
+    ($name:ident, $format:expr, $deterministic:expr, $recovers:expr, $make:expr) => {
         mod $name {
             use super::*;
 
@@ -141,6 +143,50 @@ macro_rules! contract {
                 );
             }
 
+            /// A buffered sink reports its failed write only when flushed, so a
+            /// writer that leaves the flush to the sink's `Drop` loses it and
+            /// reports success. Whatever is written, the take fails.
+            ///
+            /// Mutation (run): removing the `sink.flush()?` from the Vorbis
+            /// thread's `run`, which `vorbis_rs` does not do itself, makes its
+            /// `finish` return `Ok` over a sink that would have refused.
+            #[test]
+            fn a_buffered_full_sink_fails_the_take() {
+                let mut w = make(BufWriter::new(Full::holding(100))).unwrap();
+                let samples = input(1_500);
+                let mut failed = w.write(block(&samples)).is_err();
+                failed |= w.finish().is_err();
+                assert!(failed, "a 100-byte sink behind a buffer held the take");
+            }
+
+            /// After a `write` failed that the sink recovers from, `finish`
+            /// closes what was written and hands the sink back (FLAC reports the
+            /// lost frame instead, and must return rather than hang).
+            ///
+            /// Mutation (run): a Vorbis thread that stops at its first failure
+            /// (returns the error from `run`) loses the sink and fails the
+            /// `expect`.
+            #[test]
+            fn finish_after_a_failed_write_hands_the_sink_back() {
+                let mut w = make(Flaky::failing_write(12)).unwrap();
+                let samples = input(4_096);
+                let mut reported = false;
+                for _ in 0..400 {
+                    if w.write(block(&samples)).is_err() {
+                        reported = true;
+                        break;
+                    }
+                }
+                assert!(reported, "the refused write was never reported");
+                match w.finish() {
+                    Ok(sink) => {
+                        assert!($recovers, "this writer cannot close after a refused write");
+                        assert!(sink.len() > 0);
+                    }
+                    Err(_) => assert!(!$recovers, "closes what was written"),
+                }
+            }
+
             /// A writer dropped before `finish` (an abort) returns, with
             /// whatever threads it started stopped, rather than hanging.
             ///
@@ -172,6 +218,7 @@ contract!(
     wav,
     Format::Wav(crate::Pcm::Int24),
     true,
+    true,
     |spec: &Spec, sink| crate::WavWriter::create(spec, crate::Pcm::Int24, sink)
 );
 
@@ -179,6 +226,7 @@ contract!(
 contract!(
     aiff,
     Format::Aiff(crate::Pcm::Int16),
+    true,
     true,
     |spec: &Spec, sink| crate::AiffWriter::create(spec, crate::Pcm::Int16, sink)
 );
@@ -191,6 +239,7 @@ contract!(
         level: crate::FlacLevel::Standard
     },
     true,
+    false,
     |spec: &Spec, sink| crate::FlacWriter::create(
         spec,
         crate::IntDepth::Int16,
@@ -206,5 +255,6 @@ contract!(
         quality: crate::Quality::LOWEST
     },
     false,
+    true,
     |spec: &Spec, sink| crate::VorbisWriter::create(spec, crate::Quality::LOWEST, sink)
 );

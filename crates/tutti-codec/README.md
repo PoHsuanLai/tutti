@@ -14,14 +14,16 @@
   speaker order.
 - `Encoder` is `create(spec, sink)`, a fallible `write(block)` and `finish()`.
   `Encoder::create_file` writes beside the path and moves the file into place
-  on `finish`; dropping the encoder first removes it.
+  on `finish`; dropping the encoder first removes it, and so does `finish` after a
+  failed `write`.
 - `Pcm`, `IntDepth` and `Sample` are the sample widths and the one quantization
   every container shares.
 
 ## What this crate does not own
 
 The pipeline in front of the encoder: pulling blocks from a render or a live
-source, resampling and dithering. An encoder writes the blocks it is given at
-the rate and width the `Spec` states. `tutti-export` is the offline pipeline and
+source, resampling and dithering. An encoder takes blocks already at the rate
+and width the `Spec` states, and nothing here stops a caller from handing it
+others. `tutti-export` is the offline pipeline and
 `tutti-io`'s `WavOut` the live one; both write through this crate, so a bounced
 and a recorded file quantize and lay out a given sample identically.

@@ -225,7 +225,7 @@ fn out_of_range_input_clamps_to_the_rail() {
 
 /// Every integer encoder must quantize a given float to the same value.
 ///
-/// `tutti_types::pcm` exists precisely so "a recorded and an exported file
+/// `tutti_codec::Pcm` exists precisely so "a recorded and an exported file
 /// quantize a given sample identically" (its own module doc). A format carrying
 /// a private copy of that arithmetic can drift from the shared one silently —
 /// both files decode, both have the right length, and the samples differ.

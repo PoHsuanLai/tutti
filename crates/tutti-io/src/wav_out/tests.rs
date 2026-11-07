@@ -336,3 +336,18 @@ fn a_take_that_ends_at_the_limit_is_clean() {
     sink.finalize().expect("exactly the limit is fine");
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 8);
 }
+
+/// A `WavOut` dropped without `finalize` (a recording whose pump thread
+/// panicked) is still a readable file: the writer back-patches on drop.
+///
+/// Mutation (run): deleting `WavWriter`'s `Drop` leaves both sizes zero and
+/// `hound` reads no samples.
+#[test]
+fn a_dropped_sink_leaves_a_readable_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dropped.wav");
+    let mut sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Int16).unwrap();
+    sink.write(&[0.25; 20]);
+    drop(sink);
+    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 20);
+}

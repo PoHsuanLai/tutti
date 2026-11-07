@@ -6,9 +6,8 @@
 //! here fails against the code as it was.
 //!
 //! Gated on all four format features, not just `wav`: the cases below write
-//! FLAC, Ogg and AIFF unconditionally, and an encoder whose feature is off
-//! returns `UnsupportedFormat` rather than a file. `hound` — which decodes the
-//! results back — is likewise only linked under `wav`.
+//! FLAC, Ogg and AIFF unconditionally, and a `Format` variant exists only
+//! with its feature. `hound` decodes the results back.
 //!
 //! Every graph here is built with `tutti_graph::GraphBuilder` and rendered
 //! as a `RenderGraph`; the golden-digest pins live in `graph_source.rs`.

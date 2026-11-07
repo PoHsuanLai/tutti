@@ -59,6 +59,30 @@ pub enum Error {
     },
 }
 
+impl Clone for Error {
+    /// A copy that keeps an I/O error's kind and message, not its source.
+    fn clone(&self) -> Self {
+        match self {
+            Self::Io(e) => Self::Io(io::Error::new(e.kind(), e.to_string())),
+            Self::Spec(e) => Self::Spec(e.clone()),
+            Self::UnknownExtension { extension } => Self::UnknownExtension {
+                extension: extension.clone(),
+            },
+            Self::Encoding { codec, detail } => Self::Encoding {
+                codec: *codec,
+                detail: detail.clone(),
+            },
+            Self::WavTooLarge { limit_frames } => Self::WavTooLarge {
+                limit_frames: *limit_frames,
+            },
+            Self::BlockWidth { expected, got } => Self::BlockWidth {
+                expected: *expected,
+                got: *got,
+            },
+        }
+    }
+}
+
 impl From<Error> for io::Error {
     /// The `io::Error` itself for [`Error::Io`], else the error wrapped, for a
     /// sink that speaks `io::Result`.
@@ -75,10 +99,10 @@ impl From<Error> for io::Error {
 #[derive(Error, Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SpecError {
-    /// A sample rate of zero, or one that does not round to a positive whole
-    /// number of Hz.
-    #[error("sample rate must be non-zero")]
-    ZeroSampleRate,
+    /// A sample rate no header can hold: it rounds to zero, exceeds
+    /// `u32::MAX` Hz or is not finite.
+    #[error("a sample rate of {0} Hz does not fit a file header (1 Hz to 4294967295 Hz)")]
+    SampleRate(f64),
     /// A channel count of zero.
     #[error("channel count must be non-zero")]
     ZeroChannels,

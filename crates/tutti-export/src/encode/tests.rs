@@ -108,3 +108,75 @@ fn the_planned_frames_follow_the_plan_and_the_resample() {
         "the same rate is no resample"
     );
 }
+
+/// A topology reaches the file: four channels declare the quad mask `0x33` only
+/// when told they are quad, six declare 5.1 by their width, and a bare four
+/// are unassigned. A topology of another width than the file is refused before
+/// anything is written.
+///
+/// This restores the export-level half of the old
+/// `an_export_at_the_limit_succeeds_and_declares_its_mask`; the limit half
+/// lives in `tutti-codec`, where the limit can be lowered.
+///
+/// Mutation (run): `topology: None` in `spec()` leaves the quad file at mask 0
+/// and fails the first row; deleting the width check in `WavWriter::create`
+/// lets the stereo file declare a quad topology and fails the refusal.
+#[cfg(feature = "wav")]
+#[test]
+fn the_topology_reaches_the_file_and_must_match_its_width() {
+    let dir = tempfile::tempdir().unwrap();
+    for (channels, topology, mask) in [
+        (4u16, Some(tutti_types::ChannelTopology::quad()), 0x33u32),
+        (4, None, 0),
+        (6, None, 0x60F),
+    ] {
+        let mut cfg = config(channels, Pcm::Int24);
+        cfg.encode.topology = topology;
+        let path = dir.path().join(format!("m{channels}_{mask}.wav"));
+        let planes = vec![vec![0.5f32; 8]; usize::from(channels)];
+        let plan = RenderPlan::new(&cfg.render);
+        let _ = encode_to_file(
+            &mut PlaneSource::new(&planes),
+            cfg.render.sample_rate,
+            &plan,
+            &cfg,
+            &path,
+            &mut Control::new(Pass::ONLY, &mut never_stop),
+        )
+        .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+            mask,
+            "{channels} channels"
+        );
+        assert_eq!(
+            hound::WavReader::open(&path).unwrap().len(),
+            8 * u32::from(channels)
+        );
+    }
+
+    let mut cfg = config(2, Pcm::Int24);
+    cfg.encode.topology = Some(tutti_types::ChannelTopology::quad());
+    let path = dir.path().join("bad.wav");
+    let plan = RenderPlan::new(&cfg.render);
+    let err = encode_to_file(
+        &mut PlaneSource::new(&vec![vec![0.0f32; 8]; 2]),
+        cfg.render.sample_rate,
+        &plan,
+        &cfg,
+        &path,
+        &mut Control::new(Pass::ONLY, &mut never_stop),
+    )
+    .expect_err("a quad topology is not stereo");
+    assert!(
+        matches!(
+            err,
+            Error::Encode(tutti_codec::Error::Spec(
+                tutti_codec::SpecError::TopologyWidth { .. }
+            ))
+        ),
+        "{err}"
+    );
+    assert!(!path.exists());
+}

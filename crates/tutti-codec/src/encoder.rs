@@ -15,16 +15,17 @@ use tutti_types::{ChannelLayout, Interleaved};
 /// Writes blocks of audio as one file of a [`Format`]: the [`FormatWriter`] of
 /// whichever format the [`Spec`] names, behind one type.
 ///
-/// An encoder takes what it is given: the pipeline that feeds it pulls,
-/// resamples and dithers, and hands over blocks already at the [`Spec`]'s rate
-/// and width. [`write`](Self::write) is fallible, so a full disk in the middle
+/// An encoder takes blocks already at the [`Spec`]'s rate and width: it does not
+/// pull, resample or dither, and nothing here stops a caller from handing it
+/// blocks that were not. The pipeline in front of it is the caller's. [`write`](Self::write) is fallible, so a full disk in the middle
 /// of a take is an error at the block that hit it, not a short file that
 /// reports success; [`finish`](Self::finish) closes the file exactly once.
 ///
 /// The sink is any `Write + Seek + Send + 'static`: a file, or memory. (`Send`
-/// and `'static` because Ogg Vorbis encodes on a thread that takes the sink; in
-/// return an `Encoder` is `Send`, so a recording can move it to its pump
-/// thread.) A file made with
+/// and `'static` because Ogg Vorbis encodes on a thread that takes the sink;
+/// the bound is the same whichever features are on, since bounds that followed
+/// the features would be worse. In return an `Encoder` is `Send`, so a
+/// recording can move it to its pump thread.) A file made with
 /// [`create_file`](Encoder::create_file) is written beside its path and moved
 /// into place by `finish`; an encoder dropped before that, whether after an
 /// error or by [`abort`](Self::abort), removes it and leaves what was at the
@@ -50,6 +51,8 @@ pub struct Encoder<W: Write + Seek + Send + 'static> {
     layout: ChannelLayout,
     /// The unfinished file, when the encoder made one.
     staged: Option<Staged>,
+    /// The first failure of a `write`, kept for `finish` to report.
+    first_error: Option<Error>,
 }
 
 impl<W: Write + Seek + Send + 'static> std::fmt::Debug for Encoder<W> {
@@ -112,6 +115,7 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
             inner: Inner::open(spec, sink)?,
             layout: spec.layout,
             staged: None,
+            first_error: None,
         })
     }
 
@@ -154,6 +158,14 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
     /// closes what was written for a caller that keeps it, and
     /// [`abort`](Self::abort) discards it.
     pub fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
+        let written = self.write_block(block);
+        if let Err(e) = &written {
+            self.first_error.get_or_insert_with(|| e.clone());
+        }
+        written
+    }
+
+    fn write_block(&mut self, block: Interleaved<'_>) -> Result<()> {
         if block.layout() != self.layout {
             return Err(Error::BlockWidth {
                 expected: self.layout,
@@ -174,16 +186,24 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
         }
     }
 
-    /// Closes the file: back-patches its sizes, flushes the sink and, for a
-    /// file made by [`create_file`](Encoder::create_file), moves it into place.
-    /// Returns the sink, positioned at the end of the file.
+    /// Closes the file: back-patches its sizes and flushes the sink. Returns
+    /// the sink, positioned at the end of the file.
+    ///
+    /// After a failed [`write`](Self::write) a plain sink gets what was written
+    /// closed and handed back (a recording keeps its readable prefix; the
+    /// failure was the `write`'s to report). A file made by
+    /// [`create_file`](Encoder::create_file) is a take that must be whole, so it
+    /// is removed instead, what was at its path is left alone, and the first
+    /// failure is returned. Otherwise a file made by `create_file` is moved
+    /// into place once the sink has been flushed.
     ///
     /// # Errors
     ///
-    /// [`Error::Io`] or [`Error::Encoding`] when closing fails; the file is
-    /// then removed if the encoder made it.
+    /// [`Error::Io`] or [`Error::Encoding`] when closing fails (the file is then
+    /// removed if the encoder made it), or the first failed `write` of a file
+    /// the encoder made.
     pub fn finish(mut self) -> Result<W> {
-        let sink = match self.inner {
+        let mut sink: W = match self.inner {
             #[cfg(feature = "wav")]
             Inner::Wav(w) => w.finish()?,
             #[cfg(feature = "aiff")]
@@ -195,7 +215,14 @@ impl<W: Write + Seek + Send + 'static> Encoder<W> {
             #[cfg(not(codec))]
             Inner::Never(never, _) => match never {},
         };
+        // A buffered sink reports a failed write only when it is flushed, and
+        // a writer that does not flush would lose it to the sink's `Drop`.
+        sink.flush()?;
         if let Some(staged) = self.staged.take() {
+            if let Some(error) = self.first_error.take() {
+                // Dropping `staged` removes the partial file.
+                return Err(error);
+            }
             staged.commit()?;
         }
         Ok(sink)

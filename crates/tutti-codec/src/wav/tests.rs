@@ -177,14 +177,23 @@ fn a_topology_sets_the_mask_and_must_match_the_width() {
     assert!(sink.get_ref().is_empty(), "nothing was written");
 }
 
-/// A rate that is not a positive whole number of Hz is refused before the
-/// header, rather than written as a header that divides by zero.
+/// A rate no header can hold (zero, not finite, past `u32::MAX` Hz) is refused
+/// before the header, rather than saturated into one.
 ///
-/// Mutation: dropping the `NonZeroU32` check in `Spec::header_rate` writes a
-/// zero-rate header and fails the `Err` assertions.
+/// Mutation (run): returning `Ok(NonZeroU32::MIN)` for a rate that rounds to
+/// zero fails the first rows; dropping the `<= u32::MAX` test saturates 1e10 to
+/// `u32::MAX` and fails the 1e10 and 4 294 967 296 rows.
 #[test]
 fn a_zero_rate_is_refused() {
-    for rate in [0.0, 0.4, f64::NAN] {
+    for rate in [
+        0.0,
+        0.4,
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        1e10,
+        4_294_967_296.0,
+    ] {
         let s = Spec {
             rate: SampleRate(rate),
             ..spec(2, Pcm::Int16)
@@ -193,7 +202,7 @@ fn a_zero_rate_is_refused() {
             .err()
             .unwrap_or_else(|| panic!("{rate} Hz was accepted"));
         assert!(
-            matches!(err, Error::Spec(SpecError::ZeroSampleRate)),
+            matches!(err, Error::Spec(SpecError::SampleRate(_))),
             "{rate}: {err}"
         );
     }
@@ -258,29 +267,30 @@ fn the_limit_only_comes_down() {
     assert_eq!(w.max_frames, real);
 }
 
-/// The frame limit keeps both the data size and the RIFF size, which adds the
-/// header, inside a `u32`, on a frame boundary; one more frame would not fit.
+/// The frame limit is the whole-frame share of the 32-bit data size left after
+/// the largest header, and the RIFF size at the limit still fits a `u32`.
 ///
-/// Mutation: dropping the `- RIFF_HEADER_BYTES` makes the RIFF size overflow
-/// for the 1-channel 16-bit case, failing the last assertion.
+/// The figures are literal: `u32::MAX - 60` data bytes (4 294 967 235) over the
+/// frame size, rounded down. Frame sizes: mono 16 bit 2 bytes, stereo 24 bit 6,
+/// six channels of float 24, eight channels of 24 bit 24.
+///
+/// Mutation (run): `RIFF_HEADER_BYTES = 0` changes every figure and fails the
+/// literals; so does counting a 24-bit sample as 4 bytes (stereo row).
 #[test]
 fn the_frame_limit_fits_both_32_bit_sizes() {
-    for (n, pcm) in [
-        (1u16, Pcm::Int16),
-        (2, Pcm::Int24),
-        (6, Pcm::Float32),
-        (8, Pcm::Int24),
+    for (n, pcm, frames, frame_bytes) in [
+        (1u16, Pcm::Int16, 2_147_483_617u64, 2u64),
+        (2, Pcm::Int24, 715_827_872, 6),
+        (6, Pcm::Float32, 178_956_968, 24),
+        (8, Pcm::Int24, 178_956_968, 24),
     ] {
         let layout = ChannelLayout::from(n);
-        let frames = max_data_frames(layout, pcm);
-        let frame_bytes = u64::from(pcm.bits().div_ceil(8)) * u64::from(n);
+        assert_eq!(max_data_frames(layout, pcm), frames, "{n} {pcm:?}");
         let data = frames * frame_bytes;
+        // The largest header is 68 bytes; the RIFF size is the file less 8.
+        assert!(data + 60 <= u64::from(u32::MAX), "{n} {pcm:?}: RIFF size");
         assert!(
-            data + RIFF_HEADER_BYTES <= u64::from(u32::MAX),
-            "{n} {pcm:?}"
-        );
-        assert!(
-            data + frame_bytes + RIFF_HEADER_BYTES > u64::from(u32::MAX),
+            data + frame_bytes + 60 > u64::from(u32::MAX),
             "{n} {pcm:?}: one more frame must not fit"
         );
     }
@@ -329,4 +339,36 @@ fn a_full_disk_mid_take_fails_the_write_that_hit_it() {
     let bytes = sink.bytes().to_vec();
     assert_eq!(u32_at(&bytes, 40), 4 * 4, "four frames are counted");
     assert_eq!(hound::WavReader::new(Cursor::new(bytes)).unwrap().len(), 8);
+}
+
+/// A WAV writer dropped without `finish` (a pump thread that panicked) still
+/// back-patches its sizes, so what was written is a readable file.
+///
+/// The reader is `hound`, independent of the writer.
+///
+/// Mutation (run): deleting the `Drop` impl leaves both sizes zero and `hound`
+/// reads no samples.
+#[test]
+fn a_dropped_writer_leaves_a_readable_file() {
+    let s = spec(2, Pcm::Int16);
+    let mut sink = Cursor::new(Vec::new());
+    {
+        let mut w = WavWriter::create(&s, Pcm::Int16, &mut sink).unwrap();
+        w.write(Interleaved::new(&ramp(2, 7), s.layout)).unwrap();
+    }
+    let reader = hound::WavReader::new(Cursor::new(sink.into_inner())).unwrap();
+    assert_eq!(reader.len(), 14);
+}
+
+/// A finished writer's drop does not patch twice or touch the returned sink.
+///
+/// Mutation (run): clearing the `sink.take()` in `finish` makes `drop` patch a
+/// sink it no longer holds and fails the `expect` in `finish`.
+#[test]
+fn a_finished_writer_hands_back_its_sink_untouched_by_drop() {
+    let s = spec(2, Pcm::Int16);
+    let mut w = WavWriter::create(&s, Pcm::Int16, Cursor::new(Vec::new())).unwrap();
+    w.write(Interleaved::new(&ramp(2, 7), s.layout)).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    assert_eq!(bytes.len(), 44 + 7 * 4);
 }

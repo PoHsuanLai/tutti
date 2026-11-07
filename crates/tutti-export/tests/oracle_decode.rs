@@ -4,8 +4,8 @@
 //! # What the oracle is, and why it is independent
 //!
 //! The oracle is [`symphonia`], a pure-Rust demuxer/decoder family that shares
-//! no code with this crate's encoders. `tutti-export` writes WAV with `hound`,
-//! FLAC with `flacenc`, AIFF with `aifc` and Ogg with `vorbis_rs`; symphonia
+//! no code with this crate's encoders. `tutti-export` writes WAV through
+//! `tutti-codec`'s own writer, FLAC with `flacenc`, AIFF with `aifc` and Ogg with `vorbis_rs`; symphonia
 //! reads all four with its own parsers, its own bit readers and its own scale
 //! conventions. It has no knowledge of tutti's quantizer, so a disagreement is
 //! evidence about the encoder rather than a shared bug reflected back.
@@ -193,12 +193,11 @@ fn rms(samples: &[f32]) -> f64 {
 ///
 /// This is the exact question the export README says the Rust suite cannot ask,
 /// and the one that caught a private FLAC quantizer that truncated where
-/// `tutti_types::pcm` rounds.
+/// `tutti_codec::Pcm` rounds.
 ///
-/// Mutation: `flac.rs`'s `f32_to_i32` swapped back to the historical
-/// truncating converter (`(clamped * 32767.0) as i32` in place of
-/// `tutti_types::f32_to_i16`) → fails at sample 0 of the Int16 0.7 case,
-/// 22936 vs 22935. One LSB, which is the whole point: the float-tolerance
+/// The historical failure (not rerun): a private truncating converter
+/// (`(clamped * 32767.0) as i32` in FLAC in place of the shared rounding one)
+/// failed at sample 0 of the Int16 0.7 case, 22936 vs 22937. One LSB, which is the whole point: the float-tolerance
 /// draft of this test passed under exactly this mutation.
 #[test]
 fn flac_and_wav_agree_sample_for_sample() {

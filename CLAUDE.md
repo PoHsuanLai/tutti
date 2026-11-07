@@ -368,10 +368,16 @@ list (normal and build edges; dev-dependencies may go anywhere).
   `#![forbid(unsafe_code)]`, is `publish = false` and has no `bevy` feature.
   Each format is a cargo feature (`wav`, `aiff`, `flac`, `vorbis`), none on by
   default, and a `Format` variant exists only with its feature: no `cfg(not)`
-  arm refuses a format. An `Encoder` writes the blocks it is given at the
-  `Spec`'s rate and width; pulling, resampling and dithering are the pipeline's
-  (`tutti-export`), so no encoder can skip them. `write` is fallible and the
-  file `create_file` makes is removed unless `finish` moved it into place. The
+  arm refuses a format. An `Encoder` takes blocks already at the
+  `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
+  the crate stops a caller from handing it blocks that were not. Pulling,
+  resampling and dithering are the pipeline's, and `tutti-export` has one path
+  through its own (`pump_blocks`, private). `write` is fallible; the file
+  `create_file` makes is removed unless `finish` moved it into place (and
+  `finish` after a failed `write` removes it and returns the first error). The
+  sink is `Write + Seek + Send + 'static` on `Encoder` whatever the features,
+  because bounds that followed the features would be worse; a `FormatWriter`
+  asks only for what its own format needs. The
   WAV writer is one: `tutti-export` and `tutti-io`'s `WavOut` both write
   through it. Each format's writer implements `FormatWriter` (its boundary: it writes
   blocks of interleaved samples into a sink as one file of its format), with

@@ -111,8 +111,15 @@ impl Header {
 }
 
 /// Writes a WAV file through the [`FormatWriter`] contract.
-pub struct WavWriter<W> {
-    sink: W,
+///
+/// A writer dropped without [`finish`](FormatWriter::finish) still back-patches
+/// the sizes, best effort, so what was written stays a readable file (a
+/// recording whose pump thread panicked is not lost). The data chunk is not
+/// padded to an even length: odd-length data is left as it is, which is what
+/// the `hound`-written files this replaces did.
+pub struct WavWriter<W: Write + Seek> {
+    /// `None` once `finish` has taken it.
+    sink: Option<W>,
     pcm: Pcm,
     layout: ChannelLayout,
     header: Header,
@@ -124,7 +131,7 @@ pub struct WavWriter<W> {
     bytes: Vec<u8>,
 }
 
-impl<W> std::fmt::Debug for WavWriter<W> {
+impl<W: Write + Seek> std::fmt::Debug for WavWriter<W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WavWriter").finish_non_exhaustive()
     }
@@ -152,7 +159,7 @@ impl<W: Write + Seek> WavWriter<W> {
         let header = Header::new(spec, pcm, rate, mask);
         sink.write_all(&header.bytes)?;
         Ok(Self {
-            sink,
+            sink: Some(sink),
             pcm,
             layout: spec.layout,
             header,
@@ -161,15 +168,43 @@ impl<W: Write + Seek> WavWriter<W> {
             bytes: Vec::new(),
         })
     }
+
+    /// Lowers the number of frames the file may hold to `frames`; it never
+    /// raises the limit the format's 32-bit sizes set.
+    pub fn limit_frames(&mut self, frames: u64) {
+        self.max_frames = self.max_frames.min(frames);
+    }
+
+    /// Back-patches the RIFF and `data` sizes, leaves the sink at the end of the
+    /// file and flushes it.
+    fn patch_sizes(&mut self) -> std::io::Result<()> {
+        let data = self.frames * frame_bytes(self.layout, self.pcm);
+        // Both fit a `u32`: `max_frames` keeps the data under `MAX_DATA_BYTES`.
+        let data = data as u32;
+        let riff = data + (self.header.data_len_offset as u32 + 4 - 8);
+        let at = self.header.data_len_offset as u64;
+        let Some(sink) = self.sink.as_mut() else {
+            return Ok(());
+        };
+        sink.seek(SeekFrom::Start(4))?;
+        sink.write_all(&riff.to_le_bytes())?;
+        sink.seek(SeekFrom::Start(at))?;
+        sink.write_all(&data.to_le_bytes())?;
+        sink.seek(SeekFrom::End(0))?;
+        sink.flush()
+    }
+}
+
+impl<W: Write + Seek> Drop for WavWriter<W> {
+    fn drop(&mut self) {
+        if self.sink.is_some() {
+            let _ = self.patch_sizes();
+        }
+    }
 }
 
 impl<W: Write + Seek> FormatWriter for WavWriter<W> {
     type Sink = W;
-
-    /// Lowers the frame limit; it never raises it.
-    fn limit_frames(&mut self, frames: u64) {
-        self.max_frames = self.max_frames.min(frames);
-    }
 
     fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         let room = self.max_frames - self.frames;
@@ -183,7 +218,9 @@ impl<W: Write + Seek> FormatWriter for WavWriter<W> {
                 Sample::F32(v) => self.bytes.extend_from_slice(&v.to_le_bytes()),
             }
         }
-        self.sink.write_all(&self.bytes)?;
+        if let Some(sink) = self.sink.as_mut() {
+            sink.write_all(&self.bytes)?;
+        }
         self.frames += fits as u64;
         if fits < block.len() {
             return Err(Error::WavTooLarge {
@@ -193,21 +230,12 @@ impl<W: Write + Seek> FormatWriter for WavWriter<W> {
         Ok(())
     }
 
-    /// Back-patches the RIFF and `data` sizes, then flushes and returns the
-    /// sink, positioned at the end of the file.
     fn finish(mut self) -> Result<Self::Sink> {
-        let data = self.frames * frame_bytes(self.layout, self.pcm);
-        // Both fit a `u32`: `max_frames` keeps the data under `MAX_DATA_BYTES`.
-        let data = data as u32;
-        let riff = data + (self.header.data_len_offset as u32 + 4 - 8);
-        self.sink.seek(SeekFrom::Start(4))?;
-        self.sink.write_all(&riff.to_le_bytes())?;
-        self.sink
-            .seek(SeekFrom::Start(self.header.data_len_offset as u64))?;
-        self.sink.write_all(&data.to_le_bytes())?;
-        self.sink.seek(SeekFrom::End(0))?;
-        self.sink.flush()?;
-        Ok(self.sink)
+        self.patch_sizes()?;
+        Ok(self
+            .sink
+            .take()
+            .expect("`finish` runs once, and takes the sink"))
     }
 }
 

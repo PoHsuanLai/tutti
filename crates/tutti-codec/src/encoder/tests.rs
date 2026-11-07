@@ -179,7 +179,7 @@ fn a_spec_that_cannot_be_written_is_refused_without_a_file() {
         };
         let err = Encoder::create_file(&zero_rate, &path).expect_err("no rate");
         assert!(
-            matches!(err, Error::Spec(SpecError::ZeroSampleRate)),
+            matches!(err, Error::Spec(SpecError::SampleRate(_))),
             "{ext}: {err}"
         );
         assert!(
@@ -283,4 +283,117 @@ fn an_encoder_can_move_to_another_thread() {
     fn is_send<T: Send>() {}
     is_send::<Encoder<Cursor<Vec<u8>>>>();
     is_send::<Encoder<std::io::BufWriter<std::fs::File>>>();
+}
+
+/// A WAV file that outgrows its limit mid-take (after the up-front check
+/// passed) leaves no file behind and the path untouched, and `finish` after the
+/// failed write removes the staged file and returns the first error instead of
+/// moving a partial take into place.
+///
+/// Mutation (run): letting `finish` commit despite `first_error` replaces the
+/// sentinel with the partial file and fails the equality; deleting the
+/// `staged` drop on that path leaves the temporary and fails the listing.
+#[cfg(feature = "wav")]
+#[test]
+fn a_file_that_crosses_its_limit_is_never_put_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("take.wav");
+    std::fs::write(&path, b"previous").unwrap();
+    let spec = spec(Format::Wav(crate::Pcm::Int16), 2);
+
+    // Dropped after the failed write: nothing left.
+    let mut encoder = Encoder::create_file(&spec, &path).unwrap().limit_frames(6);
+    let err = encoder
+        .write(Interleaved::new(&saw(2, 8), spec.layout))
+        .expect_err("8 frames cross a limit of 6");
+    assert!(
+        matches!(err, Error::WavTooLarge { limit_frames: 6 }),
+        "{err}"
+    );
+    drop(encoder);
+    assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+    assert_eq!(listing(dir.path()), ["take.wav"]);
+
+    // Finished after the failed write: the first error, nothing put in place.
+    let mut encoder = Encoder::create_file(&spec, &path).unwrap().limit_frames(6);
+    let first = encoder
+        .write(Interleaved::new(&saw(2, 8), spec.layout))
+        .unwrap_err();
+    let _ = encoder.write(Interleaved::new(&saw(2, 1), spec.layout));
+    let err = encoder.finish().expect_err("a partial take is not a file");
+    assert_eq!(err.to_string(), first.to_string());
+    assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+    assert_eq!(listing(dir.path()), ["take.wav"]);
+}
+
+/// A plain sink keeps today's behaviour: `finish` after the limit closes what
+/// was written, a readable prefix, and hands the sink back.
+///
+/// Mutation (run): making `finish` return `first_error` for a plain sink fails
+/// the `expect`.
+#[cfg(feature = "wav")]
+#[test]
+fn a_plain_sink_keeps_its_prefix_after_a_failed_write() {
+    let spec = spec(Format::Wav(crate::Pcm::Int16), 2);
+    let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new()))
+        .unwrap()
+        .limit_frames(6);
+    assert!(
+        encoder
+            .write(Interleaved::new(&saw(2, 8), spec.layout))
+            .is_err()
+    );
+    let bytes = encoder
+        .finish()
+        .expect("closes what was written")
+        .into_inner();
+    assert_eq!(bytes.len(), 44 + 6 * 4);
+    assert_eq!(hound::WavReader::new(Cursor::new(bytes)).unwrap().len(), 12);
+}
+
+/// A buffered sink on a full device never reports success, whichever format:
+/// the flush is the encoder's, not the sink's `Drop`'s.
+///
+/// The device is the kernel's `/dev/full`, which refuses every write with
+/// `ENOSPC`; the take fits the buffer, so only the final flush meets it.
+///
+/// Mutation (run): removing the `sink.flush()?` from `Encoder::finish` and from
+/// the Vorbis thread's `run` makes Ogg Vorbis finish `Ok` here.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_buffered_full_device_fails_every_format() {
+    for (ext, format) in formats() {
+        let s = spec(format, 2);
+        let device = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let mut encoder = Encoder::create(&s, std::io::BufWriter::new(device)).unwrap();
+        let mut failed = encoder
+            .write(Interleaved::new(&saw(2, 1_000), s.layout))
+            .is_err();
+        failed |= encoder.finish().is_err();
+        assert!(failed, "{ext}: the take reported success on a full device");
+    }
+}
+
+/// Rates no header can hold are refused for every format.
+///
+/// Mutation (run): taking the AIFF rate from `spec.rate` without the shared
+/// check writes infinity raw and fails the infinity row.
+#[test]
+fn a_rate_no_header_holds_is_refused_by_every_format() {
+    for (ext, format) in formats() {
+        for rate in [f64::INFINITY, 1e10, f64::NAN] {
+            let s = Spec {
+                rate: SampleRate(rate),
+                ..spec(format, 2)
+            };
+            let err = Encoder::create(&s, Cursor::new(Vec::new())).expect_err("no such rate");
+            assert!(
+                matches!(err, Error::Spec(SpecError::SampleRate(_))),
+                "{ext} {rate}: {err}"
+            );
+        }
+    }
 }

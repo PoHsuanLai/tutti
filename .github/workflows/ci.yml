@@ -795,4 +795,4 @@ jobs:
       - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom
       # `drain_clock` (a write leaves the record only after a drain that must
       # have seen it has begun), against the shipped code.
-      - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom
+      - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture

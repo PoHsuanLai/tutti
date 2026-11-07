@@ -826,6 +826,21 @@ one; what differs is VST3's.
   `tutti-rt/tests/drain_clock_loom.rs` against the shipped code (`+ 1` fails it).
   A save in that window is version 2 with the record's writes; a save later is
   the component's stream alone.
+- What two drains prove is that the ring was read, not that the plugin took the
+  point. Three paths can read a write and not deliver it: the drain overflows
+  `pending` (more distinct parameters than its reserve in one drain, reachable
+  only by a burst from a plugin with hundreds of parameters; the point is dropped
+  and counted in `edits_dropped`), the bus bind fails (only on a sample-width
+  mismatch, which a typed Processor cannot have), and `process` fails (the plugin
+  was handed the points before it failed, so it is the plugin's loss). Only the
+  first is reachable, and a write it drops is in no later save. Fixing it takes
+  the Processor publishing its dropped count and the Controller re-sending its
+  record entries when the count moves, and a plugin with more parameters than the
+  reserve to test it on; neither is done.
+- A restored record is applied after the component's stream, so in the two-block
+  window a newer value already in the component (automation, or the plugin's own
+  edit) is overwritten by the older value of the record. The record holds the
+  host's last write to that parameter, and a block later it is gone.
 - Two cases stay open. A plugin's own `performEdit` while no block runs reaches
   the host's component handler, and the host records it only if the app relays it
   through `set_parameter`. After a `restartComponent` that changes the parameter

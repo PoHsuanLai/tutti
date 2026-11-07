@@ -63,9 +63,18 @@ struct Handed {
 }
 
 impl Handed {
-    /// Whether a block has surely taken the write: two drains have begun since
-    /// it entered the ring (`tutti_rt::DrainWatch::two_since` says why two).
-    fn is_taken(&self, watch: &DrainWatch) -> bool {
+    /// Whether the write has left the ring for the plugin's `process`: two
+    /// drains have begun since it entered (`tutti_rt::DrainWatch::two_since`
+    /// says why two). That is the ring read, not the plugin's word that it took
+    /// the point. A drain that overflows `pending` (more than the reserve's
+    /// distinct parameters in one drain, which only a burst from a
+    /// parameter-rich plugin can reach) drops the point and counts it in
+    /// `edits_dropped`, and the entry goes with the rest: that write is then in
+    /// no save. A bus bind that fails after the drain would lose its points
+    /// too, but it fails only on a sample-width mismatch, which a typed
+    /// Processor cannot have; a `process` that fails was handed the points
+    /// first.
+    fn is_drained(&self, watch: &DrainWatch) -> bool {
         self.sent_at.is_some_and(|mark| watch.two_since(mark))
     }
 }
@@ -144,7 +153,7 @@ impl Vst3Controller {
     /// and so are in no component stream. Forgets the ones that have been.
     fn undrained(&mut self) -> Vec<(ParamId, Normalized)> {
         let watch = &self.watch;
-        self.handed.retain(|h| !h.is_taken(watch));
+        self.handed.retain(|h| !h.is_drained(watch));
         self.handed.iter().map(|h| (h.id, h.value)).collect()
     }
 

@@ -29,6 +29,13 @@
 //! that block was over. Fences rather than `SeqCst` accesses because a fence is
 //! what `loom` models exactly, as in `job_gate.rs`.
 //!
+//! What two drains prove is that the queue was read, twice, after the write
+//! was sent; the audio thread then handed what it read to the plugin's
+//! `process`, which is the consumer's business and not this type's. A drain
+//! that dropped a point for want of room, or a block that failed before the
+//! call, would still count. Whoever uses the clock has to say why neither
+//! happens or what it costs.
+//!
 //! Each side holds only what it may do: the audio side can begin a drain and
 //! nothing else, the control side can read.
 //!
@@ -90,8 +97,9 @@ impl DrainWatch {
         DrainMark(self.drains.load(Ordering::Acquire))
     }
 
-    /// Whether two drains have begun since `mark`: the write sent before it
-    /// has surely been drained by a block that has ended.
+    /// Whether two drains have begun since `mark`: the queue has been read
+    /// twice since the write was sent, the first of them after it, and the block
+    /// of the first is over. Not that the consumer applied it.
     #[must_use]
     pub fn two_since(&self, mark: DrainMark) -> bool {
         self.drains.load(Ordering::Acquire) >= mark.0 + 2

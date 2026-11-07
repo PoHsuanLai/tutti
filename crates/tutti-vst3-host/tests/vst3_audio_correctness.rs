@@ -1656,7 +1656,7 @@ mod loaded_writes {
     /// the Processor has them, no block has run, and the component's stream
     /// does not hold them.
     ///
-    /// Mutation (run): `Handed::is_taken` true at once, or the Controller
+    /// Mutation (run): `Handed::is_drained` true at once, or the Controller
     /// starting with no record of the carried writes, fails the audio assertion.
     #[test]
     fn a_save_between_activation_and_the_first_block_keeps_the_loaded_writes() {
@@ -1729,8 +1729,9 @@ mod loaded_writes {
     /// A pending write to an id the plugin does not list is dropped on load, so
     /// it is not stored again.
     ///
-    /// Mutation (run): dropping the `parameter_info` check in `write_state`
-    /// stores the unlisted entry again and the re-saved blob differs.
+    /// Mutation (run): dropping the listed-id filter in `latest_listed` stores
+    /// the unlisted entry again and the re-saved blob differs (the unit test on
+    /// `latest_listed` fails too).
     #[test]
     fn a_pending_write_to_an_unlisted_id_is_dropped_on_load() {
         const TABLE_AT: usize = 8 + 1;
@@ -1827,5 +1828,50 @@ mod loaded_writes {
         assert_eq!(read(&restored, PARAM_GAIN), Some(1.0), "the probe default");
         Control::load_state(&mut restored, &blob).expect("the blob loads");
         assert_eq!(read(&restored, PARAM_GAIN), Some(0.25));
+    }
+
+    /// The same blob reaches the plugin's audio: the writes it carries for the
+    /// separate controller's parameters are delivered in the first block even
+    /// though the component has no state to restore.
+    ///
+    /// Mutation (run): returning early when the component stream is empty
+    /// leaves the block at the constant 1.0; `Control::load_state` not
+    /// assigning `carried` does too.
+    #[test]
+    fn a_blob_with_no_component_stream_delivers_its_writes_to_the_plugin() {
+        let _guard = plugin_guard();
+        let blob = v2_blob(
+            &[(PARAM_MODE, MODE_RAMP), (PARAM_RAMP, RAMP_LEVEL)],
+            &[],
+            &[],
+        );
+        let mut restored = load();
+        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        let block = first_block(restored);
+        assert!(
+            block.iter().all(|&v| v == RAMP_LEVEL as f32),
+            "the writes of a blob with no component stream were not delivered: {:?}",
+            &block[..4]
+        );
+    }
+
+    /// A NaN or infinite value in a blob's table reaches the plugin as a value
+    /// in `0..=1` (`Normalized::new` maps NaN to 0 and saturates), never as a
+    /// non-finite number.
+    ///
+    /// Mutation (run): reading the table value as `Normalized::new(1.0)`
+    /// regardless of the bytes fails both assertions.
+    #[test]
+    fn a_non_finite_write_in_a_blob_reaches_the_plugin_in_range() {
+        let _guard = plugin_guard();
+        let blob = v2_blob(
+            &[(PARAM_GAIN, f64::NAN), (PARAM_RAMP, f64::INFINITY)],
+            &[],
+            &[],
+        );
+        let mut restored = load();
+        Control::load_state(&mut restored, &blob).expect("the blob loads");
+        assert_eq!(read(&restored, PARAM_GAIN), Some(0.0), "NaN is 0");
+        assert_eq!(read(&restored, PARAM_RAMP), Some(1.0), "infinity saturates");
     }
 }

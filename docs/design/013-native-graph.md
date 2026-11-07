@@ -7739,6 +7739,13 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
    of `WavOut`, and decoding is file I/O. `tutti-io` depends only on
    `tutti-core`, so the sampler, export and bevy-tutti take it without a
    cycle.
+   **Revised (tutti-codec, part 2): `tutti-codec`.** `Wave`, `FileIn`,
+   `WaveMetadata`, the decoder and `can_decode` moved there, beside the
+   encoders, so one crate names the file libraries (`symphonia` in
+   `src/decode/` alone). `FileIn` needs `tutti-types` and the decoder, not the
+   live edge. The error is `DecodeError`, not `symphonia`'s; the features are
+   `decode-wav`/`decode-flac`/`decode-mp3`/`decode-ogg`; `WaveAsset` is
+   `bevy-tutti`'s and `tutti-io` has no `bevy` feature.
 6. **Events fan-in.** Layering a keyboard and a clip means two producers feed
    one events input, so fan-in is the normal case. Options:
    - allow fan-in on `Events` ports only, with a deterministic merge by

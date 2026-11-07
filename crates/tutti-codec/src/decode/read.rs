@@ -218,3 +218,6 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
         wave_output.set_len(old_len + buffer_len);
     }
 }
+
+#[cfg(all(test, feature = "decode-wav"))]
+mod tests;

@@ -69,3 +69,6 @@ pub(super) fn convert(error: Symphonia) -> DecodeError {
         Symphonia::ResetRequired => DecodeError::Malformed("the decoder needs a reset"),
     }
 }
+
+#[cfg(test)]
+mod tests;

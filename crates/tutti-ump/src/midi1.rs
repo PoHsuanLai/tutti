@@ -390,7 +390,7 @@ impl Midi1Parser {
                 have: 0,
             },
         };
-        (byte == 0xF6).then(|| Message::System(self.group, System::TuneRequest))
+        (byte == 0xF6).then_some(Message::System(self.group, System::TuneRequest))
     }
 
     fn data(&mut self, byte: u8) -> Option<Message> {

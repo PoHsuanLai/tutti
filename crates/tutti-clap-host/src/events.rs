@@ -38,12 +38,12 @@ use tutti_plugin_types::{
 };
 
 use crate::types::RtNoteExpressions;
-use tutti_midi_protocol::{narrow_bend, narrow_value, widen};
+use tutti_midi_protocol::{midi1, narrow, widen};
 use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
 use tutti_midi_types::{PerNoteBendRanges, PitchBendSensitivity};
 use tutti_ump::{
-    Message, MidiChannel, MidiGroup, RegisteredPerNoteController, System, Ump, Unknown, Voice1,
-    Voice2, decode,
+    Message, Midi1Parser, MidiChannel, MidiGroup, RegisteredPerNoteController, Ump, Unknown,
+    Voice1, Voice2, decode,
 };
 // Only the tests name it; the conversion code works in raw CC numbers.
 #[cfg(test)]
@@ -118,105 +118,33 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
-/// The UMP packet (group 0) of the MIDI 1.0 message in `data`, or `None` for
-/// one that is not a complete channel voice or System message: an undefined or
-/// SysEx status, or a data byte with its top bit set. Parsed by hand, as it
-/// runs on the audio thread and a parser's error value may allocate.
-fn midi1_packet(time: u32, data: [u8; 3]) -> Option<MidiEvent> {
-    let [status, d1, d2] = data;
-    let data_bytes = match status {
-        0x80..=0xBF | 0xE0..=0xEF | 0xF2 => 2,
-        0xC0..=0xDF | 0xF1 | 0xF3 => 1,
-        0xF6 | 0xF8 | 0xFA..=0xFC | 0xFE | 0xFF => 0,
-        0x00..=0x7F | 0xF0 | 0xF4 | 0xF5 | 0xF7 | 0xF9 | 0xFD => return None,
-    };
-    let used = [d1, d2];
-    if used[..data_bytes].iter().any(|b| b & 0x80 != 0) {
-        return None;
-    }
-    let d1 = if data_bytes >= 1 { u32::from(d1) } else { 0 };
-    let d2 = if data_bytes == 2 { u32::from(d2) } else { 0 };
-    let message_type = if status >= 0xF0 { 0x1 } else { 0x2 };
-    let word = (message_type << 28) | (u32::from(status) << 16) | (d1 << 8) | d2;
-    Some(MidiEvent::from_ump(time, &[word]))
-}
-
-/// `event` as MIDI 2.0 when it is a MIDI 1.0 channel voice message
-/// ([`widen`]); every other packet is returned as it came, an `Unknown` one
-/// included.
-fn widened(event: MidiEvent) -> MidiEvent {
-    match decode(Ump(event.data)) {
-        Ok(Message::Midi1(address, voice)) => {
-            let wide = Ump::from(Message::Midi2(address, widen(voice)));
-            MidiEvent::from_ump(event.frame_offset, wide.words())
-        }
-        Ok(
-            Message::Utility(_)
-            | Message::System(..)
-            | Message::Sysex7(..)
-            | Message::Midi2(..)
-            | Message::Data128(..)
-            | Message::Flex(..)
-            | Message::Stream(_),
-        )
-        | Err(Unknown(_)) => event,
-    }
-}
-
-/// A 14-bit value as its MIDI 1.0 data bytes, least significant first.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "each half is masked to 7 bits"
-)]
-const fn split_14(value: u16) -> [u8; 2] {
-    [(value & 0x7F) as u8, ((value >> 7) & 0x7F) as u8]
-}
-
-/// The `clap_event_midi` bytes of a System message. A message that is one
-/// byte on the wire still has three here, the data bytes zero.
-fn system_bytes(system: System) -> [u8; 3] {
-    match system {
-        System::TimeCode(data) => [0xF1, data.get(), 0],
-        System::SongPosition(position) => {
-            let [lsb, msb] = split_14(position.get());
-            [0xF2, lsb, msb]
-        }
-        System::SongSelect(song) => [0xF3, song.get(), 0],
-        System::TuneRequest => [0xF6, 0, 0],
-        System::TimingClock => [0xF8, 0, 0],
-        System::Start => [0xFA, 0, 0],
-        System::Continue => [0xFB, 0, 0],
-        System::Stop => [0xFC, 0, 0],
-        System::ActiveSensing => [0xFE, 0, 0],
-        System::Reset => [0xFF, 0, 0],
+/// `message` as MIDI 2.0 when it is a MIDI 1.0 channel voice message
+/// ([`widen`]); every other message is returned as it came.
+fn widened(message: Message) -> Message {
+    match message {
+        Message::Midi1(address, voice) => Message::Midi2(address, widen(voice)),
+        other => other,
     }
 }
 
 /// The MIDI 1.0 bytes of a poly pressure packet, narrowed to 7 bits when it is
 /// MIDI 2.0; `None` for any other packet.
 fn key_pressure_bytes(ump: Ump) -> Option<[u8; 3]> {
-    match decode(ump) {
-        Ok(Message::Midi1(address, Voice1::PolyPressure { note, pressure })) => {
-            Some([0xA0 | address.channel.get(), note.get(), pressure.get()])
-        }
-        Ok(Message::Midi2(address, Voice2::PolyPressure { note, value })) => Some([
-            0xA0 | address.channel.get(),
-            note.get(),
-            narrow_value(value).get(),
-        ]),
+    let (address, voice) = match decode(ump) {
+        Ok(Message::Midi1(address, voice)) => (address, voice),
+        Ok(Message::Midi2(address, voice)) => (address, narrow(voice)?),
         // Any other packet has no poly pressure bytes.
         Ok(
-            Message::Midi1(..)
-            | Message::Midi2(..)
-            | Message::Utility(_)
+            Message::Utility(_)
             | Message::System(..)
             | Message::Sysex7(..)
             | Message::Data128(..)
             | Message::Flex(..)
             | Message::Stream(_),
         )
-        | Err(Unknown(_)) => None,
-    }
+        | Err(Unknown(_)) => return None,
+    };
+    matches!(voice, Voice1::PolyPressure { .. }).then(|| voice.bytes(address.channel).padded())
 }
 
 /// CLAP's upper bound for `CLAP_NOTE_EXPRESSION_VOLUME`.
@@ -607,7 +535,9 @@ impl ClapEvent {
             Ok(Message::Midi2(address, voice)) => {
                 Self::from_voice2(time, address.channel, voice, ranges)
             }
-            Ok(Message::System(_, system)) => Some(ClapEvent::midi(time, 0, system_bytes(system))),
+            Ok(Message::System(_, system)) => {
+                Some(ClapEvent::midi(time, 0, system.bytes().padded()))
+            }
             // Not a note port's traffic: a CLAP plugin has no event for a clock
             // reference, a Flex Data or a Stream message. SysEx7 is assembled
             // by `InputEventList::add_midi` before it gets here, and SysEx8 and
@@ -638,26 +568,14 @@ impl ClapEvent {
         voice: Voice1,
         ranges: &PerNoteBendRanges,
     ) -> Option<Self> {
-        let ch = channel.get();
         match voice {
             Voice1::NoteOn { .. } | Voice1::NoteOff { .. } | Voice1::PolyPressure { .. } => {
                 Self::from_voice2(time, channel, widen(voice), ranges)
             }
-            Voice1::ControlChange { controller, value } => Some(ClapEvent::midi(
-                time,
-                0,
-                [0xB0 | ch, controller.get(), value.get()],
-            )),
-            Voice1::ProgramChange(program) => {
-                Some(ClapEvent::midi(time, 0, [0xC0 | ch, program.get(), 0]))
-            }
-            Voice1::ChannelPressure(pressure) => {
-                Some(ClapEvent::midi(time, 0, [0xD0 | ch, pressure.get(), 0]))
-            }
-            Voice1::PitchBend(bend) => {
-                let [lsb, msb] = split_14(bend.get());
-                Some(ClapEvent::midi(time, 0, [0xE0 | ch, lsb, msb]))
-            }
+            Voice1::ControlChange { .. }
+            | Voice1::ProgramChange(_)
+            | Voice1::ChannelPressure(_)
+            | Voice1::PitchBend(_) => Some(ClapEvent::midi(time, 0, voice.bytes(channel).padded())),
         }
     }
 
@@ -782,24 +700,14 @@ impl ClapEvent {
             }
             // CC, channel pitch bend, channel pressure and program change reach
             // the plugin as MIDI 1.0 bytes, narrowed to their resolution.
-            Voice2::ControlChange { controller, value } => Some(ClapEvent::midi(
-                time,
-                0,
-                [0xB0 | ch, controller.get(), narrow_value(value).get()],
-            )),
-            Voice2::PitchBend(bend) => {
-                let [lsb, msb] = split_14(narrow_bend(bend).get());
-                Some(ClapEvent::midi(time, 0, [0xE0 | ch, lsb, msb]))
-            }
-            Voice2::ChannelPressure(pressure) => Some(ClapEvent::midi(
-                time,
-                0,
-                [0xD0 | ch, narrow_value(pressure).get(), 0],
-            )),
+            //
             // The bank of a Program Change with one is sent as two Control
             // Changes by `InputEventList::add_midi`, so only the program is left.
-            Voice2::ProgramChange { program, bank: _ } => {
-                Some(ClapEvent::midi(time, 0, [0xC0 | ch, program.get(), 0]))
+            Voice2::ControlChange { .. }
+            | Voice2::PitchBend(_)
+            | Voice2::ChannelPressure(_)
+            | Voice2::ProgramChange { .. } => {
+                narrow(voice).map(|voice| ClapEvent::midi(time, 0, voice.bytes(channel).padded()))
             }
             // CLAP has no event for a registered or assignable controller (RPN
             // and NRPN), a relative one or Per-Note Management. The per-note
@@ -870,7 +778,13 @@ impl ClapEvent {
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
             // engine sees one vocabulary regardless of source — matching the
             // hardware input path. System / SysEx messages pass through unchanged.
-            ClapEvent::Midi(e) => midi1_packet(e.header.time, e.data).map(widened),
+            ClapEvent::Midi(e) => {
+                let message = Midi1Parser::message(MidiGroup::FIRST, &e.data)?;
+                Some(MidiEvent::from_ump(
+                    e.header.time,
+                    Ump::from(widened(message)).words(),
+                ))
+            }
             _ => None,
         }
     }
@@ -1164,29 +1078,21 @@ impl InputEventList {
                 // CC 32, PC), each its own event at the same time. All of
                 // them or none, so a bank is not sent without its program.
                 let ump = Ump(event.data);
-                let banked = match decode(ump) {
-                    Ok(Message::Midi2(
-                        address,
-                        Voice2::ProgramChange {
-                            program,
-                            bank: Some(bank),
-                        },
-                    )) => Some((address.channel.get(), bank, program)),
-                    _ => None,
-                };
+                let banked = decode(ump).ok().filter(|message| {
+                    matches!(
+                        message,
+                        Message::Midi2(_, Voice2::ProgramChange { bank: Some(_), .. })
+                    )
+                });
                 let n = if banked.is_some() { 3 } else { 1 };
                 if !self.has_midi_room(n) {
                     self.midi_dropped += n as u64;
                     return self;
                 }
-                if let Some((ch, bank, program)) = banked {
-                    for bytes in [
-                        [0xB0 | ch, 0, bank.msb.get()],
-                        [0xB0 | ch, 32, bank.lsb.get()],
-                        [0xC0 | ch, program.get(), 0],
-                    ] {
+                if let Some(message) = banked {
+                    for bytes in midi1(message) {
                         self.events
-                            .push(ClapEvent::midi(event.frame_offset, 0, bytes));
+                            .push(ClapEvent::midi(event.frame_offset, 0, bytes.padded()));
                     }
                 } else if let Some(clap_event) = ClapEvent::from_message(
                     event.frame_offset,
@@ -2013,7 +1919,7 @@ impl EventSink for OutputEventList {
 mod tests {
     use super::*;
     use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
-    use tutti_ump::{Data128, Sysex8Packet, SysexStatus};
+    use tutti_ump::{Data128, Sysex8Packet, SysexStatus, System};
 
     /// The message `midi` carries.
     fn message(midi: &MidiEvent) -> Message {

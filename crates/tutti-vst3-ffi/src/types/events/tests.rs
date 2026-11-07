@@ -258,8 +258,8 @@ fn each_kind_is_the_sdk_ordinal() {
 /// fail.
 #[test]
 fn data_from_an_iterator_holds_what_new_holds() {
-    for n in 0..=Data::CAPACITY {
-        let bytes: Vec<u8> = (0..n as u8).collect();
+    for n in 0..=16u8 {
+        let bytes: Vec<u8> = (0..n).collect();
         let from_iter = Data::try_from_iter(5, bytes.iter().copied()).expect("fits");
         let from_slice = Data::new(5, &bytes).expect("fits");
         assert_eq!(from_iter.payload(), from_slice.payload());

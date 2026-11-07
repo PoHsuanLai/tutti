@@ -5177,7 +5177,8 @@ the one place that says what a ported node can rely on:
   are allocated beside it, and when it takes over the two swap and the
   keys of the unit that stopped are closed ahead of the next block, on the
   unit's own output port (a hard replace or a cut closes them at the
-  commit). The reference interpreter does not model a crossfade.
+  commit; a re-prepare keeps them for the first block after the resume). A
+  block's slot takes only so many closes; the rest follow in the next blocks. The reference interpreter does not model a crossfade.
 - **Declared capacity.** `Shape::event_capacity` is the most events
   a node writes to each event output per block (`with_event_capacity(n)`;
   `None` takes the executor's default, `DEFAULT_EVENT_CAPACITY`). Every

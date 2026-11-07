@@ -4381,6 +4381,7 @@ dependencies = [
  "assert_no_alloc",
  "bytemuck",
  "criterion",
+ "libc",
  "proptest",
  "ringbuf",
  "tutti-graph",

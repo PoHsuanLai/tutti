@@ -1239,7 +1239,12 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
             tutti_export::RenderGraph::fork(&live, ForkTarget::Master, ForkMode::Offline, rate)
                 .expect("a graph holding plugins forks");
         if pooled {
-            graph.set_pool(Some(Arc::new(tutti_graph::WorkerPool::new(4))));
+            graph.set_pool(Some(Arc::new(
+                tutti_graph::WorkerPool::builder()
+                    .num_threads(4)
+                    .build()
+                    .expect("a worker pool"),
+            )));
         }
         let config = tutti_export::ExportConfig {
             render: tutti_export::RenderConfig {

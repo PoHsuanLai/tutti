@@ -382,7 +382,10 @@ fn an_offline_render_feeds_an_output_tap() {
     assert_eq!(tap.available(), Samples(64));
     let mut got = vec![f32::NAN; 64 * 2];
     assert_eq!(tap.pop_into(&mut got), Samples(64));
-    assert!(got.chunks_exact(2).all(|f| f == [0.5, 0.0]), "{got:?}");
+    assert!(
+        got.as_chunks::<2>().0.iter().all(|f| *f == [0.5, 0.0]),
+        "{got:?}"
+    );
     assert_eq!(tap.take_lost(), Samples(0));
 }
 

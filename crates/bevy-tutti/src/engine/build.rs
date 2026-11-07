@@ -267,7 +267,7 @@ mod tests {
         );
         let mut got = [f32::NAN; 128];
         assert_eq!(tap.pop_into(&mut got), tutti_types::Samples(64));
-        assert!(got.chunks_exact(2).all(|f| f == [0.5, 0.0]));
+        assert!(got.as_chunks::<2>().0.iter().all(|f| *f == [0.5, 0.0]));
         let level = app.world().resource::<MeteringRes>().get().peak_left.get();
         assert!(
             (level - 0.5).abs() < 1e-6,

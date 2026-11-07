@@ -98,7 +98,7 @@ impl Normalize {
     fn gain_for(&self, measured: &tutti_dsp::Loudness) -> Db {
         match *self {
             // `Db - Db` is a gain difference, which is why `Db` implements
-            // `Sub` — see the `unit_additive!(Db)` note in `units.rs`.
+            // `Sub` — see the `Additive` note on `Db` in `units/level.rs`.
             Self::Peak { target } => target - measured.true_peak,
             Self::Lufs { target, ceiling } => measured.gain_to(target, ceiling),
         }

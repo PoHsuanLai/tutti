@@ -11,50 +11,27 @@
 //! in the derives: `Eq + Ord + Hash`, which counts need for map keys and
 //! `max()`, and which the float units cannot have.
 
-/// A count of audio frames: reported latency, compensation delay, ring length,
-/// and every count crossing the [`AudioIn`](crate::io::AudioIn) /
-/// [`AudioOut`](crate::io::AudioOut) edge.
-///
-/// "Samples" in the *sample-frame* sense — one tick of the clock, however many
-/// channels wide — which is how the plugin formats and `Seconds::to_samples`
-/// already use it. It is **never** a count of interleaved `f32`s; that quantity
-/// is a slice length, reached only through
-/// [`interleaved_len`](Self::interleaved_len), and brought back only through
-/// [`from_interleaved_len`](Self::from_interleaved_len).
-///
-/// Integer by construction. Distinct from `SamplePosition`, which is an `f64`
-/// *position* within a wave that may be fractional so interpolating readers can
-/// address between two integer sample indices.
-#[repr(transparent)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// `transparent` for the same reason the float units have it: a `Samples` is
-// `512` on the wire, not `[512]`. Load-bearing for the latency path: the
+// Serde `transparent`, which `unit!` gives every quantity: a `Samples` is `512`
+// on the wire, not `[512]`. Load-bearing for the latency path: the
 // plugin-metadata `latency_samples` field has the same wire form as a bare
 // `usize`, so a host and a plugin subprocess built at different versions still
 // agree.
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
-pub struct Samples(pub usize);
-
-impl From<usize> for Samples {
-    #[inline]
-    fn from(v: usize) -> Self {
-        Self(v)
-    }
-}
-
-impl From<Samples> for usize {
-    #[inline]
-    fn from(v: Samples) -> usize {
-        v.0
-    }
-}
-
-impl core::fmt::Display for Samples {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Display::fmt(&self.0, f)
-    }
+unit! {
+    /// A count of audio frames: reported latency, compensation delay, ring length,
+    /// and every count crossing the [`AudioIn`](crate::io::AudioIn) /
+    /// [`AudioOut`](crate::io::AudioOut) edge.
+    ///
+    /// "Samples" in the *sample-frame* sense — one tick of the clock, however many
+    /// channels wide — which is how the plugin formats and `Seconds::to_samples`
+    /// already use it. It is **never** a count of interleaved `f32`s; that quantity
+    /// is a slice length, reached only through
+    /// [`interleaved_len`](Self::interleaved_len), and brought back only through
+    /// [`from_interleaved_len`](Self::from_interleaved_len).
+    ///
+    /// Integer by construction. Distinct from `SamplePosition`, which is an `f64`
+    /// *position* within a wave that may be fractional so interpolating readers can
+    /// address between two integer sample indices.
+    pub struct Samples(pub usize): From, Display;
 }
 
 impl Samples {
@@ -199,10 +176,9 @@ impl Samples {
 
 // ── Operators ───────────────────────────────────────────────────────────────
 //
-// Written out rather than generated: the `unit_*` macros in `super::units` are
-// float-shaped (`unit_bounded!` calls `<$raw>::min`, `unit_scalable!` divides by
-// a float), and `Samples` is integer-backed. `meter.rs` hand-writes its
-// `BarNumber`/`BarCount` algebra for the same reason.
+// Written out rather than named as `unit!` abilities: a count adds, scales and
+// divides by saturating or truncating integer rules, which the float
+// abilities do not state.
 //
 // Deliberately absent: `Sub`. See the ledger in the tests below.
 
@@ -257,7 +233,7 @@ impl core::ops::Div for Samples {
 /// Position within a repeating span — ring-buffer wraparound. Panics when
 /// `rhs` is zero.
 ///
-/// Safe here in a way `unit_modular!` is not for the float units: unsigned
+/// Safe here in a way `Modular` is not for the float units: unsigned
 /// integer `%` has no sign to preserve, so there is no negative-input trap.
 impl core::ops::Rem for Samples {
     type Output = Self;

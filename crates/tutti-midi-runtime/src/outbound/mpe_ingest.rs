@@ -164,7 +164,7 @@ fn zone_default_runs(config: &MpeZoneConfig) -> [RpnRun; 2] {
         RpnRun {
             channels: master..=master,
             index: RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-            data: PitchBendSensitivity::from_semitones(2).to_rpn_bits(),
+            data: PitchBendSensitivity::of(2).to_rpn_bits(),
         },
         RpnRun {
             channels: config.member_channel_range(),

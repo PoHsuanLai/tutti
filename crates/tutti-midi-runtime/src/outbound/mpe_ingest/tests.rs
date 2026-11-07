@@ -289,7 +289,7 @@ fn bend_sensitivity(channel: u8, semitones: u8) -> MidiEvent {
         MidiChannel::of(channel),
         tutti_midi_types::ump::RPN_BANK_MPE,
         RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-        tutti_midi_types::PitchBendSensitivity::from_semitones(semitones).to_rpn_bits(),
+        tutti_midi_types::PitchBendSensitivity::of(semitones).to_rpn_bits(),
     )
     .with_frame_offset(17)
 }

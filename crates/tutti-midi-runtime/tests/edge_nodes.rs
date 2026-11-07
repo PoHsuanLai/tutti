@@ -233,7 +233,7 @@ fn a_host_set_modes_reset_goes_ahead_of_the_blocks_events() {
         MidiChannel::of(2),
         RPN_BANK_MPE,
         RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
-        PitchBendSensitivity::from_semitones(12).to_rpn_bits(),
+        PitchBendSensitivity::of(12).to_rpn_bits(),
     );
     let wire = Wire::new(vec![vec![range]]);
     let (_ed, mut exec, controls, seen) =

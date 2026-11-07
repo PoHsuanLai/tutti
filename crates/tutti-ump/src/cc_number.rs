@@ -187,6 +187,7 @@ impl TryFrom<u8> for CCNumber {
     #[inline]
     fn try_from(raw: u8) -> Result<Self, OutOfRange> {
         Self::new(raw).ok_or(OutOfRange {
+            what: "controller number",
             value: raw,
             max: Self::LAST.0,
         })
@@ -217,6 +218,7 @@ mod tests {
         assert_eq!(
             CCNumber::try_from(128),
             Err(OutOfRange {
+                what: "controller number",
                 value: 128,
                 max: 127
             })

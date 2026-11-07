@@ -4,6 +4,10 @@
 //! `decode` and `encode` passes every round trip, so these are the only tests
 //! that see it. None of them uses the `midi2` oracle.
 //!
+//! Beyond the tables, the last tests pin fields whose values `spec_words.rs`
+//! leaves equal or only set together (the UMP version, the Endpoint Info and
+//! Discovery flags, the Metronome bytes), where a swap would not show.
+//!
 //! Tables here: 16 (Flex text, all 18 statuses), 13 and 15 (the accidental),
 //! and the Function Block Info fields of §7.1.8 (User Interface Hint, Direction,
 //! MIDI 1.0) and the Protocol field of §7.1.6 (Figures 18 and 19).
@@ -22,15 +26,22 @@
 //! - `Accidental` 0x1/0x2 (Sharp, DoubleSharp) and 0x2/0xE (DoubleSharp,
 //!   DoubleFlat) -> `accidentals_are_tables_13_and_15`;
 //! - `UiHint` 1/2 (Receiver, Sender) -> `function_block_fields`;
+//! - the `UmpVersion` major and minor swapped in `decode` and both writers
+//!   (symmetric) -> `the_version_is_major_then_minor`; Endpoint Info `rx_jr`
+//!   and `tx_jr` swapped symmetrically -> `endpoint_info_flags_each_alone`;
+//!   Discovery filter bits 0 and 1 swapped symmetrically ->
+//!   `discovery_filter_bits_each_alone`; Metronome `accent_2` and
+//!   `subdivision_1` swapped symmetrically -> `metronome_fields_in_order`.
+//!   Each of these four passed every other test with the oracle excluded.
 //! - `Direction` 0b01/0b10 and 0b10/0b11, `Midi1Port` 1/2 and 0/1 ->
 //!   `function_block_fields`; `Protocol` 0x01/0x02 ->
 //!   `protocols_are_figures_18_and_19`.
 
 use tutti_ump::{
     Accidental, Alteration, AlterationKind, ChordBass, ChordName, ChordPitch, ChordType, Direction,
-    FirstGroup, Flex, FlexAddress, FlexTextKind, Form, FunctionBlockId, FunctionBlockInfo,
-    GroupSpan, Letter, Message, Midi1Port, MidiGroup, Protocol, Stream, StreamConfig, U4, UiHint,
-    Ump, decode,
+    DiscoveryFilter, EndpointInfo, FirstGroup, Flex, FlexAddress, FlexTextKind, Form,
+    FunctionBlockId, FunctionBlockInfo, GroupSpan, Letter, Message, Metronome, Midi1Port,
+    MidiGroup, Protocol, Stream, StreamConfig, U4, U7, UiHint, Ump, UmpVersion, decode,
 };
 
 /// Decode gives the message, and encode gives the words back.
@@ -225,4 +236,192 @@ fn protocols_are_figures_18_and_19() {
             Message::Stream(Stream::StreamConfigurationNotification(config)),
         );
     }
+}
+
+// §7.1.1 and §7.1.2, Figures 10 and 11: the version is major in bits 15-8 and
+// minor in bits 7-0. `spec_words.rs` uses 1.1 throughout, which hides a swap.
+#[test]
+fn the_version_is_major_then_minor() {
+    let version = UmpVersion { major: 1, minor: 2 };
+    pin(
+        [0xF000_0102, 0, 0, 0],
+        Message::Stream(Stream::EndpointDiscovery {
+            version,
+            filter: DiscoveryFilter {
+                endpoint_info: false,
+                device_identity: false,
+                endpoint_name: false,
+                product_instance_id: false,
+                stream_configuration: false,
+            },
+        }),
+    );
+    pin(
+        [0xF001_0102, 0, 0, 0],
+        Message::Stream(Stream::EndpointInfo(EndpointInfo {
+            version,
+            static_function_blocks: false,
+            function_blocks: U7::new(0).unwrap(),
+            midi2: false,
+            midi1: false,
+            rx_jr: false,
+            tx_jr: false,
+        })),
+    );
+}
+
+// Figure 11: S bit 31, function blocks 30-24, M2 bit 9, M1 bit 8, RXJR bit 1,
+// TXJR bit 0. Each alone, so that no two flags can trade places unseen.
+#[test]
+fn endpoint_info_flags_each_alone() {
+    let none = EndpointInfo {
+        version: UmpVersion { major: 1, minor: 1 },
+        static_function_blocks: false,
+        function_blocks: U7::new(0).unwrap(),
+        midi2: false,
+        midi1: false,
+        rx_jr: false,
+        tx_jr: false,
+    };
+    let case = |word: u32, info: EndpointInfo| {
+        pin(
+            [0xF001_0101, word, 0, 0],
+            Message::Stream(Stream::EndpointInfo(info)),
+        );
+    };
+    case(
+        0x8000_0000,
+        EndpointInfo {
+            static_function_blocks: true,
+            ..none
+        },
+    );
+    case(
+        0x0500_0000,
+        EndpointInfo {
+            function_blocks: U7::new(5).unwrap(),
+            ..none
+        },
+    );
+    case(
+        0x0000_0200,
+        EndpointInfo {
+            midi2: true,
+            ..none
+        },
+    );
+    case(
+        0x0000_0100,
+        EndpointInfo {
+            midi1: true,
+            ..none
+        },
+    );
+    case(
+        0x0000_0002,
+        EndpointInfo {
+            rx_jr: true,
+            ..none
+        },
+    );
+    case(
+        0x0000_0001,
+        EndpointInfo {
+            tx_jr: true,
+            ..none
+        },
+    );
+}
+
+// Figure 10: the filter is bit 0 endpoint info, 1 device identity, 2 endpoint
+// name, 3 product instance id, 4 stream configuration.
+#[test]
+fn discovery_filter_bits_each_alone() {
+    let none = DiscoveryFilter {
+        endpoint_info: false,
+        device_identity: false,
+        endpoint_name: false,
+        product_instance_id: false,
+        stream_configuration: false,
+    };
+    let case = |word: u32, filter: DiscoveryFilter| {
+        pin(
+            [0xF000_0101, word, 0, 0],
+            Message::Stream(Stream::EndpointDiscovery {
+                version: UmpVersion { major: 1, minor: 1 },
+                filter,
+            }),
+        );
+    };
+    case(
+        0x01,
+        DiscoveryFilter {
+            endpoint_info: true,
+            ..none
+        },
+    );
+    case(
+        0x02,
+        DiscoveryFilter {
+            device_identity: true,
+            ..none
+        },
+    );
+    case(
+        0x04,
+        DiscoveryFilter {
+            endpoint_name: true,
+            ..none
+        },
+    );
+    case(
+        0x08,
+        DiscoveryFilter {
+            product_instance_id: true,
+            ..none
+        },
+    );
+    case(
+        0x10,
+        DiscoveryFilter {
+            stream_configuration: true,
+            ..none
+        },
+    );
+}
+
+// Figures 18 and 19: RXJR is bit 1 and TXJR bit 0, each alone.
+#[test]
+fn jitter_reduction_flags_each_alone() {
+    for (bits, rx_jr, tx_jr) in [(0b10, true, false), (0b01, false, true)] {
+        pin(
+            [0xF005_0200 | bits, 0, 0, 0],
+            Message::Stream(Stream::StreamConfigurationRequest(StreamConfig {
+                protocol: Protocol::Midi2,
+                rx_jr,
+                tx_jr,
+            })),
+        );
+    }
+}
+
+// Figure 73 has accent 2 equal to subdivision 1 and accent 3 equal to
+// subdivision 2, which hides those swaps. Six different values: word 2 is
+// clocks, accent 1, 2, 3; word 3 is subdivision 1 and 2 (§7.5.3).
+#[test]
+fn metronome_fields_in_order() {
+    pin(
+        [0xD010_0002, 0x1803_0405, 0x0607_0000, 0],
+        Message::Flex(
+            MidiGroup::FIRST,
+            Flex::SetMetronome(Metronome {
+                clocks_per_click: 24,
+                accent_1: 3,
+                accent_2: 4,
+                accent_3: 5,
+                subdivision_1: 6,
+                subdivision_2: 7,
+            }),
+        ),
+    );
 }

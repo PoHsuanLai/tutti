@@ -8,6 +8,8 @@
 /// address type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutOfRange {
+    /// What was out of range: "channel", "group" or "controller number".
+    pub what: &'static str,
     /// The refused number.
     pub value: u8,
     /// The largest the type accepts.
@@ -16,7 +18,11 @@ pub struct OutOfRange {
 
 impl core::fmt::Display for OutOfRange {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{} is above the largest value, {}", self.value, self.max)
+        write!(
+            f,
+            "{} {} is above the largest, {}",
+            self.what, self.value, self.max
+        )
     }
 }
 

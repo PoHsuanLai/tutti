@@ -80,8 +80,6 @@ test-all: test test-features test-editor test-doc test-release
 #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
 #                         components) and its tests
 #   tutti-io/bevy       — WaveAsset's Asset derive
-#   tutti-ump/serde    — tests/serde.rs (the address types refuse an
-#                         out-of-range number when read back)
 #   bevy-tutti/plugin   — plugin_host binding against a live plugin
 #                         (tests/plugin_capture.rs); `full,plugin` so the
 #                         modulation-gated plugin parameter lanes compile
@@ -127,6 +125,9 @@ test-features:
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
     cargo nextest run --locked -p tutti-io --features bevy
+    # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
+    # dev-dependency turns it on); this step names it so tests/serde.rs still runs
+    # if that edge goes away.
     cargo nextest run --locked -p tutti-ump --features serde
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support

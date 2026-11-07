@@ -5,6 +5,7 @@
 //! - `serde(transparent)` in place of `try_from = "u8", into = "u8"` on any of
 //!   the three types -> `a_number_above_the_range_is_refused` (200 and 255
 //!   deserialize);
+//! - the `what` of `OutOfRange` taken from another type -> the same test;
 //! - `into = "u8"` dropped from `MidiChannel` -> nothing fails: serde writes a
 //!   newtype as its inner value in JSON, so the bytes are the same (an
 //!   equivalent mutant).
@@ -14,7 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
-fn check<T>(max: u8, make: fn(u8) -> Option<T>, get: fn(&T) -> u8)
+fn check<T>(what: &str, max: u8, make: fn(u8) -> Option<T>, get: fn(&T) -> u8)
 where
     T: Serialize + DeserializeOwned + PartialEq + Debug,
 {
@@ -30,10 +31,11 @@ where
     // max + 1, 200 and 255: refused, with the range in the message.
     for raw in [max + 1, 200, 255] {
         let err = serde_json::from_str::<T>(&raw.to_string()).unwrap_err();
-        assert!(
-            err.to_string().contains(&format!("largest value, {max}")),
-            "{err}"
-        );
+        // The message names what was refused, the number and the limit.
+        let message = err.to_string();
+        for part in [what.to_string(), raw.to_string(), max.to_string()] {
+            assert!(message.contains(&part), "{message} lacks {part}");
+        }
     }
     // Not a `u8` at all.
     assert!(serde_json::from_str::<T>("-1").is_err());
@@ -43,9 +45,9 @@ where
 
 #[test]
 fn a_number_above_the_range_is_refused() {
-    check(15, MidiChannel::new, |v| v.get());
-    check(15, MidiGroup::new, |v| v.get());
-    check(127, CCNumber::new, |v| v.get());
+    check("channel", 15, MidiChannel::new, |v| v.get());
+    check("group", 15, MidiGroup::new, |v| v.get());
+    check("controller number", 127, CCNumber::new, |v| v.get());
 }
 
 #[test]

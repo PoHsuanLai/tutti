@@ -28,14 +28,17 @@ use coremidi::{
 };
 
 use crate::InputProducerHandle;
-use crate::capability::{EndpointId, EndpointInfo, UmpCapability};
-use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::capability::{EndpointInfo, UmpCapability};
+use crate::devices::{ChangeSink, os_devices};
+use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
+use tutti_midi_device::{EndpointId, Identity, OsDevice};
 use tutti_midi_types::ump::{MidiEvent, split_ump_stream};
 use tutti_midi_types::{MidiOut, Protocol};
 
 pub mod virtual_destination;
 pub mod virtual_source;
+mod watch;
 pub use virtual_destination::UmpVirtualDestination;
 pub use virtual_source::UmpVirtualSource;
 
@@ -94,8 +97,13 @@ fn endpoint_capability(object: &coremidi::Object) -> UmpCapability {
 /// An endpoint without a unique id is therefore left out of the list rather than
 /// handed an index that would name a different device after a hot-plug.
 fn endpoint_id(object: &coremidi::Object) -> Option<EndpointId> {
-    let unique: std::result::Result<i32, _> = Properties::unique_id().value_from(object);
-    unique.ok().map(|id| EndpointId::from_raw(id as u32 as u64))
+    unique_id(object).map(|id| EndpointId::from_raw(id as u32 as u64))
+}
+
+/// `kMIDIPropertyUniqueID`, which persists across restarts: it is also the
+/// endpoint's [`Identity`].
+fn unique_id(object: &coremidi::Object) -> Option<i32> {
+    Properties::unique_id().value_from(object).ok()
 }
 
 /// The macOS [`MidiEndpoints`] implementation.
@@ -149,7 +157,19 @@ impl CoreMidiEndpoints {
     }
 }
 
+impl CoreMidiEndpoints {
+    /// Every device now.
+    fn devices() -> Vec<OsDevice> {
+        let this = Self { client: None };
+        os_devices(&this.inputs(), &this.outputs())
+    }
+}
+
 impl MidiEndpoints for CoreMidiEndpoints {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        watch::start(sink, Self::devices)
+    }
+
     fn inputs(&self) -> Vec<EndpointInfo> {
         (0..Sources::count())
             .filter_map(Source::from_index)
@@ -157,6 +177,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
             .filter_map(|(index, source)| {
                 Some(EndpointInfo {
                     id: endpoint_id(&source)?,
+                    identity: Identity::CoreMidi(unique_id(&source)?),
                     name: endpoint_name(&source, index),
                     capability: endpoint_capability(&source),
                 })
@@ -171,6 +192,7 @@ impl MidiEndpoints for CoreMidiEndpoints {
             .filter_map(|(index, dest)| {
                 Some(EndpointInfo {
                     id: endpoint_id(&dest)?,
+                    identity: Identity::CoreMidi(unique_id(&dest)?),
                     name: endpoint_name(&dest, index),
                     capability: endpoint_capability(&dest),
                 })

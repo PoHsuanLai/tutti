@@ -88,6 +88,8 @@ test-all: test test-features test-editor test-doc test-release
 #                         helpers with no test, until they were gated)
 #   tutti-session/clap  — hosted plugins and the plugin half of export
 #                         (tests/plugin.rs); `export,modulation` beside it
+#   tutti-plugin-contract/server — the shared plugin's mode and transcript
+#                         through a real plugin-server (tests/server.rs)
 #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
 #                         (`plugin_midi_export` runs as a test) and its
 #                         prelude's request types
@@ -108,6 +110,7 @@ check-features:
     cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst2 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features vst3 --all-targets -- -D warnings
     cargo clippy --locked -p tutti-plugin-server --no-default-features --features clap --all-targets -- -D warnings
@@ -133,6 +136,7 @@ test-features:
     cargo nextest run --locked -p tutti-clap-host --features clap-extras
     cargo nextest run --locked -p tutti-plugin-types --features test-support
     cargo nextest run --locked -p tutti-plugin-db --features json
+    cargo nextest run --locked -p tutti-plugin-contract --features server
     cargo nextest run --locked -p tutti-plugin --features clap,vst2,json
     # Threaded task pool, for the tests that need it (see ci.yml).
     cargo nextest run --locked -p bevy-tutti --features full,bevy_tasks/multi_threaded -E 'test(the_rendered_graph_is_dropped_on_the_main_thread) | test(/^off_thread::/)'

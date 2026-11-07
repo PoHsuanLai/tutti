@@ -211,6 +211,21 @@ jobs:
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
 
+  # The plugin contract on Windows. Not a required check: nothing else runs a
+  # test there, and whether the shared plugin loads on a Windows runner is what
+  # this finds out. Linux and macOS run the same suite in `test`.
+  contract-windows:
+    name: plugin contract (windows)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked -p tutti-plugin-contract
+
   features:
     name: dark features
     runs-on: ubuntu-24.04
@@ -274,6 +289,8 @@ jobs:
       #                         `vst2_in_process*` suites): no other job turns
       #                         the features on, so none of them ran. Only
       #                         `real_plugin_pressure` did, by name.
+      #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
+      #                         mode and transcript through a real plugin-server
       #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
       #                         (`headless_modulation`; `plugin_midi_export`,
       #                         `test = true`, which plays the reference
@@ -297,6 +314,7 @@ jobs:
           cargo clippy --locked -p tutti-clap-host --features clap-extras --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin --features clap,vst2,json --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-db --features json --all-targets -- -D warnings
+          cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
 
       # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin.rs` and
       # tutti's `plugin_midi_export` example) spawn the `plugin-server`
@@ -325,6 +343,7 @@ jobs:
           cargo nextest run --locked -p tutti-clap-host --features clap-extras
           cargo nextest run --locked -p tutti-plugin-types --features test-support
           cargo nextest run --locked -p tutti-plugin-db --features json
+          cargo nextest run --locked -p tutti-plugin-contract --features server
 
       # bevy-tutti builds `bevy_tasks` without `multi_threaded`, so its task
       # pool runs each task inside `spawn`, on the main thread: a render's

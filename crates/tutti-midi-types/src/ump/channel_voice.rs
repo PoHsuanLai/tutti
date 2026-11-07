@@ -24,7 +24,7 @@
 //!   builds while release builds keep the safe masking.
 
 use midi2::prelude::*;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, Ump, Voice2};
 
 use super::MidiEvent;
 
@@ -281,15 +281,17 @@ impl MidiEvent {
         detach: bool,
         reset: bool,
     ) -> Self {
-        use midi2::channel_voice2::PerNoteManagement;
         debug_assert_note(note);
-        let mut m = PerNoteManagement::<[u32; 2]>::new();
-        m.set_group(u4::new(group.get()));
-        m.set_channel(u4::new(channel.get()));
-        m.set_note_number(u7::new(note & 0x7F));
-        m.set_detach(detach);
-        m.set_reset(reset);
-        Self::from_ump(0, m.data())
+        // Written by `tutti_ump`: `midi2` puts the two flags in each other's bits.
+        let message = Message::Midi2(
+            Address { group, channel },
+            Voice2::PerNoteManagement {
+                note: NoteNumber::new(note & 0x7F).unwrap_or_default(),
+                detach,
+                reset,
+            },
+        );
+        Self::from_ump(0, Ump::from(message).words())
     }
 }
 

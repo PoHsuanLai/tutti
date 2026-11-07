@@ -28,7 +28,10 @@ use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_types::{Hz, Q, SampleRate};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
+    RegisteredPerNoteController, U7, U14, Ump, Voice1, Voice2,
+};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -174,6 +177,137 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
             } else {
                 synth.queue_midi(&[off]);
             }
+            synth.block(64);
+        }
+    });
+}
+
+/// Every arm of the decode, MIDI 1.0 and 2.0, a reserved attribute, a packet
+/// `decode` refuses and a message the synth has no use for, inside the gate.
+/// Mutation: an `Vec::new()` + `push` in the `Voice1::PolyPressure` arm
+/// aborts inside the gate.
+#[test]
+fn polysynth_every_decoded_message_is_allocation_free() {
+    let mut synth = Hand::new(
+        PolySynth::new(SynthConfig {
+            sample_rate: tutti_types::SampleRate::from(48_000.0),
+            max_voices: 8,
+            mpe_enabled: true,
+            ..Default::default()
+        })
+        .unwrap(),
+    );
+    let address = Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::of(1),
+    };
+    let note = NoteNumber::new(60).unwrap();
+    let u7 = |v| U7::new(v).unwrap();
+    let ev = |m: Message| MidiEvent {
+        frame_offset: 0,
+        data: Ump::from(m).0,
+    };
+    let m1 = |v| ev(Message::Midi1(address, v));
+    let m2 = |v| ev(Message::Midi2(address, v));
+    let events = [
+        m1(Voice1::NoteOn {
+            note,
+            velocity: u7(100),
+        }),
+        m1(Voice1::PolyPressure {
+            note,
+            pressure: u7(50),
+        }),
+        m1(Voice1::ControlChange {
+            controller: CCNumber::of(1),
+            value: u7(20),
+        }),
+        m1(Voice1::ControlChange {
+            controller: CCNumber::of(64),
+            value: u7(127),
+        }),
+        m1(Voice1::PitchBend(U14::new(9000).unwrap())),
+        m1(Voice1::ChannelPressure(u7(5))),
+        m1(Voice1::ProgramChange(u7(5))),
+        m1(Voice1::NoteOff {
+            note,
+            velocity: u7(0),
+        }),
+        m1(Voice1::NoteOn {
+            note,
+            velocity: u7(0),
+        }),
+        m2(Voice2::NoteOn {
+            note,
+            velocity: 0x8000,
+            attribute: Attribute::Pitch(60 << 9),
+        }),
+        m2(Voice2::NoteOn {
+            note,
+            velocity: 0x8000,
+            attribute: Attribute::Reserved { kind: 5, data: 1 },
+        }),
+        m2(Voice2::PerNotePitchBend {
+            note,
+            value: 0xC000_0000,
+        }),
+        m2(Voice2::PolyPressure {
+            note,
+            value: 0x4000_0000,
+        }),
+        m2(Voice2::RegisteredPerNote {
+            note,
+            controller: RegisteredPerNoteController::Pitch,
+            value: 69 << 25,
+        }),
+        m2(Voice2::AssignablePerNote {
+            note,
+            controller: 74,
+            value: 1 << 30,
+        }),
+        m2(Voice2::PerNoteManagement {
+            note,
+            detach: false,
+            reset: true,
+        }),
+        m2(Voice2::Registered {
+            bank: u7(0),
+            index: u7(7),
+            value: 12 << 25,
+        }),
+        m2(Voice2::Assignable {
+            bank: u7(1),
+            index: u7(2),
+            value: 3,
+        }),
+        m2(Voice2::ControlChange {
+            controller: CCNumber::of(7),
+            value: 1 << 31,
+        }),
+        m2(Voice2::PitchBend(0x9000_0000)),
+        m2(Voice2::ChannelPressure(1 << 30)),
+        m2(Voice2::NoteOff {
+            note,
+            velocity: 0,
+            attribute: Attribute::Reserved { kind: 9, data: 2 },
+        }),
+        ev(Message::System(
+            MidiGroup::FIRST,
+            tutti_ump::System::TimingClock,
+        )),
+        // A reserved message type: `decode` refuses it.
+        MidiEvent {
+            frame_offset: 0,
+            data: [0x6000_0000, 0, 0, 0],
+        },
+    ];
+    for _ in 0..8 {
+        synth.queue_midi(&events);
+        synth.block(64);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..200 {
+            synth.queue_midi(&events);
             synth.block(64);
         }
     });

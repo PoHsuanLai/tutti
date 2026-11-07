@@ -42,6 +42,7 @@ wide = { version = "1.6", default-features = false }
 # Error handling
 thiserror = "2"
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]

@@ -4605,6 +4605,7 @@ dependencies = [
  "tutti-core",
  "tutti-dsp",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
  "tutti-mod",

@@ -21,7 +21,7 @@
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
 use midi2::{Channeled, UmpMessage};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2, decode};
 
 use crate::note_id::NoteId;
 use crate::ump::MidiEvent;
@@ -601,15 +601,23 @@ impl MidiEvent {
                 index: u8::from(m.index()),
                 delta: m.controller_data() as i32,
             },
+            // `midi2` reads Detach and Reset from the wrong bits (M2-104
+            // Figure 51 has D in bit 1 and S in bit 0), so the flags come from
+            // `tutti_ump`.
             Cv2::PerNoteManagement(m) => {
                 let note = u8::from(m.note_number());
+                let Ok(Message::Midi2(_, Voice2::PerNoteManagement { detach, reset, .. })) =
+                    decode(Ump(ev.data))
+                else {
+                    return MidiMessage::Other(*self);
+                };
                 MidiMessage::PerNoteManagement {
                     frame_offset,
                     id: note_id(note),
                     channel,
                     note,
-                    detach: m.detach(),
-                    reset: m.reset(),
+                    detach,
+                    reset,
                 }
             }
             // Every Channel Voice 2 message `midi2` currently defines now has a

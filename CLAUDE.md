@@ -174,10 +174,11 @@ just test-all                      # both
 - **Linux:** `tutti-cpal` needs ALSA headers (`libasound2-dev pkg-config` or
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
-- **Bevy-free floor:** four engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-types`, `tutti-io`, `tutti-mod`, `tutti-sampler`); the
-  rest have none, and `tutti-session`, `tutti-graph`
-  and `tutti-ump` must never grow one. `bevy-tutti` is the only crate that
+- **Bevy-free floor:** three engine crates have an optional, off-by-default
+  `bevy` feature (`tutti-types`, `tutti-mod`, `tutti-sampler`); the
+  rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`, `tutti-io`
+  and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
+  decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
   requires Bevy. Check a crate that has the feature with `cargo check -p <crate>` and
   `--features bevy`. `--no-default-features` is *not* this check.
 - **Import paths:** import engine types from a crate's root or prelude, never
@@ -209,10 +210,10 @@ CC_x86_64_pc_windows_msvc=clang AR_x86_64_pc_windows_msvc=llvm-ar \
 
 `just check-windows` runs this over the workspace and over the plugin crates
 with every format feature. It leaves out the members that cannot
-cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `vorbis` feature,
-which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
+cross-compile: `ogg_next_sys` (reached through `tutti-codec`'s `encode-vorbis`
+feature, which `tutti-export` turns on) and `tutti-vst3-host`'s `conformance` probe need
 real Windows C headers. `tutti-codec` itself is linted with its other formats
-(`wav,aiff,flac`). CI's `clippy (windows)` job
+(`encode-wav,encode-aiff,encode-flac` and every `decode-*`). CI's `clippy (windows)` job
 runs everything natively on a `windows-latest` runner. It only lints: no CI job
 runs the tests on Windows.
 **A cast from a vst3 SDK enum constant differs by platform.** The bindings
@@ -262,10 +263,12 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
-  tutti-codec    the audio file encoders: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
+  tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink; the `Pcm` widths and their one
-                 quantization. Depends on `tutti-types` alone
+                 quantization. In: `Wave` (the resident sample buffer), `Wave::read`,
+                 `Wave::read_metadata`, `FileIn` (the streaming `AudioIn`),
+                 `DecodeError`, `can_decode`. Depends on `tutti-types` alone
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
@@ -279,7 +282,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  conversion in `f64`, and constant-tempo cells for a ramp
   tutti-engine   `Engine`, the per-block graph render, over a transport and
                  the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
-  tutti-io       I/O edge: live + file decode
+  tutti-io       live I/O edge: mic monitor, `TapIn`, `WavOut`, `Recorder`
   tutti-cpal     device
   tutti-export   offline render
   tutti-nodes, tutti-spatial (vbap, hrtf), tutti-sampler, tutti-polysynth,
@@ -379,8 +382,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
 - `tutti-codec` depends on `tutti-types` alone, keeps every module private
   (`tutti_codec::Encoder`; CI runs the per-module path gate on it), is
   `#![forbid(unsafe_code)]`, is `publish = false` and has no `bevy` feature.
-  Each format is a cargo feature (`wav`, `aiff`, `flac`, `vorbis`), none on by
-  default, and a `Format` variant exists only with its feature: no `cfg(not)`
+  Each format is a cargo feature, none on by default: `encode-wav`,
+  `encode-aiff`, `encode-flac`, `encode-vorbis` for writing and `decode-wav`,
+  `decode-flac`, `decode-mp3`, `decode-ogg` for reading. A decode feature pulls
+  exactly one `symphonia` container and no encoder library, an encode feature
+  pulls no decoder, and the C Vorbis library is `encode-vorbis`'s alone, so a
+  build that only reads never needs it (`scripts/check-layout.sh` holds both).
+  A `Format` variant exists only with its `encode-*` feature: no `cfg(not)`
   arm refuses a format. An `Encoder` takes blocks already at the
   `Spec`'s rate and width; it does not pull, resample or dither, and nothing in
   the crate stops a caller from handing it blocks that were not. Pulling,
@@ -397,6 +405,13 @@ list (normal and build edges; dev-dependencies may go anywhere).
   the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
   them. A new format is a `Format` variant, a writer type, a `contract!` line in
   `src/contract.rs` and a row in `tests/bytes.rs`.
+  Decoding has no trait: it is plain functions and types of our own over
+  `symphonia`, all in `src/decode.rs` and `src/decode/`, so the library is
+  swapped by editing that module. No `symphonia` type is in a public signature,
+  field or error (`DecodeError` is ours), and no file outside that module names
+  it (`scripts/check-layout.sh`). `Wave` is here because decoding produces it and
+  `tutti-sampler`, `tutti-export` and `bevy-tutti` consume it; it needs no
+  feature. `FileIn` is here because it is the decoder's streaming state.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
   `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep

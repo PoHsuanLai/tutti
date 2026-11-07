@@ -19,7 +19,11 @@
 //! given the side-stereo modes, or `Medium` the `Standard` LPC order, fails the
 //! FLAC rows of those levels.
 
-#![cfg(any(feature = "wav", feature = "aiff", feature = "flac"))]
+#![cfg(any(
+    feature = "encode-wav",
+    feature = "encode-aiff",
+    feature = "encode-flac"
+))]
 
 use std::io::Cursor;
 use tutti_codec::{Encoder, Format, Spec};
@@ -62,7 +66,7 @@ fn written(format: Format, channels: u16, frames: usize) -> (usize, u64) {
     (bytes.len(), fnv(&bytes))
 }
 
-#[cfg(feature = "wav")]
+#[cfg(feature = "encode-wav")]
 #[test]
 fn wav_bytes_are_pinned() {
     use tutti_codec::Pcm::{Float32, Int16, Int24};
@@ -87,7 +91,7 @@ fn wav_bytes_are_pinned() {
     }
 }
 
-#[cfg(feature = "aiff")]
+#[cfg(feature = "encode-aiff")]
 #[test]
 fn aiff_bytes_are_pinned() {
     use tutti_codec::Pcm::{Float32, Int16, Int24};
@@ -112,7 +116,7 @@ fn aiff_bytes_are_pinned() {
 /// The five FLAC levels that differ, as the libFLAC-ish levels they replace:
 /// 0, 1 and 2, 3, 4 to 6, 7 and 8. Their digests differ on this input, so a
 /// level mapped to another's coding options shows.
-#[cfg(feature = "flac")]
+#[cfg(feature = "encode-flac")]
 #[test]
 fn flac_bytes_are_pinned_at_every_level() {
     use tutti_codec::FlacLevel::{Best, Fast, Fastest, Medium, Standard};

@@ -79,7 +79,6 @@ test-all: test test-features test-editor test-doc test-release
 #                          which no run ever made
 #   bevy-tutti/sampler  — src/sampler (the WaveAsset loader, the voice
 #                         components) and its tests
-#   tutti-io/bevy       — WaveAsset's Asset derive
 #   bevy-tutti/plugin   — plugin_host binding against a live plugin
 #                         (tests/plugin_capture.rs); `full,plugin` so the
 #                         modulation-gated plugin parameter lanes compile
@@ -105,12 +104,16 @@ check-features:
     cargo clippy --locked -p bevy-tutti --features plugin,modulation --all-targets -- -D warnings
     cargo clippy --locked -p tutti-session --features clap,export,modulation,midi-hardware --all-targets -- -D warnings
     cargo clippy --locked -p tutti --features clap,export,modulation --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-io --features bevy --all-targets -- -D warnings
+    cargo clippy --locked -p tutti --features audio-io --all-targets -- -D warnings
     cargo clippy --locked -p tutti-codec --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-codec --features wav --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-codec --features aiff --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-codec --features flac --all-targets -- -D warnings
-    cargo clippy --locked -p tutti-codec --features vorbis --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features encode-wav --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features encode-aiff --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features encode-flac --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --features encode-vorbis --all-targets -- -D warnings
+    cargo clippy --locked -p tutti-codec --lib --features decode-wav -- -D warnings
+    cargo clippy --locked -p tutti-codec --lib --features decode-flac -- -D warnings
+    cargo clippy --locked -p tutti-codec --lib --features decode-mp3 -- -D warnings
+    cargo clippy --locked -p tutti-codec --lib --features decode-ogg -- -D warnings
     cargo clippy --locked -p tutti-codec --all-features --all-targets -- -D warnings
     cargo clippy --locked -p tutti-ump --features serde --all-targets -- -D warnings
     cargo clippy --locked -p tutti-midi-device --features serde --all-targets -- -D warnings
@@ -138,14 +141,14 @@ test-features:
     cargo nextest run --locked -p bevy-tutti --features full,plugin
     cargo nextest run --locked -p tutti-session --features clap,export,modulation,midi-hardware
     cargo nextest run --locked -p tutti --features clap,export,modulation
-    cargo nextest run --locked -p tutti-io --features bevy
+    cargo nextest run --locked -p tutti --features audio-io
     # A `Format` variant exists only with its feature: each is tested alone (a
     # workspace run has them all on, through tutti-export).
     cargo nextest run --locked -p tutti-codec
-    cargo nextest run --locked -p tutti-codec --features wav
-    cargo nextest run --locked -p tutti-codec --features aiff
-    cargo nextest run --locked -p tutti-codec --features flac
-    cargo nextest run --locked -p tutti-codec --features vorbis
+    cargo nextest run --locked -p tutti-codec --features encode-wav
+    cargo nextest run --locked -p tutti-codec --features encode-aiff
+    cargo nextest run --locked -p tutti-codec --features encode-flac
+    cargo nextest run --locked -p tutti-codec --features encode-vorbis
     cargo nextest run --locked -p tutti-codec --all-features
     # tutti-ump/serde is already on in a workspace run (tutti-midi-types' self
     # dev-dependency turns it on); this step names it so tests/serde.rs still runs
@@ -412,7 +415,7 @@ lint:
 # workspace minus the members that cannot cross-compile, then the plugin crates
 # with every format feature. The excluded members need a real
 # Windows C toolchain and headers, not a stub. `ogg_next_sys` (the vorbis codec,
-# via tutti-codec's `vorbis` feature, which tutti-export turns on and `tutti` and
+# via tutti-codec's `encode-vorbis` feature, which tutti-export turns on and `tutti` and
 # `bevy-tutti` depend on) includes `<string.h>`. `tutti-codec` itself is checked
 # below with its other formats. `tutti-vst3-host`'s `conformance` feature (on in its own tests
 # and `tutti-plugin-server`'s) compiles and links the `audio-probe` DLL against
@@ -435,7 +438,7 @@ check-windows:
         --exclude tutti-vst3-host --exclude tutti-plugin-server \
         --exclude tutti-shared-plugin-vst3-cpp --exclude tutti-plugin-contract
     win -p tutti-shared-plugin --all-targets
-    win -p tutti-codec --features wav,aiff,flac,serde --all-targets
+    win -p tutti-codec --features encode-wav,encode-aiff,encode-flac,decode-wav,decode-flac,decode-mp3,decode-ogg,serde --all-targets
     win -p tutti-plugin -p tutti-plugin-types --features tutti-plugin/clap,tutti-plugin/vst3,tutti-plugin/vst2,tutti-plugin/json --all-targets
     win -p tutti-plugin-db --features json --all-targets
     win -p tutti-clap-host --features clap-extras --all-targets

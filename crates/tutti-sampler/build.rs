@@ -1,5 +1,5 @@
 //! Defines `cfg(codec)`: at least one of the `wav`, `flac`, `mp3` and `ogg`
-//! features is on, so `tutti-io` has a decoder to open files with.
+//! features is on, so `tutti-codec` has a decoder to open files with.
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(codec)");

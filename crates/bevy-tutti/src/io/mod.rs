@@ -156,6 +156,6 @@ pub use tutti_io::{MicMonitorNode, MicRing, Recorder, TapIn, WavOut};
 // building a source or a sink needs it named here, not fetched from `tutti-metering`.
 // `Samples` is the frame count `poll_into` and `pump` return, and the unit an
 // `AudioPump`'s capacity is given in — the same "needs it named here" reason.
-pub use tutti_io::Pcm;
+pub use tutti_codec::Pcm;
 pub use tutti_types::{AudioIn, AudioOut, OnEmpty, pump};
 pub use tutti_types::{ChannelLayout, Samples};

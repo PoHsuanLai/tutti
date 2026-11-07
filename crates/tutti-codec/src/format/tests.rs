@@ -39,17 +39,17 @@ fn extensions_name_formats_and_refuse_the_rest() {
     };
     assert_eq!(name(Format::from_path("x.XYZ")), "xyz");
     assert_eq!(name(Format::from_path("x")), "(none)");
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "encode-wav")]
     assert_eq!(
         Format::from_path("a/b.WAV").unwrap(),
         Format::Wav(Pcm::Int24)
     );
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     assert_eq!(
         Format::from_extension("aif").unwrap(),
         Format::Aiff(Pcm::Int24)
     );
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "encode-flac")]
     assert_eq!(
         Format::from_extension("flac").unwrap(),
         Format::Flac {
@@ -57,7 +57,7 @@ fn extensions_name_formats_and_refuse_the_rest() {
             level: FlacLevel::Standard
         }
     );
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     assert_eq!(
         Format::from_extension("ogg").unwrap(),
         Format::Vorbis {
@@ -72,7 +72,7 @@ fn extensions_name_formats_and_refuse_the_rest() {
 /// Mutation (run): `Aiff(_) => Some(IntDepth::default())` fails the float row.
 #[test]
 fn the_integer_width_and_the_length_bound_follow_the_format() {
-    #[cfg(feature = "wav")]
+    #[cfg(feature = "encode-wav")]
     {
         assert_eq!(Format::Wav(Pcm::Int16).int_depth(), Some(IntDepth::Int16));
         assert_eq!(Format::Wav(Pcm::Float32).int_depth(), None);
@@ -82,7 +82,7 @@ fn the_integer_width_and_the_length_bound_follow_the_format() {
                 .is_some()
         );
     }
-    #[cfg(feature = "aiff")]
+    #[cfg(feature = "encode-aiff")]
     {
         assert_eq!(Format::Aiff(Pcm::Float32).int_depth(), None);
         assert_eq!(
@@ -90,7 +90,7 @@ fn the_integer_width_and_the_length_bound_follow_the_format() {
             None
         );
     }
-    #[cfg(feature = "flac")]
+    #[cfg(feature = "encode-flac")]
     assert_eq!(
         Format::Flac {
             depth: IntDepth::Int16,
@@ -99,7 +99,7 @@ fn the_integer_width_and_the_length_bound_follow_the_format() {
         .int_depth(),
         Some(IntDepth::Int16)
     );
-    #[cfg(feature = "vorbis")]
+    #[cfg(feature = "encode-vorbis")]
     assert_eq!(
         Format::Vorbis {
             quality: Quality::default()

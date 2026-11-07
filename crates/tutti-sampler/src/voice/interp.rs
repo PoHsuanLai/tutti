@@ -21,8 +21,8 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use tutti_codec::Wave;
 use tutti_dsp::cubic_hermite;
-use tutti_io::Wave;
 use tutti_types::{
     Beat, BeatDuration, Bpm, Frame, ReadRate, SamplePosition, SampleRate, Samples, TimelineSegment,
     fold_frame, snap_to_whole_frame,

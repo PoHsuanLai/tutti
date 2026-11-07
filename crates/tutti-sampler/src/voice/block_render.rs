@@ -21,8 +21,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tutti_codec::Wave;
 use tutti_graph::{Env, Node, Offset, Prepare, Transport, TransportChanges, contract};
-use tutti_io::Wave;
 use tutti_types::{
     Amplitude, Beat, Bpm, Cents, ChannelLayout, Frame, FrameClock, PlaybackRate, SamplePosition,
     SampleRate, Samples, StretchFactor,

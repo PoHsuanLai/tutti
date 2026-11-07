@@ -1,7 +1,7 @@
 # tutti-io
 
-Tutti's audio I/O edge: what comes in from a device or a file, and what goes
-out to a file. Device-free: the sound-card side lives in `tutti-cpal`, and the
+Tutti's live audio I/O edge: what comes in from a device or the graph's tap,
+and what goes out to a file. Device-free: the sound-card side lives in `tutti-cpal`, and the
 `tutti` facade re-exports this crate as `tutti::io` (feature `io`).
 
 ## What is here
@@ -24,19 +24,8 @@ Four live pieces, and recording is just a pump between two of them:
   `Recorder` and ends it through the non-blocking `request_stop`,
   `is_finished` and `finish_in_place`.
 
-And the file side, which needs no device either:
-
-- `Wave` — a resident, planar sample buffer: what a sampler voice plays.
-- `Wave::read` / `Wave::read_metadata` — decode a file into one, or read only
-  its header. Behind the codec features.
-- `FileIn` — the streaming read, an `AudioIn` over a file at the file's own
-  width, with sample-accurate `seek`. The read-side twin of `WavOut`.
-- `WaveAsset` — the Bevy asset wrapper (feature `bevy`).
-- `can_decode` / `decodable_extensions` — which formats *this build* reads.
-
-The traits this crate implements are re-exported from its root (`pump`,
-`AudioIn`, `AudioOut`, `OnEmpty`, `Pcm`), so a consumer reaches the
-vocabulary and its live impls from one place.
+Reading a file is `tutti-codec`'s (`Wave`, `Wave::read`, `FileIn`); this crate
+holds the live edge only, and writes WAV through `tutti-codec`'s encoder.
 
 ## What this crate does not own
 
@@ -50,24 +39,24 @@ vocabulary and its live impls from one place.
 - **Offline rendering.** That is `tutti-export`'s. The two are peers: one moves
   frames in real time between endpoints a host owns, the other renders a graph
   faster than real time to a file.
-- **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump`, `ChannelLayout` and
-  the PCM quantizers are all `tutti-types`'.
-  This crate supplies the live *impls*, not the traits.
+- **The I/O vocabulary itself.** `AudioIn`/`AudioOut`/`pump` and `ChannelLayout`
+  are `tutti-types`'; import them from there. This crate supplies the live
+  *impls*, not the traits.
+- **File decode.** `Wave`, `FileIn` and the decoders are `tutti-codec`'s.
 
 ```text
-tutti-types    AudioIn/AudioOut, ChannelLayout, the PCM quantizers
+tutti-types    AudioIn/AudioOut, ChannelLayout
     ↑
+tutti-codec     the encoder WavOut writes through
 tutti-metering  AudioTap
     ↑
-tutti-io       MicMonitorNode, WavOut, TapIn, Recorder,  (device-free)
-               Wave, FileIn, the decoder
+tutti-io       MicMonitorNode, WavOut, TapIn, Recorder   (device-free)
     ↑
 tutti-cpal     MicIn, the output stream, the driver      (owns CPAL)
 ```
 
 `tutti-cpal` depends on this crate (behind its `capture` feature) for the ring
-and the monitor node; `tutti-sampler` depends on it for `Wave` and the decoder,
-and `bevy-tutti` for both.
+and the monitor node, and `bevy-tutti` for the recorder.
 
 ## Example — recording what the graph is playing
 
@@ -78,9 +67,10 @@ the same three lines record a microphone — that interchangeability is the reas
 the traits exist.
 
 ```rust
+use tutti_codec::Pcm;
+use tutti_io::{TapIn, WavOut};
 use tutti_metering::AudioTap;
-use tutti_types::Samples;
-use tutti_io::{pump, AudioIn, AudioOut, Pcm, TapIn, WavOut};
+use tutti_types::{pump, AudioIn, AudioOut, Samples};
 
 let tap = AudioTap::new();
 let mut src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
@@ -118,13 +108,8 @@ wav.finalize().expect("header back-patches");
 
 ## Features
 
-All off by default (`default = []`):
-
-- `wav` / `flac` / `mp3` / `ogg` — one symphonia container (and codec) each,
-  for `Wave::read`, `Wave::read_metadata` and `FileIn`. With none, those do
-  not exist and `decodable_extensions()` is empty; `Wave` itself is always
-  there.
-- `bevy` — the `Asset` derive on `WaveAsset`. Needs a codec as well.
+None. A decoder is `tutti-codec`'s `decode-*` features, and the Bevy asset
+wrapper of a decoded file is `bevy-tutti`'s.
 
 ## License
 

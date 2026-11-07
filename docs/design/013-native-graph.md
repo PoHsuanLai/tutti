@@ -2216,7 +2216,7 @@ the default. Now a forked disk voice plays its file:
   than real time and would outrun its refills; an underrun is silence written
   into the file as a success) and need tearing down when the export ends.
   Offline there is no deadline, so the copy **re-opens the file by its
-  path** with the butler's own decoder (`tutti_io::FileIn`, `seek` +
+  path** with the butler's own decoder (`tutti_codec::FileIn`, `seek` +
   `fill_sequential_interleaved`) and keeps two 32 768-frame pages resident
   (two, because the loop seam and a loop crossfade read two places at once).
   A page is laid out ahead of the read, after the missed frame going forward
@@ -7739,6 +7739,13 @@ now (**reversed**, see 8). Decision 5 was taken when the surface shrank:
    of `WavOut`, and decoding is file I/O. `tutti-io` depends only on
    `tutti-core`, so the sampler, export and bevy-tutti take it without a
    cycle.
+   **Revised (tutti-codec, part 2): `tutti-codec`.** `Wave`, `FileIn`,
+   `WaveMetadata`, the decoder and `can_decode` moved there, beside the
+   encoders, so one crate names the file libraries (`symphonia` in
+   `src/decode/` alone). `FileIn` needs `tutti-types` and the decoder, not the
+   live edge. The error is `DecodeError`, not `symphonia`'s; the features are
+   `decode-wav`/`decode-flac`/`decode-mp3`/`decode-ogg`; `WaveAsset` is
+   `bevy-tutti`'s and `tutti-io` has no `bevy` feature.
 6. **Events fan-in.** Layering a keyboard and a clip means two producers feed
    one events input, so fan-in is the normal case. Options:
    - allow fan-in on `Events` ports only, with a deterministic merge by

@@ -36,6 +36,10 @@ members = [
     "crates/tutti-core",
     "crates/tutti-cpal",
     "crates/tutti-types",
+    # Real-time-safe shared-memory primitives for the audio thread: the engine's
+    # lock-free and `unsafe` runtime structures, and the `ArcLend` re-export.
+    # Names no tutti crate (and `publish = false`).
+    "crates/tutti-rt",
     # The Universal MIDI Packet and the group, channel and controller addresses
     # it carries. Depends on no workspace crate, so `tutti-graph` can carry a
     # packet without a MIDI codec.

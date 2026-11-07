@@ -337,7 +337,7 @@ impl AudioPipeline {
         // Flush denormals to zero for the duration of this block. A plugin
         // whose tail decays toward silence can otherwise emit denormalized
         // floats and spike CPU. Restored on drop at end of the block.
-        let _no_denorm = tutti_types::ScopedNoDenormals::new();
+        let _no_denorm = tutti_rt::ScopedNoDenormals::new();
 
         let start = std::time::Instant::now();
 

@@ -76,9 +76,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use tutti_rt::ScopedNoDenormals;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::latency::MAX_NODE_LATENCY;
-use tutti_types::{At, Frame, Latency, NodeKey, Samples, ScopedNoDenormals};
+use tutti_types::{At, Frame, Latency, NodeKey, Samples};
 
 use crate::event::{Event, EventKind, EventWriter, SortedEvents};
 use crate::history::TransportHistory;

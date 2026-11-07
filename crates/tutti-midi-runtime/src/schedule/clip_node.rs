@@ -48,7 +48,8 @@ use tutti_graph::{
     MIN_EVENT_PORT_CAPACITY, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_types::MidiEvent;
-use tutti_types::{ArcLend, ChannelLayout, Reader};
+use tutti_rt::{ArcLend, Reader};
+use tutti_types::ChannelLayout;
 use tutti_ump::{MidiChannel, MidiGroup};
 
 use super::timed::TimedMidiEvent;

@@ -4,7 +4,7 @@
 //! [`TaskGraph::work`].
 //!
 //! ```text
-//! cargo test -p tutti-types --release --test spin_starvation -- --ignored --nocapture
+//! cargo test -p tutti-rt --release --test spin_starvation -- --ignored --nocapture
 //! ```
 //!
 //! Linux only. The `SCHED_FIFO` cases need `CAP_SYS_NICE` (or an `rtprio`
@@ -52,7 +52,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tutti_types::{BlockWaits, Participant, TaskGraph};
+use tutti_rt::{BlockWaits, Participant, TaskGraph};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Policy {

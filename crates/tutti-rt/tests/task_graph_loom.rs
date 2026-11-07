@@ -3,7 +3,7 @@
 //! module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test task_graph_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test task_graph_loom
 //! ```
 //!
 //! Each task writes its own `loom::cell::UnsafeCell` after reading each of
@@ -80,7 +80,7 @@ use std::sync::Arc;
 
 use loom::cell::UnsafeCell;
 use loom::thread;
-use tutti_types::{BlockWaits, Participant, TaskGraph};
+use tutti_rt::{BlockWaits, Participant, TaskGraph};
 
 struct Cells(Vec<UnsafeCell<u32>>);
 

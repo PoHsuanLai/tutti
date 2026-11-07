@@ -34,7 +34,7 @@ thread_local! {
 /// # Examples
 ///
 /// ```
-/// use tutti_types::RtScope;
+/// use tutti_rt::RtScope;
 ///
 /// assert!(!RtScope::is_inside());
 /// {

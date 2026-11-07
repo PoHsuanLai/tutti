@@ -53,7 +53,7 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_plugin_types::{Request, RescanScope, unframed};
-use tutti_types::RequestWord;
+use tutti_rt::RequestWord;
 use tutti_ump::MidiGroup;
 use vst::api::Supported;
 use vst::host::Host;

@@ -378,8 +378,8 @@ mod tests {
                     std::hint::spin_loop();
                 }
             });
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
             let joined = gate.run(
                 &|i| {
                     let deadline = Instant::now() + Duration::from_secs(10);
@@ -437,8 +437,8 @@ mod tests {
                     std::hint::spin_loop();
                 }
             });
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
             let joined = gate.run(
                 &|i| {
                     if i == 0 {

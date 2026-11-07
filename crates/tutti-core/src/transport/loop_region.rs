@@ -10,7 +10,8 @@
 //! A brace being dragged is the caller's state. A [`LoopRange`] is valid by
 //! construction, so the engine never holds an inverted pair.
 
-use tutti_types::{Beat, LoopRange, SeqReader, SeqWriter};
+use tutti_rt::{SeqReader, SeqWriter};
+use tutti_types::{Beat, LoopRange};
 
 /// The loop region and whether looping is armed.
 ///

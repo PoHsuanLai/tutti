@@ -2,7 +2,7 @@
 //! are loom's under the flag (see `rt/seq_cell.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test seq_cell_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test seq_cell_loom
 //! ```
 //!
 //! The value is a `[u32; 3]`: twelve bytes, so two words, the second only
@@ -44,7 +44,7 @@
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::{Contended, SeqReader, SeqWriter};
+use tutti_rt::{Contended, SeqReader, SeqWriter};
 
 type Value = [u32; 3];
 

@@ -9,7 +9,7 @@
 //! the callback, which the audio thread must never do.
 //! `ArcLend` is control-thread→audio-thread and also takes ownership of a
 //! fresh value, so it does not fit either. The sequence lock is
-//! `tutti-types`' [`SeqWriter`] / [`SeqReader`], with its loom model there;
+//! `tutti-rt`'s [`SeqWriter`] / [`SeqReader`], with its loom model there;
 //! this file only mirrors `TimeInfo` as a plain-bytes [`Snapshot`], and holds
 //! no `unsafe`.
 //!
@@ -34,7 +34,7 @@
 //! [`Vst2Processor::process_f32`]: crate::Vst2Processor::process_f32
 
 use bytemuck::{Pod, Zeroable};
-use tutti_types::{SeqReader, SeqWriter};
+use tutti_rt::{SeqReader, SeqWriter};
 use vst::api::{SmpteFrameRate, TimeInfo};
 
 /// Copies a read tries after the first before it gives up: eight in all. A

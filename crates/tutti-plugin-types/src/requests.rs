@@ -11,7 +11,7 @@
 //! An [`Edit`] goes the other way: a parameter write on an active plugin,
 //! queued to the Processor and applied at the head of its next block.
 
-use tutti_types::{EditReader, EditWriter, RequestBit, RequestWord, RingFull, edit_ring};
+use tutti_rt::{EditReader, EditWriter, RequestBit, RequestWord, RingFull, edit_ring};
 
 use crate::{Normalized, ParamId, Request, RescanScope};
 

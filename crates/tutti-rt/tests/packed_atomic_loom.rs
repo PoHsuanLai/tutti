@@ -2,7 +2,7 @@
 //! loom's under the flag (see `rt/packed_atomic.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test packed_atomic_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test packed_atomic_loom
 //! ```
 //!
 //! The value is a range, `[min, max]` as two `f32`s. It asserts, over every
@@ -28,7 +28,7 @@
 use std::sync::Arc;
 
 use loom::thread;
-use tutti_types::PackedAtomic;
+use tutti_rt::PackedAtomic;
 
 const STORES: [[f32; 2]; 2] = [[1.0, 2.0], [3.0, 4.0]];
 const INITIAL: [f32; 2] = [-1.0, -2.0];

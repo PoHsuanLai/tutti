@@ -35,7 +35,7 @@
 //!
 //! 1. **The state is read on the audio thread without locking or allocating.**
 //!    Every field of [`TransportState`] is a scalar, so this is a set of plain
-//!    atomics rather than a `tutti_types::ArcLend` cell. `ArcLend` exists
+//!    atomics rather than a `tutti_rt::ArcLend` cell. `ArcLend` exists
 //!    for state too large to pack into an atomic — a routing table, a meter map
 //!    — and its read is a slot CAS, a `SeqCst` fence and a load, plus a slot
 //!    store on release, strictly more work than the handful of `Relaxed` loads here.

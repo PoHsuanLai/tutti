@@ -2,7 +2,7 @@
 //! cell are loom's under the flag (see `rt/job_gate.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test job_gate_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test job_gate_loom
 //! ```
 //!
 //! The job borrows a `loom::cell::UnsafeCell` owned by the caller's stack
@@ -54,7 +54,7 @@ use std::sync::Arc;
 use loom::cell::UnsafeCell;
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
-use tutti_types::JobGate;
+use tutti_rt::JobGate;
 
 struct Borrowed {
     value: UnsafeCell<u32>,

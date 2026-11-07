@@ -20,8 +20,9 @@ use super::types::{Direction, SlotId, Voice};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use tutti_graph::ParamSet;
 use tutti_io::Wave;
+use tutti_rt::ArcLend;
 use tutti_types::{
-    Amplitude, ArcLend, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
+    Amplitude, Beat, BeatDuration, Cents, ChannelLayout, Param, PlaybackRate, SampleRate,
     StretchFactor,
 };
 

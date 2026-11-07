@@ -13,8 +13,9 @@ use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
     Shape, Status, Transport, Unforkable, compile,
 };
+use tutti_rt::RtScope;
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{At, ChannelLayout, NodeKey, RtScope, Samples};
+use tutti_types::{At, ChannelLayout, NodeKey, Samples};
 use tutti_ump::Ump;
 
 const NODE: NodeKey = NodeKey(1);

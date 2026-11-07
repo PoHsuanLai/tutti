@@ -704,7 +704,7 @@ pub fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
         .collect()
 }
 
-/// A pool of `participants - 1` helper threads over `tutti_types::JobGate`,
+/// A pool of `participants - 1` helper threads over `tutti_rt::JobGate`,
 /// for tests: helpers spin (yielding) for work and never sleep, so every
 /// job gets its helpers promptly and the parallel paths are exercised hard.
 /// `tutti_core::WorkerPool` is the production pool (it cannot be named here:
@@ -714,7 +714,7 @@ pub fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 /// `assert_no_alloc::assert_no_alloc` — the helpers included, which a gate
 /// around the caller alone would not see (`assert_no_alloc` is per thread).
 pub struct TestPool {
-    gate: Arc<tutti_types::JobGate>,
+    gate: Arc<tutti_rt::JobGate>,
     stop: Arc<std::sync::atomic::AtomicBool>,
     helpers: Vec<std::thread::JoinHandle<()>>,
     no_alloc: bool,
@@ -744,7 +744,7 @@ impl TestPool {
         no_alloc: bool,
         waits: tutti_graph::BlockWaits,
     ) -> Arc<Self> {
-        let gate = Arc::new(tutti_types::JobGate::with_waits(participants, waits));
+        let gate = Arc::new(tutti_rt::JobGate::with_waits(participants, waits));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let helpers = (1..participants)
             .map(|_| {

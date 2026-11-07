@@ -41,7 +41,7 @@ const WORD: usize = std::mem::size_of::<u64>();
 /// nothing on x86 and is not measurable on ARM.
 ///
 /// ```
-/// use tutti_types::PackedAtomic;
+/// use tutti_rt::PackedAtomic;
 ///
 /// let range = PackedAtomic::new([20.0f32, 20_000.0]);
 /// range.store([100.0, 5_000.0]);
@@ -51,7 +51,7 @@ const WORD: usize = std::mem::size_of::<u64>();
 /// A value larger than one word is refused:
 ///
 /// ```compile_fail
-/// let wide = tutti_types::PackedAtomic::new([0u32; 3]);
+/// let wide = tutti_rt::PackedAtomic::new([0u32; 3]);
 /// ```
 // Mutation (run) for the `compile_fail` doctest: `FITS` asserting
 // `size_of::<T>() <= 2 * WORD` → the 12-byte cell compiles → fails.

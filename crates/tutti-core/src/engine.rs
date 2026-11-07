@@ -88,8 +88,9 @@ use crate::transport::{
 use crate::transport::{SCHEDULE_CAPACITY, Schedule, Scheduled};
 use std::sync::Arc;
 use std::time::Instant;
+use tutti_rt::AudioThreadCell;
 use tutti_types::{At, Frame};
-use tutti_types::{AudioThreadCell, InterleavedMut, SampleRate, Samples, Seconds};
+use tutti_types::{InterleavedMut, SampleRate, Samples, Seconds};
 
 /// The widest graph root an engine renders — the most global outputs it
 /// folds to the device. The executor must be handed a buffer for **every**

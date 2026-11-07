@@ -10,7 +10,7 @@ use tutti_plugin_types::{
     Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
     Prepare, Refused, RestartRules, Samples, Stuck,
 };
-use tutti_types::ArcLend;
+use tutti_rt::ArcLend;
 
 use super::ClapLoaded;
 use super::config::RangeTable;

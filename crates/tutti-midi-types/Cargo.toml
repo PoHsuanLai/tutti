@@ -37,6 +37,7 @@ serde = ["dep:serde", "tutti-types/serde", "tutti-ump/serde"]
 bitflags = "2"
 # The unit vocabulary (`Beat`, `MidiChannel`, …) and `ArcLend`, re-exported.
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", optional = true, features = ["derive"] }
 thiserror.workspace = true

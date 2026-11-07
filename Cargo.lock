@@ -407,6 +407,7 @@ dependencies = [
  "tutti-plugin",
  "tutti-plugin-server",
  "tutti-polysynth",
+ "tutti-rt",
  "tutti-sampler",
  "tutti-session",
  "tutti-soundfont",
@@ -4212,6 +4213,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-plugin",
  "tutti-polysynth",
+ "tutti-rt",
  "tutti-sampler",
  "tutti-session",
  "tutti-soundfont",
@@ -4238,6 +4240,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-midi-types",
  "tutti-plugin-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4272,6 +4275,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-types",
  "tutti-plugin-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4305,6 +4309,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-graph",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4322,6 +4327,7 @@ dependencies = [
  "tutti-graph",
  "tutti-io",
  "tutti-nodes",
+ "tutti-rt",
  "tutti-types",
 ]
 
@@ -4379,6 +4385,7 @@ dependencies = [
  "proptest",
  "ringbuf",
  "tutti-graph",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4431,6 +4438,7 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4445,6 +4453,7 @@ dependencies = [
  "tutti-core",
  "tutti-graph",
  "tutti-midi-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4462,6 +4471,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tutti-midi-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4490,6 +4500,7 @@ dependencies = [
  "tutti-graph",
  "tutti-mod",
  "tutti-nodes",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
  "wide",
@@ -4530,6 +4541,7 @@ dependencies = [
  "tutti-mod",
  "tutti-nodes",
  "tutti-plugin-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
  "tutti-vst2-host",
@@ -4561,7 +4573,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-plugin",
  "tutti-plugin-types",
- "tutti-types",
+ "tutti-rt",
  "tutti-ump",
  "tutti-vst2-host",
  "tutti-vst2-test-plugin",
@@ -4583,6 +4595,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tutti-midi-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4605,6 +4618,18 @@ dependencies = [
  "tutti-types",
  "tutti-ump",
  "wide",
+]
+
+[[package]]
+name = "tutti-rt"
+version = "0.0.1"
+dependencies = [
+ "arc-lend",
+ "arrayvec",
+ "assert_no_alloc",
+ "bytemuck",
+ "libc",
+ "loom",
 ]
 
 [[package]]
@@ -4643,6 +4668,7 @@ dependencies = [
  "tutti-io",
  "tutti-mod",
  "tutti-nodes",
+ "tutti-rt",
  "tutti-sampler",
  "tutti-types",
 ]
@@ -4670,6 +4696,7 @@ dependencies = [
  "tutti-plugin",
  "tutti-plugin-types",
  "tutti-polysynth",
+ "tutti-rt",
  "tutti-sampler",
  "tutti-soundfont",
  "tutti-spatial",
@@ -4722,15 +4749,9 @@ dependencies = [
 name = "tutti-types"
 version = "0.0.1"
 dependencies = [
- "arc-lend",
- "arrayvec",
- "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
- "bytemuck",
- "libc",
  "libm",
- "loom",
  "serde",
  "serde_json",
 ]
@@ -4761,7 +4782,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-midi-types",
  "tutti-plugin-types",
- "tutti-types",
+ "tutti-rt",
  "tutti-ump",
  "tutti-vst2-test-plugin",
  "vst-tutti",
@@ -4788,6 +4809,7 @@ dependencies = [
  "parking_lot",
  "tempfile",
  "tutti-plugin-types",
+ "tutti-rt",
  "tutti-types",
  "vst3",
 ]
@@ -4807,6 +4829,7 @@ dependencies = [
  "tutti-clap-host",
  "tutti-midi-types",
  "tutti-plugin-types",
+ "tutti-rt",
  "tutti-types",
  "tutti-ump",
  "tutti-vst3-ffi",

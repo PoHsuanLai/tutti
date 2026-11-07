@@ -25,6 +25,7 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # `get_tail_time`. `default-features = false` drops this crate's codec/midi
 # defaults, which the unit vocabulary does not need.
 tutti-types = { path = "../tutti-types", default-features = false }
+tutti-rt = { path = "../tutti-rt" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

@@ -614,8 +614,8 @@ mod tests {
                 saw
             });
             held_rx.recv().unwrap();
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after / 4);
             g.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });
@@ -654,7 +654,7 @@ mod tests {
         std::thread::scope(|s| {
             s.spawn(move || {
                 go_rx.recv().unwrap();
-                crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.helper_leave_after);
+                crate::spin::tests::step_clock(BlockWaits::DEFAULT.helper_leave_after);
                 g.work(Participant::Helper(1), waits, |_| {});
                 left_tx.send(g.done()).unwrap();
             });
@@ -704,8 +704,8 @@ mod tests {
                 });
             });
             held_rx.recv().unwrap();
-            crate::rt::spin::tests::count_yields_into(&YIELDED);
-            crate::rt::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
+            crate::spin::tests::count_yields_into(&YIELDED);
+            crate::spin::tests::step_clock(BlockWaits::DEFAULT.caller_yield_after);
             g.work(Participant::Caller, waits, |t| {
                 panic!("the caller took task {t}, which the helper holds or runs inline")
             });

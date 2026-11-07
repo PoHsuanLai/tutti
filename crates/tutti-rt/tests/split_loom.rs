@@ -3,7 +3,7 @@
 //! `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test split_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test split_loom
 //! ```
 //!
 //! Every element is a `loom::cell::UnsafeCell`, and each access through a
@@ -42,7 +42,7 @@
 
 use loom::cell::UnsafeCell;
 use loom::thread;
-use tutti_types::{ClaimTable, Held, SplitMut, SplitRw};
+use tutti_rt::{ClaimTable, Held, SplitMut, SplitRw};
 
 struct Elem(UnsafeCell<u32>);
 

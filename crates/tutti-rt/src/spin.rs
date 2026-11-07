@@ -346,14 +346,14 @@ pub(super) mod tests {
     /// Count this thread's caller-side yields into `counter` (a test's own
     /// static), so another thread can see that this one yielded.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    pub(in crate::rt) fn count_yields_into(counter: &'static AtomicU32) {
+    pub(crate) fn count_yields_into(counter: &'static AtomicU32) {
         YIELDS.with(|y| y.set(Some(counter)));
     }
 
     /// Replace this thread's clock with one that advances `step` per read,
     /// so a wait's yield (or a helper's leaving) depends on how many waits
     /// it made and not on how long they took.
-    pub(in crate::rt) fn step_clock(step: std::time::Duration) {
+    pub(crate) fn step_clock(step: std::time::Duration) {
         CLOCK.with(|c| c.set(Some((std::time::Instant::now(), step))));
     }
 

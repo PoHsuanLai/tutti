@@ -2,7 +2,7 @@
 //! cells are loom's under the flag (see `rt/edits.rs`).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test edit_ring_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test edit_ring_loom
 //! ```
 //!
 //! The ring holds `[u32; 3]` (twelve bytes: two words, the second half used);
@@ -48,7 +48,7 @@
 #![cfg(loom)]
 
 use loom::thread;
-use tutti_types::edit_ring;
+use tutti_rt::edit_ring;
 
 fn run(capacity: usize) {
     loom::model(move || {
@@ -77,7 +77,7 @@ fn run(capacity: usize) {
         });
 
         let mut popped = Vec::new();
-        let take = |reader: &mut tutti_types::EditReader<[u32; 3]>, popped: &mut Vec<u32>| {
+        let take = |reader: &mut tutti_rt::EditReader<[u32; 3]>, popped: &mut Vec<u32>| {
             if let Some([a, b, c]) = reader.pop() {
                 assert!(a == b && b == c, "a torn slot: {:?}", [a, b, c]);
                 popped.push(a);

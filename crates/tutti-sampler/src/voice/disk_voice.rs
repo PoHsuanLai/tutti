@@ -127,7 +127,7 @@ impl DiskSource {
     /// read path stacks): the file's own layout.
     pub(crate) fn with_reader(
         consumer: SharedReader,
-        reader: Option<tutti_types::PosReader>,
+        reader: Option<tutti_rt::PosReader>,
         shared_state: Arc<RtState>,
     ) -> Self {
         let stride = (consumer.channels().count() as usize).clamp(1, MAX_SAMPLER_CHANNELS);

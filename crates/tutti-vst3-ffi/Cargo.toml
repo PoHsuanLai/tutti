@@ -27,6 +27,7 @@ crossbeam-queue = "0.3"
 arrayvec = "0.7"
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 tutti-types = { path = "../tutti-types" }
+tutti-rt = { path = "../tutti-rt" }
 vst3 = "0.3"
 
 # `IRunLoop` (Linux-only, and mandatory there per the VST3 docs) polls the

@@ -18,7 +18,8 @@ use tutti_plugin_types::{
     Normalized, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterInfo, PluginDescriptor,
     Request, SampleFormat,
 };
-use tutti_types::{ArcLend, ChannelTopology};
+use tutti_rt::ArcLend;
+use tutti_types::ChannelTopology;
 use tutti_vst3_ffi::{
     BusDirection, CreateError, EditorError, MediaType, Plugin, PluginNotification, RestartFlags,
 };

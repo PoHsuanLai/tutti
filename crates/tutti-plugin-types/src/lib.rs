@@ -41,11 +41,12 @@ mod transport;
 #[global_allocator]
 static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+pub use tutti_rt::{RequestBit, RequestBits, RequestWord};
 pub use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 /// Re-exported so every format crate spells a sample count the same way
 /// without each taking its own `tutti-types` dependency — `ChannelLayout`
 /// above is here for the same reason.
-pub use tutti_types::{RequestBit, RequestBits, RequestWord, SampleRate, Samples};
+pub use tutti_types::{SampleRate, Samples};
 
 mod layout_support;
 pub use layout_support::LayoutSupport;

@@ -2,7 +2,7 @@
 //! loom's under the flag (see `rt/request_word.rs`'s `sync` module).
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test -p tutti-types --release --test request_word_loom
+//! RUSTFLAGS="--cfg loom" cargo test -p tutti-rt --release --test request_word_loom
 //! ```
 //!
 //! Two threads raise one bit each while the main thread takes twice. Each
@@ -33,7 +33,7 @@
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicU32, Ordering};
 use loom::thread;
-use tutti_types::{RequestBit, RequestWord};
+use tutti_rt::{RequestBit, RequestWord};
 
 const A: RequestBit = RequestBit::new(0);
 const B: RequestBit = RequestBit::new(5);

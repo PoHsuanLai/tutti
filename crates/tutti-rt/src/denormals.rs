@@ -11,7 +11,7 @@
 //! that ran afterwards on the same core.
 //!
 //! ```
-//! use tutti_types::ScopedNoDenormals;
+//! use tutti_rt::ScopedNoDenormals;
 //!
 //! fn audio_callback(buffer: &mut [f32]) {
 //!     let _guard = ScopedNoDenormals::new();
@@ -98,7 +98,7 @@ use core::marker::PhantomData;
 /// # Examples
 ///
 /// ```
-/// use tutti_types::ScopedNoDenormals;
+/// use tutti_rt::ScopedNoDenormals;
 ///
 /// fn audio_callback(buffer: &mut [f32]) {
 ///     let _guard = ScopedNoDenormals::new();
@@ -112,7 +112,7 @@ use core::marker::PhantomData;
 /// A guard cannot leave its thread:
 ///
 /// ```compile_fail
-/// use tutti_types::ScopedNoDenormals;
+/// use tutti_rt::ScopedNoDenormals;
 ///
 /// let guard = ScopedNoDenormals::new();
 /// std::thread::spawn(move || drop(guard));

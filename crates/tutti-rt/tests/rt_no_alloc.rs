@@ -3,7 +3,7 @@
 //! then touch only that inline storage.
 
 use assert_no_alloc::AllocDisabler;
-use tutti_types::{AudioThreadCell, RtVec};
+use tutti_rt::{AudioThreadCell, RtVec};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -79,7 +79,7 @@ fn audio_thread_cell_borrows_neither_allocate_nor_free() {
 /// `vec!` in `RequestBits::iter` → it aborts.
 #[test]
 fn request_word_and_edit_ring_are_allocation_free() {
-    use tutti_types::{RequestBit, RequestWord, edit_ring};
+    use tutti_rt::{RequestBit, RequestWord, edit_ring};
 
     let word = RequestWord::new();
     let (mut writer, mut reader) = edit_ring::<[u32; 3]>(4);

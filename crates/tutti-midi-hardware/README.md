@@ -8,6 +8,54 @@ ALSA UMP sequencer (Linux). Re-exported by `tutti` as `tutti::midi_hardware`
 Events reach the wire as UMP words, not MIDI 1.0 bytes, so MIDI-2-only messages
 (per-note controllers, per-note pitch bend, JR Timestamps) survive.
 
+## Devices
+
+[`Devices`] lists the MIDI devices and keeps the list current while it lives:
+`open()` starts a watch, and dropping the value stops it. Each device has a
+[`DeviceId`] and `open_input` takes that id. An id names a device within a run:
+its identity is what the OS lets survive a restart, and the ordinal after it only
+tells alike devices apart (unplug two identical keyboards and plug them back in
+the other order, and their ordinals swap).
+
+```rust,no_run
+use std::time::Duration;
+use tutti_midi_hardware::{DeviceEvent, Devices};
+
+let devices = Devices::open()?;
+for device in devices.list() {
+    println!("{}: {}", device.id, device.name);
+}
+// Blocks until a device comes or goes, or the timeout passes.
+for event in devices.wait(Duration::from_secs(5)) {
+    match event {
+        DeviceEvent::Added(device) => println!("plugged in: {}", device.name),
+        DeviceEvent::Removed(device) => println!("gone: {}", device.name),
+        DeviceEvent::Changed(device) => println!("changed: {}", device.name),
+    }
+}
+# Ok::<(), tutti_midi_hardware::Error>(())
+```
+
+- **Linux:** a thread subscribes to the sequencer's `System:Announce` port, so a
+  device that vanishes is noticed when the kernel says so. A [`DeviceId`] is the
+  client and port name plus an ordinal for identical devices; the client number
+  is a handle to the current connection and not part of it. A client number the
+  kernel hands to a new device straight after an old one exits is a new device,
+  told by the exit announcement. On ALSA the name is the identity, so a renamed
+  device is `Removed` and then `Added` under the new name, which closes a port
+  held on it; `Changed` is for backends whose identity survives a rename.
+- **macOS:** one process-wide CoreMIDI client runs its run loop on one thread
+  for setup notifications, and each [`Devices`] registers with it. A
+  [`DeviceId`] is the endpoint's `MIDIUniqueID`. Untested by the author; see
+  doc 017.
+- If the watch ends on its own, [`Devices::watch_failure`] says why and the list
+  stays as it was.
+- **Windows (and Linux without alsa-lib 1.2.10):** the list is empty and stays
+  so, as enumeration is; opening reports [`Error::Unsupported`].
+
+A [`DeviceId`] built on the UMP Product Instance Id is in the types, but no
+backend reads one yet: alsa-lib exposes none, and CoreMIDI's unique id stands in.
+
 ## Quick start
 
 [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
@@ -27,17 +75,17 @@ use tutti_ump::{MidiChannel, MidiGroup};
 
 // The rings inbound events land in, then a session over this platform's backend.
 let ports = Arc::new(HardwareMidiInputs::new(1024));
-let session = MidiSession::new(Arc::clone(&ports));
+let session = MidiSession::new(Arc::clone(&ports))?;
 
-// A fresh snapshot per call: device lists go stale on hot-plug, so nothing is
-// cached. Capability (protocol, function blocks) is read from the OS.
-for endpoint in session.inputs() {
-    println!("{}: {:?}", endpoint.name, endpoint.capability);
+// The devices present now; capability (protocol, function blocks) is read from
+// the OS.
+for device in session.inputs() {
+    println!("{}: {:?}", device.name, session.devices().capability(&device.id));
 }
 
 // Connect by id when the choice matters (see "Matching by name" below).
 if let Some(first) = session.inputs().first() {
-    session.connect_input(first.id)?;
+    session.connect_input(&first.id)?;
 }
 
 // Outbound: `send` returns how many events were accepted, 0 when nothing is
@@ -50,11 +98,14 @@ assert_eq!(session.send(&[note]), 1);
 
 ## Main types
 
-- [`MidiSession`]: enumerate, connect, disconnect and send.
+- [`Devices`]: the devices present, and the changes to them.
+- [`MidiSession`]: connect, disconnect and send; owns a [`Devices`].
 - [`HardwareMidiInputs`]: the per-input lock-free rings the audio thread polls.
 - [`HardwareMidiDrain`]: one reader's state on those rings, owned by the node
   that drains them; it implements [`MidiIn`].
-- [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what enumeration returns.
+- [`DeviceInfo`], [`DeviceId`], [`DeviceEvent`]: what the list holds and reports;
+  they live in `tutti-midi-device`, with the pure `DeviceTable` behind them.
+- [`EndpointInfo`], [`EndpointId`], [`UmpCapability`]: what a backend enumerates.
 - [`MidiEndpoints`]: the backend trait; [`MidiSession::new`] picks this
   platform's implementation.
 - [`Error`]: what opening, connecting and sending can fail with.
@@ -64,9 +115,8 @@ assert_eq!(session.send(&[note]), 1);
 ## Matching by name picks a device you did not choose
 
 Every `*_by_name` method matches **case-insensitive substring, first hit wins**,
-in the backend's enumeration order, which is not sorted and not stable across a
-hot-plug. So `"iac"` matches `"IAC Driver Bus 1"`, and a name matching two
-devices takes whichever the OS listed first. Connect by [`EndpointId`] when the
+in id order. So `"iac"` matches `"IAC Driver Bus 1"`, and a name matching two
+devices takes the one with the lowest id. Connect by [`DeviceId`] when the
 choice matters.
 
 [`MidiSession::disconnect_input_by_name`] is weaker still: it searches a map of
@@ -95,8 +145,11 @@ backend.
 ## Features
 
 - `test-support`: exports `test_support::FakeBackend`, a device list with no OS
-  behind it, for [`MidiSession::with_backend`] in headless tests. Off by
-  default.
+  behind it, for [`MidiSession::with_backend`] in headless tests; its `plug` and
+  `unplug` drive hot-plug. Off by default.
+- `sequencer-tests`: the suites that run `Devices` against the real ALSA
+  sequencer, with user-space clients as the devices. Linux only; needs the
+  `snd-seq` module and a readable `/dev/snd/seq`. Off by default.
 
 ## Where it sits
 
@@ -109,10 +162,10 @@ Bevy systems that drive a session are in `bevy-tutti`.
 
 ## Examples
 
-Both loopback examples drive real hardware, so they need a device present:
+The loopback examples drive real hardware, so they need a device present:
 
 ```bash
-cargo run --example list_devices          # enumerate, with protocol + function blocks
+cargo run --example list_devices          # list, then watch hot-plug for ten seconds
 cargo run --example iac_loopback_test     # macOS, needs the IAC Driver enabled
 cargo run --example alsa_loopback_test    # Linux, uses `Midi Through`
 ```

@@ -88,14 +88,14 @@
 #   `pub use tutti_mod::*;` fail the same way.
 # - (4), from `check-bevy-free.sh`: `#[cfg(feature = "modulation")] pub use
 #   tutti_mod as modulation;` (an attribute on the same line), `pub use
-#   tutti_mod::{self as modulation};` and `pub use tutti_core::prelude::*;`
+#   tutti_mod::{self as modulation};` and `pub use tutti_engine::prelude::*;`
 #   each fail.
 # - The lexer, each case appended to `src/graph/commit.rs`: `Engine` in a
 #   `//` comment, in nested `/* */`, in a string and a raw string, inside
 #   `#[cfg(test)] mod tests { .. }` (with `"}"` and `'}'` in it) and as
-#   `Phase::Modulation` passes; `tutti_core::Engine` on an item after that
+#   `Phase::Modulation` passes; `tutti_engine::Engine` on an item after that
 #   block, after a `#[cfg(test)]` fn, and under `#[cfg(any(test, ..))]`
-#   fails. `type E = tutti_core::Engine;` in the out-of-line
+#   fails. `type E = tutti_engine::Engine;` in the out-of-line
 #   `src/graph/tests.rs` passes, and fails with the by-path exclusion
 #   deleted.
 #   (Current main names no denied type inside its test code either, so the
@@ -104,17 +104,17 @@
 #   expression used to blank the rest of the file (the scan went past the
 #   closer of its group at depth -1). `AudioGraphRes`'s `cfg(test)` phase
 #   log field hid the 247 lines after it, and
-#   `let _probe: Option<tutti_core::Engine> = None;` planted in its `read()`
+#   `let _probe: Option<tutti_engine::Engine> = None;` planted in its `read()`
 #   passed. With the scan ending at a depth-0 `,` or the closer of its
 #   group, each of these, appended to `src/graph/commit.rs` with
-#   `fn k() -> Option<tutti_core::Engine> { None }` after it, now fails (and
+#   `fn k() -> Option<tutti_engine::Engine> { None }` after it, now fails (and
 #   passed before): `struct P(u8, #[cfg(test)] u16);`,
 #   `struct Q { a: u8, #[cfg(test)] b: u16 }` (a last field, no comma),
 #   `(x, #[cfg(test)] x)` in a fn body, and
 #   `g(1, #[cfg(test)] 2, 3); let _v = [1, #[cfg(test)] 2];`. The planted
 #   probe in `read()` fails too. `struct P(u8, #[cfg(test)]
-#   tutti_core::Engine);` passes (the test-only field is still excluded),
-#   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_core::Engine>` reports
+#   tutti_engine::Engine);` passes (the test-only field is still excluded),
+#   and `#[cfg(test)] fn t<A, B>() -> Option<tutti_engine::Engine>` reports
 #   a false hit (the generics limit above).
 # - (4), from review: `pub use tutti_mod::{a::{B}, self};` and
 #   `pub use {tutti_mod as m};` passed the old regex. Check 4 now parses the

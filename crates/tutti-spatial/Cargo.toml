@@ -47,9 +47,6 @@ vbap = "0.1"
 thiserror = { version = "2", default-features = false }
 
 [dev-dependencies]
-# The engine and worker pool the tests render with.
-tutti-core = { path = "../tutti-core", default-features = false }
-
 # `tutti_nodes::testing` stimulus nodes for tests, examples and doctests. The
 # feature is dev-only, so the production dependency above stays without it.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }

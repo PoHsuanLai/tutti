@@ -182,7 +182,7 @@ impl Ballistics {
     /// How far to move toward a new value over `dt`, in `[0, 1]`.
     ///
     /// Public because ballistics are not stereo-specific: a level meter smooths
-    /// `tutti_core::MeterReading`'s four amplitudes
+    /// `tutti_metering::MeterReading`'s four amplitudes
     /// with the same attack and release. [`step_ballistics`] stays the
     /// convenience for the stereo case.
     ///

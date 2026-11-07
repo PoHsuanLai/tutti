@@ -28,9 +28,9 @@ use bevy_tutti::graph::{
 use bevy_tutti::modulation::{
     Lfo, ModRange, ModRoute, ModSource, ModulationState, ParamRef, TuttiModulationPlugin,
 };
-use tutti_core::transport::Transport;
 use tutti_mod::ProgramTime;
 use tutti_nodes::{DistortionNode, ShapeKind};
+use tutti_transport::Transport;
 use tutti_types::SampleRate;
 use tutti_types::{Beat, Depth, Drive, Hz, SamplePosition, Unit, UnitParam};
 

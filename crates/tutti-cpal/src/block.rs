@@ -29,7 +29,7 @@
 //! it.
 
 use std::sync::Arc;
-use tutti_core::{MeteringContext, meter_output};
+use tutti_metering::{MeteringContext, meter_output};
 use tutti_types::{ChannelLayout, InterleavedMut};
 
 use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};

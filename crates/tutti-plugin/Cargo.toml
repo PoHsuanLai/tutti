@@ -38,8 +38,8 @@ au = ["dep:tutti-au-host"]
 vst2 = ["dep:tutti-vst2-host", "dep:arrayvec"]
 
 [dependencies]
-# Core types (units, transport, metering)
-tutti-core = { path = "../tutti-core", default-features = false }
+# The transport the hosted plugins read.
+tutti-transport = { path = "../tutti-transport" }
 # The AudioIn/AudioOut I/O vocabulary — the slab is the concrete process edge
 # realising those two roles (see util/transport/shm/slab.rs).
 tutti-types = { path = "../tutti-types" }
@@ -121,6 +121,7 @@ windows = { version = "0.52", features = [
 ] }
 
 [dev-dependencies]
+tutti-engine = { path = "../tutti-engine" }
 # `contract::{drive_input, Direct}`: the in-process VST2 node driven by hand, as
 # a graph drives it, in its tests, allocation gate and bench.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }

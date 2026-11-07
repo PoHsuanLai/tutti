@@ -7,7 +7,7 @@
 //! ```text
 //! use tutti_dsp::{measure_loudness, LoudnessConfig};
 //! use tutti_types::{Amplitude, Hz, SampleRate};
-//! use tutti_core::FrozenClock;
+//! use tutti_transport::FrozenClock;
 //! use tutti_export::{render_to_buffers, render_to_file, RenderGraph, ...};
 //! use tutti_graph::GraphBuilder;
 //! use tutti_types::{Db, Interleaved};
@@ -27,7 +27,6 @@
 //! Run: `cargo run -p tutti --features "export,dsp,wav" \
 //!        --example headless_export -- <outdir>`
 
-use tutti::core::FrozenClock;
 use tutti::dsp::{LoudnessConfig, measure_loudness};
 use tutti::export::{
     AudioFormat, BitDepth, EncodeConfig, ExportConfig, RenderConfig, RenderGraph,
@@ -35,6 +34,7 @@ use tutti::export::{
 };
 use tutti::graph::GraphBuilder;
 use tutti::prelude::*;
+use tutti::transport::FrozenClock;
 use tutti_nodes::testing::{Const, Osc};
 use tutti_types::Hz;
 

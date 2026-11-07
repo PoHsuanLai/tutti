@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use tutti_core::{MeterSlotReader, ProjectMeter};
 use tutti_graph::{Cx, Offset};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_transport::{MeterSlotReader, ProjectMeter};
 use tutti_types::{MeterMap, Samples};
 use tutti_vst2_host::{ChannelLayout, PluginInfo, Vst2ProcessContext};
 

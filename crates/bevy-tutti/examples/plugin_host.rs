@@ -46,9 +46,9 @@ use bevy_tutti::plugin_host::{
     PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLiveness, PluginLoadDone,
     PluginLoadTerminated, PluginRequest, PluginsRes, SetEditorVisible, TuttiHostingPlugin,
 };
-use tutti_core::transport::Transport;
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::{CatalogConfig, NO_SCAN_DIRS, PluginId, Plugins};
+use tutti_transport::Transport;
 
 #[cfg(feature = "modulation")]
 use bevy_tutti::modulation::{Mods, ParamRef, TuttiModulationPlugin};
@@ -121,7 +121,7 @@ fn main() {
     transport.settings.set_tempo(TEMPO);
     let _ = transport
         .motion
-        .try_send(tutti_core::transport::MotionEvent::Play);
+        .try_send(tutti_transport::MotionEvent::Play);
     // A graph with no device: its audio side stays on this thread, so every
     // commit lands at once and `render_frame` below plays it. A real host
     // gets the graph from `TuttiPlugin`, which hands the audio side to the

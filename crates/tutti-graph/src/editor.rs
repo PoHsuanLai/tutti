@@ -159,12 +159,19 @@ pub enum CommitError {
     },
 }
 
+/// The widest graph root a host folds to its device: mono through 7.1. The
+/// engine's fold scratch holds this many channels, so it bounds its editor's
+/// [`Limits::max_global_outputs`] to it, and the sampler's voice width
+/// equals it. (A device wider than this is fine: the channels past what the
+/// root folds to are silent.)
+pub const MAX_ROOT_CHANNELS: usize = 8;
+
 /// What the host that runs an [`Executor`] can take, enforced by its
 /// [`Editor`] on every later commit and re-prepare, so a graph the host
 /// cannot run is refused on the control thread and never reaches it.
 ///
 /// The executor itself takes any graph; a host has buffers of its own. The
-/// engine (`tutti_core::Engine::new`) sets these to its fold
+/// engine (`tutti_engine::Engine::new`) sets these to its fold
 /// scratch's width and length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {

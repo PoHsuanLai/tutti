@@ -392,12 +392,12 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-clap-test-plugin",
- "tutti-core",
  "tutti-cpal",
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
@@ -413,6 +413,7 @@ dependencies = [
  "tutti-session",
  "tutti-soundfont",
  "tutti-spatial",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
  "tutti-vst2-test-plugin",
@@ -4199,13 +4200,14 @@ version = "0.0.1"
 dependencies = [
  "tempfile",
  "tutti-clap-test-plugin",
- "tutti-core",
  "tutti-cpal",
  "tutti-dsp",
+ "tutti-engine",
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
@@ -4219,6 +4221,7 @@ dependencies = [
  "tutti-session",
  "tutti-soundfont",
  "tutti-spatial",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4290,29 +4293,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-core"
-version = "0.0.1"
-dependencies = [
- "approx",
- "assert_no_alloc",
- "atomic_float",
- "criterion",
- "crossbeam-queue",
- "insta",
- "parking_lot",
- "proptest",
- "rand 0.8.8",
- "ringbuf",
- "tempfile",
- "thiserror 2.0.21",
- "tutti-graph",
- "tutti-nodes",
- "tutti-rt",
- "tutti-types",
- "tutti-ump",
-]
-
-[[package]]
 name = "tutti-cpal"
 version = "0.0.1"
 dependencies = [
@@ -4321,11 +4301,13 @@ dependencies = [
  "criterion",
  "ringbuf",
  "thiserror 2.0.21",
- "tutti-core",
+ "tutti-engine",
  "tutti-graph",
  "tutti-io",
+ "tutti-metering",
  "tutti-nodes",
  "tutti-rt",
+ "tutti-transport",
  "tutti-types",
 ]
 
@@ -4340,8 +4322,23 @@ dependencies = [
  "rand 0.8.8",
  "rustfft",
  "thiserror 2.0.21",
- "tutti-core",
+ "tutti-metering",
  "tutti-types",
+]
+
+[[package]]
+name = "tutti-engine"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "thiserror 2.0.21",
+ "tutti-graph",
+ "tutti-metering",
+ "tutti-nodes",
+ "tutti-rt",
+ "tutti-transport",
+ "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4358,13 +4355,13 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
- "tutti-core",
  "tutti-dsp",
  "tutti-graph",
  "tutti-io",
  "tutti-nodes",
  "tutti-sampler",
  "tutti-spatial",
+ "tutti-transport",
  "tutti-types",
  "vorbis_rs",
 ]
@@ -4404,11 +4401,29 @@ dependencies = [
  "symphonia",
  "tempfile",
  "thiserror 2.0.21",
- "tutti-core",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-metering",
  "tutti-types",
+]
+
+[[package]]
+name = "tutti-metering"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "parking_lot",
+ "ringbuf",
+ "thiserror 2.0.21",
+ "tutti-types",
+]
+
+[[package]]
+name = "tutti-midi-device"
+version = "0.0.1"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -4432,11 +4447,13 @@ dependencies = [
  "core-foundation 0.10.1",
  "coremidi",
  "coremidi-sys",
+ "libc",
  "ringbuf",
  "thiserror 2.0.21",
  "tracing",
  "tutti-alsa-ump-sys",
  "tutti-graph",
+ "tutti-midi-device",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
@@ -4504,12 +4521,13 @@ dependencies = [
  "biquad",
  "criterion",
  "libm",
- "tutti-core",
  "tutti-dsp",
+ "tutti-engine",
  "tutti-graph",
  "tutti-mod",
  "tutti-nodes",
  "tutti-rt",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
  "wide",
@@ -4540,7 +4558,7 @@ dependencies = [
  "tutti-au-host",
  "tutti-clap-host",
  "tutti-clap-test-plugin",
- "tutti-core",
+ "tutti-engine",
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
@@ -4551,6 +4569,7 @@ dependencies = [
  "tutti-plugin-db",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
  "tutti-vst2-host",
@@ -4588,7 +4607,6 @@ dependencies = [
  "tutti-au-host",
  "tutti-clap-host",
  "tutti-clap-test-plugin",
- "tutti-core",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-midi-types",
@@ -4683,8 +4701,8 @@ dependencies = [
  "thread-priority",
  "tracing",
  "tracing-subscriber",
- "tutti-core",
  "tutti-dsp",
+ "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
@@ -4692,6 +4710,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-rt",
  "tutti-sampler",
+ "tutti-transport",
  "tutti-types",
 ]
 
@@ -4703,12 +4722,13 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tutti-clap-test-plugin",
- "tutti-core",
  "tutti-cpal",
+ "tutti-engine",
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
  "tutti-io",
+ "tutti-metering",
  "tutti-midi-file",
  "tutti-midi-hardware",
  "tutti-midi-runtime",
@@ -4722,6 +4742,7 @@ dependencies = [
  "tutti-sampler",
  "tutti-soundfont",
  "tutti-spatial",
+ "tutti-transport",
  "tutti-types",
  "tutti-ump",
 ]
@@ -4759,13 +4780,23 @@ dependencies = [
  "assert_no_alloc",
  "criterion",
  "thiserror 2.0.21",
- "tutti-core",
  "tutti-dsp",
  "tutti-graph",
  "tutti-nodes",
  "tutti-spatial",
  "tutti-types",
  "vbap",
+]
+
+[[package]]
+name = "tutti-transport"
+version = "0.0.1"
+dependencies = [
+ "atomic_float",
+ "crossbeam-queue",
+ "tutti-graph",
+ "tutti-rt",
+ "tutti-types",
 ]
 
 [[package]]

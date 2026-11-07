@@ -308,9 +308,128 @@ impl DeviceTable {
   give the changes since the last call.
 - `DeviceTable` is pure. It takes an `OsChange` from the backend and returns the
   event, if the change alters the table. A repeat of a known state returns `None`.
-- `DeviceId` is stable across a restart (above).
+- `DeviceId` is stable across a restart where the OS gives something to hold; an
+  ordinal tells alike devices apart within a run ("Built", below).
 - `FakeBackend` has `plug()` and `unplug()`, so a test drives hot-plug with no
   device.
+
+**Built** (stage 4, first part). `tutti-midi-device` is a new crate that holds
+`DeviceTable`, `OsChange`, `OsDevice`, `DeviceEvent`, `DeviceInfo`, `DeviceId` and
+`EndpointId` and nothing else; it has no dependency yet (the stage's `Endpoint`
+and `Connection` will add `tutti-ump`). `Devices` is in `tutti-midi-hardware`,
+over a `Watch` the backend returns from `MidiEndpoints::watch`.
+
+- **Linux.** A thread subscribes to `System:Announce` and blocks in `poll` on the
+  sequencer's descriptors and a stop descriptor. On an announcement it
+  enumerates again, on its own client, and reports the difference. It reads from
+  an event only which client or port exited. Enumerating on a client of its own
+  matters: a client opened to enumerate announces its start, port and exit to the
+  watch, which then wakes itself without end (measured before the fix: about
+  20,000 wakes a second, and the same flood to every other subscriber).
+  `MidiEndpoints::inputs` and `outputs` use one enumerating client held for the
+  backend's life, for the same reason. The engine's own pump and output ports are
+  not subscribable by others (no `SUBS_*` capability), so no process lists them as
+  devices. Dropping `Devices` closes the stop descriptor and joins the thread.
+  Tested against the real sequencer with user-space clients as devices (suite
+  `sequencer-tests`). The watch client is a UMP client like the enumerating one,
+  so it needs the same kernel.
+- **macOS.** One process-wide CoreMIDI client with a notification block, on one
+  thread that runs its run loop for the life of the process; each `Devices` is a
+  registration with it, removed on drop. (coremidi 0.9.2's `Client` never
+  disposes on drop, so a client per `Devices` would leak one.) Measured on
+  GitHub's macOS runner: CoreMIDI sends notifications to the run loop that was
+  current when the process created its *first* client, whichever thread creates
+  later ones. With the hub's client first, its callback fired on the hub thread
+  for every endpoint added or removed in the process; with the engine's shared
+  client created first on another thread, it never fired in four seconds and the
+  hub's loop had no source (`run_current` returned at once), and the callback did
+  fire on that other thread when it ran its own loop. So both places this backend
+  creates a client (`shared_client` and the raw client of `UmpVirtualSource`) call
+  `hub_first`, which starts the hub, before taking their own locks. Nothing the
+  hub thread runs may reach those two (its enumeration builds no client), or
+  startup would wait on itself. A host that creates a CoreMIDI client
+  earlier still takes the notifications away, and a hub whose loop has nothing to
+  wait for also looks again once a second (a hot-plug is then found in about a
+  second); the same look backs up a missed notification. A run loop that
+  returns at once is rested four times a second, not spun. The hub never holds
+  its lock across a CoreMIDI call (with one held across a call, the macOS tests
+  hung); a watch's own lock is held across its enumeration, so a `Devices` drop
+  can wait for one. A panic in a watch's enumeration is caught, fails that watch
+  (`watch_failure`, as on Linux) and leaves the others; a refused client fails
+  the watch the same way and is retried by the next. Compiled and linted for
+  `aarch64-apple-darwin` from Linux; its tests run only on macOS CI (one asserts
+  the notification callback fired, one that `Devices` sees a virtual endpoint
+  come and go), and the author has not run any of this on a Mac.
+- **Windows,** and Linux without alsa-lib 1.2.10: the stub lists nothing and
+  watches nothing, as it enumerates nothing. Opening reports `Unsupported`.
+- **`DeviceId`** is an `Identity` and an ordinal. `Identity` is the Product
+  Instance Id, CoreMIDI's `MIDIUniqueID`, or the ALSA client and port name. No
+  backend produces a Product Instance Id yet: alsa-lib 1.2.16 has no getter for
+  one and CoreMIDI offers its unique id. The ordinal is the lowest one no listed
+  device with that identity holds, so two identical keyboards are `#0` and `#1`
+  and a freed ordinal comes back.
+  **An ordinal names a device within a run, not a physical unit.** Unplug A (`#0`)
+  and B (`#1`) and plug B back first, and B is `#0`; seeding follows the OS's
+  order, which can change between boots. An id whose identity no other device
+  shares (`#0` of a one-of-a-kind name, a CoreMIDI unique id) names the same
+  device again; an ordinal above 0 does not, and a saved one can reach another
+  unit.
+- **Rename.** Where the identity is the name (ALSA), a renamed device is a
+  different device: `Removed`, then `Added` under the new name, and a port held
+  on the old one is closed. A handle that stays under another name is not
+  taken for the same device, because the kernel gives a number to a new client
+  as readily as it keeps one for a renamed client, and a dropped announcement
+  would otherwise leave a dead subscription listed as live under a stale name.
+  `Changed` is for a backend whose identity survives a rename (CoreMIDI's unique
+  id) and for a direction change. A client that makes its port before it names
+  itself is listed once under `Client-N` and then removed and added under its
+  name.
+- **A reused handle is a new device.** ALSA gives a new client the number of one
+  that just exited, so two enumerations can see one handle for two devices. A
+  different identity on a handle is enough to tell. For an identical device the
+  announcements are the only evidence: they say which client or port exited,
+  and the `Reporter` sends `Gone` for such a handle before the `Present` of the
+  new one, so a held input is closed. Limits: an exit announcement the kernel
+  dropped (an overrun is read past, and the enumeration after it still runs)
+  goes unseen when an identical device then takes the number, which leaves a dead
+  subscription listed as connected. The reverse also happens: the kernel can
+  announce the exit of a number's previous owner after a new client has taken it,
+  and the new device is then reported `Removed` and `Added` with the same id
+  (a held input on it is closed). Both need a number reused within microseconds;
+  the second showed up only when tests started and stopped clients in parallel.
+  Opening reads the handle after looking it up, not under the list's lock, so a
+  handle reused in between opens the new device; the `Removed` that follows is
+  how a holder finds out.
+- **What CI runs.** None of the ALSA watch runs in CI: the runner has no
+  `snd-seq` (see CLAUDE.md), so the real-sequencer suite, and with it the
+  announcement parsing, `Departed` and the `catch_unwind` around the watch
+  thread, run only on a developer's machine. CI runs the `Reporter` and
+  `Devices` tests over the fake backend and compiles and lints the rest.
+- **A watch that dies says so.** An error or a panic in the watch thread sets
+  `Devices::watch_failure` (and is logged); the list is then the last it saw.
+  The session reports `SessionEvent::MidiWatchFailed` once, and `bevy-tutti`
+  logs it.
+- **Session.** `Phase::Poll` reads `Devices::poll`, reports each event as
+  `SessionEvent::MidiDevice`, and closes a held input or output whose device was
+  removed, reporting `MidiInputLost` or `MidiOutputLost` after it
+  (`SessionBuilder::midi_hardware_over` takes a `FakeBackend`). `bevy-tutti` writes
+  `MidiHotplug` for each device event and clears its poll timer for a lost port.
+
+Deviations from the sketch above:
+
+- `open_input` takes the ring's producer: `open_input(&id, producer)`. Input
+  events reach the graph through a ring, and the producer is what the backend
+  feeds.
+- `MidiSession` keys its connections by `DeviceId`, and its `inputs` and `outputs`
+  return `DeviceInfo`; `Devices::capability(&id)` answers what `EndpointInfo`
+  carried.
+- The stage-1 note says `tutti-midi-device` depends on `tutti-ump`; this PR's
+  crate does not.
+
+Not built: the flush of held notes when a device is lost (§8.3). Nothing at the
+input edge tracks held notes yet. The retired port discards the UMPs queued in it
+at removal, and releases nothing: a device removed while a note is held leaves it
+sounding until the node that tracks notes exists.
 
 ### Timing at the edge
 
@@ -372,7 +491,7 @@ no code with MIDI.
 | `tutti-ump` | Packet | `Ump`, `Message`, codec, `MidiGroup`, `MidiChannel`, `CCNumber`, field types, MIDI 1.0 bytes and `Midi1Parser` | No tutti crate |
 | `tutti-midi-protocol` | Translation | `Translator`, App. D, M2-115 scaling, MPE | `tutti-ump` |
 | `tutti-midi-device` | Endpoint, Function Block | `Endpoint`, `Connection`, CI codec, JR | `tutti-ump` |
-| `tutti-midi-hardware` | Transport | OS backends, no graph, `#![forbid(unsafe_code)]` | `tutti-midi-device`, the two `-ffi` crates |
+| `tutti-midi-hardware` | Transport | OS backends, no graph; `#![forbid(unsafe_code)]` once the `-ffi` crates exist (today the ALSA wrappers hold the `unsafe`) | `tutti-midi-device`, the two `-ffi` crates |
 | `tutti-alsa-ffi` | FFI | All ALSA `unsafe`, safe wrappers (from `tutti-alsa-ump-sys`) | Linux only |
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
@@ -641,7 +760,8 @@ a behaviour change.
    state: RPN and NRPN assembly, Bank Select, groups, MPE. Behaviour change: §4's
    remaining spec fixes.
 4. **`tutti-midi-device` and the `-ffi` crates.** Device detection comes first
-   (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1.
+   (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1:
+   done, except the flush (§5, "Built").
    Then model, connection, identity, device loss, timing (§5), and the backends
    with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves

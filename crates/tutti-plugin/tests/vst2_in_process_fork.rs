@@ -473,7 +473,7 @@ fn a_fork_reads_its_transport_from_the_render() {
     let _env = ProbeEnv::new(true);
     let (client, handle) = load();
     let seven_eight = TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH);
-    client.set_meter(tutti_core::ProjectMeter::new(MeterMap::new([
+    client.set_meter(tutti_transport::ProjectMeter::new(MeterMap::new([
         MeterChange::new(Beat(0.0), seven_eight),
     ])));
 

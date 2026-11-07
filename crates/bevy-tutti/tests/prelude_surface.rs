@@ -1,8 +1,8 @@
 //! Every type this crate's docs demonstrate must be nameable through this crate.
 //!
 //! `MetronomeRes::set_mode` takes a `MetronomeMode`; `transport.motion.try_send`
-//! takes a `MotionEvent`. Both arrive through a `Deref` to a tutti-core type, so
-//! without the re-export a host would need a direct `tutti-core`
+//! takes a `MotionEvent`. Both arrive through a `Deref` to a tutti-transport type, so
+//! without the re-export a host would need a direct `tutti-transport`
 //! dependency to spell an argument this crate's own examples pass. Handing out a
 //! method whose parameter type the caller cannot name is an incomplete forward.
 //!
@@ -36,7 +36,7 @@ fn _surface_compiles() {
     // --- The enums a host must pass to a method it can already call. ---
     //
     // `MetronomeRes::set_mode` and `transport.motion.try_send` both take a type
-    // that arrives through a `Deref` to tutti-core.
+    // that arrives through a `Deref` to tutti-transport.
     let _: MetronomeMode = MetronomeMode::Always;
     let _: MetronomeMode = MetronomeMode::Off;
     // `Locate` carries the richest payload of the variants, so naming it proves
@@ -214,7 +214,7 @@ fn _surface_compiles() {
 #[test]
 fn the_timeline_handle_tracks_the_live_transport() {
     use bevy_tutti::graph::TransportRes;
-    use tutti_core::transport::Transport;
+    use tutti_transport::Transport;
 
     let res = TransportRes(Transport::new(48_000.0));
     let timeline = res.timeline();
@@ -261,7 +261,7 @@ fn the_loop_region_round_trips_through_the_prelude() {
 
 /// The engine's measurement vocabulary arrives whole, not as a hand-picked subset.
 ///
-/// The names are what app code imports from `tutti-core` / `tutti-types`
+/// The names are what app code imports from `tutti-metering` / `tutti-types`
 /// alongside this prelude, most-used first. This stays a `#[test]` rather than
 /// moving into [`_surface_compiles`] because it asserts the *conversions*, not
 /// just the names: `to_samples`, `to_amplitude` and `to_semitones` are the

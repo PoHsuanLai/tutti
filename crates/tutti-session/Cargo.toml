@@ -27,7 +27,9 @@ workspace = true
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-graph = { path = "../tutti-graph" }
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-transport = { path = "../tutti-transport" }
+tutti-metering = { path = "../tutti-metering" }
+tutti-engine = { path = "../tutti-engine" }
 tutti-nodes = { path = "../tutti-nodes", default-features = false }
 # Logging: what the `bevy_log` calls of `bevy-tutti`'s old `GraphRuntime`
 # became. `bevy_log` is a `tracing` subscriber, so a Bevy app sees these
@@ -81,6 +83,9 @@ clap = ["plugin", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin/au"]
 
 [dev-dependencies]
+# The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
+# `midi-hardware` must not link a fake backend.
+tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }
 # `ArcLend` for the tests that publish into a graph.
 tutti-rt = { path = "../tutti-rt" }
 # Stimulus nodes (`Const`, `Osc`, `Through`) for the tests and doctests.

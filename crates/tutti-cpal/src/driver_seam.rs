@@ -289,7 +289,9 @@ impl CpalDriver {
 ///
 /// ```
 /// use std::sync::Arc;
-/// use tutti_core::{AudioTap, Engine, MasterMeter, Transport};
+/// use tutti_metering::{AudioTap, MasterMeter};
+/// use tutti_engine::Engine;
+/// use tutti_transport::Transport;
 /// use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// use tutti_cpal::{AudioCallbackState, AudioEngine, ManualStreamDriver, OutputSpec};
 /// use tutti_graph::{Editor, Prepare};

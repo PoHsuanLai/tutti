@@ -11,7 +11,6 @@ mod common;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use tutti_core::MotionEvent;
 use tutti_graph::ForkByClone;
 use tutti_mod::{
     Declarations, Follower, Lfo, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl,
@@ -21,6 +20,7 @@ use tutti_nodes::{Feed, ReconcileError};
 use tutti_session::{
     GraphSource, ModInput, ModKeys, ModRefusal, PHASES, ParamRef, PhaseCx, Session, SessionEvent,
 };
+use tutti_transport::MotionEvent;
 use tutti_types::{BeatDuration, Depth, Hz, NodeKey, ParamAddr, UnitParam};
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 

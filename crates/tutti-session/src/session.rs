@@ -5,9 +5,10 @@ use std::any::Any;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tutti_core::{AudioTap, MasterMeter, Transport};
 use tutti_graph::PrerollTable;
+use tutti_metering::{AudioTap, MasterMeter};
 use tutti_nodes::ClickSettings;
+use tutti_transport::Transport;
 use tutti_types::{NodeKey, Samples};
 
 use crate::graph::{Committed, CrossfadeId, Graph, Retried};
@@ -168,7 +169,7 @@ pub enum SessionEvent {
     /// later counts as refused.
     ///
     /// `port` is `None` for a loss no output port owns. The graph's total is
-    /// [`LoadReading::dropped_events`](tutti_core::LoadReading::dropped_events), exact
+    /// [`LoadReading::dropped_events`](tutti_metering::LoadReading::dropped_events), exact
     /// where this is per port: a block that loses at more than 64 places, or
     /// a host that does not run `Collect` for long enough to fill a ring of
     /// 256 entries, leaves some out here and not there.
@@ -268,6 +269,28 @@ pub enum SessionEvent {
     /// drain.
     #[cfg(feature = "midi-hardware")]
     MidiInputDropped(u64),
+    /// A MIDI device was added, removed or changed, in the order the OS
+    /// reported (design 017 §5). The session reads the devices in
+    /// `Phase::Poll`; the list at any time is
+    /// [`MidiSession::devices`](tutti_midi_hardware::MidiSession::devices).
+    #[cfg(feature = "midi-hardware")]
+    MidiDevice(tutti_midi_hardware::DeviceEvent),
+    /// A device the session held open as an input vanished: its connection
+    /// is closed and its port retired, after the [`MidiDevice`](Self::MidiDevice)
+    /// `Removed` that said so. What the device had queued is discarded; notes
+    /// it held are not released (design 017 §8.3 is not built).
+    #[cfg(feature = "midi-hardware")]
+    MidiInputLost(tutti_midi_hardware::DeviceInfo),
+    /// The device the session held open as its output vanished: the output is
+    /// closed, and what the hardware out sends is counted as dropped until a
+    /// host connects another.
+    #[cfg(feature = "midi-hardware")]
+    MidiOutputLost(tutti_midi_hardware::DeviceInfo),
+    /// The OS watch for MIDI devices ended on its own (the reason is the
+    /// message): the device list is frozen at what it last saw and no further
+    /// hot-plug is reported. Reported once.
+    #[cfg(feature = "midi-hardware")]
+    MidiWatchFailed(String),
     /// A hosted plugin was declared dead (`tutti_plugin::Liveness`) with
     /// recovery off: its node was removed. Reported once. With recovery on
     /// the death is `PluginReloading`, and the node's removal
@@ -404,6 +427,14 @@ impl std::fmt::Debug for SessionEvent {
             Self::MidiInputDropped(count) => {
                 f.debug_tuple("MidiInputDropped").field(count).finish()
             }
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiDevice(event) => f.debug_tuple("MidiDevice").field(event).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiInputLost(device) => f.debug_tuple("MidiInputLost").field(device).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiWatchFailed(why) => f.debug_tuple("MidiWatchFailed").field(why).finish(),
+            #[cfg(feature = "midi-hardware")]
+            Self::MidiOutputLost(device) => f.debug_tuple("MidiOutputLost").field(device).finish(),
             Self::EventsDropped {
                 node,
                 port,
@@ -545,9 +576,9 @@ pub struct Session {
     pub(crate) transport: Transport,
     /// The engine, for an offline session (the host pulls blocks); `None` on
     /// a device (the callback holds it) or detached.
-    pub(crate) engine: Option<tutti_core::Engine>,
+    pub(crate) engine: Option<tutti_engine::Engine>,
     /// The engine's load meter, offline or on a device; `None` detached.
-    pub(crate) load: Option<Arc<tutti_core::LoadMeter>>,
+    pub(crate) load: Option<Arc<tutti_metering::LoadMeter>>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
     pub(crate) click: Option<NodeKey>,
@@ -925,11 +956,11 @@ impl Session {
 
     /// The engine's DSP-load meter: each block's render time against its
     /// real-time budget, the smoothed mean, the peak since the last
-    /// [`take`](tutti_core::LoadMeter::take) and the blocks over budget.
+    /// [`take`](tutti_metering::LoadMeter::take) and the blocks over budget.
     /// Fed by every block the device callback (or, offline,
     /// [`render`](Self::render)) renders; `None` on a detached session,
     /// which has no engine.
-    pub fn load_meter(&self) -> Option<&Arc<tutti_core::LoadMeter>> {
+    pub fn load_meter(&self) -> Option<&Arc<tutti_metering::LoadMeter>> {
         self.load.as_ref()
     }
 

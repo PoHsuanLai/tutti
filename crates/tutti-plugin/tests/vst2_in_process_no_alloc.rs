@@ -1,7 +1,7 @@
 //! RT-safety regression: the in-process VST2 audio path must not
 //! allocate on the audio thread in steady state.
 //!
-//! Mirrors the harness in `tutti-core/tests/rt_no_alloc.rs`, and loads the
+//! Mirrors the harness in `tutti-metering/tests/rt_no_alloc.rs`, and loads the
 //! reference probe (`tutti-vst2-test-plugin`) built from this tree in the same
 //! `cargo test` invocation — the same plugin every other VST2 test here uses.
 //!
@@ -72,7 +72,7 @@ fn process_steady_state_does_not_allocate() {
 /// installed → this test trips the gate, the two without a meter pass.
 #[test]
 fn process_with_a_meter_does_not_allocate() {
-    use tutti_core::ProjectMeter;
+    use tutti_transport::ProjectMeter;
     use tutti_types::{Beat, BeatsPerBar, MeterChange, MeterMap, NoteValue, TimeSignature};
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();

@@ -18,3 +18,16 @@ fn opening_reports_unsupported_rather_than_not_found() {
         Err(Error::Unsupported(_))
     ));
 }
+
+/// Where there is no backend, `Devices` opens, lists nothing and stays quiet:
+/// the same "no devices" enumeration reports, with opening left `Unsupported`.
+#[test]
+fn devices_over_the_stub_is_empty_and_quiet() {
+    let devices = crate::Devices::with_backend(Box::new(StubEndpoints::new())).unwrap();
+    assert!(devices.list().is_empty());
+    assert!(
+        devices
+            .wait(std::time::Duration::from_millis(10))
+            .is_empty()
+    );
+}

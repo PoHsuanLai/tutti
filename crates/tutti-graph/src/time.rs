@@ -391,7 +391,7 @@ impl Env {
     /// `offset` at its tempo while it rolls, wrapping at its loop.
     ///
     /// Walked with the host's own clock, [`FrameClock`](tutti_types::FrameClock), from the
-    /// transport's position ([`Transport::clock`]): the same code tutti-core's
+    /// transport's position ([`Transport::clock`]): the same code tutti-transport's
     /// `TransportClock` and `OfflineTimeline` step by, so for a
     /// host that counts frames (its transport [counted](Transport::counted))
     /// the result is the host's own position at that frame, to the bit,

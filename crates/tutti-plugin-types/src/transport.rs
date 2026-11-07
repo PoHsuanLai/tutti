@@ -84,7 +84,7 @@ pub fn is_usable(value: f64) -> bool {
 /// Playback / record / cycle flags.
 ///
 /// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —
-/// CLAP and VST2 both call the field `flags`. Distinct from tutti-core's
+/// CLAP and VST2 both call the field `flags`. Distinct from tutti-transport's
 /// `TransportState` *trait* (a live-timeline reader, which no plugin node
 /// consumes: each reads its block's transport from the graph); this is the
 /// wire snapshot.

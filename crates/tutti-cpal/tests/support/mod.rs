@@ -15,12 +15,13 @@
 // `tests/support/mod.rs`.
 
 use std::sync::Arc;
-use tutti_core::{AudioTap, Engine, MasterMeter};
-use tutti_core::{MotionEvent, Transport};
 use tutti_cpal::{AudioCallbackState, OutputSpec};
+use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
+use tutti_metering::{AudioTap, MasterMeter};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples};
 
@@ -117,7 +118,7 @@ pub fn dc_on_channel(
     level: f32,
     channel: usize,
     outputs: usize,
-) -> (Arc<AudioCallbackState>, tutti_core::TapCons) {
+) -> (Arc<AudioCallbackState>, tutti_metering::TapCons) {
     let engine = graph_engine(&Transport::new(SAMPLE_RATE), |ed| {
         ed.insert(NodeKey(1), "dc", Const::mono(level));
         ed.spec_mut().topology.outputs = (0..outputs)

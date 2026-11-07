@@ -1,6 +1,6 @@
 //! [`TapIn`] — the analysis tap's consumer end, as an [`AudioIn`].
 //!
-//! `AudioTap` (in `tutti-core`) is the RT-push half: the audio callback copies
+//! `AudioTap` (in `tutti-metering`) is the RT-push half: the audio callback copies
 //! every master block into a lock-free ring, and `AudioTap::open` hands back the
 //! consumer as a [`TapCons`] — perfectly usable by an analysis thread draining
 //! it directly, but *not* an [`AudioIn`], so on its own it can feed neither a
@@ -18,7 +18,7 @@
 //! `matching_sink` here as there is on `MicIn`, because a tap has no device to
 //! ask: the rate lives on `AudioConfig`, which is the host's.
 
-use tutti_core::TapCons;
+use tutti_metering::TapCons;
 use tutti_types::{AudioIn, OnEmpty};
 use tutti_types::{ChannelLayout, Samples};
 
@@ -26,7 +26,7 @@ use tutti_types::{ChannelLayout, Samples};
 /// what the graph is playing.
 ///
 /// The audio callback copies every master block into a lock-free stereo ring
-/// ([`tutti_core::AudioTap`]); construct this with [`new`](Self::new) from what
+/// ([`tutti_metering::AudioTap`]); construct this with [`new`](Self::new) from what
 /// `AudioTap::open` returned, and drain it from a pump thread (for example a
 /// [`Recorder`](crate::Recorder)), never from the audio thread.
 ///
@@ -39,7 +39,7 @@ use tutti_types::{ChannelLayout, Samples};
 /// ```no_run
 /// use tutti_io::{BitDepth, Recorder, TapIn, WavOut};
 ///
-/// # fn go(tap: &tutti_core::AudioTap) -> tutti_io::Result<()> {
+/// # fn go(tap: &tutti_metering::AudioTap) -> tutti_io::Result<()> {
 /// let src = TapIn::new(tap.open().expect("tap is free"));
 /// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
 /// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs
@@ -76,7 +76,7 @@ impl AudioIn for TapIn {
     /// Always stereo: the tap ring's element is `(f32, f32)`, so the width is a
     /// property of this *code*, not of any data flowing through it — exactly the
     /// case a fixed layout still fits. Widening it means widening the lock-free
-    /// ring element in `tutti-core`'s `AudioTap`, which is a separate change.
+    /// ring element in `tutti-metering`'s `AudioTap`, which is a separate change.
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }

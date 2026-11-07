@@ -21,7 +21,7 @@
 //! - the I/O edge ([`AudioPump`]) in [`pump`] — an `AudioIn → AudioOut` pump
 //!   whose thread the ECS owns, so its sink is finalized exactly once,
 //! - opt-in latency (PDC) compensation in [`latency`] — the read side of
-//!   tutti-core's PDC, run in [`GraphReconcileSystems::Compensate`],
+//!   tutti-graph's PDC, run in [`GraphReconcileSystems::Compensate`],
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!

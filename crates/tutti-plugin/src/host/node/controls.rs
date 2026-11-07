@@ -31,8 +31,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use atomic_float::AtomicF64;
-use tutti_core::ProjectMeter;
 use tutti_plugin_types::PluginTail;
+use tutti_transport::ProjectMeter;
 use tutti_types::Latency;
 use tutti_types::{SampleRate, Samples};
 

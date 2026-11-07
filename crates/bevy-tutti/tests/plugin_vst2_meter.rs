@@ -36,9 +36,9 @@ use bevy_tutti::graph::{
 use bevy_tutti::plugin_host::{
     PluginLoadTerminated, PluginMeterBound, PluginRequest, PluginShadow, TuttiHostingPlugin,
 };
-use tutti_core::transport::Transport;
 use tutti_nodes::ClickState;
 use tutti_plugin::catalog::PluginId;
+use tutti_transport::Transport;
 use tutti_types::{
     Beat, BeatsPerBar, Bpm, MeterChange, MeterMap, NoteValue, SampleRate, TimeSignature,
 };

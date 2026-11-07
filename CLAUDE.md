@@ -72,7 +72,8 @@ serial one.
 - A parallel test compares against the **serial render, bit for bit**
   (`tests/parallel.rs`, the differential suite's `modes`), and a gate on the
   parallel path runs every participant inside `assert_no_alloc`, helpers
-  included (`TestPool::no_alloc`, `tutti-core`'s `GatedPool`).
+  included (`TestPool::no_alloc`, the `GatedPool` in `tutti-engine`'s `rt_no_alloc_engine`, `tutti-nodes`'s
+  `rt_no_alloc_modulation` and `tutti-clap-host`'s `clap_thread_pool`).
 
 ## Commands
 
@@ -116,7 +117,7 @@ and global state; nextest isolates each test in its own process.
 
 ```bash
 cargo nextest run --workspace
-cargo nextest run -p tutti-core -E 'test(my_test_name)'
+cargo nextest run -p tutti-engine -E 'test(my_test_name)'
 cargo test --doc --workspace       # nextest does NOT run doctests, silently
 just test-all                      # both
 ```
@@ -145,6 +146,12 @@ just test-all                      # both
   (plugin formats, `midi-hardware`, `clap-extras`, ...) are named in CI's
   `dark features` job and `just test-features`. Name the feature when testing
   one crate, and add a new gated suite to both lists, or it never runs.
+  **`tutti-midi-hardware --features sequencer-tests` is the exception:** it runs
+  `Devices` against the real ALSA sequencer, which needs the kernel's `snd-seq`
+  module and a readable `/dev/snd/seq`. CI's runner kernel (Azure) ships
+  neither the module nor a package for it, so CI only lints the feature and the
+  suite runs locally (`just test-features`). It fails, never skips, where the
+  sequencer is missing. Run it before changing `backend/alsa`.
 - **Golden digests** go through `tutti_nodes::testing::assert_golden`: asserted
   on x86_64 with glibc 2.39 (`RECORDED_ARCH`, `RECORDED_GLIBC`, Ubuntu 24.04),
   skipped with a printed note on any other libm or architecture (nextest shows
@@ -246,17 +253,22 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone
+  tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
+                 the pure `DeviceTable`; no dependencies, no OS, no thread
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them
   tutti-graph    doc 013: the `Node` contract, Topology->Plan compiler, serial
                  executor + reference interpreter, the `WorkerPool` and the
-                 `PrerollTable`; `Engine` renders it
+                 `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
                  dynamics, convolver, delay lines, waveshapers
   tutti-mod      modulation compiler
-  tutti-core     graph runtime, transport, metering (the metronome node,
-                 `ClickNode`, is `tutti-nodes`')
+  tutti-transport `Transport`, the motion state machine, timed commands, the
+                 offline timeline, `ProjectMeter`
+  tutti-metering `MasterMeter`, `AudioTap`, `LoadMeter`
+  tutti-engine   `Engine`, the per-block graph render, over a transport and
+                 the meters (the metronome node, `ClickNode`, is `tutti-nodes`')
   tutti-io       I/O edge: live + file decode
   tutti-cpal     device
   tutti-export   offline render
@@ -279,10 +291,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
 `scripts/check-layout.sh` holds the table and fails on an unplaced crate:
 
 0. `arc-lend`, `vst-tutti`, `tutti-rustysynth`, `tutti-alsa-ump-sys`, `tutti-ump`
-1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`
-2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`
-3. `tutti-core`, `tutti-plugin-types`
-4. `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
+1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
+2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`
+3. `tutti-transport`, `tutti-plugin-types`
+4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
    `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
@@ -317,6 +329,20 @@ list (normal and build edges; dev-dependencies may go anywhere).
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
   calls it at the input edge and consumers drop theirs.
+- `tutti-midi-device` depends on no workspace crate, keeps every module private
+  (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
+  is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend
+  feeds `DeviceTable::apply` an `OsChange`, and `tutti-midi-hardware` owns the
+  threads and the OS.
+- `tutti-transport`, `tutti-metering` and `tutti-engine` keep every module
+  private (`tutti_transport::Transport`, never `tutti_transport::handle::Transport`;
+  CI runs the per-module path gate on each), are `publish = false`,
+  `#![forbid(unsafe_code)]` and have no `bevy` feature. `tutti-metering`
+  depends on `tutti-types` alone; `tutti-transport` on `tutti-types`,
+  `tutti-rt` and `tutti-graph`; `tutti-engine` on those and the two crates
+  above, with a dev edge to `tutti-nodes` for the `ClickNode` tests.
+  `Control`, `MotionAudio`, `Schedule` and `Scheduled` are public because the
+  engine drives them across the crate edge; a host does not name them.
 - `tutti-types` has no workspace dependency, is `#![forbid(unsafe_code)]`, and
   nothing audio-specific belongs in it beyond its vocabulary.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
@@ -325,7 +351,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are
-  rustfft, ebur128, libm and thiserror; `tutti-core` is a dev-dependency only), keeps every
+  rustfft, ebur128, libm and thiserror; `tutti-metering` is a dev-dependency only), keeps every
   module private (`tutti_dsp::RealFft`, never `tutti_dsp::fft::RealFft`; CI runs
   the per-module path gate on it), is `#![forbid(unsafe_code)]` and has no
   graph or runtime, no `Arc`-published state and no atomics for control: every
@@ -579,7 +605,10 @@ read the `Cargo.toml`, grep for the type, run the probe.
   to a new app-side path.
 - **Dead crate names:** `tutti-units` → `tutti-nodes`, `tutti-synth` →
   `tutti-polysynth` + `tutti-soundfont`, `tutti-midi` → the four `midi/`
-  crates, `tutti-analysis` → `tutti-dsp`, `tutti-node` and `fundsp-tutti` →
+  crates, `tutti-analysis` → `tutti-dsp`, `tutti-core` → `tutti-transport`
+  (`Transport`, `ProjectMeter`, the clocks), `tutti-metering` (`MasterMeter`,
+  `AudioTap`, `LoadMeter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
+  is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
   `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
   `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and

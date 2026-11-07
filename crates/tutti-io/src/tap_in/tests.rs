@@ -1,5 +1,5 @@
 use super::*;
-use tutti_core::AudioTap;
+use tutti_metering::AudioTap;
 
 /// An opened tap plus its consumer, fed through the real
 /// `AudioTap::push` — the same call the audio callback makes.

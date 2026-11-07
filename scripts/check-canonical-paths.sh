@@ -53,8 +53,8 @@ fi
 # The facade's own rule: every whole-crate re-export in `crates/tutti` must be
 # aliased.
 #
-# A bare `pub use tutti_core;` there would let a consumer write
-# `tutti::tutti_core::Engine` — exactly the redundant path the chained gate
+# A bare `pub use tutti_engine;` there would let a consumer write
+# `tutti::tutti_engine::Engine` — exactly the redundant path the chained gate
 # above exists to prevent, in a shape its regex CANNOT see: it matches
 # `tutti_x::tutti_y::`, and `tutti::` has no underscore segment. Aliasing
 # removes the spelling from the language rather than asking anyone to avoid
@@ -67,7 +67,7 @@ if [ -f crates/tutti/src/lib.rs ]; then
   echo "==> unaliased crate re-exports in the facade"
   if bare=$(grep -nE "^\s*pub use tutti_[a-z0-9_]+\s*;" crates/tutti/src/lib.rs 2>/dev/null); then
     echo "$bare"
-    echo "FAIL: alias it (\`as core\`, \`as sampler\`, ...) so tutti::tutti_x:: is unspellable."
+    echo "FAIL: alias it (\`as engine\`, \`as sampler\`, ...) so tutti::tutti_x:: is unspellable."
     status=1
   else
     echo "ok"

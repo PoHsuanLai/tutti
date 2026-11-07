@@ -5,7 +5,7 @@
 //!
 //! Use it directly to host audio processors ([`Node`]s) in a graph you build
 //! and edit at run time, or to write a node that runs inside the engine.
-//! `tutti-core`'s engine renders an [`Executor`] behind its device callback,
+//! `tutti-engine`'s engine renders an [`Executor`] behind its device callback,
 //! and the `tutti` facade re-exports this crate as `tutti::graph`.
 //!
 //! # Quick start
@@ -248,7 +248,7 @@ pub use command::{CANCEL_CAPACITY, COMMAND_CAPACITY, CommandId, ScheduleError};
 pub use compile::{CompileError, CycleEdge, Shapes, VerifyError, compile};
 pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts};
 pub use cost::{Cost, Schedule, Work};
-pub use editor::{CommitError, Editor, Limits};
+pub use editor::{CommitError, Editor, Limits, MAX_ROOT_CHANNELS};
 pub use event::{
     Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
     HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,

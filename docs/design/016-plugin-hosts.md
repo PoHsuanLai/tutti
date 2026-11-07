@@ -491,7 +491,7 @@ Four things the block leaves open are fixed as follows.
   any effect and its reply, the plugin settles in the state the last one asked
   for, with no plan in flight.
 
-`proptest` is a dev-dependency of `tutti-core` and `tutti-graph` at `1.9.0`;
+`proptest` is a dev-dependency of `tutti-graph` at `1.9.0`;
 `tutti-plugin-types` adds the same. The properties run the core through a test
 shell that performs each effect against a model of the plugin (split or not,
 the Processor held or away) and replies only as a plugin could, so a sequence
@@ -791,9 +791,68 @@ one; what differs is VST3's.
 - VST3 has no `params.flush`, so a rejoin cannot write the ring's leftovers into
   the plugin: they are kept (with the writes a full ring refused, latest per
   parameter) in `Vst3Loaded::carried` and delivered in the first block of the next
-  activation. A write on the loaded plugin overwrites its carried entry, and a
-  state or preset load drops them all, so an older write never goes in over a
-  newer one.
+  activation. A write on the loaded plugin is recorded there too (it updates the
+  controller only, and a separate component hears of a value from
+  `IParameterChanges` in a process call, which a loaded plugin does not make), and
+  overwrites an entry for the same parameter. A state or preset load drops them
+  all, so an older write never goes in over a newer one.
+- `save_state` stores `carried` in the blob, because the component's stream does
+  not hold those writes. The container is `TUTTIVS3`, a version byte, the
+  component length and the two streams; with writes pending it is version 2, which
+  puts a `u32` count and that many `u32` id, `f64` value pairs before the length.
+  With nothing pending the blob is version 1's, byte for byte. `load_state` reads
+  both versions, applies the writes to the controller after the component and
+  controller streams (an id the plugin does not list is dropped), and refills
+  `carried`; on an active plugin the Controller queues them to the Processor
+  instead. A malformed version 2 blob is read as a bare component stream, as a
+  malformed version 1 is. A build that predates version 2 reads the whole blob as
+  a component stream, so a blob with writes pending does not restore there; only
+  tutti reads the container. A blob stores a pending write once per parameter,
+  and only for a parameter the plugin lists, so a blob cannot make the next
+  activation's first block do more than one point per listed parameter. A v2
+  blob whose component stream is empty still restores its writes (and the
+  controller's stream) to a plugin whose component has no state.
+- A save made while active also stores the writes no block has taken yet. The
+  Controller keeps a record of what it handed the Processor (the carried writes
+  at activation and every queued edit, latest per parameter, with the ring's
+  refusals), and `tutti_rt::drain_clock()` counts the drains the Processor begins:
+  the Processor holds the `DrainBeat` (one `begin` per block, before the drain),
+  the Controller the `DrainWatch`. After sending a write the Controller takes a
+  `DrainMark`; the write leaves the record once `two_since(mark)` is true. Two,
+  not one: the drain the mark counted may have read the ring before the write,
+  and the next began after the mark was read, so it began after the send and sees
+  the write; the one after it began only when that block was over. The fences
+  that make this a store-load pair, and `+ 2`, are checked by
+  `tutti-rt/tests/drain_clock_loom.rs` against the shipped code (`+ 1` fails it).
+  A save in that window is version 2 with the record's writes; a save later is
+  the component's stream alone.
+- What two drains prove is that the ring was read, not that the plugin took the
+  point. Three paths can read a write and not deliver it: the drain overflows
+  `pending` (more distinct parameters than its reserve in one drain, reachable
+  only by a burst from a plugin with hundreds of parameters; the point is dropped
+  and counted in `edits_dropped`), the bus bind fails (only on a sample-width
+  mismatch, which a typed Processor cannot have), and `process` fails (the plugin
+  was handed the points before it failed, so it is the plugin's loss). Only the
+  first is reachable, and a write it drops is in no later save. Fixing it takes
+  the Processor publishing its dropped count and the Controller re-sending its
+  record entries when the count moves, and a plugin with more parameters than the
+  reserve to test it on; neither is done.
+- A restored record is applied after the component's stream, so in the two-block
+  window a newer value already in the component (automation, or the plugin's own
+  edit) is overwritten by the older value of the record. The record holds the
+  host's last write to that parameter, and a block later it is gone.
+- Two cases stay open. A plugin's own `performEdit` while no block runs reaches
+  the host's component handler, and the host records it only if the app relays it
+  through `set_parameter`. After a `restartComponent` that changes the parameter
+  list, an id left in `carried` is delivered in the first block and the plugin
+  ignores it.
+- `Control::parameter` answers `None` for an id the plugin does not list
+  (`getParamNormalized` answers 0 for it), as CLAP and VST2 do. It finds out by
+  walking the parameter list, one COM call per parameter until the match, so a
+  caller polling every parameter each frame pays the square of the count. The
+  next step is an id set built at load and rebuilt on `kParamTitlesChanged` and
+  `kReloadComponent`; it needs interior mutability on `Vst3Loaded` (a `&self`
+  read refreshing a cache), which is why it is not in this change.
 - `Edit::Reset` (new in the core) says every write queued before it is stale. A
   Controller's `load_state` and `load_preset` send one (CLAP's too), the ring's
   order makes it exact, and a drain applies none of the writes ahead of it. A
@@ -1681,8 +1740,7 @@ beyond `shadow_loads` and `load_shadow` is needed, and both default to refusing.
 The quirk is a `bool` the core reads and an `Effect` pair it plans.
 
 **The crossfade.** The graph already has the machinery in `tutti-graph`:
-`CrossfadeCurve::gains` (re-exported by `tutti-core`, which `tutti-plugin-server`
-depends on) and `Fade`. `Graph::crossfade_plugin` in `tutti-session` swaps a
+`CrossfadeCurve::gains` (`tutti-graph`'s) and `Fade`. `Graph::crossfade_plugin` in `tutti-session` swaps a
 whole `PluginClient`, which means a second server process; it does not reach one
 plugin's Processors inside a server, and a swap through it would lose the
 node's identity and cost IPC and a process per load. The swap therefore reuses the

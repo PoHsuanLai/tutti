@@ -23,7 +23,6 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::contract::Direct;
 use tutti_graph::{
     Event, ForkMode, ForkTarget, GraphBuilder, Offset, ParamRamp, Prepare, Transport,
@@ -32,6 +31,7 @@ use tutti_mod::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};
+use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 #[path = "support/probe_path.rs"]

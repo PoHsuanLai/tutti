@@ -25,7 +25,7 @@ use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::Result;
 use tutti_plugin::catalog::{Plugin, PluginRole};
 
-use tutti_core::ProjectMeter;
+use tutti_transport::ProjectMeter;
 use tutti_types::{Beat, BeatDuration, Depth, MeterMap, PhaseIncrement, SampleRate};
 
 const SAMPLE_RATE: SampleRate = SampleRate::SR_48K;

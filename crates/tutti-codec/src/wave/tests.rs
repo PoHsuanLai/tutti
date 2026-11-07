@@ -27,3 +27,39 @@ fn zero_rounds_the_duration_to_the_nearest_frame() {
     assert_eq!(w.len(), 2);
     assert!(w.channel(0).iter().all(|&s| s == 0.0));
 }
+
+/// A wave built from a count assumes the engine's order where it has one and
+/// says "discrete" where it does not (4 is quad or B-format; 3 and 5 have no
+/// order), and one built from a topology keeps it, one channel per speaker.
+///
+/// Mutation (run): `assumed` returning `smpte(..).unwrap_or(quad)` for 4 fails
+/// the discrete row; `with_topology` building `topology.layout()` channels from
+/// `positions().len() + 1` fails the width.
+#[test]
+fn a_count_assumes_smpte_or_discrete_and_a_topology_is_kept() {
+    use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
+    for n in [1u16, 2, 6, 8, 12] {
+        let w = Wave::new(usize::from(n), 48_000.0);
+        assert_eq!(
+            Some(w.topology()),
+            ChannelTopology::smpte(ChannelLayout::from(n)).as_ref(),
+            "{n}"
+        );
+    }
+    for n in [3usize, 4, 5, 7, 16] {
+        assert_eq!(
+            Wave::new(n, 48_000.0).topology().positions(),
+            vec![Speaker::Discrete; n],
+            "{n}"
+        );
+    }
+    assert!(Wave::new(0, 48_000.0).topology().positions().is_empty());
+    assert_eq!(
+        Wave::from_samples(48_000.0, &[0.5]).topology().positions(),
+        [Speaker::FrontCenter]
+    );
+
+    let quad = Wave::with_topology(ChannelTopology::quad(), 48_000.0);
+    assert_eq!(quad.channels(), 4);
+    assert_eq!(quad.topology(), &ChannelTopology::quad());
+}

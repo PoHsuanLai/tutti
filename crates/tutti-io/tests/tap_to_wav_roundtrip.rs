@@ -33,7 +33,7 @@
 //! comes out right by accident. Only a push that *exceeds* the scratch forces
 //! the bad bound to be used. Keep `FRAMES` above `SCRATCH_FRAMES`.
 
-use tutti_io::{AudioIn, BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+use tutti_io::{AudioIn, ManualDriver, Pcm, PumpPass, Recorder, TapIn, WavOut};
 use tutti_metering::AudioTap;
 use tutti_types::{ChannelLayout, Samples};
 
@@ -81,7 +81,7 @@ fn tapped_frames_reach_the_wav_in_order_through_the_whole_chain() {
         "the tap is a stereo monitor; the sink below is built to match"
     );
 
-    let sink = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(src, sink, driver).expect("stereo source into a stereo sink");
@@ -150,7 +150,7 @@ fn interleaved_pushes_and_pumps_lose_no_frames() {
 
     let tap = AudioTap::new();
     let src = TapIn::new(tap.open().expect("a fresh tap opens"));
-    let sink = WavOut::create(&path, 48_000.0, 2u16, BitDepth::Float32).expect("sink opens");
+    let sink = WavOut::create(&path, 48_000.0, 2u16, Pcm::Float32).expect("sink opens");
 
     let (driver, pump) = ManualDriver::new();
     let rec = Recorder::start_with(src, sink, driver).expect("stereo source into a stereo sink");

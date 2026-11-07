@@ -49,9 +49,9 @@
 use std::sync::Arc;
 
 use tutti_export::{
-    AudioFormat, BitDepth, ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, FrozenClock,
-    GRAPH_MAX_BLOCK, Normalize, RenderConfig, RenderGraph, Rendered, Resample,
-    render_normalized_to_file, render_to_buffers, render_to_file, write_buffers,
+    ChannelLayout, Dither, EncodeConfig, Error, ExportConfig, Format, FrozenClock, GRAPH_MAX_BLOCK,
+    Normalize, Pcm, RenderConfig, RenderGraph, Rendered, Resample, render_normalized_to_file,
+    render_to_buffers, render_to_file, write_buffers,
 };
 use tutti_graph::{
     Cx, ForkMode, ForkTarget, GraphBuilder, Io, Node, Prepare, Shape, Status, Unforkable,
@@ -83,7 +83,7 @@ fn digest(planes: &[Vec<f32>]) -> u64 {
     fnv(planes.iter().flatten().flat_map(|s| s.to_le_bytes()))
 }
 
-fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
+fn config(bit_depth: Pcm, channels: ChannelLayout) -> ExportConfig {
     ExportConfig {
         render: RenderConfig {
             sample_rate: RATE,
@@ -91,8 +91,7 @@ fn config(bit_depth: BitDepth, channels: ChannelLayout) -> ExportConfig {
             ..Default::default()
         },
         encode: EncodeConfig {
-            format: AudioFormat::Wav,
-            bit_depth,
+            format: Format::Wav(bit_depth),
             channels,
             topology: None,
         },
@@ -295,7 +294,7 @@ fn float_samples(bytes: &[u8]) -> Vec<f32> {
 /// the digest moves (the closed form's tolerance cannot see it).
 #[test]
 fn a_sine_renders_its_closed_form() {
-    let cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let cfg = config(Pcm::Float32, ChannelLayout::STEREO);
     let planes = buffers(built(sine(1000.0)), &cfg).planes;
     assert_eq!(planes.len(), 2);
     assert_eq!(planes[0].len(), FRAMES);
@@ -327,7 +326,7 @@ fn a_sine_renders_its_closed_form() {
 /// `GraphSource::fill` → the digest moves.
 #[test]
 fn a_resampled_export_writes_its_render() {
-    let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
     cfg.resample = Some(Resample::to(SampleRate(44_100.0)));
     let bytes = same_file(
         || sine(1000.0),
@@ -359,7 +358,7 @@ fn a_resampled_export_writes_its_render() {
 /// Mutation (run): as above → the digest moves.
 #[test]
 fn a_peak_normalized_export_writes_its_normalized_render() {
-    let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
     cfg.render.duration_seconds = 1.0;
     let normalize = Normalize::peak(Db(-1.0));
     let bytes = same_file(
@@ -398,7 +397,7 @@ fn a_peak_normalized_export_writes_its_normalized_render() {
 /// Mutation (run): as above → the digest moves.
 #[test]
 fn a_dithered_export_writes_its_dithered_render() {
-    let mut cfg = config(BitDepth::Int16, ChannelLayout::STEREO);
+    let mut cfg = config(Pcm::Int16, ChannelLayout::STEREO);
     cfg.dither = Dither::Triangular;
     let level = 0.25 + 0.3 / 32_768.0;
     let bytes = same_file(
@@ -452,7 +451,7 @@ fn a_dithered_export_writes_its_dithered_render() {
 fn a_surround_mix_folds_to_every_width() {
     let quad = buffers(
         built(quad_vbap()),
-        &config(BitDepth::Float32, ChannelLayout::QUAD),
+        &config(Pcm::Float32, ChannelLayout::QUAD),
     )
     .planes;
     assert_audible(&quad);
@@ -464,7 +463,7 @@ fn a_surround_mix_folds_to_every_width() {
     // No digest for these: each is the quad render (whose digest is pinned)
     // folded, to the bit.
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
-        let got = buffers(built(quad_vbap()), &config(BitDepth::Float32, width)).planes;
+        let got = buffers(built(quad_vbap()), &config(Pcm::Float32, width)).planes;
         let n = width.count() as usize;
         let mut folded = vec![Vec::with_capacity(FRAMES); n];
         let mut frame = vec![0.0f32; n];
@@ -479,7 +478,7 @@ fn a_surround_mix_folds_to_every_width() {
     }
     let fork = buffers(
         forked(quad_vbap()),
-        &config(BitDepth::Float32, ChannelLayout::QUAD),
+        &config(Pcm::Float32, ChannelLayout::QUAD),
     )
     .planes;
     assert!(fork[2].iter().any(|s| s.abs() > 0.05), "no rear energy");
@@ -514,7 +513,7 @@ fn a_convolver_renders_the_direct_convolution_at_the_graph_block() {
     assert_eq!(GRAPH_MAX_BLOCK.get() % 64, 0);
     let graph = built(convolved());
     let latency = graph.reported_latency().get();
-    let planes = buffers(graph, &config(BitDepth::Float32, ChannelLayout::MONO)).planes;
+    let planes = buffers(graph, &config(Pcm::Float32, ChannelLayout::MONO)).planes;
     assert_audible(&planes);
     assert_eq!(planes[0].len(), FRAMES);
     let ir = ir();
@@ -544,7 +543,7 @@ fn the_latency_trim_drops_the_lookahead() {
     let latency = built(limited()).reported_latency();
     assert_eq!(latency, Samples(240), "5 ms at 48 kHz");
 
-    let mut trimmed = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut trimmed = config(Pcm::Float32, ChannelLayout::STEREO);
     trimmed.render.latency = latency;
     let a = buffers(built(limited()), &trimmed).planes;
     assert_eq!(a[0].len(), FRAMES, "the trim does not shorten the output");
@@ -552,7 +551,7 @@ fn the_latency_trim_drops_the_lookahead() {
 
     // Untrimmed, and 240 frames longer (as a tail), so it covers the same
     // span shifted.
-    let mut whole = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut whole = config(Pcm::Float32, ChannelLayout::STEREO);
     whole.render.tail = latency;
     let b = buffers(built(limited()), &whole).planes;
     let shifted: Vec<Vec<f32>> = b.iter().map(|p| p[240..].to_vec()).collect();
@@ -581,7 +580,7 @@ fn a_limiter_adds_no_tail_to_the_render() {
     let graph = built(limited());
     assert_eq!(graph.reported_tail().samples(), Some(Samples::ZERO));
     let latency = graph.reported_latency();
-    let mut cfg = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut cfg = config(Pcm::Float32, ChannelLayout::STEREO);
     cfg.render.latency = latency;
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     let planes = buffers(built(limited()), &cfg).planes;
@@ -591,7 +590,7 @@ fn a_limiter_adds_no_tail_to_the_render() {
         "the duration, and nothing after it"
     );
 
-    let mut whole = config(BitDepth::Float32, ChannelLayout::STEREO);
+    let mut whole = config(Pcm::Float32, ChannelLayout::STEREO);
     whole.render.tail = latency + graph.reported_tail().samples().unwrap();
     let planes = buffers(built(limited()), &whole).planes;
     let n = latency.get();
@@ -619,7 +618,7 @@ fn the_tail_extends_the_render_by_the_ring_out() {
         Some(Samples(2999)),
         "the IR's ring-out"
     );
-    let mut cfg = config(BitDepth::Float32, ChannelLayout::MONO);
+    let mut cfg = config(Pcm::Float32, ChannelLayout::MONO);
     cfg.render.tail = graph.reported_tail().samples().unwrap();
     // The latency trim too, so both halves of the gate run together.
     cfg.render.latency = graph.reported_latency();
@@ -694,7 +693,7 @@ fn an_editor_swapped_after_construction_is_refused_at_render() {
     let _live = std::mem::replace(graph.editor_mut(), other);
     let r = render_to_buffers(
         graph,
-        &config(BitDepth::Float32, ChannelLayout::STEREO),
+        &config(Pcm::Float32, ChannelLayout::STEREO),
         &FrozenClock,
     );
     assert!(matches!(r, Err(Error::InvalidConfig(_))), "{r:?}");
@@ -711,7 +710,7 @@ fn a_graph_prepared_at_another_rate_is_refused() {
         .expect("builds");
     let r = render_to_buffers(
         RenderGraph::new(editor, executor).expect("built together"),
-        &config(BitDepth::Float32, ChannelLayout::STEREO),
+        &config(Pcm::Float32, ChannelLayout::STEREO),
         &FrozenClock,
     );
     assert!(matches!(r, Err(Error::InvalidConfig(_))), "{r:?}");
@@ -744,7 +743,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     g.connect_output(clock, 0, 0).connect_output(clock, 1, 1);
     let out = render_to_buffers(
         built(g),
-        &config(BitDepth::Float32, ChannelLayout::STEREO),
+        &config(Pcm::Float32, ChannelLayout::STEREO),
         &timeline,
     )
     .expect("renders");
@@ -839,7 +838,7 @@ fn render_under(
     clock: &OfflineTimeline,
     width: ChannelLayout,
 ) -> Vec<Vec<f32>> {
-    render_to_buffers(graph, &config(BitDepth::Float32, width), clock)
+    render_to_buffers(graph, &config(Pcm::Float32, width), clock)
         .expect("renders")
         .planes
 }

@@ -1,0 +1,67 @@
+[package]
+name = "tutti-codec"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Tutti's audio file encoders: WAV, AIFF, FLAC and Ogg Vorbis behind one Encoder, over any Write + Seek sink"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-codec"
+readme = "README.md"
+keywords = ["audio", "wav", "flac", "aiff", "ogg"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[features]
+# No format by default, as on every engine crate: a build names the containers
+# it writes. A `Format` variant exists only with its feature on.
+default = []
+wav = []
+flac = ["dep:flacenc", "dep:md-5"]
+aiff = ["dep:aifc"]
+# Ogg Vorbis. Its C library (`ogg_next_sys`) does not cross-compile to Windows
+# MSVC from Linux, so `just check-windows` leaves it out of the lint run.
+vorbis = ["dep:vorbis_rs"]
+# `Serialize`/`Deserialize` on the range-checked `Quality`.
+serde = ["dep:serde"]
+
+[dependencies]
+thiserror.workspace = true
+# An unfinished file that cannot be removed is logged.
+tracing = "0.1"
+tutti-types = { path = "../tutti-types", default-features = false }
+serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
+# No default features: the encoder drives flacenc's frame encoder on its own
+# workers, so flacenc's `par` (and its `serde`/`log`) are unused.
+flacenc = { version = "0.4", optional = true, default-features = false }
+# The FLAC STREAMINFO's MD5, over the samples as written. flacenc computes one
+# only inside its own encode loop, which pads the last block; the FLAC encoder
+# drives flacenc's frame encoder itself, so it hashes the samples here. The
+# same crate and version flacenc already pulls in.
+md-5 = { version = "0.10", optional = true }
+vorbis_rs = { version = "0.5", optional = true }
+# AIFF/AIFF-C: its I16/I24/F32 formats match our three depths exactly and it
+# back-patches sizes on finalize, so AIFF streams like the others.
+aifc = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# `check_range_contract` for `Quality`.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+# `serde` on, so `Quality`'s contract test runs on every plain run. A
+# dev-dependency on self is how a feature reaches the test targets; the format
+# features are not named here (Ogg's C library cannot cross-compile to
+# Windows), and are on in a workspace run through `tutti-export`.
+tutti-codec = { path = ".", features = ["serde"] }
+tempfile = "3.10"
+# An independent reader for what the WAV writer emits.
+hound = "3.5"
+# An independent decoder for every container written, for `tests/oracle_decode.rs`.
+# The feature list is the minimum that reads what this crate emits.
+symphonia = { version = "0.5.5", default-features = false, features = ["wav", "pcm", "flac", "ogg", "vorbis", "aiff"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

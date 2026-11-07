@@ -292,13 +292,13 @@ impl RunningPump for std::thread::JoinHandle<std::io::Result<()>> {
 /// ```
 /// use tutti_metering::AudioTap;
 /// use tutti_types::Samples;
-/// use tutti_io::{BitDepth, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
+/// use tutti_io::{Pcm, ManualDriver, PumpPass, Recorder, TapIn, WavOut};
 ///
 /// # fn main() -> tutti_io::Result<()> {
 /// let tap = AudioTap::new();
 /// let src = TapIn::new(tap.open().expect("a fresh tap has no other reader"));
 /// let dir = tempfile::tempdir()?;
-/// let wav = WavOut::create(dir.path().join("take.wav"), 48_000.0, 2u16, BitDepth::Float32)?;
+/// let wav = WavOut::create(dir.path().join("take.wav"), 48_000.0, 2u16, Pcm::Float32)?;
 ///
 /// let (driver, pump) = ManualDriver::new();
 /// let rec = Recorder::start_with(src, wav, driver)?;

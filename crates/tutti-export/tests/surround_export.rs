@@ -36,7 +36,7 @@ fn export(g: GraphBuilder, layout: ChannelLayout, secs: f64, path: &std::path::P
                 ..Default::default()
             },
             encode: EncodeConfig {
-                bit_depth: tutti_export::BitDepth::Float32,
+                format: tutti_export::Format::Wav(tutti_export::Pcm::Float32),
                 channels: layout,
                 ..Default::default()
             },

@@ -3,10 +3,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{Codec, ConfigError, Error, Result, UnsupportedReason};
+pub use error::{ConfigError, Error, Result};
 
 mod options;
-pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
+pub use options::Dither;
+/// The container and its settings, and the sample widths, which are
+/// `tutti-codec`'s. Re-exported so a caller configuring an export names them
+/// from here.
+pub use tutti_codec::{FlacLevel, Format, IntDepth, Pcm, Quality};
 pub use tutti_types::ChannelLayout;
 
 mod control;
@@ -174,9 +178,8 @@ fn frame_width(layout: ChannelLayout) -> Result<usize> {
 /// # Errors
 ///
 /// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
-/// [`Error::UnsupportedFormat`] if the format's feature is off or it cannot
-/// write the bit depth; [`Error::InvalidConfig`], [`Error::Resample`],
-/// [`Error::Encoding`] or [`Error::Io`] from the resample and encode stages.
+/// [`Error::InvalidConfig`], [`Error::Resample`] or [`Error::Encode`] from the
+/// resample and encode stages.
 pub fn write_buffers(
     rendered: &Rendered,
     config: &ExportConfig,

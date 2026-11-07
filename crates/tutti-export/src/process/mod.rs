@@ -16,14 +16,6 @@
 pub(crate) mod dither;
 pub(crate) mod resample;
 
-// Consumed only by `encode_to_file`'s per-format arms, which are codec-gated.
-#[cfg(codec)]
 pub(crate) use dither::DitherState;
 pub use resample::ChunkSize;
-// `resample_rendered` is ungated: `normalize::render_normalized_to_file` calls
-// it before measuring, and that entry point is available with no codec on — it
-// renders and normalizes, then fails at the encode. The streaming `Resampler`
-// is only reached from the encode arms, so it keeps the gate.
-#[cfg(codec)]
-pub(crate) use resample::Resampler;
-pub(crate) use resample::resample_rendered;
+pub(crate) use resample::{Resampler, resample_rendered};

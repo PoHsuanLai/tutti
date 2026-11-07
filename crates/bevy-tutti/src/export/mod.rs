@@ -18,7 +18,7 @@
 //! use bevy_tutti::graph::AudioConfig;
 //! use tutti_nodes::testing::Const;
 //! use tutti_export::{
-//!     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig,
+//!     Format, Pcm, ChannelLayout, EncodeConfig, ExportConfig,
 //!     RenderConfig,
 //! };
 //!
@@ -29,8 +29,7 @@
 //!         ..Default::default()
 //!     },
 //!     encode: EncodeConfig {
-//!         format: AudioFormat::Wav,
-//!         bit_depth: BitDepth::Float32,
+//!         format: Format::Wav(Pcm::Float32),
 //!         channels: ChannelLayout::STEREO,
 //!         topology: None,
 //!     },

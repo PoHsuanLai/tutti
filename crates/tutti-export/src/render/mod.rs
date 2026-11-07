@@ -5,9 +5,9 @@
 //!   built by [`driver::with_source`].
 //! - [`driver::drive`] — the pull loop, applying the [`sink::BlockCursor`] gate.
 //!
-//! There is no sink type here. The *encoder* owns the pull (see
-//! [`crate::encode`]): FLAC's library is itself pull-based, and giving every
-//! format the same shape is what keeps buffering decorators unnecessary.
+//! There is no sink type here. The pipeline owns the pull (see
+//! [`crate::encode`]) and hands each block to a `tutti_codec::Encoder`, which
+//! only writes what it is given.
 
 pub(crate) mod driver;
 pub(crate) mod plan;

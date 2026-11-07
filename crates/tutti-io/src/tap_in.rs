@@ -37,11 +37,11 @@ use tutti_types::{ChannelLayout, Samples};
 /// # Examples
 ///
 /// ```no_run
-/// use tutti_io::{BitDepth, Recorder, TapIn, WavOut};
+/// use tutti_io::{Pcm, Recorder, TapIn, WavOut};
 ///
 /// # fn go(tap: &tutti_metering::AudioTap) -> tutti_io::Result<()> {
 /// let src = TapIn::new(tap.open().expect("tap is free"));
-/// let wav = WavOut::create("master.wav", 48_000.0, 2u16, BitDepth::Float32)?;
+/// let wav = WavOut::create("master.wav", 48_000.0, 2u16, Pcm::Float32)?;
 /// let rec = Recorder::start(src, wav)?; // both are stereo, so this pairs
 /// // ... later ...
 /// rec.finish()

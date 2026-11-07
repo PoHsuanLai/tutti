@@ -42,6 +42,12 @@
 //! and not writing it is worse than the operator: call sites escape to raw
 //! floats, and the type stops being consulted at all.
 //!
+//! # Defining a unit
+//!
+//! Every unit is one `unit!` call (`macros.rs`). The raw type decides the
+//! derives, serde and reflection; the ability list decides the algebra, with
+//! one arm per ability name in `macros.rs`.
+//!
 //! # Measurements are not controls
 //!
 //! [`Correlation`], [`Pan`] and [`Confidence`] are values the engine *reports*;

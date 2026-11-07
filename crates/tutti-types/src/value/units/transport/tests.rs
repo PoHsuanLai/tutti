@@ -19,10 +19,7 @@ use super::*;
 /// the span halves the rate, so the substitution is a silent reciprocal.
 /// [`Beat::cycles_of`] is the only interpreter.
 ///
-/// The body is empty and this test cannot fail. It exists as documentation:
-/// the omission ledger above is the contract, and a `#[test]` is what keeps
-/// it beside the operators rather than drifting into a README. Adding an
-/// omitted operator means deleting its entry here, not making this pass.
+/// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]
 fn omitted_operators_are_documented() {}
 

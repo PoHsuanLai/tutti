@@ -19,10 +19,7 @@ use super::*;
 /// - `Phase + PhaseIncrement` — `advance`, which wraps; the operator would
 ///   not.
 ///
-/// The body is empty and this test cannot fail. It exists as documentation:
-/// the omission ledger above is the contract, and a `#[test]` is what keeps
-/// it beside the operators rather than drifting into a README. Adding an
-/// omitted operator means deleting its entry here, not making this pass.
+/// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]
 fn omitted_operators_are_documented() {}
 

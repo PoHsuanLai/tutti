@@ -1,5 +1,12 @@
 use super::*;
 
+// Each family's tests hold an omission ledger: an empty
+// `omitted_operators_are_documented` test whose doc comment lists the
+// operators its types deliberately lack. The body is empty and the test cannot
+// fail. It exists as documentation: the ledger is the contract, and a `#[test]`
+// is what keeps it beside the operators rather than drifting into a README.
+// Adding an omitted operator means deleting its entry, not making a test pass.
+
 #[test]
 fn from_is_the_spelling_for_single_answer_conversions() {
     // Each of these delegates to its inherent method, so the two spellings
@@ -19,7 +26,7 @@ fn from_is_the_spelling_for_single_answer_conversions() {
 }
 
 /// The `From`/named-method split, as a ledger — the same discipline the
-/// operator omissions above get, and for the same reason: a split nobody
+/// operator omissions in the family tests get, and for the same reason: a split nobody
 /// wrote down drifts unexamined.
 #[test]
 fn conversions_that_stay_named_and_why() {

@@ -1,7 +1,8 @@
 // `unit!` defines one quantity: a `#[repr(transparent)]` newtype and the
-// abilities listed after the colon, and nothing else. A unit has exactly the
-// abilities it names, so the list is the type's whole algebra; what a type
-// declines is written beside it, as a comment, with the method that replaces it.
+// abilities listed after the colon. The raw type decides the derives (below);
+// the list decides everything else, so a unit has exactly the operators and
+// conversions it names. What a type declines is written beside it, as a
+// comment, with the method that replaces it.
 //
 //     unit! {
 //         /// docs
@@ -12,9 +13,9 @@
 // give a float quantity: derives `Copy, Clone, Debug, PartialEq, Default`,
 // serde `transparent` under `serde`, `Reflect` under `bevy` (registered under
 // the path `tutti_types::value::units`, which scene files name, whichever file
-// defines the type). Any other raw type
-// gives an integer quantity: those derives plus `Eq, PartialOrd, Ord, Hash`,
-// serde `transparent`, no reflection.
+// defines the type; the path is written below, so float units stay in this
+// module). Any other raw type gives an integer quantity: those derives plus
+// `Eq, PartialOrd, Ord, Hash`, serde `transparent`, no reflection.
 //
 // Each ability below is one `(@ability Name ..)` arm, with the traits or
 // methods it gives. `Affine(Dur)` is the only one that takes an argument.
@@ -61,7 +62,10 @@ macro_rules! unit {
         $(unit!(@ability $ability $name, $raw $(, $arg)?);)*
     };
 
-    // `new`, `get`, `Unit`, and the `From` and `Display` abilities below.
+    // `Unit` gives `new`, `get` and `impl Unit`, and includes the `From` and
+    // `Display` abilities below: list `Unit` alone, never `Unit, From` (that
+    // would define `From` twice). Integer quantities list `From` and `Display`
+    // on their own.
     (@ability Unit $name:ident, $raw:ty) => {
         impl $name {
             /// Wraps a raw float already denominated in this unit.
@@ -288,5 +292,10 @@ macro_rules! unit {
                 self.0 -= rhs.0;
             }
         }
+    };
+
+    // Anything else after `@ability` is a misspelled ability name.
+    (@ability $other:ident $($rest:tt)*) => {
+        compile_error!(concat!("unknown unit ability `", stringify!($other), "`"));
     };
 }

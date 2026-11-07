@@ -88,7 +88,9 @@ fn six_channel_sink_writes_six_samples_per_frame() {
 /// the buffer through to it, so the failure lands on a write rather than on
 /// the final flush.
 ///
-/// Mutation: MUT_FULL
+/// Mutation: storing `std::io::Error::other(e)` in `write_interleaved` flattens the kind to
+/// `Other` and fails the kind check (run); dropping the store (`let _ = e;`)
+/// leaves `is_failed` false and fails its assertion (run).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_surfaces_from_finalize() {
@@ -115,12 +117,15 @@ fn a_failed_write_surfaces_from_finalize() {
 /// After a failure the sink stops writing and the bytes that did land stay
 /// readable — both halves of what `finalize`'s error path promises.
 ///
-/// The short-circuit at the top of `write_interleaved` is otherwise
-/// untested: deleting it would leave every other test green while the sink
-/// kept hammering a writer it already knows is broken. The failure is the
-/// frame limit, lowered to two frames: the same latch a full disk sets.
+/// The failure is the frame limit, lowered to two frames: the same latch a full
+/// disk sets.
 ///
-/// Mutation: MUT_STOPS
+/// Mutation: forgetting the encoder in `finalize` instead of finishing it (`mem::forget`)
+/// leaves the header unpatched and the buffer unflushed, so the prefix is not
+/// readable and the length assertion fails (run). (Removing the early return in
+/// `write_interleaved` is not seen here: once the limit is reached a retried
+/// write fails the same way and writes nothing; the recorder's
+/// `a_failed_sink_fails_the_take` covers the pump stopping.)
 #[test]
 fn a_failed_sink_stops_writing_and_leaves_a_readable_prefix() {
     let dir = tempfile::tempdir().unwrap();
@@ -203,7 +208,7 @@ fn twenty_four_bit_capture_round_trips() {
 /// names the 4-channel file `quad`, the 6-channel one `5.1(side)`, and the
 /// 8-channel one `8 channels` (unassigned).
 ///
-/// Mutation: MUT_MASK
+/// Mutation: writing a zero mask in the extensible header fails every nonzero row (run).
 #[test]
 fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -242,7 +247,8 @@ fn a_multichannel_file_declares_the_mask_of_tutti_s_channel_order() {
 /// another width than the file cannot be asked for: the constructor takes the
 /// width from the topology.)
 ///
-/// Mutation: MUT_QUAD
+/// Mutation: ignoring the topology in the WAV writer's `create` leaves the bare-4 mask `0`
+/// and fails the `0x33` assertion (run).
 #[test]
 fn a_declared_quad_topology_sets_the_quad_mask() {
     let dir = tempfile::tempdir().unwrap();
@@ -257,7 +263,8 @@ fn a_declared_quad_topology_sets_the_quad_mask() {
 
 /// A header with no mask (stereo, 16 bit) is the plain `PCMWAVEFORMAT` one.
 ///
-/// Mutation: MUT_PLAIN
+/// Mutation: choosing the extensible header from `bits() >= 16` writes tag `0xFFFE` for
+/// stereo 16-bit and fails the tag assertion (run).
 #[test]
 fn a_plain_header_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
@@ -278,7 +285,8 @@ fn a_plain_header_is_left_alone() {
 /// The limit is lowered through `with_max_frames_for_test`; the real one is
 /// pinned in `tutti-codec`.
 ///
-/// Mutation: MUT_LIMIT
+/// Mutation: taking the whole block (`fits = block.len()`) writes all eight frames and
+/// fails the length assertion (run).
 #[test]
 fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
     let dir = tempfile::tempdir().unwrap();
@@ -315,7 +323,8 @@ fn the_frame_limit_stops_at_a_whole_frame_and_is_reported() {
 
 /// A take that ends exactly at the limit is not an error.
 ///
-/// Mutation: MUT_EXACT
+/// Mutation: erroring when a write ends exactly at the limit (`fits <= block.len()`) fails
+/// this (run).
 #[test]
 fn a_take_that_ends_at_the_limit_is_clean() {
     let dir = tempfile::tempdir().unwrap();

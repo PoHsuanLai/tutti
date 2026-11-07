@@ -4301,7 +4301,6 @@ dependencies = [
  "hound",
  "md-5",
  "serde",
- "symphonia",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",

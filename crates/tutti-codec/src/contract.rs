@@ -70,19 +70,38 @@ macro_rules! contract {
                 }
             }
 
-            /// A take of no frames is a file: the header at least.
+            /// A take of no frames is a file: a header that opens with its
+            /// format's magic (`RIFF`, `FORM`, `fLaC`, `OggS`).
             ///
-            /// Mutation: a writer whose `create` writes no header, or whose
-            /// `finish` skips the final flush, hands back an empty sink and
-            /// fails the length check.
+            /// Mutation: a writer whose `create` writes no header leaves zeros
+            /// where the magic is (WAV's `finish` patches the sizes over a hole)
+            /// and fails the letters check; one whose `finish` skips the final
+            /// flush hands back a short sink and fails the length check.
             #[test]
             fn zero_frames_is_a_file() {
                 let sink = make(Cursor::new(Vec::new())).unwrap().finish().unwrap();
+                let bytes = sink.get_ref();
+                assert!(bytes.len() > 20, "a header, got {}", bytes.len());
                 assert!(
-                    sink.get_ref().len() > 20,
-                    "a header, got {}",
-                    sink.get_ref().len()
+                    bytes[..4].iter().all(u8::is_ascii_alphabetic),
+                    "{:?}",
+                    &bytes[..4]
                 );
+            }
+
+            /// Every frame written reaches the file: a longer take is a
+            /// longer file, down to the last partial block.
+            ///
+            /// Mutation: a FLAC writer whose `finish` drops the unfilled last
+            /// block writes the same file for 4196 frames as for 4096 and
+            /// fails this.
+            #[test]
+            fn a_longer_take_is_a_longer_file() {
+                if !$deterministic {
+                    return; // an Ogg stream is paged: sizes jump
+                }
+                let all = input(4_196);
+                assert!(file(&[&all]).len() > file(&[&all[..4_096 * 2]]).len());
             }
 
             /// `finish` hands the sink back positioned at the end of the file,

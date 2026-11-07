@@ -240,9 +240,11 @@ fn a_width_past_the_containers_header_is_refused() {
 /// write that reaches the sink; Ogg Vorbis encodes on a thread, so its
 /// failure may come with the next write or `finish`.
 ///
-/// Mutation: swallowing a sink error in any writer (`let _ = ...`) lets that
-/// format finish `Ok` and fails its row; for FLAC, ignoring the result of
-/// `out.write_all` in `FrameWriter::receive` does the same.
+/// Mutation (run): ignoring the result of `out.write_all` in FLAC's
+/// `FrameWriter::receive`, and of `write_all` in the WAV writer, lets that
+/// format finish `Ok` and fails its row. Swallowing the error in AIFF's `write`
+/// or Vorbis's thread survives: the sink's failure comes back from `finalize` or
+/// `finish` instead, which this test allows ("by finish at the latest").
 #[test]
 fn a_take_that_outgrows_its_sink_fails_by_finish_at_the_latest() {
     for (ext, format) in formats() {
@@ -273,9 +275,9 @@ fn a_take_that_outgrows_its_sink_fails_by_finish_at_the_latest() {
 
 /// An encoder is `Send`, so a recording can move it to its pump thread.
 ///
-/// Mutation: none to run here; the property is a compile-time one. Removing
-/// the encoder thread's ownership of the Vorbis encoder (building it on the
-/// caller's thread and storing it in `Writer`) makes this stop compiling.
+/// The property is a compile-time one, so there is no mutation to run:
+/// holding the `VorbisEncoder` in `VorbisWriter` (built on the caller's thread)
+/// makes this stop compiling.
 #[test]
 fn an_encoder_can_move_to_another_thread() {
     fn is_send<T: Send>() {}

@@ -373,8 +373,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
   (`tutti-export`), so no encoder can skip them. `write` is fallible and the
   file `create_file` makes is removed unless `finish` moved it into place. The
   WAV writer is one: `tutti-export` and `tutti-io`'s `WavOut` both write
-  through it. A new format is a `Format` variant, a writer module and a row in
-  `tests/bytes.rs`.
+  through it. Each format's writer implements `FormatWriter` (its boundary: it writes
+  blocks of interleaved samples into a sink as one file of its format), with
+  the sink bounds on the `impl`, not the trait; `Encoder` is the one type over
+  them. A new format is a `Format` variant, a writer type, a `contract!` line in
+  `src/contract.rs` and a row in `tests/bytes.rs`.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
   `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
   `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep

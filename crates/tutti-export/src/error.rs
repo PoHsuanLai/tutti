@@ -14,7 +14,8 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// Reading or measuring the output file failed.
+    /// The sink failed: the output file could not be created, written (a full
+    /// disk) or moved into place.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
@@ -23,12 +24,11 @@ pub enum Error {
     #[error("Invalid configuration: {0}")]
     InvalidConfig(#[from] ConfigError),
 
-    /// The encoder refused the spec, a block, or the sink: an unknown file
-    /// extension, a spec the format cannot be written for, a WAV file past its
-    /// size limit, a codec failure, or the sink failing mid-take (a full
-    /// disk). The file is removed.
+    /// The encoder refused the spec or a block: a spec the format cannot be
+    /// written for, a WAV file past its size limit, or a codec failure. The
+    /// file is removed. (The sink failing is [`Io`](Self::Io).)
     #[error(transparent)]
-    Encode(#[from] tutti_codec::Error),
+    Encode(tutti_codec::Error),
 
     /// The resampler could not be constructed for this rate pair, or rejected a
     /// chunk.
@@ -147,6 +147,15 @@ pub enum ConfigError {
     /// A prepare hook left the forked graph in a state that cannot commit.
     #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
     PrepareHookUncommittable(tutti_graph::CommitError),
+}
+
+impl From<tutti_codec::Error> for Error {
+    fn from(error: tutti_codec::Error) -> Self {
+        match error {
+            tutti_codec::Error::Io(e) => Self::Io(e),
+            other => Self::Encode(other),
+        }
+    }
 }
 
 /// `std::result::Result` with this crate's [`Error`](enum@Error) as the error

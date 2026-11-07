@@ -60,9 +60,6 @@ tutti-codec = { path = ".", features = ["serde"] }
 tempfile = "3.10"
 # An independent reader for what the WAV writer emits.
 hound = "3.5"
-# An independent decoder for every container written, for `tests/oracle_decode.rs`.
-# The feature list is the minimum that reads what this crate emits.
-symphonia = { version = "0.5.5", default-features = false, features = ["wav", "pcm", "flac", "ogg", "vorbis", "aiff"] }
 
 [package.metadata.docs.rs]
 all-features = true

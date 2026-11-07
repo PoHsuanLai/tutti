@@ -290,8 +290,10 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
                  the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
-                 Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
-                 Downmix and sample conversion stay until a follow-up moves them
+                 Topology; no FFT and no new algorithms but `Fold` (topology to
+                 topology, built on the control side). `#![forbid(unsafe_code)]`.
+                 The width folds (`fold_frame`, `fold_frame_to_*`) and sample
+                 conversion stay until the edges move off them
   tutti-codec    the audio file codecs. Out: `Format` (`Wav(Pcm)`, `Aiff(Pcm)`,
                  `Flac { depth, level }`, `Vorbis { quality }`), `Spec`, and `Encoder`
                  over a `Write + Seek` sink; the `Pcm` widths and their one
@@ -617,6 +619,12 @@ Scalars use `Param<U>`.
 - **`tutti_graph::Node::process`** is for anything that is a node in the
   graph (including sampler voices): planar `f32` through `Io`, any block
   length up to `Prepare::max_block`, the transport from `Env`.
+- **A channel fold goes through `tutti_types::Fold`**, built by `Fold::between`
+  from two `ChannelTopology` values on the control side and applied without
+  allocating. A width is not a placement: an edge reports a topology (a channel
+  with no speaker is `Speaker::Discrete`), and `Fold::assuming_smpte` is the
+  named assumption for the edge that cannot. A new caller of `fold_frame` is a
+  bug; the edges still on it move in their own PRs.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.

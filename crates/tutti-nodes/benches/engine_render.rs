@@ -52,8 +52,8 @@ use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 use tutti_transport::MotionEvent;
 use tutti_transport::Transport;
-use tutti_types::{Bpm, Samples};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
+use tutti_types::{Bpm, Samples};
 use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};
 use tutti_types::{Db, Hz, Q};
 

@@ -31,8 +31,8 @@ use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, InterleavedMut};
 use tutti_types::{Bpm, Hz, NodeKey, Q, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut};
 
 // Without this every `assert_no_alloc` below is a silent no-op. See the module
 // header — this is the whole reason the gate is an integration test.

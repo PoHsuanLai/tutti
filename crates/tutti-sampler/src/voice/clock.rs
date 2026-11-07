@@ -189,7 +189,7 @@ impl Run {
     #[inline]
     pub(crate) fn frames_per_beat(&self) -> Option<f64> {
         let (tempo, rate) = (self.tempo().get(), self.sample_rate().get());
-        (self.rolling && tempo.is_finite() && tempo > 0.0).then(|| rate * 60.0 / tempo)
+        self.rolling.then(|| rate * 60.0 / tempo)
     }
 
     /// This run cut to `range`: `None` when they do not meet. A run cut
@@ -213,10 +213,9 @@ impl Run {
     }
 }
 
-/// Whether `t` moves: it plays, at a finite positive tempo.
+/// Whether `t` moves: it plays (a `Bpm` is finite and above zero).
 fn rolls(t: &Transport) -> bool {
-    let tempo = t.tempo.get();
-    t.playing && tempo.is_finite() && tempo > 0.0
+    t.playing
 }
 
 /// The loop `t` wraps at, if any.

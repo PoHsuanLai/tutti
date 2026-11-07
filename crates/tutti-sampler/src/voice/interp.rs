@@ -102,9 +102,6 @@ pub fn window_position(
         return None;
     }
     let tempo = transport.tempo;
-    if tempo.get() <= 0.0 {
-        return None;
-    }
     let now = transport.beat();
     let gate = Gate {
         window: VoiceWindow {

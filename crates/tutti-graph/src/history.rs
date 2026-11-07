@@ -277,9 +277,9 @@ impl TransportHistory {
 /// stays counted; a bare beat's walk has no [`Transport::origin`], since
 /// its frame count is the walk's, not the host's.
 pub(crate) fn roll(t: Transport, rate: SampleRate, frames: Samples) -> Transport {
-    let (tempo, r) = (t.tempo.get(), rate.get());
+    let r = rate.get();
     // `is_finite` and `> 0.0` together also refuse a NaN.
-    let usable = tempo.is_finite() && tempo > 0.0 && r.is_finite() && r > 0.0;
+    let usable = r.is_finite() && r > 0.0;
     if !usable || !t.playing {
         return t;
     }

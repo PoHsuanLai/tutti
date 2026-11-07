@@ -155,6 +155,10 @@ The roster: `Hz` · `Seconds` · `Db` · `Amplitude` · `Mix` · `Feedback` · `
 `PlaybackRate` / `StretchFactor` · `CompressionRatio` / `Q` / `Resonance` ·
 `Confidence` / `Correlation` / `Pan` · `SampleRate`.
 
+`Bpm` is range-checked, not a bare wrapper: `Bpm::new` refuses NaN, the
+infinities, zero and negative numbers (no 20 to 999 policy; that is a UI limit),
+`Bpm::of` is for literals, and there is no `From<f64>` or `Unit` impl.
+
 The last three are **measurements** — values the engine reports back — as opposed
 to the controls above them. That is why `Correlation` and `Pan` are not `Depth`
 and `Confidence` is not `Mix` despite the coinciding ranges: swapping a reading

@@ -212,10 +212,10 @@ fn track_tempos(track: &Track) -> Vec<(u64, Bpm)> {
     let mut out = Vec::new();
     for event in track.iter() {
         tick = tick.saturating_add(u64::from(event.delta.as_int()));
-        if let TrackEventKind::Meta(MetaMessage::Tempo(t)) = &event.kind {
-            if let Some(bpm) = Bpm::new(US_PER_MINUTE / f64::from(t.as_int())) {
-                out.push((tick, bpm));
-            }
+        if let TrackEventKind::Meta(MetaMessage::Tempo(t)) = &event.kind
+            && let Some(bpm) = Bpm::new(US_PER_MINUTE / f64::from(t.as_int()))
+        {
+            out.push((tick, bpm));
         }
     }
     out

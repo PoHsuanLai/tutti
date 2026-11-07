@@ -102,18 +102,37 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-/// Serializes *all* plugin work in this binary.
+/// Serialises the `hc_*` calls that change or read `HostCheck`.
 ///
-/// Two separate reasons, both real:
-/// - `HostCheck` is a process-global singleton, so a configure→drive→read
-///   sequence must not interleave with another test's.
-/// - VST3 module lifecycle is not thread-safe here: loading and unloading the
-///   same DSO concurrently races module init/exit and segfaults. Every test
-///   that constructs a `Active`/`Vst3Loaded` must hold this, not just the
-///   ones that touch `HostCheck`.
+/// The shim (`hostcheck_shim.cpp`) keeps process-global state with no lock of
+/// its own: `HostCheck::Instance()`, the stub `gComponent` whose bus-count
+/// vectors `hc_configure` reassigns, the event log that `hc_configure` and
+/// `hc_validate` reset and fill, and the parameter-id table `hc_add_parameter`
+/// grows. Two tests calling in at once see each other's setup (a spurious
+/// "sample size" or "process mode" mismatch) and corrupt the heap.
 ///
-/// Held for the whole of each test rather than per-call, since instances are
-/// dropped at end of scope and the unload is half the race.
+/// Hold it across `hc_configure` and `hc_validate` together, and around each
+/// `hc_add_parameter`; it covers no plugin work.
+///
+/// Mutation record: with `hostcheck_lock` returning a fresh mutex's guard,
+/// 100-run loops of `vst3_conformance_blocks` (32 test threads, 16 processes
+/// at once) failed 58 of 400 (`unaligned tcache chunk`, SIGSEGV, and the
+/// "sample size" and "process mode" mismatches); with the lock, 0 of 800.
+/// `vst3_conformance_modes` keeps its `PLUGIN_LOCK`, so the mutation shows
+/// there only with that guard removed too (67 of 400; with the lock, 1 of 2400
+/// and 0 of 3000 more, one SIGSEGV never explained). Controller and
+/// interfaces never failed either way, so they pin nothing about this lock.
+static HOSTCHECK: Mutex<()> = Mutex::new(());
+
+/// Acquire the `HostCheck` lock, ignoring poisoning.
+pub fn hostcheck_lock() -> std::sync::MutexGuard<'static, ()> {
+    HOSTCHECK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Serialises every test of `vst3_conformance_modes`, the one conformance
+/// binary that still holds it: with the `HostCheck` lock alone it failed once
+/// in 5,400 runs, and the cause is not found. Not a module-lifecycle guard;
+/// `Module::open` and teardown serialise themselves.
 pub static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Acquire [`PLUGIN_LOCK`], ignoring poisoning (a failed test elsewhere must
@@ -446,9 +465,6 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     mode: ProcessMode,
     blocks: &[Block<'_>],
 ) -> Result<Vec<Vec<Finding>>, String> {
-    // NOTE: the caller must already hold `PLUGIN_LOCK` — see its docs. Taking
-    // it here instead would deadlock against the helpers (`accepts_midi`,
-    // `first_parameter_id`, ...) that load plugins around this call.
     let mut inst = Active::<T>::load_with_mode(path, sample_rate, block_size, mode)
         .map_err(|e| format!("load failed: {e:?}"))?;
 
@@ -474,6 +490,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // param queues are reported. `hc_configure` (below, per block) resets only
     // the event log, not the parameter table, so registering once is enough.
     for id in inst.parameter_ids() {
+        let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
 
@@ -489,6 +506,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
         // setup-vs-data comparison compare the test against itself — it would
         // pass even if the host had never delivered the requested mode to
         // `setupProcessing`, which is precisely the bug being guarded.
+        let _hc = hostcheck_lock();
         unsafe {
             hc_configure(
                 setup.sampleRate,
@@ -677,12 +695,6 @@ pub fn supports_f64(path: &Path) -> bool {
 // returned a constant (or ignored its arguments) cannot satisfy both.
 
 /// Load a named sample bundle, or `None` when this machine lacks it.
-///
-/// **The caller must already hold [`plugin_guard`].** This constructs a
-/// `Vst3Loaded`, so it is bound by the rule on [`PLUGIN_LOCK`]: concurrent
-/// load/unload of one DSO races the module entry/exit counter. It cannot take
-/// the lock itself — several tests below load two bundles, and a per-call guard
-/// would deadlock on the second.
 pub fn sample(name: &str) -> Option<Vst3Loaded> {
     Vst3Loaded::load(&sample_path(name)?, LoadOptions::new()).ok()
 }

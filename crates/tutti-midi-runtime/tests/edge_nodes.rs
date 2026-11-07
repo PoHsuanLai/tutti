@@ -539,3 +539,98 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
         "every event past the cap is counted"
     );
 }
+
+/// **A transport change on the frame of a loop wrap sends one Song Position,
+/// on that frame.** Looping beats 1.0..1.1 at 120 BPM and 48 kHz (24 000
+/// frames a beat), the loop wraps on frame 2 400; a change of the transport
+/// (to the same rolling one, at the loop's start) cuts the block there. The
+/// first piece ends on the wrap, the second starts on the wrapped beat and
+/// has no wrap of its own. Block start: Song Position, Continue (beat 1.0 is
+/// no Start) and the tick; ticks every 1 000 frames; then on 2 400 the
+/// wrap's Song Position and the tick on the loop's start.
+///
+/// Mutation (run): forget that a piece ended on a wrap (store `false` for
+/// `prev.wrapped`) → no Song Position on frame 2 400 → fails.
+#[test]
+fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
+    use tutti_graph::LoopRange;
+    let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 4096);
+    clock.set_enabled(true);
+    let looping = Some(LoopRange {
+        start: Beat(1.0),
+        end: Beat(1.1),
+    });
+    let rolling = Transport::new(true, Bpm(120.0), Beat(1.0), looping);
+    let mut changes = TransportChanges::NONE;
+    changes
+        .push(Offset::new(2_400, Samples(4_000)).unwrap(), rolling)
+        .unwrap();
+    let mut out = vec![0.0f32; 4_000];
+    exec.process_with_changes(4_000, &rolling, &changes, &[], &mut [&mut out[..]]);
+    let status = |e: &MidiEvent| ((e.data[0] >> 16) & 0xFF) as u8;
+    let got: Vec<(u64, u8)> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| (s.1, status(&s.2)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (0, 0xF2),
+            (0, 0xFB),
+            (0, 0xF8),
+            (1_000, 0xF8),
+            (2_000, 0xF8),
+            (2_400, 0xF2),
+            (2_400, 0xF8),
+            (3_400, 0xF8),
+        ]
+    );
+}
+
+/// **A short loop in a long block overflows the port, counted, and the
+/// blocks it is cut into lose nothing.** A loop of 47.3 frames (beat 0 to
+/// 47.3 / 24 000) at 120 BPM sends a Song Position and a tick on its start
+/// at every wrap: about 340 wraps in 16 384 frames, so about 680 events
+/// against the port's 256. One block sends the first 256 and counts the
+/// rest, without panicking; the same span in blocks of 1 024 (each under the
+/// cap) loses none, and what the one block sent plus what it counted is what
+/// the blocks sent, exactly.
+///
+/// Mutation (run): drop the `count_dropped` call → the count stays 0 and the
+/// sum falls short → fails.
+#[test]
+fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
+    use tutti_graph::LoopRange;
+    use tutti_midi_runtime::CLOCK_EVENT_CAPACITY;
+    use tutti_types::FrameClock;
+    const TOTAL: usize = 16_384;
+    let end = 47.3 / 24_000.0;
+
+    let run = |len: usize| -> (usize, u64) {
+        let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, TOTAL);
+        clock.set_enabled(true);
+        let looping = Some(LoopRange {
+            start: Beat(0.0),
+            end: Beat(end),
+        });
+        let region = tutti_types::LoopRange::new(0.0, end);
+        let mut host = FrameClock::new(Beat(0.0), Bpm(120.0), SampleRate(RATE));
+        for _ in 0..TOTAL / len {
+            let rolling = Transport::new(true, Bpm(120.0), host.beat(), looping);
+            let mut out = vec![0.0f32; len];
+            exec.process(len, &rolling, &[], &mut [&mut out[..]]);
+            host.advance(Samples(len), region);
+        }
+        let sent = seen.lock().unwrap().len();
+        (sent, clock.dropped_events())
+    };
+
+    let (cut, none) = run(1_024);
+    assert_eq!(none, 0, "blocks of 1 024 fit every event");
+    assert!(cut > 2 * CLOCK_EVENT_CAPACITY, "{cut} events in all");
+    let (sent, dropped) = run(TOTAL);
+    assert_eq!(sent, CLOCK_EVENT_CAPACITY);
+    assert_eq!(sent as u64 + dropped, cut as u64);
+}

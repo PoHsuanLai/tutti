@@ -10,6 +10,7 @@ struct TestTransport {
     beat: AtomicF64,
     tempo: Bpm,
     playing: StdAtomicBool,
+    looping: std::sync::Mutex<Option<tutti_graph::LoopRange>>,
 }
 
 impl TestTransport {
@@ -18,7 +19,14 @@ impl TestTransport {
             beat: AtomicF64::new(0.0),
             tempo,
             playing: StdAtomicBool::new(false),
+            looping: std::sync::Mutex::new(None),
         }
+    }
+    fn set_loop(&self, start: f64, end: f64) {
+        *self.looping.lock().unwrap() = Some(tutti_graph::LoopRange {
+            start: Beat(start),
+            end: Beat(end),
+        });
     }
     fn set_beat(&self, b: f64) {
         self.beat.store(b, Ordering::Release);
@@ -31,7 +39,7 @@ impl TestTransport {
             self.playing.load(Ordering::Acquire),
             self.tempo,
             Beat(self.beat.load(Ordering::Acquire)),
-            None,
+            *self.looping.lock().unwrap(),
         )
     }
 }
@@ -682,4 +690,287 @@ fn non_drop_2997_goes_out_with_the_29_97_rate_code() {
     assert_eq!((ndf >> 28) & 0x06, 2 << 1);
     let df = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Df);
     assert_eq!(ndf, df);
+}
+
+/// A rig at 120 BPM and 48 kHz (24 000 frames a beat, a tick every 1 000)
+/// looping beats 1.0..1.1, so a block starting on beat 1.0 wraps on frame
+/// 2 400. Returns the rig, its transport and its receiver, rolling.
+fn looping_rig() -> (Rig, Arc<TestTransport>, crate::MidiReceiver) {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_loop(1.0, 1.1);
+    transport.set_beat(1.0);
+    transport.set_playing(true);
+    (cm, transport, cons)
+}
+
+/// The `(offset, ...)` of the events with `status`.
+fn offsets(events: &[MidiEvent], status: u8) -> Vec<u32> {
+    events
+        .iter()
+        .filter(|e| is_status(e, status))
+        .map(|e| e.frame_offset)
+        .collect()
+}
+
+/// **A loop wrap inside a block moves the ticks onto the next pass.** A
+/// 4 000-frame block starting on the loop's start (beat 1.0, which is on
+/// tick 24) wraps on frame 2 400. Its first pass holds the ticks on frames
+/// 0, 1 000 and 2 000; the second starts again on the loop's start beat, so
+/// its ticks are on 2 400 (the wrap's own frame) and 3 400. Ticks that ran
+/// on linearly past the loop's end would be on 0, 1 000, 2 000 and 3 000.
+/// The next block starts where this one ended (1 600 frames into the loop),
+/// which is no locate: no Song Position, and its tick on frame 400.
+///
+/// Mutation (run): place the ticks from the block's first beat, one pass for
+/// the whole block (the unmodified `tick`) → ticks on 0, 1 000, 2 000, 3 000
+/// → fails. Mutation (run): store the beat the block would reach without
+/// the wrap as `prev.end` (the old `beat + advance`) → a Song Position on
+/// the second block's frame 0 → fails.
+#[test]
+fn a_loop_wrap_inside_a_block_moves_the_ticks_onto_the_next_pass() {
+    let (cm, transport, cons) = looping_rig();
+    cm.tick(4_000);
+    let first = drain_all(&cons);
+    assert_eq!(offsets(&first, 0xF8), [0, 1_000, 2_000, 2_400, 3_400]);
+
+    // The block ended 1 600 frames into the loop: beat 1 + 1600 / 24000. The
+    // next one starts there, short of the wrap: no locate, and the tick on
+    // beat 1 + 2000 / 24000.
+    transport.set_beat(1.0 + 1_600.0 / 24_000.0);
+    cm.tick(700);
+    let second = drain_all(&cons);
+    assert_eq!(offsets(&second, 0xF8), [400]);
+    assert!(
+        offsets(&second, 0xF2).is_empty(),
+        "the block start is no locate"
+    );
+}
+
+/// **The Song Position goes out on the wrap's frame**, carrying the loop's
+/// start (beat 1.0 is MIDI beat 4; the end, 1.5, is 6) and before the tick
+/// on that frame. A loop of 1.0..1.5 wraps on frame 12 000; the play edge's
+/// own Song Position is on frame 0.
+///
+/// Mutation (run): send the wrap's Song Position at offset 0 → none on
+/// 12 000 → fails. Mutation (run): send the beat the pass would have
+/// reached (the loop's end) → position 6 → fails. Mutation (run): emit the
+/// pass's ticks before its Song Position → the F8 precedes the F2 on frame
+/// 12 000 → fails.
+#[test]
+fn the_song_position_lands_on_the_wraps_frame() {
+    let (cm, transport, cons) = looping_rig();
+    transport.set_loop(1.0, 1.5);
+    cm.tick(13_000);
+    let events = drain_all(&cons);
+    let positions: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e.message() {
+            MidiMessage::SongPosition { position, .. } => Some((e.frame_offset, position)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(positions, [(0, 4), (12_000, 4)]);
+    let at_wrap: Vec<_> = events.iter().filter(|e| e.frame_offset == 12_000).collect();
+    assert!(
+        is_status(at_wrap[0], 0xF2) && is_status(at_wrap[1], 0xF8),
+        "the Song Position, then the wrapped pass's first tick"
+    );
+}
+
+/// **The MTC grid restarts on the wrap's frame**, as a locate restarts it:
+/// piece 0 goes out on the wrap, the pieces before it on the first pass's
+/// grid. At 25 fps and 48 kHz a quarter-frame is 480 frames, so the first
+/// pass sends pieces 0..4 on 0, 480, ..., 1 920 and the second pieces 0..3
+/// on 2 400, 2 880, 3 360, 3 840. Unrestarted, the grid runs on and piece 5
+/// is on 2 400.
+///
+/// Mutation (run): drop `restart_mtc` on the wrap → pieces 5, 6, 7, 0 on
+/// the second pass → fails.
+#[test]
+fn the_mtc_grid_restarts_on_the_wrap() {
+    // The loop starts on beat 0, which is on an even frame, so a restarted
+    // grid puts piece 0 on the wrap's own frame.
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_loop(0.0, 0.1);
+    transport.set_playing(true);
+    cm.set_send_mtc(true);
+    cm.tick(4_000);
+    let events = drain_all(&cons);
+    let qf: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e.message() {
+            MidiMessage::TimeCode { code, .. } => Some((e.frame_offset, code >> 4)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        qf,
+        [
+            (0, 0),
+            (480, 1),
+            (960, 2),
+            (1_440, 3),
+            (1_920, 4),
+            (2_400, 0),
+            (2_880, 1),
+            (3_360, 2),
+            (3_840, 3)
+        ]
+    );
+}
+
+/// Plays the transport (120 BPM, 48 kHz, rolling from `from`, looping
+/// `region`) through blocks of `lens`, the host's clock giving each block its
+/// start beat, and returns every event with its absolute frame, in the order
+/// sent. `mtc` turns the quarter-frames on.
+fn play_layout(from: f64, region: (f64, f64), mtc: bool, lens: &[usize]) -> Vec<(u64, MidiEvent)> {
+    let (cm, transport, cons) = master(Bpm(120.0), 48_000.0);
+    transport.set_loop(region.0, region.1);
+    transport.set_playing(true);
+    cm.set_send_mtc(mtc);
+    let looping = tutti_types::LoopRange::new(region.0, region.1);
+    let mut host = tutti_types::FrameClock::new(Beat(from), Bpm(120.0), SampleRate(48_000.0));
+    let mut frame = 0u64;
+    let mut out = Vec::new();
+    for &len in lens {
+        transport.set_beat(host.beat().get());
+        cm.tick(len);
+        out.extend(
+            drain_all(&cons)
+                .into_iter()
+                .map(|e| (frame + u64::from(e.frame_offset), e)),
+        );
+        host.advance(Samples(len), looping);
+        frame += len as u64;
+    }
+    out
+}
+
+/// Block lengths covering `total` frames in blocks of `size`, the last short.
+fn fixed(total: usize, size: usize) -> Vec<usize> {
+    let mut lens = vec![size; total / size];
+    if !total.is_multiple_of(size) {
+        lens.push(total % size);
+    }
+    lens
+}
+
+/// Block lengths cut at the frames in `cuts` (and `total`).
+fn cut_at(total: usize, cuts: &[usize]) -> Vec<usize> {
+    let mut at = 0;
+    let mut lens = Vec::new();
+    for &c in cuts.iter().chain(std::iter::once(&total)) {
+        lens.push(c - at);
+        at = c;
+    }
+    lens
+}
+
+/// **The stream does not depend on where the block boundaries fall.** The
+/// loop is beat 0 to 11 999.3 frames on, at 120 BPM and 48 kHz (24 000 frames
+/// a beat), so the first wrap is on frame 12 000 and, a fraction of a frame
+/// over each time, the next on 23 999, 35 998, 47 998 and 59 997: the wrap frames are
+/// fixed by the loop. The same 60 000 frames through one block, blocks of 512
+/// and of 1 000, blocks cut exactly on each wrap (the wrap on a block's first
+/// frame) and blocks cut one frame after each wrap, must send the same ticks,
+/// Song Positions and MTC pieces on the same absolute frames; a Song Position
+/// is on every wrap frame and none other, and so is a tick on the loop's
+/// start.
+///
+/// Mutation (run): drop the carried-wrap Song Position (`|| wrapped` in
+/// `tick`) → the layout cut on the wraps has no Song Position, nor a
+/// restarted MTC grid, on them → fails.
+#[test]
+fn the_stream_does_not_depend_on_the_block_boundaries() {
+    const TOTAL: usize = 60_000;
+    let region = (0.0, 11_999.3 / 24_000.0);
+    let whole = play_layout(0.0, region, true, &[TOTAL]);
+
+    let wraps: Vec<u64> = whole
+        .iter()
+        .filter(|(_, e)| is_status(e, 0xF2))
+        .map(|&(at, _)| at)
+        .collect();
+    assert_eq!(wraps, [12_000, 23_999, 35_998, 47_998, 59_997]);
+    for &w in &wraps {
+        assert!(
+            whole.iter().any(|(at, e)| *at == w && is_status(e, 0xF8)),
+            "a tick on the loop's start at {w}"
+        );
+    }
+    assert!(whole.iter().any(|(_, e)| is_status(e, 0xF1)), "MTC is on");
+
+    let cuts: Vec<usize> = wraps.iter().map(|&w| w as usize).collect();
+    let after: Vec<usize> = cuts.iter().map(|c| c + 1).collect();
+    for (name, lens) in [
+        ("512", fixed(TOTAL, 512)),
+        ("1000", fixed(TOTAL, 1_000)),
+        ("on the wraps", cut_at(TOTAL, &cuts)),
+        ("one past the wraps", cut_at(TOTAL, &after)),
+    ] {
+        assert_eq!(lens.iter().sum::<usize>(), TOTAL);
+        let got = play_layout(0.0, region, true, &lens);
+        let key = |v: &[(u64, MidiEvent)]| {
+            let mut v: Vec<_> = v.iter().map(|&(at, e)| (at, e.data[0])).collect();
+            v.sort_by_key(|&(at, _)| at);
+            v
+        };
+        assert_eq!(key(&got), key(&whole), "blocks {name}");
+    }
+}
+
+/// **A bar-aligned loop on power-of-two blocks sends its Song Position.**
+/// A loop of beats 0..8 at 120 BPM and 48 kHz is 192 000 frames, 375 blocks
+/// of 512, so every wrap is on a block's first frame. Three cycles send a
+/// Song Position (to beat 0) on each of the first two wraps, frames 192 000
+/// and 384 000, and Start on frame 0 for the play edge.
+///
+/// Mutation (run): as above, drop the carried-wrap Song Position → none →
+/// fails.
+#[test]
+fn a_loop_wrapping_on_every_block_edge_sends_a_song_position_each_time() {
+    let events = play_layout(0.0, (0.0, 8.0), false, &fixed(3 * 192_000, 512));
+    let positions: Vec<_> = events
+        .iter()
+        .filter_map(|(at, e)| match e.message() {
+            MidiMessage::SongPosition { position, .. } => Some((*at, position)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(positions, [(192_000, 0), (384_000, 0)]);
+}
+
+/// **A real locate on the frame of a wrap sends one Song Position**, to
+/// where it locates; and a re-prepare between the blocks (`prepare` re-rates
+/// the master) keeps the wrap that ended the first.
+///
+/// Mutation (run): send the carried wrap's Song Position as well as the
+/// locate's (`located || wrapped` split into two sends) → two on frame 0 →
+/// fails. Mutation (run): clear the carried wrap in `set_sample_rate` → none
+/// after the re-prepare → fails (the second half).
+#[test]
+fn a_wrap_on_the_block_edge_and_a_locate_are_one_song_position() {
+    let (cm, transport, cons) = looping_rig();
+    cm.tick(2_400);
+    let _ = drain_all(&cons);
+    transport.set_beat(1.5);
+    cm.tick(100);
+    let positions: Vec<_> = drain_all(&cons)
+        .iter()
+        .filter_map(|e| match e.message() {
+            MidiMessage::SongPosition { position, .. } => Some((e.frame_offset, position)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(positions, [(0, 6)], "one, to the locate");
+
+    let (cm, transport, cons) = looping_rig();
+    cm.tick(2_400);
+    let _ = drain_all(&cons);
+    cm.set_sample_rate(48_000.0);
+    transport.set_beat(1.0);
+    cm.tick(2_400);
+    let second = drain_all(&cons);
+    assert_eq!(offsets(&second, 0xF2), [0], "the wrap that ended block one");
+    assert_eq!(offsets(&second, 0xF8), [0, 1_000, 2_000]);
 }

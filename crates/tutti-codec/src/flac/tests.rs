@@ -64,3 +64,58 @@ fn an_empty_stream_states_valid_sizes() {
     assert_eq!(info.total_samples(), 0);
     assert_eq!(header_bytes(&info).unwrap().len(), 42);
 }
+
+/// After a frame is lost to a sink failure the writer neither waits for it nor
+/// queues more: `write` and `finish` return errors promptly. (It once waited for
+/// the lost frame forever once `2 x workers` blocks were in flight.)
+///
+/// Mutation (run): never setting the `failed` flag (`self.failed = false`)
+/// fails it.
+#[test]
+#[cfg_attr(miri, ignore = "spawns encoder threads and waits on a clock")]
+fn a_writer_that_lost_a_frame_fails_promptly() {
+    use crate::test_sink::Flaky;
+    use crate::{FormatWriter, Spec};
+    use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let spec = Spec::new(
+            crate::Format::Flac {
+                depth: IntDepth::Int16,
+                level: FlacLevel::Standard,
+            },
+            ChannelLayout::STEREO,
+            SampleRate(44_100.0),
+        );
+        let mut w = FlacWriter::create(
+            &spec,
+            IntDepth::Int16,
+            FlacLevel::Standard,
+            Flaky::failing_write(3),
+        )
+        .unwrap();
+        let samples: Vec<f32> = (0..BLOCK_SIZE * 2)
+            .map(|i| ((i * 31) % 255) as f32 / 255.0 - 0.5)
+            .collect();
+        let mut failed = false;
+        for _ in 0..200 {
+            if w.write(Interleaved::new(&samples, ChannelLayout::STEREO))
+                .is_err()
+            {
+                failed = true;
+                break;
+            }
+        }
+        // More writes and the finish must not wait on the lost frame.
+        let again = w
+            .write(Interleaved::new(&samples, ChannelLayout::STEREO))
+            .is_err();
+        let finished = w.finish().is_err();
+        let _ = tx.send((failed, again, finished));
+    });
+    let (failed, again, finished) = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the writer waited for a frame that was lost");
+    assert!(failed && again && finished);
+}

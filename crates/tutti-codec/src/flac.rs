@@ -108,15 +108,18 @@ impl<W: Write + Seek> FormatWriter for FlacWriter<W> {
                 .extend(samples[..take].iter().map(|&s| depth.quantize(s)));
             samples = &samples[take..];
             if self.pcm.len() == BLOCK_SIZE * self.channels {
-                self.frames.block(&self.pcm, &mut self.sink)?;
+                let queued = self.frames.block(&self.pcm, &mut self.sink);
+                // Cleared whatever came of it: the block is in the writer's
+                // hands now, and a failed one must not be queued again.
                 self.pcm.clear();
+                queued?;
             }
         }
         Ok(())
     }
 
     fn finish(mut self) -> Result<Self::Sink> {
-        if !self.pcm.is_empty() {
+        if !self.pcm.is_empty() && !self.frames.failed {
             self.frames.block(&self.pcm, &mut self.sink)?;
         }
         let info = self.frames.finish(&mut self.sink)?;
@@ -174,6 +177,9 @@ struct FrameWriter {
     sent: usize,
     written: usize,
     in_flight_cap: usize,
+    /// A frame failed to encode or to reach the sink: the frame is lost, so
+    /// the stream cannot be completed and nothing waits for it.
+    failed: bool,
     info: StreamInfo,
     md5: Md5,
     md5_bytes: Vec<u8>,
@@ -253,6 +259,7 @@ impl FrameWriter {
             sent: 0,
             written: 0,
             in_flight_cap: 2 * workers,
+            failed: false,
             info,
             md5: Md5::new(),
             md5_bytes: Vec::new(),
@@ -265,6 +272,9 @@ impl FrameWriter {
     /// Queue one interleaved block: [`BLOCK_SIZE`] frames, or fewer for the
     /// last.
     fn block<W: Write>(&mut self, pcm: &[i32], out: &mut W) -> Result<()> {
+        if self.failed {
+            return Err(lost_frame());
+        }
         let frames = pcm.len() / self.channels;
         // The MD5 is over the samples as the decoder will return them: the
         // first `bytes_per_sample` bytes of each, little-endian, in
@@ -308,6 +318,14 @@ impl FrameWriter {
     /// Take one encoded frame back (waiting for it when `wait`), then write
     /// every frame that is next in order. Returns whether one was taken.
     fn receive<W: Write>(&mut self, out: &mut W, wait: bool) -> Result<bool> {
+        let taken = self.take_one(out, wait);
+        if taken.is_err() {
+            self.failed = true;
+        }
+        taken
+    }
+
+    fn take_one<W: Write>(&mut self, out: &mut W, wait: bool) -> Result<bool> {
         let got = if wait {
             self.done.recv().ok()
         } else {
@@ -338,6 +356,9 @@ impl FrameWriter {
     fn finish<W: Write>(mut self, out: &mut W) -> Result<StreamInfo> {
         // Dropping the sender is what ends the workers.
         self.jobs = None;
+        if self.failed {
+            return Err(lost_frame());
+        }
         while self.written < self.sent {
             if !self.receive(out, true)? {
                 return Err(Error::encoding(Codec::Flac, "a worker stopped"));
@@ -364,6 +385,13 @@ impl FrameWriter {
         self.info.set_md5_digest(&self.md5.finalize().into());
         Ok(self.info)
     }
+}
+
+fn lost_frame() -> Error {
+    Error::encoding(
+        Codec::Flac,
+        "an earlier frame failed, so the stream cannot be completed",
+    )
 }
 
 /// flacenc's coding options for a level, modelled loosely on libFLAC's

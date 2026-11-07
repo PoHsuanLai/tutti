@@ -41,7 +41,7 @@ use tutti_types::{ChannelLayout, Samples};
 /// **Which tap.** To record what the output sounds like, give `TapIn` the
 /// reader of `Session::open_heard_tap` (bevy's `AudioGraphRes::open_heard_tap`):
 /// the engine's output after the declick fader, every device channel, so a
-/// take across a transport stop fades as the device does. A plan tap
+/// take across a transport stop fades as the engine's output buffer does (the f32 mix, before the device layer clamps and converts it). A plan tap
 /// (`Graph::open_tap`, `Graph::open_output_tap`) is the explicit choice of the
 /// graph's own signal, before the fader: a transport-gated source (a clip, the
 /// click, a sampler voice) ends on the stop's frame, so that take has a step

@@ -1586,7 +1586,7 @@ impl Graph {
     /// in a recording.** A transport-gated source (a
     /// clip, the click, a sampler voice) ends on the stop's frame, so the tap
     /// steps from the source's whole level to silence in one frame where the
-    /// device output has faded over the declick (measured: a 0.5 source gives
+    /// engine's output buffer has faded over the declick (measured: a 0.5 source gives
     /// a step of 0.5 in the tap and a largest step of about 0.001 in the
     /// output). A source that keeps running through the stop (live input, a
     /// tail) has none. A start steps alike in both: `Play` is not declicked.

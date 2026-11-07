@@ -86,7 +86,7 @@ fn drain(tap: &mut TapReader, into: &mut Vec<f32>) {
     }
 }
 
-/// The tap is the device output, every channel, whole frames, bit for bit:
+/// The tap is the engine's output buffer, every channel, whole frames, bit for bit:
 /// a 6-wide device is not folded, and a block longer than the graph's 512-frame
 /// blocks (written chunk by chunk) arrives complete and in order. The pure
 /// render (`process_segment`) writes too, on purpose: it is a render a host
@@ -281,4 +281,35 @@ fn opening_and_closing_while_rendering_never_frees_on_the_audio_thread() {
         drop(finished);
         assert!(control.join().expect("control finished") > 0);
     });
+}
+
+/// A close is never lost to a full install queue. With no render in between,
+/// opens fill the queue (the readers dropped, bar the last); the close still
+/// has its reserved slot, so the next render installs everything in order and
+/// ends on the close: the last reader gets nothing.
+///
+/// Mutation (run, recorded here): no reserved slot (`vacant_len() <= 1` ->
+/// `== 0` in `open`, queue one smaller) -> the close fails for want of room,
+/// the last writer stays installed and the reader gets the block.
+#[test]
+fn a_close_is_not_lost_to_a_full_install_queue() {
+    let engine = engine(2);
+    let taps = engine.heard_taps();
+    let layout = ChannelLayout::STEREO;
+    // No render between: four opens, each reader dropped before the next.
+    let mut last = None;
+    for _ in 0..4 {
+        drop(last.take());
+        last = Some(taps.open(layout, Samples(256)).expect("room for four"));
+    }
+    let last = last.expect("opened");
+    taps.close();
+    render(&engine, 64, 2, false);
+    assert_eq!(
+        last.available(),
+        Samples(0),
+        "the close came after its open"
+    );
+    // The queue drained; a new open works again.
+    assert!(taps.open(layout, Samples(8)).is_ok());
 }

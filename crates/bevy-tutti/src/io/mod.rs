@@ -95,7 +95,9 @@
 //! The mic is one source; what the output sounds like is the other one hosts
 //! ask for. [`AudioGraphRes::open_heard_tap`](crate::graph::AudioGraphRes::open_heard_tap)
 //! is the tap on it: the engine's output at the device's width, after the
-//! declick fader, so a take across a transport stop fades as the device does.
+//! declick fader, so a take across a transport stop fades as the engine's output buffer does
+//! (the f32 mix, before the device layer clamps it to its block size and
+//! converts it to the device's sample type).
 //! [`TapIn`] adapts the [`TapReader`](tutti_graph::TapReader) it returns into an
 //! [`AudioIn`] so the same pump records either:
 //!
@@ -141,7 +143,7 @@
 //!   explicit choice of the graph's own signal, aligned by the compiler, on any
 //!   ports and several at once, but *before* the declick fader: a
 //!   transport-gated source (a clip, the click) steps from full level to
-//!   silence at a stop where the device output fades, so a take across a stop
+//!   silence at a stop where the engine's output buffer fades, so a take across a stop
 //!   has a click there (a source that keeps running has none).
 //! - A pump that falls behind loses what the ring could not hold and the file
 //!   closes up over the gap;

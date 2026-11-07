@@ -500,7 +500,7 @@ impl tutti_graph::Node for Gated {
 /// graph's signal before the engine's declick fader. A transport-gated source
 /// (a clip, a click, a sampler voice) stops on the stop's frame, so at a
 /// declicked stop the tap steps from the source's whole level to silence in
-/// one frame while the device output has faded to it over the declick (10 ms):
+/// one frame while the engine's output buffer has faded to it over the declick (10 ms):
 /// a recording through a tap has a click at every stop of such a source, which
 /// the old post-fader capture did not. A source that keeps running through the
 /// stop (live input, a reverb tail) has none. At a start the output has no fade
@@ -560,7 +560,7 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
 
 /// **The heard tap carries the fade at a stop.** The same render as
 /// `a_tap_steps_at_a_transport_stop_where_the_output_fades`, read through the
-/// tap after the fader: it is the device output bit for bit on both channels
+/// tap after the fader: it is the engine's output buffer bit for bit on both channels (the f32 buffer `render` fills, not the device's bytes)
 /// (an invariant of this one render, not a second render), so its largest step
 /// across the stop is the declick's ramp (about 0.001) where the plan tap's
 /// is the source's whole level (0.5). A take recorded through it has no click.
@@ -598,7 +598,7 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
     assert_eq!(
         bits(&tapped),
         bits(&device),
-        "the tap is what the device got"
+        "the tap is what the engine rendered"
     );
     let mut unfaded = vec![0.0f32; 6_400 * 2];
     plan.pop_into(&mut unfaded);

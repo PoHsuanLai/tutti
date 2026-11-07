@@ -3,7 +3,8 @@
 //! A tap in the plan (`tutti-graph`) copies the graph's signal before the
 //! engine's declick fader and the fold to the device width. This is the other
 //! kind: [`Engine`](crate::Engine) writes each chunk of its output buffer,
-//! device-width and after the fader, to the rings of a [`TapReader`], the same
+//! device-width and after the fader (the engine's f32 output buffer, before
+//! the device layer clamps and converts it), to the rings of a [`TapReader`], the same
 //! reader type. It is written by [`Engine::process`](crate::Engine::process)
 //! and [`Engine::process_segment`](crate::Engine::process_segment), so a
 //! device callback and an offline session's `render` feed it; an export forks
@@ -37,7 +38,9 @@ use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_graph::{TapReader, TapWriter};
 use tutti_types::{ChannelLayout, Samples, TapId};
 
-/// Installs that can be in flight at once.
+/// Opens that can be in flight at once. The install queue holds one more: a
+/// slot kept for a close, so closing a tap never fails for want of room while
+/// opens fill the queue (the audio thread behind).
 const INSTALLS: usize = 4;
 
 /// An install: a writer, or `None` to close.
@@ -68,6 +71,9 @@ struct Control {
     retired: HeapCons<Box<TapWriter>>,
     /// The open tap's reader, to see when it was dropped.
     reader: Option<Weak<()>>,
+    /// A close the install queue had no room for, owed to the audio thread:
+    /// sent on the next open, close or reclaim, whichever comes first.
+    owed_close: bool,
 }
 
 impl std::fmt::Debug for Control {
@@ -85,6 +91,22 @@ impl Control {
     fn alive(&self) -> bool {
         self.reader.as_ref().is_some_and(|r| r.strong_count() > 0)
     }
+
+    /// Sends a close the audio thread must see: now if the queue has room,
+    /// else it stays owed and the next control call sends it. The old writer
+    /// keeps feeding its reader (which no longer exists for the caller) until
+    /// then.
+    fn send_close(&mut self) {
+        self.owed_close = self.install.try_push(None).is_err();
+    }
+
+    /// Settles what is owed before anything new is queued behind it.
+    fn settle(&mut self) {
+        self.free();
+        if self.owed_close {
+            self.send_close();
+        }
+    }
 }
 
 /// The audio thread's ends: installs in, retired writers out, the live one.
@@ -96,15 +118,16 @@ pub(crate) struct Hearing {
 
 /// A linked pair, built with the engine.
 pub(crate) fn link() -> (HeardTaps, Hearing) {
-    let (install_tx, install_rx) = HeapRb::<Install>::new(INSTALLS).split();
+    let (install_tx, install_rx) = HeapRb::<Install>::new(INSTALLS + 1).split();
     // A retired writer waits here for the control side; this holds every
     // install that can be in flight and the live one.
-    let (retire_tx, retire_rx) = HeapRb::<Box<TapWriter>>::new(INSTALLS + 2).split();
+    let (retire_tx, retire_rx) = HeapRb::<Box<TapWriter>>::new(INSTALLS + 3).split();
     (
         HeardTaps(Arc::new(Mutex::new(Control {
             install: install_tx,
             retired: retire_rx,
             reader: None,
+            owed_close: false,
         }))),
         Hearing {
             install: install_rx,
@@ -136,11 +159,12 @@ impl HeardTaps {
         capacity: Samples,
     ) -> Result<TapReader, HeardTapError> {
         let mut c = self.control();
-        c.free();
+        c.settle();
         if c.alive() {
             return Err(HeardTapError::Busy);
         }
-        if c.install.vacant_len() == 0 {
+        // One slot stays free for a close.
+        if c.owed_close || c.install.vacant_len() <= 1 {
             return Err(HeardTapError::Backpressure);
         }
         let (reader, writer) =
@@ -156,11 +180,11 @@ impl HeardTaps {
     /// reader keeps what it was written. Does nothing if none is open.
     pub fn close(&self) {
         let mut c = self.control();
-        c.free();
+        c.settle();
         c.reader = None;
-        // A full queue means the audio thread is behind; the close then waits
-        // for the next control tick ([`reclaim`](Self::reclaim) retries).
-        let _ = c.install.try_push(None);
+        // A full queue means the audio thread is behind: the close stays owed
+        // and goes out on the next open, close or [`reclaim`](Self::reclaim).
+        c.send_close();
     }
 
     /// Frees the writers the audio thread retired, and closes the tap if its
@@ -168,10 +192,10 @@ impl HeardTaps {
     /// phase).
     pub fn reclaim(&self) {
         let mut c = self.control();
-        c.free();
+        c.settle();
         if c.reader.is_some() && !c.alive() {
             c.reader = None;
-            let _ = c.install.try_push(None);
+            c.send_close();
         }
     }
 }
@@ -203,5 +227,59 @@ impl Hearing {
                 writer.skip(block.len() / channels.max(1));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn writer(width: usize) -> Box<TapWriter> {
+        Box::new(TapReader::standalone(TapId(0), width, Samples(8)).1)
+    }
+
+    fn width(h: &Hearing) -> Option<usize> {
+        h.writer.as_ref().map(|w| w.width())
+    }
+
+    /// With the retire queue full the audio thread keeps the writer it has and
+    /// leaves the install queued: it never drops the old writer (a drop in the
+    /// engine's `RtScope` panics in debug, and the writer would be gone in
+    /// release, which the width check sees) and loses nothing. Once the control
+    /// side frees the queue, the swap goes through and the old writer is sent
+    /// back. Unreachable through the public calls (each drains the retire queue
+    /// first), so the queues are filled by hand.
+    ///
+    /// Mutation (run, recorded here): drop the `retire.vacant_len() > 0` guard
+    /// in `swap` -> the full queue refuses the old writer, `swap` forgets it
+    /// and replaces it, and the first width assertion fails.
+    #[test]
+    fn a_full_retire_queue_holds_the_install_and_drops_nothing() {
+        let (taps, mut h) = link();
+        h.writer = Some(writer(2));
+        while h.retire.vacant_len() > 0 {
+            assert!(h.retire.try_push(writer(9)).is_ok());
+        }
+        let full = h.retire.occupied_len();
+        taps.control()
+            .install
+            .try_push(Some(writer(3)))
+            .expect("room");
+        {
+            let _rt = tutti_rt::RtScope::enter();
+            h.swap();
+        }
+        assert_eq!(width(&h), Some(2), "the writer is kept");
+        assert_eq!(h.install.occupied_len(), 1, "the install waits");
+        assert_eq!(h.retire.occupied_len(), full, "nothing was sent or dropped");
+
+        taps.reclaim();
+        {
+            let _rt = tutti_rt::RtScope::enter();
+            h.swap();
+        }
+        assert_eq!(width(&h), Some(3), "the install went through");
+        assert_eq!(h.install.occupied_len(), 0);
+        assert_eq!(h.retire.occupied_len(), 1, "the old writer was sent back");
     }
 }

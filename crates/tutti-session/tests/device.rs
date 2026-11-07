@@ -714,3 +714,39 @@ fn indices_after(seen: &Mutex<Vec<usize>>, n: usize) -> Vec<usize> {
     v.sort_unstable();
     v
 }
+
+/// **The heard tap follows a restart onto a device of another width.** A tap
+/// open across the change keeps counting its blocks lost (its width is the old
+/// one's); one opened after it takes the new width and is fed.
+///
+/// Mutation (run, recorded here): delete the width update in `rerate`
+/// (`*layout = spec.channels`) -> the reopen is two lanes wide, every block
+/// counts lost and the width assertion fails.
+#[test]
+fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
+    let (driver, _old) = ManualStreamDriver::new();
+    let (mut s, mut device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .expect("builds with no device");
+    let across = s.open_heard_tap(Samples(1_024)).expect("opens");
+    assert_eq!(across.width(), 2);
+
+    let six = OutputSpec::new(
+        SampleRate(48_000.0),
+        ChannelLayout::from(6usize),
+        tutti_cpal::cpal::SampleFormat::F32,
+    );
+    let (driver, new) = ManualStreamDriver::new();
+    s.restart_on(&mut device, six, driver, None, |_| {})
+        .expect("restarts");
+    new.render_block(64).expect("open");
+    assert_eq!(across.available(), Samples(0), "the old width gets nothing");
+    assert_eq!(across.take_lost(), Samples(64), "and counts the block lost");
+
+    drop(across);
+    let after = s.open_heard_tap(Samples(1_024)).expect("reopens");
+    assert_eq!(after.width(), 6, "the device's width now");
+    new.render_block(64).expect("open");
+    assert_eq!(after.available(), Samples(64));
+    assert_eq!(after.take_lost(), Samples(0));
+}

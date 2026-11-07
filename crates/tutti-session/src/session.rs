@@ -987,10 +987,13 @@ impl Session {
     }
 
     /// Opens the tap on **what the engine renders**: every output channel at
-    /// the device's width, after the declick fader, read through the same
-    /// [`TapReader`] as a plan tap. This is the default way to record what the
-    /// output sounds like. A transport stop fades in it as it does at the
-    /// device, so a take has no click there; [`Graph::open_output_tap`] is the
+    /// the device's width, after the declick fader. It is the engine's f32
+    /// output buffer, not the device's bytes: the device layer clamps a long
+    /// callback to its `MAX_FRAMES` and converts to the device's sample type
+    /// after the engine has written the tap. It is read through the same
+    /// [`TapReader`] as a plan tap, and is the default way to record what the
+    /// output sounds like. A transport stop fades in it as it does in the
+    /// engine's output, so a take has no click there; [`Graph::open_output_tap`] is the
     /// pre-fader signal of the graph, aligned by the compiler, and steps at a
     /// stop for a transport-gated source.
     ///

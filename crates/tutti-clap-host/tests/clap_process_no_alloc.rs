@@ -59,7 +59,7 @@ const MAX_FRAMES: u32 = 512;
 // convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexStatus, Ump, decode};
 
 /// The plugin image, opened once and **never closed**.
 ///
@@ -313,39 +313,60 @@ fn process_with_every_message_kind_does_not_allocate() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
 
-    let packets: Vec<MidiEvent> = [
-        [0x0000_0000u32, 0, 0, 0],
-        [0x1000_F800, 0, 0, 0],
-        [0x1000_F280, 0, 0, 0],
-        [0x2091_3C40, 0, 0, 0],
-        [0x2081_3C40, 0, 0, 0],
-        [0x20A1_3C40, 0, 0, 0],
-        [0x20B1_0740, 0, 0, 0],
-        [0x20C1_0500, 0, 0, 0],
-        [0x20D1_4000, 0, 0, 0],
-        [0x20E1_0040, 0, 0, 0],
-        [0x3001_0102, 0x0304_0506, 0, 0],
-        [0x4091_3C00, 0xC000_0000, 0, 0],
-        [0x4081_3C00, 0x4000_0000, 0, 0],
-        [0x40A1_3C00, 0x8000_0000, 0, 0],
-        [0x40B1_0700, 0x8000_0000, 0, 0],
-        [0x40C1_0001, (5 << 24) | (1 << 8) | 2, 0, 0],
-        [0x40D1_0000, 0x8000_0000, 0, 0],
-        [0x40E1_0000, 0x8000_0000, 0, 0],
-        [0x4061_3C00, 0x8000_0000, 0, 0],
-        [0x4001_3C07, 0x8000_0000, 0, 0],
-        [0x4011_3C4A, 0x8000_0000, 0, 0],
-        [0x4021_0007, 24 << 25, 0, 0],
-        [0x4031_0102, 0x8000_0000, 0, 0],
-        [0x40F1_3C01, 0, 0, 0],
-        [0x5000_0000, 0, 0, 0],
-        [0xD010_0000, 0, 0, 0],
-        [0xF000_0000, 0, 0, 0],
-        [0x6000_0000, 0, 0, 0],
-    ]
-    .iter()
-    .map(|words| MidiEvent::from_ump(2, words))
-    .collect();
+    let sysex8 = Ump::from(Message::Data128(
+        MidiGroup::FIRST,
+        Data128::Sysex8(Sysex8Packet::new(SysexStatus::Complete, 1, &[1, 2, 3]).unwrap()),
+    ))
+    .0;
+    let table: Vec<(&str, [u32; 4])> = vec![
+        ("utility", [0x0000_0000, 0, 0, 0]),
+        ("system", [0x10F8_0000, 0, 0, 0]),
+        ("system", [0x10F2_0102, 0, 0, 0]),
+        ("midi1", [0x2091_3C40, 0, 0, 0]),
+        ("midi1", [0x2081_3C40, 0, 0, 0]),
+        ("midi1", [0x20A1_3C40, 0, 0, 0]),
+        ("midi1", [0x20B1_0740, 0, 0, 0]),
+        ("midi1", [0x20C1_0500, 0, 0, 0]),
+        ("midi1", [0x20D1_4000, 0, 0, 0]),
+        ("midi1", [0x20E1_0040, 0, 0, 0]),
+        ("sysex7", [0x3001_0102, 0x0304_0506, 0, 0]),
+        ("midi2", [0x4091_3C00, 0xC000_0000, 0, 0]),
+        ("midi2", [0x4081_3C00, 0x4000_0000, 0, 0]),
+        ("midi2", [0x40A1_3C00, 0x8000_0000, 0, 0]),
+        ("midi2", [0x40B1_0700, 0x8000_0000, 0, 0]),
+        ("midi2", [0x40C1_0001, (5 << 24) | (1 << 8) | 2, 0, 0]),
+        ("midi2", [0x40D1_0000, 0x8000_0000, 0, 0]),
+        ("midi2", [0x40E1_0000, 0x8000_0000, 0, 0]),
+        ("midi2", [0x4061_3C00, 0x8000_0000, 0, 0]),
+        ("midi2", [0x4001_3C07, 0x8000_0000, 0, 0]),
+        ("midi2", [0x4011_3C4A, 0x8000_0000, 0, 0]),
+        ("midi2", [0x4021_0007, 24 << 25, 0, 0]),
+        ("midi2", [0x4031_0102, 0x8000_0000, 0, 0]),
+        ("midi2", [0x40F1_3C01, 0, 0, 0]),
+        ("data128", sysex8),
+        ("flex", [0xD010_0000, 0, 0, 0]),
+        ("stream", [0xF000_0000, 0, 0, 0]),
+        ("unknown", [0x6000_0000, 0, 0, 0]),
+    ];
+    // Every packet is the kind it claims, so none tests nothing.
+    for (claimed, words) in &table {
+        let kind = match decode(Ump(*words)) {
+            Ok(Message::Utility(_)) => "utility",
+            Ok(Message::System(..)) => "system",
+            Ok(Message::Midi1(..)) => "midi1",
+            Ok(Message::Sysex7(..)) => "sysex7",
+            Ok(Message::Midi2(..)) => "midi2",
+            Ok(Message::Data128(..)) => "data128",
+            Ok(Message::Flex(..)) => "flex",
+            Ok(Message::Stream(_)) => "stream",
+            Err(_) => "unknown",
+        };
+        assert_eq!(kind, *claimed, "{words:08x?}");
+    }
+    let packets: Vec<MidiEvent> = table
+        .iter()
+        .map(|(_, words)| MidiEvent::from_ump(2, words))
+        .collect();
 
     let ctx = ClapProcessContext {
         midi: &packets,

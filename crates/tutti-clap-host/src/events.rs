@@ -118,6 +118,29 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
+/// The UMP packet (group 0) of the MIDI 1.0 message in `data`, or `None` for
+/// one that is not a complete channel voice or System message: an undefined or
+/// SysEx status, or a data byte with its top bit set. Parsed by hand, as it
+/// runs on the audio thread and a parser's error value may allocate.
+fn midi1_packet(time: u32, data: [u8; 3]) -> Option<MidiEvent> {
+    let [status, d1, d2] = data;
+    let data_bytes = match status {
+        0x80..=0xBF | 0xE0..=0xEF | 0xF2 => 2,
+        0xC0..=0xDF | 0xF1 | 0xF3 => 1,
+        0xF6 | 0xF8 | 0xFA..=0xFC | 0xFE | 0xFF => 0,
+        0x00..=0x7F | 0xF0 | 0xF4 | 0xF5 | 0xF7 | 0xF9 | 0xFD => return None,
+    };
+    let used = [d1, d2];
+    if used[..data_bytes].iter().any(|b| b & 0x80 != 0) {
+        return None;
+    }
+    let d1 = if data_bytes >= 1 { u32::from(d1) } else { 0 };
+    let d2 = if data_bytes == 2 { u32::from(d2) } else { 0 };
+    let message_type = if status >= 0xF0 { 0x1 } else { 0x2 };
+    let word = (message_type << 28) | (u32::from(status) << 16) | (d1 << 8) | d2;
+    Some(MidiEvent::from_ump(time, &[word]))
+}
+
 /// `event` as MIDI 2.0 when it is a MIDI 1.0 channel voice message
 /// ([`widen`]); every other packet is returned as it came, an `Unknown` one
 /// included.
@@ -172,16 +195,27 @@ fn system_bytes(system: System) -> [u8; 3] {
 /// The MIDI 1.0 bytes of a poly pressure packet, narrowed to 7 bits when it is
 /// MIDI 2.0; `None` for any other packet.
 fn key_pressure_bytes(ump: Ump) -> Option<[u8; 3]> {
-    match decode(ump).ok()? {
-        Message::Midi1(address, Voice1::PolyPressure { note, pressure }) => {
+    match decode(ump) {
+        Ok(Message::Midi1(address, Voice1::PolyPressure { note, pressure })) => {
             Some([0xA0 | address.channel.get(), note.get(), pressure.get()])
         }
-        Message::Midi2(address, Voice2::PolyPressure { note, value }) => Some([
+        Ok(Message::Midi2(address, Voice2::PolyPressure { note, value })) => Some([
             0xA0 | address.channel.get(),
             note.get(),
             narrow_value(value).get(),
         ]),
-        _ => None,
+        // Any other packet has no poly pressure bytes.
+        Ok(
+            Message::Midi1(..)
+            | Message::Midi2(..)
+            | Message::Utility(_)
+            | Message::System(..)
+            | Message::Sysex7(..)
+            | Message::Data128(..)
+            | Message::Flex(..)
+            | Message::Stream(_),
+        )
+        | Err(Unknown(_)) => None,
     }
 }
 
@@ -533,8 +567,7 @@ impl ClapEvent {
     /// `0.0..=1.0`: a MIDI 1.0 note is widened first
     /// ([`tutti_midi_protocol::widen`]), so its Note On at velocity 0 is a Note
     /// Off at release velocity 0.5 (M2-104 Appendix D.3.1). A native MIDI 2.0
-    /// Note On at velocity 0 is a Note Off at 0.0, as it has always been
-    /// here. Per-note pitch bend, pressure and the per-note controllers CLAP
+    /// Note On at velocity 0 is a Note Off at 0.0. Per-note pitch bend, pressure and the per-note controllers CLAP
     /// has an expression for are note expressions. Every other channel voice
     /// message CLAP has no typed event for (CC, channel pitch bend and
     /// pressure, program change) is a generic MIDI-1 `Midi` event, and a System
@@ -553,7 +586,7 @@ impl ClapEvent {
     /// per-note messages only poly pressure (which has MIDI 1.0 bytes).
     ///
     /// The group is ignored: every event goes to note port 0, whatever group
-    /// it arrived on. Per-group routing is design 017 stage 3.
+    /// it arrived on.
     ///
     /// **`Unknown` is not forwarded.** Forwarding it unchanged needs
     /// `CLAP_EVENT_MIDI2`, which this host does not send: it tells the plugin
@@ -586,6 +619,8 @@ impl ClapEvent {
                 | Message::Flex(..)
                 | Message::Stream(_),
             ) => None,
+            // A sink: this host sends no `CLAP_EVENT_MIDI2`, so a packet `decode`
+            // cannot frame has nowhere to go and is not forwarded.
             Err(Unknown(_)) => None,
         };
         if midi_notes {
@@ -716,7 +751,26 @@ impl ClapEvent {
                     RegisteredPerNoteController::Volume => NoteExpressionType::Volume,
                     RegisteredPerNoteController::Pan => NoteExpressionType::Pan,
                     RegisteredPerNoteController::Brightness => NoteExpressionType::Brightness,
-                    _ => return None,
+                    RegisteredPerNoteController::Modulation
+                    | RegisteredPerNoteController::Breath
+                    | RegisteredPerNoteController::Pitch
+                    | RegisteredPerNoteController::Balance
+                    | RegisteredPerNoteController::Expression
+                    | RegisteredPerNoteController::SoundVariation
+                    | RegisteredPerNoteController::Timbre
+                    | RegisteredPerNoteController::ReleaseTime
+                    | RegisteredPerNoteController::AttackTime
+                    | RegisteredPerNoteController::DecayTime
+                    | RegisteredPerNoteController::VibratoRate
+                    | RegisteredPerNoteController::VibratoDepth
+                    | RegisteredPerNoteController::VibratoDelay
+                    | RegisteredPerNoteController::SoundController10
+                    | RegisteredPerNoteController::ReverbSend
+                    | RegisteredPerNoteController::Effects2Depth
+                    | RegisteredPerNoteController::ChorusSend
+                    | RegisteredPerNoteController::Effects4Depth
+                    | RegisteredPerNoteController::Effects5Depth
+                    | RegisteredPerNoteController::Reserved(_) => return None,
                 };
                 Self::per_note_expression(
                     time,
@@ -749,8 +803,7 @@ impl ClapEvent {
             }
             // CLAP has no event for a registered or assignable controller (RPN
             // and NRPN), a relative one or Per-Note Management. The per-note
-            // bend sensitivity (RPN 0/7) was consumed by `add_midi`. Their
-            // MIDI 1.0 form (D.2.3) is design 017 stage 3.
+            // bend sensitivity (RPN 0/7) was consumed by `add_midi`.
             Voice2::Registered { .. }
             | Voice2::Assignable { .. }
             | Voice2::RelativeRegistered { .. }
@@ -817,7 +870,7 @@ impl ClapEvent {
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
             // engine sees one vocabulary regardless of source — matching the
             // hardware input path. System / SysEx messages pass through unchanged.
-            ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data).map(widened),
+            ClapEvent::Midi(e) => midi1_packet(e.header.time, e.data).map(widened),
             _ => None,
         }
     }
@@ -1960,6 +2013,7 @@ impl EventSink for OutputEventList {
 mod tests {
     use super::*;
     use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY};
+    use tutti_ump::{Data128, Sysex8Packet, SysexStatus};
 
     /// The message `midi` carries.
     fn message(midi: &MidiEvent) -> Message {
@@ -2136,10 +2190,10 @@ mod tests {
     /// **A MIDI 1.0 Note On at velocity 0 is a Note Off at release velocity
     /// 0x8000** (M2-104 Appendix D.3.1), so the plugin hears a release at
     /// `0x8000 / 0xFFFF`, not 0. A native MIDI 2.0 Note On at velocity 0 stays
-    /// the Note Off at 0 it always was here.
+    /// a Note Off at 0.
     ///
-    /// Mutation (run): `widen` replaced by a fold of velocity 0 to a Note Off
-    /// at 0 (the old `normalize`) → the first assertion fails.
+    /// Mutation (run): a MIDI 1.0 Note On at velocity 0 folded to a Note Off
+    /// at 0 instead of widened → the first assertion fails.
     #[test]
     fn a_midi1_note_on_at_velocity_zero_releases_at_half() {
         let ranges = PerNoteBendRanges::default();
@@ -2243,39 +2297,60 @@ mod tests {
     /// arm → the gate aborts.
     #[test]
     fn every_message_kind_converts_without_allocating() {
-        let packets: Vec<MidiEvent> = [
-            [0x0000_0000u32, 0, 0, 0],
-            [0x1000_F800, 0, 0, 0],
-            [0x1000_F280, 0, 0, 0],
-            [0x2091_3C40, 0, 0, 0],
-            [0x2081_3C40, 0, 0, 0],
-            [0x20A1_3C40, 0, 0, 0],
-            [0x20B1_0740, 0, 0, 0],
-            [0x20C1_0500, 0, 0, 0],
-            [0x20D1_4000, 0, 0, 0],
-            [0x20E1_0040, 0, 0, 0],
-            [0x3001_0102, 0x0304_0506, 0, 0],
-            [0x4091_3C00, 0xC000_0000, 0, 0],
-            [0x4081_3C00, 0x4000_0000, 0, 0],
-            [0x40A1_3C00, 0x8000_0000, 0, 0],
-            [0x40B1_0700, 0x8000_0000, 0, 0],
-            [0x40C1_0001, (5 << 24) | (1 << 8) | 2, 0, 0],
-            [0x40D1_0000, 0x8000_0000, 0, 0],
-            [0x40E1_0000, 0x8000_0000, 0, 0],
-            [0x4061_3C00, 0x8000_0000, 0, 0],
-            [0x4001_3C07, 0x8000_0000, 0, 0],
-            [0x4011_3C4A, 0x8000_0000, 0, 0],
-            [0x4021_0007, 24 << 25, 0, 0],
-            [0x4031_0102, 0x8000_0000, 0, 0],
-            [0x40F1_3C01, 0, 0, 0],
-            [0x5000_0000, 0, 0, 0],
-            [0xD010_0000, 0, 0, 0],
-            [0xF000_0000, 0, 0, 0],
-            [0x6000_0000, 0, 0, 0],
-        ]
-        .iter()
-        .map(|words| MidiEvent::from_ump(2, words))
-        .collect();
+        let sysex8 = Ump::from(Message::Data128(
+            MidiGroup::FIRST,
+            Data128::Sysex8(Sysex8Packet::new(SysexStatus::Complete, 1, &[1, 2, 3]).unwrap()),
+        ))
+        .0;
+        let table: Vec<(&str, [u32; 4])> = vec![
+            ("utility", [0x0000_0000, 0, 0, 0]),
+            ("system", [0x10F8_0000, 0, 0, 0]),
+            ("system", [0x10F2_0102, 0, 0, 0]),
+            ("midi1", [0x2091_3C40, 0, 0, 0]),
+            ("midi1", [0x2081_3C40, 0, 0, 0]),
+            ("midi1", [0x20A1_3C40, 0, 0, 0]),
+            ("midi1", [0x20B1_0740, 0, 0, 0]),
+            ("midi1", [0x20C1_0500, 0, 0, 0]),
+            ("midi1", [0x20D1_4000, 0, 0, 0]),
+            ("midi1", [0x20E1_0040, 0, 0, 0]),
+            ("sysex7", [0x3001_0102, 0x0304_0506, 0, 0]),
+            ("midi2", [0x4091_3C00, 0xC000_0000, 0, 0]),
+            ("midi2", [0x4081_3C00, 0x4000_0000, 0, 0]),
+            ("midi2", [0x40A1_3C00, 0x8000_0000, 0, 0]),
+            ("midi2", [0x40B1_0700, 0x8000_0000, 0, 0]),
+            ("midi2", [0x40C1_0001, (5 << 24) | (1 << 8) | 2, 0, 0]),
+            ("midi2", [0x40D1_0000, 0x8000_0000, 0, 0]),
+            ("midi2", [0x40E1_0000, 0x8000_0000, 0, 0]),
+            ("midi2", [0x4061_3C00, 0x8000_0000, 0, 0]),
+            ("midi2", [0x4001_3C07, 0x8000_0000, 0, 0]),
+            ("midi2", [0x4011_3C4A, 0x8000_0000, 0, 0]),
+            ("midi2", [0x4021_0007, 24 << 25, 0, 0]),
+            ("midi2", [0x4031_0102, 0x8000_0000, 0, 0]),
+            ("midi2", [0x40F1_3C01, 0, 0, 0]),
+            ("data128", sysex8),
+            ("flex", [0xD010_0000, 0, 0, 0]),
+            ("stream", [0xF000_0000, 0, 0, 0]),
+            ("unknown", [0x6000_0000, 0, 0, 0]),
+        ];
+        // Every packet is the kind it claims, so none tests nothing.
+        for (claimed, words) in &table {
+            let kind = match decode(Ump(*words)) {
+                Ok(Message::Utility(_)) => "utility",
+                Ok(Message::System(..)) => "system",
+                Ok(Message::Midi1(..)) => "midi1",
+                Ok(Message::Sysex7(..)) => "sysex7",
+                Ok(Message::Midi2(..)) => "midi2",
+                Ok(Message::Data128(..)) => "data128",
+                Ok(Message::Flex(..)) => "flex",
+                Ok(Message::Stream(_)) => "stream",
+                Err(_) => "unknown",
+            };
+            assert_eq!(kind, *claimed, "{words:08x?}");
+        }
+        let packets: Vec<MidiEvent> = table
+            .iter()
+            .map(|(_, words)| MidiEvent::from_ump(2, words))
+            .collect();
         for midi_notes in [false, true] {
             let mut list = InputEventList::new();
             list.reserve(64);
@@ -2297,6 +2372,136 @@ mod tests {
             assert_eq!(list.len(), converted);
             assert_eq!(list.midi_dropped(), 0);
         }
+    }
+
+    /// **The plugin-output path converts without allocating**: every MIDI 1.0
+    /// channel voice and System status a plugin can emit as `clap_event_midi`,
+    /// plus typed notes and expressions, drained into the RT pool.
+    ///
+    /// Mutation (run): a `Box::new(0u8)` planted in `widened` → the gate aborts.
+    #[test]
+    fn the_plugin_output_path_converts_without_allocating() {
+        let mut output = OutputEventList::new();
+        for status in (0x80..=0xE0u8).step_by(0x10).chain(0xF0..=0xFFu8) {
+            output.events.push(ClapEvent::midi(1, 0, [status, 60, 90]));
+        }
+        output.events.push(ClapEvent::note_on(2, 1, 60, 0.75));
+        output.events.push(ClapEvent::note_off(3, 1, 60, 0.5));
+        let mut pool = RtMidiEvents::new();
+        output.fill_midi_events(&mut pool);
+        let filled = pool.len();
+        assert!(filled > 15, "{filled} events");
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..4 {
+                output.fill_midi_events(&mut pool);
+            }
+        });
+        assert_eq!(pool.len(), filled);
+    }
+
+    /// The `clap_event_midi` bytes `add_midi` stages for `words`, as
+    /// `(time, bytes)`.
+    fn staged_midi(words: &[u32], midi_notes: bool) -> Vec<(u32, [u8; 3])> {
+        let mut list = InputEventList::new();
+        list.reserve(8);
+        list.set_midi_notes(midi_notes);
+        list.add_midi(&MidiEvent::from_ump(11, words));
+        list.events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => (m.header.time, m.data),
+                other => panic!("not a MIDI event: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// **The bytes a plugin is sent, from spec-literal packets** (M2-104
+    /// Figures 8 to 10 for System and MIDI 1.0 channel voice, and Figures 54 to
+    /// 66 for MIDI 2.0), with unequal LSB and MSB.
+    ///
+    /// Mutations (each run, each fails here): Song Position `[F2, lsb, msb]`
+    /// swapped; `System::SongSelect` data zeroed; MIDI 1.0 Pitch Bend LSB and
+    /// MSB swapped; `narrow_bend` in `Voice2::PitchBend` replaced by a constant;
+    /// MIDI 1.0 Program Change byte `^ 1`; MIDI 1.0 and MIDI 2.0 Channel
+    /// Pressure zeroed; MIDI 1.0 Control Change value zeroed; MIDI 2.0 Control
+    /// Change narrowing zeroed.
+    #[test]
+    fn spec_packets_stage_exact_midi_bytes() {
+        let at = |bytes| vec![(11, bytes)];
+        // System: time code, song position (LSB 0x2A, MSB 0x05), song select.
+        assert_eq!(staged_midi(&[0x10F1_3500], false), at([0xF1, 0x35, 0]));
+        assert_eq!(staged_midi(&[0x10F2_2A05], false), at([0xF2, 0x2A, 0x05]));
+        assert_eq!(staged_midi(&[0x10F3_2A00], false), at([0xF3, 0x2A, 0]));
+        assert_eq!(staged_midi(&[0x10F8_0000], false), at([0xF8, 0, 0]));
+        // MIDI 1.0 on channel 3: pitch bend LSB 0x2A MSB 0x05, program,
+        // channel pressure, control change 7 = 0x2A.
+        assert_eq!(staged_midi(&[0x20E3_2A05], false), at([0xE3, 0x2A, 0x05]));
+        assert_eq!(staged_midi(&[0x20C3_2A00], false), at([0xC3, 0x2A, 0]));
+        assert_eq!(staged_midi(&[0x20D3_2A00], false), at([0xD3, 0x2A, 0]));
+        assert_eq!(staged_midi(&[0x20B3_072A], false), at([0xB3, 7, 0x2A]));
+        // MIDI 2.0 on channel 3, narrowed to 7 and 14 bits: bend 14-bit
+        // (0x05 << 7 | 0x2A) in the top bits, the rest low-bit noise.
+        assert_eq!(
+            staged_midi(&[0x40E3_0000, 0x0AAB_FFFF], false),
+            at([0xE3, 0x2A, 0x05])
+        );
+        assert_eq!(
+            staged_midi(&[0x40D3_0000, 0x5400_0000], false),
+            at([0xD3, 0x2A, 0])
+        );
+        assert_eq!(
+            staged_midi(&[0x40B3_0700, 0x5400_0000], false),
+            at([0xB3, 7, 0x2A])
+        );
+        assert_eq!(
+            staged_midi(&[0x40C3_0000, 9 << 24], false),
+            at([0xC3, 9, 0])
+        );
+    }
+
+    /// **Poly pressure on a MIDI-dialect note port** reaches the plugin as
+    /// `0xAn key pressure` at the packet's time, narrowed to 7 bits for MIDI 2.0.
+    ///
+    /// Mutations (each run, each fails here): the MIDI 2.0 narrowing zeroed in
+    /// `key_pressure_bytes`; the event's time set to 0 in `into_midi_dialect`.
+    #[test]
+    fn poly_pressure_on_a_midi_dialect_port_stages_exact_bytes() {
+        assert_eq!(
+            staged_midi(&[0x20A3_3C2A], true),
+            vec![(11, [0xA3, 0x3C, 0x2A])]
+        );
+        assert_eq!(
+            staged_midi(&[0x40A3_3C00, 0x5400_0000], true),
+            vec![(11, [0xA3, 0x3C, 0x2A])]
+        );
+    }
+
+    /// **A registered per-note controller maps to its own CLAP expression**:
+    /// Volume (7) to volume at its gain, Pan (10) to pan, Brightness (74) to
+    /// brightness, each at its own value.
+    ///
+    /// Mutation (run): `RegisteredPerNoteController::Brightness` mapped to
+    /// `NoteExpressionType::Pan` → the brightness case fails.
+    #[test]
+    fn registered_per_note_controllers_map_to_their_own_expressions() {
+        let expression = |index: u32, value: u32| {
+            let mut list = InputEventList::new();
+            list.reserve(4);
+            list.add_midi(&MidiEvent::from_ump(4, &[0x4003_3C00 | index, value]));
+            match list.events() {
+                [ClapEvent::NoteExpression(e)] => (e.expression_id, e.value),
+                other => panic!("index {index}: {other:?}"),
+            }
+        };
+        let (id, v) = expression(7, 0x4000_0000);
+        assert_eq!(id, CLAP_NOTE_EXPRESSION_VOLUME);
+        assert!((v - 0.25).abs() < 1e-3, "{v}");
+        let (id, v) = expression(10, 0x8000_0000);
+        assert_eq!(id, CLAP_NOTE_EXPRESSION_PAN);
+        assert!((v - 0.5).abs() < 1e-3, "{v}");
+        let (id, v) = expression(74, 0xC000_0000);
+        assert_eq!(id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
+        assert!((v - 0.75).abs() < 1e-3, "{v}");
     }
 
     /// **A dense block sorts without allocating, and ties keep their
@@ -2800,8 +3005,9 @@ mod tests {
     }
 
     #[test]
-    fn per_note_controller_without_counterpart_falls_through_to_midi() {
-        // Per-note CC index 20 has no CLAP expression dimension → generic Midi.
+    fn per_note_controller_without_counterpart_yields_no_event() {
+        // Per-note CC index 20 has no CLAP expression dimension and no MIDI 1.0
+        // form, so nothing is sent.
         let midi = MidiEvent::per_note_controller(
             MidiGroup::FIRST,
             MidiChannel::FIRST,
@@ -2810,10 +3016,7 @@ mod tests {
             unit_f32_to_u32(0.5),
             false,
         );
-        assert!(matches!(
-            ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()),
-            Some(ClapEvent::Midi(_)) | None
-        ));
+        assert!(ClapEvent::from_midi(&midi, &PerNoteBendRanges::default()).is_none());
     }
 
     #[test]

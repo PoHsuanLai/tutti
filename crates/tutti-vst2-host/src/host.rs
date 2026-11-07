@@ -742,9 +742,7 @@ mod tests {
         for len in [1usize, 6, 7, 40, 200] {
             let host = make_host(TransportWriter::new().reader(), 48_000.0);
             let body: Vec<u8> = (0..len).map(|i| (i % 0x7F) as u8).collect();
-            let mut message = vec![0xF0];
-            message.extend_from_slice(&body);
-            message.push(0xF7);
+            let message: Vec<u8> = tutti_ump::frame(&body).collect();
             // The plugin's own buffer, alive for the callback only.
             let mut wire = message.clone();
             let mut event = sysex_event(13, &mut wire);
@@ -842,6 +840,59 @@ mod tests {
             while host.midi_out_tx.pop().is_some() {}
         });
         assert!(host.dropped_midi_out() > 0, "the refusing branch ran");
+    }
+
+    /// **A plugin's malformed MIDI bytes are dropped without allocating.** A
+    /// VST2 MIDI event is a fixed three-byte field, so a stray `0xF7`, an
+    /// undefined status and a data byte with its top bit set are what a plugin
+    /// can get wrong; none reaches the queue or counts as a drop, a valid
+    /// message beside them does, and nothing allocates.
+    ///
+    /// Mutation (run): `from_midi1_bytes` parsing with `midly`'s
+    /// `LiveEvent::parse` → the process aborts on `[0xF7, 1, 2]`.
+    #[test]
+    fn a_stray_status_from_a_plugin_allocates_nothing() {
+        let host = make_host(TransportWriter::new().reader(), 48_000.0);
+        let note = MidiEvent::note_on(
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
+            60,
+            0x8000,
+        );
+        let mut api_ev = crate::midi::from_midi(&note).expect("note-on has a MIDI-1 form");
+        let good = api_ev.midi_data;
+        let events = |ev: &mut vst::api::MidiEvent| vst::api::Events {
+            num_events: 1,
+            _reserved: 0,
+            events: [
+                std::ptr::from_mut(ev).cast::<vst::api::Event>(),
+                std::ptr::null_mut(),
+            ],
+        };
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for hostile in [
+                [0xF7, 1, 2],
+                [0xF4, 1, 2],
+                [0xFD, 0, 0],
+                [0xF0, 1, 2],
+                [0x90, 0x80, 1],
+                [0x90, 60, 0xF8],
+                [1, 2, 3],
+            ] {
+                api_ev.midi_data = hostile;
+                host.process_events(&events(&mut api_ev));
+            }
+            assert!(
+                host.midi_out_tx.is_empty(),
+                "a malformed message was queued"
+            );
+            assert_eq!(host.dropped_midi_out(), 0);
+
+            api_ev.midi_data = good;
+            host.process_events(&events(&mut api_ev));
+            assert_eq!(host.midi_out_tx.len(), 1);
+        });
     }
 
     /// **The RT gate.** Both callbacks are entered from inside the plugin's

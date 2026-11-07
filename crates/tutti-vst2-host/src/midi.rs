@@ -912,10 +912,7 @@ mod tests {
     }
 
     fn framed(payload: &[u8]) -> Vec<u8> {
-        let mut v = vec![0xF0];
-        v.extend_from_slice(payload);
-        v.push(0xF7);
-        v
+        tutti_ump::frame(payload).collect()
     }
 
     /// A Program Change with a bank reaches the plugin as CC 0, CC 32, PC at one
@@ -1049,6 +1046,44 @@ mod tests {
         assert_eq!(staged, MIDI_STACK_CAPACITY);
         assert_eq!(buf.events_dropped(), 2);
         assert_eq!(buf.sysex_dropped(), 0);
+    }
+
+    /// **Staging a packet of any message type allocates nothing.** Every
+    /// message type (the defined ones and the reserved ones) with bodies that
+    /// are valid, banked, undefined and malformed goes through `stage_piece`
+    /// inside `assert_no_alloc`; only System, MIDI 1.0 and MIDI 2.0 channel
+    /// voice packets stage anything.
+    ///
+    /// Mutation (run): the message-type gate removed from
+    /// `MidiEvent::to_midi1_messages` → a Flex Data or Stream packet reaches the
+    /// `midi2` decoder and `assert_no_alloc` aborts.
+    #[test]
+    fn staging_a_packet_of_any_message_type_allocates_nothing() {
+        const BODIES: [u32; 8] = [
+            0x0000_0000,
+            0x0090_3C40,
+            0x00C2_0001,
+            0x00F8_0000,
+            0x0120_0000,
+            0x0010_1234,
+            0x0F01_0101,
+            0x00E1_0000,
+        ];
+        let midi: Vec<MidiEvent> = (0..16u32)
+            .flat_map(|mt| {
+                BODIES.map(|body| {
+                    MidiEvent::from_ump(
+                        0,
+                        &[mt << 28 | body, 0x0900_0102, 0x0102_0304, 0x0506_0708],
+                    )
+                })
+            })
+            .collect();
+        let mut buf = MidiSendBuffer::new();
+        assert_no_alloc::assert_no_alloc(|| {
+            let _ = buf.stage_piece(&midi, 0, 4096, 4096);
+        });
+        assert_eq!(buf.events_dropped(), 0);
     }
 
     /// **The staged `api::Events` pointer is 8-aligned for every list size**,

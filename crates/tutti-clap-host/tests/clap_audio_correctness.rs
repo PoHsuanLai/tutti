@@ -1033,9 +1033,7 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         "nothing before END"
     );
     drive_midi_block(&mut inst, second);
-    let mut framed = vec![0xF0];
-    framed.extend_from_slice(&payload);
-    framed.push(0xF7);
+    let framed: Vec<u8> = tutti_ump::frame(&payload).collect();
     assert_eq!(take_sysex_input(&session.controls), (1, 5, framed));
     assert_eq!(inst.sysex_dropped(), 0);
 
@@ -1079,9 +1077,7 @@ fn a_sysex_open_across_a_reset_is_dropped() {
     let mut packets = Vec::new();
     tutti_clap_host::MidiEvent::sysex7_fragments(MidiGroup::FIRST, &payload, &mut packets);
     let (first, rest) = packets.split_at(3);
-    let mut framed = vec![0xF0];
-    framed.extend_from_slice(&payload);
-    framed.push(0xF7);
+    let framed: Vec<u8> = tutti_ump::frame(&payload).collect();
 
     drive_midi_block(&mut inst, first);
     inst.reset();

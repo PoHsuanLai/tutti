@@ -167,6 +167,23 @@ impl Data {
         })
     }
 
+    /// `bytes` under `data_type`, or `None` when they run past
+    /// [`CAPACITY`](Self::CAPACITY).
+    #[must_use]
+    pub fn try_from_iter(data_type: u32, bytes: impl IntoIterator<Item = u8>) -> Option<Self> {
+        let mut inline = [0; Self::CAPACITY];
+        let mut size = 0;
+        for byte in bytes {
+            *inline.get_mut(size)? = byte;
+            size += 1;
+        }
+        Some(Self {
+            size: u32::try_from(size).ok()?,
+            data_type,
+            bytes: inline,
+        })
+    }
+
     /// The valid bytes.
     #[must_use]
     pub fn payload(&self) -> &[u8] {

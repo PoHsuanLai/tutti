@@ -237,9 +237,14 @@ crates/          everything shipped; directory name = package name; no nesting
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
                  `is_note_off` read the type, status and velocity bits a queue
-                 needs); no dependencies but `bytemuck` (and optional `serde`)
+                 needs), and the MIDI 1.0 wire: `Voice1::bytes`, `System::bytes`,
+                 `frame` and `Midi1Parser`, the status bytes the hosts use
+                 (`tutti-midi-types`' `wire.rs` and `Midi1Splitter` hold their own
+                 until VST2 and AU move); no dependencies but `bytemuck` (and
+                 optional `serde`)
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
-                 stateless `widen` and the M2-115 scaling; depends on `tutti-ump` alone
+                 stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
+                 depends on `tutti-ump` alone
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
                  Topology; no FFT and no new algorithms. `#![forbid(unsafe_code)]`.
                  Downmix and sample conversion stay until a follow-up moves them

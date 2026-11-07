@@ -211,7 +211,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut out = vec![Vec::new(), Vec::new()];
     let mut done = 0;
     while done < total {
-        let beat = done as f64 * TEMPO.0 / 60.0 / RATE;
+        let beat = done as f64 * TEMPO.get() / 60.0 / RATE;
         side.set_transport(tutti_graph::Transport::new(true, TEMPO, Beat(beat), None));
         side.render(block, block, &mut out);
         for (a, o) in all.iter_mut().zip(&out) {
@@ -341,7 +341,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
             break;
         }
         let n = (*n).min(total - done);
-        let beat = done as f64 * TEMPO.0 / 60.0 / RATE;
+        let beat = done as f64 * TEMPO.get() / 60.0 / RATE;
         side.set_transport(tutti_graph::Transport::new(true, TEMPO, Beat(beat), None));
         side.render(n, n, &mut out);
         for (l, o) in live.iter_mut().zip(&out) {

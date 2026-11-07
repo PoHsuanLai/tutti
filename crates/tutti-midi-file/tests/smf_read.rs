@@ -395,10 +395,10 @@ fn merged_events_are_sorted_across_tracks() {
 /// other value is a tempo, however absurd (1 us is 60 million BPM, 0xFFFFFF us
 /// about 3.58 BPM), because the type carries no 20 to 999 policy.
 ///
-/// Mutation (run): `track_tempos` keeps a zero event by mapping it to
-/// `Bpm::of(f64::MAX)` instead of skipping it; the first assertion fails.
-/// Mutation (run): `track_tempos` clamps to 20..=999 BPM; the 1 us and
-/// 0xFFFFFF us assertions fail.
+/// Mutation (run): `track_tempos` keeps a zero event as `Bpm::of(f64::MAX)`
+/// (`Bpm::new(..).or(Some(Bpm::of(f64::MAX)))`) instead of skipping it; the
+/// beats assertion fails. Mutation (run): `track_tempos` clamps each tempo to
+/// 20..=999 BPM; the 1 us assertion fails.
 #[test]
 fn a_zero_tempo_is_skipped_and_an_absurd_one_is_read_as_written() {
     let data = metrical(&[vec![

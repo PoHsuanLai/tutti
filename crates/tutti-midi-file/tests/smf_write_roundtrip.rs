@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `.round() as u32` → `as u32` in the beat→tick conversion | `a_tick_is_rounded_to_nearest_not_truncated` |
 //! | `sort_by` → `sort_unstable_by` on equal keys | `parse_write_parse_is_byte_stable` (non-deterministically; see the note there) |
-//! | drop the `.max(1)` on the written microseconds | `a_tempo_above_the_wire_range_writes_the_fastest_quarter` |
+//! | `.clamp(1, u24::max_value().as_int())` → `.min(..)` or `.max(1)` on the written microseconds | `a_tempo_above_the_wire_range_writes_the_fastest_quarter` |
 
 mod support;
 
@@ -148,9 +148,10 @@ fn parse_write_parse_is_byte_stable() {
 /// about 3.6 BPM overflows the 24-bit field, which masks. Reading the Set Tempo
 /// payload back with the independent decoder closes the loop.
 ///
-/// Mutation (run): drop the `.clamp(1, ..)` in `build_track` for a plain
-/// `as u32`: the fast case reads back 0 and fails. Mutation (run): clamp only
-/// the lower bound: the slow case reads back a wrapped value and fails.
+/// Mutation (run): `build_track`'s `.clamp(1, u24::max_value())` becomes
+/// `.min(u24::max_value())`: the fast cases read back 0 and fail. Mutation
+/// (run): it becomes `.max(1)`: the slow cases read back a wrapped 24-bit
+/// value and fail.
 #[test]
 fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
     for (bpm, want_us) in [

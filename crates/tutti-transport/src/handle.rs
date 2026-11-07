@@ -243,8 +243,8 @@ mod tests {
     /// non-finite number is refused before `set_tempo`, so the tempo the clock
     /// reads, and the frames a beat spans, stay where they were.
     ///
-    /// Mutation (run): `Bpm::new` accepting `<= 0` instead of `< 0` lets the
-    /// zero through, and the first assertion fails.
+    /// Mutation (run): `Bpm::new` tests `raw >= 0.0` instead of `raw > 0.0`;
+    /// the zero is let through to `set_tempo` and the tempo assertion fails.
     #[test]
     fn a_refused_tempo_never_reaches_the_clock() {
         let t = Transport::new(44100.0);

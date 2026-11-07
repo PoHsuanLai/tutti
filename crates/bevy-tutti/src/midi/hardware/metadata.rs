@@ -22,6 +22,7 @@ use bevy_ecs::prelude::*;
 
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::ump::{BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic};
+use tutti_types::Bpm;
 use tutti_ump::MidiGroup;
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
@@ -60,9 +61,9 @@ pub enum BroadcastFlexMetadata {
     },
     /// Set Tempo (M2-104 §7.5.7), in beats per minute.
     ///
-    /// A non-positive rate encodes upstream as the "no valid tempo" sentinel
-    /// rather than being rejected here.
-    Tempo(f64),
+    /// A tempo above 6e9 BPM encodes upstream as the "no valid tempo"
+    /// sentinel, the wire field being too small to hold it.
+    Tempo(Bpm),
     /// Set Time Signature (M2-104 §7.5.8).
     TimeSignature {
         /// Beats per bar.

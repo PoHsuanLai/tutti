@@ -243,8 +243,8 @@ fn edit_in_the_past() {
 ///
 /// Mutation (run): `Bpm::new` accepts zero (`raw > 0.0` becomes `raw >= 0.0`); the `-0.0` and
 /// `0.0` cases fail.
-/// Mutation (run): `Seg::new`'s `r0` underflow is let through (`is_sound` and the last-segment
-/// `r0 > 0.0` check removed); the smallest-tempo case builds a map and fails.
+/// Mutation (run): the last segment's `r0` underflow check in `TempoMap::new` becomes `false`;
+/// the smallest-tempo case builds a map and fails.
 /// Mutation (run): `is_sound`'s `(back - dsec).abs() <= 1e-9 * dsec` becomes `true`; the
 /// squared-overflow ramp is accepted.
 #[test]

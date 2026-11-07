@@ -1403,7 +1403,9 @@ impl Executor {
         outputs: &mut [&mut [f32]],
     ) {
         let _rt = RtScope::enter();
-        with_no_denormals(|| {
+        // `move` captures `self` as one pointer; the precise capture of every
+        // field the body names is a large struct built per block.
+        with_no_denormals(move || {
             if self.suspended {
                 // Between a re-prepare's two commits the units are on the control
                 // thread: render silence, for whatever block arrives — the device

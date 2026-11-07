@@ -63,9 +63,9 @@ use core::marker::PhantomData;
 ///
 /// `f` is ordinary Rust code that runs with FTZ/DAZ (or FZ) set, which is
 /// what those texts call undefined behavior. The closure form does not change
-/// that. It fixes one thing: the mode can no longer outlive the call. An
-/// earlier guard type could be forgotten or dropped out of order and leave
-/// the thread flushing for good; nothing here can. The function is still a
+/// that. It fixes one thing: the mode can no longer outlive the call, because
+/// the restore is not something `f` or a caller can forget, skip or reorder.
+/// The function is still a
 /// safe `fn`, by choice rather than by proof: `tutti-graph` is
 /// `#![forbid(unsafe_code)]` and calls it. What tutti relies on instead:
 ///

@@ -267,7 +267,7 @@ the interpreter.
   `basedrop`, `left-right` and the locks, and with the shared-slot design
   it replaced.
 - **Executor, serial**: walk `ops`; skip nodes whose inputs are silent and whose
-  latency plus tail has elapsed; FTZ/DAZ guard. The executor always hands a node the
+  latency plus tail has elapsed; inside `with_no_denormals` (FTZ/DAZ). The executor always hands a node the
   **whole block** plus its sorted event slice. Sub-chunking at event offsets is
   the node's job (PolySynth already does it, SoundFont is limited to 8 frames
   by rustysynth). An out-of-process plugin must get whole blocks, or its
@@ -4676,7 +4676,7 @@ request and a plugin that parallelises its own voices ran them serially.
   `check_outside`; the guard is `RtScopeGuard`): it marks a scope, not a
   thread. The executor enters it at the top of a block and each hand-off
   type checks it in its `Drop`, as before.
-- **`with_no_denormals` (once the `ScopedNoDenormals` guard) is not replaced
+- **`with_no_denormals` is not replaced
   with `no_denormals` 0.3.0.** The crate restores the register on drop and
   neither allocates nor makes a syscall, but:
   - its only API is `unsafe fn no_denormals(f)`, and three of the five
@@ -4689,9 +4689,8 @@ request and a plugin that parallelises its own voices ran them serially.
   - on any architecture but x86, x86_64 and aarch64 it is a
     `compile_error!`, where `with_no_denormals` just calls its closure.
 
-  The function replaced a guard type that safe code could `mem::forget` or
-  drop out of order, leaving FTZ/DAZ set on the thread for good; a closure
-  cannot be misused that way. Its soundness argument (the FP-environment rule it departs from,
+  A closure cannot leave FTZ/DAZ set on the thread: the restore is not
+  something a caller can forget or reorder. Its soundness argument (the FP-environment rule it departs from,
   and the audit of what runs inside it) is its `# Soundness` docs.
 
 ## Per-node rewrite plan

@@ -40,7 +40,7 @@
 //!   last `delay` samples of its source port per (port, unit generation,
 //!   delay); events keep a FIFO per (sink, source, generation, delay),
 //!   flushed like a delay when the key disappears.
-//! - Blocks run under a flush-to-zero guard, as the executor's do, so the two
+//! - Blocks run inside `with_no_denormals`, as the executor's do, so the two
 //!   agree about denormals too.
 //! - **Crossfades** ([`set_graph_with_fades`](Reference::set_graph_with_fades))
 //!   are kept per key, beside the unit map, never in it: the outgoing unit

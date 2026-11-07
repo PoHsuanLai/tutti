@@ -186,12 +186,13 @@ impl TuttiDriver {
         self.audio_engine.stop();
         self.audio_engine.select_device(device.into());
         let old = self.audio_engine.spec().clone();
-        let device = self.audio_engine.resolve()?;
+        let (device, opened) = self.audio_engine.resolve()?;
         self.rerate_or_restore(old, rerate)?;
         self.audio_engine.start_with(
             self.callback_state.clone(),
             crate::CpalDriver::from_device(device),
         )?;
+        self.audio_engine.set_opened(opened);
         Ok(())
     }
 
@@ -219,10 +220,11 @@ impl TuttiDriver {
         self.audio_engine.stop();
         let old = self.audio_engine.spec().clone();
         self.audio_engine.set_spec(spec);
-        self.audio_engine.forget_opened();
         self.rerate_or_restore(old, rerate)?;
         self.audio_engine
             .start_with(self.callback_state.clone(), driver)?;
+        self.audio_engine
+            .set_opened(crate::output::Opened::Supplied);
         Ok(())
     }
 
@@ -251,7 +253,7 @@ impl TuttiDriver {
 
     /// The engine this driver runs, for reads: [`spec`](AudioEngine::spec),
     /// [`is_running`](AudioEngine::is_running), [`faults`](AudioEngine::faults),
-    /// [`device_name`](AudioEngine::device_name).
+    /// [`opened_name`](AudioEngine::opened_name).
     #[must_use]
     pub fn engine(&self) -> &AudioEngine {
         &self.audio_engine

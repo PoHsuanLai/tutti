@@ -82,10 +82,28 @@ pub struct AudioEngine {
     target: Option<(DeviceHost, DeviceSelector)>,
     faults: Arc<StreamFaults>,
     running: Option<Box<dyn RunningStream>>,
-    /// The name of the device the last resolve opened, kept so that naming
-    /// it again never enumerates the host. `None` before one, and after a
-    /// restart onto a driver the caller supplied.
-    opened_name: Option<String>,
+    /// What the stream last started is running on, kept so that naming it
+    /// never enumerates the host.
+    opened: Opened,
+}
+
+/// The device a stream runs on, as the engine learned it when it opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Opened {
+    /// The caller's own driver: no device, by design.
+    Supplied,
+    /// A device, and its name.
+    Named(String),
+    /// A device the host could not name.
+    Unnamed(String),
+}
+
+impl Opened {
+    fn of(device: &cpal::Device) -> Self {
+        device
+            .name()
+            .map_or_else(|e| Self::Unnamed(e.to_string()), Self::Named)
+    }
 }
 
 // Hand-rolled: the running stream is not `Debug`. Reports the configuration a
@@ -123,7 +141,7 @@ impl AudioEngine {
             target: Some((host, sel)),
             faults: Arc::new(StreamFaults::new()),
             running: None,
-            opened_name: device.name().ok(),
+            opened: Opened::of(&device),
         })
     }
 
@@ -141,7 +159,7 @@ impl AudioEngine {
             target: None,
             faults: Arc::new(StreamFaults::new()),
             running: None,
-            opened_name: None,
+            opened: Opened::Supplied,
         }
     }
 
@@ -179,15 +197,17 @@ impl AudioEngine {
         if self.is_running() {
             return Ok(());
         }
-        let device = self.resolve()?;
-        self.start_with(state, CpalDriver::from_device(device))
+        let (device, opened) = self.resolve()?;
+        self.start_with(state, CpalDriver::from_device(device))?;
+        self.opened = opened;
+        Ok(())
     }
 
     /// Resolve the selected device and read its config into
     /// [`spec`](Self::spec), without opening a stream: the first half of
     /// [`start`](Self::start), split out so a restart can see the config the
     /// stream will run at before it runs (`TuttiDriver::restart_with`).
-    pub(crate) fn resolve(&mut self) -> Result<cpal::Device> {
+    pub(crate) fn resolve(&mut self) -> Result<(cpal::Device, Opened)> {
         let Some((host, sel)) = &self.target else {
             return Err(Error::InvalidDevice(
                 "this engine was built from a bare spec and has no device to open; \
@@ -198,8 +218,11 @@ impl AudioEngine {
         let device = host.device(Direction::Output, sel)?;
         let config = device.default_output_config()?;
         self.spec = OutputSpec::from_supported(&config);
-        self.opened_name = device.name().ok();
-        Ok(device)
+        // What it is called is recorded by the caller once the stream runs
+        // (`set_opened`): a restart that fails leaves the name of the device
+        // the previous stream ran on.
+        let opened = Opened::of(&device);
+        Ok((device, opened))
     }
 
     /// Replace the spec the next [`start_with`](Self::start_with) opens at:
@@ -209,9 +232,9 @@ impl AudioEngine {
         self.spec = spec;
     }
 
-    /// Forgets the opened device's name: the next stream is the caller's.
-    pub(crate) fn forget_opened(&mut self) {
-        self.opened_name = None;
+    /// Records what the stream that just started runs on.
+    pub(crate) fn set_opened(&mut self, opened: Opened) {
+        self.opened = opened;
     }
 
     /// Starts a stream at the current [`spec`](Self::spec) through `driver`.
@@ -286,34 +309,26 @@ impl AudioEngine {
         }
     }
 
-    /// Returns the selected device's name, queried fresh from the host.
+    /// The name of the device the running (or last started) stream opened,
+    /// as it was then. It asks the host nothing, so it never enumerates
+    /// (which can block for good in a sound server's ALSA plugin) and is
+    /// safe on a thread that renders a frame.
+    ///
+    /// `Ok(None)` is a stream on a driver the caller supplied
+    /// ([`from_spec`](Self::from_spec), or a restart onto one): it has no
+    /// device, by design.
     ///
     /// # Errors
-    /// [`Error::InvalidDevice`] if the selector no longer resolves or the
-    /// engine was built with [`from_spec`](Self::from_spec), or
-    /// [`Error::DeviceNameError`] if the host cannot name it.
-    pub fn device_name(&self) -> Result<String> {
-        let Some((host, sel)) = &self.target else {
-            return Err(Error::InvalidDevice(
-                "this engine was built from a bare spec and has no device".into(),
-            ));
-        };
-        Ok(host.device(Direction::Output, sel)?.name()?)
-    }
-
-    /// The name of the device the engine last opened, as it was then. Unlike
-    /// [`device_name`](Self::device_name) it asks the host nothing, so it
-    /// never enumerates (which can block for good in a sound server's ALSA
-    /// plugin): it is the name to read on a thread that renders a frame.
-    ///
-    /// # Errors
-    /// [`Error::InvalidDevice`] when no device has been opened: the engine
-    /// was built with [`from_spec`](Self::from_spec), or restarted onto a
-    /// driver the caller supplied.
-    pub fn opened_name(&self) -> Result<String> {
-        self.opened_name
-            .clone()
-            .ok_or_else(|| Error::InvalidDevice("no device has been opened by this engine".into()))
+    /// [`Error::InvalidDevice`] when the device opened but the host could
+    /// not name it.
+    pub fn opened_name(&self) -> Result<Option<String>> {
+        match &self.opened {
+            Opened::Supplied => Ok(None),
+            Opened::Named(name) => Ok(Some(name.clone())),
+            Opened::Unnamed(why) => Err(Error::InvalidDevice(format!(
+                "the opened device could not be named: {why}"
+            ))),
+        }
     }
 
     /// Lists the default host's output devices.

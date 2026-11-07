@@ -750,3 +750,35 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     assert_eq!(after.available(), Samples(64));
     assert_eq!(after.take_lost(), Samples(0));
 }
+
+/// **The session lists the outputs once**, and a listing that could not
+/// start does not count: the first `list_outputs_once` whose listing starts
+/// is the only one `make` is asked for, and a `make` that fails is asked
+/// again by the next call. The device is one the host supplied, so
+/// `device_name` is `Ok(None)`, not an error.
+///
+/// Mutations (run): `outputs_listed` never set makes `make` run twice and
+/// fails the call count; set before `make` succeeds, the retry after the
+/// failure is skipped and the count is short.
+#[test]
+fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (mut session, device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    assert_eq!(device.device_name().unwrap(), None, "supplied, by design");
+
+    let calls = std::cell::Cell::new(0);
+    let make = |fail: bool| {
+        calls.set(calls.get() + 1);
+        if fail {
+            Err(tutti_cpal::Error::InvalidConfig("no thread".into()))
+        } else {
+            tutti_cpal::DeviceListing::spawn_with(|| Ok(Vec::new()))
+        }
+    };
+    assert!(session.list_outputs_once(|| make(true)).is_err());
+    session.list_outputs_once(|| make(false)).unwrap();
+    session.list_outputs_once(|| make(false)).unwrap();
+    assert_eq!(calls.get(), 2, "one failure, one start, then nothing");
+}

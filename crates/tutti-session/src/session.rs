@@ -642,6 +642,8 @@ pub struct Session {
     /// The one-shot listing of the output devices, until it answers.
     #[cfg(feature = "device")]
     pub(crate) output_listing: Option<crate::watch::OutputListing>,
+    /// A listing was started by [`Session::list_outputs_once`].
+    pub(crate) outputs_listed: bool,
     /// How often a healthy plugin's state is captured.
     #[cfg(feature = "plugin")]
     pub(crate) snapshot_interval: std::time::Duration,

@@ -116,39 +116,69 @@ fn test_transport_loop_wrapping() {
     );
 }
 
-/// **Naming the opened device asks the host nothing.** `device_name` looks
-/// the selector up again (an enumeration, which can block for good), so the
-/// frame reads `opened_name`, the name the open recorded: set here the way
-/// `open` and `resolve` set it, on an engine with no host at all, where any
-/// look at the host is an error. A start on a driver the caller supplied
-/// forgets it, so a name is never the previous device's.
-///
-/// Mutations (run): `opened_name` answering from `device_name` makes the
-/// first assertion fail (this engine has no host to ask); `forget_opened`
-/// left out of `TuttiDriver::restart_on` makes the last assertion fail.
-#[test]
-fn the_opened_name_is_read_without_asking_the_host() {
-    let spec = OutputSpec::new(
+fn manual_spec() -> OutputSpec {
+    OutputSpec::new(
         SampleRate(48_000.0),
         tutti_types::ChannelLayout::STEREO,
         cpal::SampleFormat::F32,
-    );
-    let mut engine = AudioEngine::from_spec(spec.clone());
-    assert!(engine.opened_name().is_err(), "nothing opened yet");
-    engine.opened_name = Some("Card".into());
-    assert!(engine.device_name().is_err(), "a fresh look needs the host");
-    assert_eq!(engine.opened_name().unwrap(), "Card");
+    )
+}
 
+fn driver_over(engine: AudioEngine) -> crate::TuttiDriver {
     let transport = Transport::new(48_000.0);
     let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
     let graph = Engine::new(&transport, &mut ed, exec).expect("an empty graph");
-    let mut driver = crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)));
+    crate::TuttiDriver::new(engine, Arc::new(AudioCallbackState::new(graph)))
+}
+
+/// **Naming the opened device asks the host nothing, and tells a supplied
+/// driver from a device that would not be named.** The engine here has no
+/// host at all, so any look at it would be an error: `Ok(Some)` is the name
+/// the open recorded, `Ok(None)` a driver the caller supplied (no device, by
+/// design), `Err` a device the host could not name. A start on a supplied
+/// driver ends in `Ok(None)`.
+///
+/// Mutations (run): `opened_name` mapping `Unnamed` to `Ok(None)` fails the
+/// `Err` assertion; mapping `Supplied` to `Err` fails the first assertion;
+/// `set_opened(Supplied)` left out of `TuttiDriver::restart_on` fails the
+/// last.
+#[test]
+fn the_opened_name_tells_a_supplied_driver_from_an_unnamed_device() {
+    let mut engine = AudioEngine::from_spec(manual_spec());
+    assert_eq!(engine.opened_name().unwrap(), None, "a supplied driver");
+    engine.opened = Opened::Named("Card".into());
+    assert_eq!(engine.opened_name().unwrap().as_deref(), Some("Card"));
+    engine.opened = Opened::Unnamed("no name".into());
+    assert!(engine.opened_name().is_err(), "a device that would not say");
+    engine.opened = Opened::Named("Card".into());
+
+    let mut driver = driver_over(engine);
     let (manual, _stream) = crate::ManualStreamDriver::new();
     driver
-        .restart_on(spec, manual, |_, _| Ok::<(), crate::Error>(()))
+        .restart_on(manual_spec(), manual, |_, _| Ok::<(), crate::Error>(()))
         .unwrap();
-    assert!(
-        driver.engine().opened_name().is_err(),
-        "the caller's stream"
+    assert_eq!(driver.engine().opened_name().unwrap(), None);
+}
+
+/// **A restart that fails leaves the name of the device still open.** The
+/// hook refuses after the new spec is in, before any stream starts; the name
+/// is recorded only once the stream runs.
+///
+/// Mutation (run): `set_opened` moved ahead of `rerate_or_restore` in
+/// `TuttiDriver::restart_on` makes the name `None` and fails this.
+#[test]
+fn a_failed_restart_keeps_the_opened_name() {
+    let mut engine = AudioEngine::from_spec(manual_spec());
+    engine.opened = Opened::Named("Card".into());
+    let mut driver = driver_over(engine);
+    let (manual, _stream) = crate::ManualStreamDriver::new();
+    driver
+        .restart_on(manual_spec(), manual, |_, _| {
+            Err(crate::Error::InvalidConfig("refused".into()))
+        })
+        .expect_err("the hook refuses");
+    assert_eq!(
+        driver.engine().opened_name().unwrap().as_deref(),
+        Some("Card")
     );
 }

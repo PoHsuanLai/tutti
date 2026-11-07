@@ -16,7 +16,7 @@
 //! # }
 //! ```
 //!
-//! The database is a plain [`PluginDb`](tutti_plugin_db::PluginDb); a host that
+//! The database is a plain [`PluginDb`]; a host that
 //! keeps its rows elsewhere (a CRDT, an application database) builds one from
 //! them and persists it itself, without the `json` feature:
 //!

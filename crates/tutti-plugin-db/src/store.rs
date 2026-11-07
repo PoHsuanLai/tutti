@@ -349,6 +349,29 @@ mod tests {
         );
     }
 
+    /// A file that lists one path twice loads the later row, as `apply` would.
+    /// Mutation: apply the rows in reverse order in `parse`.
+    #[test]
+    fn a_later_row_for_one_path_wins() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("db.json");
+        let (first, second) = (row("first"), row("second"));
+        let text = serde_json::to_string(&Out {
+            version: VERSION,
+            files: vec![
+                (Path::new("/plugins/a.vst3"), &first),
+                (Path::new("/plugins/a.vst3"), &second),
+            ],
+        })
+        .unwrap();
+        std::fs::write(&path, text).unwrap();
+
+        let db = load(&path);
+
+        assert_eq!(db.len(), 1);
+        assert_eq!(db.row(Path::new("/plugins/a.vst3")), Some(&second));
+    }
+
     /// A save must write the version `load` accepts. Mutation: write another
     /// number in `save`.
     #[test]

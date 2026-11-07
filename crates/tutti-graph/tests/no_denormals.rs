@@ -10,14 +10,15 @@
 //! check travels over an edge, with no state shared between threads.
 //!
 //! Mutations (each applied, seen to fail, reverted):
-//! - `Executor::render_applied` (`src/exec.rs`) without its
-//!   `with_no_denormals` → still passes: `process_with_changes` wraps the
-//!   same call, so the two are redundant for `process`. Only
-//!   `render_applied` called directly relies on its own.
-//! - Both of those removed → the serial case fails (probe 0, 1 worker).
+//! - `render_applied`'s `with_no_denormals` removed → the `RenderApplied`
+//!   case fails at the serial executor (the live engine's path, which does
+//!   not go through `process_with_changes`); the `Process` case still passes,
+//!   as its outer call covers the same code.
+//! - `render_applied`'s and `process_with_changes`'s both removed → the
+//!   serial `Process` case fails too.
 //! - `Shared::participate` (`src/par.rs`) without its `with_no_denormals`
-//!   → the first pool case fails (a helper's probe, 2 workers); the caller
-//!   is still covered by the executor's call.
+//!   → the first pool case fails (a helper's probe); the caller is still
+//!   covered by the executor's call.
 //! - `Restore::set` without `| 0x8040` (`tutti-rt`) → fails at the serial
 //!   case.
 //!
@@ -36,7 +37,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use common::{WORKERS, test_pool};
-use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, Unforkable};
+use tutti_graph::{
+    Cx, Editor, Io, Node, Prepare, Shape, Status, Transport, TransportChanges, Unforkable,
+};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
 
@@ -68,7 +71,16 @@ impl Node for Probe {
     fn reset(&mut self) {}
 }
 
-fn render_probes(workers: usize) {
+/// Which executor entry renders the block.
+#[derive(Clone, Copy, Debug)]
+enum Entry {
+    /// `process`, which wraps `render_applied` in its own call.
+    Process,
+    /// `apply_pending` then `render_applied`, as the live engine does.
+    RenderApplied,
+}
+
+fn render_probes(workers: usize, entry: Entry) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(MAX_BLOCK)));
     if workers > 1 {
         exec.set_pool(Some(test_pool(workers)));
@@ -100,11 +112,25 @@ fn render_probes(workers: usize) {
     for block in 0..BLOCKS {
         let mut chans = vec![vec![0.0f32; MAX_BLOCK]; PROBES as usize];
         let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-        exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+        match entry {
+            Entry::Process => {
+                exec.process(MAX_BLOCK, &Transport::default(), &[&input], &mut outs);
+            }
+            Entry::RenderApplied => {
+                exec.apply_pending();
+                exec.render_applied(
+                    MAX_BLOCK,
+                    &Transport::default(),
+                    &TransportChanges::NONE,
+                    &[&input],
+                    &mut outs,
+                );
+            }
+        }
         for (p, c) in chans.iter().enumerate() {
             assert!(
                 c.iter().all(|&x| x == 1.0),
-                "probe {p} ran outside the no-denormals mode ({workers} workers, block {block})"
+                "probe {p} ran outside the no-denormals mode ({workers} workers, {entry:?}, block {block})"
             );
         }
         ed.collect();
@@ -117,9 +143,11 @@ fn nodes_run_flushing_on_the_serial_executor_and_on_every_participant() {
         !flushed(),
         "the test thread must start with subnormals preserved, and the CPU must have them"
     );
-    render_probes(1);
-    for workers in WORKERS {
-        render_probes(workers);
+    for entry in [Entry::Process, Entry::RenderApplied] {
+        render_probes(1, entry);
+        for workers in WORKERS {
+            render_probes(workers, entry);
+        }
     }
     assert!(!flushed(), "the mode leaked out of the executor");
 }

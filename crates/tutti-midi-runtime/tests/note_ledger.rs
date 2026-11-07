@@ -616,9 +616,9 @@ fn a_ticket_drains_once_a_block_has_answered() {
     let f = run(&mut exec, 0, 2, 256);
     assert_eq!(a.lock().unwrap().held.len(), 1);
     let ticket = controls.release_held();
-    let ticket = controls.drained(ticket).expect_err("no block has run");
+    let ticket = ticket.drained().expect_err("no block has run");
     run(&mut exec, f, 1, 256);
-    let _proof = controls.drained(ticket).expect("a block answered");
+    let _proof = ticket.drained().expect("a block answered");
     assert!(
         a.lock().unwrap().held.is_empty(),
         "the answer ended the note"
@@ -646,7 +646,7 @@ fn a_rewire_after_the_drain_leaves_nothing() {
     let f = run(&mut exec, 0, 2, 256);
     let ticket = controls.release_held();
     let f = run(&mut exec, f, 1, 256);
-    let _proof = controls.drained(ticket).expect("a block answered");
+    let _proof = ticket.drained().expect("a block answered");
     rewire(&mut ed, &mut exec, f);
     assert!(a.lock().unwrap().held.is_empty());
     let b = b.lock().unwrap();
@@ -694,7 +694,7 @@ fn the_graph_delivers_the_drained_off_on_a_delayed_edge() {
     assert_eq!(a.lock().unwrap().held.len(), 1, "the note reached A");
     let ticket = controls.release_held();
     let f = run(&mut exec, f, 1, 256);
-    let _proof = controls.drained(ticket).expect("a block answered");
+    let _proof = ticket.drained().expect("a block answered");
     assert_eq!(f, 2_304);
     rewire(&mut ed, &mut exec, f);
     let a = a.lock().unwrap();
@@ -781,12 +781,10 @@ fn a_fork_does_not_answer_the_lives_ticket() {
     let ticket = controls.release_held();
     let (_fed, mut fexec) = fork_of(&ed);
     run_out(&mut fexec, f, 3);
-    let ticket = controls
-        .drained(ticket)
-        .expect_err("the fork is another node");
+    let ticket = ticket.drained().expect_err("the fork is another node");
     assert_eq!(live.lock().unwrap().held.len(), 1);
     run_out(&mut exec, f, 1);
-    let _proof = controls.drained(ticket).expect("the live block answered");
+    let _proof = ticket.drained().expect("the live block answered");
     assert!(live.lock().unwrap().held.is_empty());
 }
 

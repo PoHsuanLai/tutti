@@ -427,7 +427,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
         let ticket = clip.release_held();
         f += 512;
         polled += block(&mut exec, true, f);
-        assert!(clip.drained(ticket).is_ok());
+        assert!(ticket.drained().is_ok());
         // A seek back: the table is empty, the notes start again.
         for k in 0..8 {
             polled += block(&mut exec, true, 512 * k);

@@ -21,8 +21,9 @@
 //! by one note at a time, as a DAW plays notes of one key that overlap (M2-104
 //! Appendix C.2 would allow several, told apart by a Detach, which a clip does
 //! not carry): a note-on of a key it already holds ends the sounding note
-//! first, on the same frame, and the new note owns the key. From then on only the owning note's note-off ends the key;
-//! any other note's note-off for it is swallowed. So what it feeds never has
+//! first, on the same frame, and the new note owns the key. From then on only
+//! the owning note's note-off ends the key; any other note's note-off for it
+//! is swallowed. So what it feeds never has
 //! two of its voices on one key, a note nested inside another ends at its
 //! own end, overlaps of any depth leave the newest note sounding to its
 //! end, and nothing is left sounding.
@@ -56,14 +57,14 @@ use tutti_ump::Ump;
 
 use crate::ledger::{Class, NoteKey, NoteLedger, Sending};
 
+use super::timed::TimedMidiEvent;
+use super::walk::{Beated, Visit, Walk};
+
 /// Keys a clip node tracks at once, held or refused. One group's 16 channels
 /// of 128 notes is 2,048, so a clip on one group never fills it; a note-on
 /// that finds it full is withheld and counted, never dropped silently. At 12
 /// bytes a key the table is 24 KiB, allocated with the node.
 const LEDGER_CAPACITY: usize = 2048;
-
-use super::timed::TimedMidiEvent;
-use super::walk::{Beated, Visit, Walk};
 
 /// The events per frame a [`MidiClipNode`]'s port is sized for, which with
 /// its block makes its declared [`event_capacity`](Shape::event_capacity)
@@ -225,14 +226,46 @@ fn sorted(events: impl IntoIterator<Item = TimedMidiEvent>) -> Box<[ClipEvent]> 
         .collect()
 }
 
-/// A request that a clip node end the notes it holds, made by
-/// [`MidiClipControls::release_held`].
-#[derive(Debug)]
-#[must_use = "cut the clip's edge only once `MidiClipControls::drained` accepts the ticket"]
-pub struct Releasing(u64);
+/// A request that one clip node end the notes it holds, made by
+/// [`MidiClipControls::release_held`]. It belongs to that node: only its
+/// [`drained`](Self::drained) can answer it.
+#[must_use = "cut the clip's edge only once `Releasing::drained` accepts the ticket"]
+pub struct Releasing {
+    shared: Arc<Shared>,
+    ticket: u64,
+}
+
+impl Releasing {
+    /// The proof that the node ended what it held when this was asked and owes
+    /// no note-off: every one is on its port. A note the clip starts after the
+    /// block that answered is not covered (see
+    /// [`MidiClipControls::release_held`]). An edit committed after this takes
+    /// effect at a later block than the one that answered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the ticket while no block has answered it, or the port is still
+    /// refusing some of the note-offs.
+    pub fn drained(self) -> Result<Drained, Self> {
+        if self.shared.answered.load(Ordering::Acquire) >= self.ticket {
+            Ok(Drained(()))
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl std::fmt::Debug for Releasing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Releasing")
+            .field("ticket", &self.ticket)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Proof that a clip node ended the notes it held when a [`Releasing`] was
-/// asked: the node's note-offs are on its port, so its edge can be cut.
+/// asked and has none left to send: a snapshot, not a stop (see
+/// [`MidiClipControls::release_held`]).
 #[derive(Debug)]
 #[must_use = "this proves the clip's notes are ended; cut the edge with it in hand"]
 pub struct Drained(());
@@ -286,29 +319,23 @@ impl MidiClipControls {
         self.shared.cell.reclaim()
     }
 
-    /// Asks the node to end every note it holds on the first frame of its next
-    /// block. A caller about to cut the clip's edge to its sink waits for the
-    /// ticket to be [`drained`](Self::drained) first: after the cut the
-    /// note-offs have nowhere to go. The graph delivers events already on a
-    /// delayed edge when the edge goes, so no latency wait is needed.
+    /// Asks the node to end every note it holds, on the first frame of each
+    /// block until its note-offs are all on its port. A caller about to cut
+    /// the clip's edge to its sink waits for the ticket to be
+    /// [drained](Releasing::drained) first: after the cut the note-offs have
+    /// nowhere to go. The graph delivers events already on a delayed edge when
+    /// the edge goes, so no latency wait is needed.
     ///
-    /// The node answers only while it is processing blocks.
+    /// **The clip must be stopped first.** The ticket covers the notes held
+    /// when the node answers, not the ones the clip starts afterwards: a clip
+    /// that keeps rolling starts its next note after the answer, and cutting
+    /// then strands it. While the request is pending the node also ends what
+    /// it plays at each block's first frame. The node answers only while it is
+    /// processing blocks.
     pub fn release_held(&self) -> Releasing {
-        Releasing(self.shared.asked.fetch_add(1, Ordering::AcqRel) + 1)
-    }
-
-    /// The proof that the node ended what it held when `ticket` was asked. An
-    /// edit committed after this takes effect at a later block than the one
-    /// that answered.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ticket` while no block has answered it.
-    pub fn drained(&self, ticket: Releasing) -> Result<Drained, Releasing> {
-        if self.shared.answered.load(Ordering::Acquire) >= ticket.0 {
-            Ok(Drained(()))
-        } else {
-            Err(ticket)
+        Releasing {
+            shared: Arc::clone(&self.shared),
+            ticket: self.shared.asked.fetch_add(1, Ordering::AcqRel) + 1,
         }
     }
 
@@ -440,19 +467,22 @@ impl Node for MidiClipNode {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let clip = self.clip.lend();
-        let replaced = std::mem::replace(&mut self.generation, clip.generation) != clip.generation;
         let Some(first) = cx.env.offset(0) else {
             return Status::Modified;
         };
+        let replaced = std::mem::replace(&mut self.generation, clip.generation) != clip.generation;
         let Play { walk, held } = &mut self.play;
         let mut playing = Playing {
             sending: held.block(io.event_out(0), first),
         };
         let asked = self.shared.asked.load(Ordering::Acquire);
-        if replaced || asked > self.answered {
+        let asking = asked > self.answered;
+        if replaced || asking {
             playing.sending.release_all(first);
         }
-        if asked > self.answered {
+        // Answered once no note-off is owed: until then the next block asks
+        // again.
+        if asking && playing.sending.owed() == 0 {
             self.answered = asked;
             self.shared.answered.store(asked, Ordering::Release);
         }

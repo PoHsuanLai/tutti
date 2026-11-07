@@ -313,10 +313,7 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
             .binary_search_by_key(&key, |e| e.key)
             .ok();
         if owner.is_none() {
-            let taken = self.write(at, ump);
-            if let Some(i) = found.filter(|&i| self.ledger.entries[i].held.is_some()) {
-                self.finish(i, taken);
-            }
+            self.untagged_off(at, ump, found);
             return;
         }
         let Some(i) = found else { return };
@@ -334,6 +331,33 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
 
     fn write(&mut self, at: Offset, ump: Ump) -> bool {
         self.out.push(Event::midi(at, ump.0)).is_ok()
+    }
+
+    /// An untagged source has one note per key, so its off ends whatever its
+    /// key holds and settles a refused on. A key whose on the port refused is
+    /// swallowed and counted, as a tagged off is; any other off goes through.
+    fn untagged_off(&mut self, at: Offset, ump: Ump, found: Option<usize>) {
+        let Some(i) = found else {
+            self.write(at, ump);
+            return;
+        };
+        let e = self.ledger.entries[i];
+        if e.held.is_some() {
+            let taken = self.write(at, ump);
+            self.ledger.entries[i].refused = false;
+            self.finish(i, taken);
+        } else if e.refused {
+            self.ledger.entries[i].refused = false;
+            self.forget_if_idle(i);
+            self.out.withhold();
+        } else {
+            self.write(at, ump);
+        }
+    }
+
+    /// Note-offs the port refused that this ledger still owes.
+    pub(crate) fn owed(&self) -> usize {
+        self.ledger.owing
     }
 
     /// The off of held entry `i` was written (`taken`) or refused.

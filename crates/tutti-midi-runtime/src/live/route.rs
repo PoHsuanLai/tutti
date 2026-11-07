@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tutti_midi_types::MidiChannel;
+use tutti_ump::MidiChannel;
 
 use super::input_node::{MIDI_INPUT_PORTS, input_ports};
 
@@ -47,7 +47,7 @@ pub struct RouteRule<'a, T> {
 ///
 /// ```
 /// use tutti_midi_runtime::{compile_routes, RouteRule, CHANNELLESS_PORT};
-/// use tutti_midi_types::MidiChannel;
+/// use tutti_ump::MidiChannel;
 ///
 /// let (lead, sampler) = ("lead", "sampler");
 /// let ports = compile_routes(

@@ -1,10 +1,10 @@
 //! [`MidiGroup`] — which of a UMP Endpoint's 16 virtual cables a packet travels.
 //!
-//! An *address*, not a measure — so like [`MidiChannel`](super::MidiChannel) it
+//! An *address*, not a measure — so like [`MidiChannel`](crate::MidiChannel) it
 //! is an integer newtype rather than one of the float-backed units in
-//! [`super::units`], and it deliberately does not implement
-//! [`Unit`](super::Unit): a group is not an automatable DSP parameter and must
-//! not be reachable through [`Param`](super::Param).
+//! `tutti_types`, and it deliberately does not implement
+//! `Unit`: a group is not an automatable DSP parameter and must
+//! not be reachable through `Param`.
 //!
 //! # Group is transport addressing, Channel is voice addressing
 //!
@@ -35,14 +35,13 @@
 //! compile error:
 //!
 //! ```compile_fail
-//! # use tutti_types::{MidiChannel, MidiGroup};
+//! # use tutti_ump::{MidiChannel, MidiGroup};
 //! fn takes(_group: MidiGroup, _channel: MidiChannel) {}
 //! // Transposed — the compiler rejects it, which is the entire point.
 //! takes(MidiChannel::new(3), MidiGroup::new(1));
 //! ```
 //!
-//! Like [`MidiChannel`](super::MidiChannel), it is re-exported by
-//! `tutti-midi-types` and serializable (feature `serde`).
+//! Like [`MidiChannel`](crate::MidiChannel), it is serializable (feature `serde`).
 
 /// One of the 16 groups (virtual cables) in a UMP Endpoint.
 ///

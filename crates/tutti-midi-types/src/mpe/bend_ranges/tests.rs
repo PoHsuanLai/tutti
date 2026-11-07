@@ -1,6 +1,6 @@
 use super::*;
 use crate::ump::RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY;
-use crate::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 fn rpn(channel: u8, index: u8, semitones: u8) -> MidiEvent {
     MidiEvent::registered_controller(

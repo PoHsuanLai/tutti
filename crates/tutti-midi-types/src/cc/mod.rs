@@ -2,16 +2,17 @@
 //!
 //! The named controller numbers below are [`CCNumber`], not `u8`. They are
 //! aliases for the associated constants on that type — the roster lives on
-//! `CCNumber` itself (in `tutti-types`, alongside the newtype it belongs to),
+//! `CCNumber` itself (in `tutti-ump`, alongside the newtype it belongs to),
 //! and is surfaced here under short names such as `cc::MOD_WHEEL`.
 //!
 //! Typing them is the payoff of the newtype: `MOD_WHEEL` cannot be passed
-//! where a [`MidiChannel`] is expected, the swap two adjacent `u8`s would
+//! where a [`MidiChannel`](tutti_ump::MidiChannel) is expected, the swap two adjacent `u8`s would
 //! invite.
 
 pub mod mapping;
 
-pub use mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
+pub use mapping::{CCMapping, CCTarget, MappingId};
+use tutti_ump::CCNumber;
 
 // Continuous controllers (MSB half of a 14-bit pair; the LSB lives at
 // `number + 32`, which only `DATA_ENTRY` names here because it is the only one

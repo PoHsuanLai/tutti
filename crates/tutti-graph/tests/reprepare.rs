@@ -12,10 +12,11 @@ use std::sync::{Arc, Mutex};
 use common::{Kind, TestNode};
 use tutti_graph::{
     CommitError, CompileError, Cx, CycleEdge, Editor, EventEdge, EventIn, EventKind, EventOut,
-    Executor, Io, Node, Prepare, Reference, Shape, Status, Transport, Ump, Unforkable,
+    Executor, Io, Node, Prepare, Reference, Shape, Status, Transport, Unforkable,
 };
 use tutti_types::graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, Latency, NodeKey, SampleRate, Samples, Tail};
+use tutti_ump::Ump;
 
 fn prep(rate: f64, max: usize) -> Prepare {
     Prepare::new(SampleRate(rate), Samples(max))

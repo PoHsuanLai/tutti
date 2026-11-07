@@ -1,5 +1,5 @@
 use super::*;
-use tutti_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// Layout contract: `#[repr(C)] { u32, [u32;4] }` is exactly 20 bytes.
 #[test]

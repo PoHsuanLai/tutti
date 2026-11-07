@@ -51,6 +51,7 @@
 //! [`MpeIngest::new`], so reconfiguring is off-RT and rebuilds the whole
 //! transform.
 
+use tutti_midi_types::PitchBendSensitivity;
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
@@ -60,7 +61,7 @@ use tutti_midi_types::ump::{
     MidiEvent, RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY,
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PitchBendSensitivity};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// What [`MpeIngest::translate`] makes of one event, in order: nothing, the
 /// event or its per-note form, a per-note bend range for each member channel

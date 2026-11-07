@@ -511,7 +511,7 @@ fn the_park_switch_is_off_unless_armed() {
 #[test]
 fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     use tutti_graph::Node as _;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = probe_lock::acquire();
     let mut env = ProbeEnv::new();
@@ -550,7 +550,7 @@ fn a_reset_drops_the_pending_midi_and_keeps_its_sysex_cut() {
 #[test]
 fn a_reprepare_drops_the_pending_midi_and_keeps_its_sysex_cut() {
     use tutti_graph::Node as _;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = probe_lock::acquire();
     let mut env = ProbeEnv::new();

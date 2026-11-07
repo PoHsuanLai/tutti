@@ -14,9 +14,8 @@
 
 use tutti_midi_types::cc;
 use tutti_midi_types::convert::{midi1_pitch_bend_to_midi2, midi2_pitch_bend_to_midi1};
-use tutti_midi_types::{
-    CCNumber, ControllerNamespace, Midi1ToMidi2Translator, MidiEvent, MidiMessage,
-};
+use tutti_midi_types::{ControllerNamespace, Midi1ToMidi2Translator, MidiEvent, MidiMessage};
+use tutti_ump::CCNumber;
 
 /// MIDI 2.0 Channel Voice message type (M2-104 §2.1.4).
 const UMP_MT_CV2: u32 = 0x4;
@@ -129,8 +128,8 @@ fn bank_select_is_latched_for_the_next_program_change_and_mod_wheel_promotes() {
     assert_eq!(
         pc,
         MidiEvent::program_change(
-            tutti_midi_types::MidiGroup::FIRST,
-            tutti_midi_types::MidiChannel::FIRST,
+            tutti_ump::MidiGroup::FIRST,
+            tutti_ump::MidiChannel::FIRST,
             9,
             Some((0x7F << 7) | 0x01)
         )

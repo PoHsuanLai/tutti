@@ -24,7 +24,7 @@
 //!   builds while release builds keep the safe masking.
 
 use midi2::prelude::*;
-use tutti_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 use super::MidiEvent;
 

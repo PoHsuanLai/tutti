@@ -47,8 +47,9 @@ use tutti_graph::{
     Cx, Event, EventWriter, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts,
     Offset, Prepare, Shape, Status,
 };
-use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+use tutti_midi_types::MidiEvent;
 use tutti_types::{ArcLend, ChannelLayout, Reader};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use super::timed::TimedMidiEvent;
 use super::walk::{Beated, Visit, Walk};
@@ -249,7 +250,8 @@ impl MidiClipControls {
 /// use tutti_types::{Beat, NodeKey, SampleRate, Samples};
 /// use tutti_graph::{Editor, Prepare};
 /// use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-/// use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+/// use tutti_midi_types::MidiEvent;
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let (mut editor, _exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
 /// let on = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);

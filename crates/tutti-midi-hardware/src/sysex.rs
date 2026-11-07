@@ -37,8 +37,8 @@
 //! binary can install.
 
 use tracing::warn;
-use tutti_midi_types::MidiGroup;
 use tutti_midi_types::ump::{MidiEvent, SYSEX7_MAX_PAYLOAD};
+use tutti_ump::MidiGroup;
 
 /// Ceiling on one in-flight SysEx payload, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`], which the plugin hosts' reassemblers also hold.

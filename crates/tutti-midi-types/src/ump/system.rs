@@ -5,7 +5,7 @@
 //! which surfaces these as [`MidiMessage`](crate::MidiMessage) System variants.
 
 use midi2::prelude::*;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use super::MidiEvent;
 

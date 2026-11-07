@@ -274,9 +274,9 @@ mod midi_soundfont_audio {
     use tutti_core::transport::Transport;
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
     use tutti_types::{Beat, BeatDuration, SampleRate};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -533,10 +533,11 @@ mod midi_route {
     use bevy_tutti::midi::{MidiEngineNodes, MidiRouteRule, TuttiMidiPlugin};
     use tutti_core::transport::Transport;
     use tutti_midi_runtime::MidiInputNode;
+    use tutti_midi_types::MidiIn;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiChannel, MidiGroup, MidiIn};
     use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
     use tutti_types::SampleRate;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     const SAMPLE_RATE: f64 = 48_000.0;
 

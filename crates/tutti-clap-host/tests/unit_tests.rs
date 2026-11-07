@@ -13,7 +13,8 @@ use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
     NoteExpressionType, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
 };
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup, PerNoteBendRanges};
+use tutti_midi_types::PerNoteBendRanges;
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 mod support;
 #[allow(unused_imports)]

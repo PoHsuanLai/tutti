@@ -295,6 +295,7 @@ pub mod prelude {
     /// `tutti_graph::Node` a [`crate::graph::SessionNode`].
     pub use tutti_graph::{ForkByClone, Unforkable};
     pub use tutti_types::prelude::*;
+    pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
     pub use tutti_core::transport::{
         FadeOut, LoopEdit, LoopRegion, MetronomeMode, MotionEvent, MotionState, Then,

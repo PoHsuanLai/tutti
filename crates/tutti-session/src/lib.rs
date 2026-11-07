@@ -104,5 +104,7 @@ pub use session::MidiNodes;
 #[cfg(feature = "modulation")]
 pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, Session, SessionEvent};
+#[cfg(feature = "midi")]
+pub use tutti_ump::MidiChannel;
 #[cfg(feature = "device")]
 pub use watch::{Backoff, DevicePolicy, DeviceWatch, Follow, FollowEvent};

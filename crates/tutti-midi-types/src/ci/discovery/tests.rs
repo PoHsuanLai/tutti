@@ -1,6 +1,6 @@
 use super::super::*;
 use super::*;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 fn header() -> CiHeader {
     CiHeader {

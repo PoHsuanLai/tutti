@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_types::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 #[test]
 fn empty_mapping_returns_none() {

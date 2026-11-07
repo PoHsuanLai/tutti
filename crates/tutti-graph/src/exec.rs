@@ -2503,7 +2503,8 @@ mod tests {
     use tutti_types::{At, ChannelLayout, SampleRate};
 
     use super::*;
-    use crate::event::{EventKind, Ump};
+    use crate::event::EventKind;
+    use tutti_ump::Ump;
 
     /// Counts the events it receives.
     struct Count(Arc<AtomicUsize>);

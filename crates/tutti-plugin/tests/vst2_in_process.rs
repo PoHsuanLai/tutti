@@ -437,9 +437,10 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 fn midi_past_the_blocks_capacity_is_counted() {
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
     use tutti_types::{SampleRate, Samples};
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = lock_probe();
     clear_probe_env();

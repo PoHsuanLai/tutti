@@ -21,8 +21,8 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_types::{SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

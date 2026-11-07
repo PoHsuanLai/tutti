@@ -18,8 +18,8 @@ mod support;
 
 use support::decode_smf;
 use tutti_midi_file::smf::{self, MidiWriteConfig, SmfTimedEvent};
-use tutti_midi_types::MidiChannel;
 use tutti_types::{Beat, Bpm};
+use tutti_ump::MidiChannel;
 
 const TPQ: u16 = 480;
 

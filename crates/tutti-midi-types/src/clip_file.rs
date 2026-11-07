@@ -24,7 +24,8 @@ use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
 use midi2::ux::u20;
 
 use crate::ump::MidiEvent;
-use tutti_types::{Beat, BeatDuration, Bpm, MidiChannel, MidiGroup};
+use tutti_types::{Beat, BeatDuration, Bpm};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// The 8-byte file header: ASCII "SMF2CLIP" (M2-116 §5).
 pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
@@ -115,7 +116,8 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
 ///
 /// ```
 /// # use tutti_midi_types::{ParsedClipFile, write_clip_file_with_header, ClipHeader};
-/// # use tutti_midi_types::{write_clip_file_from_beats, Beat, MidiEvent, MidiChannel, MidiGroup};
+/// # use tutti_midi_types::{write_clip_file_from_beats, Beat, MidiEvent};
+/// # use tutti_ump::{MidiChannel, MidiGroup};
 /// # let first = write_clip_file_with_header(96, ClipHeader::default(), &[]);
 /// let clip = ParsedClipFile::from_bytes(&first).unwrap();
 /// let again = write_clip_file_with_header(
@@ -224,7 +226,8 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
 ///
 /// ```
 /// # use tutti_midi_types::{write_clip_file_from_beats, ParsedClipFile, MidiEvent};
-/// # use tutti_midi_types::{Beat, MidiChannel, MidiGroup};
+/// # use tutti_midi_types::Beat;
+/// # use tutti_ump::{MidiChannel, MidiGroup};
 /// let bytes = write_clip_file_from_beats(96, [
 ///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
 ///     (Beat(2.0), MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),

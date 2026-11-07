@@ -3,11 +3,12 @@
 
 use tutti_graph::{
     Cost, Cx, Event, EventKind, Io, Node, Offset, ParamSegment, Prepare, SegmentShape, Shape,
-    Status, Ump,
+    Status,
 };
 use tutti_mod::{Adsr, SignalKind, SourceId, SourceNode};
 use tutti_types::{ChannelLayout, SampleRate};
 use tutti_types::{Frame, SamplePosition, Samples};
+use tutti_ump::Ump;
 
 use super::PlayWalk;
 

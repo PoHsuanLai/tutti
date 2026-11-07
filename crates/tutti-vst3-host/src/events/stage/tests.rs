@@ -1,5 +1,5 @@
 use super::*;
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 use tutti_vst3_ffi::EVENT_CAPACITY;
 

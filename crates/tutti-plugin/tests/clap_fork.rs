@@ -694,8 +694,9 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
 fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let clip = NodeKey(1);
     live.insert(
@@ -795,8 +796,9 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
 fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
@@ -898,8 +900,9 @@ impl tutti_graph::Node for MidiSink {
 fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_types::Beat;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
@@ -1175,8 +1178,9 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 fn midi_past_the_chunks_capacity_is_counted() {
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
-    use tutti_midi_types::{MidiChannel, MidiEvent, MidiGroup};
+    use tutti_midi_types::MidiEvent;
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
+    use tutti_ump::{MidiChannel, MidiGroup};
 
     let _lock = exclusive();
     let _env = ProbeEnv::new().render_mode(render::NOTES);

@@ -1,7 +1,8 @@
 //! A block's MIDI event input as the `MidiEvent` run a MIDI instrument walks.
 
-use tutti_graph::{EventKind, SortedEvents, Ump};
+use tutti_graph::{EventKind, SortedEvents};
 use tutti_midi_types::MidiEvent;
+use tutti_ump::Ump;
 
 /// Copies the MIDI events of `events` into `out`, in their (sorted) order, and
 /// returns how many it wrote. Stops when `out` is full; non-MIDI events are

@@ -43,6 +43,7 @@ tutti-core = { path = "../tutti-core", default-features = false }
 # The AudioIn/AudioOut I/O vocabulary — the slab is the concrete process edge
 # realising those two roles (see util/transport/shm/slab.rs).
 tutti-types = { path = "../tutti-types" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 
 # The graph, for a plugin node's own `ForkSource` (fork by state
 # transfer). No cycle: `tutti-graph` names only `tutti-types`.

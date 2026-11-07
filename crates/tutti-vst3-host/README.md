@@ -60,7 +60,7 @@ Walk the stages, then render one block. `no_run`: the load needs a real `.vst3`
 bundle on disk.
 
 ```rust,no_run
-use tutti_midi_types::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, MidiGroup};
 use tutti_plugin_types::{Prepare, RenderMode, SampleFormat, SampleRate, Samples};
 use tutti_vst3_host::{
     AudioBuffer, InputEvents, LoadOptions, MidiEvent, TransportInfo, Vst3Loaded,

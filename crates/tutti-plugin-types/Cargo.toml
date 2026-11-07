@@ -37,6 +37,7 @@ tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 # plugin-width narrowing of that vocabulary's element type, and `AudioBuffer`
 # names its roles in the doc contract.
 tutti-types = { path = "../tutti-types" }
+tutti-ump = { path = "../tutti-ump", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 # Structured editor-open errors (`EditorError`).
 thiserror.workspace = true

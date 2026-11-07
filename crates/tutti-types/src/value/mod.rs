@@ -23,9 +23,6 @@
 pub mod units;
 
 pub mod adsr;
-pub mod cc_number;
-pub mod midi_channel;
-pub mod midi_group;
 pub mod note;
 
 pub mod frame;
@@ -39,12 +36,9 @@ pub mod timeline;
 pub mod unit_param;
 
 pub use adsr::Adsr;
-pub use cc_number::CCNumber;
 pub use frame::{At, Frame};
 pub use frame_clock::{FrameClock, LoopRange, SegmentOrigin};
 pub use latency::Latency;
-pub use midi_channel::MidiChannel;
-pub use midi_group::MidiGroup;
 pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::{Param, Param64};
 pub use play::PlayReading;

@@ -20,11 +20,11 @@ mod support;
 use support::{BLOCK, Hand};
 use tutti_midi_types::translation::scaling::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 use tutti_types::{Amplitude, Seconds};
+use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;
 

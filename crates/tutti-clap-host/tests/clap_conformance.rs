@@ -39,7 +39,6 @@ use tutti_clap_test_plugin::ProcessCapture;
 const CLAP_EVENT_NOTE_ON: u16 = 0;
 const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 
-use tutti_midi_types::{MidiChannel, MidiGroup};
 /// A parameter id the reference plugin actually declares (`params_state.rs`).
 ///
 /// The tests below are about event *offsets*, not parameter identity, so the id
@@ -49,6 +48,7 @@ use tutti_midi_types::{MidiChannel, MidiGroup};
 /// un-denormalized (see `add_param_changes` in `events.rs`). An invented id
 /// would make these tests fail for a reason unrelated to what they assert.
 use tutti_plugin_types::ParamId;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// The probe's real `clap_id`. A `ParamId` because that is what a queue
 /// is keyed by — CLAP ids are opaque handles, never positional indices.

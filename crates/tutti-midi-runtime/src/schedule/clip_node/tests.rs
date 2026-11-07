@@ -1,6 +1,6 @@
 use super::*;
-use tutti_midi_types::{MidiChannel, MidiGroup};
 use tutti_types::Beat;
+use tutti_ump::{MidiChannel, MidiGroup};
 
 /// **A clip a block still held when `set_events` replaced it is freed by
 /// the next `reclaim`**, with no further publish.

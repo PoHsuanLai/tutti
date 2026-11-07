@@ -7,11 +7,12 @@
 pub use midi2;
 pub use midly;
 
-// The tutti-types vocabulary this crate's own API is spelled in: every UMP
-// constructor takes a `MidiGroup` and a `MidiChannel`, the clip API positions in
-// `Beat`/`BeatDuration` and declares its tempo in `Bpm`, a CC message needs
-// `CCNumber`, and state reaches the audio thread through `ArcLend`.
-pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
+// The tutti-types vocabulary this crate's own API is spelled in: the clip API
+// positions in `Beat`/`BeatDuration` and declares its tempo in `Bpm`, and state
+// reaches the audio thread through `ArcLend`. The UMP constructors take
+// `tutti_ump`'s `MidiGroup`, `MidiChannel` and `CCNumber`, which callers import
+// from there.
+pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm};
 
 // No `///` on a `pub mod` line: it would shadow the module's own `//!` header
 // and re-resolve that text's intra-doc links in this scope rather than the
@@ -86,6 +87,7 @@ pub use ump::{
 ///
 /// ```
 /// use tutti_midi_types::prelude::*;
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// // Build a note, decode it back — no midi2 imports, no width juggling.
 /// let ev = MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
@@ -112,7 +114,8 @@ pub use ump::{
 ///     ParsedClipFile, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
 ///     CLIP_FILE_MAGIC,
 /// };
-/// use tutti_midi_types::{Bpm, MidiChannel, MidiGroup};
+/// use tutti_midi_types::Bpm;
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_with_header(
 ///     480,
@@ -134,7 +137,8 @@ pub use ump::{
 ///
 /// ```
 /// use tutti_midi_types::{ParsedClipFile, write_clip_file_from_beats, MidiEvent};
-/// use tutti_midi_types::{Beat, BeatDuration, MidiChannel, MidiGroup};
+/// use tutti_midi_types::{Beat, BeatDuration};
+/// use tutti_ump::{MidiChannel, MidiGroup};
 ///
 /// let bytes = write_clip_file_from_beats(96, [
 ///     (Beat(0.0), MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xABCD)),
@@ -155,5 +159,5 @@ pub mod prelude {
         NoteId, ParsedClipFile, PerNoteController, Protocol, normalize, write_clip_file,
         write_clip_file_from_beats,
     };
-    pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm, CCNumber, MidiChannel, MidiGroup};
+    pub use tutti_types::{ArcLend, Beat, BeatDuration, Bpm};
 }

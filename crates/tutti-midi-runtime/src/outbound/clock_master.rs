@@ -22,7 +22,7 @@
 //!   (when `send_mtc` is set).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use tutti_midi_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use atomic_float::AtomicF64;
 use tutti_graph::Transport;

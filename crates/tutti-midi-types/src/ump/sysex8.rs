@@ -16,7 +16,7 @@
 //! see the tracking issue.
 
 use std::vec::Vec;
-use tutti_types::MidiGroup;
+use tutti_ump::MidiGroup;
 
 use midi2::prelude::*;
 

@@ -82,6 +82,16 @@ impl std::fmt::Debug for TransportAudio {
     }
 }
 
+/// The commands still waiting go back first, then the machine: the next
+/// audio side can only be taken once the machine is home, and finds the
+/// list there.
+impl Drop for TransportAudio {
+    fn drop(&mut self) {
+        self.schedule.hand_back();
+        self.motion.hand_back();
+    }
+}
+
 impl TransportAudio {
     pub(crate) fn take(transport: &Transport, rate: SampleRate) -> Result<Self, AudioTaken> {
         let motion = transport.motion.audio().ok_or(AudioTaken)?;
@@ -204,6 +214,34 @@ mod tests {
         assert_eq!(t.clone().audio(48_000.0).err(), Some(AudioTaken));
         drop(first);
         t.audio(48_000.0).expect("handed back on drop");
+    }
+
+    /// A command still waiting for its beat outlives the audio side that
+    /// gathered it, credit and all: the next one (a device restart) finds it
+    /// pending, fires it, and the credits return to zero.
+    ///
+    /// Mutation (run): `TransportAudio::drop` not handing the pending list
+    /// back → the new side has no pending command and the credit stays held
+    /// → fails.
+    #[test]
+    fn a_waiting_command_outlives_its_audio_side() {
+        let t = Transport::new(48_000.0);
+        t.motion
+            .schedule(At::Beat(tutti_types::Beat(1000.0)), MotionEvent::Play)
+            .expect("room");
+        let mut first = t.audio(48_000.0).expect("first");
+        first.gather();
+        assert_eq!(first.pending().len(), 1);
+        drop(first);
+
+        let mut next = t.audio(48_000.0).expect("handed back on drop");
+        next.gather();
+        assert_eq!(next.pending().len(), 1, "carried over");
+        assert_eq!(t.motion.scheduled_outstanding(), 1);
+        assert!(!t.is_rolling());
+        let _ = next.fire(0, false);
+        assert_eq!(t.motion.scheduled_outstanding(), 0);
+        assert!(t.is_rolling(), "the carried command fired");
     }
 
     /// Firing a command gives its credit back and counts it late exactly

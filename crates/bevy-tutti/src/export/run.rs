@@ -384,11 +384,11 @@ mod tests {
             .resource::<MetronomeRes>()
             .0
             .set_mode(MetronomeMode::Always);
-        let _ = app
-            .world()
+        app.world()
             .resource::<TransportRes>()
             .motion
-            .try_send(MotionEvent::Play);
+            .try_send(MotionEvent::Play)
+            .expect("a fresh transport has room");
         for _ in 0..4 {
             app.update();
             stream.render_block(256).expect("the stream is open");

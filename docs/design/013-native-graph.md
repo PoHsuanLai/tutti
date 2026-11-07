@@ -389,8 +389,9 @@ the race. Every type below exists because the audit found the bug it prevents.
   its audio half, `MotionAudio`, which `TransportAudio` owns and the engine
   drives through `&mut`. The FSM waits in a capacity-one
   `ArrayQueue` on the handle while no engine holds it; taking it is the
-  transport's one claim and its drop hands it back, so a later engine
-  resumes the same state.) Units owned once by the audio thread only need `&mut self`.
+  transport's one claim and its drop hands it back, with the commands still
+  waiting for their time, so a later engine (a device restart) resumes the
+  same state and the same commands.) Units owned once by the audio thread only need `&mut self`.
 - `Param<U>` as a way to survive the clone. `Param<U>` stays, as the control
   value handed out through `Controls`; the hand-written sharing `Clone` impls
   go.
@@ -509,8 +510,9 @@ place that loses precision to be written out explicitly:
    **Transport commands.** `MotionFsm::schedule(At,
    TransportCommand)` queues a play, stop, seek or scrub (`MotionEvent`), a
    tempo or a loop change. No untimed overload: `try_send` is `schedule` at
-   `At::NextBlock`, on the same queue, so it keeps send order with timed
-   commands, and the settings stores are values read once per block. The queue is a
+   `At::NextBlock`, on the same queue, so commands due on one frame keep send order across
+   both calls (and `cancel_scheduled` takes back only commands waiting for a
+   frame or a beat, never an `At::NextBlock`), and the settings stores are values read once per block. The queue is a
    preallocated ring of `SCHEDULE_CAPACITY` (64) with a credit count, so
    `schedule` refuses (`ScheduleFull`, command handed back) rather than
    drops; `cancel_scheduled` takes pending ones back. Each block, the engine

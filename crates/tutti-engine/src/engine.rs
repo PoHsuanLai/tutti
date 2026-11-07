@@ -1128,6 +1128,60 @@ mod tests {
         assert!(run(false), "stop then play ends rolling");
     }
 
+    /// A locate sent with `try_send` lands on the block's first frame and
+    /// its seek is taken once, after the command: the block starts at the
+    /// target, a loop wrap inside it is counted once, and the next block
+    /// continues from the end of this one without taking the seek again.
+    ///
+    /// Analytic figures: 120 BPM at 48 kHz is 1/24 000 beat a frame.
+    ///
+    /// Mutation (run): `TransportAudio::fire` beginning with `take_seek`
+    /// false → the seek lands in the next block, so the first block's
+    /// published beat is 64 / 24 000, not the target's → fails.
+    #[test]
+    fn a_locate_on_the_first_frame_is_taken_once_and_a_wrap_counted_once() {
+        use tutti_transport::LoopEdit;
+        use tutti_types::{Beat, ChannelLayout, LoopRange};
+        let engine_for = |transport: &Transport| {
+            let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(2048)));
+            Engine::new(transport, &mut ed, exec).expect("empty graph")
+        };
+
+        let transport = Transport::new(48_000.0);
+        let engine = engine_for(&transport);
+        transport
+            .motion
+            .try_send(MotionEvent::play_from(Beat(8.0)))
+            .expect("room");
+        let mut buf = vec![0.0f32; 64 * 2];
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        let first = transport.settings.beat().get();
+        assert!((first - (8.0 + 64.0 / 24_000.0)).abs() < 1e-9, "{first}");
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        let second = transport.settings.beat().get();
+        assert!((second - (8.0 + 128.0 / 24_000.0)).abs() < 1e-9, "{second}");
+
+        // Into a loop's last frames: one wrap, counted once.
+        let transport = Transport::new(48_000.0);
+        let engine = engine_for(&transport);
+        transport
+            .motion
+            .schedule(
+                At::NextBlock,
+                LoopEdit::over(LoopRange::new(0.0, 4.0).expect("ordered")),
+            )
+            .expect("room");
+        transport
+            .motion
+            .try_send(MotionEvent::play_from(Beat(3.99)))
+            .expect("room");
+        let mut buf = vec![0.0f32; 1024 * 2];
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        let wrapped = transport.settings.beat().get();
+        let expected = 3.99 + 1024.0 / 24_000.0 - 4.0;
+        assert!((wrapped - expected).abs() < 1e-9, "{wrapped} vs {expected}");
+    }
+
     /// A block with no declicked command in sight plans no gain event, and
     /// the fader leaves the output untouched: the fast path is reachable.
     /// A command in sight plans its aim once, not at every walk step.

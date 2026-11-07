@@ -342,11 +342,14 @@ impl MotionFsm {
         self.timed.send(at, command.into())
     }
 
-    /// Takes back every scheduled command not yet applied, and frees their
-    /// credit. That includes pending [`LoopEdit`](super::LoopEdit)s: a cancel
-    /// is "nothing sent so far happens", whatever it was, so the loop region
+    /// Takes back every command waiting for a frame or a beat that has not
+    /// been applied, and frees their credit. [`At::NextBlock`] commands,
+    /// [`try_send`](Self::try_send) among them, are not waiting for a time
+    /// and stand: a stop sent just before a cancel still stops. A timed
+    /// [`LoopEdit`](super::LoopEdit) is taken back too, so the loop region
     /// stays as the engine last applied it. (A rate change does not drop
-    /// commands; it only moves `At::Frame` ones.) Takes effect at the engine's next block.
+    /// commands; it only moves `At::Frame` ones.) Takes effect at the
+    /// engine's next block.
     pub fn cancel_scheduled(&self) {
         self.timed.cancel_all();
     }
@@ -740,6 +743,27 @@ mod tests {
             }),
             "a full queue must report the drop, and hand the event back"
         );
+    }
+
+    /// A cancel takes back what waits for a time, never an immediate command:
+    /// a stop sent with `try_send` just before it still stops.
+    ///
+    /// Mutation (run): drop the `At::NextBlock` exemption in
+    /// `ScheduleAudio::gather` → the stop is cancelled and the transport
+    /// keeps rolling → fails.
+    #[test]
+    fn a_cancel_leaves_an_immediate_stop_standing() {
+        let (m, mut a) = fsm();
+        m.try_send(MotionEvent::Play).expect("room");
+        a.drain();
+        assert!(m.is_playing());
+        m.schedule(At::Beat(Beat(1000.0)), MotionEvent::Play)
+            .expect("room");
+        m.try_send(MotionEvent::stop_unfaded()).expect("room");
+        m.cancel_scheduled();
+        a.drain();
+        assert!(m.is_stopped(), "the immediate stop stood");
+        assert_eq!(m.scheduled_outstanding(), 0, "the timed one was taken back");
     }
 
     /// A backlog of commands waiting for their time cannot refuse a stop:

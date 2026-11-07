@@ -3,8 +3,8 @@
 //! A command meant to happen during playback says when:
 //! [`MotionFsm::schedule`](super::MotionFsm::schedule) takes an `At` and
 //! there is no untimed overload of it. [`MotionFsm::try_send`](super::MotionFsm::try_send)
-//! is `schedule` at `At::NextBlock`, through the same queue, so commands
-//! apply in the order they were sent. The
+//! is `schedule` at `At::NextBlock`, through the same queue, so commands due
+//! on one frame apply in the order they were sent. The
 //! [`TransportSettings`](super::TransportSettings) stores are values read
 //! once per block, not commands.
 //!
@@ -151,6 +151,12 @@ pub struct Schedule {
     /// flight is taken to be old (a graph re-rated without telling the
     /// transport).
     rescale_before: Arc<AtomicU64>,
+    /// The pending list while no [`ScheduleAudio`] holds it: a capacity-one
+    /// queue, as the motion machine's home is. The audio side pops it at
+    /// its build and pushes it back when it drops, so a command still
+    /// waiting (a beat not yet reached) outlives the engine that gathered
+    /// it, with its credit.
+    carry: Arc<ArrayQueue<Vec<Scheduled>>>,
 }
 
 impl std::fmt::Debug for Schedule {
@@ -161,7 +167,11 @@ impl std::fmt::Debug for Schedule {
 
 impl Schedule {
     pub(crate) fn new() -> Self {
+        let carry = Arc::new(ArrayQueue::new(1));
+        // A fresh capacity-one queue has room.
+        let _ = carry.push(Vec::with_capacity(IN_FLIGHT_MAX));
         Self {
+            carry,
             queue: Arc::new(ArrayQueue::new(IN_FLIGHT_MAX)),
             credit: Arc::new(AtomicUsize::new(0)),
             next_seq: Arc::new(AtomicU64::new(0)),
@@ -210,7 +220,8 @@ impl Schedule {
         Ok(())
     }
 
-    /// Cancel every command sent so far that has not been applied.
+    /// Cancel every timed command sent so far that has not been applied.
+    /// `At::NextBlock` commands are not waiting for a time and stand.
     pub(crate) fn cancel_all(&self) {
         self.cancel_before
             .store(self.next_seq.load(Ordering::Acquire), Ordering::Release);
@@ -247,11 +258,32 @@ pub(crate) struct ScheduleAudio {
     pending: Vec<Scheduled>,
 }
 
+impl Drop for ScheduleAudio {
+    fn drop(&mut self) {
+        self.hand_back();
+    }
+}
+
 impl ScheduleAudio {
+    /// Takes the pending list the last audio side handed back. Control
+    /// thread: a second audio side over the same schedule (only a test
+    /// builds one; the transport hands out one) starts with an empty list
+    /// of its own, allocated here.
     pub(crate) fn new(shared: Schedule) -> Self {
-        Self {
-            shared,
-            pending: Vec::with_capacity(IN_FLIGHT_MAX),
+        let pending = shared
+            .carry
+            .pop()
+            .unwrap_or_else(|| Vec::with_capacity(IN_FLIGHT_MAX));
+        Self { shared, pending }
+    }
+
+    /// Hands the pending list back to the schedule, commands and credits
+    /// together, for the next audio side. Idempotent; moves the list, so no
+    /// allocation.
+    pub(crate) fn hand_back(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        if pending.capacity() > 0 {
+            let _ = self.shared.carry.push(pending);
         }
     }
 
@@ -268,7 +300,10 @@ impl ScheduleAudio {
         }
         let cancel_before = self.shared.cancel_before.load(Ordering::Acquire);
         let before = self.pending.len();
-        self.pending.retain(|c| c.seq >= cancel_before);
+        // An `At::NextBlock` command is not waiting for a time, so a cancel
+        // does not take it back (a `try_send(Stop)` stands).
+        self.pending
+            .retain(|c| c.seq >= cancel_before || matches!(c.at, At::NextBlock));
         self.shared.release(before - self.pending.len());
     }
 

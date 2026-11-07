@@ -1230,7 +1230,7 @@ mod message {
     /// Bank `0x0085` is MSB 1 and LSB 5, so CC 0 = 1 and CC 32 = 5, and a
     /// Program Change with no bank is not a bank.
     ///
-    /// Mutation (run): swapping `bank.lsb` and `bank.msb` in `bank_program`
+    /// Mutation (run): swapping the LSB and MSB in `Bank::bytes`
     /// → CC 0 is 5 → fails on both packets.
     #[test]
     fn a_bank_is_msb_then_lsb() {

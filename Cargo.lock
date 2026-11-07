@@ -4706,9 +4706,13 @@ dependencies = [
 
 [[package]]
 name = "tutti-rustysynth"
-version = "1.3.6"
+version = "0.0.1"
 dependencies = [
  "thiserror 2.0.21",
+ "tutti-fixtures",
+ "tutti-sf2",
+ "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]
@@ -4781,6 +4785,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-sf2"
+version = "0.0.1"
+dependencies = [
+ "thiserror 2.0.21",
+ "tutti-fixtures",
+ "tutti-ump",
+]
+
+[[package]]
 name = "tutti-shared-plugin"
 version = "0.1.0"
 dependencies = [
@@ -4818,6 +4831,7 @@ dependencies = [
  "tutti-midi-types",
  "tutti-nodes",
  "tutti-rustysynth",
+ "tutti-sf2",
  "tutti-types",
  "tutti-ump",
 ]

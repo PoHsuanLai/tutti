@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::envelope_stage::EnvelopeStage;
 use crate::soundfont_math::SoundFontMath;
 use crate::synthesizer_settings::SynthesizerSettings;
@@ -31,7 +29,7 @@ pub(crate) struct VolumeEnvelope {
 impl VolumeEnvelope {
     pub(crate) fn new(settings: &SynthesizerSettings) -> Self {
         Self {
-            sample_rate: settings.sample_rate,
+            sample_rate: settings.hz(),
             attack_slope: 0_f64,
             decay_slope: 0_f64,
             release_slope: 0_f64,

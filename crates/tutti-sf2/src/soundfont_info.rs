@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
 use crate::read_counter::ReadCounter;
@@ -27,15 +25,15 @@ pub struct SoundFontInfo {
 
 impl SoundFontInfo {
     pub(crate) fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let chunk_id = BinaryReader::read_four_cc(reader)?;
+        let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"LIST" {
             return Err(SoundFontError::ListChunkNotFound);
         }
 
-        let end = BinaryReader::read_u32(reader)? as usize;
+        let end = reader.read_u32()? as usize;
         let reader = &mut ReadCounter::new(reader);
 
-        let list_type = BinaryReader::read_four_cc(reader)?;
+        let list_type = reader.read_four_cc()?;
         if list_type != b"INFO" {
             return Err(SoundFontError::InvalidListChunkType {
                 expected: FourCC::from_bytes(*b"INFO"),
@@ -56,28 +54,21 @@ impl SoundFontInfo {
         let mut tools: Option<String> = None;
 
         while reader.bytes_read() < end {
-            let id = BinaryReader::read_four_cc(reader)?;
-            let size = BinaryReader::read_u32(reader)? as usize;
+            let id = reader.read_four_cc()?;
+            let size = reader.read_u32()? as usize;
 
             match id.as_bytes() {
                 b"ifil" => version = Some(SoundFontVersion::new(reader)?),
-                b"isng" => {
-                    target_sound_engine =
-                        Some(BinaryReader::read_fixed_length_string(reader, size)?)
-                }
-                b"INAM" => bank_name = Some(BinaryReader::read_fixed_length_string(reader, size)?),
-                b"irom" => rom_name = Some(BinaryReader::read_fixed_length_string(reader, size)?),
+                b"isng" => target_sound_engine = Some(reader.read_fixed_length_string(size)?),
+                b"INAM" => bank_name = Some(reader.read_fixed_length_string(size)?),
+                b"irom" => rom_name = Some(reader.read_fixed_length_string(size)?),
                 b"iver" => rom_version = Some(SoundFontVersion::new(reader)?),
-                b"ICRD" => {
-                    creation_date = Some(BinaryReader::read_fixed_length_string(reader, size)?)
-                }
-                b"IENG" => author = Some(BinaryReader::read_fixed_length_string(reader, size)?),
-                b"IPRD" => {
-                    target_product = Some(BinaryReader::read_fixed_length_string(reader, size)?)
-                }
-                b"ICOP" => copyright = Some(BinaryReader::read_fixed_length_string(reader, size)?),
-                b"ICMT" => comments = Some(BinaryReader::read_fixed_length_string(reader, size)?),
-                b"ISFT" => tools = Some(BinaryReader::read_fixed_length_string(reader, size)?),
+                b"ICRD" => creation_date = Some(reader.read_fixed_length_string(size)?),
+                b"IENG" => author = Some(reader.read_fixed_length_string(size)?),
+                b"IPRD" => target_product = Some(reader.read_fixed_length_string(size)?),
+                b"ICOP" => copyright = Some(reader.read_fixed_length_string(size)?),
+                b"ICMT" => comments = Some(reader.read_fixed_length_string(size)?),
+                b"ISFT" => tools = Some(reader.read_fixed_length_string(size)?),
                 _ => return Err(SoundFontError::ListContainsUnknownId(id)),
             }
         }
@@ -110,57 +101,57 @@ impl SoundFontInfo {
     }
 
     /// Gets the version of the SoundFont.
-    pub fn get_version(&self) -> &SoundFontVersion {
+    pub fn version(&self) -> &SoundFontVersion {
         &self.version
     }
 
     /// Gets the target sound engine of the SoundFont.
-    pub fn get_target_sound_engine(&self) -> &str {
+    pub fn target_sound_engine(&self) -> &str {
         &self.target_sound_engine
     }
 
     /// Gets the bank name of the SoundFont.
-    pub fn get_bank_name(&self) -> &str {
+    pub fn bank_name(&self) -> &str {
         &self.bank_name
     }
 
     /// Gets the ROM name of the SoundFont.
-    pub fn get_rom_name(&self) -> &str {
+    pub fn rom_name(&self) -> &str {
         &self.rom_name
     }
 
     /// Gets the ROM version of the SoundFont.
-    pub fn get_rom_version(&self) -> &SoundFontVersion {
+    pub fn rom_version(&self) -> &SoundFontVersion {
         &self.rom_version
     }
 
     /// Gets the creation date of the SoundFont.
-    pub fn get_creation_date(&self) -> &str {
+    pub fn creation_date(&self) -> &str {
         &self.creation_date
     }
 
     /// Gets the auther of the SoundFont.
-    pub fn get_author(&self) -> &str {
+    pub fn author(&self) -> &str {
         &self.author
     }
 
     /// Gets the target product of the SoundFont.
-    pub fn get_target_product(&self) -> &str {
+    pub fn target_product(&self) -> &str {
         &self.target_product
     }
 
     /// Gets the copyright message for the SoundFont.
-    pub fn get_copyright(&self) -> &str {
+    pub fn copyright(&self) -> &str {
         &self.copyright
     }
 
     /// Gets the comments for the SoundFont.
-    pub fn get_comments(&self) -> &str {
+    pub fn comments(&self) -> &str {
         &self.comments
     }
 
     /// Gets the tools used to create the SoundFont.
-    pub fn get_tools(&self) -> &str {
+    pub fn tools(&self) -> &str {
         &self.tools
     }
 }

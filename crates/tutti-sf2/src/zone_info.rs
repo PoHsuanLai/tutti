@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 
 #[non_exhaustive]
@@ -13,8 +13,8 @@ pub(crate) struct ZoneInfo {
 
 impl ZoneInfo {
     fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let generator_index = BinaryReader::read_u16(reader)? as i32;
-        let modulator_index = BinaryReader::read_u16(reader)? as i32;
+        let generator_index = reader.read_u16()? as i32;
+        let modulator_index = reader.read_u16()? as i32;
 
         Ok(Self {
             generator_index,

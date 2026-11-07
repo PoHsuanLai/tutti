@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Read;
 
-use crate::binary_reader::BinaryReader;
+use crate::binary_reader::ReadExt;
 use crate::error::SoundFontError;
 
 /// Represents a sample in the SoundFont.
@@ -23,16 +21,16 @@ pub struct SampleHeader {
 
 impl SampleHeader {
     fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
-        let name = BinaryReader::read_fixed_length_string(reader, 20)?;
-        let start = BinaryReader::read_i32(reader)?;
-        let end = BinaryReader::read_i32(reader)?;
-        let start_loop = BinaryReader::read_i32(reader)?;
-        let end_loop = BinaryReader::read_i32(reader)?;
-        let sample_rate = BinaryReader::read_i32(reader)?;
-        let original_pitch = BinaryReader::read_u8(reader)?;
-        let pitch_correction = BinaryReader::read_i8(reader)?;
-        let link = BinaryReader::read_u16(reader)?;
-        let sample_type = BinaryReader::read_u16(reader)?;
+        let name = reader.read_fixed_length_string(20)?;
+        let start = reader.read_i32()?;
+        let end = reader.read_i32()?;
+        let start_loop = reader.read_i32()?;
+        let end_loop = reader.read_i32()?;
+        let sample_rate = reader.read_i32()?;
+        let original_pitch = reader.read_u8()?;
+        let pitch_correction = reader.read_i8()?;
+        let link = reader.read_u16()?;
+        let sample_type = reader.read_u16()?;
 
         Ok(Self {
             name,
@@ -70,52 +68,52 @@ impl SampleHeader {
     }
 
     /// Gets the name of the sample.
-    pub fn get_name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
     /// Gets the start point of the sample in the sample data.
-    pub fn get_start(&self) -> i32 {
+    pub fn start(&self) -> i32 {
         self.start
     }
 
     /// Gets the end point of the sample in the sample data.
-    pub fn get_end(&self) -> i32 {
+    pub fn end(&self) -> i32 {
         self.end
     }
 
     /// Gets the loop start point of the sample in the sample data.
-    pub fn get_start_loop(&self) -> i32 {
+    pub fn start_loop(&self) -> i32 {
         self.start_loop
     }
 
     /// Gets the loop end point of the sample in the sample data.
-    pub fn get_end_loop(&self) -> i32 {
+    pub fn end_loop(&self) -> i32 {
         self.end_loop
     }
 
     /// Gets the sample rate of the sample.
-    pub fn get_sample_rate(&self) -> i32 {
+    pub fn sample_rate(&self) -> i32 {
         self.sample_rate
     }
 
     /// Gets the key number of the recorded pitch of the sample.
-    pub fn get_original_pitch(&self) -> i32 {
+    pub fn original_pitch(&self) -> i32 {
         self.original_pitch as i32
     }
 
     /// Gets the pitch correction in cents that should be applied to the sample on playback.
-    pub fn get_pitch_correction(&self) -> i32 {
+    pub fn pitch_correction(&self) -> i32 {
         self.pitch_correction as i32
     }
 
     /// Gets the link info.
-    pub fn get_link(&self) -> i32 {
+    pub fn link(&self) -> i32 {
         self.link as i32
     }
 
     /// Gets the sample type.
-    pub fn get_sample_type(&self) -> i32 {
+    pub fn sample_type(&self) -> i32 {
         self.sample_type as i32
     }
 }

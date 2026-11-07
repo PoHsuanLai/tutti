@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::lfo::Lfo;
 use crate::modulation_envelope::ModulationEnvelope;
 use crate::oscillator::Oscillator;
@@ -7,13 +5,12 @@ use crate::region_pair::RegionPair;
 use crate::soundfont_math::SoundFontMath;
 use crate::volume_envelope::VolumeEnvelope;
 
-#[allow(unused)]
 #[non_exhaustive]
 pub(crate) struct RegionEx {}
 
 impl RegionEx {
     pub(crate) fn start_oscillator(oscillator: &mut Oscillator, region: &RegionPair) {
-        let sample_rate = region.instrument.sample_sample_rate;
+        let sample_rate = region.instrument.sample_rate();
         let loop_mode = region.get_sample_modes();
         let start = region.get_sample_start();
         let end = region.get_sample_end();

@@ -48,7 +48,7 @@ mod ump;
 pub use cc_number::CCNumber;
 pub use decode::decode;
 pub use field::{
-    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, Pitch, SharpsFlats, U4, U7, U14,
+    DeltaTicks, FirstGroup, FunctionBlockId, GroupSpan, NoteNumber, OutOfRange, Pitch, SharpsFlats, U4, U7, U14,
 };
 pub use message::{
     Accidental, Address, Alteration, AlterationKind, Attribute, Bank, BlockFilter, BlockSelect,

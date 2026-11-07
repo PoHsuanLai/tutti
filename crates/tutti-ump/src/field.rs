@@ -4,6 +4,24 @@
 //! The public constructor refuses a value out of range. The codec builds one
 //! from bits it has just masked, through the private `wire`.
 
+/// A raw number above the largest the type holds, from `TryFrom<u8>` on an
+/// address type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutOfRange {
+    /// The refused number.
+    pub value: u8,
+    /// The largest the type accepts.
+    pub max: u8,
+}
+
+impl core::fmt::Display for OutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{} is above the largest value, {}", self.value, self.max)
+    }
+}
+
+impl std::error::Error for OutOfRange {}
+
 // A bit-width field: `new` refuses above `MAX`, `wire` masks.
 macro_rules! bits {
     ($(#[$doc:meta])* $name:ident, $repr:ty, $width:expr) => {

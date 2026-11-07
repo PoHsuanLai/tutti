@@ -30,16 +30,18 @@
 //! Change message is 7-bit any more, and the range is a property of the format
 //! rather than a legacy carry-over.
 
+use crate::OutOfRange;
+
 /// One of the 128 MIDI Control Change controllers.
 ///
 /// Always in `0..=127`: [`new`](Self::new) refuses a larger number, and
 /// [`masked`](Self::masked) is the one constructor that masks.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-// `transparent` for the same reason `MidiChannel` has it: a `CCNumber` is `74`
-// on the wire, not `[74]`.
+// Serialized as the bare number, and read back through `TryFrom<u8>`, so a
+// document cannot carry a value the type refuses.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(transparent))]
+#[cfg_attr(feature = "serde", serde(try_from = "u8", into = "u8"))]
 pub struct CCNumber(u8);
 
 impl CCNumber {
@@ -179,6 +181,15 @@ impl CCNumber {
     }
 }
 
+impl TryFrom<u8> for CCNumber {
+    type Error = OutOfRange;
+
+    #[inline]
+    fn try_from(raw: u8) -> Result<Self, OutOfRange> {
+        Self::new(raw).ok_or(OutOfRange { value: raw, max: Self::LAST.0 })
+    }
+}
+
 impl From<CCNumber> for u8 {
     #[inline]
     fn from(n: CCNumber) -> u8 {
@@ -186,7 +197,7 @@ impl From<CCNumber> for u8 {
     }
 }
 
-// Deliberately no `From<u8> for CCNumber`, for the same reason `MidiChannel`
+// Deliberately no infallible `From<u8> for CCNumber`, for the same reason `MidiChannel`
 // refuses one: the conversion would mask or fail, and a lossy conversion inside
 // a trait that promises not to lose data is exactly what `ChannelLayout`
 // refused a reverse `From` for.
@@ -194,6 +205,17 @@ impl From<CCNumber> for u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn try_from_agrees_with_new() {
+        for raw in 0..=255u8 {
+            assert_eq!(CCNumber::try_from(raw).ok(), CCNumber::new(raw));
+        }
+        assert_eq!(
+            CCNumber::try_from(128),
+            Err(OutOfRange { value: 128, max: 127 })
+        );
+    }
 
     #[test]
     fn a_cc_number_out_of_range_is_refused() {

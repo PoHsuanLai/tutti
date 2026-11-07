@@ -4,9 +4,9 @@ use std::sync::Mutex;
 
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
-use crate::capability::EndpointId;
 use crate::error::{Error, Result};
 use tutti_alsa_ump_sys as sys;
+use tutti_midi_device::EndpointId;
 use tutti_midi_types::MidiOut;
 use tutti_midi_types::ump::MidiEvent;
 

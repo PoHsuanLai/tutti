@@ -26,7 +26,7 @@
     reason = "FFI type names mirror alsa-lib's C spelling, so a reader can grep the header"
 )]
 
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_short, c_uint, c_void};
 
 /// Opaque sequencer handle.
 #[derive(Debug)]
@@ -109,6 +109,13 @@ pub const SND_SEQ_NONBLOCK: c_int = 1;
 
 /// `SND_SEQ_CLIENT_UMP_MIDI_2_0` — the client speaks UMP with MIDI 2.0 protocol.
 pub const SND_SEQ_CLIENT_UMP_MIDI_2_0: c_int = 2;
+
+/// `SND_SEQ_CLIENT_SYSTEM` — the kernel's own client, which owns the announce
+/// port.
+pub const SND_SEQ_CLIENT_SYSTEM: c_int = 0;
+/// `SND_SEQ_PORT_SYSTEM_ANNOUNCE` — the system client's port that sends an event
+/// whenever a client or port starts, exits or changes.
+pub const SND_SEQ_PORT_SYSTEM_ANNOUNCE: c_int = 1;
 
 /// `SND_SEQ_ADDRESS_SUBSCRIBERS` — deliver to everything subscribed to the
 /// sending port, rather than to one named address.
@@ -226,6 +233,16 @@ unsafe extern "C" {
     /// must be copied out, never retained.
     pub fn snd_seq_ump_event_input(seq: *mut snd_seq_t, ev: *mut *mut snd_seq_ump_event_t)
     -> c_int;
+    /// How many poll descriptors the client needs for `events` (`POLLIN`).
+    pub fn snd_seq_poll_descriptors_count(seq: *mut snd_seq_t, events: c_short) -> c_int;
+    /// Fill `pfds` (an array of `struct pollfd`, `space` long) for `events`;
+    /// returns how many it filled.
+    pub fn snd_seq_poll_descriptors(
+        seq: *mut snd_seq_t,
+        pfds: *mut c_void,
+        space: c_uint,
+        events: c_short,
+    ) -> c_int;
     /// Send one UMP event immediately, bypassing the queue.
     pub fn snd_seq_ump_event_output_direct(
         seq: *mut snd_seq_t,

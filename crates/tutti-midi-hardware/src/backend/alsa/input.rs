@@ -7,10 +7,10 @@ use std::time::Instant;
 use super::client::{SeqClient, check};
 use super::enumerate::unpack_id;
 use crate::InputProducerHandle;
-use crate::capability::EndpointId;
 use crate::endpoints::InputConnection;
 use crate::error::Result;
 use tutti_alsa_ump_sys as sys;
+use tutti_midi_device::EndpointId;
 use tutti_midi_types::ump::split_ump_stream;
 
 /// How long the pump sleeps when the queue is empty.

@@ -1,48 +1,43 @@
-//! Enumerate this machine's MIDI endpoints and what each can carry.
+//! List this machine's MIDI devices and what each can carry, then watch for
+//! devices coming and going.
 //!
-//! Prints, per endpoint, the [`EndpointId`](tutti_midi_hardware::EndpointId)
-//! raw value to open it by, the OS-reported name, and the protocol the OS says
-//! it speaks. Expect `Midi1` for most of it: most hardware in the world is still
-//! MIDI 1.0, and only a `Midi2` endpoint carries per-note controllers and JR
-//! Timestamps to the wire.
+//! Prints, per device, its id, its name and the protocol the OS says it speaks.
+//! Expect `Midi1` for most of it: most hardware in the world is still MIDI 1.0,
+//! and only a `Midi2` device carries per-note controllers and JR Timestamps to
+//! the wire. Then it waits ten seconds and prints each change.
 //!
-//! No flag is needed — this crate has no cargo features.
+//! No flag is needed: this crate has no cargo features.
 //!
 //! ```text
 //! cargo run --example list_devices
 //! ```
 
-use std::sync::Arc;
-use tutti_midi_hardware::{HardwareMidiInputs, MidiSession};
+use std::time::{Duration, Instant};
 
-fn main() {
-    let session = MidiSession::new(Arc::new(HardwareMidiInputs::new(256)));
+use tutti_midi_hardware::{Devices, Error};
 
-    for (label, endpoints) in [
-        ("MIDI Input Endpoints", session.inputs()),
-        ("MIDI Output Endpoints", session.outputs()),
-    ] {
-        println!("=== {label} ===");
-        if endpoints.is_empty() {
-            println!("  (none found)");
-        }
-        for e in &endpoints {
-            // The protocol is what the OS reports for that endpoint, not the one
-            // ports are opened with — most hardware is still MIDI 1.0, and only
-            // a MIDI-2.0 endpoint carries per-note controllers and JR
-            // Timestamps.
-            println!(
-                "  [{:>10}] {:<32} {:?}{}",
-                e.id.raw(),
-                e.name,
-                e.capability.protocol,
-                if e.capability.function_blocks.is_empty() {
-                    String::new()
-                } else {
-                    format!("  ({} function blocks)", e.capability.function_blocks.len())
-                }
-            );
-        }
-        println!();
+fn main() -> Result<(), Error> {
+    let devices = Devices::open()?;
+
+    println!("=== MIDI devices ===");
+    let list = devices.list();
+    if list.is_empty() {
+        println!("  (none found)");
     }
+    for d in &list {
+        let protocol = devices.capability(&d.id).map(|c| c.protocol);
+        println!(
+            "  {:<48} {:<32} {:?} {protocol:?}",
+            d.id, d.name, d.direction
+        );
+    }
+
+    println!("\nwatching for 10 s; plug or unplug a device");
+    let until = Instant::now() + Duration::from_secs(10);
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        for event in devices.wait(left) {
+            println!("  {event:?}");
+        }
+    }
+    Ok(())
 }

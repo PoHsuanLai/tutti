@@ -1,7 +1,11 @@
 use super::*;
 use crate::InputProducerHandle;
+use crate::capability::EndpointInfo;
+use crate::devices::{ChangeSink, os_devices};
+use crate::endpoints::{NoWatch, Watch};
 use crate::test_support::FakeBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_midi_device::EndpointId;
 
 // The fake backend is in `crate::test_support` so `bevy-tutti` can test
 // its own session wiring against it: a headless CI box has no MIDI port.
@@ -15,10 +19,19 @@ fn session() -> (MidiSession, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let (backend, counters) = FakeBackend::build();
     let ports = Arc::new(HardwareMidiInputs::new(64));
     (
-        MidiSession::with_backend(backend, ports),
+        MidiSession::with_backend(backend, ports).unwrap(),
         counters.sent,
         counters.opens,
     )
+}
+
+/// The id of the input listed under `name`.
+fn input(s: &MidiSession, name: &str) -> DeviceId {
+    s.inputs()
+        .into_iter()
+        .find(|d| d.name == name)
+        .unwrap_or_else(|| panic!("no input {name}"))
+        .id
 }
 
 fn note() -> MidiEvent {
@@ -31,14 +44,15 @@ fn enumeration_passes_the_backend_through() {
     let (s, _, _) = session();
     assert_eq!(s.inputs().len(), 2);
     assert_eq!(s.outputs().len(), 2);
-    assert_eq!(s.inputs()[0].name, "Keystep Pro");
+    let names: Vec<_> = s.inputs().into_iter().map(|d| d.name).collect();
+    assert_eq!(names, ["IAC Bus 1", "Keystep Pro"], "ordered by id");
 }
 
 #[test]
 fn connecting_an_input_makes_it_connected() {
     let (s, _, _) = session();
     assert!(!s.is_any_input_connected());
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
     assert!(s.is_any_input_connected());
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
 }
@@ -48,8 +62,8 @@ fn connecting_an_input_makes_it_connected() {
 #[test]
 fn connecting_an_open_input_is_idempotent() {
     let (s, _, opens) = session();
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
     assert_eq!(opens.load(Ordering::SeqCst), 1, "the port opens once");
     assert_eq!(s.connected_input_names().len(), 1);
 }
@@ -63,17 +77,26 @@ fn by_name_matching_is_case_insensitive_substring() {
 
 #[test]
 fn connecting_an_absent_device_is_an_error_not_a_silent_noop() {
-    let (s, _, _) = session();
+    let (backend, counters) = FakeBackend::build();
+    let s = MidiSession::with_backend(backend, Arc::new(HardwareMidiInputs::new(64))).unwrap();
     assert!(s.connect_input_by_name("nonexistent").is_err());
-    assert!(s.connect_input(EndpointId::from_raw(999)).is_err());
+    // An id that was listed and is gone: the shape of a stale id.
+    let gone = input(&s, "IAC Bus 1");
+    counters.unplug(EndpointId::from_raw(2));
+    assert!(
+        !s.devices()
+            .wait(std::time::Duration::from_secs(10))
+            .is_empty()
+    );
+    assert!(s.connect_input(&gone).is_err());
     assert!(!s.is_any_input_connected());
 }
 
 #[test]
 fn disconnecting_closes_only_the_named_input() {
     let (s, _, _) = session();
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
-    s.connect_input(EndpointId::from_raw(2)).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+    s.connect_input(&input(&s, "IAC Bus 1")).unwrap();
     s.disconnect_input_by_name("iac");
     assert_eq!(s.connected_input_names(), vec!["Keystep Pro".to_string()]);
     s.disconnect_all_inputs();
@@ -117,7 +140,7 @@ fn a_refusing_output_reports_zero_accepted() {
     let (backend, counters) = FakeBackend::build_accepting(0);
     let sent = counters.sent;
     let ports = Arc::new(HardwareMidiInputs::new(64));
-    let s = MidiSession::with_backend(backend, ports);
+    let s = MidiSession::with_backend(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
     assert!(s.is_output_connected(), "the output is open");
@@ -134,7 +157,7 @@ fn a_refusing_output_reports_zero_accepted() {
 fn a_partial_accept_reports_what_landed() {
     let (backend, _counters) = FakeBackend::build_accepting(1);
     let ports = Arc::new(HardwareMidiInputs::new(64));
-    let s = MidiSession::with_backend(backend, ports);
+    let s = MidiSession::with_backend(backend, ports).unwrap();
     s.connect_output_by_name("synth a").unwrap();
 
     assert_eq!(s.send(&[note(), note(), note()]), 1);
@@ -160,9 +183,10 @@ fn disconnecting_output_stops_delivery() {
 #[test]
 fn connecting_a_second_output_replaces_the_first() {
     let (s, _, _) = session();
-    s.connect_output(EndpointId::from_raw(10)).unwrap();
-    s.connect_output(EndpointId::from_raw(11)).unwrap();
-    assert_eq!(s.output_endpoint(), Some(EndpointId::from_raw(11)));
+    let output = |name: &str| s.outputs().into_iter().find(|d| d.name == name).unwrap().id;
+    s.connect_output(&output("Synth A")).unwrap();
+    s.connect_output(&output("IAC Bus 1")).unwrap();
+    assert_eq!(s.output_device(), Some(output("IAC Bus 1")));
     assert_eq!(s.output_device_name(), Some("IAC Bus 1".to_string()));
 }
 
@@ -189,12 +213,12 @@ fn the_midi_out_impl_routes_to_the_open_output() {
 #[test]
 fn hot_plug_cycles_keep_the_port_set_bounded() {
     let (s, _, opens) = session();
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
-    s.connect_input(EndpointId::from_raw(2)).unwrap();
+    s.connect_input(&input(&s, "Keystep Pro")).unwrap();
+    s.connect_input(&input(&s, "IAC Bus 1")).unwrap();
     for cycle in 0..100 {
-        s.disconnect_input(EndpointId::from_raw(1));
+        s.disconnect_input(&input(&s, "Keystep Pro"));
         assert_eq!(s.ports().list_input_ports().len(), 1, "cycle {cycle}");
-        s.connect_input(EndpointId::from_raw(1)).unwrap();
+        s.connect_input(&input(&s, "Keystep Pro")).unwrap();
         assert_eq!(s.ports().list_input_ports().len(), 2, "cycle {cycle}");
         assert_eq!(s.ports().slot_count(), 2, "cycle {cycle}");
     }
@@ -236,6 +260,10 @@ impl Drop for LoggingBackend {
 }
 
 impl MidiEndpoints for LoggingBackend {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        sink.seed(os_devices(&self.inputs(), &[]));
+        Ok(Box::new(NoWatch))
+    }
     fn inputs(&self) -> Vec<EndpointInfo> {
         vec![crate::test_support::endpoint(1, "Logged")]
     }
@@ -267,7 +295,10 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
         refuse,
     };
     let ports = Arc::new(HardwareMidiInputs::new(16));
-    (MidiSession::with_backend(Box::new(backend), ports), log)
+    (
+        MidiSession::with_backend(Box::new(backend), ports).unwrap(),
+        log,
+    )
 }
 
 /// Dropping the session closes its inputs before the backend they were
@@ -281,7 +312,7 @@ fn logging_session(refuse: bool) -> (MidiSession, Arc<Mutex<Vec<&'static str>>>)
 #[test]
 fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
     let (s, log) = logging_session(false);
-    s.connect_input(EndpointId::from_raw(1)).unwrap();
+    s.connect_input(&input(&s, "Logged")).unwrap();
     let ports = Arc::clone(s.ports());
     assert_eq!(ports.list_input_ports().len(), 1);
 
@@ -301,7 +332,7 @@ fn dropping_the_session_closes_inputs_then_the_backend_and_retires_ports() {
 fn a_refused_open_leaves_no_port() {
     let (s, _log) = logging_session(true);
     for _ in 0..3 {
-        assert!(s.connect_input(EndpointId::from_raw(1)).is_err());
+        assert!(s.connect_input(&input(&s, "Logged")).is_err());
     }
     assert!(!s.is_any_input_connected());
     assert!(s.ports().list_input_ports().is_empty());

@@ -22,18 +22,24 @@
 //! `snd_seq_ump_event_input` blocks, so each open input runs a pump thread that
 //! reads and pushes into the connection's [`InputProducerHandle`] — the same
 //! ring CoreMIDI's callback feeds. The thread exits when its connection drops.
+//!
+//! One more thread watches the `System:Announce` port for devices that come and
+//! go ([`watch`]); it exists while a `Devices` does.
 
 mod client;
 mod enumerate;
 mod input;
 mod output;
+mod watch;
 
 use crate::InputProducerHandle;
-use crate::capability::{EndpointId, EndpointInfo};
-use crate::endpoints::{InputConnection, MidiEndpoints};
+use crate::capability::EndpointInfo;
+use crate::devices::{ChangeSink, os_devices};
+use crate::endpoints::{InputConnection, MidiEndpoints, Watch};
 use crate::error::Result;
 use client::SeqClient;
 use enumerate::Direction;
+use tutti_midi_device::{EndpointId, OsDevice};
 use tutti_midi_types::MidiOut;
 
 /// The Linux [`MidiEndpoints`] implementation.
@@ -66,7 +72,24 @@ impl AlsaEndpoints {
     }
 }
 
+impl AlsaEndpoints {
+    /// Every device now, from one client; `None` when the sequencer will not
+    /// open, which is not the same as no devices.
+    fn devices() -> Option<Vec<OsDevice>> {
+        let seq = SeqClient::open("tutti-enum", true)
+            .inspect_err(|e| tracing::debug!("ALSA enumeration: {e}"))
+            .ok()?;
+        let inputs = enumerate::endpoints(&seq, Direction::Input);
+        let outputs = enumerate::endpoints(&seq, Direction::Output);
+        Some(os_devices(&inputs, &outputs))
+    }
+}
+
 impl MidiEndpoints for AlsaEndpoints {
+    fn watch(&self, sink: ChangeSink) -> Result<Box<dyn Watch>> {
+        watch::start(sink, Self::devices)
+    }
+
     fn inputs(&self) -> Vec<EndpointInfo> {
         Self::list(Direction::Input)
     }

@@ -100,7 +100,7 @@ jobs:
       # And `tutti-midi-protocol`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-plugin-db`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_plugin_db catalog database facts fs pedal record scanner
+      - run: scripts/check-canonical-paths.sh tutti_plugin_db facts format fs pedal scanner store table
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter interp swept_delay waveshape resample
       # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
@@ -268,7 +268,7 @@ jobs:
       #                         link, built and its suite run with it on
       #   tutti-clap-host/clap-extras — tests/unit_tests.rs's 5 extension tests
       #                         and the extension code they cover
-      #   tutti-plugin-db/json — `JsonCatalog` and its tests
+      #   tutti-plugin-db/json — `save`, `load` and their tests
       #   tutti-plugin/clap,vst2 — 33 CLAP and 49 in-process VST2 tests (the
       #                         `clap_*`, `plugin_param_delivery*` and
       #                         `vst2_in_process*` suites): no other job turns
@@ -657,11 +657,11 @@ jobs:
   # Miri over the non-FFI `unsafe`. See docs/design/012-unsafe-policy.md for
   # why this crate and not the rest: ~95% of this repo's `unsafe` is a C
   # ABI, which miri does not execute at all, and out-of-process hosting is the
-  # structural answer there instead. Of what is left, the two that matter are
-  # the aliasing in `tutti-rt`'s `AudioThreadCell` and `arc-lend`'s
-  # hazard-slot reclamation (`ArcLend`, its own crate). (The third, the pointer arithmetic in
-  # `tutti-node`'s planar buffers, went with that crate: a
-  # graph node's buffers are `tutti-graph`'s, which forbids `unsafe`.)
+  # structural answer there instead. Of what is left, the ones that matter
+  # are `tutti-rt`'s: the aliasing in `AudioThreadCell`, the claims behind
+  # `SplitMut`/`SplitRw`, `JobGate`'s job cell and `edit_ring`'s slot words
+  # (their unit tests, `--lib` below, run under miri), and `arc-lend`'s
+  # hazard-slot reclamation (`ArcLend`, its own crate).
   #
   # Its own job because it needs nightly and is slow — minutes, not seconds —
   # and because a failure here should read as "a memory-safety claim broke",
@@ -698,6 +698,11 @@ jobs:
       # timeout under miri. They test a debug-only policy check, which the
       # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
       - run: cargo +nightly miri test --locked -p tutti-rt --lib
+      # The thread hand-over of `edit_ring` under 16 schedules: one seed
+      # explores one interleaving.
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits
+        env:
+          MIRIFLAGS: -Zmiri-many-seeds=0..16
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
       - run: cargo +nightly miri test --locked -p arc-lend
       # Its unit tests again over 16 scheduling seeds: the small

@@ -3,18 +3,18 @@
 //! # What is *not* here
 //!
 //! Most catalog operations need no wrapper. `blacklist`, `unblacklist`,
-//! `clear_blacklist`, `remove`, `records`, `find`, `info`, `prune_missing`,
-//! `recover_crash` and `flush` are all cheap, synchronous calls on
+//! `clear_blacklist`, `remove`, `entries`, `find`, `info`, `prune_missing`,
+//! `recover_crash` and `save` are all cheap, synchronous calls on
 //! [`PluginsRes`] — a host reaches them through `ResMut<PluginsRes>` directly.
 //! Wrapping each in a message-and-system pair would be a second way to say the
 //! same thing, and the two would drift.
 //!
 //! Two facts a host does need to know, because nothing enforces them:
 //!
-//! - **Mutations are in-memory until `flush`.** `blacklist`, `unblacklist`,
+//! - **Mutations are in-memory until `save`.** `blacklist`, `unblacklist`,
 //!   `remove` and [`ProbePlugin`] all edit the live catalog and nothing else. A
-//!   host that never calls `PluginsRes::flush` loses them at exit.
-//! - **Blacklisted records are invisible.** `records()`, `iter()` and `find()`
+//!   host that never calls `Plugins::save` loses them at exit.
+//! - **Blacklisted files are invisible.** `entries()`, `iter()` and `find()`
 //!   all skip them, so a plugin hidden by a scan is simply absent with no
 //!   explanation. `ScanResult::newly_blacklisted` on
 //!   [`PluginsScanned`](super::PluginsScanned) is the signal to say something,
@@ -36,7 +36,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 
 use tutti_plugin::BridgeError;
 use tutti_plugin::catalog::{PluginId, probe_record};
-use tutti_plugin_db::PluginRecord;
+use tutti_plugin_db::Delta;
 
 use crate::plugin_host::PluginsRes;
 
@@ -53,8 +53,8 @@ pub struct ProbePlugin(
 
 /// Outcome of a [`ProbePlugin`].
 ///
-/// `Ok` means the record is in the live catalog. It is **not** yet persisted —
-/// call `PluginsRes::flush` for that.
+/// `Ok` means the file's row is in the live catalog. It is **not** yet persisted —
+/// call `Plugins::save` for that.
 #[derive(Message, Debug)]
 pub struct PluginProbed {
     /// The path that was probed, echoed back so a caller can match the request.
@@ -69,7 +69,7 @@ pub struct PluginProbed {
 /// Private: [`start_probe`] fills this and [`poll_probes`] drains it.
 #[derive(Resource, Default, Debug)]
 pub struct InFlightProbes {
-    tasks: std::collections::HashMap<std::path::PathBuf, Task<Result<PluginRecord, BridgeError>>>,
+    tasks: std::collections::HashMap<std::path::PathBuf, Task<Result<Delta, BridgeError>>>,
 }
 
 impl InFlightProbes {
@@ -117,13 +117,13 @@ pub fn poll_probes(
     if in_flight.tasks.is_empty() {
         return;
     }
-    // Absent while a rescan owns the catalog. Leave the tasks in place — they
+    // Absent if the host removed the catalog. Leave the tasks in place — they
     // are finished either way, and the next frame can install them.
     let Some(mut plugins) = plugins else {
         return;
     };
 
-    let mut done: Vec<(std::path::PathBuf, Result<PluginRecord, BridgeError>)> = Vec::new();
+    let mut done: Vec<(std::path::PathBuf, Result<Delta, BridgeError>)> = Vec::new();
     for (path, task) in in_flight.tasks.iter_mut() {
         if let Some(result) = block_on(future::poll_once(task)) {
             done.push((path.clone(), result));
@@ -133,9 +133,10 @@ pub fn poll_probes(
     for (path, result) in done {
         in_flight.tasks.remove(&path);
         let outcome = match result {
-            Ok(record) => {
-                info!("probed plugin '{}'", record.descriptor.name);
-                Ok(plugins.0.register_record(record))
+            Ok(delta) => {
+                info!("probed plugin file '{}'", path.display());
+                plugins.0.apply(delta);
+                Ok(PluginId::from_path(path.clone()))
             }
             Err(e) => {
                 warn!("failed to probe '{}': {e}", path.display());

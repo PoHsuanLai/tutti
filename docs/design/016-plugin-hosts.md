@@ -1508,27 +1508,24 @@ pub struct FileFacts {
     pub format: Option<PluginFormat>,
 }
 
-pub fn classify(record: Option<&PluginRecord>, facts: &FileFacts) -> ScanDecision;
-pub fn needs_rescan(record: &PluginRecord, facts: &FileFacts) -> bool;
-pub fn is_blacklisted_and_unchanged(record: &PluginRecord, facts: &FileFacts) -> bool;
-pub fn blacklist_record(existing: Option<&PluginRecord>, path: &Path, reason: String, facts: &FileFacts) -> PluginRecord;
-pub fn missing<'a>(records: impl Iterator<Item = &'a PluginRecord>, present: &HashSet<PathBuf>) -> Vec<PathBuf>;
-pub fn parse_records(text: &str) -> Result<HashMap<PathBuf, PluginRecord>, serde_json::Error>; // `json` feature
+pub fn classify(row: Option<&FileRow>, facts: &FileFacts) -> ScanDecision;
+pub fn needs_rescan(row: &FileRow, facts: &FileFacts) -> bool;
+pub fn is_blacklisted_and_unchanged(row: &FileRow, facts: &FileFacts) -> bool;
+pub fn missing<'a>(paths: impl Iterator<Item = &'a Path>, present: &HashSet<PathBuf>) -> Vec<PathBuf>;
 fn parse_pedal(text: &str) -> Option<PathBuf>;                                                    // private to the pedal
 ```
 
 `ScanDecision` is `Blacklisted | UpToDate | Probe`. `scan` is the IO: it walks the
 directories (`discover`, `fs.rs`), reads each file's `FileFacts` once
 (`FileFacts::read`, one `stat`), and calls `classify`, then probes with the same
-facts, so the record is stamped with the time the decision saw. The catalog's
-default methods that read the filesystem take the facts instead
+facts, so the row is stamped with the time the decision saw. The database's
+methods that read the filesystem take the facts instead
 (`needs_rescan(path, &facts)`, `blacklist(path, reason, &facts)`), and
-`prune_missing` takes the set of paths the caller found present. `JsonCatalog::load`
-and `Pedal::recover` keep the read, the rename and the remove, and call
-`parse_records` and `parse_pedal` for the decision. `blacklist_record` always
-stamps the facts' time, existing record or stub: keeping the old time left a
-blacklisted record whose file had changed looking changed, so it was re-probed on
-every scan. `discover` keys on the path's extension. `FileFacts::read` takes a
+`prune_missing` takes the set of paths the caller found present. `load`
+keeps the read and the rename; `Pedal::recover` keeps the read and the remove
+and calls `parse_pedal` for the decision. `FileRow::blacklisted` always stamps the facts'
+time: keeping an old time left a blacklisted row whose file had changed looking
+changed, so it was re-probed on every scan. `discover` keys on the path's extension. `FileFacts::read` takes a
 plugin bundle's time as the later of the directory's and its module's, the module found
 by `tutti_plugin_types::bundle` (`native_module_in_bundle`, then
 `any_module_in_bundle`), because replacing the binary leaves the directory's time
@@ -1826,7 +1823,7 @@ splits: `AuProcessor` (render and MIDI from the render thread) and `AuController
   from_u64}`; AU's public raw `AudioComponent` and `raw_unit`.
 - The `Active` trait and the `DerefMut` from the active type to the loaded one;
   the CLAP `AudioThreadClaim`, which the Processor's `&mut` replaces.
-- The filesystem-reading default methods of `CatalogExt`.
+- The filesystem-reading default methods of `CatalogExt` (the trait itself is gone: `PluginDb` is a plain table).
 - `Vst2Instance`'s `Sync`.
 
 Each break is recorded with migration notes in the description of the pull

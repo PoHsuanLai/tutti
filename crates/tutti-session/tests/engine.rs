@@ -469,3 +469,91 @@ fn a_detached_render_feeds_a_tap() {
     assert_eq!(tap.pop_into(&mut got), Samples(3));
     assert_eq!(got, [0.5; 3]);
 }
+
+/// A source that plays 0.5 only while the transport rolls, as every
+/// transport-gated source (a clip, a click, a sampler voice) does.
+struct Gated;
+
+impl tutti_graph::Node for Gated {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::EMPTY, ChannelLayout::MONO)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        for k in cx.env.offsets() {
+            io.output(0)[k.index()] = if cx.env.transport_at(k).playing {
+                0.5
+            } else {
+                0.0
+            };
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// **What a take sees across a transport stop and start.** A tap is the
+/// graph's signal before the engine's declick fader. A transport-gated source
+/// (a clip, a click, a sampler voice) stops on the stop's frame, so at a
+/// declicked stop the tap steps from the source's whole level to silence in
+/// one frame while the device output has faded to it over the declick (10 ms):
+/// a recording through a tap has a click at every stop of such a source, which
+/// the old post-fader capture did not. A source that keeps running through the
+/// stop (live input, a reverb tail) has none. At a start the output has no fade
+/// either (`Play` is not declicked), so the output and the tap step alike.
+/// The post-fade write is the fix for the stop (not in this change).
+///
+/// This is a characterisation, so it has no mutation of its own: it fails if
+/// the declick stops being a ramp in the output, or the tap stops being
+/// pre-fade (a tap fed after the fader would ramp too).
+#[test]
+fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
+    use tutti_types::{At, Frame};
+    let mut s = offline();
+    let (gate, _) = s.graph().add(tutti_graph::Unforkable(Gated));
+    s.graph().set_output_source(0, GraphSource::Node(gate, 0));
+    s.graph().set_output_source(1, GraphSource::Node(gate, 0));
+    let mut tap = s.graph().open_output_tap(Samples(16_384));
+    s.update();
+    let motion = &s.transport().motion;
+    motion.try_send(MotionEvent::Play).expect("room");
+    motion
+        .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())
+        .expect("room");
+    motion
+        .schedule(At::Frame(Frame(4_000)), MotionEvent::Play)
+        .expect("room");
+    let (mut heard, mut tapped) = (Vec::new(), Vec::new());
+    let mut block = vec![0.0f32; 64 * 2];
+    for _ in 0..100 {
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        heard.extend(block.iter().step_by(2));
+    }
+    let mut got = vec![0.0f32; 6_400 * 2];
+    let n = tap.pop_into(&mut got).get();
+    tapped.extend(got[..n * 2].iter().step_by(2));
+    assert_eq!(tapped.len(), heard.len());
+    let step = |x: &[f32], from: usize, to: usize| {
+        x[from..to]
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    // Around the stop at frame 2000, and at the start at frame 4000.
+    let (out_stop, tap_stop) = (step(&heard, 1_500, 2_500), step(&tapped, 1_500, 2_500));
+    let (out_start, tap_start) = (step(&heard, 3_500, 4_500), step(&tapped, 3_500, 4_500));
+    println!("stop: output {out_stop}, tap {tap_stop}; start: output {out_start}, tap {tap_start}");
+    assert!(
+        out_stop < 0.01,
+        "the declick ramps the output at a stop: {out_stop}"
+    );
+    assert!(
+        (tap_stop - 0.5).abs() < 1e-6,
+        "the tap steps by the whole level: {tap_stop}"
+    );
+    assert!((out_start - 0.5).abs() < 1e-6 && (tap_start - 0.5).abs() < 1e-6);
+}

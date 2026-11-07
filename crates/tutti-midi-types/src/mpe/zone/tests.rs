@@ -99,14 +99,8 @@ fn test_single_channel_config() {
     assert_eq!(config.member_count, 0);
     // Standard non-MPE default: ±2, and with no member channels both roles
     // resolve to the same range.
-    assert_eq!(
-        config.master_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(2)
-    );
-    assert_eq!(
-        config.member_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(2)
-    );
+    assert_eq!(config.master_pitch_bend_range, PitchBendSensitivity::of(2));
+    assert_eq!(config.member_pitch_bend_range, PitchBendSensitivity::of(2));
 
     // Master channel is the single channel
     assert!(config.is_master_channel(5));
@@ -131,26 +125,20 @@ fn test_single_channel_clamps_to_15() {
 #[test]
 fn test_with_pitch_bend_range() {
     // Each role is set independently; setting one leaves the other alone.
-    let config = MpeZoneConfig::lower(5).with_master_pitch_bend_range(96);
-    assert_eq!(
-        config.master_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(96)
-    );
+    let config = MpeZoneConfig::lower(5).with_master_pitch_bend_range(PitchBendSensitivity::of(96));
+    assert_eq!(config.master_pitch_bend_range, PitchBendSensitivity::of(96));
     assert_eq!(
         config.member_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(48),
+        PitchBendSensitivity::of(48),
         "member range untouched"
     );
     assert_eq!(config.member_count, 5); // Other fields unchanged
 
-    let config = MpeZoneConfig::lower(5).with_member_pitch_bend_range(12);
-    assert_eq!(
-        config.member_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(12)
-    );
+    let config = MpeZoneConfig::lower(5).with_member_pitch_bend_range(PitchBendSensitivity::of(12));
+    assert_eq!(config.member_pitch_bend_range, PitchBendSensitivity::of(12));
     assert_eq!(
         config.master_pitch_bend_range,
-        PitchBendSensitivity::from_semitones(2),
+        PitchBendSensitivity::of(2),
         "master range untouched"
     );
 }
@@ -160,19 +148,13 @@ fn test_with_pitch_bend_range() {
 /// every member ±48, what a receiver of an MCM resets to). A member at
 /// the master's ±2 bends a per-note gesture a 24th as far.
 ///
-/// Mutation (run): swap `MASTER_PITCH_BEND_SEMITONES` and
-/// `MEMBER_PITCH_BEND_SEMITONES` back (48 and 2) → fails.
+/// Mutation (run): swap `MASTER_PITCH_BEND` and
+/// `MEMBER_PITCH_BEND` back (48 and 2) → fails.
 #[test]
 fn zones_default_to_rp053_ranges_per_role() {
     for config in [MpeZoneConfig::lower(7), MpeZoneConfig::upper(7)] {
-        assert_eq!(
-            config.master_pitch_bend_range,
-            PitchBendSensitivity::from_semitones(2)
-        );
-        assert_eq!(
-            config.member_pitch_bend_range,
-            PitchBendSensitivity::from_semitones(48)
-        );
+        assert_eq!(config.master_pitch_bend_range, PitchBendSensitivity::of(2));
+        assert_eq!(config.member_pitch_bend_range, PitchBendSensitivity::of(48));
 
         // …and resolving by channel picks the right one.
         let master = config.master_channel;

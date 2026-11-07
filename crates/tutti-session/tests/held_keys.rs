@@ -5,14 +5,16 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_core::{AudioNode, MotionEvent};
+use tutti_core::MotionEvent;
 use tutti_graph::{
     Cx, Event, EventKind, IntoNode, Io, Node, NodeParts, Offset, Prepare, Shape, Status,
 };
 use tutti_midi_runtime::{MIDI_INPUT_PORTS, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_session::{MidiRouteRule, Session, SessionNode};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{
+    Beat, BeatDuration, ChannelLayout, InterleavedMut, NodeKey, SampleRate, Samples,
+};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const MF: u16 = 0x8000;
@@ -76,7 +78,7 @@ fn offline() -> Session {
         .expect("builds")
 }
 
-fn tap(s: &mut Session) -> (AudioNode, Seen) {
+fn tap(s: &mut Session) -> (NodeKey, Seen) {
     let seen = Seen::default();
     let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
     (node, seen)

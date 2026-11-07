@@ -40,7 +40,10 @@ struct In {
 #[serde(untagged)]
 enum StoredPath<'a> {
     Text(&'a str),
-    Bytes { bytes: &'a [u8] },
+    #[cfg(unix)]
+    Bytes {
+        bytes: &'a [u8],
+    },
 }
 
 #[derive(Deserialize)]

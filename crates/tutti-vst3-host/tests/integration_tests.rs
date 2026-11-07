@@ -18,9 +18,11 @@ mod active;
 #[allow(unused_imports)]
 use active::{Activate, Active, LoadError, ParamExt, StateExt};
 
-/// Serialises every test that constructs an `Active`. `Module::open` already
-/// serialises opening, but module teardown takes no lock, and the default tests
-/// without this crashed (a heap-corruption abort) in 3 of 400 runs.
+/// Serialises every test that constructs an `Active`. `Module::open` and a
+/// module's teardown are already serialised, but creating and destroying
+/// plugin instances of one image is not, and the default tests without this
+/// still crashed (heap corruption, a COM over-release) in 5 of 800 runs with
+/// both locks in place.
 ///
 /// Per-file: each test binary is its own process.
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());

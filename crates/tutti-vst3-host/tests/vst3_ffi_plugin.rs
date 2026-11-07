@@ -182,16 +182,16 @@ fn a_setup_answered_false_is_tolerated_and_recorded() {
 /// The SDK's plugin side keeps process-global state that a module open
 /// mutates unlocked, and `dlopen` hands every thread the same image, so
 /// `Module::open` serialises itself. The modules are kept until the threads
-/// have joined and dropped on this thread, because teardown is not locked.
+/// have joined and dropped on this thread, so this exercises the open alone;
+/// the next test adds the drops.
 ///
 /// This is a probabilistic test: the race is in the plugin's memory, so a
 /// broken open usually aborts the process (a heap-corruption abort or an
 /// overflow panic in the host's COM release) and sometimes does not. Without
 /// the lock this test killed the process (abort or segfault) in 99 of 100
 /// runs on the machine it was written on; with it, none of 350 runs failed.
-/// A faster or slower machine may detect less often, never falsely.
 ///
-/// Mutation: remove the `OPEN` lock in `Module::open` and the process aborts.
+/// Mutation: remove the lock in `Module::open` and the process aborts.
 #[test]
 fn concurrent_opens_of_one_image_do_not_corrupt_the_plugins_globals() {
     const THREADS: usize = 8;
@@ -216,4 +216,71 @@ fn concurrent_opens_of_one_image_do_not_corrupt_the_plugins_globals() {
     });
     assert_eq!(modules.len(), THREADS * OPENS);
     assert!(modules.iter().all(|m| m.class_count() > 0));
+}
+
+/// Opening and dropping one image from several threads at once is safe.
+///
+/// A drop releases the factory, runs the module exit and unloads the image, and
+/// the plugin's `~CPluginFactory` clears `gPluginFactory` while another
+/// thread's `GetPluginFactory` may add a reference to it, so teardown has to
+/// take the same lock as an open.
+///
+/// Probabilistic, like the test above: 4 threads of 400,000 opens and drops
+/// (about 9 s). With the lock left out of `Module::drop` (the open lock kept)
+/// the process died in 37 of 40 runs on the machine it was written on (an
+/// abort in `~CPluginFactory`); with it, none of 100 runs failed. Fewer loops
+/// detect less: 4 x 20,000 killed 19 of 60 runs, 8 x 100 only 2 of 200.
+///
+/// Mutation: remove the lock in `Module::drop` and the process aborts.
+#[test]
+fn concurrent_opens_and_drops_of_one_image_do_not_corrupt_the_plugins_globals() {
+    const THREADS: usize = 3;
+    const LOOPS: usize = 400_000;
+    let path = probe_path();
+    let start = std::sync::Barrier::new(THREADS);
+    std::thread::scope(|s| {
+        for _ in 0..THREADS {
+            s.spawn(|| {
+                start.wait();
+                for _ in 0..LOOPS {
+                    let module = Module::open(&path).expect("the probe opens");
+                    assert!(module.class_count() > 0);
+                }
+            });
+        }
+    });
+}
+
+/// An open that fails after the library is loaded releases the lock, so the
+/// next open on the same thread does not wait on itself.
+///
+/// The library is a system one with no `GetPluginFactory`, so `open` drops what
+/// it built (the library, the module entry) on its error path while it holds
+/// the lock. `open` builds a `Module` only as its last step; one dropped on
+/// that path would wait on the lock it holds. The check runs on a worker so a
+/// self-deadlock fails the test instead of hanging it.
+///
+/// Mutation (run): taking the lock a second time in `open` stops the worker
+/// from answering and the test fails after its 30 s wait.
+#[test]
+fn a_failed_open_does_not_deadlock_the_next() {
+    #[cfg(target_os = "linux")]
+    const NOT_A_PLUGIN: &str = "libm.so.6";
+    #[cfg(target_os = "macos")]
+    const NOT_A_PLUGIN: &str = "/usr/lib/libSystem.B.dylib";
+    #[cfg(windows)]
+    const NOT_A_PLUGIN: &str = "kernel32.dll";
+
+    let path = probe_path();
+    let (done, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let refused = Module::open(std::path::Path::new(NOT_A_PLUGIN)).is_err();
+        let opened = Module::open(&path).is_ok();
+        let _ = done.send((refused, opened));
+    });
+    let (refused, opened) = answer
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the opens finished: a failed open did not release the lock");
+    assert!(refused, "a system library is not a VST3 module");
+    assert!(opened);
 }

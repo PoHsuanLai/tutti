@@ -72,10 +72,11 @@ fn sample_plugin_dir() -> String {
         .unwrap_or_else(|| SAMPLE_PLUGIN_DIR_BUILT.to_string())
 }
 
-/// Serialises every test that touches a plugin. Opening a module is already
-/// serialised by `Module::open`; this still guards the process-wide
+/// Serialises every test that touches a plugin. A module's open and teardown
+/// are serialised by the module; this still guards the process-wide
 /// `TUTTI_PROBE_MISBEHAVIOUR` variable some tests set, which every probe
-/// instance reads, and module teardown, which takes no lock.
+/// instance reads, and the creation and destruction of instances (see the
+/// lock in `integration_tests.rs`).
 static PLUGIN_LOCK: Mutex<()> = Mutex::new(());
 
 fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {

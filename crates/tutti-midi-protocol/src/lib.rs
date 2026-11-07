@@ -23,6 +23,11 @@
 //! assert_eq!(velocity, 0x8000);
 //! ```
 //!
+//! [`narrow_velocity`], [`narrow_value`] and [`narrow_bend`] go the other way
+//! for a consumer that has MIDI 1.0 resolution only (M2-115 section 3.4): the
+//! top bits, as a right shift. `widen` then narrow returns every 7-bit and
+//! 14-bit value it started with.
+//!
 //! What the widening does and does not do:
 //!
 //! - **Scaling** is Min-Center-Max (M2-115 section 3): minimum, centre and
@@ -49,7 +54,9 @@
 
 #![forbid(unsafe_code)]
 
+mod narrow;
 mod scale;
 mod voice;
 
+pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use voice::widen;

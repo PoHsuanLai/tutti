@@ -61,9 +61,8 @@ fn the_count_saturates() {
 /// A writer thread and a taking thread conserve the total, and every take is
 /// whole (its energy and frames agree): the std-thread twin of the loom model.
 ///
-/// Mutation (run, recorded here): `fold` storing the frames before the energy
-/// is added, then `busy` cleared early (the `Release` store moved above the
-/// sum) -> a take sees the frames without the energy and this fails (a
+/// Mutation (run, recorded here): `fold` clearing `busy` before it adds the
+/// energy -> a take sees the frames without the energy and this fails (a
 /// scheduling-dependent failure; the loom model is the exhaustive check).
 #[test]
 fn concurrent_takes_lose_nothing_and_stay_whole() {

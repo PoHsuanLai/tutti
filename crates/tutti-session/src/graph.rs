@@ -1691,9 +1691,8 @@ impl Graph {
     /// [`Session::render`](crate::Session::render) and
     /// [`Session::render_frame`](crate::Session::render_frame) alike).
     ///
-    /// A meter reads each source as it leaves its node: before the
-    /// compiler's alignment delay, and before the engine's fold to the device
-    /// and its declick. It holds the peak since the last
+    /// A meter reads before the engine's fold to the device and its declick.
+    /// It holds the peak since the last
     /// [`read`](MeterReader::read), so a UI that polls slower than the blocks
     /// still sees a spike; ballistics are the reader's. One reader per meter:
     /// a second consumer opens a second meter.
@@ -1754,7 +1753,8 @@ impl Graph {
     /// built, so a host that reads it needs to ask for nothing; it follows
     /// the outputs as they are re-wired or widened (up to
     /// [`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS)). `None` once a
-    /// host has taken it ([`take_master_meter`](Self::take_master_meter)).
+    /// host has taken it ([`take_master_meter`](Self::take_master_meter)). A
+    /// block the engine refuses runs no op and does not touch it.
     pub fn master_meter(&mut self) -> Option<&mut MeterReader> {
         self.master_meter.as_mut()
     }

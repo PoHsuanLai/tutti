@@ -88,11 +88,13 @@ serial one.
   models fences exactly; see `tutti-rt/src/job_gate.rs`).
 - **Level metering is an op in the plan** (`Editor::open_meter`, doc 013
   "Meters"), not an engine pass: per channel, on the outputs or any node
-  port, before the engine's fold and declick. Its cells are plain atomics
-  (`fetch_max` for the peak, a compare-exchange add for the energy, a
-  `swap` to read), so no loom model; a read takes the peak held since the
-  last read, so a reader is one consumer (`&mut self`, not `Clone`) and a
-  second consumer opens a second meter. Ballistics are the reader's.
+  port, before the engine's fold and declick; the master is aligned to the
+  outputs' time. Each lane is a `tutti_rt::level_cell` (two slots and a
+  flip, with a loom model), so a block lands in one read, peak and energy
+  together; a read takes what was held since the last read, so a reader is
+  one consumer (`&mut self`, not `Clone`) and a second consumer opens a
+  second meter. A lane naming a port that no longer exists reads silence.
+  Ballistics are the reader's.
   `LoadMeter` stays in `Engine`: it times the block and is not audio.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend
   on an exact float result (its `# Soundness` docs say why).

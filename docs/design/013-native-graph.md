@@ -436,15 +436,15 @@ and its fold scratch left `Engine`; `LoadMeter` stayed, because it times the
 block and is not audio.
 
 - **Shares with the tap, and stops where they differ.** A declared reader on
-  sources: `Topology.meters: BTreeMap<MeterId, MeterSpec>`, `MeterSpec::Ports(
-  Vec<Source>)` (any ports, any width) or `MeterSpec::Outputs` (the global
+  sources: `Topology.meters: BTreeMap<MeterId, MeterSpec>`, `MeterSpec::Ports {
+  sources, align }` (any ports, any width) or `MeterSpec::Outputs` (the global
   outputs, following `Topology.outputs` as they change); one `Op::Meter {
   meter, srcs }` per meter, scheduled after all its sources and before any
   in-place overwrite of them, as `Op::Tap` is; the writer rides the next
   `Commit` and is carried or replaced by id (`Executor::rebuild`); a closed
   meter emits nothing and leaves the ops of a graph that never had one
   (`tests/meter.rs`); a fork carries none; `Editor::open_meter` / `close_meter`
-  / `reap_meters`; a removed node turns its lanes to silence;
+  / `reap_meters`; a removed node or a narrowed one turns its lanes to silence;
   `CommitError::MeterWidth` for a width that no longer fits the cells. A tap
   moves samples out through a ring and can lose them; a meter keeps two
   scalars a lane and cannot. They are two ops with two readers, not one op with
@@ -456,37 +456,52 @@ block and is not audio.
   the engine's fold to the device and its declick**. The fader is declick
   only; there is no master volume and no stereo fold in the meter (a reader
   that wants a display fold takes it through the channel `Fold`).
-- **A meter reads each source as it leaves its node**, with no alignment
-  delay. An output the compiler delays (PDC) is therefore metered up to the
-  compensation ahead of what the output carries, which a level display cannot
-  show; spending a ring per lane for it, as an aligned tap does, was not worth
-  it.
-- **The cells are atomics, so no claim and no `unsafe`.** A lane is two
-  words: the peak since the last read, as the bits of a non-negative `f32`
-  (which order like the numbers) raised with `fetch_max`, and the frames and
-  sum of squares since the last read packed in one `u64`, added with a
-  compare-exchange loop. A read **swaps both to zero**, so every update and the
-  take are read-modify-writes of one word: a block lands in this read or the
-  next, never lost, never counted twice (`concurrent_reads_lose_nothing`). No
-  store-load pair exists between words, so there is no fence and every access is
-  `Relaxed`; no `ArcLend` (only scalars are published), no new structure for
-  `tutti-rt` and no loom model. The op is `meter_op`, written once over
-  `AudioSlots` and called from `exec.rs` and `par.rs`; a lane has one writer by
-  construction, so the parallel executor shares the cells without a claim, and
-  the serial and parallel readings are equal bit for bit
+- **Aligned or raw, as the tap.** `MeterSpec::Outputs` is aligned: it reads
+  what each output channel carries, after the compensation delay. With one
+  declared the compiler makes that delay its own `Delay` op (the output's
+  `DelayKey::Output` ring, so no second ring and the state carries across
+  plans) writing a slot that the `Output` op and the meter both read; a
+  graph without a master meter keeps the delay inside the `Output` op. A
+  meter that ran ahead of the audio by the full compensation would go quiet at
+  a stop while the delayed audio still plays (`the_master_reads_at_the_outputs_time`).
+  `MeterSpec::Ports { sources, align }` takes `TapAlign::Raw` (a track's
+  level as it leaves its node) or `ToOutput` (a ring per lane, `DelayKey::Meter`).
+- **A lane naming a port that is not there reads silence.** A node replaced
+  by one with fewer outputs, or removed, leaves the lanes past its width on
+  `Zero`; there is no `Invalid` for it, so a display never wedges a commit
+  (`a_narrowed_node_silences_the_lanes_past_its_width_and_commits`). The plan
+  tap still fails every commit in the same case; that is a separate follow-up.
+- **The cell is `tutti-rt`'s `level_cell`, with a loom model.** A lane is two
+  slots (peak, frames, an `f64` sum of squares) and a flip. The op folds into
+  the active slot (wait-free); a read stores the other index, fences, waits
+  for a writer still announced on the slot it left, then takes and clears
+  it. The announce, `SeqCst` fence, re-check on the writer and the flip,
+  fence, wait on the reader are a store-load pair, so both sides use
+  fences, not `SeqCst` accesses. **A block lands whole in one read**: a read
+  with no frames has no peak and no energy. The model
+  (`tutti-rt/tests/level_cell_loom.rs`) found that the writer's re-check must
+  be `Acquire`: with `Relaxed`, a flip back to a slot (ABA) let the writer fold
+  into a view of it from before the reader cleared it, and a block was lost. The
+  `f64` sum keeps an hour of offline render exact where an `f32` stalls past
+  2^24. The reader waits only for a block in flight (a control thread's wait),
+  and nothing grows while it never reads: a peak is a maximum and the frame
+  count saturates. The op is `meter_op`, written once over `AudioSlots` and
+  called from `exec.rs` and `par.rs`; a lane has one writer by construction,
+  so the parallel executor shares the cells without a claim, and the serial
+  and parallel readings are equal bit for bit
   (`the_parallel_meters_are_bit_identical_and_allocation_free`). The block
   statistic is a fixed shape (eight running figures, combined in lane order),
   which vectorizes and is the same on every executor. A slot the executor
-  knows is silent is not scanned.
+  knows is silent is not scanned. A block the engine refuses (rendered
+  silent because the control side held the graph) runs no op, so the meter is
+  not touched.
 - **Peak held since the last read.** `MeterReader::read` returns a `Level`
   per channel: the peak and RMS over the frames measured since the previous
-  read, and that frame count (zero means nothing new, not silence). A reader
-  that never reads grows nothing: a peak is a maximum, and the frame count stops
-  adding at `u32::MAX`. **One consumer per reader**: `MeterReader` is not
+  read, and that frame count (zero means nothing new, and then the peak and
+  RMS are zero too). **One consumer per reader**: `MeterReader` is not
   `Clone` and reads through `&mut self`, because a take would steal the other
-  reader's peak; a second consumer declares a second meter. The peak and the
-  energy are taken separately, so one read may straddle a block (a display
-  figure).
+  reader's peak; a second consumer declares a second meter. Lanes are taken
+  one after another, so one read may straddle a block between two lanes.
 - **Ballistics are the reader's.** The audio side holds no clock and no decay:
   an offline render runs faster than any clock, and the reader knows its own
   refresh rate. `tutti-dsp`'s `Ballistics` and `step_ballistics` smooth a

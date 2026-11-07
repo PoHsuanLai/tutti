@@ -565,11 +565,13 @@ impl Editor {
     /// executor its cells; until then the reader sees nothing.
     ///
     /// [`MeterSpec::Outputs`] meters the graph's global outputs, one channel
-    /// each, following them as they change (up to [`MAX_ROOT_CHANNELS`]);
-    /// [`MeterSpec::Ports`] meters those sources, fixed at the width given
-    /// here. A meter reads each source as it leaves its node, before the
-    /// compiler's alignment delay and before anything the engine does to the
-    /// output (the fold to the device and the declick). Opening an id again
+    /// each, following them as they change (up to [`MAX_ROOT_CHANNELS`]),
+    /// aligned: each lane is what its output channel carries, at the
+    /// output's time. [`MeterSpec::Ports`] meters those sources, fixed at the
+    /// width given here, as they leave their nodes or aligned to the output
+    /// time (a ring per lane, as a tap's). Either way a meter reads before
+    /// anything the engine does to the output (the fold to the device and the
+    /// declick). Opening an id again
     /// replaces it: the new reader is fed from the next commit and the old
     /// one gets nothing more. A closed meter is not compiled, so it costs the
     /// audio thread nothing.

@@ -1037,7 +1037,11 @@ impl Session {
     /// from the build, so every render feeds it: a device callback,
     /// [`render`](Self::render), and a detached session's
     /// [`render_frame`](Self::render_frame). It reads before the engine's fold
-    /// to the device and its declick. `None` once a host has taken it.
+    /// to the device and its declick, aligned to the outputs' time. A block
+    /// the engine refuses (rendered silent because the control side held the
+    /// graph for that callback) runs no op, so it does not touch the meter:
+    /// the meter holds what it held and counts no frames for it. `None` once
+    /// a host has taken it.
     pub fn master_meter(&mut self) -> Option<&mut tutti_graph::MeterReader> {
         self.graph.master_meter()
     }

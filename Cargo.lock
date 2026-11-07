@@ -4412,6 +4412,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-midi-device"
+version = "0.0.1"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "tutti-midi-file"
 version = "0.0.1"
 dependencies = [

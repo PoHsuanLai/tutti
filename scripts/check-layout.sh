@@ -21,6 +21,7 @@
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
+# - `tutti-midi-device` depends on no workspace crate;
 # - `tutti-plugin-db` depends on `tutti-plugin-types` alone;
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
@@ -98,7 +99,7 @@ def rel(p):
 LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-rustysynth", "tutti-ump"],
-    ["tutti-types", "tutti-rt", "tutti-midi-protocol"],
+    ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
     ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types"],
     ["tutti-core", "tutti-plugin-types"],
     ["tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
@@ -185,6 +186,8 @@ if "tutti-rt" in pkgs:
     only("tutti-rt", ["arc-lend"])
 if "tutti-midi-protocol" in pkgs:
     only("tutti-midi-protocol", ["tutti-ump"])
+if "tutti-midi-device" in pkgs:
+    only("tutti-midi-device", [])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
 for n in ("tutti-dsp", "tutti-mod"):

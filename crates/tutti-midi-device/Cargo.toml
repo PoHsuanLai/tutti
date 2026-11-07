@@ -1,0 +1,23 @@
+[package]
+name = "tutti-midi-device"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+description = "MIDI device detection core for the Tutti audio engine: DeviceId and the pure DeviceTable"
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/tutti-midi-device"
+readme = "README.md"
+# Not published: whether and when this goes to crates.io is the maintainer's
+# call, not a side effect of a workspace change. Remove this line to publish.
+publish = false
+keywords = ["midi", "audio", "hot-plug"]
+categories = ["multimedia::audio"]
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest = "1.9.0"

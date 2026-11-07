@@ -82,21 +82,23 @@ fn two_threads_hand_over_every_value_in_order() {
         }
     });
     let mut expect = 0;
-    // `done` is read before the pop: a finished producer has pushed
-    // everything, so an empty pop then is the end, and a producer that
-    // panicked cannot leave this loop spinning.
-    while expect < count {
-        let done = producer.is_finished();
-        match reader.pop() {
-            Some(value) => {
-                assert_eq!(value, [expect, !expect, expect ^ 0x55]);
-                expect += 1;
-            }
-            None if done => break,
-            None => std::thread::yield_now(),
+    let mut take = |reader: &mut EditReader<[u64; 3]>| {
+        let value = reader.pop()?;
+        assert_eq!(value, [expect, !expect, expect ^ 0x55]);
+        expect += 1;
+        Some(())
+    };
+    // `is_finished` orders nothing, so an empty pop after it does not mean
+    // the ring is drained: it only ends the wait (a producer that panicked
+    // cannot leave this loop spinning). The producer is joined, which does
+    // synchronise, and the rest is drained after.
+    while !producer.is_finished() {
+        if take(&mut reader).is_none() {
+            std::thread::yield_now();
         }
     }
     producer.join().unwrap();
+    while take(&mut reader).is_some() {}
     assert_eq!(expect, count, "every value arrived");
     assert_eq!(reader.pop(), None);
 }

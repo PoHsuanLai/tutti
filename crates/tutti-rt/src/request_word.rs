@@ -91,6 +91,14 @@ impl RequestBitOutOfRange {
     }
 }
 
+impl std::fmt::Display for RequestBitOutOfRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "request bit {} is not below {REQUEST_BITS}", self.0)
+    }
+}
+
+impl std::error::Error for RequestBitOutOfRange {}
+
 impl TryFrom<u8> for RequestBit {
     type Error = RequestBitOutOfRange;
 

@@ -6,18 +6,25 @@ piece is there, and what checks it. This is that statement.
 
 ## Where it is
 
-Counted as lines mentioning `unsafe`, so blocks, `unsafe fn` and `unsafe impl`
-together — an upper bound, not a block count:
+Counted as code lines containing the word `unsafe` (comments and
+`unsafe_code` lints excluded), tests and benches included, so blocks,
+`unsafe fn` and `unsafe impl` together: an upper bound, not a block count. The
+counts are as of the commit that last edited this table and nothing gates
+them; recount with the same rule before quoting one.
 
-| area | ~lines | what it is |
+| area | lines | what it is |
 |---|---|---|
-| `tutti-*-host`, `tutti-*-ffi` | 1,519 | VST2/VST3/CLAP/AU C ABIs |
-| `crates/tutti-plugin-server/` | 52 | the subprocess side: shm, signals |
-| `crates/tutti-plugin/` | 46 | shm slab, IPC transport |
-| `crates/tutti-midi-hardware/` | 33 | CoreMIDI / ALSA seq-UMP |
-| `tutti-core`, `-rt`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 32 | see below (was 46; `tutti-node`'s 14 went with it in doc 013) |
-| `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 14 | see below |
-| `crates/tutti-plugin-types/` | 7 | bundle/ABI value types |
+| `tutti-*-host`, `tutti-*-ffi`, `vst-tutti` | 1,985 | VST2/VST3/CLAP/AU C ABIs |
+| `crates/tutti-plugin-server/` | 83 | the subprocess side: shm, signals |
+| `crates/tutti-plugin/` | 90 | shm slab, IPC transport |
+| `crates/tutti-midi-hardware/`, `tutti-alsa-ump-sys` | 28 | CoreMIDI / ALSA seq-UMP |
+| `crates/bevy-tutti/` | 27 | native windows for plugin editors; `set_var` in one test |
+| `crates/tutti-plugin-types/` | 10 | bundle/ABI value types |
+| `tutti-rt` | 60 | the non-FFI sites below |
+| `arc-lend` | 10 | the non-FFI sites below |
+| `tutti-core`, `-graph`, `-io`, `-cpal`, `-mod`, `-export` | 7 | one test's counting allocator; no sites |
+| `tutti-nodes`, `-spatial`, `-sampler`, `-polysynth`, `-soundfont`, `-dsp` | 28 | tests' counting allocators and a libc-version probe |
+| `testing/` | 487 | the reference test plugins; never shipped |
 
 **Roughly 95% of it is FFI**, and that is inherent: you cannot host a VST3
 without speaking COM, or reach CoreMIDI without calling it. The interesting

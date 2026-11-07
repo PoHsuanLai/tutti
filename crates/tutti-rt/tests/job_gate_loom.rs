@@ -21,7 +21,10 @@
 //! - **a busy `try_run` runs nothing** (`a_busy_try_run_runs_nothing`, with
 //!   its own mutation record);
 //! - **two helpers race for indices** (`two_helpers_*`, with their own
-//!   mutation record).
+//!   mutation record): the order of conflicting operations on `entered`,
+//!   `next`, `state` and the job cell across two helpers. They do not witness
+//!   two helpers inside the job body at once (measured: at most one, at
+//!   bounds 3, 4 and 5).
 //!
 //! # Mutation record
 //!
@@ -167,7 +170,9 @@ fn a_busy_try_run_runs_nothing() {
 /// One caller and two helpers on a gate of `participants`: the helpers race
 /// `next.fetch_add` for an index. Every index in `1..participants` runs at
 /// most once, none outside it runs, and no helper reads the job cell after
-/// `run` returns.
+/// `run` returns. What is explored is the order of conflicting operations
+/// on `entered`, `next`, `state` and the job cell; two helpers are never in
+/// the job body together in any execution.
 fn two_helpers(participants: usize) {
     loom::model(move || {
         let gate = Arc::new(JobGate::new(participants));
@@ -224,7 +229,11 @@ fn two_helpers_take_distinct_indices() {
 /// gate of 2, and must leave without calling the job.
 ///
 /// State space at `LOOM_MAX_PREEMPTIONS=3`, the bound CI runs: 24,225
-/// executions for each of the two models, under a second together.
+/// executions for each of the two models, under a second together. The
+/// counts are equal because the third participant's extra operations (the
+/// job body's reads of the cell and its `ran[2]` increment) touch objects
+/// nothing else touches, and loom's partial-order reduction does not branch
+/// on them.
 ///
 /// Mutation record (`LOOM_MAX_PREEMPTIONS=3`, applied to `src/job_gate.rs`):
 ///

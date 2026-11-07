@@ -20,6 +20,12 @@ fn the_range_is_held_at_every_door() {
     for raw in [REQUEST_BITS, REQUEST_BITS + 1, u8::MAX] {
         assert_eq!(RequestBit::new(raw), None);
         assert_eq!(RequestBit::try_from(raw).unwrap_err().get(), raw);
+        assert!(
+            RequestBit::try_from(raw)
+                .unwrap_err()
+                .to_string()
+                .contains(&raw.to_string())
+        );
         assert!(std::panic::catch_unwind(|| RequestBit::of(raw)).is_err());
     }
 }

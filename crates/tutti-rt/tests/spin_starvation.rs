@@ -26,7 +26,8 @@
 //!   class lets go of the core (RT throttling, or the fair server on 6.12+
 //!   kernels). A yield does not help: `sched_yield` from a FIFO thread
 //!   requeues it within its own priority, ahead of every `OTHER` thread.
-//!   This is why the pool's helpers must run at the caller's priority.
+//!   This is why the pool's helpers must run at the caller's priority
+//!   (`tutti-graph`'s `pool.rs`, "Priority").
 //! - **`FIFO` caller, `FIFO` helper at the same priority.** FIFO does not
 //!   time-slice, so a caller that only spins keeps the helper off the core
 //!   for good once it is queued behind it (here, after its block): the

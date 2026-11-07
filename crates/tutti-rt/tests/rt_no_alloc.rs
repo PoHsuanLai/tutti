@@ -217,13 +217,20 @@ fn split_claims_and_views_are_allocation_free() {
 
 /// `TaskGraph::begin` and every participant's `work`, the caller's and two
 /// helpers', neither allocate nor free; each thread runs its share inside the
-/// gate.
+/// gate. The four middle tasks wait until all three participants have entered
+/// the closure, so no participant can be missing from the gated path; the
+/// helpers' leave budget is an hour so none gives up first, and the wait is
+/// bounded so a participant that never arrives fails the final assertion
+/// instead of hanging.
 ///
-/// Mutation (run): a `Box::new` at the top of `TaskGraph::push` -> the first
-/// participant that readies a second task aborts.
+/// Mutations (run): a `Box::new` at the top of `TaskGraph::push` -> the first
+/// participant that readies a second task aborts; the helper threads not
+/// spawned -> the middle tasks time out and `every participant took part`
+/// fails (after the 10 s bound).
 #[test]
 fn task_graph_blocks_are_allocation_free() {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::time::{Duration, Instant};
     use tutti_rt::{BlockWaits, Participant, TaskGraph};
 
     // 0 -> {1, 2, 3, 4} -> 5.
@@ -232,28 +239,53 @@ fn task_graph_blocks_are_allocation_free() {
         &[0, 4, 5, 6, 7, 8, 8],
         &[1, 2, 3, 4, 5, 5, 5, 5],
     );
+    let waits = BlockWaits {
+        helper_leave_after: Duration::from_secs(3600),
+        ..BlockWaits::DEFAULT
+    };
     let ran: Vec<AtomicU32> = (0..6).map(|_| AtomicU32::new(0)).collect();
+    let entered: Vec<AtomicBool> = (0..3).map(|_| AtomicBool::new(false)).collect();
+    let timed_out = AtomicBool::new(false);
     for _ in 0..300 {
+        for e in &entered {
+            e.store(false, Ordering::Relaxed);
+        }
         assert_no_alloc::assert_no_alloc(|| graph.begin());
         std::thread::scope(|s| {
             let graph = &graph;
-            let ran = &ran;
+            let (ran, entered, timed_out) = (&ran, &entered, &timed_out);
+            let task = move |who: usize, t: u32| {
+                entered[who].store(true, Ordering::Release);
+                if (1..=4).contains(&t) {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !timed_out.load(Ordering::Relaxed)
+                        && !entered.iter().all(|e| e.load(Ordering::Acquire))
+                    {
+                        if Instant::now() > deadline {
+                            timed_out.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        std::hint::spin_loop();
+                    }
+                }
+                ran[t as usize].fetch_add(1, Ordering::Relaxed);
+            };
             for helper in 1..3 {
                 s.spawn(move || {
                     assert_no_alloc::assert_no_alloc(|| {
-                        graph.work(Participant::Helper(helper), BlockWaits::DEFAULT, |t| {
-                            ran[t as usize].fetch_add(1, Ordering::Relaxed);
-                        });
+                        graph.work(Participant::Helper(helper), waits, |t| task(helper, t));
                     });
                 });
             }
             assert_no_alloc::assert_no_alloc(|| {
-                graph.work(Participant::Caller, BlockWaits::DEFAULT, |t| {
-                    ran[t as usize].fetch_add(1, Ordering::Relaxed);
-                });
+                graph.work(Participant::Caller, waits, |t| task(0, t));
             });
         });
         assert!(graph.done());
+        assert!(
+            !timed_out.load(Ordering::Relaxed),
+            "every participant took part"
+        );
     }
     for (task, count) in ran.iter().enumerate() {
         assert_eq!(count.load(Ordering::Relaxed), 300, "task {task}");

@@ -693,6 +693,11 @@ jobs:
       # timeout under miri. They test a debug-only policy check, which the
       # native nextest run covers; `ArcLend`'s protocol is miri-tested below.
       - run: cargo +nightly miri test --locked -p tutti-rt --lib
+      # The thread hand-over of `edit_ring` under 16 schedules: one seed
+      # explores one interleaving.
+      - run: cargo +nightly miri test --locked -p tutti-rt --lib edits::
+        env:
+          MIRIFLAGS: -Zmiri-many-seeds=0..16
       # `ArcLend`'s unit tests, its no-alloc gate and its doctests.
       - run: cargo +nightly miri test --locked -p arc-lend
       # Its unit tests again over 16 scheduling seeds: the small

@@ -50,7 +50,8 @@
 //! - `begin`'s counter re-arm removed → `diamond_two_participants` (the
 //!   second block's counters wrap and never reach zero, so the caller
 //!   spins; loom fails it with "Model exceeded maximum number of
-//!   branches").
+//!   branches"). The caller's wait is `SpinThenYield` with a budget of 2
+//!   under loom (`src/spin.rs`).
 //!
 //! The caller's spin-then-yield is a scheduling change, not an ordering
 //! one: its progress signal (the `remaining` load the exit test makes, and

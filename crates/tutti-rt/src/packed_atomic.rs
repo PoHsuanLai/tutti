@@ -3,7 +3,7 @@
 //!
 //! Its own module because the one property it adds over an atomic per field
 //! is the reason it exists: a range's `(min, max)` held as two
-//! [`AtomicF32`](crate::AtomicF32)s could pair one write's `min` with another
+//! `AtomicF32`s could pair one write's `min` with another
 //! write's `max`; held as one `PackedAtomic` it cannot. The `loom` model in
 //! `tests/packed_atomic_loom.rs` runs this code and checks exactly that.
 

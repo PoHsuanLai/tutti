@@ -317,6 +317,33 @@ pub struct Topology {
     /// The topology's own global input width — [`ChannelLayout::EMPTY`] for a
     /// master graph, which has none.
     pub inputs: ChannelLayout,
+    /// Copy-out points ("tap these sources"). A closed tap is absent: nothing
+    /// is compiled for it.
+    pub taps: BTreeMap<TapId, TapSpec>,
+}
+
+/// The name of one tap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TapId(pub u32);
+
+/// Where a tap's copy sits in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TapAlign {
+    /// As the sources leave their nodes: no delay is added.
+    Raw,
+    /// Delayed by the compiler to the graph's output time, the compensation an
+    /// output channel of the same sources gets.
+    #[default]
+    ToOutput,
+}
+
+/// "Tap these sources": one lane per source, any ports, any number.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TapSpec {
+    /// One per lane.
+    pub sources: Vec<Source>,
+    /// Where the copy sits in time.
+    pub align: TapAlign,
 }
 
 /// An empty graph with **no global inputs** — a master graph before anything is
@@ -333,6 +360,7 @@ impl Default for Topology {
             edges: BTreeMap::new(),
             outputs: Vec::new(),
             inputs: ChannelLayout::EMPTY,
+            taps: BTreeMap::new(),
         }
     }
 }

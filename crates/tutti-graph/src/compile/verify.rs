@@ -124,6 +124,7 @@ fn accesses(plan: &Plan, op: &Op) -> Vec<Access> {
             .chain(param_reads(plan, params).map(|s| e(s, false)))
             .collect(),
         Op::Output { src, .. } => vec![a(src, false)],
+        Op::Tap { src, .. } => vec![a(src, false)],
         // A capture feeds a delay's state, not a slot.
         Op::Capture { src, .. } => vec![a(src, false)],
         Op::EventCapture { src, .. } => vec![e(src, false)],
@@ -669,6 +670,12 @@ fn verify_tables(plan: &Plan) -> Result<(), VerifyError> {
         let d = match *op {
             Op::Delay { delay, .. } | Op::EventDelay { delay, .. } => Some(delay),
             Op::Output { delay, .. } => delay,
+            Op::Tap { lane, .. } => {
+                if lane as usize >= plan.taps.len() {
+                    return Err(VerifyError(format!("a tap op names lane {lane}")));
+                }
+                None
+            }
             Op::Node { unit, .. } => {
                 *unit_uses
                     .get_mut(unit as usize)

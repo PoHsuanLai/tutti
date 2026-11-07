@@ -339,6 +339,8 @@ pub struct Editor {
     /// Keys [`set_latency`](Self::set_latency) changed since the last
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
+    /// Tap producers opened since the last commit, sent with the next.
+    pending_taps: Vec<(crate::plan::TapLaneKey, crate::tap::TapLane)>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// The plan sent last: what the executor will be running once the queue
     /// drains, and what the next commit is compiled against.
@@ -425,6 +427,47 @@ fn refresh(key: NodeKey, shape: Shape, spec: &mut GraphSpec, shapes: &mut Shapes
 }
 
 impl Editor {
+    /// Declares a tap on `sources` (one lane each, any ports) and returns its
+    /// reader. It takes effect at the next [`commit`](Self::commit), which
+    /// compiles the tap's ops and hands the executor its producers; until
+    /// then the reader sees nothing. `capacity` is each lane's ring, in
+    /// frames; what the reader does not drain in time is counted
+    /// ([`TapReader::take_lost`]).
+    ///
+    /// Opening an id again replaces it. A tap the topology does not name
+    /// compiles to nothing, so a closed tap costs the audio thread nothing.
+    pub fn open_tap(
+        &mut self,
+        id: tutti_types::TapId,
+        sources: Vec<tutti_types::graph::Source>,
+        align: tutti_types::TapAlign,
+        capacity: tutti_types::Samples,
+    ) -> crate::tap::TapReader {
+        let (reader, lanes) = crate::tap::TapReader::pair(sources.len(), capacity.0.max(1));
+        self.pending_taps.retain(|(k, _)| k.tap != id);
+        for (lane, l) in lanes.into_iter().enumerate() {
+            self.pending_taps.push((
+                crate::plan::TapLaneKey {
+                    tap: id,
+                    lane: lane as u16,
+                },
+                l,
+            ));
+        }
+        self.spec_mut()
+            .topology
+            .taps
+            .insert(id, tutti_types::TapSpec { sources, align });
+        reader
+    }
+
+    /// Removes a tap: its ops leave the plan at the next commit and its
+    /// producers are freed on the control side.
+    pub fn close_tap(&mut self, id: tutti_types::TapId) {
+        self.pending_taps.retain(|(k, _)| k.tap != id);
+        self.spec_mut().topology.taps.remove(&id);
+    }
+
     /// An empty graph, and the executor that will run it, both for
     /// `prepare`. The only way to build an [`Executor`].
     #[must_use]
@@ -453,6 +496,7 @@ impl Editor {
             pending: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
+            pending_taps: Vec::new(),
             next_gen: BTreeMap::new(),
             plan: None,
             committed: None,
@@ -1425,6 +1469,7 @@ impl Editor {
         }
         self.limits.outputs(self.spec.topology.outputs.len())?;
         if self.pending.is_empty()
+            && self.pending_taps.is_empty()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
@@ -1672,7 +1717,8 @@ impl Editor {
             }
             ParamState::new(ports, max, Some(Arc::clone(cells)))
         };
-        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params);
+        let taps = std::mem::take(&mut self.pending_taps);
+        let commit = Commit::build(self.sent + 1, Arc::clone(&plan), delta, units, params, taps);
         self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
         if self.channels.to_executor.try_push(commit).is_err() {
             unreachable!("the queue has a free slot for every credit");

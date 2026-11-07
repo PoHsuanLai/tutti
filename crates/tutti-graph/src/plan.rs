@@ -128,6 +128,25 @@ pub enum DelayKey {
         /// What feeds it.
         from: Source,
     },
+    /// One lane of an aligned tap, delayed like an output channel.
+    Tap {
+        /// The tap.
+        tap: tutti_types::TapId,
+        /// The lane within it.
+        lane: u16,
+        /// What feeds it.
+        from: Source,
+    },
+}
+
+/// One lane of one tap in a plan: the executor's ring producer is kept by
+/// this key across plans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TapLaneKey {
+    /// The tap.
+    pub tap: tutti_types::TapId,
+    /// The lane within it.
+    pub lane: u16,
 }
 
 /// One PDC delay in a plan.
@@ -375,6 +394,13 @@ pub enum Op {
         src: u32,
         /// Index into [`Plan::delays`], when the channel is delayed.
         delay: Option<u32>,
+    },
+    /// Push an audio slot's block into a tap lane's ring.
+    Tap {
+        /// Index into [`Plan::taps`].
+        lane: u32,
+        /// Audio slot read.
+        src: u32,
     },
     /// Push an audio port's block into its feedback ring.
     Capture {
@@ -835,6 +861,7 @@ pub struct Plan {
     pub(crate) audio_feedback: Vec<FeedbackSpec>,
     pub(crate) event_feedback: Vec<FeedbackSpec>,
     pub(crate) delays: Vec<DelaySpec>,
+    pub(crate) taps: Vec<TapLaneKey>,
     pub(crate) units: Vec<PlanUnit>,
     pub(crate) store_len: u32,
     pub(crate) order: Vec<NodeKey>,

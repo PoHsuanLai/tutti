@@ -179,6 +179,7 @@ pub(crate) struct Par {
     rings: ClaimTable,
     audio_fb: ClaimTable,
     event_fb: ClaimTable,
+    taps: ClaimTable,
     inject: ClaimTable,
     /// Per plan unit, its run of the (unit-sorted) inject list.
     inject_spans: Vec<Span>,
@@ -233,6 +234,7 @@ impl Par {
             rings: ClaimTable::new(plan.delays.len()),
             audio_fb: ClaimTable::new(plan.audio_feedback.len()),
             event_fb: ClaimTable::new(plan.event_feedback.len()),
+            taps: ClaimTable::new(plan.taps.len()),
             inject: ClaimTable::new(n_inject as usize),
             inject_spans,
             has_inject: ClaimTable::new(units),
@@ -277,6 +279,7 @@ pub(crate) struct Block<'b, 'o> {
     pub(crate) rings: &'b mut [Option<Ring>],
     pub(crate) audio_fb: &'b mut [Option<crate::kernels::AudioRing>],
     pub(crate) event_fb: &'b mut [Option<crate::kernels::EventFifo>],
+    pub(crate) taps: &'b mut [Option<crate::tap::TapLane>],
     pub(crate) inject: &'b mut [Inject],
     pub(crate) has_inject: &'b mut [bool],
     pub(crate) has_due: &'b mut [bool],
@@ -304,6 +307,7 @@ struct Shared<'s, 'o> {
     rings: SplitMut<'s, Option<Ring>>,
     audio_fb: SplitMut<'s, Option<crate::kernels::AudioRing>>,
     event_fb: SplitMut<'s, Option<crate::kernels::EventFifo>>,
+    taps: SplitMut<'s, Option<crate::tap::TapLane>>,
     inject: SplitMut<'s, Inject>,
     inject_spans: &'s [Span],
     has_inject: SplitMut<'s, bool>,
@@ -344,6 +348,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
         rings,
         audio_fb,
         event_fb,
+        taps,
         inject,
         inject_spans,
         has_inject,
@@ -369,6 +374,7 @@ pub(crate) fn run_block(par: &mut Par, pool: &Arc<dyn Pool>, b: Block<'_, '_>) -
             rings: SplitMut::new(b.rings, rings),
             audio_fb: SplitMut::new(b.audio_fb, audio_fb),
             event_fb: SplitMut::new(b.event_fb, event_fb),
+            taps: SplitMut::new(b.taps, taps),
             inject: SplitMut::new(b.inject, inject),
             inject_spans,
             has_inject: SplitMut::new(b.has_inject, has_inject),
@@ -526,6 +532,15 @@ impl Shared<'_, '_> {
                     flags,
                     src,
                 );
+            }
+            Op::Tap { lane, src } => {
+                let mut lane = self.taps.claim(lane as usize);
+                if let Some(lane) = lane.as_mut() {
+                    let a = ArenaView {
+                        view: self.arena.view(held_audio),
+                    };
+                    crate::tap::tap_op(lane, &a, src, frames);
+                }
             }
             Op::Capture { feedback, src } => {
                 let mut ring = self.audio_fb.claim(feedback as usize);

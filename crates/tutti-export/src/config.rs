@@ -78,6 +78,27 @@ pub struct RenderConfig {
     /// one whose nodes declined to answer. Where to stop is the caller's
     /// decision, and this field is where the caller states it.
     pub tail: Samples,
+    /// What a render does when the graph dropped an event: a port past its
+    /// capacity, a full delay. The default fails the render
+    /// ([`Error::EventsDropped`](crate::Error::EventsDropped)), because the
+    /// audio of a dropped note-on or note-off is wrong and nothing in it says so.
+    pub on_event_loss: EventLossPolicy,
+}
+
+/// What a render does when the graph it renders dropped events
+/// ([`RenderConfig::on_event_loss`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum EventLossPolicy {
+    /// The render fails with [`Error::EventsDropped`](crate::Error::EventsDropped), and a
+    /// file it wrote is removed.
+    #[default]
+    Fail,
+    /// The render succeeds and says how many events were dropped
+    /// ([`Rendered::dropped_events`](crate::Rendered::dropped_events),
+    /// [`Written::dropped_events`](crate::Written::dropped_events)): for a caller that
+    /// checks the figure itself.
+    Allow,
 }
 
 impl Default for RenderConfig {
@@ -87,6 +108,7 @@ impl Default for RenderConfig {
             duration_seconds: 0.0,
             latency: Samples(0),
             tail: Samples(0),
+            on_event_loss: EventLossPolicy::default(),
         }
     }
 }

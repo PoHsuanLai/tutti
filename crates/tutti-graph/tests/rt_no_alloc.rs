@@ -563,6 +563,61 @@ fn parallel_declared_event_capacities_are_allocation_free() {
     declared_event_capacities_are_allocation_free_on(4);
 }
 
+/// More places lose events than a block's log holds (64) and the control side
+/// never drains the ring (256 entries): 80 writers, each two events over its
+/// port, 100 blocks. The log fills every block, the ring fills in the fourth,
+/// and nothing allocates on any participant, serial or parallel. What no entry
+/// names is counted instead, so entries plus the unreported count are exactly
+/// the total.
+///
+/// Mutation (run): push into the log without the capacity test in
+/// `Dropped::note` → the 65th entry reallocates inside the gate → aborts;
+/// the same in `Dropped::absorb` → the parallel gate aborts.
+fn losses_past_the_log_and_the_ring_are_allocation_free_on(workers: usize) {
+    let (mut ed, mut exec) = Editor::new(prepare(256));
+    use_pool(&mut exec, workers);
+    let refused = Arc::new(AtomicU64::new(0));
+    for k in 1..=80u64 {
+        ed.insert(
+            NodeKey(k),
+            "spray",
+            Unforkable(Spray {
+                cap: 4,
+                burst: 6,
+                refused: Arc::clone(&refused),
+            }),
+        );
+    }
+    ed.commit().expect("commits");
+    exec.apply_pending();
+    ed.collect();
+    assert_eq!(exec.is_parallel(), workers > 1);
+    let transport = Transport::default();
+    // No warm-up block: the first one is the first to fill the log, and a log
+    // that grows would show there.
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..101 {
+            exec.process(256, &transport, &[], &mut []);
+        }
+    });
+    let total = exec.dropped_event_count();
+    assert_eq!(total, 101 * 80 * 2);
+    let named: u64 = ed.take_event_losses().map(|l| u64::from(l.count)).sum();
+    let unreported = ed.take_unreported_event_losses();
+    assert!(unreported > 0, "the log and the ring were full");
+    assert_eq!(named + unreported, total, "nothing is lost silently");
+}
+
+#[test]
+fn losses_past_the_log_and_the_ring_do_not_allocate() {
+    losses_past_the_log_and_the_ring_are_allocation_free_on(1);
+}
+
+#[test]
+fn parallel_losses_past_the_log_and_the_ring_do_not_allocate() {
+    losses_past_the_log_and_the_ring_are_allocation_free_on(4);
+}
+
 /// Declares `Cutoff` and `Q` (bases 1.0 and 2.0); writes the sum of what it
 /// reads for them.
 struct ParamSink;

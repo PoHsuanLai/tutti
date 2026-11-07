@@ -38,6 +38,12 @@ pub(crate) struct MidiIntake {
     /// Groups with a multi-packet SysEx passed on and not ended: a `START`
     /// or `CONTINUE` taken, its `END` (or a `SINGLE`) not yet.
     open: u16,
+    /// The list is full of events a note-off cannot displace (see
+    /// [`push_displacing`](Self::push_displacing)); until the next chunk.
+    exhausted: bool,
+    /// Passes over the list `push_displacing` has made (tests count them).
+    #[cfg(test)]
+    scans: u32,
 }
 
 impl MidiIntake {
@@ -91,6 +97,68 @@ impl MidiIntake {
         false
     }
 
+    /// [`push`](Self::push), but a note-off that finds the list full takes
+    /// the place of a note-on already in it (the one of its own key if the
+    /// list has it, else the latest; failing that, the latest channel
+    /// message that is not a note-off): the list is a chunk's worth of events
+    /// the wire cannot grow, and a note-on lost is a missed note where a
+    /// note-off lost is a note that never ends. Returns how many events this
+    /// call lost: 0 if `event` went in with room, 1 if it was refused, or
+    /// went in over an event it displaced. The caller counts them. A
+    /// displaced note-on's own note-off, if already in the list, reaches the
+    /// plugin as an off for a note it never heard, which a plugin ignores.
+    ///
+    /// **Cost, bounded.** One reverse pass over the list decoding each
+    /// event's first word (no parse), then a shift: about 0.3 µs for a list
+    /// of 256. Each displacement removes a displaceable event, so a list of
+    /// 256 takes at most 256 of them, and a scan that finds none marks the
+    /// list `exhausted` until the next chunk ([`new_chunk`](Self::new_chunk)),
+    /// so the note-offs after it are refused in constant time. A chunk's
+    /// worst case is 256 passes and one empty one, whatever the input
+    /// carries. Never allocates (`ArrayVec::remove` shifts in place).
+    #[must_use = "the lost events are counted by the caller"]
+    pub(crate) fn push_displacing(&mut self, list: &mut MidiEventVec, event: MidiEvent) -> u64 {
+        if self.push(list, event) {
+            return 0;
+        }
+        if self.exhausted || !is_off(&event.data) || !list.is_full() {
+            return 1;
+        }
+        #[cfg(test)]
+        {
+            self.scans += 1;
+        }
+        let key = key_of(&event.data);
+        let mut latest_on = None;
+        let mut latest_other = None;
+        let mut victim = None;
+        for (i, e) in list.iter().enumerate().rev() {
+            let w = e.data[0];
+            if is_on(&e.data) {
+                if key_of(&e.data) == key {
+                    victim = Some(i);
+                    break;
+                }
+                latest_on.get_or_insert(i);
+            } else if is_channel_message(w) && !is_off(&e.data) {
+                latest_other.get_or_insert(i);
+            }
+        }
+        match victim.or(latest_on).or(latest_other) {
+            Some(i) => {
+                list.remove(i);
+                let _ = list.try_push(event);
+            }
+            None => self.exhausted = true,
+        }
+        1
+    }
+
+    /// A new chunk begins: the list is empty again.
+    pub(crate) fn new_chunk(&mut self) {
+        self.exhausted = false;
+    }
+
     /// Everything passed on since the last chunk that arrived was lost
     /// (a whole chunk's MIDI never reached the reassembler, or the node was
     /// reset): skip the rest of every message open in it. Never allocates.
@@ -108,9 +176,39 @@ impl MidiIntake {
     pub(crate) fn lose(&mut self, list: &mut MidiEventVec) -> u64 {
         let n = list.len() as u64;
         list.clear();
+        self.exhausted = false;
         self.lost();
         n
     }
+}
+
+/// Whether the UMP in `data` is a MIDI 1.0 or 2.0 channel voice message.
+fn is_channel_message(w: u32) -> bool {
+    matches!(w >> 28, 0x2 | 0x4)
+}
+
+/// Whether `data` is a note-on that starts a note (a MIDI 1.0 note-on at
+/// velocity 0 is a note-off).
+fn is_on(data: &[u32; 4]) -> bool {
+    let w = data[0];
+    (w >> 20) & 0xf == 0x9 && is_channel_message(w) && (w >> 28 == 0x4 || w & 0x7f != 0)
+}
+
+/// Whether `data` is a note-off (or a MIDI 1.0 note-on at velocity 0).
+fn is_off(data: &[u32; 4]) -> bool {
+    let w = data[0];
+    is_channel_message(w)
+        && match (w >> 20) & 0xf {
+            0x8 => true,
+            0x9 => w >> 28 == 0x2 && w & 0x7f == 0,
+            _ => false,
+        }
+}
+
+/// A note message's group, channel and note number.
+fn key_of(data: &[u32; 4]) -> (u32, u32, u32) {
+    let w = data[0];
+    ((w >> 24) & 0xf, (w >> 16) & 0xf, (w >> 8) & 0x7f)
 }
 
 /// A SysEx7 packet's status, or `None` for any other message.
@@ -378,5 +476,88 @@ mod tests {
             assert!(!intake.push(&mut chunk, p), "group 1's tail stays cut");
         }
         assert_eq!(chunk.as_slice(), single.as_slice());
+    }
+
+    fn on(key: u8) -> MidiEvent {
+        MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, 0xFFFF)
+    }
+
+    fn off(key: u8) -> MidiEvent {
+        MidiEvent::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0)
+    }
+
+    /// A list full of note-ons takes a note-off over the note-on of its own
+    /// key, and a note-on is refused. 256 note-ons keys 0..=127 twice over:
+    /// a note-off of key 5 displaces the later note-on of 5, one is lost; a
+    /// further note-on is refused, one lost.
+    ///
+    /// Mutation: drop the `is_note_off` test in `push_displacing` → the
+    /// note-on displaces too, and the list loses a note-on it kept → fails.
+    /// Mutation: take the first note-on rather than the key's → the wrong
+    /// note-on goes → fails.
+    #[test]
+    fn a_note_off_displaces_a_note_on_of_its_key_in_a_full_list() {
+        let mut intake = MidiIntake::default();
+        let mut list = MidiEventVec::new();
+        for i in 0..MIDI_STACK_CAPACITY {
+            assert_eq!(intake.push_displacing(&mut list, on((i % 128) as u8)), 0);
+        }
+        assert_eq!(intake.push_displacing(&mut list, on(9)), 1);
+        assert_eq!(list.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(
+            list.last(),
+            Some(&on(127)),
+            "a refused note-on displaces nothing"
+        );
+        assert!(list.iter().all(MidiEvent::is_note_on));
+        assert_eq!(intake.push_displacing(&mut list, off(5)), 1);
+        assert_eq!(list.len(), MIDI_STACK_CAPACITY);
+        assert_eq!(list.last(), Some(&off(5)));
+        // The later note-on of key 5 (index 133) is the one that went.
+        let ons_of_5 = list
+            .iter()
+            .filter(|e| e.is_note_on() && e.note() == Some(5))
+            .count();
+        assert_eq!(ons_of_5, 1);
+        assert_eq!(list[5], on(5));
+    }
+
+    /// The worst case is bounded: a full list of 256 note-ons met by 8,192
+    /// note-offs displaces 256 of them (every note-on, key by key) and
+    /// refuses the rest, 7,936, in constant time after one empty pass.
+    /// Counted: every off beyond the list's 256 is one lost event or one
+    /// refused, 8,192 in all.
+    ///
+    /// Mutation: leave `exhausted` unset → 8,192 passes instead of 257 → fails. Mutation: displace without removing the
+    /// victim → the list overflows `try_push` and the count changes → fails.
+    #[test]
+    fn a_flood_of_note_offs_is_bounded_and_counted() {
+        let mut intake = MidiIntake::default();
+        let mut list = MidiEventVec::new();
+        for i in 0..MIDI_STACK_CAPACITY {
+            assert_eq!(intake.push_displacing(&mut list, on((i % 128) as u8)), 0);
+        }
+        let start = std::time::Instant::now();
+        let mut lost = 0;
+        for i in 0..8_192usize {
+            lost += intake.push_displacing(&mut list, off((i % 128) as u8));
+        }
+        let took = start.elapsed();
+        assert_eq!(lost, 8_192);
+        assert_eq!(list.iter().filter(|e| e.is_note_on()).count(), 0);
+        assert_eq!(list.len(), MIDI_STACK_CAPACITY);
+        // 256 passes that displace and one that finds nothing: not 8,192.
+        assert_eq!(intake.scans, 257);
+        // Release builds take about 0.2 ms for all of it; this is a guard
+        // against a gross regression on a loaded debug build only.
+        assert!(took < std::time::Duration::from_millis(100), "{took:?}");
+        // A new chunk may displace again.
+        list.clear();
+        intake.new_chunk();
+        for i in 0..MIDI_STACK_CAPACITY {
+            let _ = intake.push_displacing(&mut list, on((i % 128) as u8));
+        }
+        assert_eq!(intake.push_displacing(&mut list, off(5)), 1);
+        assert_eq!(list.last(), Some(&off(5)));
     }
 }

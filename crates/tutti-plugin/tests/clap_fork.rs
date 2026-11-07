@@ -688,6 +688,115 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
     );
 }
 
+/// Feed the plugin at `plugin` from a clip node holding a chord of `n`
+/// notes, started on frame `on` and ended on frame `off`.
+fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) {
+    use tutti_graph::{EventEdge, EventIn, EventOut};
+    use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
+    use tutti_midi_types::MidiEvent;
+    use tutti_types::Beat;
+    use tutti_ump::{MidiChannel, MidiGroup};
+
+    let events = (0..n).flat_map(|k| {
+        // Notes 0..100 on channel 0, 100..200 on channel 1.
+        let (g, c, key) = (MidiGroup::FIRST, MidiChannel::new(k / 100), k % 100);
+        [
+            TimedMidiEvent::new(
+                Beat(on as f64 / 24_000.0),
+                MidiEvent::note_on(g, c, key, 0xFFFF),
+            ),
+            TimedMidiEvent::new(
+                Beat(off as f64 / 24_000.0),
+                MidiEvent::note_off(g, c, key, 0),
+            ),
+        ]
+    });
+    let clip = NodeKey(1);
+    live.insert(clip, "clip", MidiClipNode::new(events));
+    live.spec_mut().connect_events(
+        EventIn {
+            node: plugin,
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: clip,
+            port: 0,
+        }),
+    );
+}
+
+/// **A chord bigger than the plugin's chunk of MIDI ends, and the export
+/// says what was lost.** 200 notes start on frame 5 200 and end on frame
+/// 5 900 of one 1,024-frame chunk (5 120..6 144): 400 events against the
+/// chunk's 256. The chunk keeps every note-off: the first 56 fit behind the
+/// 200 note-ons, and each of the other 144 takes the place of the note-on of
+/// its own key. 144 note-ons never reach the plugin, and that is the loss:
+/// by default the export fails with it, counted where the policy sees it;
+/// allowed, it is reported with the same figure. The plugin's gate (open
+/// while any note is held) opens one chunk after the note-ons and closes one
+/// chunk after the note-offs, on exactly those frames, and stays shut: no
+/// note is left sounding.
+///
+/// Before, the chunk kept the first 256 events: all 200 note-ons and 56
+/// note-offs, the gate stayed open to the end of the file, and the export
+/// returned `Ok`.
+///
+/// Mutation (run): `push_displacing` as `push` (a refused note-off is not
+/// kept) → 144 notes stay held, the gate never closes → fails. Mutation:
+/// drop `io.count_lost(host.lost)` in the plugin node → the default export
+/// is `Ok` → fails.
+#[test]
+fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
+    let _lock = exclusive();
+    let _env = ProbeEnv::new().render_mode(render::NOTES);
+    let render = |policy: tutti_export::EventLossPolicy| {
+        let probe = load_probe(SAMPLE_RATE);
+        let (mut live, _exec) = live_graph(probe.client);
+        feed_chord(&mut live, NodeKey(9), 200, 5_200, 5_900);
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            sample_rate: SampleRate(SAMPLE_RATE),
+            ..Default::default()
+        }));
+        let graph = tutti_export::RenderGraph::fork(
+            &live,
+            ForkTarget::Master,
+            ForkMode::Offline,
+            SampleRate(SAMPLE_RATE),
+        )
+        .expect("a graph holding a plugin forks");
+        let config = tutti_export::ExportConfig {
+            render: tutti_export::RenderConfig {
+                sample_rate: SampleRate(SAMPLE_RATE),
+                duration_seconds: 0.25,
+                on_event_loss: policy,
+                ..Default::default()
+            },
+            encode: tutti_export::EncodeConfig {
+                channels: tutti_export::ChannelLayout::MONO,
+                ..Default::default()
+            },
+            dither: tutti_export::Dither::Off,
+            ..Default::default()
+        };
+        tutti_export::render_to_buffers(graph, &config, timeline.as_ref())
+    };
+    let err = render(tutti_export::EventLossPolicy::Fail).expect_err("144 note-ons were lost");
+    assert!(
+        matches!(err, tutti_export::Error::EventsDropped { count: 144 }),
+        "{err:?}"
+    );
+    let rendered = render(tutti_export::EventLossPolicy::Allow).expect("allowed");
+    assert_eq!(rendered.dropped_events, 144);
+    let gate = &rendered.planes[0];
+    let chunk = tutti_export::GRAPH_MAX_BLOCK.get();
+    assert_eq!(gate.iter().position(|&s| s != 0.0), Some(5_200 + chunk));
+    assert_eq!(
+        gate.iter().rposition(|&s| s != 0.0),
+        Some(5_900 + chunk - 1),
+        "the gate closes on the note-offs' frame and stays shut"
+    );
+}
+
 /// Feed the plugin at `plugin` from a clip node holding one note-on at frame
 /// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (a beat is 24 000
 /// frames).

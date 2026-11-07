@@ -5451,11 +5451,15 @@ under both.
   `crossfade_audio_node` takes an `AudioUnit`, so a graph-node synth cannot
   be crossfaded; JR stamping still works per drained batch rather than per
   block of the graph's clock.
-- **A clip denser than `CLIP_EVENT_CAPACITY` in one block** has the rest
-  refused and counted (`Executor::dropped_event_count`); with no cursor they are
-  not retried. The capacity is sized for any real clip at the largest block;
-  a cursor that resumes after a refusal is the fix if one is not. (Note-offs
-  it owes are retried: `HeldNotes::owed`.)
+- **A clip denser than its port in one block** has the rest refused and
+  counted (`Executor::dropped_event_count`, per port in
+  `Editor::take_event_losses`); with no cursor they are not retried. The port
+  is one event a frame of the block the node was prepared for
+  (`CLIP_EVENT_DENSITY`, 256 to 8,192 events), and a note-off has room past
+  it (`note_off_room`). A note-off the port still refuses stays owed and goes
+  out at the first frame of a following block (`HeldNotes::retry`); a
+  note-on it refuses leaves its note-off withheld and counted, so nothing
+  downstream gets an off for a note it never started.
 - **A loop shorter than a block plays every pass it holds.** The walk
   (`schedule/walk.rs`) follows the host's own clock through each segment
   (`Transport::clock`, stepped with `FrameClock::advance_to_wrap`): each
@@ -5479,7 +5483,7 @@ under both.
   `a_loop_shorter_than_a_frame_is_unwrapped_at_once`, and `rt_no_alloc`'s
   `a_block_of_many_loop_passes_walks_without_allocating`.
   Every pass's events share the block's one event port, so a dense clip or
-  a very short loop can fill `CLIP_EVENT_CAPACITY` (256 a block): a loop of
+  a very short loop can fill the clip's port (one event a frame): a loop of
   a few frames with a note in it is a note-on and a note-off a pass. Past
   it the port refuses and the executor counts the refusal
   (`dropped_event_count`); the note-offs a refusal leaves owed are retried. A
@@ -5487,7 +5491,7 @@ under both.
   that differs from what it last sent (a receiver holds the context), so a
   loop with no change in it costs nothing a pass, and one with a change
   costs that change and its re-statement, bounded the same way by
-  `HARMONY_EVENT_CAPACITY` (64). What a jump or a wrap re-states is the
+  `HARMONY_EVENT_DENSITY` (two events a frame). What a jump or a wrap re-states is the
   context in force on its frame, a change on that frame included (sent
   once, as the context), so a change on the loop's start is each pass's
   context and the chord it replaces never goes out first. Pinned by

@@ -141,9 +141,13 @@
 //!
 //! - Each event output port declares how many events it writes per block
 //!   ([`Shape::event_capacity`]), and every buffer downstream is sized from
-//!   that at compile time. A writer past it is refused the newest event and
-//!   the executor counts it ([`Executor::dropped_event_count`]); nothing
-//!   downstream of a writer ever drops one.
+//!   that at compile time. A writer past it is refused the newest event,
+//!   except a note-off, which has room past the capacity
+//!   ([`note_off_room`]); the executor counts each refusal
+//!   ([`Executor::dropped_event_count`]), and per port
+//!   ([`Editor::take_event_losses`]). Nothing downstream of a writer ever
+//!   drops one. A source whose rate is per second sizes its declaration from
+//!   the block it is prepared for ([`EventDensity`]).
 //! - [`Editor::schedule`] delivers an event on an exact frame or beat
 //!   ([`At`](tutti_types::At)). A late command lands at the start of the next
 //!   block and is counted ([`Executor::late_command_count`]), never dropped.
@@ -225,6 +229,7 @@ mod fork;
 mod history;
 mod io;
 mod kernels;
+mod loss;
 mod node;
 mod par;
 mod param;
@@ -242,8 +247,9 @@ pub use controls::{ParamFork, ParamNode, ParamSet, ParamSetBuilder, param_parts}
 pub use cost::{Cost, Schedule, Work};
 pub use editor::{CommitError, Editor, Limits};
 pub use event::{
-    Event, EventKind, EventOrderError, EventRejected, EventWriter, Harmony, HarmonyKind, ParamRamp,
-    ParamSegment, SegmentShape, SortedEvents, SubBlocks,
+    Event, EventDensity, EventKind, EventOrderError, EventRejected, EventWriter, Harmony,
+    HarmonyKind, MAX_EVENT_PORT_CAPACITY, MIN_EVENT_PORT_CAPACITY, ParamRamp, ParamSegment,
+    SegmentShape, SortedEvents, SubBlocks, note_off_room,
 };
 pub use exec::{DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY};
 pub use fade::{CrossfadeCurve, Fade};
@@ -253,6 +259,7 @@ pub use fork::{
 };
 pub use history::TransportHistory;
 pub use io::{Channel, Inputs, Io, Outputs, PortKind};
+pub use loss::EventLoss;
 pub use node::{
     ConstantMask, Cx, Env, InPlaceMask, IntoNode, LoopRange, MAX_PORTS, MAX_TRANSPORT_CHANGES,
     MaxBlock, Node, NodeParts, Prepare, Resolution, Scratch, Shape, SilenceMask, Status, Transport,

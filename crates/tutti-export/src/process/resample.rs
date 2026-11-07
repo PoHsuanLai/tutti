@@ -352,6 +352,7 @@ pub(crate) fn resample_rendered(
     Ok(crate::Rendered {
         planes: out,
         sample_rate: opts.target_rate,
+        dropped_events: rendered.dropped_events,
     })
 }
 

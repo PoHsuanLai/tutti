@@ -118,11 +118,16 @@ pub(crate) fn encode_to_file(
     if outcome == Outcome::Cancelled {
         return Ok(Outcome::Cancelled);
     }
+    // Before the rename: a render that lost events is never put in place, and
+    // `path` keeps what it held (the staged file goes when `staged` drops).
+    let lost = src.lost_events();
+    crate::render::check_loss(config.render.on_event_loss, lost)?;
     staged.commit(path)?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     Ok(Outcome::Finished(Written {
         path: path.to_path_buf(),
         bytes,
+        dropped_events: lost,
     }))
 }
 
@@ -400,7 +405,11 @@ pub(crate) fn encode_planes(
     };
     // The frames' OWN rate, never `config.render.sample_rate`: these planes may
     // have been rendered under a different config entirely.
-    encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)
+    let written = encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)?;
+    Ok(written.map(|mut w| {
+        w.dropped_events = rendered.dropped_events;
+        w
+    }))
 }
 
 #[cfg(test)]

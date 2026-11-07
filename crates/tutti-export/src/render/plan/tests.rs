@@ -45,6 +45,7 @@ fn config(latency: Samples) -> RenderConfig {
         sample_rate: SampleRate(48_000.0),
         duration_seconds: 1.0,
         latency,
+        on_event_loss: Default::default(),
         tail: Samples(0),
     }
 }

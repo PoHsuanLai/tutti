@@ -53,6 +53,10 @@ proptest = "1.9.0"
 name = "graph_render"
 harness = false
 
+[[bench]]
+name = "event_path"
+harness = false
+
 [package.metadata.docs.rs]
 features = ["contract"]
 rustdoc-args = ["--cfg", "docsrs"]

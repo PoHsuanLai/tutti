@@ -294,9 +294,10 @@ fn a_nan_beat_does_not_silence_the_clip() {
 
 /// **Note-offs the port refuses go out in the blocks after, until none is
 /// held.** 400 notes are started over two blocks (200 each, under the
-/// port's 256); a seek then owes 400 note-offs: 256 on the seek block's
-/// first frame, the other 144 on the next block's, which rolls on from the
-/// seek (continuous: nothing but the debt would release them).
+/// port's 256); a seek then owes 400 note-offs: 296 on the seek block's
+/// first frame (the port's 256 and its note-off room, `note_off_room`), the
+/// other 104 on the next block's, which rolls on from the seek (continuous:
+/// nothing but the debt would release them).
 ///
 /// Mutation: never retry an owed release → 144 notes hang → fails.
 #[test]
@@ -323,8 +324,10 @@ fn refused_note_offs_are_retried_until_none_is_held() {
         .map(|&(f, _)| f)
         .collect();
     assert_eq!(offs.len(), 400, "every started note is ended");
-    assert_eq!(offs.iter().filter(|&&f| f == 512).count(), 256);
-    assert_eq!(offs.iter().filter(|&&f| f == 768).count(), 144);
+    let room = tutti_graph::note_off_room(256);
+    assert_eq!(room, 296);
+    assert_eq!(offs.iter().filter(|&&f| f == 512).count(), room);
+    assert_eq!(offs.iter().filter(|&&f| f == 768).count(), 400 - room);
 }
 
 /// **Setting the events the clip already holds cuts nothing.** Note 60 is

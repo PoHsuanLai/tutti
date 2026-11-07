@@ -60,10 +60,16 @@ pub trait MidiOut: Send + Sync {
 pub trait MidiIn: Send {
     /// Writes this block's pending events into `buffer` and returns how many.
     ///
-    /// **A full `buffer` drops the overflow.** An implementation draining a
-    /// hardware ring has already consumed those events by the time it finds
-    /// there is no room, and holding them back would need a stash outliving the
-    /// call — so the contract is truncation, not deferral. Size `buffer` for the
-    /// largest burst worth surviving.
+    /// Returns at most `buffer.len()` events. An implementation that drains a
+    /// ring takes no more than `buffer` holds and leaves the rest for the
+    /// next block, so it defers rather than drops; one that cannot (it has
+    /// consumed the events already) drops the overflow and counts it. Size
+    /// `buffer` for the largest burst worth taking in one block.
     fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
+
+    /// Sizes the source for blocks of up to `events` events. Called on the
+    /// control thread before the first [`poll_block`](Self::poll_block), and
+    /// again when the block size changes; may allocate. A source with no
+    /// per-block storage ignores it.
+    fn reserve(&mut self, _events: usize) {}
 }

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use tutti_types::{ArcLend, Reader, RtVec, SampleRate};
+use tutti_types::{ArcLend, Reader, SampleRate};
 
 use super::async_port::{HardwareMidiInput, InputProducerHandle};
 use tutti_midi_types::ump::MidiEvent;
@@ -78,6 +78,9 @@ pub struct PortInfo {
     /// Whether the drain reads this port. An inactive port keeps accepting
     /// pushes into its ring; they are simply never taken.
     pub active: bool,
+    /// How many events the driver dropped for this port because its ring was
+    /// full, since the port opened.
+    pub dropped: u64,
 }
 
 impl PortInfo {
@@ -86,11 +89,13 @@ impl PortInfo {
             id: port.id(),
             name: port.name().to_string(),
             active: port.is_active(),
+            dropped: port.dropped(),
         }
     }
 }
 
-/// Events carried from all ports through one audio block.
+/// Events carried from all ports through one audio block, until the owner
+/// sizes the drain for its block ([`HardwareMidiDrain::reserve`]).
 ///
 /// This is a hard cap, not a hint: the drain takes at most this many events per
 /// block and leaves the rest in the port rings. The scratch is sized to it and
@@ -155,7 +160,8 @@ impl DrainShared {
 /// checkable at all. See
 /// [`cycle_start_read_all_inputs_at`](HardwareMidiDrain::cycle_start_read_all_inputs_at).
 fn read_inputs(
-    events: &mut RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>,
+    events: &mut Vec<(PortId, MidiEvent)>,
+    limit: usize,
     input_ports: &PortSlots,
     sample_rate: SampleRate,
     nframes: usize,
@@ -174,10 +180,11 @@ fn read_inputs(
     };
 
     // Each port gets the headroom left by the ports before it, so the
-    // total can never exceed the scratch's capacity and no push is refused.
+    // total can never exceed the limit, which the scratch holds, and no push
+    // reallocates.
     events.clear();
     for port in input_ports.iter().flatten() {
-        let headroom = events.remaining();
+        let headroom = limit - events.len();
         if headroom == 0 {
             break;
         }
@@ -187,8 +194,8 @@ fn read_inputs(
         let id = port.id();
         port.drain_limited(headroom, |arrival, mut event| {
             event.frame_offset = frame_offset(arrival);
-            let stored = events.push((id, event));
-            debug_assert!(stored, "the drain is limited to the headroom");
+            debug_assert!(events.len() < events.capacity(), "limited to the headroom");
+            events.push((id, event));
         });
     }
     events.len()
@@ -233,6 +240,9 @@ pub struct HardwareMidiInputs {
     /// drain never takes it.
     published: Mutex<Published>,
     fifo_size: usize,
+    /// The drops of the ports removed so far, so a retired port's count stays
+    /// in [`dropped_events`](Self::dropped_events).
+    retired_dropped: AtomicU64,
     /// What every drain of this manager shares: the rate and the in-progress
     /// flag. Every field here is `Sync` on its own, so the manager derives
     /// `Sync` rather than asserting it by hand.
@@ -251,8 +261,26 @@ impl HardwareMidiInputs {
             input_ports: Arc::new(ArcLend::new(PortSlots::new())),
             published: Mutex::new(Published { next_generation: 0 }),
             fifo_size,
+            retired_dropped: AtomicU64::new(0),
             shared: DrainShared::new(),
         }
+    }
+
+    /// Events the drivers dropped for want of room in a port's ring, over all
+    /// ports, current and removed, since this manager was built. The audio
+    /// thread's drain takes events out at a bounded rate per block and
+    /// defers the rest to the next ([`HardwareMidiDrain::reserve`]); a ring
+    /// fills only when events arrive faster than blocks drain them for long
+    /// enough to fill [`new`](Self::new)'s `fifo_size`. Control side.
+    #[must_use]
+    pub fn dropped_events(&self) -> u64 {
+        let live: u64 = self
+            .published_slots()
+            .iter()
+            .flatten()
+            .map(|port| port.dropped())
+            .sum();
+        live + self.retired_dropped.load(Ordering::Relaxed)
     }
 
     /// Sets the [`SampleRate`] the arrival-timestamp → `frame_offset` conversion
@@ -345,7 +373,10 @@ impl HardwareMidiInputs {
         self.republish(|slots, _| {
             let removed = match slots.get_mut(id.index) {
                 Some(slot) if slot.as_ref().is_some_and(|port| port.id() == id) => {
-                    *slot = None;
+                    if let Some(port) = slot.take() {
+                        self.retired_dropped
+                            .fetch_add(port.dropped(), Ordering::Relaxed);
+                    }
                     true
                 }
                 _ => false,
@@ -486,7 +517,9 @@ pub struct HardwareMidiDrain {
     /// and the block start, all known before the first pop, so each event is
     /// converted as it leaves its ring and stored once. The events reach the
     /// caller through a visitor, copied out one at a time.
-    events: RtVec<(PortId, MidiEvent), CYCLE_SCRATCH_CAP>,
+    events: Vec<(PortId, MidiEvent)>,
+    /// The most events one drain takes: at most `events`' capacity.
+    limit: usize,
 }
 
 impl HardwareMidiDrain {
@@ -496,8 +529,27 @@ impl HardwareMidiDrain {
         Self {
             ports: inputs.input_ports.reader(),
             inputs,
-            events: RtVec::new(),
+            events: Vec::with_capacity(CYCLE_SCRATCH_CAP),
+            limit: CYCLE_SCRATCH_CAP,
         }
+    }
+
+    /// Sizes the drain to take up to `events` events a block (never fewer
+    /// than it takes by default). What a node does for the block it is
+    /// prepared for: a longer block gathers more events between two drains,
+    /// and the drain defers what it has no room for to the next block, one
+    /// block later each. Control thread: allocates.
+    pub fn reserve(&mut self, events: usize) {
+        let want = events.max(CYCLE_SCRATCH_CAP);
+        self.events
+            .reserve_exact(want.saturating_sub(self.events.len()));
+        self.limit = want.min(self.events.capacity());
+    }
+
+    /// The most events one drain takes.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.limit
     }
 
     /// The manager this drains.
@@ -547,6 +599,19 @@ impl HardwareMidiDrain {
         &mut self,
         nframes: usize,
         buffer_start: Instant,
+        visit: impl FnMut(PortId, MidiEvent),
+    ) -> usize {
+        let limit = self.limit;
+        self.read_limited(nframes, buffer_start, limit, visit)
+    }
+
+    /// The drain, taking at most `limit` events (and no more than
+    /// [`capacity`](Self::capacity)); what it leaves stays in the rings.
+    fn read_limited(
+        &mut self,
+        nframes: usize,
+        buffer_start: Instant,
+        limit: usize,
         mut visit: impl FnMut(PortId, MidiEvent),
     ) -> usize {
         let shared = &self.inputs.shared;
@@ -568,6 +633,7 @@ impl HardwareMidiDrain {
         let input_ports = self.ports.lend();
         read_inputs(
             &mut self.events,
+            limit.min(self.limit),
             &input_ports,
             shared.sample_rate(),
             nframes,
@@ -587,17 +653,21 @@ impl tutti_midi_types::MidiIn for HardwareMidiDrain {
     /// block's `nframes`). RT-safe: a bounded copy out of the drain's own
     /// scratch, with no allocation.
     ///
-    /// A full `buffer` drops the overflow — the drain is destructive at the
-    /// ring, so by the time there is no room the events are already out of it.
+    /// Takes no more events than `buffer` holds: the rest stay in the port
+    /// rings for the next block, so a small `buffer` defers events and drops
+    /// none.
     fn poll_block(&mut self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let mut written = 0usize;
-        self.cycle_start_read_all_inputs(block_size, |_port, event| {
-            if written < buffer.len() {
-                buffer[written] = event;
-                written += 1;
-            }
+        self.read_limited(block_size, Instant::now(), buffer.len(), |_port, event| {
+            buffer[written] = event;
+            written += 1;
         });
         written
+    }
+
+    /// As [`HardwareMidiDrain::reserve`].
+    fn reserve(&mut self, events: usize) {
+        HardwareMidiDrain::reserve(self, events);
     }
 }
 

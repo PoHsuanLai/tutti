@@ -186,6 +186,7 @@ impl Node for PluginClient<Bound> {
             segments,
             params,
             intake,
+            lost: 0,
         };
 
         // The block's channels, on the stack: no allocation per call.
@@ -205,6 +206,9 @@ impl Node for PluginClient<Bound> {
             &mut outs[..n_out],
             &mut host,
         );
+        // The MIDI the plugin never got is the executor's loss too: an export
+        // watching its count sees it.
+        io.count_lost(host.lost);
         if io.event_output_count() > 0 {
             let out = io.event_out(0);
             for e in out_events.iter() {
@@ -270,11 +274,15 @@ struct PluginChunks<'a> {
     params: &'a mut ParamDelivery,
     /// Takes the MIDI into the chunk's capped list.
     intake: &'a mut MidiIntake,
+    /// MIDI events this call took from the event input and did not hand to
+    /// the plugin ([`Io::count_lost`]).
+    lost: u64,
 }
 
 impl Chunks for PluginChunks<'_> {
     fn begin(&mut self, at: usize, chunk: usize) {
         self.segments.begin(chunk);
+        self.intake.new_chunk();
         // What an earlier chunk could not send goes on this one's first frame.
         self.params.begin();
         let transport = match Offset::new(at, Samples(self.frames)) {
@@ -326,6 +334,7 @@ impl Chunks for PluginChunks<'_> {
             segments,
             params,
             intake,
+            lost,
             ..
         } = self;
         let features = *features;
@@ -341,7 +350,7 @@ impl Chunks for PluginChunks<'_> {
             |e, frame| match e.kind {
                 EventKind::Midi(ump) => {
                     let event = MidiEvent::from_ump(frame as u32, &ump.0);
-                    midi_dropped += u64::from(!intake.push(&mut pending.midi, event));
+                    midi_dropped += intake.push_displacing(&mut pending.midi, event);
                 }
                 EventKind::Harmony(h) => {
                     push_harmony(&mut pending.harmony, features, h, frame);
@@ -352,6 +361,7 @@ impl Chunks for PluginChunks<'_> {
             },
         );
         params.count_midi_dropped(midi_dropped);
+        *lost += midi_dropped;
     }
 
     /// The chunk's MIDI, sorted by frame: the event input's, as its frames
@@ -375,10 +385,12 @@ impl Chunks for PluginChunks<'_> {
     fn unsent(&mut self) {
         let lost = self.intake.lose(&mut self.pending.midi);
         self.params.count_midi_dropped(lost);
+        self.lost += lost;
     }
 
     fn refused(&mut self, midi: usize) {
         self.params.count_midi_dropped(midi as u64);
+        self.lost += midi as u64;
         self.intake.lost();
     }
 
@@ -541,6 +553,7 @@ mod loss_tests {
             segments: &mut segments,
             params: &mut params,
             intake: &mut intake,
+            lost: 0,
         });
         (counters.dropped_midi_in(), intake)
     }

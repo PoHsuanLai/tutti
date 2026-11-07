@@ -82,8 +82,8 @@ pub use graph::{
 };
 #[cfg(feature = "midi")]
 pub use midi::{
-    LiveInput, MIDI_OUT_DROP_REPORT, Midi, MidiOutDrops, MidiOutRouter, MidiRouteId, MidiRouteRule,
-    UmpOut, drain_receiver_through,
+    LiveInput, MIDI_INPUT_DROP_REPORT, MIDI_OUT_DROP_REPORT, Midi, MidiOutDrops, MidiOutRouter,
+    MidiRouteId, MidiRouteRule, UmpOut, drain_receiver_through,
 };
 #[cfg(feature = "modulation")]
 pub use modulation::{

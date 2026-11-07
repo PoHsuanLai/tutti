@@ -36,6 +36,7 @@ fn flac_refuses_float32_with_the_bit_depth_reason() {
     let rendered = Rendered {
         planes: vec![vec![0.0; 64]; 2],
         sample_rate: SampleRate(44_100.0),
+        dropped_events: 0,
     };
     let config = ExportConfig {
         encode: EncodeConfig {

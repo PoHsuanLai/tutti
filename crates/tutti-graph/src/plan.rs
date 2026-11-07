@@ -221,7 +221,7 @@ impl EventSlotCapacity {
     pub const fn port(cap: Option<NonZeroU32>) -> Self {
         match cap {
             Some(n) => Self {
-                declared: n.get(),
+                declared: crate::event::note_off_room(n.get() as usize) as u32,
                 defaults: 0,
             },
             None => Self {
@@ -241,7 +241,8 @@ impl EventSlotCapacity {
         let fifo_bound = |n: usize| crate::kernels::EventFifo::bound(len.get(), n, max_block);
         match cap {
             Some(n) => Self {
-                declared: u32::try_from(fifo_bound(n.get() as usize)).unwrap_or(u32::MAX),
+                declared: u32::try_from(fifo_bound(crate::event::note_off_room(n.get() as usize)))
+                    .unwrap_or(u32::MAX),
                 defaults: 0,
             },
             // `limit + limit / 4 + 8` with `limit = default × blocks`: at
@@ -281,10 +282,13 @@ impl EventSlotCapacity {
         self.declared >= need.declared && self.defaults >= need.defaults
     }
 
-    /// Events, with each undeclared port worth `default`.
+    /// Events, with each undeclared port worth `default` (and the note-off
+    /// room past it, [`note_off_room`](crate::note_off_room)).
     #[must_use]
     pub fn events(self, default: usize) -> usize {
-        (self.declared as usize).saturating_add((self.defaults as usize).saturating_mul(default))
+        (self.declared as usize).saturating_add(
+            (self.defaults as usize).saturating_mul(crate::event::note_off_room(default)),
+        )
     }
 }
 

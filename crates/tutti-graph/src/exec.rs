@@ -159,11 +159,13 @@ use tutti_types::{Frame, NodeKey, RtScope, Samples, ScopedNoDenormals, Tail};
 use crate::arena::{Arena, Role};
 use crate::command::{CommandRx, Deliveries, overlay_capacity};
 use crate::cost::Schedule;
+use crate::event::PortCount;
 use crate::event::{Event, EventWriter, SortedEvents, merge_into};
 use crate::fade::CrossfadeCurve;
 use crate::history::TransportHistory;
 use crate::io::Io;
 use crate::kernels::{AudioRing, EventFifo};
+use crate::loss::{Dropped, EventLoss};
 use crate::node::{
     ConstantMask, Cx, Env, InPlaceMask, MAX_PORTS, MaxBlock, Node, Prepare, SilenceMask, Status,
     Transport, TransportChanges,
@@ -181,7 +183,8 @@ use tutti_types::PlayReading;
 /// configured otherwise ([`Editor::with_event_capacity`](crate::Editor::with_event_capacity)).
 ///
 /// A hard cap, preallocated so the audio thread never grows a buffer. Past
-/// it the port refuses the newest event
+/// it the port refuses the newest event, a note-off excepted until
+/// [`note_off_room`](crate::note_off_room)
 /// ([`EventRejected::Full`](crate::EventRejected::Full), returned to the
 /// node), and the executor counts it in
 /// [`dropped_event_count`](Executor::dropped_event_count); an engine forwards that
@@ -489,6 +492,10 @@ pub(crate) struct Channels {
     pub(crate) faded: HeapCons<Box<Crossfade>>,
     /// The executor's play clock, as it last published it.
     pub(crate) play: PlayReader,
+    /// Where the executor says which ports lost events.
+    pub(crate) losses: HeapCons<EventLoss>,
+    /// Refusals the log and the ring could not name.
+    pub(crate) unreported: Arc<AtomicU64>,
 }
 
 /// The executor's ends of the rings.
@@ -497,6 +504,8 @@ pub(crate) struct ExecutorEnds {
     back: HeapProd<Box<Commit>>,
     fade_back: HeapProd<Box<Crossfade>>,
     play: Arc<AtomicU64>,
+    losses: HeapProd<EventLoss>,
+    unreported: Arc<AtomicU64>,
 }
 
 /// Build the rings: the editor's ends and the executor's.
@@ -505,18 +514,24 @@ pub(crate) fn channels() -> (Channels, ExecutorEnds) {
     let (back_tx, back_rx) = HeapRb::<Box<Commit>>::new(QUEUE_CAPACITY + 1).split();
     let (fade_tx, fade_rx) = HeapRb::<Box<Crossfade>>::new(FADE_CAPACITY).split();
     let play = Arc::new(AtomicU64::new(0));
+    let unreported = Arc::new(AtomicU64::new(0));
+    let (loss_tx, loss_rx) = HeapRb::<EventLoss>::new(crate::loss::RING_CAPACITY).split();
     (
         Channels {
             to_executor: tx,
             returned: back_rx,
             faded: fade_rx,
             play: PlayReader(Arc::clone(&play)),
+            losses: loss_rx,
+            unreported: Arc::clone(&unreported),
         },
         ExecutorEnds {
             queue: rx,
             back: back_tx,
             fade_back: fade_tx,
             play,
+            losses: loss_tx,
+            unreported,
         },
     )
 }
@@ -645,7 +660,11 @@ pub struct Executor {
     store: Vec<Option<Unit>>,
     state: State,
     frame: Frame,
-    dropped: u64,
+    /// Events dropped: the running total, and this block's log of where.
+    dropped: Dropped,
+    /// Where each block's log goes, for the editor to drain.
+    losses: HeapProd<EventLoss>,
+    unreported: Arc<AtomicU64>,
     commands: CommandRx,
     /// `seq` of the last commit applied.
     applied: u64,
@@ -676,7 +695,7 @@ impl std::fmt::Debug for Executor {
             .field("event_cap", &self.event_cap)
             .field("planned", &self.plan.is_some())
             .field("frame", &self.frame)
-            .field("dropped", &self.dropped)
+            .field("dropped", &self.dropped.total())
             .field("applied", &self.applied)
             .field("suspended", &self.suspended)
             .field("next_prepare", &self.next_prepare)
@@ -739,7 +758,9 @@ impl Executor {
             store: Vec::new(),
             state: State::empty(prepare.max_block().get()),
             frame: Frame::ZERO,
-            dropped: 0,
+            dropped: Dropped::new(),
+            losses: ends.losses,
+            unreported: ends.unreported,
             commands,
             applied: 0,
             suspended: false,
@@ -842,7 +863,24 @@ impl Executor {
     /// overflow (which never drops a note-off while anything else can go).
     /// A merge never drops: its slot holds all its inputs.
     pub fn dropped_event_count(&self) -> u64 {
-        self.dropped
+        self.dropped.total()
+    }
+
+    /// Events that never arrived: [`dropped_event_count`](Self::dropped_event_count)
+    /// less the refusals a node recovered (a note-off it kept owed and wrote
+    /// in a later block, `EventWriter::recovered`). What an export fails on.
+    /// A refusal still owed counts as lost.
+    pub fn lost_event_count(&self) -> u64 {
+        self.dropped.lost()
+    }
+
+    /// Refusals a node took back so far (`EventWriter::recovered`): with
+    /// [`dropped_event_count`](Self::dropped_event_count), the two figures
+    /// [`lost_event_count`](Self::lost_event_count) is made of. Over a span,
+    /// the loss is the change in one less the change in the other, since a
+    /// recovery in the span may be of a refusal before it.
+    pub fn recovered_event_count(&self) -> u64 {
+        self.dropped.recovered()
     }
 
     /// Scheduled commands that were already past due when the executor
@@ -1060,9 +1098,13 @@ impl Executor {
         // An event FIFO is sized from its source port's declared rate
         // (`Shape::event_capacity`), or the default for one that declared
         // none: the same figure the source's writer enforces.
+        // The rate is what the port can hold, note-off room included: the
+        // FIFO takes every event the port wrote.
         let rate = |from: EventOut| {
-            plan.event_port_capacity(from)
-                .map_or(cap, |n| n.get() as usize)
+            crate::event::note_off_room(
+                plan.event_port_capacity(from)
+                    .map_or(cap, |n| n.get() as usize),
+            )
         };
         let rings: Vec<Option<Ring>> = plan
             .delays
@@ -1408,6 +1450,8 @@ impl Executor {
             state,
             frame,
             dropped,
+            losses,
+            unreported,
             commands,
             applied,
             suspended: _,
@@ -1502,10 +1546,11 @@ impl Executor {
         // block this long (`Plan::schedule`); either way the same samples.
         let spread = par.as_ref().is_some_and(|p| p.spreads(frames));
         if let (true, Some(par), Some(pool)) = (spread, par.as_mut(), pool.as_ref()) {
-            let (lost, ended) = crate::par::run_block(
+            let ended = crate::par::run_block(
                 par,
                 pool,
                 Block {
+                    dropped: &mut *dropped,
                     plan,
                     env: &env,
                     history,
@@ -1529,7 +1574,6 @@ impl Executor {
                     due,
                 },
             );
-            *dropped += lost;
             fade_ended |= ended;
         } else {
             // Built once per block, not per op: rebuilt per node call it was
@@ -1545,7 +1589,7 @@ impl Executor {
                 at: 0,
                 overlay,
                 due,
-                dropped,
+                dropped: &mut *dropped,
             };
             for op in &plan.ops {
                 match *op {
@@ -1563,17 +1607,19 @@ impl Executor {
                         );
                     }
                     Op::EventDelay { delay, src, dst } => {
-                        *st.dropped += event_delay_op(
+                        let lost = event_delay_op(
                             event_ring(&mut rings[delay as usize]),
                             &mut *st.events,
                             src,
                             dst,
                             frames,
                         );
+                        st.dropped.charge_delay(plan, delay, lost);
                     }
                     Op::EventMerge { srcs, dst } => {
-                        *st.dropped +=
+                        let lost =
                             event_merge_op(&plan.event_list[srcs.range()], dst, &mut *st.events);
+                        st.dropped.count(lost);
                     }
                     Op::Node { unit, .. } => {
                         // One record per node op, lowered at compile time and
@@ -1619,12 +1665,14 @@ impl Executor {
                         let fifo = event_fb[feedback as usize]
                             .as_mut()
                             .expect("built by apply");
-                        *st.dropped += fifo.push(st.events.ev(src)) as u64;
+                        let lost = fifo.push(st.events.ev(src));
+                        st.dropped.charge_feedback(plan, feedback, u64::from(lost));
                     }
                 }
             }
         }
 
+        dropped.flush(plan, losses, unreported);
         for f in event_fb.iter_mut().flatten() {
             f.advance(frames);
         }
@@ -1815,7 +1863,7 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
         Form::Source { out } => {
             node_op(u, head, st, [&[], &[out], &[], &[]], |call, node, st| {
                 let mut outs = [st.arena.slot_mut(out, frames)];
-                (call.process(node, &[], &mut outs), 0)
+                call.process(node, &[], &mut outs)
             });
         }
         Form::Split { input, out } => node_op(
@@ -1825,7 +1873,7 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
             [&[input], &[out], &[], &[]],
             |call, node, st| {
                 let (i, o) = st.arena.pair(input, out, frames);
-                (call.process(node, &[i], &mut [o]), 0)
+                call.process(node, &[i], &mut [o])
             },
         ),
         Form::InPlace { slot } => node_op(
@@ -1835,7 +1883,7 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
             [&[slot], &[slot], &[], &[]],
             |call, node, st| {
                 let mut outs = [st.arena.slot_mut(slot, frames)];
-                (call.process(node, &[&[]], &mut outs), 0)
+                call.process(node, &[&[]], &mut outs)
             },
         ),
         // The stereo shapes: fixed widths, so `direct_op` gets the same
@@ -1856,12 +1904,11 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
         Form::Audio => {
             let ports = rec.ports(&plan.nodes.slots);
             node_op(u, head, st, ports, |call, node, st| {
-                let status = match rec.ain.max(rec.aout) {
+                match rec.ain.max(rec.aout) {
                     0..=4 => call.run_audio::<4, A>(node, &mut *st.arena, borrows),
                     5..=16 => call.run_audio::<16, A>(node, &mut *st.arena, borrows),
                     _ => call.run_audio::<MAX_PORTS, A>(node, &mut *st.arena, borrows),
-                };
-                (status, 0)
+                }
             });
         }
         Form::General => {
@@ -1872,12 +1919,17 @@ pub(crate) fn node_dispatch<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots 
                 let (inject, overlay) = (&*st.inject, &st.overlay[..]);
                 let extra = Extra { inject, overlay };
                 let (arena, events) = (&mut *st.arena, &mut *st.events);
+                let dropped = &mut *st.dropped;
                 match (a, e) {
-                    (0..=4, 0..=4) => call.run::<4, 4, A, E>(node, arena, events, borrows, extra),
-                    (0..=16, 0..=4) => call.run::<16, 4, A, E>(node, arena, events, borrows, extra),
-                    _ => {
-                        call.run::<MAX_PORTS, MAX_PORTS, A, E>(node, arena, events, borrows, extra)
+                    (0..=4, 0..=4) => {
+                        call.run::<4, 4, A, E>(node, arena, events, borrows, extra, dropped)
                     }
+                    (0..=16, 0..=4) => {
+                        call.run::<16, 4, A, E>(node, arena, events, borrows, extra, dropped)
+                    }
+                    _ => call.run::<MAX_PORTS, MAX_PORTS, A, E>(
+                        node, arena, events, borrows, extra, dropped,
+                    ),
                 }
             });
         }
@@ -1979,7 +2031,8 @@ fn fading_node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
             let (inject, overlay) = (&*st.inject, &st.overlay[..]);
             let extra = Extra { inject, overlay };
             let (arena, events) = (&mut *st.arena, &mut *st.events);
-            call.run::<MAX_PORTS, MAX_PORTS, A, E>(node, arena, events, borrows, extra)
+            let dropped = &mut *st.dropped;
+            call.run::<MAX_PORTS, MAX_PORTS, A, E>(node, arena, events, borrows, extra, dropped)
         },
     );
 
@@ -2064,7 +2117,7 @@ pub(crate) struct OpState<'s, A: ?Sized, F: ?Sized, E: ?Sized> {
     /// Where a node's scheduled events are merged into its inputs.
     pub(crate) overlay: &'s mut Vec<Event>,
     pub(crate) due: Deliveries<'s>,
-    pub(crate) dropped: &'s mut u64,
+    pub(crate) dropped: &'s mut Dropped,
 }
 
 /// Run one node op: the silence skip, flushed-event injection, the call
@@ -2081,7 +2134,7 @@ fn node_op<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     h: &Head<'_, '_>,
     st: &mut OpState<'_, A, F, E>,
     ports: [&[u32]; 4],
-    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, F, E>) -> (Status, u32),
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, F, E>) -> Status,
 ) {
     node_op_with(u, h, st, ports, false, call_node);
 }
@@ -2126,7 +2179,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     st: &mut OpState<'_, A, F, E>,
     [ain, aout, ein, eout]: [&[u32]; 4],
     params_done: bool,
-    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, F, E>) -> (Status, u32),
+    call_node: impl FnOnce(&Call<'_, '_>, &mut dyn Node, &mut OpState<'_, A, F, E>) -> Status,
 ) {
     let (rec, frames) = (h.rec, h.frames);
     let unit = rec.unit;
@@ -2205,7 +2258,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         };
         let (n, lost) = st.due.overlay(unit, base, st.overlay, &mut views);
         n_views = n;
-        *st.dropped += u64::from(lost);
+        st.dropped.at_node(rec.unit, lost);
     }
 
     // The table only for a unit whose step delivered frames this block;
@@ -2230,8 +2283,7 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         scheduled: &views[..n_views],
         params,
     };
-    let (status, drops) = call_node(&call, &mut *u.node, st);
-    *st.dropped += drops as u64;
+    let status = call_node(&call, &mut *u.node, st);
     if scheduled {
         st.has_due[st.at] = false;
     }
@@ -2285,7 +2337,7 @@ fn direct_op<
     let frames = h.frames;
     node_op(u, h, st, [ain, aout, &[], &[]], |call, node, st| {
         let (ins, mut outs) = st.arena.direct::<I, O>(frames, d);
-        (call.process(node, &ins, &mut outs), 0)
+        call.process(node, &ins, &mut outs)
     });
 }
 
@@ -2380,7 +2432,8 @@ impl<'p> Call<'p, '_> {
 
     /// Borrow a node's audio and event buffers and run it. `N` must hold the
     /// wider audio side and `M` the wider event side. Returns the node's
-    /// status and how many events its writers refused.
+    /// status, and charges the events its writers refused to `dropped`, by
+    /// port.
     fn run<const N: usize, const M: usize, A: AudioSlots, E: EventSlots + ?Sized>(
         &self,
         node: &mut dyn Node,
@@ -2388,7 +2441,8 @@ impl<'p> Call<'p, '_> {
         events: &mut E,
         borrows: &[(u32, Role)],
         extra: Extra<'_>,
-    ) -> (Status, u32) {
+        dropped: &mut Dropped,
+    ) -> Status {
         let Extra { inject, overlay } = extra;
         let rec = self.rec;
         let frames = self.frames;
@@ -2415,13 +2469,20 @@ impl<'p> Call<'p, '_> {
         for &(port, a, b) in self.scheduled {
             evin[port as usize] = SortedEvents::trusted(&overlay[a as usize..b as usize], frames);
         }
-        let drops = Cell::new(0u32);
+        // One count per port, so a loss is charged to the port that had it.
+        let drops: [PortCount; M] = std::array::from_fn(|_| PortCount::default());
         let mut evout: [EventWriter<'_>; M] = std::array::from_fn(|_| EventWriter::detached());
-        for (w, b) in evout.iter_mut().zip(evout_bufs.iter_mut()).take(e_out) {
+        for ((w, b), d) in evout
+            .iter_mut()
+            .zip(evout_bufs.iter_mut())
+            .zip(&drops)
+            .take(e_out)
+        {
             let b = b.take().expect("event output borrowed");
             b.clear();
-            *w = EventWriter::new(b, self.cap, frames as u32, &drops);
+            *w = EventWriter::new(b, self.cap, frames as u32, d);
         }
+        let unplaced = Cell::new(0u32);
         let io = Io::new(
             self.max,
             frames,
@@ -2433,9 +2494,19 @@ impl<'p> Call<'p, '_> {
             &evin[..e_in],
             &mut evout[..e_out],
         )
-        .with_params(self.params);
+        .with_params(self.params)
+        .with_lost(&unplaced);
         let status = node.process(&self.cx(), io);
-        (status, drops.get())
+        if unplaced.get() != 0 {
+            dropped.at_node(rec.unit, unplaced.get());
+        }
+        for (port, d) in drops.iter().take(e_out).enumerate() {
+            let (refused, recovered) = (d.refused.get(), d.recovered.get());
+            if refused != 0 || recovered != 0 {
+                dropped.at_port(rec.unit, port as u16, refused, recovered);
+            }
+        }
+        status
     }
 }
 

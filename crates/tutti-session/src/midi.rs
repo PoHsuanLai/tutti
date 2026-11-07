@@ -353,6 +353,12 @@ pub(crate) struct MidiState {
     /// The drop count the last `MidiOut` phase reported, and when.
     drops_seen: u64,
     reported_at: Option<Instant>,
+    /// The hardware input's drop total the last `Poll` phase reported, and
+    /// when.
+    #[cfg(feature = "midi-hardware")]
+    input_drops_seen: u64,
+    #[cfg(feature = "midi-hardware")]
+    input_reported_at: Option<Instant>,
 }
 
 impl std::fmt::Debug for MidiState {
@@ -378,6 +384,12 @@ impl std::fmt::Debug for MidiState {
 /// a clock running with no output drops ticks on every update.
 pub const MIDI_OUT_DROP_REPORT: Duration = Duration::from_secs(1);
 
+/// How often a rising count of events the hardware input's rings dropped is
+/// reported at most
+/// (`SessionEvent::MidiInputDropped`, feature `midi-hardware`):
+/// a stalled audio callback with a busy controller drops on every update.
+pub const MIDI_INPUT_DROP_REPORT: Duration = Duration::from_secs(1);
+
 impl MidiState {
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
@@ -386,6 +398,28 @@ impl MidiState {
         self.clips.remove(&node);
         self.live.remove(&node);
         self.routed.remove(&node);
+    }
+
+    /// `Phase::Poll`: reports the events the hardware input's rings dropped
+    /// when their total rose, at most once per [`MIDI_INPUT_DROP_REPORT`] of
+    /// `now`.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn midi_input_phase(
+        &mut self,
+        io: Option<&tutti_midi_hardware::MidiSession>,
+        now: Instant,
+        out: &mut Vec<crate::SessionEvent>,
+    ) {
+        let Some(io) = io else { return };
+        let total = io.ports().dropped_events();
+        let due = self
+            .input_reported_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= MIDI_INPUT_DROP_REPORT);
+        if total != self.input_drops_seen && due {
+            self.input_drops_seen = total;
+            self.input_reported_at = Some(now);
+            out.push(crate::SessionEvent::MidiInputDropped(total));
+        }
     }
 
     /// `Phase::MidiOut`: drains the hardware out to the output, and reports

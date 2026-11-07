@@ -74,7 +74,6 @@
 //!
 //! [`FeedbackKey`]: crate::FeedbackKey
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
@@ -1177,7 +1176,7 @@ impl Reference {
                 .iter()
                 .map(|v| SortedEvents::new(v, frames).expect("the reference sorted them"))
                 .collect();
-            let drops = Cell::new(0);
+            let drops = crate::event::PortCount::default();
             // The node's declared capacity bounds its writers here as in the
             // executor; undeclared, nothing does.
             let cap = shape
@@ -1205,7 +1204,7 @@ impl Reference {
                 .expect("unit present")
                 .1
                 .process(&cx, io);
-            (status, drops.get())
+            (status, drops.refused.get())
         };
         self.dropped += u64::from(refused);
         settle(status, &ins, &mut outs);

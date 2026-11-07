@@ -527,6 +527,29 @@ impl Editor {
         self.channels.play.read()
     }
 
+    /// The output ports that lost events since the last call, one entry per
+    /// port per block they lost some in, oldest first. Control thread; takes
+    /// what the paired executor has noted, never blocks it.
+    ///
+    /// Each entry is exact for its block. The executor's
+    /// [`dropped_event_count`](crate::Executor::dropped_event_count) is the
+    /// total and is exact whether or not these were drained: a block that
+    /// lost at more places than its log holds, or a control side that lets
+    /// the ring (256 entries) fill, leaves entries out and the total stands.
+    /// Drain it from the tick that collects (the session's `Collect` phase).
+    pub fn take_event_losses(&mut self) -> impl Iterator<Item = crate::EventLoss> + '_ {
+        std::iter::from_fn(|| self.channels.losses.try_pop())
+    }
+
+    /// Refusals since the last call that [`take_event_losses`](Self::take_event_losses)
+    /// did not name: a merge's, and those the per-block log (64 places) or the
+    /// ring (256 entries) had no room for. Control thread.
+    pub fn take_unreported_event_losses(&mut self) -> u64 {
+        self.channels
+            .unreported
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The graph value.
     pub fn spec(&self) -> &GraphSpec {
         &self.spec

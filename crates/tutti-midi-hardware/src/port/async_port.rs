@@ -24,6 +24,8 @@
 //!
 //! [`HardwareMidiInputs`]: super::HardwareMidiInputs
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use ringbuf::traits::{Consumer, Producer, Split};
@@ -58,6 +60,8 @@ use super::PortId;
 pub struct InputProducerHandle {
     producer: HeapProd<(Instant, MidiEvent)>,
     port: PortId,
+    /// Events [`push`](Self::push) found no room for, shared with the port.
+    dropped: Arc<AtomicU64>,
 }
 
 impl core::fmt::Debug for InputProducerHandle {
@@ -73,11 +77,17 @@ impl InputProducerHandle {
     /// into a `frame_offset` within the block that reads it.
     ///
     /// Returns `false` when the ring is full; the event is then dropped, not
-    /// queued. Lock-free and allocation-free, so it is safe to call from a
-    /// driver callback.
+    /// queued, and counted
+    /// ([`HardwareMidiInputs::dropped_events`](super::HardwareMidiInputs::dropped_events)).
+    /// Lock-free and allocation-free, so it is safe to call from a driver
+    /// callback.
     #[inline]
     pub fn push(&mut self, event: MidiEvent, timestamp: Instant) -> bool {
-        self.producer.try_push((timestamp, event)).is_ok()
+        let taken = self.producer.try_push((timestamp, event)).is_ok();
+        if !taken {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        taken
     }
 
     /// The identity of the port this handle feeds: the key to pass to
@@ -103,6 +113,8 @@ pub(crate) struct HardwareMidiInput {
     active: std::sync::atomic::AtomicBool,
     /// Reached only by the audio thread's drain, one borrow at a time.
     input: AudioThreadCell<HeapCons<(Instant, MidiEvent)>>,
+    /// Events the producer found the ring full for.
+    dropped: Arc<AtomicU64>,
 }
 
 impl HardwareMidiInput {
@@ -114,15 +126,26 @@ impl HardwareMidiInput {
         port: PortId,
     ) -> (Self, InputProducerHandle) {
         let (producer, consumer) = HeapRb::new(fifo_size).split();
+        let dropped = Arc::new(AtomicU64::new(0));
         (
             Self {
                 id: port,
                 name: name.into(),
                 active: std::sync::atomic::AtomicBool::new(true),
                 input: AudioThreadCell::new(consumer),
+                dropped: Arc::clone(&dropped),
             },
-            InputProducerHandle { producer, port },
+            InputProducerHandle {
+                producer,
+                port,
+                dropped,
+            },
         )
+    }
+
+    /// How many events the producer dropped for want of room in the ring.
+    pub(crate) fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     pub(crate) fn id(&self) -> PortId {

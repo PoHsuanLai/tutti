@@ -1541,21 +1541,24 @@ mod tests {
                 _ => None,
             })
             .expect("a merge");
+        // A port of 5 declared events holds them and the note-off room past
+        // them (`note_off_room`), which is what a merge of it must hold.
+        let room = crate::note_off_room(5) as u32;
         assert_eq!(
             good.event_slot_capacity[dst as usize],
             EventSlotCapacity {
-                declared: 5,
+                declared: room,
                 defaults: 1
             },
-            "five declared events and one default"
+            "five declared events (and their note-off room) and one default"
         );
         for short in [
             EventSlotCapacity {
-                declared: 4,
+                declared: room - 1,
                 defaults: 1,
             },
             EventSlotCapacity {
-                declared: 5,
+                declared: room,
                 defaults: 0,
             },
         ] {

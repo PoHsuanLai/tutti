@@ -119,6 +119,19 @@ pub enum Error {
     #[error("Cannot fork the graph for export: {0}")]
     Fork(tutti_graph::ForkError),
 
+    /// The graph dropped events during the render (a port past its capacity,
+    /// a full delay): the audio of a dropped note-on or note-off is wrong, and
+    /// a note whose note-off was dropped may sound to the end. Raised under
+    /// [`EventLossPolicy::Fail`](crate::EventLossPolicy::Fail), the default;
+    /// a file export removes the file. `count` is the executor's
+    /// `lost_event_count` over the render: events that never arrived, not a
+    /// note-off that was refused and sent again.
+    #[error("Export failed: the graph dropped {count} events during the render")]
+    EventsDropped {
+        /// How many.
+        count: u64,
+    },
+
     /// A forked unit failed while the render ran: a hosted plugin's
     /// server crashed, or stopped answering (`kind`). Past that point the
     /// render holds silence where the unit's output belongs, so the export is

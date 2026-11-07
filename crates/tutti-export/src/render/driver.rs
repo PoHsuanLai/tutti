@@ -80,6 +80,11 @@ pub(crate) trait FrameSource {
     /// replay has no block of its own. Pulling the graph 64 frames at a time
     /// would run its per-block walk sixteen times as often as it needs to.
     fn max_block(&self) -> usize;
+    /// Events the graph lost since the render began (`Executor::lost_event_count`):
+    /// not a note-off it refused and sent again. A replay loses none.
+    fn lost_events(&self) -> u64 {
+        0
+    }
 }
 
 /// The render source for the graph: a `tutti_graph::Executor` (a
@@ -103,6 +108,10 @@ pub(crate) struct GraphSource<'a> {
     planes: Vec<Vec<f32>>,
     max_block: usize,
     produced: Samples,
+    /// The executor's dropped and recovered counts when the render began;
+    /// kept apart, because a recovery in the render may be of a refusal
+    /// before it.
+    before: (u64, u64),
 }
 
 impl<'a> GraphSource<'a> {
@@ -133,6 +142,10 @@ impl<'a> GraphSource<'a> {
         // executor renders only what was. (Nothing commits during the render,
         // so the plan applied here is the one every block runs.)
         executor.apply_pending();
+        let before = (
+            executor.dropped_event_count(),
+            executor.recovered_event_count(),
+        );
         let (global_inputs, outputs) = executor.plan().map_or_else(
             || {
                 let topology = &editor.spec().topology;
@@ -150,6 +163,7 @@ impl<'a> GraphSource<'a> {
             planes,
             max_block,
             produced: Samples(0),
+            before,
         })
     }
 }
@@ -211,9 +225,22 @@ impl FrameSource for GraphSource<'_> {
     fn max_block(&self) -> usize {
         self.max_block
     }
+
+    fn lost_events(&self) -> u64 {
+        lost_over(
+            self.before,
+            (
+                self.executor.dropped_event_count(),
+                self.executor.recovered_event_count(),
+            ),
+        )
+    }
 }
 
 /// Run `f` over the frame source for `graph`, then check the fork's health.
+/// Returns what `f` did and the events the graph lost over the render; what
+/// to do about them is the caller's ([`check_loss`]), made before a file is
+/// committed and not for a cancelled render.
 ///
 /// The one place a [`RenderGraph`] becomes a [`FrameSource`], so every entry
 /// point renders and checks identically.
@@ -222,12 +249,14 @@ pub(crate) fn with_source<R>(
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
-) -> crate::Result<R> {
+) -> crate::Result<(R, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let (editor, executor) = graph.parts_mut();
-    let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
+    let mut src = GraphSource::new(editor, executor, sample_rate, clock)?;
+    let rendered = f(&mut src)?;
+    let lost = src.lost_events();
     // A forked unit that failed mid-render (a plugin's server crashed or
     // hung) rendered silence from then on, and `process` has no error
     // channel: the probe is the only place the failure shows. A render that
@@ -239,7 +268,27 @@ pub(crate) fn with_source<R>(
             kind: fault.kind,
             cause: fault.cause,
         })?;
-    Ok(rendered)
+    Ok((rendered, lost))
+}
+
+/// The events lost between two readings of the executor's `(dropped,
+/// recovered)` counts. A recovery can be of a refusal from before the first
+/// reading, so the refusals still owed then (`dropped - recovered`) are
+/// settled first: only recoveries past them took back a refusal made in the
+/// span.
+pub(crate) fn lost_over(before: (u64, u64), after: (u64, u64)) -> u64 {
+    let owed = before.0.saturating_sub(before.1);
+    let dropped = after.0.saturating_sub(before.0);
+    let recovered = after.1.saturating_sub(before.1).saturating_sub(owed);
+    dropped.saturating_sub(recovered)
+}
+
+/// Fails a render that lost events under `EventLossPolicy::Fail`
+pub(crate) fn check_loss(policy: crate::EventLossPolicy, lost: u64) -> crate::Result<()> {
+    if lost > 0 && policy == crate::EventLossPolicy::Fail {
+        return Err(crate::Error::EventsDropped { count: lost });
+    }
+    Ok(())
 }
 
 /// Replays already-rendered planes as a frame source.

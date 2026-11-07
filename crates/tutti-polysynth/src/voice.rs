@@ -138,12 +138,12 @@ impl VoiceSlot {
         self.note
     }
 
-    #[inline]
     #[cfg(test)]
     pub(crate) fn velocity(&self) -> f32 {
         self.velocity
     }
 
+    #[inline]
     pub(crate) fn channel(&self) -> MidiChannel {
         self.channel
     }

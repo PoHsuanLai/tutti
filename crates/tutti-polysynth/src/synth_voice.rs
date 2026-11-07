@@ -377,6 +377,11 @@ impl SynthVoice {
         Resonance(base + self.cc_resonance_value * (max_res - base))
     }
 
+    #[cfg(test)]
+    pub(crate) fn mod_wheel(&self) -> f32 {
+        self.mod_wheel_value
+    }
+
     pub(crate) fn set_mod_wheel(&mut self, value: f32) {
         self.mod_wheel_value = value;
     }

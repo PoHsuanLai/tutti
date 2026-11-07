@@ -445,11 +445,13 @@ impl PolySynth {
             } => {
                 let id = NoteId::from_channel_note(channel, note.get());
                 let data = u32_to_unit_f32(value);
-                // The index is a wire byte, not a 7-bit value; `CCNumber`
-                // masks it.
-                match CCNumber::new(controller) {
-                    cc::BRIGHTNESS => self.set_voice_mpe(id, MpeControl::Slide(data)),
-                    cc::VOLUME => self.set_voice_mpe(id, MpeControl::Gain(data)),
+                // The index is a wire byte, not a 7-bit value: 0xCA is not
+                // CC74.
+                match controller {
+                    c if c == cc::BRIGHTNESS.get() => {
+                        self.set_voice_mpe(id, MpeControl::Slide(data));
+                    }
+                    c if c == cc::VOLUME.get() => self.set_voice_mpe(id, MpeControl::Gain(data)),
                     _ => {}
                 }
             }

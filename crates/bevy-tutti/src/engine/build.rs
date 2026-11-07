@@ -12,6 +12,7 @@
 //! There is no public `TuttiEngine` bundle: construction inserts directly.
 
 use bevy_app::App;
+use bevy_ecs::world::World;
 use tutti_session::{Device, Session, SessionBuilder};
 
 use crate::engine::Result;
@@ -47,7 +48,7 @@ use crate::sampler::DiskStreamerRes;
 /// [`engine_ready`](crate::graph::engine_ready) run condition gates every
 /// engine-dependent system, so the app proceeds without audio.
 pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
-    let device = tutti_cpal::DeviceSelector::from(plugin.output_device);
+    let device = plugin.output_device.clone();
     build_on(plugin, app, |builder| builder.build_device(device))
 }
 
@@ -61,6 +62,55 @@ pub(crate) fn build_on(
     app: &mut App,
     build: impl FnOnce(SessionBuilder) -> Result<(Session, Device)>,
 ) -> Result<()> {
+    build_in(plugin, app.world_mut(), build)
+}
+
+/// Starts the session's device watch on `source`, with the plugin's policy
+/// and selector, and marks the list as the watch's.
+pub(crate) fn watch_with(
+    world: &mut World,
+    plugin: &crate::TuttiPlugin,
+    session: &mut Session,
+    device: &Device,
+    source: impl tutti_cpal::SnapshotSource + Send + 'static,
+) {
+    let Some(policy) = plugin.watch_devices else {
+        return;
+    };
+    session.watch_devices(
+        source,
+        policy,
+        plugin.output_device.clone(),
+        device.opened_id(&plugin.output_device),
+    );
+    world.insert_resource(super::device_state::DevicesWatched);
+}
+
+/// [`build_on`] into a world: the engine built after the app started (a
+/// start that failed and was retried, design 018).
+pub(crate) fn build_in(
+    plugin: &crate::TuttiPlugin,
+    world: &mut World,
+    build: impl FnOnce(SessionBuilder) -> Result<(Session, Device)>,
+) -> Result<()> {
+    build_with(plugin, world, build, Watching::Spawn)
+}
+
+/// Where a built engine's device watch gets its snapshots.
+pub(crate) enum Watching {
+    /// A new poller, if the plugin watches devices.
+    Spawn,
+    /// None: the caller installs the watch.
+    Skip,
+}
+
+/// [`build_in`], with the device watch as `source` says.
+pub(crate) fn build_with(
+    plugin: &crate::TuttiPlugin,
+    world: &mut World,
+    build: impl FnOnce(SessionBuilder) -> Result<(Session, Device)>,
+    source: Watching,
+) -> Result<()> {
     #[cfg_attr(not(feature = "midi"), allow(unused_mut))]
     let mut builder = Session::builder()
         .inputs(plugin.inputs)
@@ -73,11 +123,17 @@ pub(crate) fn build_on(
     // The hardware input ingests MPE in the app's `MpeModeConfig`, inserted
     // before the engine builds (default `Disabled`).
     #[cfg(feature = "midi")]
-    if let Some(mode) = app.world().get_resource::<crate::midi::MpeModeConfig>() {
+    if let Some(mode) = world.get_resource::<crate::midi::MpeModeConfig>() {
         builder = builder.mpe_mode(mode.0);
     }
     #[cfg_attr(not(feature = "sampler"), allow(unused_mut))]
     let (mut session, device) = build(builder)?;
+    if let (Watching::Spawn, Some(policy)) = (source, plugin.watch_devices) {
+        match policy.spawn_poller(tutti_cpal::AudioHost::Default) {
+            Ok(poller) => watch_with(world, plugin, &mut session, &device, poller),
+            Err(e) => bevy_log::warn!("the device poller did not start: {e}"),
+        }
+    }
 
     // --- Publish every subsystem. On `Err` above none of this runs, so
     // `engine_ready` stays an exact proxy for "the callback is live". ---
@@ -102,30 +158,30 @@ pub(crate) fn build_on(
     #[cfg(feature = "midi-hardware")]
     let midi_io = session.midi_io().cloned();
 
-    app.insert_resource(AudioGraphRes::from_session(session));
-    app.insert_resource(config);
-    app.insert_resource(compensation);
-    app.insert_non_send(device);
-    app.insert_resource(TransportRes(transport));
-    app.insert_resource(MetronomeRes(metronome));
+    world.insert_resource(AudioGraphRes::from_session(session));
+    world.insert_resource(config);
+    world.insert_resource(compensation);
+    world.insert_non_send(device);
+    world.insert_resource(TransportRes(transport));
+    world.insert_resource(MetronomeRes(metronome));
     // The engine-built node gets an entity like everything else in the graph,
     // and `EngineNodes` publishes it. Spawned here, before any host system
     // runs, it is otherwise unreachable — and `PortSources` names sources by
     // `Entity`, so an unnameable node is an unwirable one. The click's output
     // is left unwired so that the host declares where it lands.
     if let Some(click) = click {
-        let click_entity = app.world_mut().spawn(click).id();
-        app.insert_resource(EngineNodes {
+        let click_entity = world.spawn(click).id();
+        world.insert_resource(EngineNodes {
             click: click_entity,
         });
     }
     // Consumers read `MeteringRes::get()` directly; the session enabled it.
-    app.insert_resource(MeteringRes(meter));
+    world.insert_resource(MeteringRes(meter));
     // Deliberately NOT opened: while closed, `AudioTap::push` on the audio
     // thread is one atomic load and a return, so a host that never analyses
     // pays nothing. `AudioTapRes::open()` is the switch, and it hands back a
     // consumer the caller owns.
-    app.insert_resource(AudioTapRes(tap));
+    world.insert_resource(AudioTapRes(tap));
 
     #[cfg(feature = "midi")]
     if let Some(nodes) = midi_nodes {
@@ -133,26 +189,26 @@ pub(crate) fn build_on(
         // (and from) them by entity: the route rules feed from the input's
         // ports, and anything declared on the hardware out reaches the wire
         // beside the clock (the session's `"clock"` feed).
-        let input_entity = app.world_mut().spawn(nodes.input).id();
-        let clock_entity = app.world_mut().spawn(nodes.clock).id();
-        let out_entity = app.world_mut().spawn(nodes.hardware_out).id();
-        app.insert_resource(MidiEngineNodes {
+        let input_entity = world.spawn(nodes.input).id();
+        let clock_entity = world.spawn(nodes.clock).id();
+        let out_entity = world.spawn(nodes.hardware_out).id();
+        world.insert_resource(MidiEngineNodes {
             input: input_entity,
             input_node: nodes.input,
             clock: clock_entity,
             hardware_out: out_entity,
         });
-        app.insert_resource(MpeModeRes(nodes.input_controls));
-        app.insert_resource(ClockMasterRes::new(nodes.clock_master));
+        world.insert_resource(MpeModeRes(nodes.input_controls));
+        world.insert_resource(ClockMasterRes::new(nodes.clock_master));
     }
     #[cfg(feature = "midi-hardware")]
     if let Some(io) = midi_io {
-        app.insert_resource(MidiIoRes(io));
+        world.insert_resource(MidiIoRes(io));
     }
 
     #[cfg(feature = "sampler")]
     if let Some(streamer) = disk_streamer {
-        app.insert_resource(DiskStreamerRes(streamer));
+        world.insert_resource(DiskStreamerRes(streamer));
     }
 
     Ok(())

@@ -46,8 +46,9 @@ use tutti_types::{AudioIn, OnEmpty};
 use crate::driver::DeviceInfo;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
-use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
+use crate::host::{AudioHost, DeviceHost, DeviceSelector};
 use crate::owner::Owned;
+use crate::roster::Direction;
 
 /// Capture-ring capacity in stereo frames — ~1s at 48kHz. Large enough that a
 /// briefly descheduled pump thread doesn't overrun, small enough to bound
@@ -272,7 +273,7 @@ impl MicIn {
         WavOut::create(path, self.sample_rate, AudioIn::layout(self), depth)
     }
 
-    /// Lists the default host's input devices; a [`DeviceInfo::index`] is what
+    /// Lists the default host's input devices; a [`DeviceInfo::id`] is what
     /// [`open`](Self::open) takes as a selector.
     ///
     /// # Errors

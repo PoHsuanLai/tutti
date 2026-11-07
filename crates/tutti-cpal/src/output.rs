@@ -15,7 +15,8 @@ use crate::driver::DeviceInfo;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
-use crate::host::{AudioHost, DeviceHost, DeviceSelector, Direction};
+use crate::host::{AudioHost, DeviceHost, DeviceSelector};
+use crate::roster::Direction;
 
 /// Maximum frames per CPAL callback buffer.
 ///
@@ -292,8 +293,7 @@ impl AudioEngine {
         Ok(host.device(Direction::Output, sel)?.name()?)
     }
 
-    /// Lists the default host's output devices. Each
-    /// [`DeviceInfo::index`] is positional, see [`DeviceSelector::Index`].
+    /// Lists the default host's output devices.
     ///
     /// # Errors
     /// [`Error::DevicesError`] if the host cannot enumerate.

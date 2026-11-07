@@ -33,6 +33,9 @@ const IDLE_RETURN: Duration = Duration::from_millis(50);
 const IDLE_REST: Duration = Duration::from_millis(250);
 
 /// DIAG
+pub(super) static RL_RETURNS: AtomicU64 = AtomicU64::new(0); // DIAG
+pub(super) static RL_LAST_MS: AtomicU64 = AtomicU64::new(0); // DIAG
+/// DIAG
 #[cfg(test)]
 pub(super) static NOTIFICATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0); // DIAG
@@ -137,6 +140,8 @@ fn start_hub() -> std::result::Result<&'static Hub, String> {
                 loop {
                     let started = Instant::now();
                     CFRunLoop::run_current();
+                    RL_RETURNS.fetch_add(1, Ordering::SeqCst); // DIAG
+                    RL_LAST_MS.store(started.elapsed().as_millis() as u64, Ordering::SeqCst); // DIAG
                     if started.elapsed() < IDLE_RETURN {
                         std::thread::sleep(IDLE_REST);
                     }

@@ -28,7 +28,7 @@ fn stage(n: usize) {
     STAGE.store(n, std::sync::atomic::Ordering::SeqCst); // DIAG
 }
 
-fn diag_flow(settle: Option<Duration>) {
+fn diag_flow(settle: Option<Duration>, poke: u8) {
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(70)); // DIAG watchdog
         eprintln!(
@@ -48,6 +48,14 @@ fn diag_flow(settle: Option<Duration>) {
     }
     let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
     stage(3);
+    match poke {
+        1 => eprintln!("DIAG poke count {}", coremidi::Destinations::count()),
+        2 => eprintln!(
+            "DIAG poke devices {}",
+            crate::backend::coremidi::CoreMidiEndpoints::devices().len()
+        ),
+        _ => {}
+    }
     let stop = std::sync::atomic::AtomicBool::new(false);
     struct Stop<'a>(&'a std::sync::atomic::AtomicBool);
     impl Drop for Stop<'_> {
@@ -61,8 +69,10 @@ fn diag_flow(settle: Option<Duration>) {
             let start = Instant::now();
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                 eprintln!(
-                    "DIAG t={:?} notifications={} table={:?}",
+                    "DIAG t={:?} runloop_returns={} last_ms={} notifications={} table={:?}",
                     start.elapsed(),
+                    RL_RETURNS.load(std::sync::atomic::Ordering::SeqCst),
+                    RL_LAST_MS.load(std::sync::atomic::Ordering::SeqCst),
                     NOTIFICATIONS.load(std::sync::atomic::Ordering::SeqCst),
                     devices
                         .list()
@@ -95,10 +105,20 @@ fn diag_flow(settle: Option<Duration>) {
 
 #[test]
 fn diag_immediate() {
-    diag_flow(None);
+    diag_flow(None, 0);
 }
 
 #[test]
 fn diag_settled() {
-    diag_flow(Some(Duration::from_secs(2)));
+    diag_flow(Some(Duration::from_secs(2)), 0);
+}
+
+#[test]
+fn diag_poke_count() {
+    diag_flow(None, 1);
+}
+
+#[test]
+fn diag_poke_devices() {
+    diag_flow(None, 2);
 }

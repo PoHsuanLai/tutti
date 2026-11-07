@@ -169,18 +169,18 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
     assert_eq!(transport.settings.steady_time(), 1024 * (1 + 20 * 8));
 }
 
-/// The master meter on the audio thread: the stereo measure and the wide
-/// device's fold into its scratch never allocate, and the meter really reads
-/// (a gated-off meter would pass by measuring nothing).
+/// The master meter on the audio thread: the meter op over a stereo and a
+/// wide root never allocates, and the meter really reads (a gated-off meter
+/// would pass by measuring nothing).
 ///
-/// Mutation (run, recorded here): `Vec::with_capacity(1)` in `Heard::measure`
+/// Mutation (run, recorded here): `Vec::with_capacity(1)` in `meter_op`
 /// -> the gate panics.
 #[test]
 fn the_master_meter_is_allocation_free() {
     use tutti_graph::{Editor, Prepare, Unforkable};
     use tutti_transport::MotionEvent;
-    use tutti_types::NodeKey;
     use tutti_types::graph::{OutPort, Source};
+    use tutti_types::{MeterId, MeterSpec, NodeKey};
 
     for width in [2usize, 6] {
         let transport = Transport::new(48_000.0);
@@ -197,9 +197,10 @@ fn the_master_meter_is_allocation_free() {
                 })
             })
             .collect();
+        let mut meter = ed.open_meter(MeterId(1), MeterSpec::Outputs);
         ed.commit().expect("commits");
         let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
-        engine.master_meter().enable();
+        meter.enable();
         let _ = transport.motion.try_send(MotionEvent::Play);
 
         let mut output = vec![0.0f32; 1024 * width];
@@ -212,7 +213,7 @@ fn the_master_meter_is_allocation_free() {
             }
         });
         assert!(
-            engine.master_meter().get().peak_left.get() > 0.0,
+            meter.read()[0].peak.get() > 0.0,
             "width {width}: the meter read nothing"
         );
     }

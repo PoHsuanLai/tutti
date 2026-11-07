@@ -3,7 +3,7 @@ name = "tutti-metering"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Level metering for the Tutti audio engine: master meter, analysis tap, load meter"
+description = "Load metering for the Tutti audio engine"
 license.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tutti-metering"
@@ -17,9 +17,6 @@ workspace = true
 
 [dependencies]
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
-
-[dev-dependencies]
-assert_no_alloc = { version = "1", default-features = false }
 
 [package.metadata.docs.rs]
 all-features = true

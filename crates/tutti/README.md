@@ -69,7 +69,8 @@ instead, turn on `export` and a codec: see `examples/headless_export.rs`.
   device width, and applies transport commands on their frame.
   [`Transport`](crate::transport::Transport) ([`transport`](crate::transport))
   holds tempo, loop and play state; nodes read the playhead per frame from
-  their block's `Env`. Level meters and the analysis tap are
+  their block's `Env`. Level meters and taps are ops in the graph's plan
+  (`Editor::open_meter`, `Editor::open_tap`); the DSP-load meter is
   [`metering`](crate::metering)'s.
 - **The vocabulary** ([`types`](crate::types)): unit newtypes (`Hz`, `Db`,
   `Beat`, `Samples`, …), channel layouts, interleaved buffer views, and the
@@ -86,7 +87,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 |---|---|---|---|
 | `tutti::engine` | `tutti-engine` | the per-block graph render: `Engine` | always |
 | `tutti::transport` | `tutti-transport` | `Transport`, tempo, loop, motion state machine, timed commands, offline timeline | always |
-| `tutti::metering` | `tutti-metering` | `MasterMeter`, `LoadMeter` | always |
+| `tutti::metering` | `tutti-metering` | `LoadMeter` | always |
 | `tutti::types` | `tutti-types` | units, channel layouts, buffer views, RT primitives | always |
 | `tutti::graph` | `tutti-graph` | the audio graph: builder, compiler, `Editor` / `Executor` | always |
 | `tutti::nodes` | `tutti-nodes` | built-in nodes: filters, delays, dynamics, LFOs, mixing, automation | always |

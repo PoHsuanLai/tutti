@@ -42,11 +42,13 @@ use std::sync::Arc;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, Transport,
+    MeterReader, ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, Transport,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
-use tutti_types::{ChannelLayout, SampleRate, Seconds, TapAlign, TapId, UnitAddr};
+use tutti_types::{
+    ChannelLayout, MeterId, MeterSpec, SampleRate, Seconds, TapAlign, TapId, UnitAddr,
+};
 use tutti_types::{Compensation, Samples, Tail};
 use tutti_types::{
     NodeKey,
@@ -341,6 +343,10 @@ pub struct Graph {
     /// The taps that copy the graph's outputs ([`open_output_tap`](Self::open_output_tap)),
     /// by the channels they were opened with: their sources follow the outputs.
     output_taps: BTreeMap<TapId, usize>,
+    /// The id the next meter takes (`MASTER_METER` is taken at construction).
+    next_meter: u32,
+    /// The master meter's reader until a host takes it.
+    master_meter: Option<MeterReader>,
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
     next_crossfade: u64,
@@ -406,6 +412,9 @@ pub enum Committed {
     Retry,
 }
 
+/// The master meter's id; every other meter takes the ids after it.
+const MASTER_METER: MeterId = MeterId(0);
+
 fn compensation_of(plan: &tutti_graph::Plan) -> Compensation {
     Compensation::new(plan.compensation().to_vec(), plan.total_latency().samples())
 }
@@ -452,6 +461,10 @@ impl Graph {
         let topology = &mut editor.spec_mut().topology;
         topology.inputs = ChannelLayout::from_count(inputs as u16);
         topology.outputs = vec![Source::Zero; outputs];
+        // Declared and on from the start: a host reads the master level
+        // without asking for it.
+        let master_meter = editor.open_meter(MASTER_METER, MeterSpec::Outputs);
+        master_meter.enable();
         Self {
             editor,
             local: Some(Local {
@@ -467,6 +480,8 @@ impl Graph {
             fed_edges: BTreeMap::new(),
             next_tap: 0,
             output_taps: BTreeMap::new(),
+            next_meter: 1,
+            master_meter: Some(master_meter),
             parked: VecDeque::new(),
             next_crossfade: 0,
             #[cfg(feature = "plugin")]
@@ -1665,6 +1680,90 @@ impl Graph {
                 tap.sources = outputs.iter().copied().take(width).collect();
             }
         }
+    }
+
+    // --- Meters ---
+
+    /// Declares a level meter on `sources`, one channel each, any node
+    /// ports, and returns its reader, **off** until
+    /// [`enable`](MeterReader::enable). The meter is compiled by the next
+    /// commit and fed by every block that renders after it (a device,
+    /// [`Session::render`](crate::Session::render) and
+    /// [`Session::render_frame`](crate::Session::render_frame) alike).
+    ///
+    /// A meter reads before the engine's fold to the device and its declick.
+    /// It holds the peak since the last
+    /// [`read`](MeterReader::read), so a UI that polls slower than the blocks
+    /// still sees a spike; ballistics are the reader's. One reader per meter:
+    /// a second consumer opens a second meter.
+    ///
+    /// `align` is the tap's choice: [`TapAlign::Raw`] reads each source as it
+    /// leaves its node (a track's level), [`TapAlign::ToOutput`] delays each
+    /// lane by the compensation an output of the same source gets (a ring per
+    /// lane), so it lines up with what the outputs carry.
+    ///
+    /// Removing a node a meter reads leaves that channel on silence, and so
+    /// does replacing it with a node that has fewer outputs (the lanes past
+    /// the new width); the commit succeeds either way. Dropping the reader
+    /// leaves the meter open until [`close_meter`](Self::close_meter) or the
+    /// session's next [`Reclaim`](crate::Phase::Reclaim) phase, which closes
+    /// it and frees its cells.
+    pub fn open_meter(&mut self, sources: &[GraphSource], align: TapAlign) -> MeterReader {
+        let sources = sources.iter().copied().map(Self::lower).collect();
+        self.declare_meter(MeterSpec::Ports { sources, align })
+    }
+
+    /// A raw meter on every output port of `node`: a track's level. Its width is
+    /// the node's output count now; a later re-shape of the node does not
+    /// widen it.
+    pub fn open_node_meter(&mut self, node: NodeKey) -> MeterReader {
+        let sources: Vec<GraphSource> = (0..self.node_outputs(node))
+            .map(|port| GraphSource::Node(node, port))
+            .collect();
+        self.open_meter(&sources, TapAlign::Raw)
+    }
+
+    fn declare_meter(&mut self, spec: MeterSpec) -> MeterReader {
+        let id = MeterId(self.next_meter);
+        self.next_meter += 1;
+        let reader = self.editor.open_meter(id, spec);
+        self.edited = true;
+        reader
+    }
+
+    /// Closes a meter: its op leaves the plan at the next commit and its
+    /// cells are freed on this side. Closing a closed meter does nothing.
+    pub fn close_meter(&mut self, id: MeterId) {
+        self.editor.close_meter(id);
+        self.edited = true;
+    }
+
+    /// Closes the meters whose readers were dropped, and returns how many.
+    /// The session's [`Reclaim`](crate::Phase::Reclaim) phase runs it.
+    pub(crate) fn reap_meters(&mut self) -> usize {
+        let reaped = self.editor.reap_meters();
+        if reaped > 0 {
+            self.edited = true;
+        }
+        reaped
+    }
+
+    /// The master meter: the level of each global output channel, before
+    /// the engine's fold and declick. Declared and **on** when the graph is
+    /// built, so a host that reads it needs to ask for nothing; it follows
+    /// the outputs as they are re-wired or widened (up to
+    /// [`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS)). `None` once a
+    /// host has taken it ([`take_master_meter`](Self::take_master_meter)). A
+    /// block the engine refuses runs no op and does not touch it.
+    pub fn master_meter(&mut self) -> Option<&mut MeterReader> {
+        self.master_meter.as_mut()
+    }
+
+    /// Hands the master meter's reader to its one consumer, which owns it
+    /// from here: dropping it closes the meter at the next
+    /// [`Reclaim`](crate::Phase::Reclaim) phase.
+    pub fn take_master_meter(&mut self) -> Option<MeterReader> {
+        self.master_meter.take()
     }
 
     // --- Shape ---

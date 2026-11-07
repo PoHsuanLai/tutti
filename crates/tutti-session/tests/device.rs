@@ -28,14 +28,14 @@ fn spec_at(rate: f64) -> OutputSpec {
 /// **The session publishes the meter and the taps its callback feeds**, not
 /// disconnected ones: a host opens a tap with `Graph::open_output_tap` and
 /// sees the frames the callback renders, and reads the level they carry from
-/// `Session::master_meter`. (Moved from `bevy-tutti`'s `engine::build`, where
+/// `Session::take_master_meter`. (Moved from `bevy-tutti`'s `engine::build`, where
 /// it pinned `AudioTapRes`; its adapter half there now checks the resource is
 /// the session's meter. The tap half was `Session::tap().open()`; the frame
 /// count is the same figure.)
 ///
-/// Mutation (run, recorded here): `SessionBuilder::build_on` leaving the
-/// session's `meter` at `None` -> `expect` fails; the tap not marking the
-/// graph edited -> no plan is sent and the tap sees nothing.
+/// Mutation (run, recorded here): `Graph::new` not declaring the master
+/// meter -> `expect` fails; the tap not marking the graph edited -> no plan is
+/// sent and the tap sees nothing.
 #[test]
 fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();
@@ -50,7 +50,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         .set_output_source(0, GraphSource::Node(dc, 0));
     let mut tap = session.graph().open_output_tap(Samples(1_024));
     session.update();
-    let meter = session.master_meter().expect("a device's engine").clone();
+    let mut meter = session.take_master_meter().expect("declared at the build");
     stream.render_block(64).expect("the stream is open");
     let mut frames = 0;
     let mut one = [0.0f32; 2];
@@ -59,7 +59,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
         frames += 1;
     }
     assert_eq!(frames, 64, "the callback's block reached the session's tap");
-    let level = meter.get().peak_left.get();
+    let level = meter.read()[0].peak.get();
     assert!(
         (level - 0.5).abs() < 1e-6,
         "the callback's block was measured: {level}"

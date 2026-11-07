@@ -152,6 +152,14 @@ impl AudioGraphRes {
         GraphRef(self.read())
     }
 
+    /// While held, the device policy asks for no restart
+    /// ([`TuttiPlugin::watch_devices`](crate::TuttiPlugin::watch_devices)):
+    /// hold it while a take is recording, because a restart can change the
+    /// rate under it. The watch still reports devices.
+    pub fn hold_device_restarts(&mut self, held: bool) {
+        self.session().hold_device_restarts(held);
+    }
+
     /// The session, for this crate's engine and restart paths.
     pub(crate) fn session(&mut self) -> &mut Session {
         self.write()

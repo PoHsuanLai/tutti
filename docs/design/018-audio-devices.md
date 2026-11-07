@@ -113,9 +113,42 @@ AudioDeviceEvent (message), AudioDeviceState::{output_devices, default_output}
   when it says to, and `AudioEngineState::Failed` is no longer terminal when
   `retry_startup` is on. Systems that ran once at startup (`Startup`) have
   not seen that engine; only the engine-gated ones run once it is built.
-- **A lost stream is latched.** A device not listed while the stream runs on
-  it marks the stream broken, and it stays broken when the device is listed
-  again: the stream did not follow it back.
+- **A stream is lost only by a fault.** Absence from the list never ends it:
+  ALSA opens every PCM to enumerate, so a device this process holds
+  exclusively can drop out of the list while it plays, and `default` may never
+  be listed. A list change is `Vanished`/`Appeared` (`DeviceLost` and
+  `DeviceAppeared` events: "no longer listed", not "the stream died"). The
+  stream's death is `DeviceFault` with `Disconnected`; the input-faults lane
+  (#262) is making ALSA report that, and this design needs nothing more from
+  it. Ordinals of same-named devices renumber when one goes; that changes
+  events, not the stream's tracking.
+- **Unknown is not different.** The device a stream runs on is `None` when the
+  host cannot name it (a custom driver). `None` is never compared with the
+  default, so a healthy stream is not restarted. The id recorded is the one
+  opened: the selector's own id, or for `Default` the device's name at
+  ordinal 0. cpal names the default and nothing else, so with two same-named
+  cards the default is taken to be the first.
+- **Bare ALSA never changes default.** The default's name is constant
+  (`default`), so `DefaultChanged` cannot fire there and `follow_default`
+  moves the stream only after a fault. Probing can also make a restart meet
+  `EBUSY`: a counted strike, then the backoff. Opening every PCM each
+  interval is a cost a host opts into; the interval is at least 250 ms.
+- **A policy restart never makes a choice.** `Session::restart` (the host's)
+  records the selector as what the user wants. A restart the policy asked for
+  goes through `Session::restart_wanted`, which never changes it and is
+  dropped when the host has chosen something else since (a stale request).
+  `restart_on` (a custom driver) records no choice and leaves the running
+  device unknown.
+- **A host can decline.** Ignoring `RestartWanted` declines it (a strike is
+  counted); `Session::hold_device_restarts(true)` (Bevy:
+  `AudioGraphRes::hold_device_restarts`) stops the asking while a take is
+  recorded, since a restart can change the rate mid-take. The session cannot
+  see a host's recorder.
+- **The adapter copies.** The session hands over its current list
+  (`Session::watched_devices`) and the adapter copies it for display; it
+  compares nothing and has no clock. The startup retry's decision is
+  `DeviceWatch::retry_start`, in the session crate, and its poller moves into
+  the session's watch when the engine is built.
 - **The poller watches the default host** (`AudioHost::Default`); a JACK app
   polls through its own `SnapshotSource`.
 - **What this does not claim.** Nothing here was exercised on real hardware,

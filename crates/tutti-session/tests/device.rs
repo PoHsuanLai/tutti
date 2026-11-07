@@ -322,7 +322,7 @@ fn following_the_default_restarts_and_reports_the_rate() {
 /// wants a restart onto the default, and this fails.
 #[test]
 fn an_explicit_device_is_not_replaced_by_the_default() {
-    let (driver, _stream) = ManualStreamDriver::new();
+    let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap();
@@ -337,6 +337,7 @@ fn an_explicit_device_is_not_replaced_by_the_default() {
     fake.show(&["A", "B"], Some("B"));
     assert!(wants(&poll(&mut session, base, 0)).is_empty());
     fake.show(&["B"], Some("B"));
+    stream.fail(StreamError::DeviceNotAvailable);
     assert!(
         wants(&poll(&mut session, base, 5_000)).is_empty(),
         "A gone, B is not a substitute"
@@ -382,7 +383,7 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
 /// **A flapping device cannot cause a restart storm** through the session.
 #[test]
 fn a_flapping_device_is_not_restarted_on_every_change() {
-    let (driver, _stream) = ManualStreamDriver::new();
+    let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap();
@@ -399,6 +400,7 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
     let mut asked = 0;
     for k in 0..100u64 {
         if k % 2 == 0 {
+            stream.fail(StreamError::DeviceNotAvailable);
             fake.show(&[], None);
         } else {
             fake.show(&["A"], Some("A"));
@@ -508,4 +510,111 @@ fn a_restart_that_stopped_the_stream_is_retried() {
     // The default goes back to A, which the dead stream was on.
     fake.show(&["A", "B"], Some("A"));
     assert_eq!(wants(&poll(&mut session, base, 700)).len(), 1);
+}
+
+/// **A stale `RestartWanted` cannot override an explicit choice.** The
+/// policy asks for `Default`; before it runs, the host restarts onto
+/// another device. The wanted restart is dropped and the choice stays.
+///
+/// Mutation (run): `restart_wanted` without the `want` check, or running
+/// through `restart_following` (which records a choice) → fails.
+#[test]
+fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (mut session, mut device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    let fake = Fake::default();
+    session.watch_devices(
+        fake.clone(),
+        policy(),
+        DeviceSelector::Default,
+        Some(id("A")),
+    );
+    let base = Instant::now();
+    fake.show(&["A", "X"], Some("A"));
+    poll(&mut session, base, 0);
+    fake.show(&["A", "X"], Some("X"));
+    let wanted = poll(&mut session, base, 100);
+    let [DeviceSelector::Default] = wants(&wanted).as_slice() else {
+        panic!("{wanted:?}");
+    };
+    // The host chooses X first (this device-free engine cannot open it, but
+    // the choice is made).
+    let _ = session.restart(
+        &mut device,
+        DeviceRestart {
+            device: DeviceSelector::named("X"),
+            max_block: None,
+        },
+    );
+    let stale = DeviceRestart::default();
+    assert!(!session.restart_wanted(&mut device, stale, |_| {}).unwrap());
+    assert_eq!(
+        session.watch_devices_want(),
+        Some(DeviceSelector::named("X")),
+        "the choice stands"
+    );
+}
+
+/// **A fault after a restart is reported** even when the count equals the
+/// one the last poll saw (a restart clears the record).
+///
+/// Mutation (run): `note_restart` not resetting the seen count → the second
+/// fault is missed.
+#[test]
+fn a_fault_after_a_restart_is_reported_again() {
+    let (driver, _first) = ManualStreamDriver::new();
+    let (mut session, mut device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    session.update();
+    let base = Instant::now();
+    let (driver, second) = ManualStreamDriver::new();
+    session
+        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .unwrap();
+    second.fail(StreamError::DeviceNotAvailable);
+    let events = poll(&mut session, base, 0);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::DeviceFault(_)))
+    );
+    let (driver, third) = ManualStreamDriver::new();
+    session
+        .restart_on(&mut device, spec_at(48_000.0), driver, None, |_| {})
+        .unwrap();
+    third.fail(StreamError::DeviceNotAvailable);
+    let events = poll(&mut session, base, 20);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::DeviceFault(_))),
+        "{events:?}"
+    );
+}
+
+/// **Held restarts are declined**: nothing is asked while held.
+#[test]
+fn a_host_can_hold_restarts() {
+    let (driver, _stream) = ManualStreamDriver::new();
+    let (mut session, _device) = Session::builder()
+        .build_device_on(spec_at(48_000.0), driver)
+        .unwrap();
+    let fake = Fake::default();
+    session.watch_devices(
+        fake.clone(),
+        policy(),
+        DeviceSelector::Default,
+        Some(id("A")),
+    );
+    let base = Instant::now();
+    session.hold_device_restarts(true);
+    fake.show(&["A", "B"], Some("A"));
+    poll(&mut session, base, 0);
+    fake.show(&["A", "B"], Some("B"));
+    assert!(wants(&poll(&mut session, base, 100)).is_empty());
+    session.hold_device_restarts(false);
+    assert_eq!(wants(&poll(&mut session, base, 200)).len(), 1);
 }

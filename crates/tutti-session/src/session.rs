@@ -188,7 +188,7 @@ pub enum SessionEvent {
         id: Option<tutti_cpal::DeviceId>,
     },
     /// The device policy wants the stream restarted: run it with
-    /// [`Session::restart`](crate::Session::restart) (a
+    /// [`Session::restart_wanted`](crate::Session::restart_wanted) (a
     /// headless host) or the adapter's restart. The outcome is reported by
     /// the next update, and tells the policy, which waits out its backoff
     /// before it asks again.

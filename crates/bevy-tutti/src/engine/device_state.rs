@@ -130,13 +130,10 @@ pub enum AudioDeviceEvent {
     RestartFailed(String),
 }
 
-/// What the app sees of one session device event, and its effect on
-/// `state`; `None` for an event that is not about devices.
-pub(crate) fn translate(
-    event: &SessionEvent,
-    state: Option<&mut AudioDeviceState>,
-) -> Option<AudioDeviceEvent> {
-    let out = match event {
+/// The message for one session device event, `None` for an event that is
+/// not about devices.
+pub(crate) fn translate(event: &SessionEvent) -> Option<AudioDeviceEvent> {
+    Some(match event {
         SessionEvent::DeviceAppeared { direction, id } => AudioDeviceEvent::Appeared {
             direction: *direction,
             id: id.clone(),
@@ -152,30 +149,13 @@ pub(crate) fn translate(
         SessionEvent::DeviceRestarted(r) => AudioDeviceEvent::Restarted(*r),
         SessionEvent::RestartFailed(why) => AudioDeviceEvent::RestartFailed(why.clone()),
         _ => return None,
-    };
-    if let Some(state) = state {
-        match &out {
-            AudioDeviceEvent::Appeared {
-                direction: Direction::Output,
-                id,
-            } => {
-                let name = id.to_string();
-                if !state.output_devices.contains(&name) {
-                    state.output_devices.push(name);
-                }
-            }
-            AudioDeviceEvent::Lost {
-                direction: Direction::Output,
-                id,
-            } => state.output_devices.retain(|n| *n != id.to_string()),
-            AudioDeviceEvent::DefaultChanged {
-                direction: Direction::Output,
-                id,
-            } => state.default_output = id.as_ref().map(ToString::to_string),
-            _ => {}
-        }
-    }
-    Some(out)
+    })
+}
+
+/// Copies the watch's current list into `state`, for display.
+pub(crate) fn copy_devices(state: &mut AudioDeviceState, devices: &tutti_cpal::Snapshot) {
+    state.output_devices = devices.outputs.iter().map(ToString::to_string).collect();
+    state.default_output = devices.default_output.as_ref().map(ToString::to_string);
 }
 
 /// The session's `Poll` phase
@@ -201,7 +181,7 @@ pub(crate) fn device_fault_poll(
         .bypass_change_detection()
         .run_phase(Phase::Poll, std::time::Instant::now());
     for event in events {
-        if let Some(change) = translate(&event, state.as_deref_mut()) {
+        if let Some(change) = translate(&event) {
             changes.write(change);
         }
         match event {
@@ -214,7 +194,7 @@ pub(crate) fn device_fault_poll(
             // The one call the session offers; its outcome is the next
             // frame's `Restarted` or `RestartFailed`.
             SessionEvent::RestartWanted(request) => commands.queue(move |world: &mut World| {
-                if let Err(e) = crate::restart_device(world, request) {
+                if let Err(e) = crate::engine::restart::restart_wanted(world, request) {
                     bevy_log::warn!("device restart failed: {e}");
                 }
             }),
@@ -227,6 +207,9 @@ pub(crate) fn device_fault_poll(
             }
             _ => {}
         }
+    }
+    if let (Some(devices), Some(state)) = (graph.session().watched_devices(), state.as_mut()) {
+        copy_devices(state, devices);
     }
     if let (Some(count), Some(state)) = (count, state.as_mut())
         && count != state.stream_faults
@@ -286,42 +269,52 @@ pub(crate) fn retry_startup(plugin: &crate::TuttiPlugin, app: &mut App) {
 /// listed. A build that fails again waits out the backoff. On success the
 /// state is `Running` and the retry ends.
 pub(crate) fn startup_retry_system(world: &mut World) {
+    use crate::engine::build::{Watching, build_with, watch_with};
     let Some(mut retry) = world.remove_non_send::<StartupRetry>() else {
         return;
     };
     let mut events = Vec::new();
-    retry.watch.poll(std::time::Instant::now(), &mut events);
-    let mut built = false;
-    for event in events {
-        let change = {
-            let mut state = world.get_resource_mut::<AudioDeviceState>();
-            translate(&event, state.as_deref_mut())
-        };
-        if let Some(change) = change {
+    let mut plugin = retry.plugin.clone();
+    let build = &mut retry.build;
+    let outcome = retry.watch.retry_start(&mut events, |device| {
+        plugin.output_device = device.clone();
+        build_with(&plugin, world, |b| build(b, device), Watching::Skip)
+    });
+    for event in &events {
+        if let Some(change) = translate(event) {
             world.write_message(change);
         }
-        if let SessionEvent::RestartWanted(request) = event {
-            let mut plugin = retry.plugin.clone();
-            plugin.output_device = request.device.clone();
-            let build = &mut retry.build;
-            match crate::engine::build::build_in(&plugin, world, |b| build(b, request.device)) {
-                Ok(()) => {
-                    world.insert_resource(AudioEngineState::Running);
-                    built = true;
+    }
+    if let (Some(devices), Some(mut state)) = (
+        retry.watch.snapshot().cloned(),
+        world.get_resource_mut::<AudioDeviceState>(),
+    ) {
+        copy_devices(&mut state, &devices);
+    }
+    match outcome {
+        Some(Ok(())) => {
+            world.insert_resource(AudioEngineState::Running);
+            // The poller goes on into the session's watch: one poller.
+            let source = retry.watch.into_source();
+            if let Some(device) = world.remove_non_send::<Device>() {
+                world.resource_scope(|world, mut graph: Mut<AudioGraphRes>| {
+                    watch_with(world, &plugin, graph.session(), &device, source);
+                });
+                if let (Ok(name), Some(mut state)) = (
+                    device.device_name(),
+                    world.get_resource_mut::<AudioDeviceState>(),
+                ) {
+                    state.current_device = name;
                 }
-                Err(e) => {
-                    bevy_log::error!("retrying the audio engine failed: {e}");
-                    world.insert_resource(AudioEngineState::Failed(e.to_string()));
-                    retry.watch.note(
-                        tutti_session::FollowEvent::RestartFailed { running: false },
-                        std::time::Instant::now(),
-                    );
-                }
+                world.insert_non_send(device);
             }
         }
-    }
-    if !built {
-        world.insert_non_send(retry);
+        Some(Err(e)) => {
+            bevy_log::error!("retrying the audio engine failed: {e}");
+            world.insert_resource(AudioEngineState::Failed(e.to_string()));
+            world.insert_non_send(retry);
+        }
+        None => world.insert_non_send(retry),
     }
 }
 

@@ -138,8 +138,8 @@ impl TuttiDriver {
     /// must run at the rate the graph was built at.
     ///
     /// Stops the current stream, selects `device` (a
-    /// [`DeviceSelector`], or an `Option<usize>`
-    /// position with `None` for the default), reads its config and starts a
+    /// [`DeviceSelector`], or an `Option<DeviceId>`
+    /// with `None` for the default), reads its config and starts a
     /// new stream on it.
     ///
     /// # Errors

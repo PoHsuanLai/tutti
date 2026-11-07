@@ -339,6 +339,59 @@ fn restarts_are_never_closer_than_the_base_wait() {
     }
 }
 
+/// A stream on a device whose identity is unknown is not on a different
+/// one: a healthy stream is not restarted.
+///
+/// Mutation (run): `moved` made `running_on != Some(default)` → this fails.
+#[test]
+fn an_unknown_device_is_not_a_different_one() {
+    let now = t0();
+    let mut f = Follow::running(on(), DeviceSelector::Default, None);
+    for k in 0..10 {
+        let v = view(&["A", "B"], Some("A"));
+        assert!(f.step(FollowEvent::Look, &v, at(now, k * 60_000)).is_none());
+    }
+}
+
+/// Absence from the list is not a lost stream (ALSA's probe hides a device
+/// this process holds), whatever the ordinals do; only a fault is.
+///
+/// Mutation (run): a latch of `broken` on absence in `decide` → this fails.
+#[test]
+fn absence_from_the_list_does_not_end_a_stream() {
+    let now = t0();
+    let usb1 = DeviceId::nth("USB", 1);
+    let mut f = Follow::running(on(), DeviceSelector::Id(usb1.clone()), Some(usb1));
+    let gone = view(&["Built-in"], Some("Built-in"));
+    let renumbered = Snapshot::from_names(["USB"], [], Some("USB"), None);
+    let back = Snapshot::from_names(["USB", "USB"], [], Some("USB"), None);
+    for (k, v) in [&gone, &renumbered, &back].into_iter().enumerate() {
+        assert!(
+            f.step(FollowEvent::Look, v, at(now, k as u64 * 60_000))
+                .is_none()
+        );
+    }
+    f.step(FollowEvent::Lost, &back, at(now, 200_000));
+    assert!(
+        f.step(FollowEvent::Look, &back, at(now, 300_000)).is_some(),
+        "a fault is"
+    );
+}
+
+/// Held: nothing is asked for, and it resumes when released.
+///
+/// Mutation (run): the `held` check removed → this fails.
+#[test]
+fn a_held_policy_asks_for_nothing() {
+    let now = t0();
+    let mut f = Follow::running(on(), DeviceSelector::Default, Some(id("A")));
+    f.hold(true);
+    let v = view(&["A", "B"], Some("B"));
+    assert!(f.step(FollowEvent::Look, &v, now).is_none());
+    f.hold(false);
+    assert!(f.step(FollowEvent::Look, &v, at(now, 1)).is_some());
+}
+
 // Mutations (run, each restored): the `not_before` gate removed fails the
 // flapping, failed-restart and spacing tests; `Lost` ignored fails the
 // flapping and explicit-choice tests; `RestartFailed` always marking broken

@@ -84,15 +84,23 @@ pub struct TuttiPlugin {
     /// ([`DeviceSelector`]).
     pub output_device: DeviceSelector,
     /// Watch the host's devices (design 018): `None`, the default, enumerates
-    /// once at startup and never moves the stream by itself. With a policy,
-    /// a poller thread enumerates every
-    /// [`poll_interval`](DevicePolicy::poll_interval),
-    /// [`AudioDeviceState`](crate::AudioDeviceState)'s list follows, an
-    /// [`AudioDeviceEvent`](crate::AudioDeviceEvent) is written for each
-    /// change, and the policy's own opt-ins decide what restarts the stream.
-    /// With `retry_startup`, [`AudioEngineState::Failed`] is not terminal:
-    /// the engine is built when the device appears. Nothing of this was
-    /// exercised against real hardware.
+    /// once at startup, starts no thread and never moves the stream by
+    /// itself. With a policy, a poller thread enumerates every
+    /// [`poll_interval`](DevicePolicy::poll_interval) (on ALSA that opens
+    /// every PCM, a cost the app opts into),
+    /// [`AudioDeviceState`](crate::AudioDeviceState)'s list is the session's,
+    /// an [`AudioDeviceEvent`](crate::AudioDeviceEvent) is written for each
+    /// change, and the policy's opt-ins decide what restarts the stream. A
+    /// restart can change the rate: hold restarts while recording
+    /// ([`AudioGraphRes::hold_device_restarts`](crate::graph::AudioGraphRes::hold_device_restarts)).
+    ///
+    /// With `retry_startup`, [`AudioEngineState::Failed`] is not terminal: the
+    /// engine is built when the device is listed, after `Startup` has run.
+    /// An app must therefore wire it when it appears, not in `Startup`: run
+    /// its wiring under [`engine_ready`](crate::graph::engine_ready), or react
+    /// to `Added<AudioNode>` / a changed `AudioEngineState`. A system that ran
+    /// once at startup has seen no engine. Nothing of this was exercised
+    /// against real hardware.
     pub watch_devices: Option<DevicePolicy>,
     /// How many input channels to open. `0` opens no input stream at all,
     /// which is the default — a host that never records should not hold a

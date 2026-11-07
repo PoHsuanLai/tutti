@@ -14,7 +14,7 @@
 
 pub(crate) mod build;
 pub(crate) mod device_state;
-mod restart;
+pub(crate) mod restart;
 mod state;
 
 pub use crate::error::{Error, Result};

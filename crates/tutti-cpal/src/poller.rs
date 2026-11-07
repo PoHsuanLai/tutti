@@ -15,7 +15,11 @@ use crate::error::{Error, Result};
 use crate::host::{AudioHost, DeviceHost};
 use crate::roster::{Snapshot, SnapshotSource};
 
-/// A thread enumerating one host every `interval`.
+/// The shortest interval a poller keeps: enumeration can open every device.
+pub const MIN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A thread enumerating one host every `interval` (at least
+/// [`MIN_POLL_INTERVAL`]).
 ///
 /// Only a snapshot that differs from the one before it is published. The
 /// thread opens its own [`DeviceHost`] and ends once the poller drops (after
@@ -35,6 +39,7 @@ impl DevicePoller {
     /// [`Error::HostUnavailable`] when the host cannot be opened, or
     /// [`Error::InvalidConfig`] when the thread cannot be spawned.
     pub fn spawn(host: AudioHost, interval: Duration) -> Result<Self> {
+        let interval = interval.max(MIN_POLL_INTERVAL);
         // Opened here to report an unreachable host to the caller; the thread
         // opens its own, so no host crosses a thread.
         DeviceHost::open(host)?;
@@ -45,8 +50,14 @@ impl DevicePoller {
         std::thread::Builder::new()
             .name("tutti-device-poll".into())
             .spawn(move || {
-                let Ok(host) = DeviceHost::open(host) else {
-                    return;
+                let host = match DeviceHost::open(host) {
+                    Ok(host) => host,
+                    Err(e) => {
+                        if let Ok(mut slot) = thread_error.lock() {
+                            *slot = Some(e.to_string());
+                        }
+                        return;
+                    }
                 };
                 let mut last: Option<Snapshot> = None;
                 loop {

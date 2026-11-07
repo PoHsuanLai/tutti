@@ -65,12 +65,51 @@ pub(crate) fn build_on(
     build_in(plugin, app.world_mut(), build)
 }
 
+/// Starts the session's device watch on `source`, with the plugin's policy
+/// and selector, and marks the list as the watch's.
+pub(crate) fn watch_with(
+    world: &mut World,
+    plugin: &crate::TuttiPlugin,
+    session: &mut Session,
+    device: &Device,
+    source: impl tutti_cpal::SnapshotSource + Send + 'static,
+) {
+    let Some(policy) = plugin.watch_devices else {
+        return;
+    };
+    session.watch_devices(
+        source,
+        policy,
+        plugin.output_device.clone(),
+        device.opened_id(&plugin.output_device),
+    );
+    world.insert_resource(super::device_state::DevicesWatched);
+}
+
 /// [`build_on`] into a world: the engine built after the app started (a
 /// start that failed and was retried, design 018).
 pub(crate) fn build_in(
     plugin: &crate::TuttiPlugin,
     world: &mut World,
     build: impl FnOnce(SessionBuilder) -> Result<(Session, Device)>,
+) -> Result<()> {
+    build_with(plugin, world, build, Watching::Spawn)
+}
+
+/// Where a built engine's device watch gets its snapshots.
+pub(crate) enum Watching {
+    /// A new poller, if the plugin watches devices.
+    Spawn,
+    /// None: the caller installs the watch.
+    Skip,
+}
+
+/// [`build_in`], with the device watch as `source` says.
+pub(crate) fn build_with(
+    plugin: &crate::TuttiPlugin,
+    world: &mut World,
+    build: impl FnOnce(SessionBuilder) -> Result<(Session, Device)>,
+    source: Watching,
 ) -> Result<()> {
     #[cfg_attr(not(feature = "midi"), allow(unused_mut))]
     let mut builder = Session::builder()
@@ -89,17 +128,9 @@ pub(crate) fn build_in(
     }
     #[cfg_attr(not(feature = "sampler"), allow(unused_mut))]
     let (mut session, device) = build(builder)?;
-    if let Some(policy) = plugin.watch_devices {
+    if let (Watching::Spawn, Some(policy)) = (source, plugin.watch_devices) {
         match policy.spawn_poller(tutti_cpal::AudioHost::Default) {
-            Ok(poller) => {
-                session.watch_devices(
-                    poller,
-                    policy,
-                    plugin.output_device.clone(),
-                    device.device_name().ok().map(tutti_cpal::DeviceId::new),
-                );
-                world.insert_resource(super::device_state::DevicesWatched);
-            }
+            Ok(poller) => watch_with(world, plugin, &mut session, &device, poller),
             Err(e) => bevy_log::warn!("the device poller did not start: {e}"),
         }
     }

@@ -28,7 +28,10 @@ impl std::fmt::Display for Direction {
 ///
 /// cpal names a device and does nothing else, so two identical cards are told
 /// apart by order. The ordinal holds while the set of same-named devices does
-/// not change; a name alone is ordinal 0. The direction is the context a
+/// not change (removing the first of two identical cards renumbers the
+/// second); a name alone is ordinal 0. [`Display`](std::fmt::Display) is for
+/// showing, not for comparing or saving: save [`name`](Self::name) and
+/// [`ordinal`](Self::ordinal) and rebuild with [`nth`](Self::nth). The direction is the context a
 /// `DeviceId` is used in (a [`Snapshot`] list, an output selector).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DeviceId {
@@ -110,8 +113,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// A snapshot from the names an enumeration returned, in order. A
-    /// default is matched by name alone, so it is the first device with it.
+    /// A snapshot from the names an enumeration returned, in order. cpal
+    /// names the default device and nothing else, so a default is matched by
+    /// name alone: it is the first device with that name (ordinal 0), even
+    /// when two same-named cards exist and the second is the default.
     pub fn from_names<S: Into<String>>(
         outputs: impl IntoIterator<Item = S>,
         inputs: impl IntoIterator<Item = S>,
@@ -221,6 +226,12 @@ impl DeviceRoster {
 pub trait SnapshotSource {
     /// The newest snapshot not yet taken, or `None`. Never blocks.
     fn poll(&mut self) -> Option<Snapshot>;
+}
+
+impl<S: SnapshotSource + ?Sized> SnapshotSource for Box<S> {
+    fn poll(&mut self) -> Option<Snapshot> {
+        (**self).poll()
+    }
 }
 
 #[cfg(test)]

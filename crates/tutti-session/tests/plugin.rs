@@ -171,8 +171,14 @@ fn an_export_announces_offline_before_its_first_block_and_realtime_after() {
     assert!(s.export_in_flight());
 
     let done = job.run();
-    let output = s.finish_export(done).expect("the export renders");
-    assert!(matches!(output, tutti_session::ExportOutput::Buffers(_)));
+    let output = s
+        .finish_export(done)
+        .expect("the export renders")
+        .finished();
+    assert!(matches!(
+        output,
+        Some(tutti_session::ExportOutput::Buffers(_))
+    ));
     assert!(!s.export_in_flight());
     assert_eq!(s.render_mode(), RenderMode::Realtime);
     await_latency(&s, node, base, "told Realtime by finish_export");
@@ -248,7 +254,8 @@ fn a_plugin_added_mid_export_is_told_offline() {
         "a plugin added mid-export, after its first update",
     );
 
-    s.finish_export(job.run()).expect("renders");
+    let out = s.finish_export(job.run()).expect("renders");
+    assert!(out.finished().is_some(), "not cancelled");
     await_latency(&s, late, base, "told Realtime once the export ends");
 }
 
@@ -385,7 +392,8 @@ fn export_leftovers_drop_on_the_main_thread() {
 
     let job = s.export(request(ExportSource::Mix)).expect("starts");
     let done = std::thread::spawn(move || job.run()).join().unwrap();
-    s.finish_export(done).expect("renders");
+    let out = s.finish_export(done).expect("renders");
+    assert!(out.finished().is_some(), "not cancelled");
 
     let main = std::thread::current().id();
     let drops = drops.lock().unwrap().clone();
@@ -425,4 +433,127 @@ fn an_update_frees_a_plugin_meter_cleared_while_a_block_held_it() {
     }
     s.update();
     assert_eq!(meter.retired_len(), 0, "the update freed it");
+}
+
+/// Copies stereo through, and cancels the export it renders in when it
+/// processes its second block. Forked by clone: the fork shares the handle.
+#[derive(Clone)]
+struct CancelOnSecondBlock {
+    blocks: Arc<std::sync::atomic::AtomicUsize>,
+    handle: Arc<std::sync::OnceLock<tutti_session::ExportHandle>>,
+}
+
+impl tutti_graph::Node for CancelOnSecondBlock {
+    fn shape(&self) -> tutti_graph::Shape {
+        tutti_graph::Shape::audio(ChannelLayout::STEREO, ChannelLayout::STEREO)
+    }
+    fn prepare(&mut self, _: &tutti_graph::Prepare) {}
+    fn process(
+        &mut self,
+        _: &tutti_graph::Cx<'_>,
+        mut io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        let (ins, mut outs) = io.split();
+        for c in 0..2 {
+            outs.get(c).copy_from_slice(ins.get(c));
+        }
+        if self
+            .blocks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+            == 2
+        {
+            self.handle.get().expect("the handle was set").cancel();
+        }
+        tutti_graph::Status::Modified
+    }
+    fn reset(&mut self) {}
+}
+
+/// The plugin servers this process has running: its children whose command
+/// line names the server binary. `None` off Linux, where `/proc` is not
+/// there to read.
+fn servers() -> Option<usize> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let me = std::process::id().to_string();
+    let server = plugin_server();
+    let server = server.file_name().unwrap().to_string_lossy().into_owned();
+    let mut n = 0;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let dir = entry.path();
+        let Ok(stat) = std::fs::read_to_string(dir.join("stat")) else {
+            continue;
+        };
+        // `pid (comm) state ppid ...`: comm may hold spaces, so split after its `)`.
+        let after = stat.rsplit_once(')').map_or("", |(_, rest)| rest);
+        if after.split_whitespace().nth(1) != Some(me.as_str()) {
+            continue;
+        }
+        let cmd = std::fs::read(dir.join("cmdline")).unwrap_or_default();
+        if String::from_utf8_lossy(&cmd).contains(&server) {
+            n += 1;
+        }
+    }
+    Some(n)
+}
+
+/// **A cancelled export over a hosted plugin's fork** stops at its second
+/// block, reports `Cancelled`, releases the token on `finish_export`, takes
+/// its forked `plugin-server` with it (the fork dies with the rendered graph,
+/// on the main thread), and the next export, forking a fresh server, succeeds.
+/// The server count is read from `/proc`, so that part is Linux only.
+///
+/// Mutation (run): `ExportHandle::tick` ignoring the stop request -> the
+/// render runs to its end and the outcome is `Finished`; fails.
+/// Mutation (run): `finish_export_unannounced` forgetting the rendered graph
+/// -> the forked server is still running after the finish; fails.
+#[test]
+fn a_cancelled_export_frees_the_token_and_the_forked_server() {
+    use std::sync::atomic::AtomicUsize;
+    let mut s = session(&[]);
+    let probe = add_probe(&mut s);
+    let blocks = Arc::new(AtomicUsize::new(0));
+    let handle = Arc::new(std::sync::OnceLock::new());
+    let (cancel, _) = s.graph().add(ForkByClone(CancelOnSecondBlock {
+        blocks: Arc::clone(&blocks),
+        handle: Arc::clone(&handle),
+    }));
+    s.graph()
+        .set_source(cancel, 0, tutti_session::GraphSource::Node(probe, 0));
+    s.graph()
+        .set_source(cancel, 1, tutti_session::GraphSource::Node(probe, 1));
+    s.graph().set_outputs_from(cancel);
+    s.update();
+    let live = servers();
+
+    let mut long = request(ExportSource::Mix);
+    long.config.render.duration_seconds = 5.0;
+    let job = s.export(long).expect("starts");
+    handle.set(job.handle()).ok();
+    let rendered = job.run();
+    assert!(
+        blocks.load(std::sync::atomic::Ordering::SeqCst) < 20,
+        "the render stopped at the cancel, not at its end of 235 blocks"
+    );
+    assert!(s.export_in_flight(), "the token lives until the finish");
+    if let Some(live) = live {
+        assert_eq!(servers(), Some(live + 1), "the export's fork has a server");
+    }
+    let out = s.finish_export(rendered).expect("a cancel is not an error");
+    assert!(out.finished().is_none(), "cancelled");
+    assert!(!s.export_in_flight(), "the token is released");
+    if let Some(live) = live {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while servers() != Some(live) {
+            assert!(Instant::now() < deadline, "the fork's server never exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    let next = s
+        .export_blocking(request(ExportSource::Mix))
+        .expect("the next export is not refused");
+    assert!(next.finished().is_some(), "and renders to its end");
 }

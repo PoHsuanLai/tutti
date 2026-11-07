@@ -104,20 +104,64 @@ fn an_allowed_loss_is_reported() {
     assert_eq!(second.dropped_events, 12);
 }
 
-/// A file of a failed render is not left behind; an allowed one carries the
-/// count.
+/// A render that lost events puts nothing in place: the file already at the
+/// path is byte for byte what it was, and no temporary is left beside it, on
+/// the streaming path and the normalizing one. An allowed render replaces it
+/// and carries the count. A render the caller cancels is not judged.
 ///
-/// Mutation: drop the `remove_file` in `render_to_file` → the file stays →
-/// fails.
+/// Mutation: move the `check_loss` in `encode_to_file` after `staged.commit`
+/// (or remove it) → the old file is replaced → fails. Mutation: the same
+/// check in `render_pass` removed → the normalizing path writes the damaged
+/// render → fails.
 #[test]
-fn a_failed_file_render_leaves_no_file() {
+fn a_render_that_lost_events_replaces_nothing() {
     let dir = std::env::temp_dir().join(format!("tutti-export-loss-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("out.wav");
+    let before = b"the previous export".to_vec();
+    std::fs::write(&path, &before).unwrap();
+    let leftovers = || {
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+
     let err = render_to_file(graph(), &config(EventLossPolicy::Fail), &FrozenClock, &path)
         .expect_err("events were dropped");
     assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
-    assert!(!path.exists());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(leftovers(), vec!["out.wav".to_string()], "no temporary");
+
+    let normalize = tutti_export::Normalize::Peak {
+        target: tutti_types::Db(-1.0),
+    };
+    let err = tutti_export::render_normalized_to_file(
+        graph(),
+        &config(EventLossPolicy::Fail),
+        &FrozenClock,
+        normalize,
+        &path,
+    )
+    .expect_err("events were dropped");
+    assert!(matches!(err, Error::EventsDropped { count: 12 }), "{err:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(leftovers(), vec!["out.wav".to_string()], "no temporary");
+
+    // Cancelled before the first block: not an error, and still untouched.
+    let cancelled = tutti_export::render_to_file_with(
+        graph(),
+        &config(EventLossPolicy::Fail),
+        &FrozenClock,
+        &path,
+        &mut |_| tutti_export::Flow::Stop,
+    )
+    .expect("a cancelled render is not an error");
+    assert_eq!(cancelled, tutti_export::Outcome::Cancelled);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
     let written = render_to_file(
         graph(),
         &config(EventLossPolicy::Allow),
@@ -126,6 +170,7 @@ fn a_failed_file_render_leaves_no_file() {
     )
     .expect("allowed");
     assert_eq!(written.dropped_events, 12);
-    assert!(path.exists());
+    assert_ne!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(leftovers(), vec!["out.wav".to_string()]);
     std::fs::remove_dir_all(&dir).unwrap();
 }

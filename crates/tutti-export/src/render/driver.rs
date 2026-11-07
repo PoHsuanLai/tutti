@@ -20,6 +20,7 @@
 //! rather than allowed outright, so real dead code is still caught elsewhere.
 #![cfg_attr(not(codec), allow(dead_code))]
 
+use crate::control::{Control, Flow, Outcome};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
 use tutti_core::transport::RenderClock;
@@ -79,6 +80,11 @@ pub(crate) trait FrameSource {
     /// replay has no block of its own. Pulling the graph 64 frames at a time
     /// would run its per-block walk sixteen times as often as it needs to.
     fn max_block(&self) -> usize;
+    /// Events the graph lost since the render began (`Executor::lost_event_count`):
+    /// not a note-off it refused and sent again. A replay loses none.
+    fn lost_events(&self) -> u64 {
+        0
+    }
 }
 
 /// The render source for the graph: a `tutti_graph::Executor` (a
@@ -102,6 +108,8 @@ pub(crate) struct GraphSource<'a> {
     planes: Vec<Vec<f32>>,
     max_block: usize,
     produced: Samples,
+    /// The executor's lost-event count when the render began.
+    lost_before: u64,
 }
 
 impl<'a> GraphSource<'a> {
@@ -132,6 +140,7 @@ impl<'a> GraphSource<'a> {
         // executor renders only what was. (Nothing commits during the render,
         // so the plan applied here is the one every block runs.)
         executor.apply_pending();
+        let lost_before = executor.lost_event_count();
         let (global_inputs, outputs) = executor.plan().map_or_else(
             || {
                 let topology = &editor.spec().topology;
@@ -149,6 +158,7 @@ impl<'a> GraphSource<'a> {
             planes,
             max_block,
             produced: Samples(0),
+            lost_before,
         })
     }
 }
@@ -210,9 +220,18 @@ impl FrameSource for GraphSource<'_> {
     fn max_block(&self) -> usize {
         self.max_block
     }
+
+    fn lost_events(&self) -> u64 {
+        self.executor
+            .lost_event_count()
+            .saturating_sub(self.lost_before)
+    }
 }
 
 /// Run `f` over the frame source for `graph`, then check the fork's health.
+/// Returns what `f` did and the events the graph lost over the render; what
+/// to do about them is the caller's ([`check_loss`]), made before a file is
+/// committed and not for a cancelled render.
 ///
 /// The one place a [`RenderGraph`] becomes a [`FrameSource`], so every entry
 /// point renders and checks identically.
@@ -220,16 +239,15 @@ pub(crate) fn with_source<R>(
     graph: &mut RenderGraph,
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
-    on_loss: crate::EventLossPolicy,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
 ) -> crate::Result<(R, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let (editor, executor) = graph.parts_mut();
-    let dropped_before = executor.lost_event_count();
-    let rendered = f(&mut GraphSource::new(editor, executor, sample_rate, clock)?)?;
-    let dropped = executor.lost_event_count().saturating_sub(dropped_before);
+    let mut src = GraphSource::new(editor, executor, sample_rate, clock)?;
+    let rendered = f(&mut src)?;
+    let lost = src.lost_events();
     // A forked unit that failed mid-render (a plugin's server crashed or
     // hung) rendered silence from then on, and `process` has no error
     // channel: the probe is the only place the failure shows. A render that
@@ -241,12 +259,16 @@ pub(crate) fn with_source<R>(
             kind: fault.kind,
             cause: fault.cause,
         })?;
-    // The executor drops an event it has no room for and goes on; the render
-    // would be a silently damaged one, so by default it says so.
-    if dropped > 0 && on_loss == crate::EventLossPolicy::Fail {
-        return Err(crate::Error::EventsDropped { count: dropped });
+    Ok((rendered, lost))
+}
+
+/// Fails a render that lost events under [`EventLossPolicy::Fail`]
+/// ([`crate::EventLossPolicy`]).
+pub(crate) fn check_loss(policy: crate::EventLossPolicy, lost: u64) -> crate::Result<()> {
+    if lost > 0 && policy == crate::EventLossPolicy::Fail {
+        return Err(crate::Error::EventsDropped { count: lost });
     }
-    Ok((rendered, dropped))
+    Ok(())
 }
 
 /// Replays already-rendered planes as a frame source.
@@ -306,12 +328,16 @@ impl FrameSource for PlaneSource<'_> {
 /// The gate (latency trim + output-length cap) lives here rather than on a sink
 /// because it needs counters that span blocks. `consume` is called only with
 /// frames that survive it.
+///
+/// After each block `control` is told how far the render is; if it answers
+/// [`Flow::Stop`] the render ends there as [`Outcome::Cancelled`].
 pub(crate) fn drive<F>(
     src: &mut dyn FrameSource,
     layout: ChannelLayout,
     plan: &crate::render::RenderPlan,
+    control: &mut Control<'_>,
     mut consume: F,
-) -> crate::Result<()>
+) -> crate::Result<Outcome<()>>
 where
     F: FnMut(Interleaved<'_>) -> crate::Result<()>,
 {
@@ -354,9 +380,12 @@ where
             consume(filled.window(window.clone()))?;
             kept = Samples(kept.get() + window.len());
         }
+        if control.report(src.produced(), plan.total) == Flow::Stop {
+            return Ok(Outcome::Cancelled);
+        }
     }
 
-    Ok(())
+    Ok(Outcome::Finished(()))
 }
 
 #[cfg(test)]

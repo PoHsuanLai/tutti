@@ -9,11 +9,15 @@ mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
+mod control;
+use control::{Control, never_stop};
+pub use control::{Flow, Outcome, Pass, Progress};
+
 mod config;
 pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{Normalize, render_normalized_to_file};
+pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -44,7 +48,7 @@ pub struct Written {
     /// Size on disk after finalization, in bytes. `0` if the file could not
     /// be stat'd.
     pub bytes: u64,
-    /// Events the graph dropped during the render that produced the file;
+    /// Events the graph lost during the render that produced the file;
     /// nonzero only under [`EventLossPolicy::Allow`] (under `Fail` the render
     /// is an error instead).
     pub dropped_events: u64,
@@ -65,9 +69,10 @@ pub struct Rendered {
     /// is always the render rate. An encoder must read it from here rather than
     /// from a config, or it converts from a rate the samples were never at.
     pub sample_rate: tutti_types::SampleRate,
-    /// Events the graph dropped during the render; nonzero only under
-    /// [`EventLossPolicy::Allow`] (under `Fail` the render is an error
-    /// instead). A dropped note-on or note-off makes the audio wrong.
+    /// Events the graph lost during the render (not a note-off it refused and
+    /// sent again); nonzero only under [`EventLossPolicy::Allow`] (under `Fail`
+    /// the render is an error instead). A lost note-on or note-off makes the
+    /// audio wrong.
     pub dropped_events: u64,
 }
 
@@ -178,7 +183,21 @@ pub fn write_buffers(
     path: impl AsRef<Path>,
 ) -> Result<Written> {
     frame_width(config.encode.channels)?;
-    encode::encode_planes(rendered, config, path.as_ref())
+    let written = encode::encode_planes(
+        rendered,
+        config,
+        path.as_ref(),
+        &mut Control::new(Pass::ONLY, &mut never_stop),
+    )?;
+    Ok(finished(written))
+}
+
+/// The value of an outcome no tick could have cancelled.
+fn finished<T>(outcome: Outcome<T>) -> T {
+    match outcome {
+        Outcome::Finished(t) => t,
+        Outcome::Cancelled => unreachable!("`never_stop` never cancels"),
+    }
 }
 
 /// Renders `graph` and writes it to `path`.
@@ -203,39 +222,57 @@ pub fn write_buffers(
 /// prepared at another rate or its editor does not feed its executor, and
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
 /// render — the file may exist but is not a valid render — and
-/// [`Error::EventsDropped`] if the graph dropped an event and
-/// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default;
-/// the file is removed).
+/// [`Error::EventsDropped`] if the graph lost an event and
+/// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default):
+/// checked before the file is put in place, so `path` keeps what it held.
 pub fn render_to_file(
-    mut graph: impl BorrowMut<RenderGraph>,
+    graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
     path: impl AsRef<Path>,
 ) -> Result<Written> {
+    render_to_file_with(graph, config, clock, path, &mut never_stop).map(finished)
+}
+
+/// [`render_to_file`], reporting to `tick` after each block.
+///
+/// `tick` sees the [`Progress`] of the pass (one frame count rising to its
+/// total) and answers [`Flow::Stop`] to end the render, which returns
+/// [`Outcome::Cancelled`]. The render is written to a temporary file beside
+/// `path` and renamed over it when it finishes, so a cancelled or failed
+/// render leaves what was at `path` as it was.
+///
+/// # Errors
+///
+/// As [`render_to_file`]. A cancelled render is not an error.
+pub fn render_to_file_with(
+    mut graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    path: impl AsRef<Path>,
+    tick: &mut dyn FnMut(Progress) -> Flow,
+) -> Result<Outcome<Written>> {
     frame_width(config.encode.channels)?;
     let path = path.as_ref();
     let plan = render::RenderPlan::new(&config.render);
-    let on_loss = config.render.on_event_loss;
-    let written = render::with_source(
+    let mut control = Control::new(Pass::ONLY, tick);
+    // The loss check is inside `encode_to_file`, before the rename.
+    render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
-        on_loss,
-        |src| encode::encode_to_file(src, config.render.sample_rate, &plan, config, path),
-    );
-    match written {
-        Ok((mut written, dropped)) => {
-            written.dropped_events = dropped;
-            Ok(written)
-        }
-        // A file of a render that dropped events is not a render of the
-        // graph: it is not left behind.
-        Err(e @ Error::EventsDropped { .. }) => {
-            let _ = std::fs::remove_file(path);
-            Err(e)
-        }
-        Err(e) => Err(e),
-    }
+        |src| {
+            encode::encode_to_file(
+                src,
+                config.render.sample_rate,
+                &plan,
+                config,
+                path,
+                &mut control,
+            )
+        },
+    )
+    .map(|(written, _lost)| written)
 }
 
 /// Renders `graph` ([`RenderGraph`]) into memory.
@@ -265,14 +302,40 @@ pub fn render_to_file(
 /// [`Error::UnsupportedChannels`] for a zero-channel `config.encode.channels`;
 /// [`Error::InvalidConfig`] if the graph was prepared at another rate or its
 /// editor does not feed its executor; [`Error::ForkFailed`] if a forked node
-/// failed during the render; [`Error::EventsDropped`] if the graph dropped an
+/// failed during the render; [`Error::EventsDropped`] if the graph lost an
 /// event and `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the
 /// default).
 pub fn render_to_buffers(
-    mut graph: impl BorrowMut<RenderGraph>,
+    graph: impl BorrowMut<RenderGraph>,
     config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
+    render_to_buffers_with(graph, config, clock, &mut never_stop).map(finished)
+}
+
+/// [`render_to_buffers`], reporting to `tick` after each block; see
+/// [`render_to_file_with`]. A cancelled render returns [`Outcome::Cancelled`]
+/// and the planes rendered so far are dropped.
+///
+/// # Errors
+///
+/// As [`render_to_buffers`].
+pub fn render_to_buffers_with(
+    graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    tick: &mut dyn FnMut(Progress) -> Flow,
+) -> Result<Outcome<Rendered>> {
+    render_pass(graph, config, clock, &mut Control::new(Pass::ONLY, tick))
+}
+
+/// One render into memory, reporting through `control`.
+fn render_pass(
+    mut graph: impl BorrowMut<RenderGraph>,
+    config: &ExportConfig,
+    clock: &dyn RenderClock,
+    control: &mut Control<'_>,
+) -> Result<Outcome<Rendered>> {
     let ch = frame_width(config.encode.channels)?;
     let plan = render::RenderPlan::new(&config.render);
 
@@ -281,22 +344,25 @@ pub fn render_to_buffers(
     let mut planes: Vec<Vec<f32>> = (0..ch)
         .map(|_| Vec::with_capacity(plan.output_length.get()))
         .collect();
-    let ((), dropped_events) = render::with_source(
+    let (driven, lost) = render::with_source(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
-        config.render.on_event_loss,
         |src| {
-            render::drive(src, config.encode.channels, &plan, |block| {
+            render::drive(src, config.encode.channels, &plan, control, |block| {
                 block.append_to_planes(&mut planes);
                 Ok(())
             })
         },
     )?;
+    // A cancelled render is no render: it is not judged.
+    if driven == Outcome::Finished(()) {
+        render::check_loss(config.render.on_event_loss, lost)?;
+    }
 
-    Ok(Rendered {
+    Ok(driven.map(|()| Rendered {
         planes,
         sample_rate: config.render.sample_rate,
-        dropped_events,
-    })
+        dropped_events: lost,
+    }))
 }

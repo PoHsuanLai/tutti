@@ -1,4 +1,6 @@
 use super::*;
+use crate::GRAPH_MAX_BLOCK;
+use crate::control::{Pass, Progress};
 use tutti_core::transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
 use tutti_graph::GraphBuilder;
 use tutti_types::ChannelLayout;
@@ -29,14 +31,96 @@ fn render(
         latency: Samples(0),
     };
     let mut out = Vec::new();
-    with_source(graph, RATE, clock, crate::EventLossPolicy::Fail, |src| {
-        drive(src, ChannelLayout::from(ch), &plan, |b| {
-            out.extend(b.iter_frames().map(<[f32]>::to_vec));
-            Ok(())
-        })
+    with_source(graph, RATE, clock, |src| {
+        drive(
+            src,
+            ChannelLayout::from(ch),
+            &plan,
+            &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+            |b| {
+                out.extend(b.iter_frames().map(<[f32]>::to_vec));
+                Ok(())
+            },
+        )
     })
-    .unwrap();
+    .unwrap()
+    .0
+    .finished()
+    .expect("not cancelled");
     out
+}
+
+/// Drive `frames` of `mono_dc` ticking `tick`; returns the outcome and the
+/// frames consumed.
+fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outcome<()>, usize) {
+    let plan = crate::render::RenderPlan {
+        total: Samples(frames),
+        output_length: Samples(frames),
+        latency: Samples(0),
+    };
+    let mut consumed = 0;
+    let outcome = with_source(&mut mono_dc(0.5), RATE, &FrozenClock, |src| {
+        drive(
+            src,
+            ChannelLayout::MONO,
+            &plan,
+            &mut Control::new(Pass::ONLY, tick),
+            |b| {
+                consumed += b.iter_frames().count();
+                Ok(())
+            },
+        )
+    })
+    .unwrap()
+    .0;
+    (outcome, consumed)
+}
+
+/// A tick that stops after block `n` ends the drive there, as `Cancelled`,
+/// having consumed exactly `n` blocks and no more.
+///
+/// Mutation (run): `drive` ignoring the tick's answer -> it renders all
+/// 16 blocks and returns `Finished`; fails.
+/// Mutation (run): `drive` ticking before it consumes the block -> the
+/// consumed count is one block short; fails.
+#[test]
+fn a_tick_that_stops_ends_the_drive_after_that_block() {
+    let block = GRAPH_MAX_BLOCK.get();
+    let mut ticks = 0;
+    let (outcome, consumed) = drive_ticked(16 * block, &mut |_| {
+        ticks += 1;
+        if ticks == 3 {
+            Flow::Stop
+        } else {
+            Flow::Continue
+        }
+    });
+    assert_eq!(outcome, Outcome::Cancelled);
+    assert_eq!(ticks, 3);
+    assert_eq!(consumed, 3 * block);
+}
+
+/// Progress rises strictly block by block, names its pass, carries the plan's
+/// total, and the last reading is the total.
+///
+/// Mutation (run): `Control::report` given `Samples(0)` for produced -> not
+/// rising; fails.
+#[test]
+fn progress_rises_and_reaches_the_total() {
+    let total = 5 * GRAPH_MAX_BLOCK.get() + 17;
+    let mut seen = Vec::new();
+    let (outcome, _) = drive_ticked(total, &mut |p| {
+        seen.push(p);
+        Flow::Continue
+    });
+    assert_eq!(outcome, Outcome::Finished(()));
+    assert_eq!(seen.len(), 6);
+    assert!(seen.windows(2).all(|w| w[0].produced < w[1].produced));
+    assert!(
+        seen.iter()
+            .all(|p| p.total == Samples(total) && p.pass == Pass::ONLY)
+    );
+    assert_eq!(seen.last().unwrap().produced, Samples(total));
 }
 
 /// A mono graph rendered to a wider file must NOT be copied into every

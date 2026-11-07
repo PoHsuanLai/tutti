@@ -45,7 +45,7 @@ tutti-types = { path = "../tutti-types", default-features = false }
 
 # Lock-free: each input port's SPSC ring, split into an owned producer and
 # consumer.
-ringbuf = "0.4"
+ringbuf = "0.6"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -67,7 +67,6 @@ core-foundation = { workspace = true }
 # reporting green for a run that did not execute them.
 tutti-midi-hardware = { path = ".", features = ["test-support"] }
 
-tracing-subscriber = "0.3"
 # The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
 # `HardwareMidiInputs` through a `MidiInputNode` in a graph, under a disabled
 # allocator.

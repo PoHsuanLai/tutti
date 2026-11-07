@@ -166,6 +166,18 @@ pub trait AudioIn<S = f32> {
     /// end-of-stream for a finite one — which of the two is
     /// [`ON_EMPTY`](Self::ON_EMPTY).
     fn poll_into(&mut self, out: &mut [S]) -> Samples;
+
+    /// Whether the source broke and will produce no more frames, however long
+    /// a consumer waits.
+    ///
+    /// A [`Starved`](OnEmpty::Starved) source reads `0` both while the
+    /// producer is late and after its device is gone. This is the second case.
+    /// Frames already buffered stay readable: a consumer polls until `0`, then
+    /// checks this. The default is `false`, right for a source that cannot break
+    /// mid-stream.
+    fn is_failed(&self) -> bool {
+        false
+    }
 }
 
 /// A push destination for audio frames.
@@ -213,6 +225,16 @@ pub trait AudioOut<S = f32> {
     ///
     /// Any I/O error from the final flush or commit.
     fn finalize(self) -> std::io::Result<()>;
+
+    /// Whether an earlier [`write`](Self::write) failed and later ones are
+    /// discarded.
+    ///
+    /// `write` returns `()`, so a sink that can fail (a full disk) reports it
+    /// here, mid-take, as well as from [`finalize`](Self::finalize). The default
+    /// is `false`, right for a sink that cannot fail.
+    fn is_failed(&self) -> bool {
+        false
+    }
 }
 
 /// Moves one block from an [`AudioIn`] to an [`AudioOut`] and returns how many

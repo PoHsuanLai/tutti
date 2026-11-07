@@ -18,6 +18,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# No job writes to the repository, issues or checks.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -51,6 +55,22 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - run: cargo fmt --all --check
+
+  # Advisories (`deny.toml`): a RustSec vulnerability, a yanked crate or an
+  # unmaintained one not named there fails the job. The advisory DB is fetched
+  # fresh on the runner; a failed fetch is an error, never a pass. `bans` and
+  # `licenses` are not checked (see `deny.toml`).
+  deny:
+    name: cargo deny (advisories)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check advisories
 
   paths:
     name: canonical paths

@@ -438,5 +438,16 @@ verify-audio OUT="/tmp/tutti-verify":
     uv run python crates/tutti-dsp/examples/verify_analysis.py {{OUT}}/analysis
     uv run python crates/tutti-polysynth/examples/verify_synth.py   {{OUT}}/synth
 
+# RustSec advisories, yanked and unmaintained crates (`deny.toml`).
+#   cargo install cargo-deny --version 0.20.2 --locked
+deny:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! cargo deny --version >/dev/null 2>&1; then
+        echo "cargo-deny is not installed; run: cargo install cargo-deny --version 0.20.2 --locked" >&2
+        exit 1
+    fi
+    cargo deny --locked check advisories
+
 # Everything CI runs, in CI's order.
-ci: lint check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-features check-loom test test-features test-editor test-doc test-release doc
+ci: lint deny check-paths check-bevy-free check-adapter check-guards check-plugin-ffi check-layout check-features check-loom test test-features test-editor test-doc test-release doc

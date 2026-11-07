@@ -27,6 +27,7 @@ pub(crate) mod ogg;
 pub(crate) mod wav;
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::error::Result;
 // `drive` and the buffer views are `pump_blocks`'s, and it carries the same
 // codec gate.
@@ -89,12 +90,100 @@ pub(crate) trait Encoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()>;
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>>;
 }
 
 /// Render `src` to `path` in the format `config` names.
 ///
-/// The one dispatch. A format whose cargo feature is off is a clean
+/// The render is written to a temporary file beside `path` and renamed over
+/// it when it finishes, so `path` holds either the previous file or a
+/// complete new one, never a partial render. A render that errors or that
+/// `control` stops leaves `path` untouched and removes the temporary.
+///
+/// The rename replaces an existing file (on Windows too: `std::fs::rename`
+/// is `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`), and replaces a symlink
+/// at `path` rather than writing through it. The new file has the default
+/// permissions, not the old file's.
+pub(crate) fn encode_to_file(
+    src: &mut dyn FrameSource,
+    source_rate: tutti_types::SampleRate,
+    plan: &RenderPlan,
+    config: &ExportConfig,
+    path: &Path,
+    control: &mut Control<'_>,
+) -> Result<Outcome<Written>> {
+    let staged = Staged::beside(path);
+    let outcome = encode_into(src, source_rate, plan, config, staged.path(), control)?;
+    if outcome == Outcome::Cancelled {
+        return Ok(Outcome::Cancelled);
+    }
+    // Before the rename: a render that lost events is never put in place, and
+    // `path` keeps what it held (the staged file goes when `staged` drops).
+    let lost = src.lost_events();
+    crate::render::check_loss(config.render.on_event_loss, lost)?;
+    staged.commit(path)?;
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    Ok(Outcome::Finished(Written {
+        path: path.to_path_buf(),
+        bytes,
+        dropped_events: lost,
+    }))
+}
+
+/// A file being written beside its destination: removed when dropped unless
+/// [`commit`](Self::commit)ted. A leftover that cannot be removed is logged,
+/// not an error: the render's outcome is already decided.
+struct Staged {
+    temp: std::path::PathBuf,
+    kept: bool,
+}
+
+impl Staged {
+    fn beside(target: &Path) -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let name = target
+            .file_name()
+            .map_or_else(|| "export".to_owned(), |n| n.to_string_lossy().into_owned());
+        let temp = target.with_file_name(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        Self { temp, kept: false }
+    }
+
+    fn path(&self) -> &Path {
+        &self.temp
+    }
+
+    /// Renames the temporary over `target`.
+    fn commit(mut self, target: &Path) -> std::io::Result<()> {
+        std::fs::rename(&self.temp, target)?;
+        self.kept = true;
+        Ok(())
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        match std::fs::remove_file(&self.temp) {
+            Ok(()) => {}
+            // Never created: the encoder failed before it opened the file.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                "export: could not remove the unfinished file {}: {e}",
+                self.temp.display()
+            ),
+        }
+    }
+}
+
+/// Writes `src` to `path` in the format `config` names: the one dispatch. A format whose cargo feature is off is a clean
 /// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat): no arm
 /// silently degrades, and no arm rejects a format this build can actually
 /// write.
@@ -103,13 +192,14 @@ pub(crate) trait Encoder {
 // `Written` construction is unreachable. That is the intended behaviour of a
 // build that can write no formats, not dead code to prune.
 #[cfg_attr(not(codec), allow(unused_variables, unreachable_code))]
-pub(crate) fn encode_to_file(
+fn encode_into(
     src: &mut dyn FrameSource,
     source_rate: tutti_types::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     path: &Path,
-) -> Result<Written> {
+    control: &mut Control<'_>,
+) -> Result<Outcome<()>> {
     use crate::options::AudioFormat;
     #[allow(
         unused_imports,
@@ -117,13 +207,14 @@ pub(crate) fn encode_to_file(
     )]
     use crate::{Error, UnsupportedReason};
 
-    match config.encode.format {
+    let outcome: Outcome<()> = match config.encode.format {
         #[cfg(feature = "wav")]
         AudioFormat::Wav => wav::WavEncoder::create(path, config, source_rate, plan)?.encode(
             src,
             source_rate,
             plan,
             config,
+            control,
         )?,
         #[cfg(not(feature = "wav"))]
         AudioFormat::Wav => {
@@ -134,9 +225,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "flac")]
-        AudioFormat::Flac(opts) => {
-            flac::FlacEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::Flac(opts) => flac::FlacEncoder::create(path, config, opts)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "flac"))]
         AudioFormat::Flac(_) => {
             return Err(Error::UnsupportedFormat {
@@ -146,9 +241,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => {
-            aiff::AiffEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::Aiff => aiff::AiffEncoder::create(path, config)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "aiff"))]
         AudioFormat::Aiff => {
             return Err(Error::UnsupportedFormat {
@@ -158,9 +257,13 @@ pub(crate) fn encode_to_file(
         }
 
         #[cfg(feature = "ogg")]
-        AudioFormat::OggVorbis(opts) => {
-            ogg::OggEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
-        }
+        AudioFormat::OggVorbis(opts) => ogg::OggEncoder::create(path, config, opts)?.encode(
+            src,
+            source_rate,
+            plan,
+            config,
+            control,
+        )?,
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
             return Err(Error::UnsupportedFormat {
@@ -168,14 +271,9 @@ pub(crate) fn encode_to_file(
                 reason: UnsupportedReason::FeatureDisabled,
             });
         }
-    }
+    };
 
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    Ok(Written {
-        path: path.to_path_buf(),
-        bytes,
-        dropped_events: 0,
-    })
+    Ok(outcome)
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.
@@ -196,8 +294,9 @@ pub(crate) fn pump_blocks<W>(
     source_rate: tutti_types::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
+    control: &mut Control<'_>,
     mut write: W,
-) -> Result<()>
+) -> Result<Outcome<()>>
 where
     W: FnMut(Interleaved<'_>) -> Result<()>,
 {
@@ -235,19 +334,23 @@ where
     };
 
     if let Some((rs, planes, out)) = resampler.as_mut() {
-        drive(src, layout, plan, |block| {
+        let driven = drive(src, layout, plan, control, |block| {
             block.deinterleave_into(planes);
             rs.push(planes, out)?;
             emit_planes(out, &mut staging, &mut dither, layout, &mut write)
         })?;
+        if driven == Outcome::Cancelled {
+            return Ok(Outcome::Cancelled);
+        }
         rs.finish(out)?;
-        emit_planes(out, &mut staging, &mut dither, layout, &mut write)
+        emit_planes(out, &mut staging, &mut dither, layout, &mut write)?;
+        Ok(Outcome::Finished(()))
     } else if dither.is_off() {
         // Nothing to add, so nothing to copy: the gated block goes straight
         // to the encoder.
-        drive(src, layout, plan, write)
+        drive(src, layout, plan, control, write)
     } else {
-        drive(src, layout, plan, |block| {
+        drive(src, layout, plan, control, |block| {
             staging.clear();
             staging.extend_from_slice(block.samples());
             dither.apply(&mut staging);
@@ -291,7 +394,8 @@ pub(crate) fn encode_planes(
     rendered: &crate::Rendered,
     config: &ExportConfig,
     path: &Path,
-) -> Result<Written> {
+    control: &mut Control<'_>,
+) -> Result<Outcome<Written>> {
     let frames = rendered.frames();
     let mut src = PlaneSource::new(&rendered.planes);
     let plan = RenderPlan {
@@ -301,7 +405,12 @@ pub(crate) fn encode_planes(
     };
     // The frames' OWN rate, never `config.render.sample_rate`: these planes may
     // have been rendered under a different config entirely.
-    let mut written = encode_to_file(&mut src, rendered.sample_rate, &plan, config, path)?;
-    written.dropped_events = rendered.dropped_events;
-    Ok(written)
+    let written = encode_to_file(&mut src, rendered.sample_rate, &plan, config, path, control)?;
+    Ok(written.map(|mut w| {
+        w.dropped_events = rendered.dropped_events;
+        w
+    }))
 }
+
+#[cfg(test)]
+mod tests;

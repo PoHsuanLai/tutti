@@ -710,6 +710,10 @@ comments and docs, and treat it as a bug when you find it:
   type the session owns (`Editor`, `Executor`, `Modulation`, `TuttiDriver`,
   `AudioCallbackState`, `Engine`, `RenderGraph`) or if `tutti-session`
   re-exports a crate whole, which would make it a third umbrella.
+  It also fails on policy in the adapter: an `Instant::now` that is not the
+  argument of a session phase, or a `const NAME: usize|Duration` (a throttle
+  and a job limit were the two it found; each is an exception naming the lane
+  that moves it into the session).
 
   **Why `Device` is `!Send` when `TuttiDriver` is `Send`.** `cpal::Stream`
   is `!Send`; `tutti-cpal` wraps it as `Send` with an `unsafe impl` whose

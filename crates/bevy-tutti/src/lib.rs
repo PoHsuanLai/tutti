@@ -254,8 +254,8 @@ pub mod prelude {
 
     #[cfg(feature = "export")]
     pub use crate::export::{
-        ExportClock, ExportDone, ExportError, ExportInFlight, ExportOutput, ExportPlugin,
-        ExportRequest, ExportSource, ExportTarget,
+        ExportCancelled, ExportClock, ExportDone, ExportError, ExportInFlight, ExportOutput,
+        ExportPlugin, ExportRequest, ExportSource, ExportTarget,
     };
     #[cfg(feature = "audio-io")]
     pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};

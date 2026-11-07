@@ -35,9 +35,8 @@ Use it directly when you need only the vocabulary (a crate that implements
 - **`graph`** — the audio graph *as a value*: `Topology` (nodes, edges, outputs),
   `validate` → `Valid`, `topo_order`. `Clone + Eq + Hash`, so two graphs compare
   and one hashes; it implements both traits above, so latency and tail are folds
-  over it. Compiling one into a runtime is `tutti-graph`'s compiler (a
-  `GraphSpec` over a `Topology`, to a `Plan`) — that half names the units and
-  so cannot live here.
+  over it. Compiling one into a runtime is a separate crate's job — that half
+  names the units and so cannot live here.
 - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
   musical math, so it layers *over* a transport rather than living inside one.

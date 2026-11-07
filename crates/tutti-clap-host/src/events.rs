@@ -2055,11 +2055,8 @@ mod tests {
     /// and the plain-event bound fail.
     #[test]
     fn a_banked_program_change_is_three_midi_events() {
-        // The words of M2-104 Figure 64: Bank Valid at bit 0 of word 1, then in
-        // word 2 the program (30-24), the bank MSB (14-8) and the bank LSB (6-0).
-        // Not `MidiEvent::program_change(.., Some(0x0085))`: that builder writes
-        // the bank halves the other way round, which this test is not about.
-        let pc = MidiEvent::from_ump(5, &[0x40C1_0001, (9 << 24) | (1 << 8) | 5]);
+        let pc = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085))
+            .with_frame_offset(5);
         let mut list = InputEventList::new();
         list.reserve(8);
         list.add_midi(&pc);
@@ -2110,6 +2107,30 @@ mod tests {
         assert_eq!(tight.events().len(), cap);
         assert_eq!(tight.events.capacity(), cap, "did not grow");
         assert_eq!(tight.midi_dropped(), 4);
+    }
+
+    /// A Program Change packet written from M2-104 Figure 64's words (bank MSB
+    /// 1 at bits 14-8, LSB 5 at bits 6-0) reaches the plugin as CC 0 = 1,
+    /// CC 32 = 5, then the program. Unlike the builder test above, no builder
+    /// is in the path.
+    ///
+    /// Mutation (run): `add_midi` sending the bank LSB as CC 0 and the MSB as
+    /// CC 32 -> fails.
+    #[test]
+    fn a_spec_word_banked_program_change_is_three_midi_events() {
+        let pc = MidiEvent::from_ump(5, &[0x40C1_0001, (9 << 24) | (1 << 8) | 5]);
+        let mut list = InputEventList::new();
+        list.reserve(8);
+        list.add_midi(&pc);
+        let got: Vec<[u8; 3]> = list
+            .events()
+            .iter()
+            .map(|e| match e {
+                ClapEvent::Midi(m) => m.data,
+                _ => panic!("not a MIDI event"),
+            })
+            .collect();
+        assert_eq!(got, vec![[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]]);
     }
 
     /// **A MIDI 1.0 Note On at velocity 0 is a Note Off at release velocity

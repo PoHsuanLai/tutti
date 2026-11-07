@@ -412,6 +412,16 @@ pub enum Invalid {
         /// The port it names.
         from: OutPort,
     },
+    /// A tap lane is sourced from a node port or a global input that does not
+    /// exist.
+    TapOutOfRange {
+        /// Which tap.
+        tap: TapId,
+        /// Which of its lanes.
+        lane: usize,
+        /// What it names.
+        source: Source,
+    },
     /// A cycle **not** broken by an [`Edge::Feedback`] edge.
     Cycle {
         /// The nodes the topological walk could not place.
@@ -538,6 +548,22 @@ impl Topology {
                     .is_some_and(|n| from.port < n.outputs.count());
                 if !resolves {
                     errs.push(Invalid::OutputOutOfRange { channel, from });
+                }
+            }
+        }
+
+        for (&tap, spec) in &self.taps {
+            for (lane, &source) in spec.sources.iter().enumerate() {
+                let resolves = match source {
+                    Source::Node(from) => self
+                        .nodes
+                        .get(&from.node)
+                        .is_some_and(|n| from.port < n.outputs.count()),
+                    Source::Global(channel) => channel < self.inputs.count(),
+                    Source::Zero => true,
+                };
+                if !resolves {
+                    errs.push(Invalid::TapOutOfRange { tap, lane, source });
                 }
             }
         }

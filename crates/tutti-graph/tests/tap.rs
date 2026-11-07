@@ -523,3 +523,32 @@ fn a_fork_carries_no_tap_and_an_export_reads_its_own_losslessly() {
         "the live tap saw none of the export"
     );
 }
+
+/// Removing a node a tap reads leaves the tap on silence in that lane, as an
+/// output wired to it would be, and the graph still commits.
+///
+/// Mutation (run, recorded here): delete the tap loop in `Editor::remove`
+/// -> the commit is refused (`TapOutOfRange`) and `commit` panics.
+#[test]
+fn removing_a_tapped_node_silences_its_lane() {
+    let mut r = rig(1, false);
+    let mut tap = r.ed.open_tap(
+        TapId(1),
+        vec![r.gains[0], r.gains[1]],
+        TapAlign::Raw,
+        Samples(1024),
+    );
+    commit(&mut r);
+    r.ed.remove(NodeKey(21));
+    commit(&mut r);
+    block(&mut r, 100, 0);
+    let mut got = Vec::new();
+    drain(&mut tap, &mut got);
+    assert_eq!(got.len(), 200);
+    let first: Vec<f32> = (0..100).map(|t| chain_at(0, 0, t)).collect();
+    assert_eq!(lane(&got, 2, 0), first, "the other lane plays on");
+    assert!(
+        lane(&got, 2, 1).iter().all(|&x| x == 0.0),
+        "the removed node's lane is silent"
+    );
+}

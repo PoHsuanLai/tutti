@@ -2029,7 +2029,7 @@ Export issues found along the way:
     world read) in the frame the export starts; the compute-pool task builds
     the fork, runs the hook's edit, commits and renders. Everything the task
     holds is wrapped (`ToMain`) so that wherever it drops (finished, failed,
-    or cancelled before or mid-run) it is sent to `ExportDrops` and dropped
+    or despawned before or mid-run) it is sent to `ExportDrops` and dropped
     by `poll_exports` on the main thread; that includes the hook's edit until
     it runs. The `prepare` hook is split to match:
     `with_prepare(|world| move |prepared| ..)`; its edit runs on the pool and
@@ -2045,7 +2045,7 @@ Export issues found along the way:
     `a_failing_build_names_its_key_and_hands_back_what_it_built`, and
     bevy-tutti's `export_fork.rs` `off_thread` module (a slow deferred build
     does not hold the frame and takes no later edit; a pinned source builds,
-    prepares and drops on the main thread; a cancelled export and a failed
+    prepares and drops on the main thread; a despawned export and a failed
     build drop there too, the failure naming the entity). Those run in CI's
     threaded-pool step beside `the_rendered_graph_is_dropped_on_the_main_thread`:
     without `bevy_tasks/multi_threaded` a spawned task runs inside `spawn`, so
@@ -6890,7 +6890,9 @@ renders anywhere but must drop on the main thread, so tutti-export's
 `impl BorrowMut<RenderGraph>` (by value as before, or `&mut` to keep it),
 and bevy-tutti's render task hands its graph back with the result to
 `poll_exports`, now pinned to the main thread (`NonSendMarker`), which drops
-it. A render cancelled mid-poll still drops on the pool. Pinned by
+it. (A cancel no longer drops the task: it stops the render at its next
+block through `ExportHandle`, and the graph comes back to `poll_exports`
+like a finished one's.) Pinned by
 `the_rendered_graph_is_dropped_on_the_main_thread`, which bites only with
 `bevy_tasks/multi_threaded` on (bevy-tutti's own feature set leaves it off, and
 a task then runs on the thread that polls it), so CI's `dark features` job and

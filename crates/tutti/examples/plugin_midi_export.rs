@@ -69,7 +69,7 @@ fn play(plugin: &Path, midi: &Path, out: &Path) -> Result<Written, Box<dyn std::
             .trim_reported_latency() // RenderConfig::latency, from the plan
             .with_reported_tail(Samples(48_000 * 10)), // the plugin's declared tail
     )?; // the plugin hears Offline from here
-    let ExportOutput::File(written) = s.finish_export(job.run())? else {
+    let Some(ExportOutput::File(written)) = s.finish_export(job.run())?.finished() else {
         unreachable!("a file request writes a file");
     }; // and Realtime from here
     Ok(written)

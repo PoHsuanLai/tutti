@@ -431,6 +431,10 @@ impl AudioOut for WavOut {
         self.write_interleaved(frames);
     }
 
+    fn is_failed(&self) -> bool {
+        self.first_error.is_some()
+    }
+
     fn finalize(self) -> std::io::Result<()> {
         let mask = self.mask();
         let Self {

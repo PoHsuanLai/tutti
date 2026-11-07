@@ -103,12 +103,13 @@ Three choices differ from the specification on purpose:
 pub struct Ump([u32; 4]);
 
 impl Ump {
-    pub const fn words(&self) -> &[u32];     // 1, 2 or 4 by message type
+    pub const fn words(&self) -> &[u32];     // 1, 2, 3 or 4 by message type
     pub const fn is_note_off(self) -> bool;  // for the graph's FIFOs, the only copy
 }
 ```
 
-The graph's `EventKind::Midi` holds this `Ump`. Its doc says the graph never
+Message types `0xB` and `0xC` are 96 bits (Table 4), so a packet is 1, 2, 3 or 4
+words. The graph's `EventKind::Midi` holds this `Ump`. Its doc says the graph never
 inspects the words, and `Event` does: `is_note_off` makes that the one place.
 `Pod` lets plugin IPC copy a block of events as one memory copy.
 
@@ -126,7 +127,7 @@ pub enum Message {
     Sysex7(Group, Sysex7Packet),       // MT 0x3
     Midi2(Address, Voice2),            // MT 0x4
     Data128(Group, Data128),           // MT 0x5: SysEx8, Mixed Data Set
-    Flex(Group, FlexAddress, Flex),    // MT 0xD
+    Flex(Group, Flex),                 // MT 0xD
     Stream(Stream),                    // MT 0xF: no group
 }
 
@@ -151,11 +152,22 @@ Rules:
 - **Hand-written match arms, not a macro or a proc macro.** There are few messages
   and each arm is short. A reader checks them against the specification's table,
   and a macro would hide what they are checking.
-- **Fields are typed.** Note, velocity, group, channel and 7-bit values have a
-  public constructor that refuses out-of-range values and a private one masked
-  off the wire. A note of 200 cannot be built, where today it silently becomes 72
-  in release. Types are added under the rules in CLAUDE.md: a distinct range or a
-  distinct algebra.
+- **Fields are typed.** Note, group, channel and the 4-, 7- and 14-bit values
+  (`NoteNumber`, `U4`, `U7`, `U14`) have a public constructor that refuses
+  out-of-range values and a private one masked off the wire. A note of 200 cannot
+  be built, where today it silently becomes 72 in release. There is no `Velocity`
+  type: MIDI 2.0 velocities stay `u16`, and their scaling is M2-115's. The refusal
+  holds for the new types' public constructors. The three moved types
+  (`MidiGroup`, `MidiChannel`, `CCNumber`) mask for now. Types are added under the
+  rules in CLAUDE.md: a distinct range or a distinct algebra.
+- **Flex addressing follows the specification.** Set Tempo, Set Time Signature and
+  Set Metronome are Group messages: §7.5.3 to §7.5.5 fix Format 0 and Address 1,
+  so they carry no `FlexAddress`. Key signature, chord name and text do, and carry
+  it in their variant.
+- **Reserved bits** are ignored on decode and zero on encode. A reserved value in
+  a field decodes as `Unknown`.
+- **Name limits are not in the codec.** They apply to a reassembled string, so
+  they are checked where strings are reassembled.
 
 `NoteId` is an engine concept: `MidiMessage` mints one on decode and the wire has
 none. It moves to whichever node assigns voices, and leaves decoding.
@@ -212,15 +224,45 @@ inferred block. An endpoint with many groups is one device, not many.
 
 **Stable identity.** A device is identified by what survives a restart: CoreMIDI's
 `MIDIUniqueID`, or the UMP Product Instance Id, falling back to the name. An ALSA
-client number is only a handle to the current connection.
+client number is only a handle to the current connection. `DeviceId` is the
+Product Instance Id when there is one, and otherwise the client and port name plus
+an ordinal on ALSA.
 
 **Device loss is an event.** Backends watch for removal (the ALSA announce port, a
 CoreMIDI notify proc). Today a vanished device stays listed as connected, verified
 on ALSA, and `Disconnected` never fires. On loss the session retires the port,
 emits `Disconnected`, and the input edge flushes (§8.3).
 
+### Device detection
+
+```rust
+// tutti-midi-hardware
+let devices = Devices::open()?;            // starts watching; drop stops
+let all: Vec<DeviceInfo> = devices.list();
+for event in devices.poll() {              // DeviceEvent::{Added, Removed, Changed}
+    /* .. */
+}
+let events = devices.wait(timeout);        // blocks until an event or the timeout
+let input = devices.open_input(id)?;
+
+// tutti-midi-device: the pure core
+impl DeviceTable {
+    pub fn apply(&mut self, change: OsChange) -> Option<DeviceEvent>;
+}
+```
+
+- `Devices::open()` starts the watch and dropping it stops it. `poll` and `wait`
+  give the changes since the last call.
+- `DeviceTable` is pure. It takes an `OsChange` from the backend and returns the
+  event, if the change alters the table. A repeat of a known state returns `None`.
+- `DeviceId` is stable across a restart (above).
+- `FakeBackend` has `plug()` and `unplug()`, so a test drives hot-plug with no
+  device.
+
 ### Timing at the edge
 
+- **The clock map.** `ClockMap` converts an OS time to a frame. It is pure: it
+  takes the two clocks' readings and holds no clock itself.
 - **Input.** Take the OS's timestamp where one exists (CoreMIDI packets carry
   host time, ALSA has queue timestamps). Replace ALSA's 1 ms sleep with a blocking
   `poll` on the sequencer's descriptor, plus a descriptor to wake it for shutdown. Today's read-time stamp measured 1 ms of
@@ -244,6 +286,32 @@ inbound path, in one change, when a stage needs it (an estimated 650 to 750
 lines). Property Exchange waits for a named peer and for M2-105, which is not in
 the core set.
 
+## Layers
+
+Every MIDI feature has four layers:
+
+1. A pure core with no OS, no thread and no clock. Time arrives as a value.
+2. A thin OS or graph layer that feeds the core and carries out what it returns.
+3. Policy in `tutti-session`: when to poll, what to open, what to do on loss.
+4. `bevy-tutti`, which translates only. `scripts/check-adapter.sh` enforces it.
+
+| Feature | Core |
+|---|---|
+| Device detection | `DeviceTable` |
+| Connection steps | `Connection` |
+| OS time to frame | `ClockMap` |
+| Output scheduling | `OutputPlan` |
+| Held notes and controllers | `HeldState` |
+| Recording into clips | `ClipBuilder` |
+| Chase on seek | `ChaseIndex` |
+| Clock, MTC and MMC slave | `ClockFollower` |
+| CC modulation and MIDI learn | `Binding`, `LearnState` |
+
+The same pattern is already in use: the plugin hosts' pure `step` (design 016),
+`Phase::Poll`, `PhaseCx { now }`, and `Session::update() -> Vec<SessionEvent>`.
+Audio devices (design 018) follow the pattern and share `Phase::Poll`. They share
+no code with MIDI.
+
 ## 6. Crates
 
 | Crate | Layer | Holds | Depends on |
@@ -256,7 +324,8 @@ the core set.
 | `tutti-coremidi-ffi` | FFI | The raw CoreMIDI calls the `coremidi` crate lacks | macOS only |
 | `tutti-midi-runtime` | Engine | Graph nodes | `tutti-graph`, `tutti-midi-protocol` |
 | `tutti-graph` | Graph | Event ports hold `Ump` | `tutti-types`, `tutti-ump` |
-| `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump` |
+| `tutti-midi-file` | Files | SMF, Clip File | `tutti-ump`, `tutti-tempo` |
+| `tutti-tempo` | Time | `TempoMap` (beat to sample); not MIDI | `tutti-types` |
 
 `tutti-midi-types` goes away. This is not a split for compile time, which is
 already small. Dependencies enforce the layering: `tutti-ump` cannot call the
@@ -359,7 +428,7 @@ Each is its own lane after its dependency stage.
 
 ### Files
 
-`tutti-midi-file` adds real work on top of `midly`: musical time, a tempo map, note
+`tutti-midi-file` adds real work on top of `midly`: musical time, note
 pairing, and one reader for SMF and Clip File. The rest is thin or awkward. There
 are two read models from one parse, `pub use midly` and `SmfMessage` expose
 `midly`'s types, and `iter()` writes each parsed message to wire bytes in order to
@@ -368,7 +437,7 @@ Format 2 as if parallel, rejects SMPTE division, and returns `Ok` on a truncated
 file. Writing has no tempo map, track names or SysEx.
 
 ```rust
-pub struct MidiFile { kind: MidiFileKind, tracks: Vec<Track>, tempo_map: TempoMap }
+pub struct MidiFile { kind: MidiFileKind, tracks: Vec<Track>, tempo_map: TempoMap }  // tutti_tempo
 pub struct Track { name: Option<String>, events: Vec<(Tick, FileEvent)> }
 
 pub enum FileEvent {
@@ -393,6 +462,11 @@ impl Track { pub fn notes(&self) -> impl Iterator<Item = PairedNote> + '_; }
 - **`FileEvent` is not a mirror of `Message`.** It adds what a packet cannot hold.
   It allocates, and files do not reach the audio thread: the clip node holds a
   compiled form.
+- **`TempoMap` is not a MIDI type.** It maps beats to samples and lives in
+  `tutti-tempo`, a small pure crate above `tutti-types` with
+  `#![forbid(unsafe_code)]`, because the transport, the export plan, plugin
+  transport info and SMF import all want it. The file layer builds one from tempo
+  meta events. Adopting it in the transport is separate work.
 - **Integer ticks.** Events keep their tick and the track its division, so a write is
   exact with no rounding, and `events()` gives callers `Beat`.
 - **A lossless round trip** is the test: a file read and written holds the same
@@ -415,8 +489,10 @@ a behaviour change.
    host.
 3. **`tutti-midi-protocol`.** Translation to the edge. Behaviour change: §4's spec
    fixes.
-4. **`tutti-midi-device` and the `-ffi` crates.** Model, connection, identity, device
-   loss, timing (§5), and the backends with no `unsafe` of their own.
+4. **`tutti-midi-device` and the `-ffi` crates.** Device detection comes first
+   (`Devices`, `DeviceTable`, `FakeBackend::plug`; §5), directly after stage 1.
+   Then model, connection, identity, device loss, timing (§5), and the backends
+   with no `unsafe` of their own.
    Behaviour change: real hot-plug, timestamps, output scheduling. CI codec moves
    here and the rest of `ci`/`negotiate` is deleted.
 5. **Remove the old types:** `tutti-midi-types`, `MidiEvent`, `MidiMessage`, the

@@ -22,9 +22,12 @@ use std::collections::HashMap;
 use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
+use tutti_export::Outcome;
 use tutti_types::NodeKey;
 
-use crate::export::request::{ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest};
+use crate::export::request::{
+    ExportCancelled, ExportDone, ExportError, ExportInFlight, ExportNode, ExportRequest,
+};
 use crate::graph::{AudioConfig, AudioGraphRes};
 
 /// Starts the oldest pending [`ExportRequest`], if nothing is already running.
@@ -112,10 +115,11 @@ pub fn start_exports(world: &mut World) {
             return;
         }
     };
+    let handle = job.handle();
     let task = AsyncComputeTaskPool::get().spawn(async move { job.run() });
     world
         .entity_mut(entity)
-        .insert(ExportInFlight::new(task, nodes));
+        .insert(ExportInFlight::new(task, nodes, handle));
 }
 
 /// The session's request for `request`, started.
@@ -268,10 +272,25 @@ pub fn poll_exports(
                 Err(ExportError::NoEngine)
             }
         };
-        commands
-            .entity(entity)
-            .remove::<ExportInFlight>()
-            .trigger(move |entity: Entity| ExportDone { entity, result });
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.remove::<ExportInFlight>();
+        match result {
+            Ok(Outcome::Cancelled) => {
+                entity_commands.trigger(|entity: Entity| ExportCancelled { entity });
+            }
+            Ok(Outcome::Finished(output)) => {
+                entity_commands.trigger(move |entity: Entity| ExportDone {
+                    entity,
+                    result: Ok(output),
+                });
+            }
+            Err(e) => {
+                entity_commands.trigger(move |entity: Entity| ExportDone {
+                    entity,
+                    result: Err(e),
+                });
+            }
+        }
     }
 }
 

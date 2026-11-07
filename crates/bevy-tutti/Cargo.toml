@@ -254,7 +254,7 @@ tempfile = "3.8"
 # is what lets the tap test pop the frames a simulated callback pushed, rather
 # than asserting only that an `is_open` flag flipped. Same version tutti-core
 # builds the ring with.
-ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
+ringbuf = { version = "0.6", default-features = false, features = ["alloc"] }
 # `tests/plugin_capture.rs` loads the reference CLAP plugin through a real
 # `plugin-server`, to pin that a loaded plugin's shadow is captured and driven.
 # A dev-dependency so cargo builds the cdylib as part of the same test run; the

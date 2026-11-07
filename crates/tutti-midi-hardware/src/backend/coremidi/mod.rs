@@ -2,7 +2,7 @@
 //!
 //! # Almost no raw FFI
 //!
-//! The safe `coremidi 0.8` wrapper covers the entire real-device path —
+//! The safe `coremidi` wrapper covers the entire real-device path —
 //! `Sources`/`Destinations` enumeration, `Client::input_port_with_protocol`
 //! (`MIDIInputPortCreateWithProtocol`), `InputPortWithContext::connect_source`,
 //! `OutputPort::send` (`MIDISendEventList`), `EventBuffer::push(ts, &[u32])`
@@ -38,6 +38,27 @@ pub mod virtual_destination;
 pub mod virtual_source;
 pub use virtual_destination::UmpVirtualDestination;
 pub use virtual_source::UmpVirtualSource;
+
+/// The process-wide CoreMIDI client every backend and virtual destination
+/// shares.
+///
+/// coremidi 0.9 never disposes a [`Client`] on drop (Apple: disposing the last
+/// client may make the MIDI server exit and fail every later client creation),
+/// so a client per endpoint set or virtual port would accumulate. One is created
+/// on first use and kept for the life of the process; a failed creation is not
+/// cached, so a later call retries.
+pub(crate) fn shared_client() -> std::result::Result<&'static Client, coremidi::OSStatus> {
+    static CLIENT: std::sync::Mutex<Option<&'static Client>> = std::sync::Mutex::new(None);
+    let mut slot = CLIENT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(client) = *slot {
+        return Ok(client);
+    }
+    let client: &'static Client = Box::leak(Box::new(Client::new("tutti-midi")?));
+    *slot = Some(client);
+    Ok(client)
+}
 
 /// CoreMIDI's `kMIDIProtocol_2_0`, as `kMIDIPropertyProtocolID` reports it.
 const PROTOCOL_ID_MIDI_2_0: i32 = 2;
@@ -79,9 +100,9 @@ fn endpoint_id(object: &coremidi::Object) -> Option<EndpointId> {
 
 /// The macOS [`MidiEndpoints`] implementation.
 pub struct CoreMidiEndpoints {
-    /// One client for the whole backend. CoreMIDI ties ports to their client, so
-    /// a per-open client would leak one per connection.
-    client: Option<Client>,
+    /// The process-wide client ([`shared_client`]); `None` when CoreMIDI refused
+    /// it.
+    client: Option<&'static Client>,
 }
 
 impl core::fmt::Debug for CoreMidiEndpoints {
@@ -97,19 +118,19 @@ impl Default for CoreMidiEndpoints {
 }
 
 impl CoreMidiEndpoints {
-    /// Creates the backend, opening its CoreMIDI client.
+    /// Creates the backend on the process-wide CoreMIDI client.
     ///
     /// A failed client is kept as `None` rather than panicking: enumeration then
     /// reports nothing and opening reports an error, which is what a headless
     /// machine or a sandbox without MIDI access should look like.
     pub fn new() -> Self {
         Self {
-            client: Client::new("tutti-midi").ok(),
+            client: shared_client().ok(),
         }
     }
 
-    fn client(&self) -> Result<&Client> {
-        self.client.as_ref().ok_or(Error::CoreMidi {
+    fn client(&self) -> Result<&'static Client> {
+        self.client.ok_or(Error::CoreMidi {
             operation: "create client",
             status: -1,
         })

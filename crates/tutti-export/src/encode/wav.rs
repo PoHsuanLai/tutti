@@ -15,6 +15,7 @@
 //! deliberate difference: an export dithers first, a live capture does not.
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::encode::{Encoder, pump_blocks};
 use crate::error::{ConfigError, Error, Result};
 use crate::options::BitDepth;
@@ -151,7 +152,8 @@ impl Encoder for WavEncoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()> {
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>> {
         let mut budget = FrameBudget {
             written: 0,
             max: self.max_frames,
@@ -165,7 +167,7 @@ impl Encoder for WavEncoder {
             ..
         } = self;
         let width = u64::from(layout.count().max(1));
-        let pumped = pump_blocks(src, source_rate, plan, config, |frames| {
+        let pumped = pump_blocks(src, source_rate, plan, config, control, |frames| {
             budget.admit(frames.samples().len() as u64 / width)?;
             // Already interleaved — hound wants a flat sample stream, which is
             // exactly what the render hands over. No de-interleave step to undo.
@@ -192,12 +194,16 @@ impl Encoder for WavEncoder {
             let _ = std::fs::remove_file(&path);
             return Err(e);
         }
-        pumped?;
+        if pumped? == Outcome::Cancelled {
+            // Closed by the caller's removal of the path; hound's drop
+            // finalizes what was written, which is then deleted.
+            return Ok(Outcome::Cancelled);
+        }
         writer.finalize().map_err(io_err)?;
         // `hound` writes the lowest-N-bits speaker mask and has no way to change
         // it; the one for the channels' speakers goes in over the header.
         wav::patch_channel_mask_at(&path, mask)?;
-        Ok(())
+        Ok(Outcome::Finished(()))
     }
 }
 

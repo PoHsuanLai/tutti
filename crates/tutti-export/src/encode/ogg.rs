@@ -10,6 +10,7 @@
 //! quantization to dither against.
 
 use crate::config::ExportConfig;
+use crate::control::{Control, Outcome};
 use crate::encode::{Encoder, pump_blocks};
 use crate::error::{Codec, ConfigError, Error, Result};
 use crate::render::{FrameSource, RenderPlan};
@@ -58,7 +59,8 @@ impl Encoder for OggEncoder {
         source_rate: tutti_types::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
-    ) -> Result<()> {
+        control: &mut Control<'_>,
+    ) -> Result<Outcome<()>> {
         // Through `pump_blocks`, not `drive` — that is what applies the
         // resample. Calling `drive` directly while still taking the header rate
         // from `encoder_rate` writes un-resampled audio under a header claiming
@@ -70,7 +72,7 @@ impl Encoder for OggEncoder {
         // The stride, derived once at entry — not re-derived per block.
         let ch = usize::from(config.encode.channels.count());
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); ch];
-        pump_blocks(src, source_rate, plan, config, |frames| {
+        let pumped = pump_blocks(src, source_rate, plan, config, control, |frames| {
             // An EMPTY block is vorbis's end-of-stream signal, and `pump_blocks`
             // legitimately emits one (the resampler flushes after its last real
             // block). Passing it through closes the stream early and leaves the
@@ -84,10 +86,13 @@ impl Encoder for OggEncoder {
                 .encode_audio_block(&planes)
                 .map_err(|e| Error::encoding(Codec::Ogg, format!("encoding failed: {e}")))
         })?;
+        if pumped == Outcome::Cancelled {
+            return Ok(Outcome::Cancelled);
+        }
 
         self.encoder
             .finish()
             .map_err(|e| Error::encoding(Codec::Ogg, format!("finalization failed: {e}")))?;
-        Ok(())
+        Ok(Outcome::Finished(()))
     }
 }

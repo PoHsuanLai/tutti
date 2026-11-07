@@ -105,7 +105,7 @@ const _: () = {
 ///
 /// [`soundfont_playback_system`] takes it from here — an off-thread
 /// `SoundFontUnit` build, then [`PendingSoundFontUnit`], then an
-/// [`AudioNode`](crate::graph::AudioNode) once the build lands.
+/// [`AudioNode`] once the build lands.
 ///
 /// The trigger query is steady-state, not `Added`, so an entity whose `.sf2`
 /// asset has not finished loading is retried each frame until it resolves. An
@@ -170,7 +170,7 @@ pub struct PendingSoundFontUnit {
 
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
 /// but is neither building (`PendingSoundFontUnit`) nor already playing (it has
-/// no [`AudioNode`](crate::graph::AudioNode) yet).
+/// no [`AudioNode`] yet).
 type PlaySoundFontPending = (
     Without<PendingSoundFontUnit>,
     Without<crate::graph::AudioNode>,

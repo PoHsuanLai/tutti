@@ -158,7 +158,7 @@ fn start(
 }
 
 /// Every entity bound to a graph node, by entity and by node key — what
-/// resolves an [`ExportSource::Node`] to its node, and what names a node an
+/// resolves an [`ExportSource::Node`](crate::export::ExportSource) to its node, and what names a node an
 /// export failed on. Taken on the main thread when the render starts, and
 /// kept with the render ([`ExportInFlight`]): a fork can fail mid-render,
 /// long after the world was last readable.

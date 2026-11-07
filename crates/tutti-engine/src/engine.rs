@@ -1144,6 +1144,36 @@ mod tests {
         assert!(transport.motion.is_playing(), "the next block applies it");
     }
 
+    /// A refused block is silence in the heard tap too: the tap keeps a
+    /// take's timing, as a recording of the device would, and the frames are
+    /// written (not counted lost). The plan tap, an op of the graph, has no
+    /// frames for a block the graph did not render.
+    ///
+    /// Mutation (run, recorded here): delete the `hearing.write` in the
+    /// refused-block path of `process` -> the tap holds no frames for it.
+    #[test]
+    fn a_refused_block_is_silence_in_the_heard_tap() {
+        use tutti_types::ChannelLayout;
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        let mut tap = engine
+            .heard_taps()
+            .open(ChannelLayout::STEREO, Samples(256))
+            .expect("opens");
+        let mut buf = vec![1.0f32; 64 * 2];
+        let mut seg = vec![1.0f32; 32 * 2];
+        {
+            let _control = engine.graph.borrow_mut();
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process_segment(&mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO));
+        }
+        let mut got = vec![f32::NAN; 96 * 2];
+        assert_eq!(tap.pop_into(&mut got), Samples(96));
+        assert!(got.iter().all(|&x| x == 0.0), "silence, whole frames");
+        assert_eq!(tap.take_lost(), Samples(0));
+    }
+
     /// The motion machine outlives the engine that ran it: an engine built
     /// after the first is dropped resumes the same state, so a transport
     /// left rolling can still be stopped.

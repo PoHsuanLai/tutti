@@ -218,6 +218,80 @@ fn the_master_meter_is_allocation_free() {
     }
 }
 
+/// The tap after the fader on the audio thread: writing (rings that fill and
+/// count what they drop), taking an install, replacing the writer and taking a
+/// close never allocate, and the writer a replace or close retires is sent
+/// back, not freed (the engine enters `RtScope`, where a `TapWriter` drop is a
+/// debug panic). The installs and closes are queued before each gate; the
+/// engine takes them inside it.
+///
+/// Mutation (run, recorded here): `Vec::with_capacity(1)` in
+/// `TapWriter::push_interleaved` -> the gate panics; dropping the replaced
+/// writer in `Hearing::swap` -> the debug panic.
+#[test]
+fn the_heard_tap_is_allocation_free() {
+    use tutti_graph::{Editor, Prepare, Unforkable};
+    use tutti_transport::MotionEvent;
+    use tutti_types::NodeKey;
+    use tutti_types::graph::{OutPort, Source};
+
+    let transport = Transport::new(48_000.0);
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate(48_000.0),
+        tutti_types::Samples(512),
+    ));
+    ed.insert(NodeKey(1), "tone", Unforkable(TransportTone));
+    ed.spec_mut().topology.outputs = (0..2)
+        .map(|port| {
+            Source::Node(OutPort {
+                node: NodeKey(1),
+                port,
+            })
+        })
+        .collect();
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    let _ = transport.motion.try_send(MotionEvent::Play);
+    let taps = engine.heard_taps();
+    let mut output = vec![0.0f32; 1024 * 2];
+    let layout = ChannelLayout::STEREO;
+    engine.process(&mut InterleavedMut::new(&mut output, layout));
+    ed.collect();
+
+    // 16 frames of ring against 1024-frame blocks: every block overflows.
+    let first = taps.open(layout, tutti_types::Samples(16)).expect("opens");
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..8 {
+            engine.process(&mut InterleavedMut::new(&mut output, layout));
+        }
+    });
+    drop(first);
+    taps.reclaim();
+    // The reclaim queued a close; a new open queues a replacement behind it.
+    let mut second = taps
+        .open(layout, tutti_types::Samples(4096))
+        .expect("reopens");
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..8 {
+            engine.process(&mut InterleavedMut::new(&mut output, layout));
+        }
+    });
+    taps.close();
+    assert_no_alloc::assert_no_alloc(|| {
+        engine.process(&mut InterleavedMut::new(&mut output, layout));
+    });
+    taps.reclaim();
+    assert_eq!(
+        second.available().get(),
+        4096,
+        "the second tap filled its ring"
+    );
+    assert!(
+        second.take_lost().get() > 0,
+        "and counted what it could not hold"
+    );
+}
+
 /// The metronome on the graph: `ClickNode` and a node walking its
 /// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
 /// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing

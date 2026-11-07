@@ -1,14 +1,23 @@
 use super::*;
+use crate::synth_voice::SynthVoice;
 use crate::{
     Adsr, FilterType, OscillatorType, PortamentoConfig, PortamentoCurve, PortamentoMode,
     SynthConfig, UnisonConfig, VoiceMode,
 };
+use tutti_midi_types::cc;
 use tutti_midi_types::convert::{
-    midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
+    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
 };
-use tutti_midi_types::midi2::num::u7;
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{
+    Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump,
+    Voice1, Voice2,
+};
+
+/// A note number that is in range.
+fn note_number(n: u8) -> NoteNumber {
+    NoteNumber::new(n).expect("a 7-bit note")
+}
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with
@@ -93,7 +102,7 @@ impl Hand {
         let out =
             tutti_graph::contract::drive_input(&mut self.synth, &env, &[], &[], &[&events]).audio;
         for e in &past {
-            self.synth.apply_midi(e);
+            self.synth.apply_midi(Ump(e.data));
         }
         out.try_into().expect("stereo")
     }
@@ -184,6 +193,16 @@ fn ev_bend(channel: u8, bend14: u16) -> MidiEvent {
         MidiGroup::FIRST,
         MidiChannel::new(channel),
         midi1_pitch_bend_to_midi2(bend14),
+    )
+}
+
+fn ev_per_note_management(channel: u8, note: u8, detach: bool, reset: bool) -> MidiEvent {
+    MidiEvent::per_note_management(
+        MidiGroup::FIRST,
+        MidiChannel::new(channel),
+        note,
+        detach,
+        reset,
     )
 }
 
@@ -593,7 +612,7 @@ fn test_note_off_respects_channel() {
     for voice in &synth.voices {
         if voice.is_active()
             && voice.channel() == MidiChannel::new(1)
-            && voice.note() == u7::new(60)
+            && voice.note() == note_number(60)
         {
             assert!(
                 voice.gate_value() > 0.0,
@@ -905,7 +924,7 @@ fn test_legato_mode_no_retrigger() {
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
     assert_eq!(synth.active_voice_count(), 1);
-    assert_eq!(synth.voices[0].note(), u7::new(60));
+    assert_eq!(synth.voices[0].note(), note_number(60));
 
     // Second note should legato (update pitch, no retrigger)
     let note2 = ev_note_on(0, 64, 100);
@@ -919,7 +938,7 @@ fn test_legato_mode_no_retrigger() {
     );
     assert_eq!(
         synth.voices[0].note(),
-        u7::new(64),
+        note_number(64),
         "Voice should have new note"
     );
     assert!(
@@ -951,13 +970,13 @@ fn test_mono_mode_retrigger() {
     queue_midi(&mut synth, &[note1]);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
-    assert_eq!(synth.voices[0].note(), u7::new(60));
+    assert_eq!(synth.voices[0].note(), note_number(60));
 
     // Second note should retrigger (new allocation, not legato)
     let note2 = ev_note_on(0, 64, 100);
     queue_midi(&mut synth, &[note2]);
     synth.tick(&[], &mut output);
-    assert_eq!(synth.voices[0].note(), u7::new(64));
+    assert_eq!(synth.voices[0].note(), note_number(64));
 }
 
 /// One wheel position means one pitch, whether the note was already
@@ -1219,12 +1238,12 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     let voice_60 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == u7::new(60))
+        .find(|v| v.is_active() && v.note() == note_number(60))
         .unwrap();
     let voice_64 = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == u7::new(64))
+        .find(|v| v.is_active() && v.note() == note_number(64))
         .unwrap();
 
     assert!(
@@ -1282,7 +1301,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == u7::new(note))
+            .find(|v| v.is_active() && v.note() == note_number(note))
             .unwrap()
             .mpe_state()
             .pitch_bend_semitones
@@ -1292,16 +1311,7 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     assert!(bent(&synth, 64) > 40.0, "note 64 should start bent");
 
     // Per-Note Management Reset addressed to note 60 only.
-    queue_midi(
-        &mut synth,
-        &[MidiEvent::per_note_management(
-            MidiGroup::FIRST,
-            MidiChannel::new(1),
-            60,
-            false,
-            true,
-        )],
-    );
+    queue_midi(&mut synth, &[ev_per_note_management(1, 60, false, true)]);
     synth.tick(&[], &mut output);
 
     assert!(
@@ -1360,7 +1370,7 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == u7::new(note))
+            .find(|v| v.is_active() && v.note() == note_number(note))
             .unwrap()
             .base_note_freq()
             .get()
@@ -1417,7 +1427,7 @@ fn test_per_note_management_detach_freezes_the_note() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == u7::new(60))
+            .find(|v| v.is_active() && v.note() == note_number(60))
             .unwrap()
             .mpe_state()
             .pitch_bend_semitones
@@ -1427,16 +1437,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     assert!(frozen_at > 40.0, "note should be bent before detach");
 
     // Detach (D=1, S=0).
-    queue_midi(
-        &mut synth,
-        &[MidiEvent::per_note_management(
-            MidiGroup::FIRST,
-            MidiChannel::new(1),
-            60,
-            true,
-            false,
-        )],
-    );
+    queue_midi(&mut synth, &[ev_per_note_management(1, 60, true, false)]);
     synth.tick(&[], &mut output);
 
     // A further per-note bend to zero must be IGNORED — the note holds its value.
@@ -1505,7 +1506,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     let bend = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == u7::new(60))
+        .find(|v| v.is_active() && v.note() == note_number(60))
         .unwrap()
         .mpe_state()
         .pitch_bend_semitones
@@ -1558,7 +1559,7 @@ fn test_reset_all_controllers_spares_per_note() {
     let bend = synth
         .voices
         .iter()
-        .find(|v| v.is_active() && v.note() == u7::new(60))
+        .find(|v| v.is_active() && v.note() == note_number(60))
         .unwrap()
         .mpe_state()
         .pitch_bend_semitones
@@ -1619,7 +1620,7 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == u7::new(note))
+            .find(|v| v.is_active() && v.note() == note_number(note))
             .unwrap()
             .mpe_state()
             .slide
@@ -1669,7 +1670,7 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
         synth
             .voices
             .iter()
-            .find(|v| v.is_active() && v.note() == u7::new(note))
+            .find(|v| v.is_active() && v.note() == note_number(note))
             .unwrap()
             .mpe_state()
             .gain
@@ -2501,6 +2502,376 @@ fn a_fork_renders_the_volume_and_unison_it_was_taken_with() {
             render(source.fork_node()),
             baseline,
             "{param:?}: a fork taken after the move does not hear it"
+        );
+    }
+}
+
+// --- One behaviour on either wire ---
+
+fn ump(message: Message) -> Ump {
+    Ump::from(message)
+}
+
+fn address(channel: u8) -> Address {
+    Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::new(channel),
+    }
+}
+
+fn u7(v: u8) -> U7 {
+    U7::new(v).expect("a 7-bit value")
+}
+
+/// Voices whose key is still held.
+fn sounding(synth: &PolySynth) -> usize {
+    synth
+        .allocator
+        .slots()
+        .iter()
+        .filter(|s| s.is_key_held())
+        .count()
+}
+
+fn poly_synth() -> PolySynth {
+    PolySynth::new(SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Poly,
+        ..Default::default()
+    })
+    .expect("synth builds")
+}
+
+/// A MIDI 1.0 Note On and the MIDI 2.0 Note On that widens it claim the same
+/// voice: same note, channel and velocity, which is the figure translation
+/// scales to. Mutations, each failing this test: reading the MIDI 1.0
+/// velocity as `velocity / 127.0`; ignoring `Midi1` messages.
+#[test]
+fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
+    let wide = midi1_velocity_to_midi2(100);
+    let m1 = Message::Midi1(
+        address(3),
+        Voice1::NoteOn {
+            note: note_number(64),
+            velocity: u7(100),
+        },
+    );
+    let m2 = Message::Midi2(
+        address(3),
+        Voice2::NoteOn {
+            note: note_number(64),
+            velocity: wide,
+            attribute: Attribute::None,
+        },
+    );
+    for message in [m1, m2] {
+        let mut synth = poly_synth();
+        synth.apply_midi(ump(message));
+        assert_eq!(synth.active_voice_count(), 1, "{message:?}");
+        let slot = &synth.allocator.slots()[0];
+        assert_eq!(slot.note(), note_number(64), "{message:?}");
+        assert_eq!(slot.channel(), MidiChannel::new(3), "{message:?}");
+        assert_eq!(
+            slot.velocity(),
+            u16_to_unit_f32(wide),
+            "{message:?} sounds at the widened velocity"
+        );
+    }
+}
+
+/// Every way to end a note ends it: a Note Off on either wire, and a Note On
+/// at velocity 0 on either wire. A MIDI 2.0 Note On at velocity 0 is a Note On
+/// in M2-104 §7.4.2; the synth has always read it as a Note Off, and this pins
+/// that for the translation stage to change. Mutations, each failing this
+/// test: the MIDI 2.0 velocity-0 arm sounding a note; the MIDI 1.0 velocity-0
+/// guard removed; the MIDI 1.0 Note Off ignored.
+#[test]
+fn every_note_off_form_releases_the_note() {
+    let note = note_number(60);
+    let on = Message::Midi1(
+        address(0),
+        Voice1::NoteOn {
+            note,
+            velocity: u7(90),
+        },
+    );
+    let offs = [
+        Message::Midi1(
+            address(0),
+            Voice1::NoteOff {
+                note,
+                velocity: u7(0),
+            },
+        ),
+        Message::Midi1(
+            address(0),
+            Voice1::NoteOn {
+                note,
+                velocity: u7(0),
+            },
+        ),
+        Message::Midi2(
+            address(0),
+            Voice2::NoteOff {
+                note,
+                velocity: 0,
+                attribute: Attribute::None,
+            },
+        ),
+        Message::Midi2(
+            address(0),
+            Voice2::NoteOn {
+                note,
+                velocity: 0,
+                attribute: Attribute::None,
+            },
+        ),
+    ];
+    for off in offs {
+        let mut synth = poly_synth();
+        synth.apply_midi(ump(on));
+        assert_eq!(sounding(&synth), 1, "{off:?}");
+        synth.apply_midi(ump(off));
+        assert_eq!(sounding(&synth), 0, "{off:?}");
+    }
+}
+
+/// Pitch bend and the sustain pedal act alike from either wire. Mutations,
+/// each failing this test: a MIDI 1.0 bend divided by 16383 instead of widened
+/// by translation's scaler; MIDI 1.0 messages ignored.
+#[test]
+fn midi1_and_midi2_controllers_reach_the_same_state() {
+    let bend14 = 12_288u16;
+    let wide_bend = midi1_pitch_bend_to_midi2(bend14);
+    let expected = bend_u32_to_signed_f32(wide_bend);
+    for message in [
+        Message::Midi1(
+            address(0),
+            Voice1::PitchBend(U14::new(bend14).expect("14 bits")),
+        ),
+        Message::Midi2(address(0), Voice2::PitchBend(wide_bend)),
+    ] {
+        let mut synth = poly_synth();
+        synth.apply_midi(ump(message));
+        assert_eq!(synth.pitch_bend, expected, "{message:?}");
+    }
+
+    let sustain = |message: Message| {
+        let mut synth = poly_synth();
+        let note = note_number(60);
+        synth.apply_midi(ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOn {
+                note,
+                velocity: u7(90),
+            },
+        )));
+        synth.apply_midi(ump(message));
+        synth.apply_midi(ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOff {
+                note,
+                velocity: u7(0),
+            },
+        )));
+        synth.allocator.slots()[0].is_sustained()
+    };
+    let pedal = cc::SUSTAIN;
+    assert!(sustain(Message::Midi1(
+        address(0),
+        Voice1::ControlChange {
+            controller: pedal,
+            value: u7(127)
+        }
+    )));
+    assert!(sustain(Message::Midi2(
+        address(0),
+        Voice2::ControlChange {
+            controller: pedal,
+            value: midi1_cc_to_midi2(127)
+        }
+    )));
+    assert!(!sustain(Message::Midi1(
+        address(0),
+        Voice1::ControlChange {
+            controller: pedal,
+            value: u7(0)
+        }
+    )));
+}
+
+fn mpe_synth() -> PolySynth {
+    PolySynth::new(SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Poly,
+        mpe_enabled: true,
+        ..Default::default()
+    })
+    .expect("synth builds")
+}
+
+fn voice_of(synth: &PolySynth, note: u8) -> &SynthVoice {
+    synth
+        .voices
+        .iter()
+        .find(|v| v.is_active() && v.note() == note_number(note))
+        .expect("the note sounds")
+}
+
+/// Per-Note Management read from literal words (M2-104 Figure 51: D is bit 1
+/// and S bit 0), so neither the encoder nor the decoder can be wrong in step
+/// with the other. Mutation: testing `reset` before `detach` in `voice2` made
+/// both halves fail (as did `if reset` for `if detach` in the handler).
+#[test]
+fn per_note_management_flags_are_read_from_the_spec_bits() {
+    let on = ump(Message::Midi2(
+        address(1),
+        Voice2::NoteOn {
+            note: note_number(60),
+            velocity: 0xC000,
+            attribute: Attribute::None,
+        },
+    ));
+    let bend = |value: u32| {
+        ump(Message::Midi2(
+            address(1),
+            Voice2::PerNotePitchBend {
+                note: note_number(60),
+                value,
+            },
+        ))
+    };
+
+    // D = 1: the bend freezes.
+    let mut synth = mpe_synth();
+    synth.apply_midi(on);
+    synth.apply_midi(bend(0xFFFF_FFFF));
+    let held = voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get();
+    assert!(held > 0.0);
+    synth.apply_midi(Ump([0x40F1_3C02, 0, 0, 0]));
+    synth.apply_midi(bend(0x8000_0000));
+    assert_eq!(
+        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
+        held
+    );
+
+    // S = 1: the bend resets, and the note keeps responding.
+    let mut synth = mpe_synth();
+    synth.apply_midi(on);
+    synth.apply_midi(bend(0xFFFF_FFFF));
+    synth.apply_midi(Ump([0x40F1_3C01, 0, 0, 0]));
+    assert_eq!(
+        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
+        0.0
+    );
+    synth.apply_midi(bend(0xFFFF_FFFF));
+    assert_eq!(
+        voice_of(&synth, 60).mpe_state().pitch_bend_semitones.get(),
+        held
+    );
+}
+
+/// A note with a reserved attribute type (4 and up) sounds and ends: a
+/// receiver ignores a reserved value (M2-104 §7.1.1). `midi2` refused the
+/// packet, so the note was dropped and an off for it left the voice stuck.
+/// Mutation: ignoring `Attribute::Reserved` on the Note On, then on the Note
+/// Off, each failed here.
+#[test]
+fn a_reserved_attribute_type_does_not_stop_a_note() {
+    let reserved = Attribute::Reserved {
+        kind: 5,
+        data: 0x1234,
+    };
+    let mut synth = poly_synth();
+    synth.apply_midi(ump(Message::Midi2(
+        address(0),
+        Voice2::NoteOn {
+            note: note_number(60),
+            velocity: 0x8000,
+            attribute: reserved,
+        },
+    )));
+    assert_eq!(sounding(&synth), 1);
+    synth.apply_midi(ump(Message::Midi2(
+        address(0),
+        Voice2::NoteOff {
+            note: note_number(60),
+            velocity: 0,
+            attribute: reserved,
+        },
+    )));
+    assert_eq!(sounding(&synth), 0);
+}
+
+/// An Assignable Per-Note Controller whose index byte has the high bit set is
+/// not CC74 or CC7: `CCNumber::new` used to mask 0xCA to 74. Mutation:
+/// restoring the mask made the 0xCA case move the slide.
+#[test]
+fn an_assignable_per_note_index_is_a_whole_byte() {
+    let drive = |controller: u8| {
+        let mut synth = mpe_synth();
+        synth.apply_midi(ump(Message::Midi2(
+            address(1),
+            Voice2::NoteOn {
+                note: note_number(60),
+                velocity: 0x8000,
+                attribute: Attribute::None,
+            },
+        )));
+        let before = voice_of(&synth, 60).mpe_state().slide;
+        synth.apply_midi(ump(Message::Midi2(
+            address(1),
+            Voice2::AssignablePerNote {
+                note: note_number(60),
+                controller,
+                value: u32::MAX,
+            },
+        )));
+        (before, voice_of(&synth, 60).mpe_state().slide)
+    };
+    let (before, after) = drive(74);
+    assert_ne!(before, after, "index 74 is slide");
+    let (before, after) = drive(0xCA);
+    assert_eq!(before, after, "index 0xCA is not");
+}
+
+/// MIDI 1.0 controller and pressure values are widened by translation's
+/// scaler, to exact figures: 64 is the centre, 127 is full. Mutations, each
+/// failing here: `value / 127.0` for the CC (64 gives 0.504); the poly
+/// pressure forced to `0.0 *`.
+#[test]
+fn midi1_values_scale_to_exact_figures() {
+    let mut synth = mpe_synth();
+    let note = note_number(60);
+    synth.apply_midi(ump(Message::Midi1(
+        address(1),
+        Voice1::NoteOn {
+            note,
+            velocity: u7(100),
+        },
+    )));
+    for (value, expected) in [(0, 0.0), (64, 0.5), (127, 1.0)] {
+        synth.apply_midi(ump(Message::Midi1(
+            address(1),
+            Voice1::ControlChange {
+                controller: cc::MOD_WHEEL,
+                value: u7(value),
+            },
+        )));
+        assert_eq!(synth.voices[0].mod_wheel(), expected, "CC1 = {value}");
+        synth.apply_midi(ump(Message::Midi1(
+            address(1),
+            Voice1::PolyPressure {
+                note,
+                pressure: u7(value),
+            },
+        )));
+        assert_eq!(
+            voice_of(&synth, 60).mpe_state().pressure,
+            expected,
+            "pressure = {value}"
         );
     }
 }

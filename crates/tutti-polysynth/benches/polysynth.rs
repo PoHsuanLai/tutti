@@ -42,7 +42,9 @@ use tutti_polysynth::{
     SvfMode, SynthConfig, UnisonConfig,
 };
 use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{
+    Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice1, Voice2,
+};
 
 const SR: f64 = 48_000.0;
 /// The block every case renders: a constant here, not an axis (see the
@@ -224,8 +226,76 @@ fn bench_portamento(c: &mut Criterion) {
     group.finish();
 }
 
+/// **The event path.** One event on every frame of the block, from either
+/// wire, each one a message the synth applies: a modulation wheel, a pitch
+/// bend and a per-note pressure on a held note.
+///
+/// `none` is the same synth with the block's event input empty, so the
+/// difference over 64 events is the cost of splitting the block at each event
+/// and applying it (decode included). Splitting is common to any reading of
+/// the words.
+fn bench_events(c: &mut Criterion) {
+    let address = Address {
+        group: MidiGroup::FIRST,
+        channel: MidiChannel::FIRST,
+    };
+    let note = NoteNumber::new(36).expect("a note");
+    let wire = [
+        Message::Midi1(
+            address,
+            Voice1::ControlChange {
+                controller: CCNumber::new(1),
+                value: U7::new(64).expect("7 bits"),
+            },
+        ),
+        Message::Midi2(
+            address,
+            Voice2::ControlChange {
+                controller: CCNumber::new(1),
+                value: 0x8000_0000,
+            },
+        ),
+        Message::Midi1(address, Voice1::PitchBend(U14::new(9000).expect("14 bits"))),
+        Message::Midi2(address, Voice2::PitchBend(0x9000_0000)),
+        Message::Midi1(
+            address,
+            Voice1::PolyPressure {
+                note,
+                pressure: U7::new(50).expect("7 bits"),
+            },
+        ),
+        Message::Midi2(
+            address,
+            Voice2::PolyPressure {
+                note,
+                value: 0x4000_0000,
+            },
+        ),
+    ];
+    let events: Vec<Event> = (0..BLOCK)
+        .map(|i| {
+            let at = Offset::new(i, Samples(BLOCK)).expect("inside");
+            Event::midi(at, Ump::from(wire[i % wire.len()]).0)
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("events/block");
+    group.throughput(Throughput::Elements(BLOCK as u64));
+    let mut synth = held(config(), 4);
+    group.bench_function("none", |b| b.iter(|| drive(&mut synth)));
+    let mut synth = held(config(), 4);
+    group.bench_function("64-events", |b| {
+        b.iter(|| {
+            synth.events(0, &events);
+            drive(&mut synth)
+        })
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_events,
     bench_voices,
     bench_oscillator,
     bench_filter,

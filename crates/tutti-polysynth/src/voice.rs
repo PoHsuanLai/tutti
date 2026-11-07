@@ -8,9 +8,8 @@
 //! the id is `NoteId::from_channel_note(channel, note)`, so behaviour is unchanged;
 //! native MIDI 2.0 per-note messages address the exact voice by the same id.
 
-use tutti_midi_types::midi2::num::u7;
 use tutti_midi_types::{NoteId, PerNoteMap};
-use tutti_ump::MidiChannel;
+use tutti_ump::{MidiChannel, NoteNumber};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct VoiceId(u64);
@@ -100,7 +99,7 @@ pub(crate) struct VoiceSlot {
     voice_id: VoiceId,
     /// MIDI 2.0 per-note identity for this voice (the allocation key).
     id: NoteId,
-    note: u7,
+    note: NoteNumber,
     channel: MidiChannel,
     velocity: f32,
     envelope_level: f32,
@@ -113,7 +112,7 @@ impl Default for VoiceSlot {
         Self {
             voice_id: VoiceId::default(),
             id: NoteId::default(),
-            note: u7::new(0),
+            note: NoteNumber::default(),
             channel: MidiChannel::FIRST,
             velocity: 0.0,
             envelope_level: 0.0,
@@ -135,8 +134,13 @@ impl VoiceSlot {
     }
 
     #[inline]
-    pub(crate) fn note(&self) -> u7 {
+    pub(crate) fn note(&self) -> NoteNumber {
         self.note
+    }
+
+    #[cfg(test)]
+    pub(crate) fn velocity(&self) -> f32 {
+        self.velocity
     }
 
     #[inline]
@@ -208,7 +212,7 @@ impl VoiceSlot {
         &mut self,
         voice_id: VoiceId,
         id: NoteId,
-        note: u7,
+        note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
         time: u64,
@@ -253,7 +257,7 @@ impl VoiceSlot {
 
     /// Update identity, note and velocity for legato retrigger (the slot keeps
     /// sounding but now represents a new note, hence a new [`NoteId`]).
-    pub(crate) fn update_note(&mut self, id: NoteId, note: u7, velocity: f32) {
+    pub(crate) fn update_note(&mut self, id: NoteId, note: NoteNumber, velocity: f32) {
         self.id = id;
         self.note = note;
         self.velocity = velocity;
@@ -311,8 +315,8 @@ fn steal_score(slot: &VoiceSlot, strategy: AllocationStrategy) -> Option<(u8, u6
                 AllocationStrategy::Oldest => slot.start_time(),
                 AllocationStrategy::Newest => u64::MAX - slot.start_time(),
                 AllocationStrategy::Quietest => slot.envelope_level().to_bits() as u64,
-                AllocationStrategy::HighestNote => u64::MAX - u64::from(u8::from(slot.note())),
-                AllocationStrategy::LowestNote => u64::from(u8::from(slot.note())),
+                AllocationStrategy::HighestNote => u64::MAX - u64::from(slot.note().get()),
+                AllocationStrategy::LowestNote => u64::from(slot.note().get()),
                 AllocationStrategy::NoSteal => return None,
             };
             Some((1, tiebreaker))
@@ -332,7 +336,7 @@ pub struct VoiceAllocator {
     id_to_slot: PerNoteMap<usize, 128>,
     sustain_pedal: [bool; 16],
     sostenuto_pedal: [bool; 16],
-    legato_last_note: Option<u7>,
+    legato_last_note: Option<NoteNumber>,
 }
 
 impl VoiceAllocator {
@@ -356,7 +360,7 @@ impl VoiceAllocator {
     pub fn allocate(
         &mut self,
         id: NoteId,
-        note: u7,
+        note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
     ) -> AllocationResult {
@@ -424,7 +428,7 @@ impl VoiceAllocator {
         }
 
         if self.config.mode == VoiceMode::Legato
-            && self.legato_last_note == Some(u7::new(id.note_number()))
+            && self.legato_last_note == NoteNumber::new(id.note_number())
         {
             self.legato_last_note = None;
         }
@@ -563,7 +567,7 @@ impl VoiceAllocator {
         &mut self,
         slot_index: usize,
         id: NoteId,
-        note: u7,
+        note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
     ) -> AllocationResult {
@@ -580,7 +584,7 @@ impl VoiceAllocator {
     fn allocate_mono_legato(
         &mut self,
         id: NoteId,
-        note: u7,
+        note: NoteNumber,
         channel: MidiChannel,
         velocity: f32,
     ) -> AllocationResult {

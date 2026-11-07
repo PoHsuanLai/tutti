@@ -374,7 +374,8 @@ impl PluginAudio for Vst2Instance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate}: not a positive finite rate"
+                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
+                previous.rate().0
             )));
         };
         self.reconfigure(previous, wanted)
@@ -902,9 +903,9 @@ mod tests {
     /// The core tells the host to read a revived plugin again (`IoChanged`), and
     /// what it reads is the layout the plugin had.
     ///
-    /// A plugin cannot decline `effSetSampleRate`; the activation refuses a
-    /// rate that is no rate (the core's `Refused` path), which is the refusal
-    /// the bridge's rollback exists for.
+    /// A plugin cannot decline `effSetSampleRate`; a rate that is no rate is
+    /// refused before the plugin is touched (`Prepare::with_rate`), so the
+    /// rollback itself is not driven here.
     ///
     /// Mutation (run): the `Activate(previous)` rollback removed from
     /// `reconfigure` -> the plugin stays refused and renders silence (the

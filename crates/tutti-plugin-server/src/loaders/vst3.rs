@@ -390,7 +390,8 @@ impl PluginAudio for Vst3Instance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate}: not a positive finite rate"
+                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
+                previous.rate().0
             )));
         };
         self.reconfigure(previous, wanted)

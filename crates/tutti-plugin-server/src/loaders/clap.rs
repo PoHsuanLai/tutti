@@ -525,7 +525,8 @@ impl PluginAudio for ClapInstance {
         }
         let Some(wanted) = previous.with_rate(SampleRate(rate)) else {
             return Err(PluginError::Other(format!(
-                "plugin refused sample rate {rate}: not a positive finite rate"
+                "plugin refused sample rate {rate} (running at {}): not a positive finite rate",
+                previous.rate().0
             )));
         };
         let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {

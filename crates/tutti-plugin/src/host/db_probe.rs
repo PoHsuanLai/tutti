@@ -102,8 +102,11 @@ pub fn probe_record(path: impl AsRef<Path>) -> Result<Delta, BridgeError> {
 
     let descriptor = super::subprocess::probe_metadata(path)?;
 
+    // Keyed like a scan keys it, by canonical path, so an alias and the real
+    // path are one row.
+    let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Ok(Delta::put(
-        path,
+        key,
         FileRow::probed(format, &facts, vec![descriptor]),
     ))
 }

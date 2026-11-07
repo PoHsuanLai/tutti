@@ -19,12 +19,22 @@ impl Pedal {
         Self { path: path.into() }
     }
 
-    /// Record the plugin that is about to be probed.
+    /// Record the plugin that is about to be probed. Creates the pedal's
+    /// directory, so the first run is protected too.
     pub(super) fn arm(&self, plugin: impl AsRef<Path>) -> std::io::Result<()> {
+        if let Some(parent) = self.path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
         let mut f = std::fs::File::create(&self.path)?;
-        f.write_all(plugin.as_ref().to_string_lossy().as_bytes())?;
+        f.write_all(&path_bytes(plugin.as_ref()))?;
         f.sync_all()?;
         Ok(())
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Remove the pedal on clean completion.
@@ -46,9 +56,9 @@ impl Pedal {
         if !self.path.exists() {
             return None;
         }
-        let crashed = std::fs::read_to_string(&self.path)
+        let crashed = std::fs::read(&self.path)
             .ok()
-            .and_then(|text| parse_pedal(&text));
+            .and_then(|bytes| parse_pedal(&bytes));
         if let Some(p) = &crashed {
             warn!(
                 "dead-man's pedal found: blacklisting {:?} (crashed during previous scan)",
@@ -69,12 +79,37 @@ impl Pedal {
     }
 }
 
+/// A path as the pedal stores it: the raw bytes on unix, where a name need not
+/// be UTF-8 and a lossy copy would blacklist a different file; the UTF-8 text
+/// elsewhere (a Windows path that is not valid Unicode is stored lossily).
+#[cfg(unix)]
+fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    std::borrow::Cow::Borrowed(path.as_os_str().as_bytes())
+}
+
+#[cfg(not(unix))]
+fn path_bytes(path: &Path) -> std::borrow::Cow<'_, [u8]> {
+    std::borrow::Cow::Owned(path.to_string_lossy().into_owned().into_bytes())
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// Reads the plugin a pedal file names.
 ///
-/// Returns `None` for text that names no plugin (empty or only whitespace).
-pub(super) fn parse_pedal(text: &str) -> Option<PathBuf> {
-    let text = text.trim();
-    (!text.is_empty()).then(|| PathBuf::from(text))
+/// Returns `None` for contents that name no plugin (empty or only whitespace).
+pub(super) fn parse_pedal(bytes: &[u8]) -> Option<PathBuf> {
+    let bytes = bytes.trim_ascii();
+    (!bytes.is_empty()).then(|| path_from_bytes(bytes))
 }
 
 #[cfg(test)]
@@ -148,11 +183,11 @@ mod tests {
     #[test]
     fn parse_pedal_names_the_plugin_without_surrounding_whitespace() {
         assert_eq!(
-            parse_pedal("/plugins/crashy.vst3"),
+            parse_pedal("/plugins/crashy.vst3".as_bytes()),
             Some(PathBuf::from("/plugins/crashy.vst3"))
         );
         assert_eq!(
-            parse_pedal("  /plugins/crashy.vst3\n"),
+            parse_pedal("  /plugins/crashy.vst3\n".as_bytes()),
             Some(PathBuf::from("/plugins/crashy.vst3"))
         );
     }
@@ -161,15 +196,15 @@ mod tests {
     /// blacklist the path `""`).
     #[test]
     fn parse_pedal_names_nothing_for_blank_text() {
-        assert_eq!(parse_pedal(""), None);
-        assert_eq!(parse_pedal(" \n\t "), None);
+        assert_eq!(parse_pedal("".as_bytes()), None);
+        assert_eq!(parse_pedal(" \n\t ".as_bytes()), None);
     }
 
     /// A path with interior spaces is one path. Mutation: split on whitespace.
     #[test]
     fn parse_pedal_keeps_interior_spaces() {
         assert_eq!(
-            parse_pedal("/Library/My Plugins/A B.vst3"),
+            parse_pedal("/Library/My Plugins/A B.vst3".as_bytes()),
             Some(PathBuf::from("/Library/My Plugins/A B.vst3"))
         );
     }
@@ -187,5 +222,37 @@ mod tests {
         assert_eq!(pedal.recover(&mut db, |_| Ok(())), None);
         assert!(db.is_empty());
         assert!(!pedal.path.exists());
+    }
+
+    /// On the first run the pedal's directory does not exist yet; arming must
+    /// still protect the probe. Mutation: drop the `create_dir_all` in `arm`.
+    #[test]
+    fn arm_creates_the_pedals_directory() {
+        let dir = TempDir::new().unwrap();
+        let pedal = Pedal::new(dir.path().join("fresh").join("state").join(".scanning"));
+
+        pedal.arm("/plugins/test.vst3").unwrap();
+
+        assert!(pedal.path.exists());
+    }
+
+    /// A name that is not UTF-8 survives the pedal, so the file that crashed is
+    /// the file that is blacklisted. Mutation: store `to_string_lossy()` in
+    /// `path_bytes`.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_round_trips_through_the_pedal() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new().unwrap();
+        let pedal = Pedal::new(dir.path().join(".scanning"));
+        let plugin = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
+        assert!(plugin.to_str().is_none());
+
+        pedal.arm(&plugin).unwrap();
+        let mut db = PluginDb::new();
+        let crashed = pedal.recover(&mut db, |_| Ok(()));
+
+        assert_eq!(crashed, Some(plugin.clone()));
+        assert!(db.is_blacklisted(&plugin));
     }
 }

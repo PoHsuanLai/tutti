@@ -42,7 +42,7 @@ pub use format::{
 };
 pub use fs::{discover, format_from_path};
 pub use scanner::{
-    ProbeFailure, Scan, ScanPhase, ScanPoll, ScanProgress, ScanResult, Scanner,
+    ProbeFailure, Scan, ScanBusy, ScanPhase, ScanPoll, ScanProgress, ScanResult, Scanner,
     probe_plugin_fallback,
 };
 #[cfg(feature = "json")]

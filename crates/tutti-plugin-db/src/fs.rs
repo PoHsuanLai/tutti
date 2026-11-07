@@ -49,8 +49,16 @@ impl FileFacts {
     /// by `tutti_plugin_types::bundle`, the one bundle walk.
     pub fn read(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref();
+        Self::read_as(path, format_from_path(path))
+    }
+
+    /// Reads the facts for `path`, taking the format from the caller instead of
+    /// the extension. A scan uses it: it keys a file by its canonical path but
+    /// knows the format from the name it was found under, and a link's target
+    /// may be named anything.
+    pub fn read_as(path: impl AsRef<Path>, format: Option<PluginFormat>) -> Self {
+        let path = path.as_ref();
         let metadata = std::fs::metadata(path);
-        let format = format_from_path(path);
         let mut mtime = metadata.as_ref().ok().and_then(modified_secs);
         if metadata.as_ref().is_ok_and(|m| m.is_dir())
             && let Some(module) = module_in_bundle(path, format)
@@ -104,8 +112,10 @@ fn module_in_bundle(bundle: &Path, format: Option<PluginFormat>) -> Option<PathB
 ///
 /// Each directory and each plugin is visited once, by its canonical path, so a
 /// symlink that loops back to an ancestor ends the walk there and two routes to
-/// one plugin report it once, under the path first walked. A path that cannot
-/// be resolved (a dangling link) is skipped. Unreadable directories are skipped
+/// one plugin report it once. A plugin is reported under its canonical path,
+/// with the format its walked name carries, so the same file is the same key
+/// whichever route or root found it. A path that cannot be resolved (a dangling
+/// link) is skipped. Unreadable directories are skipped
 /// too, not reported: discovery over a list of standard install locations must
 /// not fail because one of them is absent.
 pub fn discover(dirs: impl IntoIterator<Item = impl AsRef<Path>>) -> Vec<(PathBuf, PluginFormat)> {
@@ -152,8 +162,8 @@ impl Walk {
             debug!("cannot resolve plugin {:?}", path);
             return;
         };
-        if self.seen.insert(real) {
-            self.found.push((path, format));
+        if self.seen.insert(real.clone()) {
+            self.found.push((real, format));
         }
     }
 }
@@ -263,7 +273,7 @@ mod tests {
 
         let found = discover([dir.path()]);
         assert_eq!(found.len(), 1, "expected the bundle itself, got {found:?}");
-        assert_eq!(found[0].0, bundle);
+        assert_eq!(found[0].0, bundle.canonicalize().unwrap());
         assert_eq!(found[0].1, PluginFormat::Vst3);
     }
 
@@ -305,7 +315,7 @@ mod tests {
         let found = discover([dir.path()]);
 
         assert_eq!(found.len(), 1, "got {found:?}");
-        assert_eq!(found[0].0, sub.join("deep.vst3"));
+        assert_eq!(found[0].0, sub.join("deep.vst3").canonicalize().unwrap());
     }
 
     /// Two routes to one plugin report it once (a file link and a directory
@@ -327,6 +337,27 @@ mod tests {
 
         assert_eq!(found.len(), 1, "got {found:?}");
         assert_eq!(found[0].1, PluginFormat::Clap);
+    }
+
+    /// A plugin is reported under its canonical path with the format of the name
+    /// it was found under, so a link to a file named anything keeps its format
+    /// and two routes give one key. Mutation: report the walked path; or take the
+    /// format from the canonical path.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_reported_under_its_target_with_the_links_format() {
+        let dir = TempDir::new().unwrap();
+        let target = create_fake_plugin(dir.path(), "libsynth.bin");
+        let links = dir.path().join("links");
+        std::fs::create_dir(&links).unwrap();
+        std::os::unix::fs::symlink(&target, links.join("synth.clap")).unwrap();
+
+        let found = discover([links.as_path()]);
+
+        assert_eq!(
+            found,
+            vec![(target.canonicalize().unwrap(), PluginFormat::Clap)]
+        );
     }
 
     /// The seen set spans the roots: a root inside another is not walked twice.

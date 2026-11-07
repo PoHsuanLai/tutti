@@ -1522,8 +1522,8 @@ facts, so the row is stamped with the time the decision saw. The database's
 methods that read the filesystem take the facts instead
 (`needs_rescan(path, &facts)`, `blacklist(path, reason, &facts)`), and
 `prune_missing` takes the set of paths the caller found present. `load`
-and `Pedal::recover` keep the read, the rename and the remove, and call
-`parse_pedal` for the decision. `FileRow::blacklisted` always stamps the facts'
+keeps the read and the rename; `Pedal::recover` keeps the read and the remove
+and calls `parse_pedal` for the decision. `FileRow::blacklisted` always stamps the facts'
 time: keeping an old time left a blacklisted row whose file had changed looking
 changed, so it was re-probed on every scan. `discover` keys on the path's extension. `FileFacts::read` takes a
 plugin bundle's time as the later of the directory's and its module's, the module found

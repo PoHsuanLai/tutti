@@ -2,7 +2,11 @@
 //!
 //! The file carries a version. A file of another version, or an old file with
 //! none, is not read: it is moved aside and the database starts empty, and a
-//! rescan rebuilds it. There is no migration.
+//! rescan rebuilds it. There is no migration. Quarantined files are never
+//! overwritten.
+//!
+//! A path that is not valid UTF-8 cannot be written to JSON; [`save`] leaves
+//! such a row out and logs it, and the rest of the table is saved.
 
 use super::table::{Delta, FileRow, PluginDb};
 use serde::{Deserialize, Serialize};
@@ -78,12 +82,31 @@ fn custom(message: &str) -> serde_json::Error {
     <serde_json::Error as serde::de::Error>::custom(message)
 }
 
+/// The first of `path`, `path.1`, `path.2`, ... that does not exist, so a
+/// quarantined file never replaces an earlier one.
+fn unused_name(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    (1u32..)
+        .map(|n| {
+            let mut name = path.clone().into_os_string();
+            name.push(format!(".{n}"));
+            PathBuf::from(name)
+        })
+        .find(|candidate| !candidate.exists())
+        .unwrap_or(path)
+}
+
 /// Loads the database from `path`, or starts empty if the file is missing,
 /// corrupt, or of another version.
 ///
 /// An unreadable file is not overwritten: it is renamed (`.corrupt`, or `.v<N>`
-/// for version `N`, `.v0` for an old file with none) so its records can be
-/// recovered by hand.
+/// for version `N`, `.v0` for an old file with none; `.1`, `.2`, ... is added
+/// when that name is taken) so its records can be recovered by hand.
+///
+/// A temp file a crashed [`save`] left behind (`<name>.tmp-<pid>-<n>`) is not
+/// removed: the writer of a live one may be another process.
 pub fn load(path: impl AsRef<Path>) -> PluginDb {
     let path = path.as_ref();
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -96,7 +119,7 @@ pub fn load(path: impl AsRef<Path>) -> PluginDb {
             db
         }
         Err(unreadable) => {
-            let quarantine = unreadable.quarantine(path);
+            let quarantine = unused_name(unreadable.quarantine(path));
             match std::fs::rename(path, &quarantine) {
                 Ok(()) => warn!(
                     "plugin database {unreadable}; preserved at {:?}, starting fresh",
@@ -122,9 +145,13 @@ pub fn load(path: impl AsRef<Path>) -> PluginDb {
 /// fails; the previous file is then intact.
 pub fn save(db: &PluginDb, path: impl AsRef<Path>) -> std::io::Result<()> {
     let path = path.as_ref();
+    let (files, skipped): (Vec<_>, Vec<_>) = db.rows().partition(|(p, _)| p.to_str().is_some());
+    for (skipped, _) in skipped {
+        warn!("plugin database: not saving {skipped:?}, the path is not valid UTF-8");
+    }
     let out = Out {
         version: VERSION,
-        files: db.rows().collect(),
+        files,
     };
     let json = serde_json::to_string_pretty(&out).map_err(std::io::Error::other)?;
     replace_file(path, |f| f.write_all(json.as_bytes()))?;
@@ -152,6 +179,8 @@ fn replace_file(
     let written = (|| {
         let mut f = std::fs::File::create(&tmp)?;
         fill(&mut f)?;
+        // Durability across power loss cannot be observed by a test; the
+        // contract this function's tests pin is the old-or-new one.
         f.sync_all()?;
         std::fs::rename(&tmp, path)
     })();
@@ -456,5 +485,68 @@ mod tests {
         save(&db, &a).unwrap();
         save(&db_of(&["v", "u", "w", "z", "y", "x"]), &b).unwrap();
         assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+    }
+
+    /// A second unreadable file does not replace the first, for each kind.
+    /// Mutation: return the name without checking `exists` in `unused_name`.
+    #[test]
+    fn quarantined_files_are_never_overwritten() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("db.json");
+        let old = r#"[{"path":"/p/a.vst3"}]"#;
+        for (text, extension) in [
+            ("junk one", "corrupt"),
+            ("junk two", "corrupt.1"),
+            ("junk three", "corrupt.2"),
+            (old, "v0"),
+            ("[1]", "v0.1"),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(load(&path).is_empty());
+            assert_eq!(
+                std::fs::read_to_string(path.with_extension(extension)).unwrap(),
+                text,
+                "{extension}"
+            );
+        }
+    }
+
+    /// The temp file is a sibling of the target, so the rename stays on one
+    /// filesystem. Mutation: build the temp name under `std::env::temp_dir()`.
+    #[test]
+    fn the_temp_file_is_a_sibling_of_the_target() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("plugins.json");
+
+        replace_file(&path, |f| {
+            let temps: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(temps.len(), 1, "{temps:?}");
+            assert!(temps[0].starts_with("plugins.tmp-"), "{temps:?}");
+            f.write_all(b"x")
+        })
+        .unwrap();
+    }
+
+    /// A row whose path is not UTF-8 is left out with a log line, and the rest
+    /// of the table is saved. Mutation: save every row (the whole save fails).
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_is_left_out_and_the_rest_is_saved() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("db.json");
+        let mut db = db_of(&["kept"]);
+        let odd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/plugins/caf\xe9.vst3"));
+        db.blacklist(&odd, "boom".into(), &no_file());
+
+        save(&db, &path).unwrap();
+
+        let loaded = load(&path);
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.row(Path::new("/plugins/kept.vst3")).is_some());
     }
 }

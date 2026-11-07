@@ -123,7 +123,13 @@ pub fn start_scan(world: &mut World) {
         return;
     };
 
-    let scan = plugins.0.spawn_rescan();
+    let scan = match plugins.0.spawn_rescan() {
+        Ok(scan) => scan,
+        Err(busy) => {
+            warn!("plugin rescan not started: {busy}");
+            return;
+        }
+    };
     world.insert_resource(InFlightScan { scan });
     world.insert_resource(PluginCatalogState::Scanning {
         current: 0,
@@ -172,18 +178,24 @@ pub fn poll_scan(world: &mut World) {
     }
 
     let poll = world.resource_scope(|world, in_flight: Mut<InFlightScan>| {
-        match world.get_resource_mut::<PluginsRes>() {
-            Some(mut plugins) => plugins.0.poll_rescan(&in_flight.scan),
-            // The host removed the catalog mid-scan; there is nothing to apply
-            // the deltas to, so the scan is over.
-            None => ScanPoll::Died,
-        }
+        world
+            .get_resource_mut::<PluginsRes>()
+            .map(|mut plugins| plugins.0.poll_rescan(&in_flight.scan))
     });
 
     let result = match poll {
-        ScanPoll::Running => return,
-        ScanPoll::Done(result) => Some(result),
-        ScanPoll::Died => None,
+        Some(ScanPoll::Running) => return,
+        Some(ScanPoll::Done(result)) => Some(result),
+        Some(ScanPoll::Died) => None,
+        // The host removed the catalog mid-scan: there is nothing to apply the
+        // deltas to. Dropping the scan stops its worker after the file in
+        // flight.
+        None => {
+            world.remove_resource::<InFlightScan>();
+            world.insert_resource(PluginCatalogState::Idle);
+            warn!("plugin rescan abandoned: PluginsRes was removed while it ran");
+            return;
+        }
     };
 
     world.remove_resource::<InFlightScan>();
@@ -203,9 +215,9 @@ pub fn poll_scan(world: &mut World) {
                 writer.write(PluginsScanned(result));
             }
         }
-        // The worker ended without a tally: a probe panicked. Rows it sent
+        // The worker ended without a tally, so a probe panicked. Rows it sent
         // before that are applied, so the catalog is intact and usable.
-        None => warn!("plugin rescan ended without a result; the scan thread may have panicked"),
+        None => warn!("plugin rescan ended without a result: the scan thread panicked"),
     }
 }
 
@@ -262,5 +274,27 @@ mod tests {
             .collect();
         assert_eq!(scanned.len(), 1);
         assert_eq!(scanned[0].0.scanned, 0);
+    }
+
+    /// A host that removes the catalog mid-scan ends the scan cleanly: the
+    /// in-flight marker goes and the state returns to idle, instead of the
+    /// system polling a scan with nothing to apply it to forever.
+    /// Mutation: `return` before the `remove_resource::<InFlightScan>()` in the
+    /// `None` arm of `poll_scan`.
+    #[test]
+    fn removing_the_catalog_mid_scan_ends_the_scan() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut world = world(&dir);
+        world.write_message(RescanPlugins);
+        start_scan(&mut world);
+        world.remove_resource::<PluginsRes>();
+
+        poll_scan(&mut world);
+
+        assert!(!world.contains_resource::<InFlightScan>());
+        assert_eq!(
+            *world.resource::<PluginCatalogState>(),
+            PluginCatalogState::Idle
+        );
     }
 }

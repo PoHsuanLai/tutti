@@ -752,7 +752,7 @@ impl Default for Transport {
     /// Stopped at beat zero, 120 BPM, not looping, the block start its own
     /// origin.
     fn default() -> Self {
-        Self::new(false, Bpm(120.0), Beat(0.0), None)
+        Self::new(false, Bpm::of(120.0), Beat(0.0), None)
     }
 }
 
@@ -830,7 +830,7 @@ impl TransportChanges {
         len: 0,
         items: [TransportChange {
             at: Offset::ZERO,
-            to: Transport::new(false, Bpm(120.0), Beat(0.0), None),
+            to: Transport::new(false, Bpm::of(120.0), Beat(0.0), None),
         }; MAX_TRANSPORT_CHANGES],
     };
 

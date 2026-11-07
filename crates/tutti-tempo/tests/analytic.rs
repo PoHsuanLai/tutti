@@ -20,7 +20,7 @@ use tutti_types::{Beat, Bpm, Frame};
 /// first sampled tempo (60.8 BPM does not survive `/ 60 * 60`).
 #[test]
 fn step_is_beats_over_rate() {
-    let m = TempoMap::constant(Bpm(120.0)).unwrap();
+    let m = TempoMap::constant(Bpm::of(120.0)).unwrap();
     assert_eq!(m.seconds_at(Beat(4.0)), 2.0);
     assert_eq!(m.frame_at_or_after(Beat(4.0), R), Frame(96_000));
     assert_eq!(m.beat_at_frame(Frame(96_000), R), Beat(4.0));
@@ -35,9 +35,9 @@ fn step_is_beats_over_rate() {
         "no frame before 0"
     );
     for bpm in [60.8, 61.3, 61.9, 133.3] {
-        let m = TempoMap::constant(Bpm(bpm)).unwrap();
-        assert_eq!(m.tempo_at(Beat(3.0)), Bpm(bpm));
-        assert_eq!(m.tempo_at_seconds(1.0), Bpm(bpm));
+        let m = TempoMap::constant(Bpm::of(bpm)).unwrap();
+        assert_eq!(m.tempo_at(Beat(3.0)), Bpm::of(bpm));
+        assert_eq!(m.tempo_at_seconds(1.0), Bpm::of(bpm));
     }
 }
 
@@ -233,15 +233,18 @@ fn edit_in_the_past() {
     assert_eq!(m2.points().len(), 3);
     assert_eq!(
         m2.tempo_at(Beat(9.0)),
-        Bpm(60.0),
+        Bpm::of(60.0),
         "the earlier map is unchanged"
     );
 }
 
-/// Every refusal, with the index it names. Non-finite and non-positive tempos
-/// are refused here, whatever `Bpm` accepts.
+/// Every refusal, with the index it names. A non-finite or non-positive tempo
+/// never gets here: `Bpm` refuses it.
 ///
-/// Mutation (run): the tempo check `t > 0.0` becomes `t >= 0.0`; a zero tempo is accepted.
+/// Mutation (run): `Bpm::new` accepts zero (`raw > 0.0` becomes `raw >= 0.0`); the `-0.0` and
+/// `0.0` cases fail.
+/// Mutation (run): `Seg::new`'s `r0` underflow is let through (`is_sound` and the last-segment
+/// `r0 > 0.0` check removed); the smallest-tempo case builds a map and fails.
 /// Mutation (run): `is_sound`'s `(back - dsec).abs() <= 1e-9 * dsec` becomes `true`; the
 /// squared-overflow ramp is accepted.
 #[test]
@@ -256,6 +259,8 @@ fn refusals() {
         TempoMap::new([pt(f64::NAN, 120.0, Step)]).unwrap_err(),
         TempoError::FirstNotAtZero
     );
+    // A zero, negative or non-finite tempo is not a `Bpm`, so a map is never
+    // handed one and checks none.
     for bad in [
         0.0,
         -120.0,
@@ -264,17 +269,16 @@ fn refusals() {
         f64::NEG_INFINITY,
         -0.0,
     ] {
-        assert_eq!(
-            TempoMap::constant(Bpm(bad)).unwrap_err(),
-            TempoError::BadTempo(0),
-            "{bad}"
-        );
-        assert_eq!(
-            TempoMap::new([pt(0.0, 120.0, Step), pt(4.0, bad, Step)]).unwrap_err(),
-            TempoError::BadTempo(1),
-            "{bad}"
-        );
+        assert_eq!(Bpm::new(bad), None, "{bad}");
     }
+    // The smallest tempos the type holds: a beat's rate underflows to zero for
+    // the smallest, which the map refuses as unrepresentable, and the next
+    // one up builds.
+    assert_eq!(
+        TempoMap::constant(Bpm::of(f64::from_bits(1))).unwrap_err(),
+        TempoError::Unrepresentable(0)
+    );
+    assert!(TempoMap::constant(Bpm::of(f64::MIN_POSITIVE)).is_ok());
     for beat in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert_eq!(
             TempoMap::new([pt(0.0, 120.0, Step), pt(beat, 90.0, Step)]).unwrap_err(),
@@ -315,7 +319,7 @@ fn refusals() {
         TempoError::Unrepresentable(0)
     );
     // The error reads as a sentence and is a `std::error::Error`.
-    let e: Box<dyn std::error::Error> = Box::new(TempoError::BadTempo(2));
+    let e: Box<dyn std::error::Error> = Box::new(TempoError::Unrepresentable(2));
     assert!(e.to_string().contains("point 2"));
 }
 
@@ -377,9 +381,9 @@ fn a_point_belongs_to_the_segment_it_starts() {
         pt(12.0, 60.0, Shape::Step),
     ])
     .unwrap();
-    assert_eq!(m.tempo_at(Beat(4.0)), Bpm(180.0));
-    assert_eq!(m.tempo_at(Beat(8.0)), Bpm(90.0));
-    assert_eq!(m.tempo_at(Beat(12.0)), Bpm(60.0));
+    assert_eq!(m.tempo_at(Beat(4.0)), Bpm::of(180.0));
+    assert_eq!(m.tempo_at(Beat(8.0)), Bpm::of(90.0));
+    assert_eq!(m.tempo_at(Beat(12.0)), Bpm::of(60.0));
     assert!(
         (m.tempo_at(Beat(4.0_f64.next_down())).get() - 180.0).abs() < 1e-9,
         "the ramp arrives at 180"
@@ -406,8 +410,8 @@ fn a_first_ramp_extrapolates_at_its_first_tempo() {
         let m = TempoMap::new([pt(0.0, 120.0, shape), pt(4.0, 240.0, Shape::Step)]).unwrap();
         assert_eq!(m.seconds_at(Beat(-1.0)), -0.5);
         assert_eq!(m.beat_at_seconds(-0.5), Beat(-1.0));
-        assert_eq!(m.tempo_at(Beat(-100.0)), Bpm(120.0));
-        assert_eq!(m.tempo_at_seconds(-3.0), Bpm(120.0));
+        assert_eq!(m.tempo_at(Beat(-100.0)), Bpm::of(120.0));
+        assert_eq!(m.tempo_at_seconds(-3.0), Bpm::of(120.0));
     }
 }
 
@@ -466,7 +470,7 @@ fn an_edit_at_negative_zero_replaces_the_first_point() {
     let m = TempoMap::new([pt(0.0, 120.0, Shape::Step), pt(8.0, 90.0, Shape::Step)]).unwrap();
     let m2 = m.with_point(pt(-0.0, 100.0, Shape::Step)).unwrap();
     assert_eq!(m2.points().len(), 2);
-    assert_eq!(m2.tempo_at(Beat(0.0)), Bpm(100.0));
+    assert_eq!(m2.tempo_at(Beat(0.0)), Bpm::of(100.0));
     assert_eq!(
         m2.points()[0].beat.get().to_bits(),
         0.0f64.to_bits(),

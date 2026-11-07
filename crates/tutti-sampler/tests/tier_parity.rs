@@ -116,10 +116,7 @@ struct Clock(Arc<MockTransport>);
 
 impl Clock {
     fn new(tempo: f64) -> Arc<Self> {
-        Arc::new(Self(MockTransport::rolling(
-            Beat::new(0.0),
-            Bpm::new(tempo),
-        )))
+        Arc::new(Self(MockTransport::rolling(Beat::new(0.0), Bpm::of(tempo))))
     }
 
     /// Jump the playhead to an absolute position in seconds of file time.

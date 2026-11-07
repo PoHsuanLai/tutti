@@ -63,8 +63,8 @@ use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 
 use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
-use tutti_types::Samples;
 use tutti_types::{BarNumber, TimeSignature};
+use tutti_types::{Bpm, Samples};
 
 /// Serializes component discovery / instantiate / dispose, exactly as
 /// `au_conformance.rs`'s lock of the same name does. AudioToolbox tolerates
@@ -305,8 +305,8 @@ fn reinstalling_host_callbacks_preserves_the_published_state() {
     au.install_host_callbacks().expect("second install");
     let state = au.transport().expect("state survives a re-install");
     assert_eq!(
-        state.tempo().0,
-        137.5,
+        state.tempo(),
+        Some(Bpm::of(137.5)),
         "a re-install must reuse the existing state, not replace it"
     );
     assert!(state.is_playing());
@@ -355,8 +355,8 @@ fn transport_survives_initialize_and_uninitialize() {
     au.initialize()
         .expect("initialize with transport installed");
     assert_eq!(
-        au.transport().expect("state survives initialize").tempo().0,
-        90.0
+        au.transport().expect("state survives initialize").tempo(),
+        Some(Bpm::of(90.0))
     );
 
     let input = silence(2, BLOCK as usize);
@@ -365,16 +365,13 @@ fn transport_survives_initialize_and_uninitialize() {
 
     au.uninitialize().expect("uninitialize");
     assert_eq!(
-        au.transport()
-            .expect("state survives uninitialize")
-            .tempo()
-            .0,
-        90.0
+        au.transport().expect("state survives uninitialize").tempo(),
+        Some(Bpm::of(90.0))
     );
 
     au.initialize().expect("re-initialize");
     render(&mut au, &input, &mut output, BLOCK).expect("render after the cycle");
-    assert_eq!(au.transport().unwrap().tempo().0, 90.0);
+    assert_eq!(au.transport().unwrap().tempo(), Some(Bpm::of(90.0)));
 }
 
 // ------------------------------------------- the state plumbing, driven direct

@@ -608,7 +608,7 @@ mod tests {
         ] {
             let src = SrcRatio::for_rates(file_rate, session);
             let rate = PlaybackRate::new(speed);
-            let transport = Transport::new(true, Bpm(120.0), Beat(4.0), None);
+            let transport = Transport::new(true, Bpm::of(120.0), Beat(4.0), None);
 
             // Memory's split: the wave's own rate, times varispeed alone.
             let memory = window_position(
@@ -652,7 +652,7 @@ mod tests {
     /// cannot read stale material by ignoring a `None`.
     #[test]
     fn window_position_is_none_outside_the_window() {
-        let stopped = Transport::new(false, Bpm(120.0), Beat(4.0), None);
+        let stopped = Transport::new(false, Bpm::of(120.0), Beat(4.0), None);
         assert!(
             window_position(
                 &stopped,
@@ -665,7 +665,7 @@ mod tests {
             "a stopped transport has no position"
         );
 
-        let rolling = Transport::new(true, Bpm(120.0), Beat(2.0), None);
+        let rolling = Transport::new(true, Bpm::of(120.0), Beat(2.0), None);
         assert!(
             window_position(
                 &rolling,
@@ -939,7 +939,7 @@ mod tests {
     const FPB: f64 = 24_000.0;
 
     fn rolling(beat: f64) -> Transport {
-        Transport::new(true, Bpm(120.0), Beat(beat), None)
+        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// A gate over a 48 kHz source at unit rate, for `window`.
@@ -969,7 +969,7 @@ mod tests {
     /// Mutation (run): `sounds` never set → every sounding row fails.
     #[test]
     fn place_sounds_iff_a_frame_has_a_position() {
-        let stopped = Transport::new(false, Bpm(120.0), Beat(1.0), None);
+        let stopped = Transport::new(false, Bpm::of(120.0), Beat(1.0), None);
         let span = |start: f64, frames: f64| {
             gate(VoiceWindow::span(Beat(start), BeatDuration(frames / FPB)))
         };
@@ -1036,7 +1036,7 @@ mod tests {
     /// (ignoring `Env::changes`) → frame 32 reads 24 032 → fails.
     #[test]
     fn a_seek_and_a_stop_inside_a_block_land_on_their_frames() {
-        let stopped = Transport::new(false, Bpm(120.0), Beat(2.5), None);
+        let stopped = Transport::new(false, Bpm::of(120.0), Beat(2.5), None);
         let env = env(64, rolling(1.0), &[(32, rolling(2.0)), (48, stopped)]);
         let got = placed(&env, gate(VoiceWindow::default()));
         for (i, p) in got.iter().enumerate() {
@@ -1062,7 +1062,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        let t = Transport::new(true, Bpm(120.0), Beat(1.0 - 20.0 / FPB), looping);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(1.0 - 20.0 / FPB), looping);
         let env = env(64, t, &[]);
         let got = placed(&env, gate(VoiceWindow::default()));
         for (i, p) in got.iter().enumerate() {

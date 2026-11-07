@@ -39,12 +39,13 @@ pub use atomic_float::AtomicF32;
 
 // Value vocabulary.
 pub use value::{
-    Adsr, Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio,
-    Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz, InvalidMaxBlock,
-    Latency, MaxBlock, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, Param64,
-    ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Q, Radians,
-    ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds, Semitones, Spread, SrcRatio,
-    StereoWidth, StretchFactor, Tail, Unit, UnitAddr, UnitParam, UnitParamOutOfRange, Velocity,
+    Adsr, Amplitude, ArcDegrees, At, Azimuth, Beat, BeatDuration, Bpm, BpmOutOfRange, Cents,
+    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Frame, Hz,
+    InvalidMaxBlock, Latency, MaxBlock, Mix, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan,
+    Param, Param64, ParamAddr, ParamKey, Phase, PhaseIncrement, PitchClass, PlayReading,
+    PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Samples, Seconds,
+    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Tail, Unit, UnitAddr, UnitParam,
+    UnitParamOutOfRange, Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,
@@ -97,7 +98,7 @@ pub use meter::{
 ///
 /// Not here, and spelled in full instead: `Unit` (it collides with unrelated
 /// `Unit` types in DSP crates), the `latency`/`tail` graph traits, and the error
-/// types `NotOnMidiScale` / `UnitParamOutOfRange`.
+/// types `NotOnMidiScale` / `UnitParamOutOfRange` / `BpmOutOfRange`.
 pub mod prelude {
     pub use crate::value::{
         Amplitude, Beat, BeatDuration, Bpm, Cents, Db, Depth, Frame, Hz, Note, Param, ParamAddr,

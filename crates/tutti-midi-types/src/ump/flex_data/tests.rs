@@ -5,12 +5,13 @@ use tutti_ump::MidiGroup;
 #[test]
 fn tempo_conversion_kernels_round_trip() {
     for bpm in [60.0, 120.0, 140.0, 174.0] {
-        let field = bpm_to_ten_ns_per_quarter(bpm);
+        let field = bpm_to_ten_ns_per_quarter(Bpm::of(bpm));
         let back = ten_ns_per_quarter_to_bpm(field).expect("nonzero");
-        assert!((back - bpm).abs() < 0.05, "bpm {bpm} → {back}");
+        assert!((back.get() - bpm).abs() < 0.05, "bpm {bpm} → {back}");
     }
-    // An invalid rate maps to the "no tempo" sentinel, both directions.
-    assert_eq!(bpm_to_ten_ns_per_quarter(0.0), 0);
+    // The "no tempo" sentinel, both directions: a `Bpm` is never zero, so the
+    // zero field is only a tempo above 6e9 BPM, which the field cannot hold.
+    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(1e10)), 0);
     assert_eq!(ten_ns_per_quarter_to_bpm(0), None);
 }
 
@@ -18,26 +19,26 @@ fn tempo_conversion_kernels_round_trip() {
 // Mutation: TEN_NS_UNITS_PER_MINUTE = 6e8 fails the first two.
 #[test]
 fn tempo_wire_field_is_ten_ns_per_quarter() {
-    assert_eq!(bpm_to_ten_ns_per_quarter(120.0), 50_000_000);
-    assert_eq!(bpm_to_ten_ns_per_quarter(60.0), 100_000_000);
-    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0);
+    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(120.0)), 50_000_000);
+    assert_eq!(bpm_to_ten_ns_per_quarter(Bpm::of(60.0)), 100_000_000);
+    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0));
     assert_eq!(ev.data_words(), &[0xD010_0000, 0x02FA_F080, 0, 0]);
 }
 
 #[test]
 fn external_set_tempo_packet_decodes_to_120_bpm() {
     let ev = MidiEvent::from_ump(0, &[0xD010_0000, 0x02FA_F080, 0, 0]);
-    assert_eq!(flex_tempo_bpm(&ev), Some(120.0));
-    assert_eq!(ten_ns_per_quarter_to_bpm(100_000_000), Some(60.0));
+    assert_eq!(flex_tempo_bpm(&ev), Some(Bpm::of(120.0)));
+    assert_eq!(ten_ns_per_quarter_to_bpm(100_000_000), Some(Bpm::of(60.0)));
 }
 
 #[test]
 fn flex_set_tempo_round_trips_bpm() {
     for bpm in [60.0, 120.0, 140.0, 174.0] {
-        let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, bpm);
+        let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(bpm));
         let decoded = flex_tempo_bpm(&ev).expect("is a Set Tempo");
         // 10ns-per-qn is integer-quantized, so allow a tiny epsilon.
-        assert!((decoded - bpm).abs() < 0.05, "bpm {bpm} → {decoded}");
+        assert!((decoded.get() - bpm).abs() < 0.05, "bpm {bpm} → {decoded}");
     }
 }
 
@@ -79,7 +80,9 @@ fn flex_set_key_signature_round_trips() {
     assert_eq!(tonic, Tonic::D);
     assert_eq!(sf, KeySharpsFlats::Sharps(u3::new(2)));
     // A non-key-signature event decodes to None.
-    assert!(flex_key_signature(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0)).is_none());
+    assert!(
+        flex_key_signature(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none()
+    );
 }
 
 #[test]
@@ -138,7 +141,7 @@ fn flex_text_single_packet_round_trips_kind_and_string() {
 
 #[test]
 fn flex_text_rejects_non_text() {
-    assert!(flex_text(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0)).is_none());
+    assert!(flex_text(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0))).is_none());
     assert!(
         flex_text(&MidiEvent::note_on(
             MidiGroup::FIRST,
@@ -223,7 +226,7 @@ fn reassembler_passes_single_packet_text_straight_through() {
 
     // Non-text Flex Data and non-Flex events are ignored.
     assert!(
-        r.push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0))
+        r.push(&MidiEvent::flex_set_tempo(MidiGroup::FIRST, Bpm::of(120.0)))
             .is_none()
     );
     assert!(

@@ -542,7 +542,7 @@ mod tests {
     }
 
     fn at(playing: bool, frame: f64) -> Transport {
-        Transport::new(playing, Bpm(120.0), Beat(frame / FPB), None)
+        Transport::new(playing, Bpm::of(120.0), Beat(frame / FPB), None)
     }
 
     /// `(start, end, jump, generation)` of each run of the block.
@@ -644,7 +644,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        let t = Transport::new(true, Bpm(120.0), Beat(1.0 - 10.0 / FPB), looping);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(1.0 - 10.0 / FPB), looping);
         let mut clock = Clock::new();
         let e = env(t, &[]);
         let block = clock.observe(&e);
@@ -711,7 +711,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        Transport::new(true, Bpm(120.0), Beat(from / FPB), looping)
+        Transport::new(true, Bpm::of(120.0), Beat(from / FPB), looping)
     }
 
     /// `(ago, len)` of the wrap crossfade at each run of the block.
@@ -783,13 +783,13 @@ mod tests {
     fn the_crossfade_is_the_fade_or_half_a_pass() {
         let rate = SampleRate(48_000.0);
         let loop_of = |beats: f64| LoopRange::new(0.0, beats).expect("a loop");
-        let len = |beats| Wrap::new(loop_of(beats), Bpm(120.0), rate).map(|w| w.len);
+        let len = |beats| Wrap::new(loop_of(beats), Bpm::of(120.0), rate).map(|w| w.len);
         assert_eq!(len(1.0), Some(240));
         assert_eq!(len(0.005), Some(60), "a pass of 120 frames");
         assert_eq!(len(0.00005), None, "a pass of 1.2 frames");
         let fast = SampleRate(96_000.0);
         assert_eq!(
-            Wrap::new(loop_of(1.0), Bpm(120.0), fast).map(|w| w.len),
+            Wrap::new(loop_of(1.0), Bpm::of(120.0), fast).map(|w| w.len),
             Some(480)
         );
     }

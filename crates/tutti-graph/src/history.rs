@@ -25,7 +25,12 @@ struct Piece {
 const EMPTY: Piece = Piece {
     frame: Frame::ZERO,
     rate: SampleRate(0.0),
-    transport: Transport::new(false, tutti_types::Bpm(120.0), tutti_types::Beat(0.0), None),
+    transport: Transport::new(
+        false,
+        tutti_types::Bpm::of(120.0),
+        tutti_types::Beat(0.0),
+        None,
+    ),
     play: PlayReading {
         epoch: 0,
         play: Frame::ZERO,
@@ -372,14 +377,14 @@ mod tests {
     }
 
     fn rolling(beat: f64) -> Transport {
-        Transport::new(true, Bpm(120.0), Beat(beat), None)
+        Transport::new(true, Bpm::of(120.0), Beat(beat), None)
     }
 
     /// A host that counts frames, at `beat` (its segment's first frame).
     fn counted(beat: f64, looping: Option<LoopRange>) -> Transport {
         Transport::counted(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             SegmentOrigin {
                 beat: Beat(beat),
                 frame: Frame(0),
@@ -489,7 +494,7 @@ mod tests {
         let mut p = Played::default();
         let loop_t = Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(8.0),
             Some(LoopRange {
                 start: Beat(8.0),
@@ -500,7 +505,10 @@ mod tests {
         mid_seek.push(off(20), rolling(32.0)).expect("inside");
         let mut tempo = TransportChanges::NONE;
         tempo
-            .push(off(10), Transport::new(true, Bpm(90.0), Beat(40.0), None))
+            .push(
+                off(10),
+                Transport::new(true, Bpm::of(90.0), Beat(40.0), None),
+            )
             .expect("inside");
         let scenes = [
             (rolling(1.0), TransportChanges::NONE),
@@ -517,7 +525,7 @@ mod tests {
             ),
             (rolling(40.0), tempo),
             (
-                Transport::new(false, Bpm(90.0), Beat(41.0), None),
+                Transport::new(false, Bpm::of(90.0), Beat(41.0), None),
                 TransportChanges::NONE,
             ),
             (rolling(41.0), TransportChanges::NONE),
@@ -556,7 +564,7 @@ mod tests {
         let first = env(
             0,
             64,
-            Transport::new(true, Bpm(120.0), Beat(4.0), looping),
+            Transport::new(true, Bpm::of(120.0), Beat(4.0), looping),
             TransportChanges::NONE,
         );
         p.play(first);
@@ -748,7 +756,7 @@ mod tests {
                         }),
                     )
                 }
-                _ => Transport::counted(t.playing, Bpm(97.0), origin, t.looping),
+                _ => Transport::counted(t.playing, Bpm::of(97.0), origin, t.looping),
             }
         };
         for k in 0..4 {

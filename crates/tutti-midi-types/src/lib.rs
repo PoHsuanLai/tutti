@@ -120,7 +120,7 @@ pub use ump::{
 ///
 /// let bytes = write_clip_file_with_header(
 ///     480,
-///     ClipHeader { tempo_bpm: Bpm(174.0), time_signature: (7, 8) },
+///     ClipHeader { tempo_bpm: Bpm::of(174.0), time_signature: (7, 8) },
 ///     &[ClipEvent::new(0, MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000))],
 /// );
 ///
@@ -129,7 +129,7 @@ pub use ump::{
 ///
 /// let clip = ParsedClipFile::from_bytes(&bytes).unwrap();
 /// assert_eq!(clip.time_signature(), Some((7, 8)));
-/// assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(174.0), 0.05));
+/// assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm::of(174.0), 0.05));
 /// ```
 ///
 /// [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an

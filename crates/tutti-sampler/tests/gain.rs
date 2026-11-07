@@ -82,7 +82,7 @@ impl Clock {
             frame: Frame(0),
             sample_rate: SampleRate(SR),
             block_len: Samples(BLOCK),
-            transport: tutti_graph::Transport::new(true, Bpm::new(self.tempo), self.beat(), None),
+            transport: tutti_graph::Transport::new(true, Bpm::of(self.tempo), self.beat(), None),
             changes: TransportChanges::NONE,
             play: tutti_graph::PlayClock::ZERO,
         };

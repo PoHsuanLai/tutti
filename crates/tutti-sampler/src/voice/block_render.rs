@@ -282,7 +282,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
         _ => None,
     };
     let mut host = Host {
-        clock: FrameClock::new(Beat::new(0.0), Bpm::new(120.0), SampleRate(SR)),
+        clock: FrameClock::new(Beat::new(0.0), Bpm::of(120.0), SampleRate(SR)),
         playing: true,
     };
     let mut heard = [false; 2];

@@ -68,7 +68,7 @@ impl Rig {
     fn with_block(pool: VoicePool, block: usize) -> Self {
         Self {
             direct: Direct::new(pool, SampleRate(SR), block),
-            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
             block,
         }
     }
@@ -482,7 +482,7 @@ impl Clips {
             .collect();
         Self {
             nodes,
-            t: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
+            t: MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0)),
             block,
         }
     }
@@ -537,7 +537,7 @@ fn bench_sources(c: &mut Criterion) {
             Direct::new(source, SampleRate(SR), BLOCK)
         })
         .collect();
-    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut block = || {
         let env = t.env(BLOCK, SR);
         let mut peak = 0.0f32;

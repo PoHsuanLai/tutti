@@ -72,7 +72,7 @@ use bevy::prelude::*;
 use bevy_tutti::prelude::*;
 
 fn control(transport: Res<TransportRes>, meter: Res<MeteringRes>) -> Result {
-    transport.settings.set_tempo(128.0);
+    transport.settings.set_tempo(Bpm::of(128.0));
     transport.motion.try_send(MotionEvent::Play)?;
     let _ = meter;
     Ok(())

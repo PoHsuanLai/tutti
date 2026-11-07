@@ -23,7 +23,7 @@ const SR: f64 = 44_100.0;
 /// `None`: a free-running source reads none), at [`SR`]; the transport
 /// is not moved. Every output channel, planar.
 fn planes(unit: &mut MemorySource, t: Option<&MockTransport>, n: usize) -> Vec<Vec<f32>> {
-    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+    let stopped = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     crate::testing::block(unit, t.unwrap_or(&stopped), SR, n)
 }
 
@@ -135,7 +135,7 @@ fn one_block_matches_single_frames_when_placed() {
     // The case that was actually broken: a placed voice at non-unity speed.
     let wave = ramp_wave(4096, 44100.0);
     // Beat 0.1: 2 205 frames in, read at 0.5x, inside the wave.
-    let transport = MockTransport::rolling(Beat::new(0.1), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.1), Bpm::of(120.0));
     let build = || {
         MemorySource::with_config(
             Arc::clone(&wave),
@@ -195,7 +195,7 @@ fn placed_clip_honours_speed_in_one_frame() {
     // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
     // inside a 16k wave at both 1x and 0.5x.
     let wave = ramp_wave(16_384, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
 
     let mut unity = placed_unit(&wave, 1.0);
     let mut half = placed_unit(&wave, 0.5);
@@ -216,7 +216,7 @@ fn placed_clip_honours_speed_in_a_block() {
     // The same assertion through a longer block, so the pair documents
     // that the two agree for the right reason.
     let wave = ramp_wave(16_384, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
 
     let mut unity = placed_unit(&wave, 1.0);
     let mut half = placed_unit(&wave, 0.5);
@@ -238,7 +238,7 @@ fn placed_clip_honours_speed_in_a_block() {
 #[test]
 fn placed_clip_reads_across_a_block_not_dc() {
     let wave = ramp_wave(16_384, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
 
     let block = block(&mut u, Some(&transport), 8);
@@ -264,7 +264,7 @@ fn placed_clip_reads_across_a_block_not_dc() {
 #[test]
 fn placed_clip_block_step_follows_playback_rate() {
     let wave = ramp_wave(16_384, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 0.5);
 
     let block = block(&mut u, Some(&transport), 8);
@@ -291,7 +291,7 @@ fn placed_clip_block_step_follows_playback_rate() {
 fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
     let wave = ramp_wave(4_096, 24_000.0);
     for len in [64usize, 1] {
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         let mut u = placed_unit(&wave, 1.0);
         u.set_render_rate(SampleRate::new(48_000.0));
         let out = crate::testing::play(&mut u, &transport, 48_000.0, 512, len);
@@ -328,7 +328,7 @@ fn a_placed_wave_at_another_rate_steps_by_the_conversion() {
 #[test]
 fn a_stretched_placed_read_steps_by_the_conversion_and_the_stretch() {
     let wave = ramp_wave(4_096, 24_000.0);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
     u.set_render_rate(SampleRate::new(48_000.0));
     let mut clock = Clock::new();
@@ -397,7 +397,7 @@ fn a_loop_reads_through_its_seam_at_a_fractional_rate() {
 #[test]
 fn a_rate_change_lands_on_the_next_block() {
     let wave = ramp_wave(16_384, 44_100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
     let first = block(&mut u, Some(&transport), 16);
     transport.advance(16, SR);
@@ -474,7 +474,7 @@ fn a_crossfaded_loop_plays_the_hand_computed_frames() {
 fn a_stopped_clock_silences_a_placed_read() {
     let wave = ramp_wave(16_384, 44_100.0);
     for single in [false, true] {
-        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
         let mut u = placed_unit(&wave, 1.0);
         let blk = |u: &mut MemorySource| {
             if single {
@@ -504,7 +504,7 @@ fn a_stopped_clock_silences_a_placed_read() {
 fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     use tutti_graph::{Offset, TransportChanges};
     let wave = ramp_wave(16_384, 44_100.0);
-    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
     let mut u = placed_unit(&wave, 1.0);
     let mut env = transport.env(64, SR);
     let mut changes = TransportChanges::NONE;
@@ -512,7 +512,7 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     changes
         .push(
             Offset::new(40, Samples(64)).unwrap(),
-            tutti_graph::Transport::new(false, Bpm::new(120.0), stop_beat, None),
+            tutti_graph::Transport::new(false, Bpm::of(120.0), stop_beat, None),
         )
         .unwrap();
     env.changes = changes;
@@ -736,7 +736,7 @@ fn speed_2x_advances_twice_as_fast() {
 fn placement_gate_applies_src_ratio_exactly_once() {
     // A 48 kHz wave in a 44.1 kHz session.
     let wave = ramp_wave(200_000, 48_000.0);
-    let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(4.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
     sampler.set_render_rate(SampleRate::new(44_100.0));
     assert!(
@@ -780,7 +780,7 @@ fn setting_a_window_places_the_source() {
     assert_eq!(sampler.window(), Some(window));
 
     // The gate honours it: beat 0 is before the beat-8 start, beat 9 inside.
-    let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::new(120.0)).transport();
+    let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::of(120.0)).transport();
     assert!(sampler.window_position(&at(0.0)).is_none());
     assert!(sampler.window_position(&at(9.0)).is_some());
 }
@@ -958,7 +958,7 @@ fn transport_driven_produces_samples_at_beat_position() {
     // At 120 BPM, beat 1.0 = 0.5 seconds = 22050 samples at 44100 Hz.
     // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
     let mut output = [0.0f32; 2];
@@ -976,7 +976,7 @@ fn transport_driven_produces_samples_at_beat_position() {
 #[test]
 fn transport_stopped_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
     let mut output = [0.0f32; 2];
@@ -989,7 +989,7 @@ fn transport_stopped_outputs_silence() {
 #[test]
 fn transport_before_start_beat_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(4.0), None);
 
     let mut output = [0.0f32; 2];
@@ -1001,7 +1001,7 @@ fn transport_before_start_beat_outputs_silence() {
 #[test]
 fn transport_past_duration_beats_outputs_silence() {
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(10.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(10.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), Some(BeatDuration::new(4.0)));
 
     let mut output = [0.0f32; 2];
@@ -1013,7 +1013,7 @@ fn transport_past_duration_beats_outputs_silence() {
 #[test]
 fn transport_process_block() {
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
     let output = planes(&mut sampler, Some(&transport), 4);
@@ -1024,7 +1024,7 @@ fn transport_process_block() {
 #[test]
 fn transport_process_block_silence_when_stopped() {
     let wave = ramp_wave(44100, 44100.0);
-    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0));
     let mut sampler = MemorySource::placed(wave, Beat::new(0.0), None);
 
     let output = planes(&mut sampler, Some(&transport), 4);
@@ -1187,7 +1187,7 @@ fn the_shape_is_the_declared_width() {
 fn six_channel_wave_reaches_all_six_outputs() {
     let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6usize);
     let out = planes(&mut u, None, 8);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut placed =
         MemorySource::with_channels(indexed_wave(6, 64), 6usize).placed_at(VoiceWindow::default());
     let placed = planes(&mut placed, Some(&transport), 8);
@@ -1311,7 +1311,7 @@ fn a_placed_fork_reads_the_renders_transport() {
     let mut fork = tutti_graph::ParamFork::new(&live).fork_node();
     // Beat 1 is where the window opens; half a beat later (11 025
     // frames at 120 BPM) the ramp reads 11 026.
-    let transport = MockTransport::rolling(Beat::new(1.5), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(1.5), Bpm::of(120.0));
     let out = block(&mut fork, Some(&transport), 2);
     assert!((out[0].0 - 11_026.0).abs() < 1e-3, "{:?}", out[0]);
 }

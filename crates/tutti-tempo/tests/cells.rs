@@ -237,7 +237,7 @@ fn next_change_finds_the_next_point() {
     assert_eq!(map.next_change(Frame(cuts[0].get() + 1), R), Some(cuts[1]));
     assert_eq!(map.next_change(cuts[3], R), Some(cuts[3]));
     assert_eq!(map.next_change(Frame(cuts[3].get() + 1), R), None);
-    let constant = TempoMap::constant(tutti_types::Bpm(120.0)).unwrap();
+    let constant = TempoMap::constant(tutti_types::Bpm::of(120.0)).unwrap();
     assert_eq!(
         constant.next_change(Frame(0), R),
         None,
@@ -316,7 +316,7 @@ fn chord_error_stays_under_a_fraction_of_a_frame() {
 #[test]
 fn a_step_cell_has_the_segments_exact_tempo() {
     for bpm in [133.3, 120.0, 97.7, 61.3] {
-        let map = TempoMap::constant(Bpm(bpm)).unwrap();
+        let map = TempoMap::constant(Bpm::of(bpm)).unwrap();
         for i in 0..100_000u64 {
             let c = chord_cell(&map, Frame(i * 128 + i % 97), CellGrid::of(128), R);
             assert_eq!(c.tempo.get().to_bits(), bpm.to_bits(), "{bpm} cell {i}");

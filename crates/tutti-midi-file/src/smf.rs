@@ -30,6 +30,7 @@ use crate::{Error, Result};
 // type from `tutti_midi_hardware::MidiMessage` (the decoded MIDI-2 view). It is
 // imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the
 // engine's `MidiMessage` in a `use tutti_midi_hardware::*` context.
+use midly::num::u24;
 use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
 use tutti_types::{Beat, BeatDuration, Bpm};
 use tutti_ump::MidiChannel;
@@ -129,7 +130,7 @@ impl ParsedMidiFile {
         let tempo_bpm = match changes.first() {
             Some(&(0, tempo)) => tempo,
             // Nothing at tick 0: the spec's 120 governs until the first change.
-            _ => Bpm(120.0),
+            _ => Bpm::of(120.0),
         };
         debug!("Tempo at beat 0: {} BPM", tempo_bpm);
         let tempo_changes = changes
@@ -200,19 +201,20 @@ const US_PER_MINUTE: f64 = 60_000_000.0;
 
 /// Every Set Tempo in `track` as `(absolute tick, Bpm)`, in track order.
 ///
-/// A zero microseconds-per-quarter is wire-representable and is skipped rather
-/// than read as an infinite BPM — an infinity here would become
-/// `ParsedMidiFile::tempo_bpm` and reach every consumer of the parse. The MIDI-2
-/// inverse (`ten_ns_per_quarter_to_bpm`) guards the identical condition.
+/// A zero microseconds-per-quarter is wire-representable and is skipped: it
+/// divides to an infinity, which `Bpm::new` refuses, and an infinity here would
+/// become `ParsedMidiFile::tempo_bpm` and reach every consumer of the parse.
+/// The MIDI-2 inverse (`ten_ns_per_quarter_to_bpm`) skips the same condition.
+/// Any other value is a tempo, however slow (about 0.014 BPM) or fast (60
+/// million BPM at 1 us): the file's tempo is read as written, with no policy.
 fn track_tempos(track: &Track) -> Vec<(u64, Bpm)> {
     let mut tick = 0u64;
     let mut out = Vec::new();
     for event in track.iter() {
         tick = tick.saturating_add(u64::from(event.delta.as_int()));
         if let TrackEventKind::Meta(MetaMessage::Tempo(t)) = &event.kind {
-            match t.as_int() {
-                0 => {}
-                us_per_quarter => out.push((tick, Bpm(US_PER_MINUTE / f64::from(us_per_quarter)))),
+            if let Some(bpm) = Bpm::new(US_PER_MINUTE / f64::from(t.as_int())) {
+                out.push((tick, bpm));
             }
         }
     }
@@ -397,7 +399,9 @@ pub struct MidiWriteConfig {
     /// Tempo for the Set Tempo meta event on the first track. `None` writes no
     /// tempo, leaving a reader to assume the SMF default of 120.
     ///
-    /// A non-positive value writes the wire's own "no valid tempo" zero.
+    /// The wire holds 1 to 16 777 215 us per quarter (24 bits): a tempo above
+    /// 60 million BPM writes the shortest, 1 (the wire's zero means "no valid
+    /// tempo"), and one below about 3.6 BPM the longest.
     pub tempo_bpm: Option<Bpm>,
     /// Time signature as `(numerator, denominator_power_of_two)` — `(4, 2)` is
     /// 4/4, `(6, 3)` is 6/8 — for the first track's meta event. This is the SMF
@@ -484,15 +488,10 @@ fn build_track<'a>(
 
     if include_meta {
         if let Some(bpm) = config.tempo_bpm {
-            // Guarded like its MIDI-2 twin `bpm_to_ten_ns_per_quarter`: a
-            // non-positive BPM divided to `inf`, and the saturating cast wrote
-            // `u32::MAX` microseconds per quarter — about 71 minutes a beat —
-            // into the file. Zero is the wire's own "no valid tempo".
-            let us = if bpm.get() > 0.0 {
-                (US_PER_MINUTE / bpm.get()) as u32
-            } else {
-                0
-            };
+            // Converting to the 24-bit field masks, so a slow tempo would wrap
+            // to a faster one, and one above 60 million BPM would cast to 0,
+            // the wire's "no valid tempo".
+            let us = ((US_PER_MINUTE / bpm.get()) as u32).clamp(1, u24::max_value().as_int());
             track.push(meta_event(MetaMessage::Tempo(us.into())));
         }
         if let Some((num, denom_pow)) = config.time_signature {

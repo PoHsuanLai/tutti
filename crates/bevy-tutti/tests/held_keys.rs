@@ -102,7 +102,7 @@ fn spawn_tap(app: &mut App, seen: Seen) -> Entity {
 fn roll(app: &mut App, frames: u64) {
     let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
     for f in 0..frames {
-        let t = tutti_graph::Transport::new(true, Bpm(120.0), Beat(f as f64 / 24_000.0), None);
+        let t = tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(f as f64 / 24_000.0), None);
         let mut frame = [0.0f32; 2];
         graph.render_frame_at(&t, &mut frame);
     }

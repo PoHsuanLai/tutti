@@ -22,7 +22,7 @@ fn round_trips_a_clip_through_a_file() {
         &path,
         96,
         Some(ClipHeader {
-            tempo_bpm: Bpm(128.0),
+            tempo_bpm: Bpm::of(128.0),
             time_signature: (5, 4),
         }),
         &events,
@@ -31,7 +31,7 @@ fn round_trips_a_clip_through_a_file() {
 
     let clip = read(&path).unwrap();
     assert_eq!(clip.time_signature(), Some((5, 4)));
-    assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm(128.0), 0.05));
+    assert!(!clip.tempo_bpm().unwrap().differs_from(Bpm::of(128.0), 0.05));
 
     // The header's Set Tempo / Set Time Signature are real events in the
     // stream, so `events` carries them ahead of the notes — compare the

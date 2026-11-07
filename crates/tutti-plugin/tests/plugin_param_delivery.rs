@@ -59,7 +59,7 @@ fn rig(client: tutti_plugin::handles::PluginClient, lanes: Vec<ControlLaneNode>)
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(BLOCK));
     let mut rig = Rig::prepared_with(client.bind(), prepare, lanes);
     rig.renderer()
-        .set_transport(Transport::new(true, Bpm(120.0), Beat(0.0), None));
+        .set_transport(Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
     rig
 }
 
@@ -253,7 +253,7 @@ fn an_export_renders_an_edit_made_in_the_plugin_as_live_does() {
     let prepare = Prepare::new(SampleRate(SAMPLE_RATE), Samples(FORK_BLOCK));
     let mut live = Rig::prepared_with(probe.client.bind(), prepare, vec![held]);
     live.renderer()
-        .set_transport(Transport::new(true, Bpm(120.0), Beat(0.0), None));
+        .set_transport(Transport::new(true, Bpm::of(120.0), Beat(0.0), None));
     let near = |out: &[Vec<f32>], db: f64| {
         out.first()
             .and_then(|c| c.last())

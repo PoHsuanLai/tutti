@@ -32,7 +32,7 @@ use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut};
-use tutti_types::{Hz, NodeKey, Q, SampleRate, Samples};
+use tutti_types::{Bpm, Hz, NodeKey, Q, SampleRate, Samples};
 
 // Without this every `assert_no_alloc` below is a silent no-op. See the module
 // header — this is the whole reason the gate is an integration test.
@@ -85,7 +85,7 @@ fn rolling_state_with(writer: MeterWriter, tap: AudioTap) -> (Transport, AudioCa
     Box::leak(Box::new(ed));
     let state = AudioCallbackState::new(engine, writer, tap);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
     (transport, state)

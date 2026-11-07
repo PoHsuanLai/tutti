@@ -549,7 +549,7 @@ mod tests {
         let timeline = || {
             ExportClock::timeline(Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
                 start_beat: Beat(0.25),
-                tempo: Bpm(120.0),
+                tempo: Bpm::of(120.0),
                 sample_rate: SampleRate(RATE),
                 loop_range: None,
             })))

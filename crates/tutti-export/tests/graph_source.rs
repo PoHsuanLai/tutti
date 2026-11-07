@@ -732,7 +732,7 @@ fn the_graph_reads_the_render_clocks_transport() {
     let start = 4.0;
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(start),
-        tempo: Bpm(120.0),
+        tempo: Bpm::of(120.0),
         sample_rate: RATE,
         loop_range: None,
     });
@@ -804,7 +804,7 @@ fn tone_at(i: usize) -> f32 {
 fn timeline() -> Arc<OfflineTimeline> {
     Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm(120.0),
+        tempo: Bpm::of(120.0),
         sample_rate: RATE,
         loop_range: None,
     }))
@@ -977,7 +977,7 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
     g.pipe_output(k);
     let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     exec.apply_pending();
-    let elsewhere = tutti_graph::Transport::new(true, Bpm(120.0), Beat(0.25), None);
+    let elsewhere = tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(0.25), None);
     let mut sink = vec![0.0f32; 256];
     for _ in 0..8 {
         exec.process(256, &elsewhere, &[], &mut [&mut sink[..]]);

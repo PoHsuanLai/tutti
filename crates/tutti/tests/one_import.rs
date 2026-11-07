@@ -108,7 +108,7 @@ fn a_timed_transport_program_needs_only_the_prelude() {
         .expect("room");
     transport
         .motion
-        .schedule(At::NextBlock, TransportCommand::Tempo(Bpm(90.0)))
+        .schedule(At::NextBlock, TransportCommand::Tempo(Bpm::of(90.0)))
         .expect("room");
     assert_eq!(transport.motion.scheduled_outstanding(), 2);
 

@@ -52,7 +52,7 @@ use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 use tutti_transport::MotionEvent;
 use tutti_transport::Transport;
-use tutti_types::Samples;
+use tutti_types::{Bpm, Samples};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
 use tutti_types::{ChannelLayout, InterleavedMut, NodeKey, SampleRate};
 use tutti_types::{Db, Hz, Q};
@@ -103,7 +103,7 @@ fn chain_engine(outputs: usize) -> Engine {
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
     engine
 }

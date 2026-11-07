@@ -76,7 +76,7 @@ fn two_hundred_moving_parameters_do_not_allocate_on_the_audio_thread() {
             // stepping by one each block.
             k.set_knob(((b + i) % 16) as f32 / 16.0);
         }
-        let t = Transport::new(true, Bpm(120.0), Beat(b as f64), None);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None);
         rig.renderer().executor_mut().process_with_changes(
             BLOCK,
             &t,

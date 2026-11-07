@@ -82,7 +82,7 @@
 //!     transport: Res<TransportRes>,
 //!     mut graph: ResMut<AudioGraphRes>,
 //! ) -> Result {
-//!     transport.settings.set_tempo(128.0);
+//!     transport.settings.set_tempo(Bpm::of(128.0));
 //!     // `try_send` — the motion queue is bounded, so a send can fail and the
 //!     // caller decides what that means.
 //!     transport.motion.try_send(MotionEvent::Play)?;

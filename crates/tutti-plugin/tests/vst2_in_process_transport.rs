@@ -148,18 +148,21 @@ fn rig<N: IntoNode>(node: N, arrival: usize) -> (Renderer, N::Controls) {
 fn scene(b: usize) -> (Transport, TransportChanges) {
     let base = 4.0 + b as f64;
     let mut changes = TransportChanges::NONE;
-    let rolling = Transport::new(true, Bpm(120.0), Beat(base), None);
+    let rolling = Transport::new(true, Bpm::of(120.0), Beat(base), None);
     let t = match b % 6 {
         0 => rolling,
         // A seek at the block boundary, far from where the last block left
         // off.
-        1 => Transport::new(true, Bpm(120.0), Beat(64.0 + base), None),
+        1 => Transport::new(true, Bpm::of(120.0), Beat(64.0 + base), None),
         // A tempo change inside the block, after the frame the next block
         // hears (frame 24 of this one) and before it.
         2 => {
             let at = Offset::new(10, Samples(BLOCK)).expect("inside");
             changes
-                .push(at, Transport::new(true, Bpm(90.0), Beat(base + 0.5), None))
+                .push(
+                    at,
+                    Transport::new(true, Bpm::of(90.0), Beat(base + 0.5), None),
+                )
                 .expect("a change inside the block");
             rolling
         }
@@ -167,7 +170,7 @@ fn scene(b: usize) -> (Transport, TransportChanges) {
         // frame 24, which the next block's first frame hears.
         3 => Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(base),
             Some(LoopRange {
                 start: Beat(base),
@@ -175,7 +178,7 @@ fn scene(b: usize) -> (Transport, TransportChanges) {
             }),
         ),
         4 => rolling.with_recording(true),
-        _ => Transport::new(false, Bpm(100.0), Beat(base), None),
+        _ => Transport::new(false, Bpm::of(100.0), Beat(base), None),
     };
     (t, changes)
 }

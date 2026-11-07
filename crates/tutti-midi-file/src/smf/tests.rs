@@ -15,10 +15,9 @@ fn test_parse_empty_midi() {
 /// Neither direction of the tempo relation may divide by zero.
 ///
 /// A `Tempo(0)` meta event is malformed but wire-representable, and gave an
-/// infinite BPM that became `ParsedMidiFile::tempo_bpm`. Writing a
-/// non-positive BPM did the mirror: `inf` microseconds, saturating to
-/// `u32::MAX` — about 71 minutes per beat — in the file. The MIDI-2 twin
-/// has always guarded both.
+/// infinite BPM that became `ParsedMidiFile::tempo_bpm`. Writing has no
+/// mirror to guard: a `Bpm` is never non-positive. The MIDI-2 twin skips the
+/// same wire zero.
 #[test]
 fn a_degenerate_tempo_is_absent_rather_than_infinite() {
     // Header (division 480) + a track holding only Set Tempo = 0.
@@ -33,13 +32,14 @@ fn a_degenerate_tempo_is_absent_rather_than_infinite() {
         "zero microseconds-per-quarter must not become an infinite BPM"
     );
     // Falls back to the documented default rather than inventing a rate.
-    assert_eq!(file.tempo_bpm, Bpm(120.0));
+    assert_eq!(file.tempo_bpm, Bpm::of(120.0));
 
-    // And the write direction: a non-positive BPM writes the wire's own
-    // "no tempo" zero rather than a saturated u32.
+    // And the write direction (a `Bpm` is never non-positive; a tempo above
+    // the wire's range writes the shortest quarter, not the wire's "no tempo"
+    // zero; see `a_tempo_above_the_wire_range_writes_the_fastest_quarter`).
     let config = MidiWriteConfig {
         ticks_per_beat: 480,
-        tempo_bpm: Some(Bpm(0.0)),
+        tempo_bpm: Some(Bpm::of(1.0e9)),
         time_signature: None,
     };
     let track = vec![vec![SmfTimedEvent {
@@ -107,7 +107,7 @@ fn test_write_and_read_roundtrip() {
 
     let config = MidiWriteConfig {
         ticks_per_beat: 480,
-        tempo_bpm: Some(Bpm(120.0)),
+        tempo_bpm: Some(Bpm::of(120.0)),
         time_signature: Some((4, 2)),
     };
 
@@ -115,7 +115,7 @@ fn test_write_and_read_roundtrip() {
     let parsed = ParsedMidiFile::from_bytes(&data).unwrap();
 
     assert_eq!(parsed.ticks_per_beat, 480);
-    assert!(!parsed.tempo_bpm.differs_from(Bpm(120.0), 0.1));
+    assert!(!parsed.tempo_bpm.differs_from(Bpm::of(120.0), 0.1));
     assert_eq!(parsed.events.len(), 2);
     assert!((parsed.events[0].time_beats - Beat(0.0)).abs() < BeatDuration(0.001));
     assert!((parsed.events[1].time_beats - Beat(1.0)).abs() < BeatDuration(0.001));

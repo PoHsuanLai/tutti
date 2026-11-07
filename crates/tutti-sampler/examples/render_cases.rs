@@ -42,7 +42,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     let (pool, handle) = VoicePool::new().with_handle();
     let mut pool = contract::prepared(pool, SampleRate(SR), BLOCK);
     // A rolling transport this example advances by hand, a block at a time.
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     // 4x the output length: at the slowest factor the source is consumed far
     // faster than it is emitted, and a short wave would run dry mid-measurement
     // and look like an attenuation bug.

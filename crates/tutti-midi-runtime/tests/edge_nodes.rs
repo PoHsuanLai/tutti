@@ -450,8 +450,8 @@ fn the_out_node_hands_midi_back_and_counts_drops() {
 fn a_start_inside_a_block_clocks_from_its_frame() {
     let (_ed, mut exec, clock, seen) = rig(ClockNode::new(), 1, 2048);
     clock.set_enabled(true);
-    let stopped = Transport::new(false, Bpm(120.0), Beat(0.0), None);
-    let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let stopped = Transport::new(false, Bpm::of(120.0), Beat(0.0), None);
+    let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut changes = TransportChanges::NONE;
     changes
         .push(Offset::new(100, Samples(2048)).unwrap(), rolling)
@@ -483,7 +483,7 @@ fn a_clocks_fork_sends_nothing() {
     let mut out = vec![0.0f32; 512];
     fork_exec.process(
         512,
-        &Transport::new(true, Bpm(120.0), Beat(0.0), None),
+        &Transport::new(true, Bpm::of(120.0), Beat(0.0), None),
         &[],
         &mut [&mut out[..]],
     );
@@ -515,7 +515,7 @@ fn a_clock_flood_past_the_port_capacity_is_counted() {
         let mut frame = 0usize;
         for &len in blocks {
             let beat = frame as f64 / RATE * BPM / 60.0;
-            let rolling = Transport::new(true, Bpm(BPM), Beat(beat), None);
+            let rolling = Transport::new(true, Bpm::of(BPM), Beat(beat), None);
             let mut out = vec![0.0f32; len];
             exec.process(len, &rolling, &[], &mut [&mut out[..]]);
             frame += len;
@@ -560,7 +560,7 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
         start: Beat(1.0),
         end: Beat(1.1),
     });
-    let rolling = Transport::new(true, Bpm(120.0), Beat(1.0), looping);
+    let rolling = Transport::new(true, Bpm::of(120.0), Beat(1.0), looping);
     let mut changes = TransportChanges::NONE;
     changes
         .push(Offset::new(2_400, Samples(4_000)).unwrap(), rolling)
@@ -616,9 +616,9 @@ fn a_short_loop_in_a_long_block_is_counted_past_the_cap() {
             end: Beat(end),
         });
         let region = tutti_types::LoopRange::new(0.0, end);
-        let mut host = FrameClock::new(Beat(0.0), Bpm(120.0), SampleRate(RATE));
+        let mut host = FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(RATE));
         for _ in 0..TOTAL / len {
-            let rolling = Transport::new(true, Bpm(120.0), host.beat(), looping);
+            let rolling = Transport::new(true, Bpm::of(120.0), host.beat(), looping);
             let mut out = vec![0.0f32; len];
             exec.process(len, &rolling, &[], &mut [&mut out[..]]);
             host.advance(Samples(len), region);

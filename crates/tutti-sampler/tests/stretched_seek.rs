@@ -28,7 +28,7 @@ fn rms(x: &[f32]) -> f32 {
 fn render(frames: usize, seek_at: usize) -> Vec<f32> {
     let (pool, handle) = VoicePool::new().with_handle();
     let mut pool = contract::prepared(pool, SampleRate(SR), BLOCK);
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut wave = Wave::new(1, SR);
     for i in 0..frames * 4 {
         wave.push_frame(&[(TAU * 440.0 * i as f32 / SR as f32).sin()]);

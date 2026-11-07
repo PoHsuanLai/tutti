@@ -229,7 +229,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 
     let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(start_beat),
-        tempo: Bpm(120.0),
+        tempo: Bpm::of(120.0),
         sample_rate: RATE,
         loop_range: None,
     });

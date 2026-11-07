@@ -91,7 +91,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
     let channels = 2 * READS as usize;
     let mut all = vec![Vec::new(); channels];
     let region = tutti_types::LoopRange::new(LOOP.0, LOOP.1).expect("a loop");
-    let mut clock = FrameClock::new(Beat(0.0), Bpm(120.0), SampleRate(SR));
+    let mut clock = FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(SR));
     let mut wraps = 0;
     for i in 0..600 {
         let n = 1 + (i * 37) % MAX_BLOCK;
@@ -102,7 +102,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
                 start: Beat(LOOP.0),
                 end: Beat(LOOP.1),
             };
-            let t = Transport::new(true, Bpm(120.0), clock.beat(), Some(looping));
+            let t = Transport::new(true, Bpm::of(120.0), clock.beat(), Some(looping));
             exec.process(n, &t, &[], &mut outs);
         }
         let before = clock.beat();

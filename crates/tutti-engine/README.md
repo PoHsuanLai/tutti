@@ -92,7 +92,7 @@ let engine = Engine::new(&transport, &mut editor, executor).expect("within the l
 // settings anyone may store into, motion a state machine that may defer or
 // reject. Queued events apply at the next block, which the audio callback
 // renders.
-transport.settings.set_tempo(Bpm(90.0));
+transport.settings.set_tempo(Bpm::of(90.0));
 transport
     .motion
     .try_send(MotionEvent::play_from(Beat(8.0)))

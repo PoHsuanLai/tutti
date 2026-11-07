@@ -118,8 +118,8 @@ impl SmpteTimecode {
     /// [`to_seconds`](Self::to_seconds), because SMPTE timecode is the
     /// documented precision carve-out — `Beat` would carry it, but the
     /// hour-scale seconds it is derived from would not survive `Seconds`.
-    pub fn to_beats(&self, tempo: impl Into<Bpm>) -> f64 {
-        self.to_seconds() * tempo.into().get() / 60.0
+    pub fn to_beats(&self, tempo: Bpm) -> f64 {
+        self.to_seconds() * tempo.get() / 60.0
     }
 }
 

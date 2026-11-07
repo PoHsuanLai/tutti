@@ -418,7 +418,7 @@ fn the_prepare_hook_sees_the_callers_timeline() {
     // A deliberately un-default transport: neither 120 BPM nor beat 0.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_types::Beat(16.0),
-        tempo: tutti_types::Bpm(90.0),
+        tempo: tutti_types::Bpm::of(90.0),
         sample_rate: tutti_types::SampleRate(44_100.0),
         loop_range: None,
     }));
@@ -480,7 +480,7 @@ fn a_master_exports_prepare_hook_sees_the_callers_timeline() {
     let (mut app, _node) = app_with_engine_on();
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_types::Beat(4.0),
-        tempo: tutti_types::Bpm(90.0),
+        tempo: tutti_types::Bpm::of(90.0),
         sample_rate: tutti_types::SampleRate(44_100.0),
         loop_range: None,
     }));

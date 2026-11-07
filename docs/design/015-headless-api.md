@@ -912,7 +912,7 @@ let synth = s.add_plugin(job.run())?;
 s.graph().set_outputs_from(synth);
 
 let file = MidiFile::read("song.mid")?;                 // tutti-midi-file: sniffs SMF vs Clip File
-let tempo = file.tempo().unwrap_or(Bpm(120.0));         // the tempo at beat 0; an SMF always has one
+let tempo = file.tempo().unwrap_or(Bpm::of(120.0));         // the tempo at beat 0; an SMF always has one
 s.midi().play_clip(synth, file.iter().map(TimedMidiEvent::from))?;
 s.transport().set_tempo(tempo);
 

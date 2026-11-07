@@ -420,7 +420,7 @@ fn render_wide(
         let mut chans = vec![vec![0.0f32; n]; outputs + extra];
         {
             let mut outs: Vec<&mut [f32]> = chans.iter_mut().map(Vec::as_mut_slice).collect();
-            let t = Transport::new(true, Bpm(120.0), Beat(frame as f64 / 24_000.0), None);
+            let t = Transport::new(true, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None);
             exec.process(n, &t, &[&input], &mut outs);
         }
         assert!(

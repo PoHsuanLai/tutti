@@ -11,6 +11,7 @@
 //! asked, and it extrapolates at its own tempo.
 
 use crate::point::Shape;
+use tutti_types::Bpm;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Seg {
@@ -18,7 +19,7 @@ pub(crate) struct Seg {
     /// Seconds from beat 0 to `beat0`.
     pub sec0: f64,
     /// Tempo at `beat0`, as given.
-    pub bpm0: f64,
+    pub bpm0: Bpm,
     /// `bpm0 / 60`.
     pub r0: f64,
     pub shape: Shape,
@@ -31,8 +32,8 @@ pub(crate) struct Seg {
 impl Seg {
     /// The segment from `beat0`, spanning `dbeats` to a next tempo of `r1`
     /// (`INFINITY` beats for the last segment).
-    pub fn new(beat0: f64, sec0: f64, bpm0: f64, r1: f64, shape: Shape, dbeats: f64) -> Self {
-        let r0 = bpm0 / 60.0;
+    pub fn new(beat0: f64, sec0: f64, bpm0: Bpm, r1: f64, shape: Shape, dbeats: f64) -> Self {
+        let r0 = bpm0.get() / 60.0;
         let shape = if r0 == r1 { Shape::Step } else { shape };
         let (k, dsec) = match shape {
             Shape::Step => (0.0, dbeats / r0),
@@ -102,32 +103,40 @@ impl Seg {
 
     /// Tempo in BPM `ds` seconds in. Written as the given tempo plus a change,
     /// so offset 0 is that tempo to the bit.
-    pub fn bpm_at_sec(&self, ds: f64) -> f64 {
+    pub fn bpm_at_sec(&self, ds: f64) -> Bpm {
         if ds < 0.0 {
             return self.bpm0;
         }
-        match self.shape {
-            Shape::Step => self.bpm0,
-            Shape::RampTime => self.bpm0 + 60.0 * self.k * ds,
-            Shape::RampBeats => self.bpm0 * libm::exp(self.k * ds),
-        }
+        let bpm0 = self.bpm0.get();
+        self.in_range(match self.shape {
+            Shape::Step => bpm0,
+            Shape::RampTime => bpm0 + 60.0 * self.k * ds,
+            Shape::RampBeats => bpm0 * libm::exp(self.k * ds),
+        })
     }
 
     /// Tempo in BPM `db` beats in. As [`bpm_at_sec`](Self::bpm_at_sec); the
     /// time ramp's `sqrt(r0^2 + 2 k db) - r0` is `2 k db / (sqrt(..) + r0)`,
     /// which does not cancel.
-    pub fn bpm_at_beat(&self, db: f64) -> f64 {
+    pub fn bpm_at_beat(&self, db: f64) -> Bpm {
         if db < 0.0 {
             return self.bpm0;
         }
-        match self.shape {
-            Shape::Step => self.bpm0,
+        let bpm0 = self.bpm0.get();
+        self.in_range(match self.shape {
+            Shape::Step => bpm0,
             Shape::RampTime => {
                 let root = (self.r0 * self.r0 + 2.0 * self.k * db).sqrt();
-                self.bpm0 + 60.0 * (2.0 * self.k * db) / (root + self.r0)
+                bpm0 + 60.0 * (2.0 * self.k * db) / (root + self.r0)
             }
-            Shape::RampBeats => self.bpm0 + 60.0 * self.k * db,
-        }
+            Shape::RampBeats => bpm0 + 60.0 * self.k * db,
+        })
+    }
+
+    /// `raw` as a tempo; the segment's own where the closed form leaves the
+    /// range (a ramp read far past its end).
+    fn in_range(&self, raw: f64) -> Bpm {
+        Bpm::new(raw).unwrap_or(self.bpm0)
     }
 }
 

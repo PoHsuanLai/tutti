@@ -62,7 +62,7 @@ fn test_transport_advances_with_graph() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
     let frames = 256;
@@ -85,7 +85,7 @@ fn test_transport_loop_wrapping() {
     let sample_rate = 44100.0;
     let (transport, state) = build_callback_state(sample_rate);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(tutti_types::Bpm::of(120.0));
     transport
         .motion
         .schedule(

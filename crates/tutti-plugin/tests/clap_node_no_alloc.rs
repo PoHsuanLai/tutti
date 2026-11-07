@@ -134,7 +134,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
     changes
         .push(
             Offset::new(20, Samples(BLOCK)).expect("inside"),
-            Transport::new(true, Bpm(90.0), Beat(9.0), None),
+            Transport::new(true, Bpm::of(90.0), Beat(9.0), None),
         )
         .expect("a change inside the block");
     let pace = Duration::from_millis(15);
@@ -151,7 +151,7 @@ fn a_bound_plugin_does_not_allocate_on_the_audio_thread() {
             sender.queue(&[on, off]);
         }
         let n = BLOCK;
-        let t = Transport::new(true, Bpm(120.0), Beat(b as f64), None).with_recording(true);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(b as f64), None).with_recording(true);
         let ins: [&[f32]; 2] = [&inputs[0][..n], &inputs[1 % inputs.len()][..n]];
         let (a, rest) = outs.split_at_mut(1);
         let mut o: [&mut [f32]; 2] = [&mut a[0][..n], &mut rest[0][..n]];

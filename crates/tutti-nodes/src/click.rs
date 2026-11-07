@@ -672,11 +672,11 @@ mod tests {
         recording: false,
     };
 
-    /// A transport at `beat` that holds it for the whole block (a tempo of
-    /// zero), under `deck`: the constant beat a test positions the playhead
-    /// at.
+    /// A transport at `beat` that holds it for the whole block (the smallest
+    /// tempo, whose step per frame underflows to zero), under `deck`: the
+    /// constant beat a test positions the playhead at.
     fn held(deck: Deck, beat: f64) -> tutti_graph::Transport {
-        tutti_graph::Transport::new(deck.playing, Bpm(0.0), Beat(beat), None)
+        tutti_graph::Transport::new(deck.playing, Bpm::of(f64::from_bits(1)), Beat(beat), None)
             .with_recording(deck.recording)
     }
 
@@ -885,7 +885,7 @@ mod tests {
     /// A transport rolling from `start` so that frame `i` of the block is at
     /// beat `start + i/100` (at 44.1 kHz): 26 460 BPM.
     fn hundredths_from(start: f64) -> tutti_graph::Transport {
-        tutti_graph::Transport::new(true, Bpm(26_460.0), Beat(start), None)
+        tutti_graph::Transport::new(true, Bpm::of(26_460.0), Beat(start), None)
     }
 
     /// A meter change that lands *inside* a notated beat still clicks its
@@ -1003,7 +1003,7 @@ mod tests {
         const N: usize = 64;
         let mut host = FrameClock::new(
             Beat(2.0 - 20.0 / 22_050.0),
-            Bpm(120.0),
+            Bpm::of(120.0),
             tutti_types::SampleRate(SR),
         );
         let counted = |host: &FrameClock| {
@@ -1076,7 +1076,7 @@ mod tests {
             node.last_click_onset = Some(Beat(0.0));
             node.click_pos = node.click_normal.len();
 
-            let bps = tutti_types::beats_per_sample(BPM, RATE).get();
+            let bps = tutti_types::beats_per_sample(Bpm::of(BPM), RATE).get();
             let expected = ((ONSET - START) / bps).ceil() as usize;
             assert_ne!(
                 expected % len,
@@ -1084,7 +1084,8 @@ mod tests {
                 "the onset must land mid-block, or a block-quantised click passes"
             );
 
-            let mut host = FrameClock::new(Beat(START), Bpm(BPM), tutti_types::SampleRate(RATE));
+            let mut host =
+                FrameClock::new(Beat(START), Bpm::of(BPM), tutti_types::SampleRate(RATE));
             let mut left = Vec::new();
             while left.len() < expected + 2 * len {
                 let t = tutti_graph::Transport::counted(true, host.tempo(), host.origin(), None);
@@ -1334,8 +1335,11 @@ mod tests {
         // second: four clicks, past beat 3 (a downbeat in 3/4, not in 4/4).
         let render = |node: ClickNode| {
             let mut node = prepared(node, tutti_types::SampleRate(48_000.0), 64);
-            let mut host =
-                FrameClock::new(Beat(0.0), Bpm(1_200.0), tutti_types::SampleRate(48_000.0));
+            let mut host = FrameClock::new(
+                Beat(0.0),
+                Bpm::of(1_200.0),
+                tutti_types::SampleRate(48_000.0),
+            );
             let mut left = Vec::new();
             for _ in 0..160 {
                 let t = tutti_graph::Transport::counted(true, host.tempo(), host.origin(), None)

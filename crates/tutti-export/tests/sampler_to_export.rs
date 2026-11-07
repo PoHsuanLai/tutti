@@ -94,7 +94,7 @@ fn tone(frames: usize) -> Arc<Wave> {
 fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) {
     let transport = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm(TEMPO),
+        tempo: Bpm::of(TEMPO),
         sample_rate: SampleRate(SR),
         loop_range: None,
     }));

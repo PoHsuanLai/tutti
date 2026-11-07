@@ -41,7 +41,7 @@ use tutti_types::{Amplitude, Beat, BeatDuration, Bpm, Depth, Hz, SampleRate, Sec
 use common::probe::{Held, ProbeUnit, Pulse};
 
 const RATE: f64 = 48_000.0;
-const TEMPO: Bpm = Bpm(120.0);
+const TEMPO: Bpm = Bpm::of(120.0);
 /// A lane's control step (`tutti_nodes::automation::CONTROL_STEP`).
 const STEP: usize = 32;
 /// A port's connect crossfade (`PARAM_DECLICK`).

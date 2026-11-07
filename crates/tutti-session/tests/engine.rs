@@ -557,3 +557,116 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
     );
     assert!((out_start - 0.5).abs() < 1e-6 && (tap_start - 0.5).abs() < 1e-6);
 }
+
+/// **The heard tap carries the fade at a stop.** The same render as
+/// `a_tap_steps_at_a_transport_stop_where_the_output_fades`, read through the
+/// tap after the fader: it is the device output bit for bit on both channels
+/// (an invariant of this one render, not a second render), so its largest step
+/// across the stop is the declick's ramp (about 0.001) where the plan tap's
+/// is the source's whole level (0.5). A take recorded through it has no click.
+///
+/// Mutation (run, recorded here): write the tap before the fader in
+/// `Engine::process` (the write moved above `fader.apply`) -> it steps 0.5 and
+/// is not the output, and both assertions fail.
+#[test]
+fn the_heard_tap_carries_the_fade_at_a_stop() {
+    use tutti_types::{At, Frame};
+    let mut s = offline();
+    let (gate, _) = s.graph().add(tutti_graph::Unforkable(Gated));
+    s.graph().set_output_source(0, GraphSource::Node(gate, 0));
+    s.graph().set_output_source(1, GraphSource::Node(gate, 0));
+    let mut plan = s.graph().open_output_tap(Samples(16_384));
+    let mut heard = s.open_heard_tap(Samples(16_384)).expect("an engine");
+    s.update();
+    let motion = &s.transport().motion;
+    motion.try_send(MotionEvent::Play).expect("room");
+    motion
+        .schedule(At::Frame(Frame(2_000)), MotionEvent::stop())
+        .expect("room");
+    motion
+        .schedule(At::Frame(Frame(4_000)), MotionEvent::Play)
+        .expect("room");
+    let mut device = Vec::new();
+    let mut block = vec![0.0f32; 64 * 2];
+    for _ in 0..100 {
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        device.extend_from_slice(&block);
+    }
+    let mut tapped = vec![0.0f32; 6_400 * 2];
+    assert_eq!(heard.pop_into(&mut tapped), Samples(6_400));
+    let bits = |x: &[f32]| x.iter().map(|s| s.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&tapped), bits(&device), "the tap is what the device got");
+    let mut unfaded = vec![0.0f32; 6_400 * 2];
+    plan.pop_into(&mut unfaded);
+    let step = |x: &[f32]| {
+        x.iter()
+            .step_by(2)
+            .skip(1_500)
+            .take(1_000)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    let (faded, cliff) = (step(&tapped), step(&unfaded));
+    println!("stop: heard tap {faded}, plan tap {cliff}");
+    assert!(faded < 0.01, "the heard tap ramps: {faded}");
+    assert!((cliff - 0.5).abs() < 1e-6, "the plan tap steps: {cliff}");
+}
+
+/// Offline, a block `render` pulls is written whole; a detached session has no
+/// engine and says so; a fork (what an export renders) has no write into the
+/// live tap.
+///
+/// Mutation (run, recorded here): `Session::open_heard_tap` returning the
+/// tap even when detached is not expressible; delete the `Engine::process`
+/// write (see `tutti-engine`'s `heard_tap` mutations) -> the 64-frame
+/// assertion fails.
+#[test]
+fn render_feeds_the_heard_tap_and_a_fork_does_not() {
+    let mut s = offline();
+    let (dc, _) = s.graph().insert(Const::mono(0.5));
+    s.graph().set_output_source(0, GraphSource::Node(dc, 0));
+    s.graph().set_output_source(1, GraphSource::Node(dc, 0));
+    s.update();
+    let mut tap = s.open_heard_tap(Samples(1_024)).expect("an engine");
+    assert_eq!(
+        s.open_heard_tap(Samples(8)).err(),
+        Some(tutti_session::HeardTapError::Busy)
+    );
+    let mut block = vec![0.0f32; 64 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    assert_eq!(tap.available(), Samples(64));
+    // An export renders a fork, without the engine: nothing reaches the tap.
+    let mut fork = s.graph_ref().fork_live().expect("forks");
+    let mut out = [0.0f32; 2];
+    for _ in 0..64 {
+        fork.tick(&[], &mut out);
+    }
+    assert_eq!(tap.available(), Samples(64), "the fork wrote nothing");
+    assert_eq!(out, [0.5, 0.5]);
+    tap.take_lost();
+    let detached = Session::builder()
+        .build_detached(SampleRate(RATE))
+        .expect("builds");
+    assert_eq!(
+        detached.open_heard_tap(Samples(8)).err(),
+        Some(tutti_session::HeardTapError::Detached)
+    );
+}
+
+/// A dropped heard reader is closed by the `Reclaim` phase, so the tap can be
+/// opened again.
+///
+/// Mutation (run, recorded here): delete `taps.reclaim()` from the `Reclaim`
+/// arm -> the reopen is refused as `Busy`.
+#[test]
+fn a_dropped_heard_reader_is_closed_by_the_reclaim_phase() {
+    let mut s = offline();
+    let tap = s.open_heard_tap(Samples(64)).expect("an engine");
+    drop(tap);
+    s.update();
+    let mut block = vec![0.0f32; 64 * 2];
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    assert!(s.open_heard_tap(Samples(64)).is_ok());
+}

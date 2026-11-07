@@ -329,6 +329,7 @@ impl SessionBuilder {
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
             meter: engine.as_ref().map(master_meter_of),
+            heard: None,
             engine,
             click: parts.click,
             click_settings: parts.click_settings,
@@ -389,7 +390,10 @@ impl SessionBuilder {
             root_width(self.outputs_floor, layout),
         )?;
         let engine = parts.graph.engine(&parts.transport)?;
-        self.session(parts, Some(engine), true)
+        let heard = engine.heard_taps();
+        let mut session = self.session(parts, Some(engine), true)?;
+        session.heard = Some((heard, layout));
+        Ok(session)
     }
 
     /// A session with no engine: the executor stays on this side, every
@@ -489,6 +493,7 @@ impl SessionBuilder {
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
         session.meter = Some(master_meter_of(&engine));
+        session.heard = Some((engine.heard_taps(), spec.channels));
         let state = Arc::new(tutti_cpal::AudioCallbackState::new(engine));
         start(&mut audio_engine, Arc::clone(&state))?;
         let device = crate::Device::new(tutti_cpal::TuttiDriver::new(audio_engine, state));

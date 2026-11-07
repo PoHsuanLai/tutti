@@ -248,3 +248,26 @@ fn each_kind_is_the_sdk_ordinal() {
         tag(T::kLegacyMIDICCOutEvent)
     );
 }
+
+/// `Data::try_from_iter` holds what `Data::new` holds and refuses what it
+/// refuses, from any iterator: 16 bytes fit, a 17th does not, and an iterator
+/// with no end is refused rather than read to the end.
+///
+/// Mutation (run): the bound check removed (`inline.get_mut(size)` replaced by
+/// `inline.get_mut(size % 16)`) → the 17-byte case and the endless iterator
+/// fail.
+#[test]
+fn data_from_an_iterator_holds_what_new_holds() {
+    for n in 0..=Data::CAPACITY {
+        let bytes: Vec<u8> = (0..n as u8).collect();
+        let from_iter = Data::try_from_iter(5, bytes.iter().copied()).expect("fits");
+        let from_slice = Data::new(5, &bytes).expect("fits");
+        assert_eq!(from_iter.payload(), from_slice.payload());
+        assert_eq!(
+            (from_iter.size, from_iter.data_type, from_iter.bytes),
+            (from_slice.size, from_slice.data_type, from_slice.bytes)
+        );
+    }
+    assert!(Data::try_from_iter(0, 0..17u8).is_none());
+    assert!(Data::try_from_iter(0, std::iter::repeat(1)).is_none());
+}

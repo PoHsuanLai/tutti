@@ -31,6 +31,7 @@ pub struct SessionBuilder {
     inputs: usize,
     outputs_floor: usize,
     render_workers: usize,
+    render_worker_start: Option<crate::RenderWorkerStart>,
     #[cfg(feature = "midi-hardware")]
     midi_hardware: bool,
     /// The backend the OS MIDI layer runs over, if not the platform's.
@@ -63,6 +64,7 @@ impl Default for SessionBuilder {
             inputs: 0,
             outputs_floor: 2,
             render_workers: 1,
+            render_worker_start: None,
             #[cfg(feature = "midi-hardware")]
             midi_hardware: false,
             #[cfg(feature = "midi-hardware")]
@@ -115,6 +117,21 @@ impl SessionBuilder {
     #[must_use]
     pub fn render_workers(mut self, workers: usize) -> Self {
         self.render_workers = workers;
+        self
+    }
+
+    /// A hook each helper of the live render pool runs once on its own
+    /// thread, with its index (`1..`, the callback is 0), before it takes
+    /// work. A host that promotes its audio callback (`SCHED_FIFO`, MMCSS, an
+    /// audio workgroup) gives the helpers the same priority here: helpers
+    /// below it can stall a block, helpers above it preempt the callback.
+    /// Nothing promotes them by default. An export's own pool does not run
+    /// it. A hook that panics or blocks behaves as
+    /// [`WorkerPoolBuilder::start_handler`](tutti_graph::WorkerPoolBuilder::start_handler)
+    /// documents.
+    #[must_use]
+    pub fn render_worker_start(mut self, hook: impl Fn(usize) + Send + Sync + 'static) -> Self {
+        self.render_worker_start = Some(crate::RenderWorkerStart::new(hook));
         self
     }
 
@@ -223,6 +240,7 @@ impl SessionBuilder {
 
         let mut graph = Graph::new(self.inputs, outputs, rate, max_block, quantum);
         graph.set_render_workers(self.render_workers);
+        graph.set_render_worker_start(self.render_worker_start.take());
         let transport = Transport::new(rate);
         let click_settings = Arc::new(ClickSettings::new());
 

@@ -646,7 +646,8 @@ impl Feedback {
     /// [`Feedback::MAX_STABLE`] independently still permits a combined 1.98 and a
     /// runaway. This scales the pair down together when their sum would
     /// exceed the bound, preserving their ratio, so the pair sums to
-    /// [`MAX_STABLE`](Self::MAX_STABLE) at most.
+    /// [`MAX_STABLE`](Self::MAX_STABLE) at most, to within `f32` rounding
+    /// (`(0.0, f32::MAX)` sums to 0.9900002).
     ///
     /// Negative coefficients are raised to zero. A NaN stays NaN in its own
     /// coefficient and the other is clamped on its own, as [`new_clamped`]
@@ -3159,7 +3160,7 @@ mod tests {
     }
 
     /// The module's one non-finite rule: NaN stays NaN, an infinity saturates
-    /// at its bound. (Both used to read as `UNITY`.)
+    /// at its bound.
     #[test]
     fn playback_rate_follows_the_non_finite_rule() {
         assert!(PlaybackRate::new_clamped(f32::NAN).get().is_nan());
@@ -3305,6 +3306,8 @@ mod tests {
     /// drop the `is_infinite` arm → `(INFINITY, 0.0)` gives NaN → fails.
     #[test]
     fn stable_pair_keeps_the_ratio_and_survives_infinity() {
+        // 1e-6 absolute: a few f32 ulps at these magnitudes (the sums land
+        // within 2e-7 of the bound).
         let near = |got: (Feedback, Feedback), want: (f32, f32)| {
             assert!(
                 (got.0.get() - want.0).abs() < 1e-6 && (got.1.get() - want.1).abs() < 1e-6,
@@ -3332,6 +3335,9 @@ mod tests {
         near(Feedback::stable_pair(f32::NEG_INFINITY, 0.5), (0.0, 0.5));
         // A sum that overflows `f32` keeps its ratio too.
         near(Feedback::stable_pair(f32::MAX, f32::MAX), (0.495, 0.495));
+        // The sum is the bound to within f32 rounding, even at the extreme.
+        let (d, c) = Feedback::stable_pair(0.0, f32::MAX);
+        assert!((d.get() + c.get() - 0.99).abs() < 1e-6);
         // NaN stays NaN in its own coefficient; the other clamps alone.
         let (d, c) = Feedback::stable_pair(f32::NAN, 2.0);
         assert!(d.get().is_nan());

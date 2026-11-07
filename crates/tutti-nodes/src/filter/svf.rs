@@ -154,9 +154,9 @@ impl<F: Real> SvfFilterNode<F> {
             coeffs: SvfCoefficients::solve(filter_type, frequency, q, Db(0.0), SampleRate::DEFAULT),
             state: vec![[zero; 2]; n],
             good: [
-                LastGood::new(frequency.get()),
-                LastGood::new(q.get()),
-                LastGood::new(0.0),
+                LastGood::new(frequency.get(), 0.0),
+                LastGood::new(q.get(), Q::BUTTERWORTH.get()),
+                LastGood::fixed(0.0),
             ],
         }
     }
@@ -173,7 +173,7 @@ impl<F: Real> SvfFilterNode<F> {
     pub fn with_gain_db(mut self, db: impl Into<Db>) -> Self {
         let db = db.into();
         self.gain_db = Param::new(db);
-        self.good[2] = LastGood::new(db.get());
+        self.good[2] = LastGood::new(db.get(), 0.0);
         self.coeffs = SvfCoefficients::solve(
             self.filter_type,
             self.frequency.load(),
@@ -925,6 +925,36 @@ mod tests {
             run.ramped.coeffs == run.jumped.coeffs,
             "the block must end solved at the new cutoff"
         );
+    }
+
+    /// A NaN Q at construction is read as the Butterworth Q, not as 0, which
+    /// is below the type's floor: the output stays finite, and a later finite
+    /// Q takes effect.
+    ///
+    /// Not covered: the Q `LastGood` fallback `Q::BUTTERWORTH` → `0.0` still
+    /// passes, because the filter solve floors Q itself. The fallback keeps the
+    /// node's own state inside the type's range regardless.
+    #[test]
+    fn a_nan_q_at_construction_is_finite_and_recovers() {
+        use crate::test_support::noise;
+        let x = noise(7, 64);
+        let mut f = prepared(SvfFilterNode::<f64>::new(
+            SvfType::LowPass,
+            800.0,
+            Q(f32::NAN),
+        ));
+        for _ in 0..4 {
+            let out = drive_block(&mut f, &[&x]);
+            assert!(out[0].iter().all(|s| s.is_finite()), "NaN Q");
+        }
+        f.set_q(3.0);
+        for _ in 0..4 {
+            let out = drive_block(&mut f, &[&x]);
+            assert!(out[0].iter().all(|s| s.is_finite()), "after set_q");
+        }
+        Node::reset(&mut f);
+        let out = drive_block(&mut f, &[&x]);
+        assert!(out[0].iter().all(|s| s.is_finite()), "after reset");
     }
 
     /// A NaN in a raw cell never reaches the filter state — not even in the

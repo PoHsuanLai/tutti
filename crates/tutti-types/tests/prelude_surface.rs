@@ -124,19 +124,25 @@ fn implementing_audio_in_needs_nothing_beyond_the_prelude() {
 /// The `use ... as _` lines above only check the names they list, so a name
 /// added to the prelude and left off both lists would still pass. This reads
 /// `src/lib.rs` and compares the two `pub use` sets by identifier. It is
-/// textual: it sees `pub use` statements and no glob (`*`) re-export, and it
-/// treats any identifier in a root `pub use` as exported at the root.
+/// textual: it strips `//` and `/* */` comments, sees `pub use` statements and
+/// no glob (`*`) re-export, treats any identifier in a root `pub use` as
+/// exported at the root, and does not follow `as` renames or macro-generated
+/// exports. A `//` inside a string literal in `lib.rs` would cut its line.
 ///
 /// Mutation (run): add `pub use crate::graph::Source;` to the prelude → fails
 /// naming `Source`.
 #[test]
 fn every_prelude_name_is_exported_at_the_root() {
     let lib = include_str!("../src/lib.rs");
-    let code: String = lib
+    let mut code: String = lib
         .lines()
-        .filter(|l| !l.trim_start().starts_with("//"))
+        .map(|l| l.split("//").next().unwrap())
         .collect::<Vec<_>>()
         .join("\n");
+    while let Some(i) = code.find("/*") {
+        let j = code[i..].find("*/").expect("a closed block comment") + i + 2;
+        code.replace_range(i..j, " ");
+    }
     let modules: Vec<&str> = code
         .split("mod ")
         .skip(1)

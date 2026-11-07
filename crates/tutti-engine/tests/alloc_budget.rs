@@ -279,7 +279,12 @@ fn rendering_blocks_allocates_nothing() {
 fn fan(nodes: usize, pooled: bool) -> (Editor, Executor) {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(256)));
     if pooled {
-        exec.set_pool(Some(std::sync::Arc::new(tutti_graph::WorkerPool::new(4))));
+        exec.set_pool(Some(std::sync::Arc::new(
+            tutti_graph::WorkerPool::builder()
+                .num_threads(4)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     ed.insert(NodeKey(0), "sine", ForkByClone(Sine::new(Hz(440.0))));
     for i in 1..=nodes as u64 {

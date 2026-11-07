@@ -46,6 +46,9 @@ mod build;
 // Tests only: the block read is the same whatever the block length.
 #[cfg(test)]
 mod block_render;
+// Tests only: a placed voice across a transport loop wrap.
+#[cfg(test)]
+mod wrap_fade;
 
 /// A voice built from a decoded wave, and the width a file's voice runs at.
 pub use build::{memory_voice, voice_width};

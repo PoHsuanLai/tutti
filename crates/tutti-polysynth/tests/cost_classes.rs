@@ -84,7 +84,12 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
 fn graph(workers: usize, declared: bool) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
-        exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
+        exec.set_pool(Some(Arc::new(
+            WorkerPool::builder()
+                .num_threads(workers)
+                .build()
+                .expect("a worker pool"),
+        )));
     }
     const SUM: NodeKey = NodeKey(1_000);
     let sources = LIGHT + HEAVY;

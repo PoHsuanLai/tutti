@@ -3415,7 +3415,7 @@ What each layer holds:
   helper to wake. It runs one job at a time: a `run` that finds it busy
   runs its job alone on the caller, and `Pool::try_run` runs nothing and
   returns `false`, for a caller with a fallback of its own (a CLAP plugin's
-  thread-pool request). `WorkerPoolBuilder::on_start` runs a host hook on each
+  thread-pool request). `WorkerPoolBuilder::start_handler` runs a host hook on each
   helper before it takes work: where RT priority, MMCSS or a macOS audio
   workgroup join goes. The engine does not promote threads itself, for the
   reason it does not promote the callback. The helpers must run at the
@@ -3518,7 +3518,7 @@ Evidence:
 Benchmarks (`tutti-nodes/benches/parallel_render.rs`, criterion medians,
 one 256-frame block at 48 kHz, this crate's `SvfFilterNode`s; a 4-core
 container, otherwise idle (load under 0.8 before each run); `1` is the
-serial executor with no pool, the others `WorkerPool::new(n)`; `best` is
+serial executor with no pool, the others `WorkerPool::builder().num_threads(n)`; `best` is
 the serial time over the fastest):
 
 | graph | 1 (serial) | 2 | 4 | 8 | best |
@@ -4564,7 +4564,7 @@ all three into fresh `Vec`s to keep only the restart flags.
 - **What it does not fix.** A yield moves a FIFO thread behind threads of
   its own priority only. A helper below the callback's priority (a
   `SCHED_OTHER` helper, the default when a host gives
-  `WorkerPoolBuilder::on_start` no hook) still waits for RT throttling,
+  `WorkerPoolBuilder::start_handler` no hook) still waits for RT throttling,
   as the middle row shows. `WorkerPool`'s docs now say the helpers must run
   at the callback's priority. Raising it is still the host's call.
 - **Not demonstrated:** the stall without pinning. Unpinned, the kernel's

@@ -143,11 +143,10 @@ fn watch_threads() -> usize {
 // - `AlsaWatch::drop` forgetting the stop descriptor and not joining:
 //   `dropping_devices_ends_the_watch_thread` fails;
 // - `devices` enumerating on a client it opens itself, not the watch's:
-//   `an_idle_devices_does_not_wake_itself` fails with about 20,000 wakes in a
-//   second;
+//   `an_idle_devices_does_not_wake_itself` fails (about 20,000 wakes, and as
+//   many clients opened, in a second);
 // - `AlsaEndpoints::list` opening a client per call:
-//   `asking_for_capabilities_does_not_wake_the_watch` fails (1,255 wakes for
-//   1,000 asks);
+//   `asking_for_capabilities_does_not_wake_the_watch` fails (1,000 opens);
 // - `SND_SEQ_PORT_CAP_SUBS_WRITE` back on the pump's port, or
 //   `SND_SEQ_PORT_CAP_SUBS_READ` on the output's:
 //   `the_engines_own_clients_are_not_listed` fails;
@@ -155,6 +154,10 @@ fn watch_threads() -> usize {
 //   `an_identical_device_that_takes_a_number_at_once...`,
 //   `an_input_held_when_its_device_vanishes...` and
 //   `devices::tests::a_handle_the_os_says_departed_is_a_new_device` fail;
+// - `Reporter::report` ignoring identity:
+//   `a_renamed_client_is_removed_and_added_under_its_new_name` fails;
+// - the `SND_SEQ_CLIENT_SYSTEM` skip removed:
+//   `the_kernels_system_client_is_not_listed` fails;
 // - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
 //   fails.
 //
@@ -265,10 +268,21 @@ fn opening_twice_gives_each_its_own_watch() {
 #[test]
 fn an_idle_devices_does_not_wake_itself() {
     let devices = Devices::open().unwrap();
-    // Other processes' clients may wake it a few times; a loop is thousands.
-    devices.wait(Duration::from_secs(1));
-    let wakes = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(wakes <= 20, "{wakes} wakes in one idle second");
+    // The watch must be running: without a sequencer there is no thread, and
+    // this would pass for the wrong reason.
+    settle_watch_threads(1);
+    let opens = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst);
+    // A full second: an event from another process returns `wait` early, and
+    // the loop goes on.
+    let until = Instant::now() + Duration::from_secs(1);
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        devices.wait(left);
+    }
+    // Every client opened is announced to the watch, which opens another to
+    // look, and so on: a loop is a client opened per wake. Other processes'
+    // wakes are no evidence either way, so this counts what this one does.
+    let opened = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst) - opens;
+    assert_eq!(opened, 0, "{opened} sequencer clients opened while idle");
 }
 
 /// Opening an input and an output on a device makes the engine's own clients
@@ -336,21 +350,31 @@ fn an_identical_device_that_takes_a_number_at_once_is_a_new_device() {
     drop(device);
 }
 
-/// A rename is the same device: the handle stayed. (A client renamed through
-/// `snd_seq_set_client_name` announces a change.)
+/// On ALSA a device is its name, so a renamed client is a different device:
+/// removed, then added under the new name, which closes a port held on the old.
+/// Mutation: `Reporter::report` ignoring the identity makes it `Changed` with
+/// the old id, and the wait for `Removed` times out.
 #[test]
-fn a_client_renamed_in_place_is_changed_and_keeps_its_id() {
+fn a_renamed_client_is_removed_and_added_under_its_new_name() {
     let devices = Devices::open().unwrap();
     let name = unique("rename");
     let device = plug(&name);
-    let before = info(until(&devices, added(&name)));
+    let mut backlog = Vec::new();
+    let before = info(until_in(&devices, &mut backlog, added(&name))).id;
     let renamed = format!("{name}-two");
     device.rename(&renamed);
-    let after = info(until(
-        &devices,
-        |e| matches!(e, DeviceEvent::Changed(i) if i.name == format!("{renamed}: port")),
-    ));
-    assert_eq!(after.id, before.id);
+    until_in(&devices, &mut backlog, removed(before.clone()));
+    let after = info(until_in(&devices, &mut backlog, added(&renamed)));
+    assert_ne!(after.id, before);
+}
+
+/// The kernel's own client is not a device. Mutation: dropping the
+/// `SND_SEQ_CLIENT_SYSTEM` skip lists `System: Announce` and `System: Timer`.
+#[test]
+fn the_kernels_system_client_is_not_listed() {
+    let devices = Devices::open().unwrap();
+    let system = |d: &DeviceInfo| matches!(d.id.identity(), Identity::Alsa { client, .. } if client == "System");
+    assert!(!devices.list().iter().any(system), "{:?}", devices.list());
 }
 
 /// A backend whose enumeration panics the second time it is asked.
@@ -404,9 +428,9 @@ fn a_watch_that_panics_reports_its_failure() {
     assert!(devices.watch_failure().unwrap().contains("panicked"));
 }
 
-/// Asking the backend what a device can carry enumerates, and must not announce
-/// anything for it. Mutation: `AlsaEndpoints::list` opening a client per call
-/// (as before) adds hundreds of wakes.
+/// Asking the backend what a device can carry enumerates, and must not open a
+/// client (each would be announced to every watch). Mutation:
+/// `AlsaEndpoints::list` opening a client per call fails with 1000 opens.
 #[test]
 fn asking_for_capabilities_does_not_wake_the_watch() {
     let devices = Devices::open().unwrap();
@@ -415,16 +439,10 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
     let id = info(until(&devices, added(&name))).id;
     // The first call opens the enumerating client, which announces itself once.
     assert!(devices.capability(&id).is_some());
-    devices.wait(Duration::from_millis(300));
-    let before = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
+    let opens = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst);
     for _ in 0..1000 {
         let _ = devices.capability(&id);
     }
-    devices.wait(Duration::from_millis(500));
-    let after = super::watch::WAKES.load(std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        after - before <= 200,
-        "{} wakes for 1000 capability asks",
-        after - before
-    );
+    let opened = super::client::OPENS.load(std::sync::atomic::Ordering::SeqCst) - opens;
+    assert_eq!(opened, 0, "{opened} sequencer clients opened for 1000 asks");
 }

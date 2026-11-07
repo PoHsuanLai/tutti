@@ -31,6 +31,8 @@ use tutti_midi_device::{EndpointId, OsDevice};
 pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 const EAGAIN: i32 = -11;
+/// Read errors a drain puts up with before it stops.
+const MAX_DRAIN_ERRORS: usize = 8;
 /// Linux truncates a thread name to 15 bytes.
 const THREAD_NAME: &str = "tutti-devwatch";
 
@@ -166,16 +168,26 @@ impl Announce {
     /// non-blocking.
     fn drain(&self) -> Vec<Departed> {
         let mut departed = Vec::new();
+        let mut failures = 0;
         loop {
             let mut event: *mut sys::snd_seq_ump_event_t = std::ptr::null_mut();
             // SAFETY: `seq` is open; the event is alsa-lib's, read before the
             // next call.
             let rc = unsafe { sys::snd_seq_ump_event_input(self.seq.raw(), &mut event) };
             if rc < 0 {
-                if rc != EAGAIN {
-                    tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
+                if rc == EAGAIN {
+                    return departed;
                 }
-                return departed;
+                // An overrun drops announcements; the read goes on past it, and
+                // the enumeration that follows every drain finds what changed
+                // (a reused number whose exit was dropped is the one thing it
+                // cannot). A descriptor that keeps failing ends the drain.
+                tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
+                failures += 1;
+                if failures >= MAX_DRAIN_ERRORS {
+                    return departed;
+                }
+                continue;
             }
             if event.is_null() {
                 continue;

@@ -6,6 +6,11 @@ use std::os::raw::c_int;
 use crate::error::Result;
 use tutti_alsa_ump_sys as sys;
 
+/// Sequencer clients this process has opened, for the tests that a quiet path
+/// opens none: every open is announced to every watch on the machine.
+#[cfg(test)]
+pub(super) static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// An open sequencer client that speaks UMP.
 ///
 /// Owns the `snd_seq_t` and closes it on drop.
@@ -47,6 +52,8 @@ impl SeqClient {
         // polls, so opens non-blocking) fail while output (blocking) worked,
         // from the same function, and reads as "no MIDI inputs" rather than as
         // an open failure.
+        #[cfg(test)]
+        OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let device = CString::new("hw").expect("literal has no NUL");
         let mut seq: *mut sys::snd_seq_t = std::ptr::null_mut();
         let mode = if nonblock { sys::SND_SEQ_NONBLOCK } else { 0 };

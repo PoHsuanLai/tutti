@@ -34,7 +34,8 @@ const IDLE_REST: Duration = Duration::from_millis(250);
 
 /// DIAG
 #[cfg(test)]
-pub(super) static NOTIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
+pub(super) static NOTIFICATIONS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0); // DIAG
 #[cfg(not(test))]
 static NOTIFICATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0); // DIAG
 

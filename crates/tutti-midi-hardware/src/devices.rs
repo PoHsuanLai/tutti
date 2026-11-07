@@ -8,12 +8,13 @@
 //! The queue is unbounded: an app that never polls keeps one small event per
 //! hot-plug.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, OsChange, OsDevice,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, Direction, EndpointId, Identity, OsChange,
+    OsDevice,
 };
 use tutti_midi_types::MidiOut;
 
@@ -94,10 +95,12 @@ impl core::fmt::Debug for ChangeSink {
 /// reported gone.
 ///
 /// An OS reuses a handle: ALSA hands a new client the number of one that just
-/// exited, so two looks that straddle both see one handle. The OS says when a
-/// handle's device left (`departed`), and the handle is then reported gone
-/// before it is reported present again, as a new device. A handle that stays
-/// and whose name changes is the same device, renamed.
+/// exited, so two looks that straddle both see one handle. A handle that now
+/// names another identity is a different device, and so is one the OS says
+/// departed (`departed`): each is reported gone before it is reported present
+/// again. Where the identity is the name (ALSA), a rename is therefore a
+/// removal and an addition, and closes a port held on the device; where it
+/// survives a rename (CoreMIDI's unique id), the device is `Changed`.
 #[cfg_attr(
     not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
     allow(
@@ -108,7 +111,7 @@ impl core::fmt::Debug for ChangeSink {
 #[derive(Debug)]
 pub(crate) struct Reporter {
     sink: ChangeSink,
-    known: BTreeSet<EndpointId>,
+    known: BTreeMap<EndpointId, Identity>,
 }
 
 #[cfg_attr(
@@ -122,23 +125,29 @@ impl Reporter {
     pub(crate) fn new(sink: ChangeSink) -> Self {
         Self {
             sink,
-            known: BTreeSet::new(),
+            known: BTreeMap::new(),
         }
     }
 
     /// Lists `present` as the devices there already were.
     pub(crate) fn seed(&mut self, present: Vec<OsDevice>) {
-        self.known = present.iter().map(|d| d.handle).collect();
+        self.known = present
+            .iter()
+            .map(|d| (d.handle, d.identity.clone()))
+            .collect();
         self.sink.seed(present);
     }
 
     /// Reports `present` as the whole device list: every device in it, and the
-    /// departure of each known one that is not, or that `departed` names. The
-    /// table drops what repeats.
+    /// departure of each known one that is not, that has another identity now,
+    /// or that `departed` names. The table drops what repeats.
     pub(crate) fn report(&mut self, present: Vec<OsDevice>, departed: impl Fn(EndpointId) -> bool) {
-        let now: BTreeSet<EndpointId> = present.iter().map(|d| d.handle).collect();
-        for handle in &self.known {
-            if !now.contains(handle) || departed(*handle) {
+        let now: BTreeMap<EndpointId, Identity> = present
+            .iter()
+            .map(|d| (d.handle, d.identity.clone()))
+            .collect();
+        for (handle, identity) in &self.known {
+            if now.get(handle) != Some(identity) || departed(*handle) {
                 self.sink.send(OsChange::Gone(*handle));
             }
         }

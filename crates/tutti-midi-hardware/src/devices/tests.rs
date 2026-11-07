@@ -32,8 +32,10 @@ fn fake() -> (Devices, FakeCounters) {
 //   fails;
 // - `Reporter::report` ignoring `departed`:
 //   `a_handle_the_os_says_departed_is_a_new_device` fails;
+// - `Reporter::report` ignoring the identity:
+//   `a_handle_under_another_identity_is_a_different_device` fails;
 // - `Reporter::report` sending `Gone` when only the name changed:
-//   `a_handle_that_stays_under_a_new_name_is_a_rename` fails.
+//   `a_handle_with_the_same_identity_and_a_new_name_is_changed` fails.
 
 fn id_of(devices: &Devices, name: &str) -> DeviceId {
     devices
@@ -270,11 +272,29 @@ fn a_handle_the_os_says_departed_is_a_new_device() {
     );
 }
 
-/// A handle that stays and whose name changes is the same device renamed.
-/// Mutation: `report` sending `Gone` for a changed name makes this
-/// `removed`, `added`.
+/// Where the identity is the name, a handle that stays under a new name is a
+/// different device: removed, then added. Mutation: `report` ignoring identity
+/// makes it `changed`.
 #[test]
-fn a_handle_that_stays_under_a_new_name_is_a_rename() {
+fn a_handle_under_another_identity_is_a_different_device() {
+    let (shared, mut reporter) = reporter();
+    reporter.report(os_devices(&[endpoint(7, "Old")], &[]), |_| false);
+    reporter.report(os_devices(&[endpoint(7, "New")], &[]), |_| false);
+    assert_eq!(
+        shape(&shared),
+        [
+            ("added", "Old".into()),
+            ("removed", "Old".into()),
+            ("added", "New".into())
+        ]
+    );
+}
+
+/// Where the identity survives a rename, the device is `Changed`. Mutation:
+/// `report` sending `Gone` when only the name changed makes it `removed`,
+/// `added`.
+#[test]
+fn a_handle_with_the_same_identity_and_a_new_name_is_changed() {
     let (shared, mut reporter) = reporter();
     reporter.report(os_devices(&[endpoint(7, "Old")], &[]), |_| false);
     let mut renamed = endpoint(7, "Old");

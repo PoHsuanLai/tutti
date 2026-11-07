@@ -75,7 +75,8 @@ pub(super) fn endpoints(seq: &SeqClient, direction: Direction) -> Vec<EndpointIn
         sys::snd_seq_client_info_set_client(cinfo, -1);
         while sys::snd_seq_query_next_client(seq.raw(), cinfo) >= 0 {
             let client = sys::snd_seq_client_info_get_client(cinfo);
-            if client == own_id {
+            // The kernel's own client (Timer, Announce) is not a device.
+            if client == own_id || client == sys::SND_SEQ_CLIENT_SYSTEM {
                 continue;
             }
             let client_name = cstr(sys::snd_seq_client_info_get_name(cinfo))

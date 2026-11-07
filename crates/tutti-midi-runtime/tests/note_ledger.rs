@@ -448,8 +448,7 @@ fn random_relay(seed: u64, ledger: bool) -> usize {
         capacity: 8,
     };
     let (tally, _) = through(blocks, relay, 33);
-    let held = tally.lock().unwrap().held.len();
-    held
+    tally.lock().unwrap().held.len()
 }
 
 /// Whatever the port refuses, a relay through the ledger leaves no note

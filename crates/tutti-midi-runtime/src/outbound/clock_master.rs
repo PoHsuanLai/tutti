@@ -494,9 +494,7 @@ impl ClockMaster {
 
         self.mtc.cycle.store(cycle, Ordering::Release);
         self.mtc.next.store(next, Ordering::Release);
-        self.mtc
-            .frames
-            .store(at + len as u64, Ordering::Release);
+        self.mtc.frames.store(at + len as u64, Ordering::Release);
     }
 }
 

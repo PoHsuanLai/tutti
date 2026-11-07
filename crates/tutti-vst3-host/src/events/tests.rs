@@ -1034,7 +1034,7 @@ mod message {
     /// Each System message is carried as its MIDI 1.0 bytes; Song Position
     /// is LSB first.
     ///
-    /// Mutation (run): `system_bytes` taking `[lsb, msb]` the other way
+    /// Mutation (run): `System::bytes` taking `[lsb, msb]` the other way
     /// round for Song Position → fails.
     #[test]
     fn a_system_message_is_carried_as_its_midi1_bytes() {
@@ -1236,25 +1236,26 @@ mod message {
     fn a_bank_is_msb_then_lsb() {
         let banked =
             MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085));
+        let padded = |event| midi::bank_program(event).map(|messages| messages.map(|m| m.padded()));
         assert_eq!(
-            midi::bank_program(&banked),
+            padded(&banked),
             Some([[0xB1, 0, 1], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
         // Spec words: MSB 2 at bits 15-8, LSB 5 at bits 7-0.
         let spec_words = MidiEvent::from_ump(0, &[0x41C1_0001, 0x0900_0205]);
         assert_eq!(
-            midi::bank_program(&spec_words),
+            padded(&spec_words),
             Some([[0xB1, 0, 2], [0xB1, 32, 5], [0xC1, 9, 0]])
         );
         let plain = MidiEvent::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, None);
-        assert_eq!(midi::bank_program(&plain), None);
+        assert_eq!(padded(&plain), None);
     }
 
     /// A MIDI 1.0 message a plugin sends as raw bytes is widened on the way
     /// in: a Note On at velocity 0 is a Note Off at 0x8000, and a system
     /// message is forwarded unchanged.
     ///
-    /// Mutation (run): `widen_midi1` returning `event` for `Message::Midi1`
+    /// Mutation (run): `widened` returning its input for `Message::Midi1`
     /// → the packet stays Channel Voice 1 → fails.
     #[test]
     fn raw_midi1_from_a_plugin_is_widened() {
@@ -1286,7 +1287,7 @@ mod message {
     /// host has no worker pool: the calling thread is the only participant.
     ///
     /// Mutations (run): a `Box::new(message)` in `MidiEncoder::message`, one
-    /// in `system_bytes`, and one in `widen_midi1` → `assert_no_alloc` aborts
+    /// in `bank_program`, and one in `widened` → `assert_no_alloc` aborts
     /// each time.
     #[test]
     fn every_kind_of_message_is_read_without_allocating() {
@@ -1412,6 +1413,37 @@ mod message {
                 let _ = event.to_midi();
             }
             let _ = legacy.to_midi();
+        });
+    }
+
+    /// **A plugin's malformed MIDI bytes are dropped without allocating.** A
+    /// stray `0xF7`, a truncated Note On, an undefined status, a data byte with
+    /// its top bit set each read as nothing, inside
+    /// `assert_no_alloc`; a good message beside them still reads. With the
+    /// `midly` parse behind `from_midi1_bytes`, `[0xF7, 1, 2]` and `[0x90, 60]`
+    /// aborted a debug build here.
+    ///
+    /// Mutation (run): `Midi1Parser::message` replaced by `midly`'s
+    /// `LiveEvent::parse(..).ok()` in `decode` → the process aborts on
+    /// `[0xF7, 1, 2]`.
+    #[test]
+    fn a_stray_status_from_a_plugin_allocates_nothing() {
+        let hostile: Vec<Event> = [
+            &[0xF7, 1, 2][..],
+            &[0x90, 60],
+            &[0x90, 0x80, 1],
+            &[0xF4, 1, 2],
+            &[0xB0, 7],
+        ]
+        .into_iter()
+        .map(|bytes| Event::at(0, Payload::Data(Data::new(0, bytes).unwrap())))
+        .collect();
+        let good = Event::at(3, Payload::Data(Data::inline(0, [0xB0, 7, 99])));
+        assert_no_alloc::assert_no_alloc(|| {
+            for event in &hostile {
+                assert!(event.to_midi().is_none(), "{event:?} read as a message");
+            }
+            assert!(good.to_midi().is_some());
         });
     }
 

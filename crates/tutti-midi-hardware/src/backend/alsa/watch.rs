@@ -15,6 +15,7 @@
 //! announce its own start, port and exit to this very port, and the watch would
 //! wake itself for ever.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_int, c_short, c_uint};
@@ -34,6 +35,8 @@ use tutti_midi_device::{EndpointId, OsDevice};
 pub(super) static WAKES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 const EAGAIN: i32 = -11;
+/// The input FIFO overran: announcements were lost.
+const ENOSPC: i32 = -28;
 /// Read errors in a row a drain puts up with before it stops.
 const MAX_DRAIN_ERRORS: usize = 8;
 /// Looks a settle takes before it reports the last one.
@@ -92,8 +95,32 @@ impl Departed {
 struct Drained {
     /// What left the sequencer.
     departed: Vec<Departed>,
-    /// Whether the queue held any event at all.
+    /// Whether the queue held any event at all, or a read failed: a failed read
+    /// is not a quiet one.
     any: bool,
+    /// Whether the queue overran, so announcements were lost.
+    overrun: bool,
+}
+
+impl Drained {
+    /// Records a failed read other than `-EAGAIN`. The kernel reports an
+    /// overrun of the input FIFO as `-ENOSPC` (alsa-lib's `snd_seq_event_input`
+    /// documents it; the kernel's `snd_seq_read` clears the FIFO after it).
+    fn failed(&mut self, rc: c_int) {
+        self.any = true;
+        self.overrun |= rc == ENOSPC;
+    }
+}
+
+/// What a settle found.
+#[derive(Debug)]
+struct Settled<T> {
+    /// The last look.
+    seen: T,
+    /// Every departure read on the way.
+    departed: Vec<Departed>,
+    /// Whether any read overran.
+    overrun: bool,
 }
 
 /// Looks at the sequencer until a look is followed by a read that finds
@@ -106,23 +133,125 @@ struct Drained {
 /// departures read before it agree, and a departure names a device the previous
 /// settled look held. A read that finds events looks again, up to
 /// [`MAX_SETTLE`] times: a sequencer that never quiets reports the last look
-/// with what was read.
+/// with what was read. An exit the kernel posts after the final read (it frees
+/// the number first) is what [`Owed`] covers.
 fn settle<T>(
     first: Drained,
     mut drain: impl FnMut() -> Drained,
     look: impl Fn() -> T,
-) -> (T, Vec<Departed>) {
+) -> Settled<T> {
     let mut departed = first.departed;
+    let mut overrun = first.overrun;
     let mut seen = look();
+    let mut quiet = false;
     for _ in 0..MAX_SETTLE {
         let more = drain();
         if !more.any {
+            quiet = true;
             break;
         }
         departed.extend(more.departed);
+        overrun |= more.overrun;
         seen = look();
     }
-    (seen, departed)
+    if !quiet {
+        tracing::debug!("ALSA announce did not quiet in {MAX_SETTLE} looks");
+    }
+    Settled {
+        seen,
+        departed,
+        overrun,
+    }
+}
+
+/// Exits the kernel owes the watch: it frees a client number and only then
+/// posts the exit, so a new client can take the number, and a look can show it,
+/// before the old owner's exit is read. When a report finds the owner of a
+/// number replaced without having read that owner's exits, it records one of
+/// each, and the exit that arrives later pays the debt instead of reaching the
+/// number's new owner. A replacement that is identical to its predecessor is
+/// not seen as one, so its exits are read as the departure they are.
+///
+/// Debts are only as good as the announcements: an overrun may have lost the
+/// exits they wait for, so [`forget`](Self::forget) clears them all.
+#[derive(Debug, Default)]
+struct Owed {
+    ports: BTreeMap<(c_int, c_int), u32>,
+    clients: BTreeMap<c_int, u32>,
+}
+
+impl Owed {
+    /// The departures that are not an owed exit arriving.
+    fn pay(&mut self, departed: Vec<Departed>) -> Vec<Departed> {
+        departed
+            .into_iter()
+            .filter(|d| {
+                let debt = match *d {
+                    Departed::Port(c, p) => self.ports.get_mut(&(c, p)),
+                    Departed::Client(c) => self.clients.get_mut(&c),
+                };
+                match debt {
+                    Some(n) if *n > 0 => {
+                        *n -= 1;
+                        false
+                    }
+                    _ => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Records the exits a report leaves owing. `kept` is what it was told
+    /// departed, `gone` the handles it reported gone, `present` the handles of
+    /// the look it reported.
+    fn owe(&mut self, kept: &[Departed], gone: &[EndpointId], present: &BTreeSet<EndpointId>) {
+        let mut clients = BTreeSet::new();
+        for &handle in gone {
+            let (client, port) = unpack_id(handle);
+            if !kept.iter().any(|d| d.names(handle)) {
+                *self.ports.entry((client, port)).or_default() += 1;
+            }
+            // A port that closed on a client that lives owes no client exit.
+            let replaced = present.contains(&handle);
+            let client_gone = !present.iter().any(|&h| unpack_id(h).0 == client);
+            if (replaced || client_gone) && !kept.contains(&Departed::Client(client)) {
+                clients.insert(client);
+            }
+        }
+        for client in clients {
+            *self.clients.entry(client).or_default() += 1;
+        }
+    }
+
+    fn forget(&mut self) {
+        self.ports.clear();
+        self.clients.clear();
+    }
+}
+
+/// One wake of the watch: settles, pays what is owed, reports, and records what
+/// the report left owing.
+fn step(
+    reporter: &mut Reporter,
+    owed: &mut Owed,
+    first: Drained,
+    drain: impl FnMut() -> Drained,
+    snapshot: impl Fn() -> Vec<OsDevice>,
+) {
+    let Settled {
+        seen: present,
+        departed,
+        overrun,
+    } = settle(first, drain, snapshot);
+    let kept = if overrun {
+        owed.forget();
+        departed
+    } else {
+        owed.pay(departed)
+    };
+    let handles: BTreeSet<EndpointId> = present.iter().map(|d| d.handle).collect();
+    let gone = reporter.report(present, |id| kept.iter().any(|d| d.names(id)));
+    owed.owe(&kept, &gone, &handles);
 }
 
 /// Why `Announce::wait` returned.
@@ -239,11 +368,11 @@ impl Announce {
                 if rc == EAGAIN {
                     return found;
                 }
-                // An overrun drops announcements; the read goes on past it, and
-                // the enumeration that follows every drain finds what changed
-                // (a reused number whose exit was dropped is the one thing it
-                // cannot). A descriptor that keeps failing ends the drain.
+                // An overrun drops announcements and is not a quiet read: it
+                // makes the settle look again and clears what is owed. A
+                // descriptor that keeps failing ends the drain.
                 tracing::debug!("ALSA announce: {}", super::client::strerror(rc));
+                found.failed(rc);
                 if errors.failed() {
                     return found;
                 }
@@ -309,6 +438,7 @@ pub(super) fn start(
     let failures = sink.clone();
     let mut reporter = Reporter::new(sink);
     reporter.seed(snapshot(&announce.seq));
+    let mut owed = Owed::default();
     let thread = std::thread::Builder::new()
         .name(THREAD_NAME.to_string())
         .spawn(move || {
@@ -318,9 +448,13 @@ pub(super) fn start(
                         Ok(Woken::Announced(first)) => {
                             #[cfg(test)]
                             WAKES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            let (present, departed) =
-                                settle(first, || announce.drain(), || snapshot(&announce.seq));
-                            reporter.report(present, |id| departed.iter().any(|d| d.names(id)));
+                            step(
+                                &mut reporter,
+                                &mut owed,
+                                first,
+                                || announce.drain(),
+                                || snapshot(&announce.seq),
+                            );
                         }
                         Ok(Woken::Stopped) => return None,
                         Err(e) => return Some(e),

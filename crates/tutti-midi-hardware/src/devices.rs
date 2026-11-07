@@ -221,22 +221,31 @@ impl Reporter {
 
     /// Reports `present` as the whole device list: every device in it, and the
     /// departure of each known one that is not, that has another identity now,
-    /// or that `departed` names. The table drops what repeats.
-    pub(crate) fn report(&mut self, present: Vec<OsDevice>, departed: impl Fn(EndpointId) -> bool) {
+    /// or that `departed` names. The table drops what repeats. Returns the
+    /// handles reported gone.
+    pub(crate) fn report(
+        &mut self,
+        present: Vec<OsDevice>,
+        departed: impl Fn(EndpointId) -> bool,
+    ) -> Vec<EndpointId> {
         let now: BTreeMap<EndpointId, Identity> = present
             .iter()
             .map(|d| (d.handle, d.identity.clone()))
             .collect();
-        let gone = self
+        let gone: Vec<EndpointId> = self
             .known
             .iter()
             .filter(|&(handle, identity)| now.get(handle) != Some(identity) || departed(*handle))
-            .map(|(handle, _)| OsChange::Gone(*handle));
+            .map(|(handle, _)| *handle)
+            .collect();
         let changes: Vec<_> = gone
+            .iter()
+            .map(|&handle| OsChange::Gone(handle))
             .chain(present.into_iter().map(OsChange::Present))
             .collect();
         self.sink.send_all(changes);
         self.known = now;
+        gone
     }
 }
 

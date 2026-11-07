@@ -200,8 +200,9 @@ fn watch_threads() -> usize {
 // - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
 //   fails.
 //
-// - `watch::settle` taking one look, the order the watch had before (a drain, a
-//   look): `a_device_that_takes_a_departed_clients_number_is_added_once` fails
+// - `watch::settle` taking one look and `step` not calling `owed.owe` (the order
+//   the watch had before: a drain, a look):
+//   `a_device_that_takes_a_departed_clients_number_is_added_once` fails
 //   when four copies of it run at once (3 of 4 failed, 12 of 12 pass with the
 //   fix); alone and idle the race is not hit and it passes. The review that
 //   found the bug saw the extra `Removed` in 139 of 300 cycles.
@@ -408,12 +409,16 @@ fn the_engines_own_clients_are_not_listed() {
     drop((input, output));
 }
 
-/// The engine's clients are told by their ports, not their names: a device may
-/// be called `tutti-in`. The name carries the process id, as every device
-/// here does, so a parallel copy of the suite does not share it: the engine's
-/// own client is `tutti-in` with that prefix, and a name that starts with it is
-/// what a skip by name would hide. Mutation: skipping clients whose name starts
-/// with `tutti-` hides it.
+/// The engine's clients are told by their capabilities (the pump's and the
+/// output's ports are not subscribable), not their names: a device may be
+/// called like one. The engine opens exactly `tutti-in` and `tutti-out`
+/// (`input.rs`, `output.rs`); this device is `tutti-in-<pid>`, because client
+/// names are global to the machine and a fixed `tutti-in` is shared by parallel
+/// copies of the suite. So the exact-name case is given up: a skip of the
+/// single name `tutti-in` would not be caught here, though a skip by the
+/// `tutti-` prefix is. No function filters by name (there is nothing to unit
+/// test); the listing is by capability. Mutation: skipping clients whose name
+/// starts with `tutti-` hides it.
 #[test]
 fn a_device_called_like_an_engine_client_is_listed() {
     let devices = Watched::open();
@@ -556,8 +561,15 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
 /// device must be added once and never removed while it lives. One `Devices`,
 /// `A` dropped and `B` plugged at once, `B` held for 150 ms.
 ///
-/// Mutation: see the record above (`watch::settle` taking one look reports
-/// `Added, Removed, Added` for `B`, under load).
+/// The kernel frees a number before it posts the exit, so the exit can arrive
+/// after the look that shows `B`; `Owed` is what pays it. The test holds three
+/// clients for six seconds. The sequencer has 64 dynamic client slots, so
+/// `.config/nextest.toml` runs the tests of this file at most four at a time
+/// (test group `sequencer`): parallel copies of the suite ran out of slots
+/// (`snd_seq_open` ENOMEM) with this test beside them.
+///
+/// Mutation: see the record above (reports `Added, Removed, Added` for `B`,
+/// under load).
 #[test]
 fn a_device_that_takes_a_departed_clients_number_is_added_once() {
     let devices = Watched::open();

@@ -227,15 +227,18 @@ fn drive(
 
 proptest! {
     // Mutation record, each seen to fail, then restored:
-    // - `present` returns `Added` for a known handle (skips the by_handle
-    //   lookup): `added_and_removed_alternate_per_id` fails;
-    // - `gone` keeps the `by_handle` entry: `list_agrees_with_the_os` fails;
     // - the ordinal search starts at 1: `two_identical_devices_get_distinct_ordinals`
-    //   fails;
-    // - `present` skips the `Changed` for a rename: `list_agrees_with_the_os`
-    //   fails on the name;
-    // - `present` overwrites the id on a rename: `a_rename_is_changed_and_keeps_the_id`
-    //   fails.
+    //   and `ids_order_by_identity_then_ordinal` fail;
+    // - `gone` leaves the `by_handle` entry: `list_agrees_with_the_os` and
+    //   `a_re_enumeration_is_silent_and_keeps_ids` fail;
+    // - `present` never reports a rename (`unchanged` always true):
+    //   `a_rename_is_changed_and_keeps_the_id`, `a_direction_change_is_changed`
+    //   and `list_agrees_with_the_os` fail;
+    // - `present` never finds a known handle (every Present is new):
+    //   `a_repeat_of_a_known_state_is_none`, `a_re_enumeration_changes_nothing`
+    //   and `a_re_enumeration_is_silent_and_keeps_ids` fail;
+    // - a rename returns `Added` instead of `Changed`:
+    //   `added_and_removed_alternate_per_id` fails.
     #[test]
     fn added_and_removed_alternate_per_id(changes in prop::collection::vec(change(), 0..60)) {
         let mut listed: BTreeMap<DeviceId, DeviceInfo> = BTreeMap::new();

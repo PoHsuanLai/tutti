@@ -278,7 +278,7 @@ pub use plan::{
     ParamPortOp, Placement, Plan, PlanUnit, Span, UnitIdx, Value, ZERO_SLOT,
 };
 pub use play::PlayClock;
-pub use pool::{OnStart, WorkerPool, WorkerPoolBuilder};
+pub use pool::{WorkerPool, WorkerPoolBuilder};
 pub use preroll::PrerollTable;
 // The reading is a value type, `tutti-types`' (the modulation compiler
 // carries one without naming the graph); the clock that keeps it is here.

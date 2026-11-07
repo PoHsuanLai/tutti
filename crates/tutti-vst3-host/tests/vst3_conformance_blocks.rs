@@ -1,6 +1,6 @@
 //! VST3 host conformance: The blocks the host builds, driven through the real process path, are spec-clean: steady and partial blocks, 64-bit, transport, notes, parameter changes and MIDI.
 //!
-//! The harness (HostCheck's C ABI, the plugin lock, discovery, `drive_block`) is
+//! The harness (HostCheck's C ABI, the HostCheck lock, discovery, `drive_block`) is
 //! `support/conformance.rs`, which also carries the suite's overview.
 
 #![cfg(feature = "conformance")]
@@ -55,7 +55,6 @@ fn report_multi_class_bundle_coverage() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
 
     let mut bundles = 0usize;
     let mut audio_classes = 0usize;
@@ -119,7 +118,6 @@ fn every_audio_class_survives_a_block() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
 
     let mut driven = 0usize;
     let mut failures = Vec::new();
@@ -134,8 +132,7 @@ fn every_audio_class_survives_a_block() {
             .map(|c| c.name.clone())
             .collect();
         // Drop before instantiating: `Vst3Loaded` opens its own handle, and
-        // holding two to one DSO across module init/exit is the load/unload
-        // race `PLUGIN_LOCK` exists to avoid.
+        // holding two to one DSO is needless.
         drop(library);
 
         for name in names {
@@ -249,7 +246,6 @@ fn sidechain_input_buses_are_staged() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let path = require_host_checker();
     let inst = Active::<f32>::load(&path, 48_000.0, 512)
         .unwrap_or_else(|e| panic!("host-checker failed to load: {e:?}"));
@@ -287,7 +283,6 @@ fn steady_state_block_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -339,7 +334,6 @@ fn partial_block_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -397,7 +391,6 @@ fn f64_processing_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -466,7 +459,6 @@ fn transport_across_blocks_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -529,7 +521,6 @@ fn note_lifecycle_across_blocks_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -623,7 +614,6 @@ fn parameter_changes_are_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let mut failures = Vec::new();
     // Every plugin that could not be driven at all. Counted rather than merely
     // printed: `failures` holds only *spec violations*, so a run where nothing
@@ -691,7 +681,6 @@ fn midi_event_list_is_spec_clean() {
     if !harness_ready() {
         return;
     }
-    let _plugins = plugin_guard();
     let midi = [
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000).with_frame_offset(200),
         MidiEvent::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000).with_frame_offset(50),

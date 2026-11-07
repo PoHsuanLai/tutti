@@ -220,6 +220,8 @@ bench *ARGS:
     cargo bench --locked -p tutti-cpal      --bench audio_callback  {{ARGS}}
     cargo bench --locked -p tutti-export    --bench offline_render  {{ARGS}}
     cargo bench --locked -p tutti-polysynth --bench polysynth       {{ARGS}}
+    cargo bench --locked -p tutti-ump       --bench codec            {{ARGS}}
+    cargo bench --locked -p tutti-midi-types --bench message_baseline {{ARGS}}
     cargo bench --locked -p tutti-sampler   --bench voice_pool      {{ARGS}}
     # `--features vst2`: the only plugin path criterion can measure honestly.
     # Everything else is a subprocess — see the bench's own header.

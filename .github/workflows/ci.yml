@@ -96,7 +96,7 @@ jobs:
       # The same for `tutti-session`, which keeps every module private too.
       - run: scripts/check-canonical-paths.sh tutti_session builder device error export graph midi modulation node plugin session watch
       # And `tutti-ump`, which keeps its modules private.
-      - run: scripts/check-canonical-paths.sh tutti_ump cc_number midi_channel midi_group ump
+      - run: scripts/check-canonical-paths.sh tutti_ump cc_number decode encode field message midi_channel midi_group ump
       # And `tutti-dsp`: its modules are private, the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_dsp allpass analysis buffer control convolver delay dynamics fft filter swept_delay waveshape resample
       # The vendored VST3 SDK is three Steinberg submodules, documented as
@@ -405,6 +405,8 @@ jobs:
           cargo bench --locked -p tutti-cpal      --bench audio_callback -- --test
           cargo bench --locked -p tutti-export    --bench offline_render -- --test
           cargo bench --locked -p tutti-polysynth --bench polysynth      -- --test
+          cargo bench --locked -p tutti-ump       --bench codec          -- --test
+          cargo bench --locked -p tutti-midi-types --bench message_baseline -- --test
           cargo bench --locked -p tutti-sampler   --bench voice_pool     -- --test
           cargo bench --locked -p tutti-plugin --features vst2 --bench vst2_in_process -- --test
           cargo bench --locked -p arc-lend --bench lend -- --test

@@ -138,10 +138,16 @@
 //! assert_eq!(app.world_mut().query::<&AudioPump<f32>>().iter(app.world()).count(), 1);
 //! ```
 //!
-//! Two things this cannot do for you. The tap flows from the commit that
+//! Three things this cannot do for you. The tap flows from the commit that
 //! carries it (the frame's own, once the graph was edited), and it is fed by
 //! the graph's render, so it records the signal *before* the engine's declick
-//! fader and the fold to the device's width. And the rate is yours to match:
+//! fader and the fold to the device's width: a transport-gated source (a
+//! clip, the click) steps from full level to silence at a stop where the
+//! device output fades, so a take across a stop has a click there (a source
+//! that keeps running has none). A pump that falls behind loses what the ring
+//! could not hold and the file closes up over the gap;
+//! [`PumpFinished::lost`](crate::graph::PumpFinished::lost) says how many
+//! frames. And the rate is yours to match:
 //! a tap has no device to ask, so it is
 //! [`AudioConfig`](crate::graph::AudioConfig) that knows, not this module.
 

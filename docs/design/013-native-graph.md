@@ -344,7 +344,7 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   `Topology::validate` refuses a lane naming a node port or global input that
   does not exist (`Invalid::TapOutOfRange`); `Editor::remove` turns a lane on a
   removed node into silence, as it does an output.
-- **The compiler.** One `Op::Tap { lane, src }` per source, beside
+- **The compiler.** One `Op::Tap { tap, srcs }` per tap, beside
   `Op::Output`, plus, for `TapAlign::ToOutput`, a `Delay` (`DelayKey::Tap`)
   with the compensation an output of the same source gets, so an aligned tap
   of the outputs' sources is the output channels sample for sample. `Raw` reads
@@ -352,19 +352,28 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   nothing: a closed tap costs the audio thread nothing, and the closed plan has
   exactly the ops of a graph that never had a tap (`tests/tap.rs`).
 - **The op.** `tap_op` is written once over `AudioSlots` and called from
-  `exec.rs` and `par.rs`; `tutti-graph` stays `#![forbid(unsafe_code)]`. It
-  pushes the slot into the lane's `ringbuf` ring (the crate already depends on
-  it for the editor queue; no new lock-free structure, so no `tutti-rt`
-  addition and no loom model). What the ring refuses is counted, once for the
-  tap whatever its width (lane 0 holds the counter, the lanes fill and drain in
-  step), and read with `TapReader::take_lost`.
-- **The hand-over.** `Editor::open_tap` makes the reader and the producers; the
-  producers ride the next `Commit` into the executor like a unit, and a lane
+  `exec.rs` and `par.rs`; `tutti-graph` stays `#![forbid(unsafe_code)]`. It is
+  **one op per tap**, reading every lane's slot (`Op::Tap { tap, srcs }`), so
+  the compiler schedules it after all the tap's sources and aligning delays and
+  before any in-place overwrite of them, and the parallel executor's claim on
+  the tap's writer is a single writer. The lanes are `ringbuf` rings (the
+  crate already depends on it for the editor queue; no new lock-free
+  structure, so no `tutti-rt` addition and no loom model). The op takes the
+  fewest frames any ring has room for, pushes exactly that many to every lane,
+  and counts the remainder lost, once (`TapReader::take_lost`); the reader
+  pops the fewest frames any lane holds. One thread writes and one reads, so a
+  ring's vacancy only grows under the reader and its occupancy only grows
+  under the writer: each count is an underestimate at worst, and **the lanes
+  cannot tear** (frame `n` of every lane is the same frame, whatever the
+  reader's speed). Independent per-lane pushes did tear under a draining
+  reader: hundreds of frames in a run, with only lane 0 counting.
+- **The hand-over.** `Editor::open_tap` makes the reader and the writer; the
+  writer rides the next `Commit` into the executor like a unit, and a tap
   the new plan no longer names stays in the old `State`, retired to the control
   side with it. Nothing on the audio thread allocates, locks or frees: a
-  `TapLane` and a `TapReader` both `RtScope::check_outside` in their `Drop`.
+  `TapWriter` and a `TapReader` both `RtScope::check_outside` in their `Drop`.
   A tap flows from the commit that carries it; `open_tap` returns at once.
-- **The reader dropped first.** The lane then finds no reader (`read_is_held`)
+- **The reader dropped first.** The tap then finds no reader (`read_is_held`)
   and writes nothing; the tap stays in the plan until `Editor::close_tap` or
   `Editor::reap_taps`, which `tutti-session` runs in its `Reclaim` phase. The
   ring is freed with the producer, at the editor's collect. Dropped last, the
@@ -374,7 +383,13 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
   loop drains between blocks, loses nothing. That is the loop being
   synchronous, not the ring being unbounded.
 - **What a tap sees.** The signal before the engine's declick fader and the
-  fold to the device width: it is the graph's output. The reference
+  fold to the device width: it is the graph's output. At a transport stop a
+  transport-gated source ends on the stop's frame, so the tap steps by the
+  source's whole level in one frame where the output fades (measured in
+  `tutti-session/tests/engine.rs`); the post-fade write is the fix. A latency
+  change that resizes an aligned tap's delay shifts the stream with no marker,
+  as it does an output, and a lane naming a source that does not exist fails
+  every commit until the tap is closed. The reference
   interpreter knows no taps, so the differential suite checks that a tap changes
   nothing and that an aligned tap of the outputs is the outputs
   (`an_aligned_tap_of_the_outputs_is_the_output`), serial and parallel.

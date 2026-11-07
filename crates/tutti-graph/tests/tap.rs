@@ -674,8 +674,10 @@ fn lanes_do_not_tear_under_a_concurrent_drain() {
 /// The same, on the pool: the chains run in different tasks and the tap op
 /// joins them, and every participant is inside `assert_no_alloc`.
 ///
-/// Mutation (run, recorded here): as above, and `Op::Tap` not scheduled after
-/// every lane's chain is covered by the aligned-tap tests.
+/// Mutation (run, recorded here): as above, and the compiler not registering
+/// the tap op as a reader of its lanes' values (`read_aref` dropped) -> the
+/// tap is scheduled with no order against the chains and every tap test
+/// fails.
 #[test]
 fn lanes_do_not_tear_on_the_pool() {
     for workers in [2, 4] {

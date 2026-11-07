@@ -437,8 +437,17 @@ impl Editor {
     /// frames; what the reader does not drain in time is counted
     /// ([`TapReader::take_lost`]).
     ///
-    /// Opening an id again replaces it. A tap the topology does not name
-    /// compiles to nothing, so a closed tap costs the audio thread nothing.
+    /// Opening an id again replaces it: the new reader is fed from the next
+    /// commit and the old one gets nothing more. A tap the topology does not
+    /// name compiles to nothing, so a closed tap costs the audio thread
+    /// nothing.
+    ///
+    /// Nothing is validated here. A lane naming a node port or global input
+    /// that does not exist ([`Invalid::TapOutOfRange`](tutti_types::graph::Invalid))
+    /// makes **every** commit fail until the tap is closed or the source
+    /// exists. A latency change that resizes an aligned tap's delay shifts
+    /// the stream by the difference with no marker for the reader, as it does
+    /// an output. A tap sees the signal before the engine's declick fader.
     pub fn open_tap(
         &mut self,
         id: TapId,

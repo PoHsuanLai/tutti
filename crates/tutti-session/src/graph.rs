@@ -1571,8 +1571,22 @@ impl Graph {
     ///
     /// [`TapAlign::ToOutput`] delays each lane by the compensation an output
     /// of the same source gets, so it lines up with what the outputs carry;
-    /// [`TapAlign::Raw`] reads the source as it leaves its node. A tap sees
-    /// the signal before the engine's declick fader.
+    /// [`TapAlign::Raw`] reads the source as it leaves its node.
+    ///
+    /// **A tap sees the signal before the engine's declick fader, and at a
+    /// transport stop that shows in a recording.** A transport-gated source (a
+    /// clip, the click, a sampler voice) ends on the stop's frame, so the tap
+    /// steps from the source's whole level to silence in one frame where the
+    /// device output has faded over the declick (measured: a 0.5 source gives
+    /// a step of 0.5 in the tap and a largest step of about 0.001 in the
+    /// output). A source that keeps running through the stop (live input, a
+    /// tail) has none. A start steps alike in both: `Play` is not declicked.
+    ///
+    /// A source that does not exist (a node port past its width) fails every
+    /// commit until the tap is closed; nothing is validated here. A latency
+    /// change that resizes an aligned tap's delay shifts the stream with no
+    /// marker for the reader, as it does an output. What the reader does not
+    /// drain is dropped and counted, and a recording closes up over the gap.
     ///
     /// Dropping the reader leaves the tap open until
     /// [`close_tap`](Self::close_tap) or the session's next
@@ -1599,7 +1613,8 @@ impl Graph {
     /// [`widen_outputs`](Self::widen_outputs) does not widen it.
     ///
     /// This is the signal the graph produces, before the engine's declick
-    /// fader and the fold to the device's width.
+    /// fader and the fold to the device's width; see [`open_tap`](Self::open_tap)
+    /// for what that means at a transport stop.
     pub fn open_output_tap(&mut self, capacity: Samples) -> TapReader {
         let outputs: Vec<GraphSource> =
             (0..self.outputs()).map(|c| self.output_source(c)).collect();

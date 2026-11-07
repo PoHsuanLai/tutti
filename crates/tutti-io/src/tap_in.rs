@@ -40,8 +40,9 @@ use tutti_types::{ChannelLayout, Samples};
 ///
 /// **A tap is the graph's signal before the engine's declick fader.** A
 /// transport-gated source (a clip, the click, a sampler voice) ends on the
-/// stop's frame, so a take across a stop has a step there where the device
-/// output has faded; a source that keeps running has none. Start and stop the
+/// stop's frame, so a take across a stop has a step there (measured: the
+/// source's whole level in one frame) where the device output has faded over
+/// the declick; a source that keeps running has none. Start and stop the
 /// recording around transport stops if that matters.
 ///
 /// Like every [`AudioIn`] it carries no sample rate: the tap runs at the

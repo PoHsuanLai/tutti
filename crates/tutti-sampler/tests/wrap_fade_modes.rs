@@ -7,13 +7,13 @@
 //! both, and a fork shares nothing else with it; `tutti-export`'s render is
 //! a different crate's gate.
 //!
-//! Voices go through a `VoicePool` (a bare `MemorySource` node has its own
-//! read, with no crossfade). The fade is asserted to have run: the voice placed before the loop start
-//! steps across the wrap by less than a cut's step, which the wave gives
-//! analytically.
+//! The voices go through a `VoicePool` each, then as bare `MemorySource`
+//! nodes. The fade is asserted to have run: the voice placed before the loop
+//! start steps across the wrap by less than a cut's step, which the wave
+//! gives analytically.
 //!
 //! Mutation (run): `Wrap::new` always `None` (no fade) → the step at the wrap
-//! is the cut's → fails.
+//! is the cut's → fails, for both hosts.
 
 use std::sync::Arc;
 
@@ -37,7 +37,14 @@ fn tone() -> Arc<Wave> {
     Arc::new(w)
 }
 
-fn graph(wave: &Arc<Wave>, workers: usize) -> Executor {
+/// What a voice is in the graph.
+#[derive(Clone, Copy, Debug)]
+enum Host {
+    Pool,
+    Node,
+}
+
+fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(MAX_BLOCK)));
     if workers > 1 {
         exec.set_pool(Some(Arc::new(WorkerPool::new(workers))));
@@ -47,16 +54,24 @@ fn graph(wave: &Arc<Wave>, workers: usize) -> Executor {
         let key = NodeKey(k + 1);
         // Placed before the loop's start, on it, and inside the fade.
         let at = [0.0, LOOP.0, LOOP.0 + 0.002][k as usize % 3] + k as f64 * 0.0001;
-        let mut pool = VoicePool::new();
-        pool.insert_voice(
-            SlotId(1),
-            Voice {
-                source: VoiceSource::Memory(MemorySource::placed(Arc::clone(wave), Beat(at), None)),
-                play: Playback::default(),
-                channel_index: None,
-            },
-        );
-        ed.insert(key, "pool", pool);
+        let source = MemorySource::placed(Arc::clone(wave), Beat(at), None);
+        match host {
+            Host::Pool => {
+                let mut pool = VoicePool::new();
+                pool.insert_voice(
+                    SlotId(1),
+                    Voice {
+                        source: VoiceSource::Memory(source),
+                        play: Playback::default(),
+                        channel_index: None,
+                    },
+                );
+                ed.insert(key, "pool", pool);
+            }
+            Host::Node => {
+                ed.insert(key, "source", source);
+            }
+        }
         for port in 0..2u16 {
             outputs.push(Source::Node(OutPort { node: key, port }));
         }
@@ -114,15 +129,18 @@ fn render(exec: &mut Executor) -> Vec<Vec<u32>> {
 #[cfg_attr(miri, ignore = "spawns a worker pool")]
 fn a_wrap_crossfade_renders_bit_identically_on_a_pool() {
     let wave = tone();
-    let serial = render(&mut graph(&wave, 1));
-    assert!(
-        serial
-            .iter()
-            .all(|c| c.iter().any(|&b| f32::from_bits(b) != 0.0))
-    );
-    for workers in [2, 4] {
-        let mut exec = graph(&wave, workers);
-        assert!(exec.is_parallel());
-        assert_eq!(serial, render(&mut exec), "{workers} workers");
+    for host in [Host::Pool, Host::Node] {
+        let serial = render(&mut graph(&wave, 1, host));
+        assert!(
+            serial
+                .iter()
+                .all(|c| c.iter().any(|&b| f32::from_bits(b) != 0.0)),
+            "{host:?}"
+        );
+        for workers in [2, 4] {
+            let mut exec = graph(&wave, workers, host);
+            assert!(exec.is_parallel());
+            assert_eq!(serial, render(&mut exec), "{host:?}, {workers} workers");
+        }
     }
 }

@@ -10,6 +10,7 @@ mod hearing;
 mod output;
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
 pub use hearing::{HeardTapError, HeardTaps};
+pub use output::OutputControl;
 
 /// What a host driving the engine names, in one import.
 ///

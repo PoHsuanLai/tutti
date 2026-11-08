@@ -1180,3 +1180,38 @@ fn select_refuses_a_list_past_u16() {
         Err(FoldError::TooWide(usize::from(u16::MAX) + 1))
     );
 }
+
+/// `declared` places a declared all-`Discrete` source by index (where
+/// `to_width` would read a four as quad) and a named one as `to_width` does;
+/// a discrete source wider than the destination is refused.
+///
+/// Mutation (run): `declared` delegating to `to_width` for a discrete source
+/// puts the quad's rears in the 5.1 destination's side slots (positions 4 and
+/// 5) and zero at 2 and 3, failing the first assertion.
+#[test]
+fn declared_keeps_a_discrete_source_by_index() {
+    let four = ChannelTopology::discrete(ChannelLayout::QUAD);
+    let mut out = [9.0f32; 6];
+    Fold::declared(&four, ChannelLayout::from(6u16))
+        .unwrap()
+        .frame(&[1.0, 2.0, 3.0, 4.0], &mut out);
+    assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 0.0, 0.0]);
+    assert_eq!(
+        Fold::declared(&four, ChannelLayout::STEREO),
+        Err(FoldError::Unplaced {
+            channel: 2,
+            speaker: Speaker::Discrete
+        })
+    );
+    // A named source is `to_width`'s.
+    let five_one = smpte(6);
+    let mut stereo = [0.0f32; 2];
+    Fold::declared(&five_one, ChannelLayout::STEREO)
+        .unwrap()
+        .frame(&[1.0; 6], &mut stereo);
+    let mut reference = [0.0f32; 2];
+    Fold::to_width(&five_one, ChannelLayout::STEREO)
+        .unwrap()
+        .frame(&[1.0; 6], &mut reference);
+    assert_eq!(stereo, reference);
+}

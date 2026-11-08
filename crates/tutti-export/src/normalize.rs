@@ -55,9 +55,20 @@ use crate::{render_to_buffers, render_to_file_with, write_buffers};
 /// [`Peak`](Self::Peak) has no such limit; true peak folds over every channel.
 /// Prefer it when normalizing wide layouts whose energy is not concentrated in
 /// the front six.
+///
+/// A peak target (or a loudness ceiling) within the headroom of full scale is
+/// lowered on `Int16`/`Int24` (see `render_normalized_to_file`, "Headroom"), and
+/// [`Written::normalized`] reports the effective figure and the gain applied.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalize {
     /// Bring the loudest true peak to `target` dBTP.
+    ///
+    /// Any audio with a reading is measurable, however quiet: a render whose
+    /// true peak is -100 dBTP gets about +99 dB, and the gain is applied
+    /// (it is reported in [`Written::normalized`]). Only exact silence, a true
+    /// peak at the floor ([`Db::FLOOR`]), is refused
+    /// ([`Error::Unmeasurable`](crate::Error::Unmeasurable)); there is no
+    /// invented threshold between the two.
     Peak {
         /// True-peak level to land on, in dBTP. Typically negative — 0 leaves no
         /// headroom for a consumer DAC's reconstruction filter.
@@ -250,7 +261,14 @@ const ABSOLUTE_GATE_LUFS: f32 = -70.0;
 /// (an LSB for no dither, 1.5 for rectangular, 2 for triangular): a peak
 /// normalized to 0 dBTP, plus dither, would be clamped by the quantizer.
 /// A target already under the limit is unchanged. [`Written::clipped_samples`]
-/// counts what is clamped all the same.
+/// counts what is clamped all the same, and [`Written::normalized`] reports the
+/// effective target.
+///
+/// # Quiet audio
+///
+/// [`Normalize::Peak`] refuses only exact silence. Near-silence (-100 dBTP, say)
+/// is audio with a reading and gets its gain (about +99 dB); read
+/// [`Written::normalized`] to see what was applied.
 ///
 /// # Errors
 ///
@@ -313,7 +331,13 @@ pub fn render_normalized_to_file_with(
         _ => (rendered, std::borrow::Cow::Borrowed(config)),
     };
 
-    rendered.apply_gain(normalize.within(&config).gain_for_rendered(&rendered)?);
+    let normalize = normalize.within(&config);
+    let gain = normalize.gain_for_rendered(&rendered)?;
+    rendered.apply_gain(gain);
+    let target = match normalize {
+        Normalize::Peak { target } => target,
+        Normalize::Lufs { ceiling, .. } => ceiling,
+    };
 
     crate::encode::encode_planes(
         &rendered,
@@ -321,6 +345,24 @@ pub fn render_normalized_to_file_with(
         path,
         &mut control.pass(Pass::SECOND_OF_TWO),
     )
+    .map(|outcome| {
+        outcome.map(|mut written| {
+            written.normalized = Some(Normalized { gain, target });
+            written
+        })
+    })
+}
+
+/// What a normalizing export did ([`Written::normalized`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Normalized {
+    /// The gain applied to the render.
+    pub gain: Db,
+    /// The effective limit the gain was chosen against, in dBTP: the peak
+    /// target of [`Normalize::Peak`], or the ceiling of [`Normalize::Lufs`],
+    /// after the headroom an integer format keeps was taken off it (so a 0 dBTP
+    /// request on `Int16` reads a little under 0 here).
+    pub target: Db,
 }
 
 #[cfg(test)]

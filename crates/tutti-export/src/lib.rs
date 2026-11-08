@@ -21,7 +21,9 @@ mod config;
 pub use config::{EncodeConfig, EventLossPolicy, ExportConfig, RenderConfig, Resample};
 
 mod normalize;
-pub use normalize::{Normalize, render_normalized_to_file, render_normalized_to_file_with};
+pub use normalize::{
+    Normalize, Normalized, render_normalized_to_file, render_normalized_to_file_with,
+};
 
 mod graph;
 pub use graph::{GRAPH_MAX_BLOCK, RenderGraph};
@@ -45,7 +47,7 @@ use tutti_types::Samples;
 
 /// A file an export wrote, returned by [`render_to_file`], [`write_buffers`]
 /// and [`render_normalized_to_file`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Written {
     /// Where it landed — the `path` the entry point was given.
     pub path: PathBuf,
@@ -58,12 +60,16 @@ pub struct Written {
     pub dropped_events: u64,
     /// Samples the quantizer clipped: those past full scale (after any gain,
     /// resample and dither) written to an integer format, which the encoder
-    /// clamps to it. `0` for a format that does not quantize (`Pcm::Float32`,
+    /// clamps to it, **and non-finite ones** (a NaN is written as 0, an
+    /// infinity as full scale). `0` for a format that does not quantize (`Pcm::Float32`,
     /// and Ogg Vorbis, whose encoder takes the float stream). A normalizing
     /// export keeps its target and ceiling one LSB plus the dither amplitude
     /// below full scale for an integer format, so this stays `0` unless the
     /// programme itself was past full scale.
     pub clipped_samples: u64,
+    /// The gain and effective target of a normalizing export
+    /// ([`render_normalized_to_file`]); `None` for the others.
+    pub normalized: Option<Normalized>,
 }
 
 /// Rendered audio held in memory, one `Vec` per channel.

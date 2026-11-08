@@ -149,14 +149,19 @@ pub(crate) fn encode_to_file(
         bytes,
         dropped_events: lost,
         clipped_samples: clipped,
+        normalized: None,
     }))
 }
 
-/// Samples of an integer-bound block the quantizer will clamp: those past
-/// full scale (`tutti-codec`'s converters clamp to `[-1, 1]`, so `1.0` itself
-/// is not clipped).
+/// Samples of an integer-bound block the quantizer will not write as they are:
+/// those past full scale (`tutti-codec`'s converters clamp to `[-1, 1]`, so
+/// `1.0` itself is not clipped), and non-finite ones (a NaN becomes 0 and an
+/// infinity full scale).
 fn clipped_in(samples: &[f32]) -> u64 {
-    samples.iter().filter(|s| s.abs() > 1.0).count() as u64
+    samples
+        .iter()
+        .filter(|s| !s.is_finite() || s.abs() > 1.0)
+        .count() as u64
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.

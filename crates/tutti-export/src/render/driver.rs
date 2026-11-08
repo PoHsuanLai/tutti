@@ -305,13 +305,13 @@ impl FrameSource for GraphSource<'_> {
 ///
 /// The one place a [`RenderGraph`] becomes a [`FrameSource`], so every entry
 /// point renders and checks identically.
-pub(crate) fn with_source<R>(
+pub(crate) fn with_source<T>(
     graph: &mut RenderGraph,
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
     file: &FileChannels<'_>,
-    f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
-) -> crate::Result<(R, u64)> {
+    f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<Outcome<T>>,
+) -> crate::Result<(Outcome<T>, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
@@ -334,7 +334,12 @@ pub(crate) fn with_source<R>(
     // The fallback: the entry points that put a file in place ask before they
     // do (`encode_to_file`), and the one that holds planes asks before it
     // returns them (`render_pass`); this one covers any caller that did not.
-    let health = src.check_health();
+    // A render the caller cancelled is not judged, so a fault that came
+    // before the cancel does not turn it into a failure.
+    let health = match &rendered {
+        Ok(Outcome::Finished(_)) | Err(_) => src.check_health(),
+        Ok(Outcome::Cancelled) => Ok(()),
+    };
     graph.settle(counts);
     let rendered = rendered?;
     health?;

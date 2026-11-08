@@ -182,3 +182,23 @@ fn a_fork_that_dies_fails_the_buffer_and_normalized_renders() {
     assert!(is_crash(&err), "{err:?}");
     assert_eq!(std::fs::read(&path).unwrap(), b"old");
 }
+
+/// A render the caller cancels is not judged: a fault that came before the
+/// cancel does not turn `Cancelled` into `ForkFailed`, and the file is intact.
+///
+/// Mutation (run): `with_source` running `check_health` for a `Cancelled`
+/// outcome too → `ForkFailed` → fails.
+#[test]
+fn a_cancel_wins_over_a_fork_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out.wav");
+    std::fs::write(&path, b"old").unwrap();
+    let (graph, probe, _live) = fork();
+    let outcome = render_to_file_with(graph, &config(), &FrozenClock, &path, &mut |_| {
+        probe.0.store(true, Ordering::SeqCst);
+        Flow::Stop
+    })
+    .expect("a cancelled render is not an error");
+    assert_eq!(outcome, tutti_export::Outcome::Cancelled);
+    assert_eq!(std::fs::read(&path).unwrap(), b"old");
+}

@@ -945,6 +945,9 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 /// meter planes with no dither in them: dither added there makes the silence
 /// read as ±1 LSB of signal, which is measurable, and the render succeeds.
 ///
+/// (The planes `render_to_buffers` returns for silence are checked directly by
+/// `silence_planes_carry_no_dither`.)
+///
 /// Mutation (run): drop the `Db::FLOOR` check in `Normalize::check` → the
 /// silent render is written and the `expect_err` fails. Mutation (run):
 /// `DitherState::for_config(config).apply` over the planes in `render_pass` →
@@ -1375,4 +1378,22 @@ fn a_declared_root_is_what_the_file_is_placed_from() {
         first_frame(&mut six, 2).unwrap(),
         [2.0 + m * 3.0 + m * 5.0, 1.0 + m * 3.0 + m * 6.0]
     );
+}
+
+/// `render_to_buffers` of silence gives exactly 0.0 at an integer depth with
+/// dither on: dither belongs to the encode boundary, not to the planes a meter
+/// reads.
+///
+/// Mutation (run): `DitherState::apply` over the planes in `render_pass` →
+/// they carry noise → fails.
+#[test]
+fn silence_planes_carry_no_dither() {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add(Const::frame(&[0.0, 0.0]));
+    g.pipe_output(id);
+    let mut cfg = config(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
+    cfg.dither = tutti_export::Dither::Triangular;
+    let out = render_to_buffers(built(g, RATE), &cfg, &FrozenClock).unwrap();
+    assert!(out.frames().get() > 0);
+    assert!(out.planes.iter().flatten().all(|s| s.to_bits() == 0));
 }

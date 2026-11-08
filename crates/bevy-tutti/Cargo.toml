@@ -78,6 +78,7 @@ tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
@@ -184,7 +185,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session/midi-hardware
 synth = ["dep:tutti-polysynth", "tutti-session/synth"]
 # SoundFont does NOT imply `synth`: it is its own crate and pulls no voice
 # engine. It implies `midi`: a soundfont is played by MIDI.
-soundfont = ["midi", "dep:tutti-soundfont", "tutti-session/soundfont"]
+soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session/soundfont"]
 # Clip playback: the butler streaming engine and the `.wav` asset loader
 # (`tutti-sampler` → `crate::sampler`).
 #

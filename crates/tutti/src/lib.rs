@@ -90,6 +90,10 @@ pub use tutti_sampler as sampler;
 #[cfg(feature = "synth")]
 pub use tutti_polysynth as polysynth;
 
+/// A SoundFont 2 file as data (`tutti-sf2`), what `soundfont` plays. Feature
+/// `soundfont`.
+#[cfg(feature = "soundfont")]
+pub use tutti_sf2 as sf2;
 /// SoundFont (.sf2) playback (`tutti-soundfont`). Feature `soundfont`.
 #[cfg(feature = "soundfont")]
 pub use tutti_soundfont as soundfont;

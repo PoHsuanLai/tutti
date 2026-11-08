@@ -2,7 +2,8 @@
 
 use tutti_polysynth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 use tutti_session::PluginLoadRequest;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Adsr, Amplitude, Seconds};
 
 use super::cases::{Gap, Subject};
@@ -57,8 +58,7 @@ impl Subject for Soundfont {
     const CUT: usize = 8;
 
     fn rig() -> Rig {
-        let mut settings = Settings::new(RATE);
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(RATE).with_reverb_and_chorus(false);
         let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
         let mut file = std::fs::File::open(&path).expect("the test font is in the checkout");
         let font = std::sync::Arc::new(SoundFont::new(&mut file).expect("the test font parses"));

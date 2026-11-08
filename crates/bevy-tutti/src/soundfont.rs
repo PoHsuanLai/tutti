@@ -19,7 +19,8 @@ use std::sync::Arc;
 use crate::graph::{
     AudioConfig, AudioGraphRes, AudioNode, CapturedControls, GraphReconcileSystems, engine_ready,
 };
-use tutti_soundfont::{SoundFont, SoundFontError, SoundFontUnit};
+use tutti_sf2::{Error as SoundFontError, SoundFont};
+use tutti_soundfont::SoundFontUnit;
 use tutti_ump::{MidiChannel, U7};
 
 /// A parsed `.sf2` as a loadable asset.

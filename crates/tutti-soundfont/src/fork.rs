@@ -102,8 +102,7 @@ mod tests {
 
     /// A unit at `rate`, on preset `preset`.
     fn unit(soundfont: &Arc<SoundFont>, rate: SampleRate, preset: U7) -> SoundFontUnit {
-        let mut settings = Settings::new(rate);
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(rate).with_reverb_and_chorus(false);
         let mut unit =
             SoundFontUnit::new(Arc::clone(soundfont), &settings).expect("the unit builds");
         unit.program_change(MidiChannel::FIRST, preset);

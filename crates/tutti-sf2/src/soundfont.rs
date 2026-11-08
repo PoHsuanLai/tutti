@@ -2,8 +2,7 @@ use std::io::Read;
 
 use crate::LoopMode;
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
-use crate::four_cc::FourCC;
+use crate::error::Error;
 use crate::instrument::Instrument;
 use crate::preset::Preset;
 use crate::sample_header::SampleHeader;
@@ -16,7 +15,7 @@ use crate::soundfont_sampledata::SoundFontSampleData;
 #[non_exhaustive]
 pub struct SoundFont {
     pub(crate) info: SoundFontInfo,
-    pub(crate) bits_per_sample: i32,
+    pub(crate) bits_per_sample: u8,
     pub(crate) wave_data: Vec<i16>,
     pub(crate) sample_headers: Vec<SampleHeader>,
     pub(crate) presets: Vec<Preset>,
@@ -28,22 +27,22 @@ impl SoundFont {
     ///
     /// # Errors
     ///
-    /// Returns [`SoundFontError`] if the stream cannot be read, is not a
+    /// Returns [`Error`] if the stream cannot be read, is not a
     /// SoundFont 2 file, has compressed samples, or has a region that reaches
     /// outside the sample data.
-    pub fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    pub fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let chunk_id = reader.read_four_cc()?;
         if chunk_id != b"RIFF" {
-            return Err(SoundFontError::RiffChunkNotFound);
+            return Err(Error::RiffChunkNotFound);
         }
 
         let _size = reader.read_i32()?;
 
         let form_type = reader.read_four_cc()?;
         if form_type != b"sfbk" {
-            return Err(SoundFontError::InvalidRiffChunkType {
-                expected: FourCC::from_bytes(*b"sfbk"),
-                actual: form_type,
+            return Err(Error::InvalidRiffChunkType {
+                expected: *b"sfbk",
+                actual: *form_type.as_bytes(),
             });
         }
 
@@ -65,27 +64,30 @@ impl SoundFont {
         Ok(sound_font)
     }
 
-    fn sanity_check(&self) -> Result<(), SoundFontError> {
+    fn sanity_check(&self) -> Result<(), Error> {
         // https://github.com/sinshu/rustysynth/issues/22
         // https://github.com/sinshu/rustysynth/issues/33
         // https://github.com/sinshu/rustysynth/pull/51
         for instrument in &self.instruments {
             for region in &instrument.regions {
-                let start = region.sample_start();
-                let end = region.sample_end();
-                let start_loop = region.sample_start_loop();
-                let end_loop = region.sample_end_loop();
+                let start = region.raw_sample_start();
+                let end = region.raw_sample_end();
+                let start_loop = region.raw_sample_start_loop();
+                let end_loop = region.raw_sample_end_loop();
                 let loop_mode = region.sample_modes();
 
+                // Signed, 64 bits: a header's DWORD and an offset can take an
+                // address below 0 or past 2^31, and either is refused.
+                let len = self.wave_data.len() as i64;
                 if start < 0
                     || start_loop < 0
-                    || end as usize >= self.wave_data.len()
-                    || end_loop as usize >= self.wave_data.len()
+                    || end >= len
+                    || end_loop >= len
                     || end <= start
                     || end_loop < start_loop
                     || (loop_mode != LoopMode::NoLoop && start_loop >= end_loop)
                 {
-                    return Err(SoundFontError::SanityCheckFailed);
+                    return Err(Error::SanityCheckFailed);
                 }
             }
         }
@@ -101,7 +103,7 @@ impl SoundFont {
 
     /// The bit depth of the sample data.
     #[must_use]
-    pub fn bits_per_sample(&self) -> i32 {
+    pub fn bits_per_sample(&self) -> u8 {
         self.bits_per_sample
     }
 
@@ -146,7 +148,7 @@ mod tests {
         let mut file = File::open(&path).unwrap();
         assert!(matches!(
             SoundFont::new(&mut file),
-            Err(SoundFontError::UnsupportedSampleFormat)
+            Err(Error::UnsupportedSampleFormat)
         ));
     }
 
@@ -157,7 +159,7 @@ mod tests {
         let mut file = File::open(&path).unwrap();
         assert!(matches!(
             SoundFont::new(&mut file),
-            Err(SoundFontError::SampleDataNotFound)
+            Err(Error::SampleDataNotFound)
         ));
     }
 }

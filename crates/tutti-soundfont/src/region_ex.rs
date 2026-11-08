@@ -14,7 +14,7 @@ pub(crate) struct RegionEx {}
 
 impl RegionEx {
     pub(crate) fn start_oscillator(oscillator: &mut Oscillator, region: &RegionPair) {
-        let sample_rate = region.instrument.sample_rate();
+        let sample_rate = region.instrument.sample_rate().get() as i32;
         let loop_mode = region.sample_modes();
         let start = region.sample_start();
         let end = region.sample_end();

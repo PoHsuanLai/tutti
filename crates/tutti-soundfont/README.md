@@ -27,7 +27,8 @@ use std::sync::Arc;
 use tutti_types::{NodeKey, SampleRate, Samples};
 use tutti_graph::{Editor, Prepare};
 use tutti_ump::{MidiChannel, U7};
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 
 let mut file = File::open("piano.sf2")?;
 let soundfont = Arc::new(SoundFont::new(&mut file)?);
@@ -148,7 +149,7 @@ send MIDI on its event input.
 - No MIDI device I/O: that is `tutti-midi-hardware`; the message types are
   `tutti-midi-types`.
 
-`SoundFont` and `SoundFontError` are re-exported from `tutti-sf2`, so decoding a file needs no direct dependency on it.
+A file is decoded by `tutti-sf2` (`tutti_sf2::SoundFont`), which this crate does not re-export: one path for a type. The `tutti` crate re-exports it as `tutti::sf2`.
 The `tutti` crate re-exports this one as `tutti::soundfont` behind its
 `soundfont` feature, and `bevy-tutti` uses it behind the same feature.
 

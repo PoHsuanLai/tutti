@@ -23,12 +23,12 @@ impl SoundFontVersion {
         Ok(Self { major, minor })
     }
 
-    /// Gets the major version.
+    /// The major version.
     pub fn major(&self) -> i32 {
         self.major as i32
     }
 
-    /// Gets the minor version.
+    /// The minor version.
     pub fn minor(&self) -> i32 {
         self.minor as i32
     }

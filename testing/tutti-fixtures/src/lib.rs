@@ -1,6 +1,7 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
-//! cdylibs and the `plugin-server` binary; and [`check_range_contract`], the one
-//! check a range-checked type keeps its contract.
+//! cdylibs and the `plugin-server` binary; [`check_range_contract`], the one
+//! check a range-checked type keeps its contract; and [`sf2`], a SoundFont built
+//! in memory.
 //!
 //! A test finds a repo file through [`repo_root`] and [`asset`], never through
 //! a relative `..` path, so moving a crate never changes what a test reads.
@@ -34,6 +35,7 @@
 #![forbid(unsafe_code)]
 
 mod range_contract;
+pub mod sf2;
 
 pub use range_contract::{RangeContract, check_range_contract};
 

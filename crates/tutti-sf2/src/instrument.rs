@@ -1,4 +1,4 @@
-use crate::error::SoundFontError;
+use crate::error::Error;
 use crate::instrument_info::InstrumentInfo;
 use crate::instrument_region::InstrumentRegion;
 use crate::sample_header::SampleHeader;
@@ -18,12 +18,17 @@ impl Instrument {
         instrument_id: usize,
         zones: &[Zone],
         samples: &[SampleHeader],
-    ) -> Result<Self, SoundFontError> {
+    ) -> Result<Self, Error> {
         let name = info.name.clone();
 
+        // An instrument with no zones plays nothing; it stays in the list, so the
+        // indices the presets name keep their meaning (SF2 2.04 section 7.6).
         let zone_count = info.zone_end_index - info.zone_start_index + 1;
         if zone_count <= 0 {
-            return Err(SoundFontError::InvalidInstrument(instrument_id));
+            return Ok(Self {
+                name,
+                regions: Vec::new(),
+            });
         }
 
         let span_start = info.zone_start_index as usize;
@@ -38,13 +43,17 @@ impl Instrument {
         infos: &[InstrumentInfo],
         zones: &[Zone],
         samples: &[SampleHeader],
-    ) -> Result<Vec<Instrument>, SoundFontError> {
+    ) -> Result<Vec<Instrument>, Error> {
         if infos.len() <= 1 {
-            return Err(SoundFontError::InstrumentNotFound);
+            return Err(Error::InstrumentNotFound);
         }
 
-        // The last one is the terminator.
+        // The last one is the terminator, and its zone index is the number of
+        // zones (section 7.6); a file where it is not is structurally defective.
         let count = infos.len() - 1;
+        if infos[count].zone_start_index as usize != zones.len() {
+            return Err(Error::InvalidInstrumentList);
+        }
 
         let mut instruments: Vec<Instrument> = Vec::new();
         for (instrument_id, info) in infos.iter().take(count).enumerate() {
@@ -54,12 +63,12 @@ impl Instrument {
         Ok(instruments)
     }
 
-    /// Gets the name of the instrument.
+    /// The name of the instrument.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Gets the regions of the instrument.
+    /// The regions of the instrument.
     pub fn regions(&self) -> &[InstrumentRegion] {
         &self.regions[..]
     }

@@ -113,7 +113,7 @@ jobs:
       # And `tutti-codec`, which keeps its modules private: the root names every item.
       - run: scripts/check-canonical-paths.sh tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
       # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_sf2 binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
+      - run: scripts/check-canonical-paths.sh tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: scripts/check-canonical-paths.sh tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
       # And `tutti-tempo`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_tempo error grid map point segment

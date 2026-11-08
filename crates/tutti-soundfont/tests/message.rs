@@ -26,7 +26,8 @@ mod support;
 
 use support::Hand;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+use tutti_sf2::SoundFont;
+use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber,
@@ -47,8 +48,7 @@ fn load_test_soundfont() -> Arc<SoundFont> {
 
 /// Without the effect lines, which are not linear in the channel gain.
 fn unit() -> Hand {
-    let mut settings = Settings::new(RATE);
-    settings.reverb_and_chorus = false;
+    let settings = Settings::new(RATE).with_reverb_and_chorus(false);
     Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap())
 }
 

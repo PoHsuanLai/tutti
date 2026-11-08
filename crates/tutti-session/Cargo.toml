@@ -91,6 +91,9 @@ clap = ["plugin", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin/au"]
 
 [dev-dependencies]
+# The SoundFont type the instrument contract's subject decodes a font into
+# (`tutti-soundfont` does not re-export it).
+tutti-sf2 = { path = "../tutti-sf2" }
 # The `FakeBackend` the hot-plug tests drive (`plug`, `unplug`). Dev-only:
 # `midi-hardware` must not link a fake backend.
 tutti-midi-hardware = { path = "../tutti-midi-hardware", features = ["test-support"] }

@@ -49,7 +49,9 @@ impl Patch for PresetPatch<'_> {
             for (i, instrument_zone) in instrument.regions().iter().enumerate() {
                 if instrument_zone.contains(key, velocity) {
                     spec(VoiceSpec {
-                        group: u16::try_from(instrument_zone.exclusive_class()).unwrap_or(0),
+                        group: instrument_zone
+                            .exclusive_class()
+                            .map_or(0, |class| u16::from(class.get())),
                         scope: self.preset as u32,
                         tag: ((p as u32) << 16) | i as u32,
                     });

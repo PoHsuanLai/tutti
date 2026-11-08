@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
+use crate::error::Error;
 
 #[derive(Clone, Copy)]
 #[non_exhaustive]
@@ -11,7 +11,7 @@ pub(crate) struct Generator {
 }
 
 impl Generator {
-    fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let generator_type = reader.read_u16()?;
         let value = reader.read_u16()?;
 
@@ -24,9 +24,9 @@ impl Generator {
     pub(crate) fn read_from_chunk<R: Read>(
         reader: &mut R,
         size: usize,
-    ) -> Result<Vec<Generator>, SoundFontError> {
+    ) -> Result<Vec<Generator>, Error> {
         if size == 0 || !size.is_multiple_of(4) {
-            return Err(SoundFontError::InvalidGeneratorList);
+            return Err(Error::InvalidGeneratorList);
         }
 
         let count = size / 4 - 1;

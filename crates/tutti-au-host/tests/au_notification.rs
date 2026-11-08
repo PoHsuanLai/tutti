@@ -159,7 +159,7 @@ fn a_listener_observes_a_parameter_written_by_the_host() {
     let log = EventLog::default();
     // SAFETY: `au` outlives `listener` — `listener` is dropped at the end of
     // this scope, before `au`.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
+    let listener = unsafe { AuParameterListener::new(au.unit(), log.sink()) }
         .expect("AUEventListenerCreateWithDispatchQueue");
     listener
         .watch_parameter(p.id, EventAddress::GLOBAL)
@@ -222,14 +222,14 @@ fn gesture_begin_and_end_are_delivered_in_order() {
     let log = EventLog::default();
     // SAFETY: `au` outlives `listener`.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create listener");
     listener
         .watch_gestures(p.id, EventAddress::GLOBAL)
         .expect("watch_gestures");
 
     // SAFETY: `au.raw_unit()` is live.
     unsafe {
-        emit_gesture(au.raw_unit(), p.id, EventAddress::GLOBAL, true).expect("emit begin");
+        emit_gesture(au.unit(), p.id, EventAddress::GLOBAL, true).expect("emit begin");
     }
     // Separate the two so a coalescing window cannot merge them. The listener's
     // value-change granularity is 10 ms; gestures are not value changes, but
@@ -237,7 +237,7 @@ fn gesture_begin_and_end_are_delivered_in_order() {
     std::thread::sleep(Duration::from_millis(50));
     // SAFETY: as above.
     unsafe {
-        emit_gesture(au.raw_unit(), p.id, EventAddress::GLOBAL, false).expect("emit end");
+        emit_gesture(au.unit(), p.id, EventAddress::GLOBAL, false).expect("emit end");
     }
 
     assert!(
@@ -284,7 +284,7 @@ fn a_dropped_listener_stops_delivering() {
     let log = EventLog::default();
     // SAFETY: `au` outlives `listener`, which is dropped explicitly below.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create listener");
     listener
         .watch_parameter(p.id, EventAddress::GLOBAL)
         .expect("watch_parameter");
@@ -358,7 +358,7 @@ fn load_state_notifies_listeners() {
     let log = EventLog::default();
     // SAFETY: `au` outlives `listener`.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create listener");
     // The wildcard notify covers every parameter, so watch every parameter —
     // registration itself has no wildcard (see `notify_all_parameters`).
     for q in &params {
@@ -413,7 +413,7 @@ fn notify_all_parameters_is_accepted_with_no_listener() {
     let _g = lock();
     let au = DELAY.open(RATE, BLOCK);
     // SAFETY: `au.raw_unit()` is live.
-    unsafe { notify_all_parameters(au.raw_unit()) }
+    unsafe { notify_all_parameters(au.unit()) }
         .expect("the wildcard notify is legal with no listeners registered");
 }
 

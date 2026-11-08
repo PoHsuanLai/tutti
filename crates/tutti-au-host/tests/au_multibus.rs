@@ -552,7 +552,7 @@ fn the_matching_constraint_survives_a_real_au() {
 fn a_mixer_publishes_a_parameter_strip_per_input_bus() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit();
 
     let strip0 = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Input, 0));
     assert_eq!(
@@ -597,7 +597,7 @@ fn a_mixer_publishes_a_parameter_strip_per_input_bus() {
 fn the_same_parameter_id_on_two_elements_holds_two_values() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit();
 
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
     let bus1 = ParamAddress::on_bus(BusDirection::Input, 1);
@@ -636,7 +636,7 @@ fn the_same_parameter_id_on_two_elements_holds_two_values() {
 fn a_parameter_write_to_a_missing_element_fails_rather_than_aliasing() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit();
 
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
     let volume = parameters::list_at(raw, bus0)
@@ -675,7 +675,7 @@ fn a_parameter_write_to_a_missing_element_fails_rather_than_aliasing() {
 fn the_default_parameter_address_is_still_global_element_zero() {
     let _g = lock();
     let mut au = support::corpus::DELAY.open(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit();
 
     let params = au.get_parameter_list();
     assert_eq!(

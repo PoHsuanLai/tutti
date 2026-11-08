@@ -278,7 +278,7 @@ fn a_host_property_write_reaches_a_property_listener() {
     let log = EventLog::default();
     // SAFETY: `au` outlives `listener` — `listener` is dropped at the end of this
     // scope, before `au`, which is `AuParameterListener::new`'s requirement.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
+    let listener = unsafe { AuParameterListener::new(au.unit(), log.sink()) }
         .expect("create a listener on AUDelay");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
@@ -321,7 +321,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     let log = EventLog::default();
     // SAFETY: as above — the listener is dropped first.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create a listener");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_LATENCY, EventAddress::GLOBAL)
         .expect("watch_property on kAudioUnitProperty_Latency");
@@ -377,7 +377,7 @@ fn two_watched_properties_arrive_under_their_own_ids() {
 
     let log = EventLog::default();
     // SAFETY: as above.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
+    let listener = unsafe { AuParameterListener::new(au.unit(), log.sink()) }
         .expect("create a listener on AUDistortion");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, EventAddress::GLOBAL)
@@ -443,7 +443,7 @@ fn registration_never_refuses_a_property_id() {
     let log = EventLog::default();
     // SAFETY: as above.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create a listener");
 
     for id in [0u32, 999_999, u32::MAX] {
         assert!(
@@ -497,7 +497,7 @@ fn a_dropped_property_listener_stops_delivering() {
     let log = EventLog::default();
     // SAFETY: as above.
     let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+        unsafe { AuParameterListener::new(au.unit(), log.sink()) }.expect("create a listener");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
         .expect("watch BypassEffect");
@@ -552,7 +552,7 @@ fn a_dropped_property_listener_stops_delivering() {
 fn value_strings_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = N_BAND_EQ.open(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit();
 
     let global = parameters::value_strings_at(unit, ParamAddress::GLOBAL, 2000);
     assert_eq!(
@@ -601,7 +601,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
 fn clump_name_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = DISTORTION.open(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit();
 
     // The full measured table, so a shifted or truncated read is caught rather
     // than merely a read that returns nothing.
@@ -688,7 +688,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
     // are hosted this way (they refuse `AudioUnitInitialize` as this host
     // configures them).
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit();
 
     let addresses = [
         ("global", ParamAddress::GLOBAL),
@@ -764,7 +764,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
 fn the_mixer_strip_arity_differs_between_input_and_output_scope() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit();
 
     // The global scope has no parameters at all on this unit, which is the fact
     // that makes an accidentally-global read detectable rather than plausible.

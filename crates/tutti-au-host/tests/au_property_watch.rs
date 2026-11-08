@@ -131,7 +131,7 @@ impl Watched {
         let log = Arc::new(Log::default());
         // SAFETY: `au` is stored in the same struct as the listener and declared
         // after it, so it outlives the registration.
-        let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
+        let listener = unsafe { AuParameterListener::new(au.unit(), log.sink()) }
             .expect("create a listener on the probe");
         for id in [
             K_AUDIO_UNIT_PROPERTY_LATENCY,

@@ -532,7 +532,7 @@ fn a_scheduled_immediate_change_takes_effect() {
             // SAFETY: `unit` is the unit currently rendering, so it is live.
             let r = unsafe {
                 tutti_au_host::render_notify::schedule(
-                    unit.get(),
+                    &unit,
                     p.id,
                     ScheduleAddress::GLOBAL,
                     &[ParamEvent::Immediate {
@@ -599,7 +599,7 @@ fn a_batch_of_scheduled_events_is_accepted() {
             // SAFETY: the unit is currently rendering.
             let r = unsafe {
                 tutti_au_host::render_notify::schedule(
-                    unit.get(),
+                    &unit,
                     p.id,
                     ScheduleAddress::GLOBAL,
                     &events,
@@ -850,7 +850,7 @@ fn a_multi_block_ramp_is_rescheduled_each_render() {
             // SAFETY: the unit is currently rendering.
             let r = unsafe {
                 tutti_au_host::render_notify::schedule(
-                    unit.get(),
+                    &unit,
                     p.id,
                     ScheduleAddress::GLOBAL,
                     &[ParamEvent::Ramped {
@@ -1021,7 +1021,7 @@ fn schedule_one_block(
             // SAFETY: the unit is currently rendering, so it is live.
             let _ = unsafe {
                 tutti_au_host::render_notify::schedule(
-                    unit.get(),
+                    &unit,
                     param,
                     ScheduleAddress::GLOBAL,
                     &[event],

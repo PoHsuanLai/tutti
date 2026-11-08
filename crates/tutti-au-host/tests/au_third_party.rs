@@ -1550,7 +1550,7 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
 
     let au = open(&info, juce_unit.label);
     assert!(
-        tutti_au_host::AuEditor::has_editor(au.raw_unit()),
+        tutti_au_host::AuEditor::has_editor(au.unit()),
         "{}: advertises no Cocoa view, so the JUCE encoding path is untested",
         juce_unit.label
     );
@@ -1567,7 +1567,7 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
         width: 800,
         height: 600,
     };
-    let mut editor = unsafe { tutti_au_host::AuEditor::open(au.raw_unit(), None, preferred) }
+    let mut editor = unsafe { tutti_au_host::AuEditor::open(au.unit(), None, preferred) }
         .unwrap_or_else(|e| {
             panic!(
                 "{}: opening a JUCE Cocoa view failed: {e:?}. This is what an \

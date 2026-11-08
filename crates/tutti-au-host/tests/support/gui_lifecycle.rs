@@ -66,7 +66,7 @@ unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
         width: 800,
         height: 600,
     };
-    unsafe { AuEditor::open(au.raw_unit(), None, preferred) }
+    unsafe { AuEditor::open(au.unit(), None, preferred) }
 }
 
 /// Instantiate and initialize `unit`, panicking with its label on failure.
@@ -165,7 +165,7 @@ fn has_editor_agrees_with_opening_one() {
 
     for unit in all {
         let au = ready(unit);
-        let claims = AuEditor::has_editor(au.raw_unit());
+        let claims = AuEditor::has_editor(au.unit());
         // SAFETY: `au` is live and initialized, and this runs on the main
         // thread under the `harness = false` runner.
         let opened = unsafe { open_headless(&au) };
@@ -437,7 +437,7 @@ fn an_au_without_a_cocoa_view_is_refused_cleanly() {
     for unit in WITHOUT_COCOA_VIEW {
         let au = ready(unit);
         assert!(
-            !AuEditor::has_editor(au.raw_unit()),
+            !AuEditor::has_editor(au.unit()),
             "{}: this unit is in the corpus precisely because it advertises no \
              Cocoa view; if that changed the corpus needs updating, because the \
              no-editor path is now untested",

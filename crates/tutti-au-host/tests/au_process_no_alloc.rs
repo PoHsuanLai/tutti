@@ -418,7 +418,7 @@ fn per_element_parameter_writes_do_not_allocate() {
     let mut au = corpus::MULTI_CHANNEL_MIXER.open(48_000.0, BLOCK);
     let mut b = Bufs::new();
 
-    let unit = au.raw_unit();
+    let unit = au.unit();
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
     let strip = parameters::list_at(unit, bus0);
     let pid = strip

@@ -462,13 +462,17 @@ unsafe extern "C" fn au_input_render_callback(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
-    guard("the input render callback", CANNOT_DO_IN_CURRENT_CONTEXT, || {
-        // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
-        // registered (live until `Renderer::drop` withdraws it), and `io_data`
-        // is the unit's own list for this pull; `render_input` checks both for
-        // null.
-        unsafe { render_input(in_ref_con, in_number_frames, io_data) }
-    })
+    guard(
+        "the input render callback",
+        CANNOT_DO_IN_CURRENT_CONTEXT,
+        || {
+            // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
+            // registered (live until `Renderer::drop` withdraws it), and `io_data`
+            // is the unit's own list for this pull; `render_input` checks both for
+            // null.
+            unsafe { render_input(in_ref_con, in_number_frames, io_data) }
+        },
+    )
 }
 
 /// # Safety

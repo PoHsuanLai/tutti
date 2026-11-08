@@ -80,7 +80,6 @@ use coreaudio_sys::OSStatus;
 use crate::guard::guard;
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 
-
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
 ///
 /// Spelled out rather than reusing `bool`: the AU writes through these pointers

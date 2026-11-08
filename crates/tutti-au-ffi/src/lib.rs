@@ -22,8 +22,7 @@ mod transport;
 mod unit;
 
 pub use cf::{
-    NotADictionary, PresetFacts, cfstring_to_string, cfstring_to_string_checked, preset_facts,
-    preset_with_identity,
+    NotADictionary, PresetFacts, cfstring_to_string_checked, preset_facts, preset_with_identity,
 };
 pub use component::ComponentRef;
 pub use editor::AuEditor;
@@ -42,9 +41,9 @@ pub use plain::Plain;
 pub use render::{
     BusLayout, PushScratch, Renderer, output_byte_sizes, process_push, process_push_multiple,
 };
-pub use status::Status;
 pub use render_notify::{
     ParamEvent, RenderNotification, RenderNotify, RenderPhase, ScheduleAddress, schedule,
 };
+pub use status::Status;
 pub use transport::{HostCallbacks, TransportState};
 pub use unit::{PropertyInfo, RenderUnit, Unit};

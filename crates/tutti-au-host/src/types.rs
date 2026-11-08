@@ -16,7 +16,7 @@
 //!   `AudioTimeStamp::with_sample_time` — the ASBD flag math and timestamp
 //!   validity flag, kept as inherent-method extensions so the exact field
 //!   values live in one audited place.
-//! * `fourcc_to_string` / `cfstring_to_string` — string helpers.
+//! * `fourcc_to_string` — the four-char-code string helper.
 //!
 //! Field access uses the bindgen `m`-prefixed names (`mSampleRate`,
 //! `mChannelsPerFrame`, …) directly.

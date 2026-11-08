@@ -222,28 +222,6 @@ impl CfPlist {
     }
 }
 
-/// Copies a `CFStringRef` into an owned Rust `String`.
-///
-/// Returns an empty string when `cf_str` is null.
-///
-/// # Safety
-/// `cf_str` must be either null or a valid `CFStringRef` with +1 retain count
-/// suitable for `wrap_under_get_rule` (CoreFoundation's "Get" ownership model).
-pub unsafe fn cfstring_to_string(cf_str: coreaudio_sys::CFStringRef) -> String {
-    if cf_str.is_null() {
-        return String::new();
-    }
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
-    // `coreaudio-sys` and `core-foundation-sys` each declare their own opaque
-    // `__CFString`; the pointers are ABI-identical, so cast across.
-    let cf_str = cf_str as core_foundation_sys::string::CFStringRef;
-    // SAFETY: the caller's contract: `cf_str` is a live CFString; the Get rule
-    // retains it for the span of the copy.
-    let s: CFString = unsafe { TCFType::wrap_under_get_rule(cf_str) };
-    s.to_string()
-}
-
 /// Copies a `CFStringRef` into an owned `String`, but only after confirming it
 /// really is a `CFString`.
 ///

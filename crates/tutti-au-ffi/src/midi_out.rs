@@ -64,7 +64,6 @@ use crate::guard::guard;
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::{Inner, Unit};
 
-
 /// The `AUMIDIOutputCallbackStruct` from `AudioUnitProperties.h`.
 ///
 /// Hand-declared for the same reason `bus.rs::AuChannelInfo` is: `coreaudio-sys`

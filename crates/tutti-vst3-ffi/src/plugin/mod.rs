@@ -29,7 +29,9 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, ParamId, WindowHandle};
+use tutti_plugin_types::{
+    ContentScale, EditorCapabilities, EditorSize, MainThread, ParamId, WindowHandle,
+};
 use tutti_types::ChannelLayout;
 
 use crate::audio::{Arrangement, AudioSide, Setup, Shared};
@@ -193,6 +195,14 @@ pub struct Plugin {
     handler: ComWrapper<ComponentHandler>,
     application: ComWrapper<HostApplication>,
     editor: Option<Editor>,
+    /// This plugin's claim on the module's run loop: what it registers there is
+    /// taken back when its editor closes and when it drops.
+    #[cfg(target_os = "linux")]
+    owner: crate::com::Owner,
+    /// Whether `initialize` succeeded on the component, and on a separate
+    /// controller: `terminate` follows a successful `initialize` only.
+    component_initialized: bool,
+    controller_initialized: bool,
     process_context_requirements: u32,
     shared: Arc<Shared>,
     _not_sync: PhantomData<Cell<()>>,
@@ -215,9 +225,10 @@ impl std::fmt::Debug for Plugin {
 // are refused while an `AudioSide` exists. What runs beside `process` is what the
 // SDK allows in the `Processing` state; a plugin that races its own `process`
 // breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
-// and touch atomics, queues and mutexes only. The editor view is UI-thread by
-// spec: the host asserts the main thread before each editor call, except in
-// `Drop`, which detaches the view on whatever thread drops the plugin.
+// and touch atomics, queues and mutexes only. The editor view and the
+// controller are UI-thread by spec: each entry takes a `&MainThread`, which
+// only the claiming thread holds. `Drop` has no token: it detaches the view if
+// `MainThread::current()` finds one, and leaks the view otherwise.
 unsafe impl Send for Plugin {}
 
 impl Plugin {
@@ -248,14 +259,23 @@ impl Plugin {
             audio_presentation_latency: processor.cast(),
         };
         let shared = Arc::new(Shared::new(&processor));
+        #[cfg(target_os = "linux")]
+        let owner = crate::com::Owner::next();
         Ok(Self {
             component,
             processor,
             controller,
             ext,
             handler: ComponentHandler::new(),
-            application: module.new_host_application(),
+            application: module.new_host_application(
+                #[cfg(target_os = "linux")]
+                owner,
+            ),
             editor: None,
+            #[cfg(target_os = "linux")]
+            owner,
+            component_initialized: false,
+            controller_initialized: false,
             // The real answer is read in `read_process_context_requirements`; until then the
             // plugin is assumed to need everything.
             process_context_requirements: u32::MAX,

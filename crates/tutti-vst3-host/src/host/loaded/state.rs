@@ -13,8 +13,8 @@ impl Vst3Loaded {
     /// Read before [`units`](Self::units), which needs the list ids to tell a
     /// unit's real program list from one it names but the plugin never
     /// publishes. Main/UI thread.
-    pub fn program_lists(&self, _main: &MainThread) -> Vec<Vst3ProgramListInfo> {
-        self.plugin.program_lists()
+    pub fn program_lists(&self, main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+        self.plugin.program_lists(main)
     }
 
     /// The plugin's unit tree — the groups it sorts parameters, programs and
@@ -31,8 +31,8 @@ impl Vst3Loaded {
     /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
     /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
     /// thread.
-    pub fn units(&self, _main: &MainThread) -> Vec<Vst3UnitInfo> {
-        self.plugin.units()
+    pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
+        self.plugin.units(main)
     }
 
     /// Name of one program in a list, or `None` if the plugin doesn't
@@ -43,11 +43,11 @@ impl Vst3Loaded {
     /// plugin is free to number its lists however it likes. Main/UI thread.
     pub fn program_name(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         list_id: i32,
         program_index: u32,
     ) -> Option<String> {
-        self.plugin.program_name(list_id, program_index)
+        self.plugin.program_name(main, list_id, program_index)
     }
 
     /// The unit the plugin currently considers selected — which part of a
@@ -57,8 +57,8 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    pub fn selected_unit(&self, _main: &MainThread) -> Option<i32> {
-        self.plugin.selected_unit()
+    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+        self.plugin.selected_unit(main)
     }
 
     /// Tells the plugin which unit the host's UI is now showing, so a plugin
@@ -69,8 +69,8 @@ impl Vst3Loaded {
     /// [`unit_ids::ROOT`] to select the implicit
     /// top-level unit. Main/UI thread.
     #[must_use]
-    pub fn select_unit(&mut self, _main: &MainThread, unit_id: i32) -> bool {
-        self.plugin.select_unit(unit_id)
+    pub fn select_unit(&mut self, main: &MainThread, unit_id: i32) -> bool {
+        self.plugin.select_unit(main, unit_id)
     }
 
     /// Which unit a given bus channel belongs to, or `None` if the plugin
@@ -80,14 +80,14 @@ impl Vst3Loaded {
     /// `BusDirections` values. Main/UI thread.
     pub fn unit_by_bus(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         media_type: i32,
         direction: i32,
         bus_index: i32,
         channel: i32,
     ) -> Option<i32> {
         self.plugin
-            .unit_by_bus(media_type, direction, bus_index, channel)
+            .unit_by_bus(main, media_type, direction, bus_index, channel)
     }
 
     /// Reads the bundle's machine-readable compatibility / migration info as a
@@ -222,7 +222,7 @@ impl Vst3Loaded {
     /// own stream is tolerated, matching [`save_state`](tutti_plugin_types::Control::save_state).
     pub(in crate::host) fn write_state(
         &mut self,
-        _main: &MainThread,
+        main: &MainThread,
         data: &[u8],
     ) -> Result<Vec<(ParamId, Normalized)>> {
         if data.is_empty() {
@@ -257,13 +257,13 @@ impl Vst3Loaded {
         // back to the controller. Bounded by the plugin's parameter list, not
         // by the blob: an id this plugin does not list is dropped, and each
         // parameter is kept once.
-        let listed: HashSet<u32> = (0..self.parameter_count())
-            .filter_map(|i| self.parameter_info_at(i))
+        let listed: HashSet<u32> = (0..self.parameter_count(main))
+            .filter_map(|i| self.parameter_info_at(main, i))
             .map(|info| info.id)
             .collect();
         Ok(latest_listed(pending, &listed)
             .into_iter()
-            .filter(|&(id, value)| self.write_normalized(id, value))
+            .filter(|&(id, value)| self.write_normalized(main, id, value))
             .collect())
     }
 

@@ -46,7 +46,9 @@ impl Plugin {
         let host = self.host_context()?;
         // SAFETY: `host` is the live host application, which `self` keeps
         // alive; `initialize` borrows it.
-        check(unsafe { self.component.initialize(host) })
+        check(unsafe { self.component.initialize(host) })?;
+        self.component_initialized = true;
+        Ok(())
     }
 
     /// Reads `IProcessContextRequirements` into
@@ -81,6 +83,7 @@ impl Plugin {
             // SAFETY: `host` is the live host application, which `self` keeps
             // alive.
             check(unsafe { ctrl.initialize(host) })?;
+            self.controller_initialized = true;
         }
         Ok(())
     }
@@ -253,8 +256,12 @@ impl Drop for Plugin {
         // refuses on `retired`, which it checks under the lock, and the rest is
         // control-side teardown that must not hold it.
         drop(state);
-        // No token: Drop has no main-thread guarantee.
-        self.release_editor();
+        // Drop has no token and may run on any thread: the editor is detached
+        // only if this is the main thread (`release_editor`).
+        self.release_editor(MainThread::current().as_ref());
+        // Registered with the run loop outside any editor (a plugin may do so
+        // from `initialize`): gone with the plugin.
+        self.purge_run_loop();
         // Mirror the load-time connect in reverse: for a separate controller,
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.
@@ -268,22 +275,34 @@ impl Drop for Plugin {
         // Controller Component" then "Terminate Processor Component"). The
         // hosting sample's `PlugProvider::terminatePlugin` terminates the
         // component first; both terminate a single-component plugin once.
+        // `terminate` follows a successful `initialize` and nothing else: a
+        // plugin that never initialized, or refused to, has nothing to undo and
+        // some crash on it.
         if let Some(ctrl) = self.controller.get() {
-            // SAFETY: the controller is live; a null handler clears the one the
-            // host attached.
-            unsafe {
-                let _ = ctrl.setComponentHandler(std::ptr::null_mut());
+            let initialized = match self.controller {
+                ControllerLink::Separate(_) => self.controller_initialized,
+                _ => self.component_initialized,
+            };
+            if initialized {
+                // SAFETY: the controller is live; a null handler clears the one
+                // the host attached.
+                unsafe {
+                    let _ = ctrl.setComponentHandler(std::ptr::null_mut());
+                }
             }
             // A component that is its own controller is terminated once, below.
-            if matches!(self.controller, ControllerLink::Separate(_)) {
+            if self.controller_initialized && matches!(self.controller, ControllerLink::Separate(_))
+            {
                 // SAFETY: a separate controller is a distinct live object,
                 // terminated once, before the component.
                 unsafe { ctrl.terminate() };
             }
         }
-        // SAFETY: the component is live and is terminated once, last.
-        unsafe {
-            self.component.terminate();
+        if self.component_initialized {
+            // SAFETY: the component is live and is terminated once, last.
+            unsafe {
+                self.component.terminate();
+            }
         }
     }
 }

@@ -41,24 +41,48 @@ impl Plugin {
         let frame = HostPlugFrame::new(
             #[cfg(target_os = "linux")]
             self.module.run_loop(),
+            #[cfg(target_os = "linux")]
+            Some(self.owner),
         );
+        // A plugin registers with the module's own run loop (the factory's host
+        // context) while `attached` runs; the scope says whose that is.
+        #[cfg(target_os = "linux")]
+        let run_loop = self.module.run_loop();
+        #[cfg(target_os = "linux")]
+        let _scope = run_loop.scope(self.owner);
         let (editor, size) = Editor::open(view, parent, scale, frame)?;
         self.editor = Some(editor);
         Ok(size)
     }
 
     /// Detaches and releases the editor, if one is open.
-    pub fn close_editor(&mut self, _main: &MainThread) {
-        self.release_editor();
+    pub fn close_editor(&mut self, main: &MainThread) {
+        self.release_editor(Some(main));
     }
 
-    /// [`close_editor`](Self::close_editor) for `Drop`, which has no token: the
-    /// thread a drop runs on is the owner's, and the per-format lane that gives
-    /// the plugin a main-thread handle is what makes that the main thread.
-    pub(super) fn release_editor(&mut self) {
+    /// [`close_editor`](Self::close_editor), and for `Drop`, which has no
+    /// token: it passes what [`MainThread::current`] finds. An editor is
+    /// detached on the main thread only. Dropped anywhere else (`None`), the
+    /// view is leaked instead of being called off its thread: a toolkit's
+    /// `removed` on the wrong thread is a crash, and a leaked view is memory.
+    /// The run loop is purged either way, so nothing of it is ever called.
+    pub(super) fn release_editor(&mut self, main: Option<&MainThread>) {
         if let Some(editor) = self.editor.take() {
-            editor.close();
+            match main {
+                Some(main) => editor.close(main),
+                None => std::mem::forget(editor),
+            }
         }
+        // A timer or descriptor the view left registered (it was told to
+        // unregister in `removed`) is the plugin's leak; the run loop must not
+        // call it once the view is gone.
+        self.purge_run_loop();
+    }
+
+    /// Takes back whatever this plugin left registered with the run loop.
+    pub(super) fn purge_run_loop(&self) {
+        #[cfg(target_os = "linux")]
+        self.module.run_loop().purge(self.owner);
     }
 
     /// Whether an editor is open.
@@ -152,9 +176,9 @@ impl Plugin {
     }
 
     /// Tells the open editor whether it has focus.
-    pub fn set_editor_focus(&self, _main: &MainThread, focused: bool) {
+    pub fn set_editor_focus(&self, main: &MainThread, focused: bool) {
         if let Some(e) = &self.editor {
-            crate::view::set_view_focus(&e.view, focused);
+            crate::view::set_view_focus(main, &e.view, focused);
         }
     }
 

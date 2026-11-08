@@ -2,7 +2,8 @@
 //! component ↔ controller messaging.
 
 use crate::guard::guard;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use vst3::Steinberg::{
@@ -13,8 +14,19 @@ use vst3::{Class, ComWrapper};
 
 use super::attr_list::AttributeList;
 
+/// The id, and every id `getMessageID` has pointed a plugin at.
+#[derive(Default)]
+struct Ids {
+    current: Option<Arc<CStr>>,
+    /// Ids handed out by pointer, held until the message is dropped:
+    /// `getMessageID` returns a bare pointer and releases the lock, so a
+    /// `setMessageID` must not free what an earlier pointer names. One entry
+    /// per distinct id lent.
+    lent: Vec<Arc<CStr>>,
+}
+
 pub struct Message {
-    message_id: Mutex<Option<CString>>,
+    message_id: Mutex<Ids>,
     attributes: ComWrapper<AttributeList>,
 }
 
@@ -25,7 +37,7 @@ impl Class for Message {
 impl Message {
     pub fn new() -> ComWrapper<Self> {
         ComWrapper::new(Self {
-            message_id: Mutex::new(None),
+            message_id: Mutex::new(Ids::default()),
             attributes: AttributeList::new(),
         })
     }
@@ -34,33 +46,31 @@ impl Message {
 impl IMessageTrait for Message {
     unsafe fn getMessageID(&self) -> FIDString {
         guard(std::ptr::null(), || {
-            // Returns a borrowed pointer into the `CString` this message owns.
-            // `FIDString` carries no lifetime, so the contract is by convention:
-            // the pointer is valid until the next `setMessageID` on this message
-            // (which replaces the `CString` and frees the old allocation). VST3's
-            // component↔controller messaging reads the id synchronously inside the
-            // receiver's `IConnectionPoint::notify` before returning control, so a
-            // caller that follows the protocol never observes a dangling pointer.
-            // The lock is released when `guard` drops at the end of this call — it
-            // guards concurrent access to the `Option`, not the returned pointer.
-            let guard = self.message_id.lock();
-            match guard.as_ref() {
-                Some(c) => c.as_ptr(),
-                None => std::ptr::null(),
+            // A bare pointer: `FIDString` carries no lifetime. The id is kept
+            // in `lent` once handed out, so it stays valid until the message
+            // is dropped, whatever `setMessageID` does after.
+            let mut ids = self.message_id.lock();
+            let Some(current) = ids.current.clone() else {
+                return std::ptr::null();
+            };
+            let ptr = current.as_ptr();
+            if !ids.lent.iter().any(|held| Arc::ptr_eq(held, &current)) {
+                ids.lent.push(current);
             }
+            ptr
         })
     }
 
     unsafe fn setMessageID(&self, id: FIDString) {
         guard((), || {
-            let mut guard = self.message_id.lock();
-            *guard = if id.is_null() {
+            let mut ids = self.message_id.lock();
+            ids.current = if id.is_null() {
                 None
             } else {
                 // SAFETY: a COM method: the plugin passes pointers valid for this call, per the
                 // VST3
                 // ABI.
-                Some(unsafe { CStr::from_ptr(id) }.to_owned())
+                Some(Arc::from(unsafe { CStr::from_ptr(id) }))
             };
         })
     }
@@ -73,5 +83,30 @@ impl IMessageTrait for Message {
                 .map(|r| r.as_ptr())
                 .unwrap_or(std::ptr::null_mut())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **An id pointer `getMessageID` returned stays readable after
+    /// `setMessageID` replaces the id.**
+    ///
+    /// Mutation: drop the `lent` push in `getMessageID` -> the replaced id is
+    /// freed and the read below is a use-after-free (visible under Miri; the
+    /// string compare can pass by luck), and the `lent` count assertion fails.
+    #[test]
+    fn an_id_pointer_outlives_its_replacement() {
+        let message = Message::new();
+        // SAFETY: a COM method on a live object the test owns; the ids are NUL-terminated.
+        unsafe {
+            message.setMessageID(c"first".as_ptr());
+            let seen = message.getMessageID();
+            message.setMessageID(c"second".as_ptr());
+            assert_eq!(CStr::from_ptr(seen), c"first");
+            assert_eq!(CStr::from_ptr(message.getMessageID()), c"second");
+        }
+        assert_eq!(message.message_id.lock().lent.len(), 2);
     }
 }

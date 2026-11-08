@@ -165,7 +165,7 @@ impl<T: Vst3Sample> Staged<T> {
         // Capped so a controller reporting a negative or absurd count (read
         // back through `as u32`) cannot reserve gigabytes.
         const MAX_PRESIZED_QUEUES: u32 = 1 << 14;
-        let param_queues = (loaded.parameter_count().min(MAX_PRESIZED_QUEUES) as usize)
+        let param_queues = (loaded.parameter_count(main).min(MAX_PRESIZED_QUEUES) as usize)
             .max(OUTPUT_PARAM_QUEUE_RESERVE);
         // The host's chunk adds its spare queues to the parameter count.
         let chunk_queues = param_queues + ParameterChanges::SPARE_QUEUES;
@@ -222,7 +222,7 @@ impl<T: Vst3Sample> Staged<T> {
                 loaded.midi_cc.reader(),
                 // Only a plugin with an `IMidiMapping` can publish a mapping
                 // later, so only it reserves the routing scratch.
-                loaded.plugin.has_midi_mapping(),
+                loaded.plugin.has_midi_mapping(main),
                 chunk_queues,
                 chunk_room,
             ),

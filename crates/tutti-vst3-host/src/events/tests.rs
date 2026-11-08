@@ -154,10 +154,10 @@ fn cc_falls_through_to_data_event() {
     let vst3 = encode(&event).expect("CC should convert");
     match &vst3.payload {
         Payload::Data(e) => {
-            assert_eq!(e.size, 3);
-            assert_eq!(e.bytes[0], 0xB0 | 2);
-            assert_eq!(e.bytes[1], 74);
-            assert_eq!(e.bytes[2], 100);
+            assert_eq!(e.size(), 3);
+            assert_eq!(e.payload()[0], 0xB0 | 2);
+            assert_eq!(e.payload()[1], 74);
+            assert_eq!(e.payload()[2], 100);
         }
         _ => panic!("expected Data variant for CC"),
     }
@@ -174,9 +174,9 @@ fn pitch_bend_falls_through_to_data_event() {
     let vst3 = encode(&event).expect("PitchBend should convert");
     match &vst3.payload {
         Payload::Data(e) => {
-            assert_eq!(e.size, 3);
-            assert_eq!(e.bytes[0] & 0xF0, 0xE0);
-            let value = (e.bytes[1] as u16) | ((e.bytes[2] as u16) << 7);
+            assert_eq!(e.size(), 3);
+            assert_eq!(e.payload()[0] & 0xF0, 0xE0);
+            let value = (e.payload()[1] as u16) | ((e.payload()[2] as u16) << 7);
             assert_eq!(value, 8192, "PitchBend should round-trip to center");
         }
         _ => panic!("expected Data variant for PitchBend"),
@@ -189,9 +189,9 @@ fn program_change_falls_through_to_data_event() {
     let vst3 = encode(&event).expect("ProgramChange should convert");
     match &vst3.payload {
         Payload::Data(e) => {
-            assert_eq!(e.size, 3);
-            assert_eq!(e.bytes[0], 0xC0 | 9);
-            assert_eq!(e.bytes[1], 42);
+            assert_eq!(e.size(), 3);
+            assert_eq!(e.payload()[0], 0xC0 | 9);
+            assert_eq!(e.payload()[1], 42);
         }
         _ => panic!("expected Data variant for ProgramChange"),
     }
@@ -607,11 +607,11 @@ fn single_packet_sysex_round_trips_through_data_event() {
     let vst3 = encode(&event).expect("SysEx should map to Data");
     match &vst3.payload {
         Payload::Data(e) => {
-            assert_eq!(e.data_type, K_DATA_TYPE_MIDI_SYSEX);
-            assert_eq!(e.size as usize, payload.len() + 2);
-            assert_eq!(e.bytes[0], 0xF0);
-            assert_eq!(e.bytes[1..1 + payload.len()], payload);
-            assert_eq!(e.bytes[1 + payload.len()], 0xF7);
+            assert_eq!(e.data_type(), K_DATA_TYPE_MIDI_SYSEX);
+            assert_eq!(e.size() as usize, payload.len() + 2);
+            assert_eq!(e.payload()[0], 0xF0);
+            assert_eq!(e.payload()[1..1 + payload.len()], payload);
+            assert_eq!(e.payload()[1 + payload.len()], 0xF7);
             assert_eq!(vst3.sample_offset(), 7);
         }
         _ => panic!("expected Data variant for SysEx"),

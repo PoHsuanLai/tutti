@@ -523,9 +523,9 @@ impl PluginParams for Vst3Instance {
             .unwrap_or_default()
     }
 
-    fn parameter_count(&self, _main: &MainThread) -> usize {
+    fn parameter_count(&self, main: &MainThread) -> usize {
         self.loaded_ref()
-            .map_or(0, |loaded| loaded.parameter_count() as usize)
+            .map_or(0, |loaded| loaded.parameter_count(main) as usize)
     }
 }
 

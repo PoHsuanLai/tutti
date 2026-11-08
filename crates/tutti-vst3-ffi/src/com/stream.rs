@@ -14,6 +14,10 @@ use vst3::{Class, ComWrapper};
 
 use crate::sdk::sdk_enum_i32;
 
+/// The most a stream may hold (1 GiB): a plugin's state is far smaller, and a
+/// seek then a write otherwise zero-fills up to any position a plugin names.
+const MAX_STREAM_BYTES: u64 = 1 << 30;
+
 /// COM-wrapped in-memory stream.
 ///
 /// Construct via [`BStream::new`] or [`BStream::from_data`]; the returned
@@ -80,6 +84,11 @@ impl IBStreamTrait for BStream {
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
+            // `Cursor<Vec<u8>>` zero-fills up to a seek position on write, so an
+            // unbounded position is an unbounded allocation.
+            if cursor.position().saturating_add(num_bytes as u64) > MAX_STREAM_BYTES {
+                return kInvalidArgument;
+            }
             // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
             // ABI makes `buffer` valid for `num_bytes` writable bytes for the call, and the
             // plugin does not alias it while this method runs.
@@ -130,6 +139,11 @@ impl IBStreamTrait for BStream {
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
+            // `Cursor<Vec<u8>>` zero-fills up to a seek position on write, so an
+            // unbounded position is an unbounded allocation.
+            if cursor.position().saturating_add(num_bytes as u64) > MAX_STREAM_BYTES {
+                return kInvalidArgument;
+            }
             // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
             // ABI makes `buffer` valid for `num_bytes` readable bytes for the call.
             let buf =
@@ -153,7 +167,10 @@ impl IBStreamTrait for BStream {
         guard(vst3::Steinberg::kInternalError, || {
             let seek_from = match mode {
                 m if m == sdk_enum_i32(kIBSeekSet) => match u64::try_from(pos) {
-                    Ok(start) => SeekFrom::Start(start),
+                    Ok(start) if start <= MAX_STREAM_BYTES => SeekFrom::Start(start),
+                    // Past the cap no write could land: refuse it here too, so
+                    // `tell` never reports a position the stream cannot hold.
+                    Ok(_) => return kInvalidArgument,
                     // A negative absolute position is not a position (cast to
                     // `u64` it would wrap to about 2^64 and answer `kResultOk`).
                     Err(_) => return kInvalidArgument,
@@ -394,5 +411,39 @@ mod tests {
             assert_eq!(result, kResultOk);
             assert_eq!(&buf[..3], &[1, 2, 3]);
         });
+    }
+
+    /// **A plugin cannot make the host allocate past the cap by seeking far and
+    /// writing.** `Cursor<Vec<u8>>` zero-fills up to the position, so a seek to
+    /// 1 TiB and a one-byte write used to ask for a terabyte.
+    ///
+    /// Mutation: delete the position check in `write` (and the `Ok(_)` arm of
+    /// `seek`) -> the write below succeeds, allocating 1 GiB, and the test
+    /// fails on its status.
+    #[test]
+    fn a_far_seek_then_a_write_is_refused() {
+        let stream = BStream::new();
+        with_ptr(&stream, |ptr| {
+            let mut at = 0i64;
+            // SAFETY: COM methods on a live object the test owns, with valid arguments.
+            unsafe {
+                assert_eq!(
+                    ptr.seek(1 << 40, sdk_enum_i32(kIBSeekSet), &mut at),
+                    kInvalidArgument
+                );
+                // The cap itself is a position; one more byte there is not room.
+                assert_eq!(
+                    ptr.seek(MAX_STREAM_BYTES as i64, sdk_enum_i32(kIBSeekSet), &mut at),
+                    kResultOk
+                );
+                let mut written = 0i32;
+                assert_eq!(
+                    ptr.write(b"x".as_ptr() as *mut c_void, 1, &mut written),
+                    kInvalidArgument
+                );
+                assert_eq!(written, 0);
+            }
+        });
+        assert!(stream.data().len() < 1 << 20, "nothing was allocated");
     }
 }

@@ -6,6 +6,7 @@
 
 use std::ffi::{c_char, c_void};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use vst3::{Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
 
@@ -47,6 +48,10 @@ fn put_cstring(src: &str, dst: &mut [c_char]) {
 struct Plugin {
     core: Core,
     dsp: Mutex<Dsp>,
+    /// Whether `initialize` has run and `terminate` has not: the SDK allows
+    /// `terminate` after a successful `initialize` only, and this plugin
+    /// aborts the process on any other, as a strict one does by crashing.
+    initialized: AtomicBool,
 }
 
 impl Class for Plugin {
@@ -60,9 +65,15 @@ impl Class for Plugin {
 
 impl IPluginBaseTrait for Plugin {
     unsafe fn initialize(&self, _ctx: *mut FUnknown) -> tresult {
+        self.initialized.store(true, SeqCst);
         kResultOk
     }
     unsafe fn terminate(&self) -> tresult {
+        // A panic cannot unwind out of an `extern "system"` call: it aborts.
+        assert!(
+            self.initialized.swap(false, SeqCst),
+            "terminate without a successful initialize"
+        );
         kResultOk
     }
 }
@@ -438,6 +449,10 @@ impl IEditControllerTrait for Plugin {
         kResultOk
     }
     unsafe fn createView(&self, _name: *const c_char) -> *mut IPlugView {
+        #[cfg(target_os = "linux")]
+        if self.core.editor() != core::EDITOR_NONE {
+            return view::create(self.core.editor() == core::EDITOR_LEAKY);
+        }
         std::ptr::null_mut()
     }
 }
@@ -445,7 +460,57 @@ impl IEditControllerTrait for Plugin {
 struct Factory;
 
 impl Class for Factory {
-    type Interfaces = (IPluginFactory,);
+    type Interfaces = (IPluginFactory3,);
+}
+
+impl IPluginFactory2Trait for Factory {
+    unsafe fn getClassInfo2(&self, index: i32, info: *mut PClassInfo2) -> tresult {
+        if index != 0 {
+            return kInvalidArgument;
+        }
+        // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call.
+        let info = unsafe { &mut *info };
+        info.cid = CID;
+        info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
+        put_cstring("Audio Module Class", &mut info.category);
+        put_cstring("Tutti Shared Test Plugin", &mut info.name);
+        info.classFlags = 0;
+        put_cstring("Fx", &mut info.subCategories);
+        put_cstring("Tutti", &mut info.vendor);
+        put_cstring("1.0.0", &mut info.version);
+        put_cstring("VST 3.8.0", &mut info.sdkVersion);
+        kResultOk
+    }
+}
+
+impl IPluginFactory3Trait for Factory {
+    unsafe fn getClassInfoUnicode(&self, index: i32, info: *mut PClassInfoW) -> tresult {
+        if index != 0 {
+            return kInvalidArgument;
+        }
+        // SAFETY, for this function's `unsafe` blocks: `info` is an out-pointer the host owns for the call.
+        let info = unsafe { &mut *info };
+        info.cid = CID;
+        info.cardinality = PClassInfo_::ClassCardinality_::kManyInstances as int32;
+        put_cstring("Audio Module Class", &mut info.category);
+        put_wstring("Tutti Shared Test Plugin", &mut info.name);
+        info.classFlags = 0;
+        put_cstring("Fx", &mut info.subCategories);
+        put_wstring("Tutti", &mut info.vendor);
+        put_wstring("1.0.0", &mut info.version);
+        put_wstring("VST 3.8.0", &mut info.sdkVersion);
+        kResultOk
+    }
+    /// What VSTGUI reads on Linux: the host's context, kept for `IRunLoop`.
+    unsafe fn setHostContext(&self, context: *mut FUnknown) -> tresult {
+        #[cfg(target_os = "linux")]
+        // SAFETY: `context` is the host's object, valid for this call.
+        unsafe {
+            view::keep_host_context(context);
+        }
+        let _ = context;
+        kResultOk
+    }
 }
 
 impl IPluginFactoryTrait for Factory {
@@ -486,6 +551,7 @@ impl IPluginFactoryTrait for Factory {
         let plugin = ComWrapper::new(Plugin {
             core: Core::new(),
             dsp: Mutex::new(Dsp::default()),
+            initialized: AtomicBool::new(false),
         });
         let Some(unknown) = plugin.to_com_ptr::<FUnknown>() else {
             return kInternalError;
@@ -532,4 +598,198 @@ extern "system" fn GetPluginFactory() -> *mut IPluginFactory {
     ComWrapper::new(Factory)
         .to_com_ptr::<IPluginFactory>()
         .map_or(std::ptr::null_mut(), |p| p.into_raw())
+}
+
+/// The editor view, on Linux: it takes the host's run loop from the context
+/// `setHostContext` gave the factory, as VSTGUI's `LinuxFactory` does, and
+/// registers a timer and a file descriptor with it when attached.
+#[cfg(target_os = "linux")]
+mod view {
+    use super::*;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+    use vst3::ComPtr;
+    use vst3::Steinberg::Linux::{
+        IEventHandler, IEventHandlerTrait, IRunLoop, IRunLoopTrait, ITimerHandler,
+        ITimerHandlerTrait,
+    };
+
+    /// The host context the factory was given, held as VSTGUI holds it: for the
+    /// life of the module, and shared by every instance.
+    struct Context(ComPtr<FUnknown>);
+    // SAFETY: a refcounted host object the host makes safe to share; the
+    // plugin touches it only from the editor's thread.
+    unsafe impl Send for Context {}
+
+    static CONTEXT: Mutex<Option<Context>> = Mutex::new(None);
+
+    pub(super) unsafe fn keep_host_context(context: *mut FUnknown) {
+        // SAFETY: `context` is the host's object, valid for this call; `ComPtr`
+        // takes its own reference.
+        let kept = unsafe { ComRef::from_raw(context) }.map(|c| Context(c.to_com_ptr()));
+        *CONTEXT.lock().unwrap() = kept;
+    }
+
+    /// The calling thread, by `pthread_self`. Not `std::thread::current`: that
+    /// registers a thread-local destructor in this library, which crashes the
+    /// thread when it exits after the host has unloaded the library.
+    fn this_thread() -> usize {
+        unsafe extern "C" {
+            fn pthread_self() -> usize;
+        }
+        // SAFETY: `pthread_self` takes nothing and cannot fail.
+        unsafe { pthread_self() }
+    }
+
+    struct Tick;
+    impl Class for Tick {
+        type Interfaces = (ITimerHandler,);
+    }
+    impl ITimerHandlerTrait for Tick {
+        unsafe fn onTimer(&self) {}
+    }
+
+    struct Ready;
+    impl Class for Ready {
+        type Interfaces = (IEventHandler,);
+    }
+    impl IEventHandlerTrait for Ready {
+        unsafe fn onFDIsSet(&self, _fd: Linux::FileDescriptor) {}
+    }
+
+    /// What `attached` registered.
+    struct Registered {
+        run_loop: ComPtr<IRunLoop>,
+        tick: ComPtr<ITimerHandler>,
+        ready: ComPtr<IEventHandler>,
+        /// Never written, so the descriptor never turns readable.
+        _pair: (UnixStream, UnixStream),
+    }
+
+    struct View {
+        leaky: bool,
+        registered: Mutex<Option<Registered>>,
+        /// The thread `attached` ran on: a toolkit's view belongs to it, and
+        /// `removed` on another aborts the process, as a real one may crash.
+        thread: Mutex<Option<usize>>,
+    }
+
+    impl Class for View {
+        type Interfaces = (IPlugView,);
+    }
+
+    pub(super) fn create(leaky: bool) -> *mut IPlugView {
+        ComWrapper::new(View {
+            leaky,
+            registered: Mutex::new(None),
+            thread: Mutex::new(None),
+        })
+        .to_com_ptr::<IPlugView>()
+        .map_or(std::ptr::null_mut(), |p| p.into_raw())
+    }
+
+    impl IPlugViewTrait for View {
+        unsafe fn isPlatformTypeSupported(&self, kind: FIDString) -> tresult {
+            // SAFETY: both are NUL-terminated platform-type strings.
+            let same = unsafe {
+                std::ffi::CStr::from_ptr(kind)
+                    == std::ffi::CStr::from_ptr(kPlatformTypeX11EmbedWindowID)
+            };
+            if same { kResultTrue } else { kResultFalse }
+        }
+        unsafe fn attached(&self, _parent: *mut c_void, _kind: FIDString) -> tresult {
+            let Some(run_loop) = CONTEXT
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|c| c.0.cast::<IRunLoop>())
+            else {
+                return kNotInitialized;
+            };
+            *self.thread.lock().unwrap() = Some(this_thread());
+            let Ok(pair) = UnixStream::pair() else {
+                return kInternalError;
+            };
+            let tick = ComWrapper::new(Tick).to_com_ptr::<ITimerHandler>().unwrap();
+            let ready = ComWrapper::new(Ready)
+                .to_com_ptr::<IEventHandler>()
+                .unwrap();
+            // SAFETY: the handlers are live COM objects `Registered` keeps (or
+            // leaks) past the registration; the run loop is the host's.
+            unsafe {
+                run_loop.registerTimer(tick.as_ptr(), 1);
+                run_loop.registerEventHandler(ready.as_ptr(), pair.0.as_raw_fd());
+            }
+            *self.registered.lock().unwrap() = Some(Registered {
+                run_loop,
+                tick,
+                ready,
+                _pair: pair,
+            });
+            kResultOk
+        }
+        unsafe fn removed(&self) -> tresult {
+            // A panic cannot unwind out of an `extern "system"` call: it aborts.
+            assert_eq!(
+                *self.thread.lock().unwrap(),
+                Some(this_thread()),
+                "removed off the thread that attached"
+            );
+            let Some(registered) = self.registered.lock().unwrap().take() else {
+                return kResultOk;
+            };
+            if self.leaky {
+                // The leak: the registrations stay with the host, and the
+                // handlers and the descriptor outlive the view.
+                std::mem::forget(registered);
+            } else {
+                // SAFETY: the handlers `attached` registered, unregistered once.
+                unsafe {
+                    registered
+                        .run_loop
+                        .unregisterTimer(registered.tick.as_ptr());
+                    registered
+                        .run_loop
+                        .unregisterEventHandler(registered.ready.as_ptr());
+                }
+            }
+            kResultOk
+        }
+        unsafe fn onWheel(&self, _distance: f32) -> tresult {
+            kResultFalse
+        }
+        unsafe fn onKeyDown(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
+            kResultFalse
+        }
+        unsafe fn onKeyUp(&self, _key: char16, _code: int16, _modifiers: int16) -> tresult {
+            kResultFalse
+        }
+        unsafe fn getSize(&self, size: *mut ViewRect) -> tresult {
+            // SAFETY: `size` is an out-pointer the host owns for the call.
+            unsafe {
+                *size = ViewRect {
+                    left: 0,
+                    top: 0,
+                    right: 200,
+                    bottom: 100,
+                };
+            }
+            kResultOk
+        }
+        unsafe fn onSize(&self, _size: *mut ViewRect) -> tresult {
+            kResultOk
+        }
+        unsafe fn onFocus(&self, _state: TBool) -> tresult {
+            kResultOk
+        }
+        unsafe fn setFrame(&self, _frame: *mut IPlugFrame) -> tresult {
+            kResultOk
+        }
+        unsafe fn canResize(&self) -> tresult {
+            kResultFalse
+        }
+        unsafe fn checkSizeConstraint(&self, _rect: *mut ViewRect) -> tresult {
+            kResultFalse
+        }
+    }
 }

@@ -127,8 +127,8 @@ let mut plugin = Vst3Loaded::load(Path::new("/usr/lib/vst3/MyPlugin.vst3"), Load
 // position: `parameter_ids` lists them, `parameter_info` reads one by id, and
 // the id is what `Control::set_parameter` takes. The titles are UTF-16 in the
 // ABI, so they are read through the `_string` accessors rather than as fields.
-for id in plugin.parameter_ids() {
-    let Some(info) = plugin.parameter_info(id) else {
+for id in plugin.parameter_ids(&main) {
+    let Some(info) = plugin.parameter_info(&main, id) else {
         continue;
     };
     println!(
@@ -140,7 +140,7 @@ for id in plugin.parameter_ids() {
 }
 
 // The write takes the id and a normalized `0..=1` value.
-if let Some(&id) = plugin.parameter_ids().first() {
+if let Some(&id) = plugin.parameter_ids(&main).first() {
     plugin.set_parameter(&main, id, Normalized::of(0.75));
 }
 

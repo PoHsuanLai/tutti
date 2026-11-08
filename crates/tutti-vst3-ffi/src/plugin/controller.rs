@@ -7,28 +7,29 @@ impl Plugin {
 
     /// How many parameters the controller reports; zero without a controller.
     #[must_use]
-    pub fn parameter_count(&self) -> u32 {
+    pub fn parameter_count(&self, _main: &MainThread) -> u32 {
         match self.controller.get() {
             // SAFETY: a plain getter on a live controller.
-            Some(c) => unsafe { c.getParameterCount() as u32 },
+            // A negative count is a broken plugin's, not four billion parameters.
+            Some(c) => unsafe { c.getParameterCount().max(0).cast_unsigned() },
             None => 0,
         }
     }
 
     /// The `index`-th parameter's description.
     #[must_use]
-    pub fn parameter_info(&self, index: u32) -> Option<Vst3ParameterInfo> {
+    pub fn parameter_info(&self, _main: &MainThread, index: u32) -> Option<Vst3ParameterInfo> {
         let controller = self.controller.get()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::ParameterInfo>();
         // SAFETY: `raw` is a valid out-parameter.
-        check(unsafe { controller.getParameterInfo(index as i32, &mut raw) }).ok()?;
+        check(unsafe { controller.getParameterInfo(i32::try_from(index).ok()?, &mut raw) }).ok()?;
         Some(Vst3ParameterInfo::from_c(&raw))
     }
 
     /// `normalizedParamToPlain` for the parameter `id`; `None` without a
     /// controller.
     #[must_use]
-    pub fn normalized_to_plain(&self, id: u32, normalized: f64) -> Option<f64> {
+    pub fn normalized_to_plain(&self, _main: &MainThread, id: u32, normalized: f64) -> Option<f64> {
         let controller = self.controller.get()?;
         // SAFETY: a plain conversion on a live controller.
         Some(unsafe { controller.normalizedParamToPlain(id, normalized) })
@@ -36,14 +37,14 @@ impl Plugin {
 
     /// The parameter's current normalized value; `None` without a controller.
     #[must_use]
-    pub fn parameter_normalized(&self, id: ParamId) -> Option<f64> {
+    pub fn parameter_normalized(&self, _main: &MainThread, id: ParamId) -> Option<f64> {
         let controller = self.controller.get()?;
         // SAFETY: a plain getter on a live controller.
         Some(unsafe { controller.getParamNormalized(id.get()) })
     }
 
     /// Sets the parameter's normalized value; `false` without a controller.
-    pub fn set_parameter_normalized(&self, id: ParamId, value: f64) -> bool {
+    pub fn set_parameter_normalized(&self, _main: &MainThread, id: ParamId, value: f64) -> bool {
         let Some(controller) = self.controller.get() else {
             return false;
         };
@@ -54,7 +55,12 @@ impl Plugin {
 
     /// The plugin's text for a normalized value.
     #[must_use]
-    pub fn parameter_text(&self, id: ParamId, normalized: f64) -> Option<String> {
+    pub fn parameter_text(
+        &self,
+        _main: &MainThread,
+        id: ParamId,
+        normalized: f64,
+    ) -> Option<String> {
         let controller = self.controller.get()?;
         let mut string: String128 = [0; 128];
         // SAFETY: `string` is a valid out-parameter of the size the ABI names.
@@ -68,7 +74,7 @@ impl Plugin {
     ///
     /// `text` is cut to 127 UTF-16 units, the `String128` the ABI allows.
     #[must_use]
-    pub fn parameter_from_text(&self, id: ParamId, text: &str) -> Option<f64> {
+    pub fn parameter_from_text(&self, _main: &MainThread, id: ParamId, text: &str) -> Option<f64> {
         let controller = self.controller.get()?;
         let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
         buf.push(0);
@@ -86,10 +92,14 @@ impl Plugin {
     /// `INoteExpressionController::getNoteExpressionCount`, floored at zero;
     /// zero without the interface.
     #[must_use]
-    pub fn note_expression_count(&self, bus_index: i32, channel: i16) -> u32 {
+    pub fn note_expression_count(&self, _main: &MainThread, bus_index: i32, channel: i16) -> u32 {
         match &self.ext.note_expression {
             // SAFETY: a plain getter on a live interface.
-            Some(c) => unsafe { c.getNoteExpressionCount(bus_index, channel).max(0) as u32 },
+            Some(c) => unsafe {
+                c.getNoteExpressionCount(bus_index, channel)
+                    .max(0)
+                    .cast_unsigned()
+            },
             None => 0,
         }
     }
@@ -98,6 +108,7 @@ impl Plugin {
     #[must_use]
     pub fn note_expression_info(
         &self,
+        _main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -106,7 +117,12 @@ impl Plugin {
         let mut raw = zeroed::<vst3::Steinberg::Vst::NoteExpressionTypeInfo>();
         // SAFETY: `raw` is a valid out-parameter.
         check(unsafe {
-            controller.getNoteExpressionInfo(bus_index, channel, index as i32, &mut raw)
+            controller.getNoteExpressionInfo(
+                bus_index,
+                channel,
+                i32::try_from(index).ok()?,
+                &mut raw,
+            )
         })
         .ok()?;
         Some(Vst3NoteExpressionInfo::from_c(&raw))
@@ -115,10 +131,14 @@ impl Plugin {
     /// `IKeyswitchController::getKeyswitchCount`, floored at zero; zero without
     /// the interface.
     #[must_use]
-    pub fn keyswitch_count(&self, bus_index: i32, channel: i16) -> u32 {
+    pub fn keyswitch_count(&self, _main: &MainThread, bus_index: i32, channel: i16) -> u32 {
         match &self.ext.keyswitch {
             // SAFETY: a plain getter on a live interface.
-            Some(c) => unsafe { c.getKeyswitchCount(bus_index, channel).max(0) as u32 },
+            Some(c) => unsafe {
+                c.getKeyswitchCount(bus_index, channel)
+                    .max(0)
+                    .cast_unsigned()
+            },
             None => 0,
         }
     }
@@ -127,6 +147,7 @@ impl Plugin {
     #[must_use]
     pub fn keyswitch_info(
         &self,
+        _main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -134,8 +155,10 @@ impl Plugin {
         let controller = self.ext.keyswitch.as_ref()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::KeyswitchInfo>();
         // SAFETY: `raw` is a valid out-parameter.
-        check(unsafe { controller.getKeyswitchInfo(bus_index, channel, index as i32, &mut raw) })
-            .ok()?;
+        check(unsafe {
+            controller.getKeyswitchInfo(bus_index, channel, i32::try_from(index).ok()?, &mut raw)
+        })
+        .ok()?;
         Some(Vst3KeyswitchInfo::from_c(&raw))
     }
 
@@ -145,6 +168,7 @@ impl Plugin {
     #[must_use]
     pub fn compatible_param_id(
         &self,
+        _main: &MainThread,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: u32,
     ) -> Option<u32> {
@@ -164,7 +188,12 @@ impl Plugin {
 
     /// `IParameterFunctionName::getParameterIDFromFunctionName`.
     #[must_use]
-    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
+    pub fn param_id_for_function_name(
+        &self,
+        _main: &MainThread,
+        unit_id: i32,
+        function_name: &str,
+    ) -> Option<u32> {
         let ctrl = self.ext.parameter_function_name.as_ref()?;
         let c_name = std::ffi::CString::new(function_name).ok()?;
         let mut param_id: u32 = 0;
@@ -179,7 +208,7 @@ impl Plugin {
 
     /// Every program list the plugin declares.
     #[must_use]
-    pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
+    pub fn program_lists(&self, _main: &MainThread) -> Vec<Vst3ProgramListInfo> {
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
         };
@@ -199,11 +228,11 @@ impl Plugin {
     /// Every unit the plugin declares, with each unit's program list resolved
     /// against the lists the plugin actually has.
     #[must_use]
-    pub fn units(&self) -> Vec<Vst3UnitInfo> {
+    pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
         };
-        let known: Vec<i32> = self.program_lists().into_iter().map(|l| l.id).collect();
+        let known: Vec<i32> = self.program_lists(main).into_iter().map(|l| l.id).collect();
         // SAFETY: a plain getter on a live interface.
         let count = unsafe { ctrl.getUnitCount() }.max(0);
         let mut units = Vec::with_capacity(count as usize);
@@ -221,17 +250,25 @@ impl Plugin {
 
     /// The name of a program in a list.
     #[must_use]
-    pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
+    pub fn program_name(
+        &self,
+        _main: &MainThread,
+        list_id: i32,
+        program_index: u32,
+    ) -> Option<String> {
         let ctrl = self.ext.unit_info.as_ref()?;
         let mut name: String128 = [0; 128];
         // SAFETY: `name` is a valid out-parameter of the size the ABI names.
-        check(unsafe { ctrl.getProgramName(list_id, program_index as i32, &mut name) }).ok()?;
+        check(unsafe {
+            ctrl.getProgramName(list_id, i32::try_from(program_index).ok()?, &mut name)
+        })
+        .ok()?;
         Some(utf16_to_string(&name))
     }
 
     /// The selected unit.
     #[must_use]
-    pub fn selected_unit(&self) -> Option<i32> {
+    pub fn selected_unit(&self, _main: &MainThread) -> Option<i32> {
         let ctrl = self.ext.unit_info.as_ref()?;
         // SAFETY: a plain getter on a live interface.
         Some(unsafe { ctrl.getSelectedUnit() })
@@ -239,7 +276,7 @@ impl Plugin {
 
     /// Selects a unit; `false` without the interface or if refused.
     #[must_use]
-    pub fn select_unit(&self, unit_id: i32) -> bool {
+    pub fn select_unit(&self, _main: &MainThread, unit_id: i32) -> bool {
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return false;
         };
@@ -252,6 +289,7 @@ impl Plugin {
     #[must_use]
     pub fn unit_by_bus(
         &self,
+        _main: &MainThread,
         media_type: i32,
         direction: i32,
         bus_index: i32,
@@ -271,7 +309,12 @@ impl Plugin {
     /// controls the SDK defines, as the plugin maps them; `u32::MAX` for an
     /// unmapped one. Empty without the interface or if refused.
     #[must_use]
-    pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
+    pub fn physical_ui_mapping(
+        &self,
+        _main: &MainThread,
+        bus_index: i32,
+        channel: i16,
+    ) -> Vec<(u32, u32)> {
         let Some(ctrl) = self.ext.physical_ui_mapping.as_ref() else {
             return Vec::new();
         };
@@ -303,6 +346,7 @@ impl Plugin {
     #[must_use]
     pub fn xml_representation(
         &self,
+        _main: &MainThread,
         vendor: &str,
         name: &str,
         version: &str,
@@ -325,7 +369,7 @@ impl Plugin {
     }
 
     /// `IAutomationState::setAutomationState`; `false` without the interface.
-    pub fn set_automation_state(&self, state: i32) -> bool {
+    pub fn set_automation_state(&self, _main: &MainThread, state: i32) -> bool {
         match &self.ext.automation_state {
             Some(a) => {
                 // SAFETY: a plain call on a live interface.
@@ -340,7 +384,7 @@ impl Plugin {
 
     /// Whether the controller implements `IMidiMapping`.
     #[must_use]
-    pub fn has_midi_mapping(&self) -> bool {
+    pub fn has_midi_mapping(&self, _main: &MainThread) -> bool {
         self.controller
             .get()
             .is_some_and(|c| c.cast::<IMidiMapping>().is_some())
@@ -349,7 +393,12 @@ impl Plugin {
     /// `IMidiMapping::getMidiControllerAssignment` for bus 0: the parameter
     /// the plugin maps a CC to, if it maps one (`kResultTrue`).
     #[must_use]
-    pub fn midi_controller_assignment(&self, channel: i16, controller: i16) -> Option<u32> {
+    pub fn midi_controller_assignment(
+        &self,
+        _main: &MainThread,
+        channel: i16,
+        controller: i16,
+    ) -> Option<u32> {
         let mapping = self.controller.get()?.cast::<IMidiMapping>()?;
         self.midi_assignment_with(&mapping, channel, controller)
     }
@@ -371,6 +420,7 @@ impl Plugin {
     /// whole sweep.
     pub fn midi_controller_assignments(
         &self,
+        _main: &MainThread,
         channels: std::ops::Range<i16>,
         controllers: std::ops::Range<i16>,
         mut visit: impl FnMut(i16, i16, u32),

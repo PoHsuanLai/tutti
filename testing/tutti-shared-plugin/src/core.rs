@@ -22,6 +22,17 @@
 //! Tail 8191 in every mode. A parameter event moves `level` or `aux` at its
 //! sample offset.
 //!
+//! # Editor
+//!
+//! Only the VST3 Rust shell has an editor, and its behaviour is the second
+//! byte of the state's mode word (`mode | editor << 8`; 0 when a blob leaves it
+//! out): `EDITOR_NONE` offers no view; `EDITOR_TIDY` registers one run-loop
+//! timer and one file descriptor when the view is attached, as VSTGUI does on
+//! Linux, and unregisters both when it is removed; `EDITOR_LEAKY` registers the
+//! same and never unregisters them. The host's run-loop bookkeeping is the
+//! witness, so the behaviour needs no transcript. The view also aborts the
+//! process if `removed` runs on a thread other than the one `attached` did.
+//!
 //! # State
 //!
 //! State is a little-endian blob. The head is what a load restores; the rest is
@@ -31,7 +42,7 @@
 //! | at | field |
 //! |---|---|
 //! | 0 | magic `TSP1` (u32) |
-//! | 4 | mode (u32) |
+//! | 4 | mode (u32): the low byte is the mode; the next byte is the editor behaviour (below) |
 //! | 8, 16 | `level`, `aux` (f64) |
 //! | 24 | process calls (u64), then total frames (u64) |
 //! | 40 | prepare calls (u32), rate (f64), max block (u32) |
@@ -66,6 +77,15 @@ pub const PARAMS: u32 = 3;
 pub const NAMES: [&str; PARAMS as usize] = ["level", "aux", "mode"];
 /// Number of modes.
 pub const MODES: u32 = 5;
+/// The shell offers no editor view.
+pub const EDITOR_NONE: u32 = 0;
+/// The view registers a timer and a file descriptor with the host's run loop
+/// on `attached` and unregisters them on `removed`.
+pub const EDITOR_TIDY: u32 = 1;
+/// The view registers as [`EDITOR_TIDY`]'s does and never unregisters.
+pub const EDITOR_LEAKY: u32 = 2;
+/// Number of editor behaviours.
+pub const EDITORS: u32 = 3;
 /// Latency of the Delay mode, in frames.
 pub const LATENCY: u32 = 137;
 /// Reported tail, in frames.
@@ -189,6 +209,7 @@ pub struct Core {
     level: AtomicU64,
     aux: AtomicU64,
     mode: AtomicU32,
+    editor: AtomicU32,
     calls: AtomicU64,
     frames: AtomicU64,
     prepares: AtomicU32,
@@ -233,6 +254,7 @@ impl Core {
             level: AtomicU64::new(0.5f64.to_bits()),
             aux: AtomicU64::new(0.25f64.to_bits()),
             mode: z(),
+            editor: z(),
             calls: AtomicU64::new(0),
             frames: AtomicU64::new(0),
             prepares: z(),
@@ -244,6 +266,11 @@ impl Core {
             log_n: z(),
             log: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
         }
+    }
+
+    /// The editor behaviour a state load selected (`EDITOR_*`).
+    pub fn editor(&self) -> u32 {
+        self.editor.load(Relaxed)
     }
 
     /// A parameter's normalized value, `None` for an id the plugin lacks.
@@ -469,7 +496,8 @@ impl Core {
     pub fn save(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(512);
         b.extend_from_slice(&MAGIC.to_le_bytes());
-        b.extend_from_slice(&self.mode.load(Relaxed).to_le_bytes());
+        let word = self.mode.load(Relaxed) | self.editor.load(Relaxed) << 8;
+        b.extend_from_slice(&word.to_le_bytes());
         b.extend_from_slice(&self.level.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.aux.load(Relaxed).to_le_bytes());
         b.extend_from_slice(&self.calls.load(Relaxed).to_le_bytes());
@@ -517,11 +545,13 @@ impl Core {
         if word(0) != MAGIC {
             return Err(BadState);
         }
-        let (mode, level, aux) = (word(4), float(8), float(16));
-        if mode >= MODES || !level.is_finite() || !aux.is_finite() {
+        let (mode, editor) = (word(4) & 0xFF, word(4) >> 8);
+        let (level, aux) = (float(8), float(16));
+        if mode >= MODES || editor >= EDITORS || !level.is_finite() || !aux.is_finite() {
             return Err(BadState);
         }
         self.mode.store(mode, Relaxed);
+        self.editor.store(editor, Relaxed);
         self.set_param(LEVEL, level);
         self.set_param(AUX, aux);
         Ok(())
@@ -548,6 +578,22 @@ mod tests {
         let (core, mut dsp) = (Core::new(), Dsp::default());
         core.prepare(&mut dsp, 48_000.0, 4);
         (core, dsp)
+    }
+
+    // Mutation (run): `save` not writing the editor byte, or `load` not
+    // reading it, fails the round trip; `load` masking nothing refuses a blob
+    // with an editor byte as a bad mode.
+    #[test]
+    fn the_editor_byte_round_trips_beside_the_mode() {
+        let core = Core::new();
+        let mut blob = core.save();
+        blob[4..8].copy_from_slice(&(3 | EDITOR_LEAKY << 8).to_le_bytes());
+        core.load(&blob).unwrap();
+        assert_eq!(core.editor(), EDITOR_LEAKY);
+        let saved = core.save();
+        assert_eq!(&saved[4..8], &(3 | EDITOR_LEAKY << 8).to_le_bytes());
+        blob[4..8].copy_from_slice(&(EDITORS << 8).to_le_bytes());
+        assert!(core.load(&blob).is_err());
     }
 
     // Mutation (run): not setting the flag when the log is full fails

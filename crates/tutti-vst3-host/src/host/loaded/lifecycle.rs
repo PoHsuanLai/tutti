@@ -344,9 +344,9 @@ impl Vst3Loaded {
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
     /// [`Request::MidiCcAssignmentChanged`]. Allocates.
-    pub fn rebuild_midi_cc_mapping(&mut self, _main: &MainThread) {
+    pub fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
         self.midi_cc
-            .publish(MidiCcCell(MidiCcMapping::query(&self.plugin)));
+            .publish(MidiCcCell(MidiCcMapping::query(main, &self.plugin)));
         self.midi_cc.reclaim();
     }
 }

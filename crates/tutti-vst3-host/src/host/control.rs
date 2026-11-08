@@ -115,7 +115,7 @@ impl Vst3Loaded {
         // Note expression: any dimension on the main event bus, channel 0.
         features.set(
             Features::NOTE_EXPRESSION,
-            self.note_expression_count(0, 0) > 0,
+            self.note_expression_count(main, 0, 0) > 0,
         );
         features.set(Features::SEQUENCER_CONTEXT, self.wants_sequencer_context());
         // Both preset bits come from the same question, whether the plugin
@@ -156,15 +156,19 @@ impl Vst3Loaded {
             .units(main)
             .into_iter()
             .find_map(|u| (u.program_list == Some(list_id)).then_some(u.id))?;
-        self.program_change_parameter_of(owning_unit)
+        self.program_change_parameter_of(main, owning_unit)
     }
 
     /// The program-change parameter belonging to `owning_unit`: the half of
     /// [`program_change_parameter`](Self::program_change_parameter) that does
     /// not walk the unit tree, for a caller that already holds the unit.
-    fn program_change_parameter_of(&self, owning_unit: i32) -> Option<(ParamId, i32)> {
-        (0..self.parameter_count()).find_map(|i| {
-            let info = self.parameter_info_at(i)?;
+    fn program_change_parameter_of(
+        &self,
+        main: &MainThread,
+        owning_unit: i32,
+    ) -> Option<(ParamId, i32)> {
+        (0..self.parameter_count(main)).find_map(|i| {
+            let info = self.parameter_info_at(main, i)?;
             (info.is_program_change() && info.unit_id == owning_unit)
                 .then_some((ParamId::new(info.id), info.step_count))
         })
@@ -207,8 +211,13 @@ impl Vst3Loaded {
     /// `setParamNormalized` on the edit controller, for the Loaded state and
     /// the Controller's immediate half alike. `false` when the plugin has no
     /// controller.
-    pub(super) fn write_normalized(&self, id: ParamId, value: Normalized) -> bool {
-        self.plugin.set_parameter_normalized(id, value.get())
+    pub(super) fn write_normalized(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        value: Normalized,
+    ) -> bool {
+        self.plugin.set_parameter_normalized(main, id, value.get())
     }
 }
 
@@ -246,10 +255,10 @@ impl Control for Vst3Loaded {
     /// Normalized `0..=1`, VST3's own domain. `None` for an id the plugin does
     /// not list (`getParamNormalized` would answer 0 for it) and for a plugin
     /// with no edit controller.
-    fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
-        self.parameter_info(id)?;
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        self.parameter_info(main, id)?;
         self.plugin
-            .parameter_normalized(id)
+            .parameter_normalized(main, id)
             .map(Normalized::clamped)
     }
 
@@ -263,12 +272,12 @@ impl Control for Vst3Loaded {
     /// inactive plugin waits in `carried`, which the next activation delivers in
     /// its first block and `save_state` stores beside the component's stream.
     /// While active, the Controller queues the write to the Processor instead.
-    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
-        let written = self.write_normalized(id, value);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        let written = self.write_normalized(main, id, value);
         // A write the last activation left undelivered is older than this one.
         if let Some(slot) = self.carried.iter_mut().find(|(waiting, _)| *waiting == id) {
             slot.1 = value;
-        } else if written && !self.active.is_active() && self.parameter_info(id).is_some() {
+        } else if written && !self.active.is_active() && self.parameter_info(main, id).is_some() {
             self.carried.push((id, value));
         }
     }
@@ -276,8 +285,8 @@ impl Control for Vst3Loaded {
     /// The plugin's own display string for `value`: the value is a *parameter*
     /// of the call, not the plugin's current one, which is what an automation
     /// lane drawing labels along a curve needs.
-    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
-        self.plugin.parameter_text(id, value.get())
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        self.plugin.parameter_text(main, id, value.get())
     }
 
     /// The inverse. A caller must leave its field unchanged on `None` rather
@@ -289,12 +298,12 @@ impl Control for Vst3Loaded {
     /// direction uses.
     fn parameter_value_from_text(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
         self.plugin
-            .parameter_from_text(id, text)
+            .parameter_from_text(main, id, text)
             .map(Normalized::clamped)
     }
 
@@ -366,7 +375,7 @@ impl Control for Vst3Loaded {
             .units(main)
             .into_iter()
             .find_map(|u| u.program_list.map(|list| (list, u.id)))?;
-        let (param_id, step_count) = self.program_change_parameter_of(owning_unit)?;
+        let (param_id, step_count) = self.program_change_parameter_of(main, owning_unit)?;
         if step_count <= 0 {
             return None;
         }

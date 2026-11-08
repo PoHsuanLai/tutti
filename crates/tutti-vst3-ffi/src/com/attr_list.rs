@@ -3,6 +3,7 @@
 use crate::guard::guard;
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use vst3::Steinberg::{
@@ -16,11 +17,18 @@ enum AttributeValue {
     Int(i64),
     Float(f64),
     String(Vec<u16>),
-    Binary(Vec<u8>),
+    /// Shared, so `getBinary` can keep a value alive after the key is replaced.
+    Binary(Arc<[u8]>),
 }
 
 pub struct AttributeList {
     attributes: Mutex<HashMap<String, AttributeValue>>,
+    /// The binary values `getBinary` has handed out a pointer to, held until
+    /// the list is dropped. `getBinary` returns a pointer with no lifetime
+    /// and releases the lock, so a `setBinary` on the same key (or a plugin
+    /// thread that reads after the sender reuses the message) must not free
+    /// what the pointer points at. One entry per distinct value lent.
+    lent: Mutex<Vec<Arc<[u8]>>>,
 }
 
 impl Class for AttributeList {
@@ -31,6 +39,7 @@ impl AttributeList {
     pub fn new() -> ComWrapper<Self> {
         ComWrapper::new(Self {
             attributes: Mutex::new(HashMap::new()),
+            lent: Mutex::new(Vec::new()),
         })
     }
 }
@@ -196,21 +205,18 @@ impl IAttributeListTrait for AttributeList {
                 unsafe { std::slice::from_raw_parts(data as *const u8, size_in_bytes as usize) };
             self.attributes
                 .lock()
-                .insert(k, AttributeValue::Binary(slice.to_vec()));
+                .insert(k, AttributeValue::Binary(Arc::from(slice)));
             kResultOk
         })
     }
 
     /// Returns a borrowed pointer to the stored binary value.
     ///
-    /// # Caveat
+    /// # Lifetime
     ///
-    /// The returned `*data` pointer borrows the `Vec`'s current allocation and
-    /// is valid only until the next mutation of this attribute list (a
-    /// subsequent `setBinary`/`setString`/… on the same key may reallocate or
-    /// drop the backing buffer). The caller must copy out the bytes before
-    /// mutating the list, matching how VST3 hosts consume message attributes
-    /// synchronously inside `IConnectionPoint::notify`.
+    /// The pointer stays valid until the list is dropped: the value is kept in
+    /// `lent` when it is handed out, so a later `setBinary` on the same key
+    /// replaces the attribute and leaves the bytes this pointer names alone.
     unsafe fn getBinary(
         &self,
         id: AttrID,
@@ -221,8 +227,20 @@ impl IAttributeListTrait for AttributeList {
             let Some(k) = key_from_ptr(id) else {
                 return kInvalidArgument;
             };
-            match self.attributes.lock().get(&k) {
-                Some(AttributeValue::Binary(v)) => {
+            // Cloned out of the attribute map, then lent: the map's lock is not
+            // held past this statement.
+            let value = match self.attributes.lock().get(&k) {
+                Some(AttributeValue::Binary(v)) => Some(Arc::clone(v)),
+                _ => None,
+            };
+            match value {
+                Some(v) => {
+                    {
+                        let mut lent = self.lent.lock();
+                        if !lent.iter().any(|held| Arc::ptr_eq(held, &v)) {
+                            lent.push(Arc::clone(&v));
+                        }
+                    }
                     if !data.is_null() {
                         // SAFETY: a COM method: the plugin passes pointers valid for this call,
                         // per the
@@ -236,7 +254,7 @@ impl IAttributeListTrait for AttributeList {
                     }
                     kResultOk
                 }
-                _ => kInvalidArgument,
+                None => kInvalidArgument,
             }
         })
     }
@@ -429,5 +447,54 @@ mod tests {
             }
             other => panic!("Expected String, got {:?}", other),
         }
+    }
+
+    /// **A pointer `getBinary` returned stays readable after the key is set
+    /// again.** The lock is released on return, and the pointer used to name the
+    /// stored `Vec`, which `setBinary` dropped: a plugin that read it after the
+    /// sender reused the message read freed memory.
+    ///
+    /// Mutation: have `getBinary` skip the `lent` push -> the replacing
+    /// `setBinary` frees the first buffer and the read below is a
+    /// use-after-free (Miri or the allocator's poisoning shows it; the byte
+    /// check can pass by luck).
+    #[test]
+    fn a_binary_pointer_outlives_its_replacement() {
+        let attrs = AttributeList::new();
+        let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
+        let key = make_key("blob");
+        let first = [1u8, 2, 3, 4];
+        let mut data: *const c_void = std::ptr::null();
+        let mut size = 0u32;
+        // SAFETY: the test calls COM methods on a live object it owns, with arguments valid
+        // for each call.
+        unsafe {
+            assert_eq!(
+                ptr.setBinary(key.as_ptr(), first.as_ptr().cast(), 4),
+                kResultOk
+            );
+            assert_eq!(ptr.getBinary(key.as_ptr(), &mut data, &mut size), kResultOk);
+            let second = [9u8; 4096];
+            assert_eq!(
+                ptr.setBinary(key.as_ptr(), second.as_ptr().cast(), 4096),
+                kResultOk
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(data.cast::<u8>(), size as usize),
+                &first
+            );
+        }
+        assert_eq!(attrs.lent.lock().len(), 1, "one value lent");
+        // SAFETY: as above.
+        unsafe {
+            let (mut again, mut n) = (std::ptr::null(), 0u32);
+            assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
+            assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
+        }
+        assert_eq!(
+            attrs.lent.lock().len(),
+            2,
+            "a value is lent once, however often it is read"
+        );
     }
 }

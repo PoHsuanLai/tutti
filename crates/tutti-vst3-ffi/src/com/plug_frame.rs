@@ -48,6 +48,9 @@ pub(crate) struct HostPlugFrame {
     /// Shared with `HostApplication` — see `run_loop.rs`.
     #[cfg(target_os = "linux")]
     run_loop: Arc<RunLoop>,
+    /// The plugin whose editor this frame serves: see `HostApplication::owner`.
+    #[cfg(target_os = "linux")]
+    owner: Option<super::run_loop::Owner>,
 }
 
 #[cfg(target_os = "linux")]
@@ -64,11 +67,16 @@ impl Class for HostPlugFrame {
 
 impl HostPlugFrame {
     /// A frame with no pending request and, on Linux, the shared `run_loop`.
-    pub(crate) fn new(#[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
+    pub(crate) fn new(
+        #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
+        #[cfg(target_os = "linux")] owner: Option<super::run_loop::Owner>,
+    ) -> ComWrapper<Self> {
         ComWrapper::new(Self {
             resize_request: Mutex::new(None),
             #[cfg(target_os = "linux")]
             run_loop,
+            #[cfg(target_os = "linux")]
+            owner,
         })
     }
 
@@ -115,7 +123,10 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         guard(vst3::Steinberg::kInternalError, || {
             // SAFETY: the plugin passes a handler it keeps alive until it
             // unregisters it, and calls from the UI thread (the `IRunLoop` contract).
-            unsafe { self.run_loop.register_event_handler(handler, fd) }
+            unsafe {
+                self.run_loop
+                    .register_event_handler(handler, fd, self.owner)
+            }
         })
     }
 
@@ -133,7 +144,10 @@ impl vst3::Steinberg::Linux::IRunLoopTrait for HostPlugFrame {
         guard(vst3::Steinberg::kInternalError, || {
             // SAFETY: as for `registerEventHandler`: alive until unregistered, UI
             // thread.
-            unsafe { self.run_loop.register_timer(handler, milliseconds) }
+            unsafe {
+                self.run_loop
+                    .register_timer(handler, milliseconds, self.owner)
+            }
         })
     }
 
@@ -155,6 +169,8 @@ mod tests {
         HostPlugFrame::new(
             #[cfg(target_os = "linux")]
             RunLoop::new(),
+            #[cfg(target_os = "linux")]
+            None,
         )
     }
 

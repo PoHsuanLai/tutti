@@ -68,6 +68,10 @@ assert_no_alloc = { version = "1", default-features = false }
 # this crate.
 tutti-clap-host = { path = "../tutti-clap-host" }
 tempfile = "3"
+# The shared test plugin (its cdylib is built by the same `cargo test`) and the
+# helper that finds it: `tests/vst3_run_loop.rs` drives its editor modes.
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+tutti-shared-plugin = { path = "../../testing/tutti-shared-plugin" }
 winit = "0.30"
 raw-window-handle = "0.6"
 
@@ -124,6 +128,10 @@ path = "tests/vst3_misbehaving_plugin.rs"
 [[test]]
 name = "vst3_process_no_alloc"
 path = "tests/vst3_process_no_alloc.rs"
+
+[[test]]
+name = "vst3_run_loop"
+path = "tests/vst3_run_loop.rs"
 
 [[test]]
 name = "vst3_traits"

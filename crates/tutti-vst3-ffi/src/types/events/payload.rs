@@ -128,13 +128,25 @@ impl ExpressionInt {
 
 /// `DataEvent` with its bytes inline.
 #[derive(Debug, Clone, Copy)]
+///
+/// The fields are private: `size` is what the plugin is told it may read from
+/// `bytes`, so it must never exceed [`CAPACITY`](Self::CAPACITY), and every
+/// constructor keeps it so. A literal cannot say otherwise:
+///
+/// ```compile_fail
+/// use tutti_vst3_ffi::Data;
+///
+/// let _ = Data { size: 1_000_000, data_type: 0, bytes: [0; 16] };
+/// ```
+// Mutation (type-level, no runtime test can show it): making `size` `pub`
+// again lets the doctest above compile, so it fails.
 pub struct Data {
     /// Valid bytes in `bytes`, at most 16.
-    pub size: u32,
+    size: u32,
     /// The `DataEvent.type` subtype.
-    pub data_type: u32,
+    data_type: u32,
     /// The payload; only the first `size` bytes are valid.
-    pub bytes: [u8; Data::CAPACITY],
+    bytes: [u8; Data::CAPACITY],
 }
 
 impl Data {
@@ -182,6 +194,29 @@ impl Data {
             data_type,
             bytes: inline,
         })
+    }
+
+    /// The bytes a plugin sent, `size` clamped to
+    /// [`CAPACITY`](Self::CAPACITY).
+    pub(super) fn from_plugin(data_type: u32, size: u32, bytes: [u8; Self::CAPACITY]) -> Self {
+        Self {
+            #[allow(clippy::cast_possible_truncation, reason = "CAPACITY is 16")]
+            size: size.min(Self::CAPACITY as u32),
+            data_type,
+            bytes,
+        }
+    }
+
+    /// Valid bytes in the payload, at most [`CAPACITY`](Self::CAPACITY).
+    #[must_use]
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// The `DataEvent.type` subtype.
+    #[must_use]
+    pub fn data_type(&self) -> u32 {
+        self.data_type
     }
 
     /// The valid bytes.

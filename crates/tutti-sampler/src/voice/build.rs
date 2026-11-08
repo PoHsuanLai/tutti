@@ -7,7 +7,7 @@ use tutti_types::ChannelLayout;
 
 use super::memory_source::{MemorySource, VoiceWindow};
 use super::types::{Playback, Voice, VoiceSource};
-use crate::{MAX_SAMPLER_CHANNELS, PlaceError, Wave};
+use crate::{PlaceError, Wave};
 
 /// Builds an in-memory voice from a decoded wave.
 ///
@@ -47,7 +47,7 @@ pub fn memory_voice(
 
 /// The width a voice should run at, given what the file has.
 ///
-/// Clamped to [`MAX_SAMPLER_CHANNELS`] because that is the sampler's own
+/// Clamped to [`MAX_SAMPLER_CHANNELS`](crate::MAX_SAMPLER_CHANNELS) because that is the sampler's own
 /// per-read stack ceiling — deliberately equal to the graph root's, since a
 /// voice wider than the root can render is a voice nobody can hear.
 ///
@@ -59,13 +59,13 @@ pub fn memory_voice(
 /// whatever reaches it, so a voice narrowed to the device here would be narrowed
 /// *twice* on a wider project. The only ceiling that applies is the sampler's.
 pub fn voice_width(file: ChannelLayout) -> ChannelLayout {
-    let n = file.count().clamp(1, MAX_SAMPLER_CHANNELS as u16);
-    ChannelLayout::from(n as usize)
+    ChannelLayout::from_count(file.count().clamp(1, crate::MAX_SAMPLER_WIDTH))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_SAMPLER_CHANNELS;
 
     /// `voice_width` is the file's own width clamped to `1..=MAX_SAMPLER_CHANNELS`
     /// — the device is deliberately not consulted, or a voice would be narrowed
@@ -76,13 +76,13 @@ mod tests {
         let cases: &[(ChannelLayout, usize, &str)] = &[
             (ChannelLayout::STEREO, 2, "a stereo file stays stereo"),
             (
-                ChannelLayout::from(64usize),
+                ChannelLayout::from(64u16),
                 ceiling,
                 "wider than the sampler's ceiling comes back at the ceiling, not \
                  truncated silently downstream at the root's fold",
             ),
             (
-                ChannelLayout::from(0usize),
+                ChannelLayout::from(0u16),
                 1,
                 "a zero-width file becomes mono, not a node nobody can wire",
             ),

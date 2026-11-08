@@ -31,7 +31,7 @@ use tutti_types::{
 use super::clock::{BlockClock, Run, Wrap};
 use super::loop_span::{LoopSpan, blend};
 use super::memory_source::VoiceWindow;
-use crate::{MAX_SAMPLER_CHANNELS, PlaceError};
+use crate::PlaceError;
 
 /// Where the playhead sits in source samples, or `None` when it is outside the
 /// voice's window.
@@ -510,7 +510,7 @@ pub(crate) fn read_looped_frame(
 /// has no centre to name, so the sample goes to every channel, as it always
 /// did; so does a width of one or two, where the rule is exactly that, and a
 /// frame of any width other than the one the spread was built for. A width past
-/// [`MAX_SAMPLER_CHANNELS`] is built for that many, the most a reader writes.
+/// [`MAX_SAMPLER_CHANNELS`](crate::MAX_SAMPLER_CHANNELS) is built for that many, the most a reader writes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonoSpread {
     /// `None`: to every channel. Otherwise the fold of one channel into the
@@ -530,7 +530,7 @@ impl MonoSpread {
         // A reader never emits past `MAX_SAMPLER_CHANNELS` (the channels above
         // it are silent), so the spread is of the frame it does emit: for a
         // 12-wide node, the 8-wide one, whose centre is the same channel.
-        let width = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
+        let width = ChannelLayout::from_count(width.count().min(crate::MAX_SAMPLER_WIDTH));
         // One and two channels are the fan exactly (the centre of a mono frame
         // is its channel, a stereo frame's front pair is all of it); the
         // `fan_is_the_fold_at_one_and_two` test pins that.
@@ -612,7 +612,7 @@ pub const MAX_WAVE_CHANNELS: usize = 32;
 /// can refuse); the per-frame and per-block writes are allocation-free.
 ///
 /// The frame is the one a reader writes: its width is the node's, at most
-/// [`MAX_SAMPLER_CHANNELS`] (a wider node's remaining channels are silent).
+/// [`MAX_SAMPLER_CHANNELS`](crate::MAX_SAMPLER_CHANNELS) (a wider node's remaining channels are silent).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Place {
     /// A mono wave placed by its spread, or a wave read channel for channel.
@@ -642,7 +642,7 @@ impl Place {
     /// The placement of `wave` into a frame of `width` channels.
     ///
     /// Control side: it allocates. `width` is capped at
-    /// [`MAX_SAMPLER_CHANNELS`], the most a reader writes.
+    /// [`MAX_SAMPLER_CHANNELS`](crate::MAX_SAMPLER_CHANNELS), the most a reader writes.
     ///
     /// # Errors
     ///
@@ -669,7 +669,7 @@ impl Place {
         topology: &ChannelTopology,
         width: ChannelLayout,
     ) -> Result<Self, PlaceError> {
-        let frame = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
+        let frame = ChannelLayout::from_count(width.count().min(crate::MAX_SAMPLER_WIDTH));
         if let Some(channel) = topology
             .positions()
             .iter()
@@ -778,6 +778,7 @@ pub(crate) fn interpolate_taps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_SAMPLER_CHANNELS;
     use tutti_graph::{Env, Offset, Transport, TransportChanges};
     use tutti_types::{PlaybackRate, SrcRatio};
 
@@ -786,7 +787,11 @@ mod tests {
         let place = if out.is_empty() {
             Place::FAN
         } else {
-            Place::for_wave(wave, ChannelLayout::from(out.len())).expect("a placeable wave")
+            Place::for_wave(
+                wave,
+                ChannelLayout::try_from(out.len()).expect("a test width is small"),
+            )
+            .expect("a placeable wave")
         };
         super::read_frame(wave, &place, position, out);
     }

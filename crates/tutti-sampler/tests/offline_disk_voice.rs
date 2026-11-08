@@ -207,7 +207,7 @@ fn a_fork_plays_the_file_from_the_frame_its_beat_falls_on() {
             play: Playback::default(),
             channel_index: Some(0),
         },
-        2usize,
+        2u16,
     );
 
     let mut node_fork = fork_unprepared(node);
@@ -871,7 +871,7 @@ fn a_fork_matches_the_memory_tier_bit_for_bit() {
                     },
                     channel_index: None,
                 },
-                2usize,
+                2u16,
             ))
         } else {
             Box::new(source)

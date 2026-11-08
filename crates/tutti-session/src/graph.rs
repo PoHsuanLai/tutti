@@ -464,7 +464,7 @@ impl Graph {
     /// outputs, prepared for `rate`, `max_block` and the device's callback
     /// `quantum` (when known), its executor local.
     pub(crate) fn new(
-        inputs: usize,
+        inputs: ChannelLayout,
         outputs: usize,
         rate: SampleRate,
         max_block: Samples,
@@ -472,7 +472,7 @@ impl Graph {
     ) -> Self {
         let (mut editor, exec) = Editor::new(prepare_for(rate, max_block, quantum));
         let topology = &mut editor.spec_mut().topology;
-        topology.inputs = ChannelLayout::from_count(inputs as u16);
+        topology.inputs = inputs;
         topology.outputs = vec![Source::Zero; outputs];
         // Declared and on from the start: a host reads the master level
         // without asking for it.
@@ -1913,7 +1913,10 @@ impl Graph {
         {
             Some(tutti_types::FoldError::RootWidth {
                 declared: root.layout(),
-                requested: ChannelLayout::from(channels),
+                // Only the report names the request; one past `u16::MAX` is
+                // refused either way (it is past `MAX_ROOT_CHANNELS`), so the
+                // saturated figure loses nothing.
+                requested: ChannelLayout::clamped(channels),
             })
         } else if channels > tutti_graph::MAX_ROOT_CHANNELS {
             Some(tutti_types::FoldError::Unplaced {
@@ -2003,7 +2006,10 @@ impl Graph {
             }
             None => {
                 if let Some(device) = device {
-                    Fold::widths(ChannelLayout::from(self.outputs()), device)?;
+                    let outputs = self.outputs();
+                    let width = ChannelLayout::try_from(outputs)
+                        .map_err(|_| tutti_types::FoldError::TooWide(outputs))?;
+                    Fold::widths(width, device)?;
                 }
                 self.outputs()
             }

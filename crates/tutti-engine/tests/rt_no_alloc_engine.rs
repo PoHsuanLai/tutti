@@ -206,7 +206,7 @@ fn the_master_meter_is_allocation_free() {
         let _ = transport.motion.try_send(MotionEvent::Play);
 
         let mut output = vec![0.0f32; 1024 * width];
-        let layout = ChannelLayout::from(width);
+        let layout = ChannelLayout::try_from(width).expect("a test width is small");
         engine.process(&mut InterleavedMut::new(&mut output, layout));
         ed.collect();
         assert_no_alloc::assert_no_alloc(|| {

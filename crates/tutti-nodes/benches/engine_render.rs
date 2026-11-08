@@ -163,7 +163,7 @@ fn bench_width(c: &mut Criterion) {
     for outputs in [1usize, 2, 6, 8] {
         let engine = chain_engine(outputs);
         let mut buf = vec![0.0f32; FRAMES * outputs];
-        let layout = ChannelLayout::from(outputs);
+        let layout = ChannelLayout::try_from(outputs).expect("a test width is small");
         engine.support_output(layout).expect("a width");
         group.throughput(Throughput::Elements(FRAMES as u64));
         group.bench_with_input(BenchmarkId::from_parameter(outputs), &outputs, |b, _| {

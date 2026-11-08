@@ -49,7 +49,7 @@ struct Sum(usize);
 impl Node for Sum {
     fn shape(&self) -> Shape {
         Shape::audio(
-            ChannelLayout::from_count(2 * self.0 as u16),
+            ChannelLayout::try_from(2 * self.0).expect("a test width is small"),
             ChannelLayout::STEREO,
         )
         .with_cost(Cost::Light)

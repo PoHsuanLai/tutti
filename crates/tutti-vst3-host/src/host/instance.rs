@@ -95,6 +95,12 @@ pub(super) fn usable_topology(topology: ChannelTopology, width: usize) -> Option
     usable.then_some(topology)
 }
 
+/// A bus width the plugin reported (already bounded by the ffi layer's
+/// `audio_bus_channels` to what a layout holds) as a layout.
+pub(super) fn bus_layout(width: usize) -> ChannelLayout {
+    ChannelLayout::try_from(width).expect("the ffi layer bounds a bus width to a layout")
+}
+
 /// A plugin and the scratch its Processor renders through, between
 /// `setBusArrangements` and the split.
 pub(super) struct Staged<T: Vst3Sample> {
@@ -130,8 +136,8 @@ impl<T: Vst3Sample> Staged<T> {
             ));
         }
 
-        let num_input_channels = ChannelLayout::from(loaded.info.num_inputs);
-        let num_output_channels = ChannelLayout::from(loaded.info.num_outputs);
+        let num_input_channels = bus_layout(loaded.info.num_inputs);
+        let num_output_channels = bus_layout(loaded.info.num_outputs);
         // Resolve the per-direction scratch from the initial bus layout in the
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
@@ -294,13 +300,13 @@ impl<T: Vst3Sample> Staged<T> {
         let proposals = plugin
             .audio_bus_channels(BusDirection::Input)
             .into_iter()
-            .map(|c| default_arrangement_for(ChannelLayout::from(c)))
+            .map(|c| default_arrangement_for(bus_layout(c)))
             .collect::<Option<Vec<_>>>()
             .zip(
                 plugin
                     .audio_bus_channels(BusDirection::Output)
                     .into_iter()
-                    .map(|c| default_arrangement_for(ChannelLayout::from(c)))
+                    .map(|c| default_arrangement_for(bus_layout(c)))
                     .collect::<Option<Vec<_>>>(),
             );
 
@@ -347,8 +353,8 @@ impl<T: Vst3Sample> Staged<T> {
         // The scratch below is sized from the full per-bus slices, not from
         // these, so an empty direction stays empty rather than being rounded up
         // to a channel the plugin never declared.
-        let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
-        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
+        let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
+        let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
         let in_scratch = BusBuffers::new(T::WIDTH, in_counts, num_in, block_size);
         let out_scratch = BusBuffers::new(T::WIDTH, out_counts, num_out, block_size);
 
@@ -423,8 +429,8 @@ impl<T: Vst3Sample> Staged<T> {
         // live read said it could not be trusted.
         let in_counts = plugin.audio_bus_channels(BusDirection::Input);
         let out_counts = plugin.audio_bus_channels(BusDirection::Output);
-        let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
-        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0));
+        let num_in = bus_layout(in_counts.first().copied().unwrap_or(0));
+        let num_out = bus_layout(out_counts.first().copied().unwrap_or(0));
         let block_size = self.audio.config.block_size;
         let in_scratch = BusBuffers::new(T::WIDTH, &in_counts, num_in, block_size);
         let out_scratch = BusBuffers::new(T::WIDTH, &out_counts, num_out, block_size);

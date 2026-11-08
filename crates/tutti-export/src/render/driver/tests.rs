@@ -32,13 +32,13 @@ fn render(
     };
     let mut out = Vec::new();
     let file = FileChannels {
-        layout: ChannelLayout::from(ch),
+        layout: ChannelLayout::try_from(ch).expect("a test width is small"),
         topology: None,
     };
     with_source(graph, RATE, clock, &file, |src| {
         drive(
             src,
-            ChannelLayout::from(ch),
+            ChannelLayout::try_from(ch).expect("a test width is small"),
             &plan,
             &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
             |b| {

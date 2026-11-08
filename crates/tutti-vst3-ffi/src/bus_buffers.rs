@@ -81,6 +81,12 @@ impl BusBuffers {
     ///
     /// `bus_channels` stays a raw `&[usize]` slice (per-bus host counts); only
     /// the single-scalar `fallback_channels` is a `ChannelLayout`.
+    ///
+    /// # Panics
+    ///
+    /// If a bus is wider than `u16::MAX` channels, which
+    /// [`Plugin::audio_bus_channels`](crate::Plugin::audio_bus_channels) never
+    /// reports.
     #[must_use]
     pub fn new(
         width: SampleWidth,
@@ -102,7 +108,9 @@ impl BusBuffers {
         let mut ptr_tables = Vec::with_capacity(bus_channels.len());
         for &ch in &bus_channels {
             let table = vec![std::ptr::null_mut::<c_void>(); ch.max(MIN_PTR_COUNT)];
-            bus_arrays.push(make_audio_bus(ChannelLayout::from(ch)));
+            bus_arrays.push(make_audio_bus(
+                ChannelLayout::try_from(ch).expect("a bus is at most u16::MAX channels wide"),
+            ));
             ptr_tables.push(table);
         }
         Self {

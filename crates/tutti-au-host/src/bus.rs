@@ -15,7 +15,7 @@
 
 use tutti_plugin_types::ChannelLayout;
 
-use crate::error::Result;
+use crate::error::{AuError, Result};
 use crate::ffi::{get_property, get_property_bytes};
 use crate::types::*;
 
@@ -123,7 +123,7 @@ impl AuChannelCount {
             n if n < -2 => Self::TotalAcrossBuses {
                 max_total: n.unsigned_abs(),
             },
-            n => Self::Exactly(n as u16),
+            n => Self::Exactly(n.unsigned_abs()),
         }
     }
 
@@ -288,7 +288,13 @@ pub(crate) unsafe fn bus_layout(
             bus,
         )
     }?;
-    Ok(ChannelLayout::from(asbd.mChannelsPerFrame))
+    ChannelLayout::try_from(asbd.mChannelsPerFrame).map_err(|_| AuError::BusTooWide {
+        scope: match direction {
+            BusDirection::Input => "input",
+            BusDirection::Output => "output",
+        },
+        channels: asbd.mChannelsPerFrame,
+    })
 }
 
 /// Every channel configuration the AU declares, decoded from

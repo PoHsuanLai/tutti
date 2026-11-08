@@ -115,7 +115,7 @@ fn resetting_a_fork_leaves_the_live_voice_playing() {
             },
             channel_index: None,
         },
-        1usize,
+        1u16,
     );
     assert!(node.slot.stretch.is_some(), "vacuous without a filter");
     let (mut live, source) = live_and_fork(node);
@@ -190,7 +190,7 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
                 },
                 channel_index: None,
             },
-            1usize,
+            1u16,
         )
     };
     let (live, mut twin) = (node(), node());
@@ -346,7 +346,7 @@ fn a_transport_seek_flushes_stretch_state() {
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
     let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
+    let (mut unit, handle) = VoicePool::with_channels(None, 1u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -456,7 +456,7 @@ fn a_transport_seek_flushes_a_standalone_voice_node() {
             },
             channel_index: None,
         },
-        1usize,
+        1u16,
     );
     assert!(
         node.slot.needs_stretch() && node.slot.stretch.is_some(),
@@ -521,7 +521,7 @@ fn continuous_playback_does_not_flush_a_standalone_voice_node() {
             },
             channel_index: None,
         },
-        1usize,
+        1u16,
     );
 
     let mut out = [0.0f32; 1];
@@ -650,7 +650,7 @@ fn a_voice_node_reads_a_wave_at_another_rate_at_any_block_length() {
                     },
                     channel_index: None,
                 },
-                1usize,
+                1u16,
             );
             node.prepare(&Prepare::new(SampleRate(48_000.0), Samples(64)));
             let len = if via_tick { 1 } else { 64 };
@@ -717,7 +717,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
             })
             .collect();
         let (mut writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192 + 64, 2usize);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192 + 64, 2u16);
         writer.push_interleaved(&flat);
         let ring = std::sync::Arc::clone(&reader);
         // ONE `RtState`, shared by the source and the gate — `DiskVoice::new`
@@ -831,7 +831,7 @@ fn continuous_playback_does_not_flush_the_stretch_filter() {
     let wave = Arc::new(Wave::from_samples(SR, &data));
 
     let transport = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 1usize)
+    let (mut unit, handle) = VoicePool::with_channels(None, 1u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -1334,7 +1334,7 @@ fn a_voices_fork_keeps_its_window_and_reads_the_renders_transport() {
         VoiceSource::Memory(s) => assert_eq!(s.window().map(|w| w.start), Some(Beat::new(2.0))),
         other => panic!("expected a Memory source, got {other:?}"),
     }
-    let mut node = VoiceNode::with_channels(fork, 1usize);
+    let mut node = VoiceNode::with_channels(fork, 1u16);
     node.prepare(&Prepare::new(SampleRate(SR), Samples(64)));
     let at = |beat: f64| MockTransport::rolling(Beat::new(beat), Bpm::of(120.0));
     assert!(
@@ -1371,7 +1371,7 @@ fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
 
     // Build a Disk voice with no butler channel.
     let (writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2usize);
+        RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
     let state = std::sync::Arc::new(RtState::new());
     let inner = DiskSource::new(reader, state.clone());
@@ -1435,7 +1435,7 @@ fn streaming_voice_of(channel_index: Option<usize>, region: u64) -> Voice {
     use crate::voice::disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 
     let (writer, reader) =
-        RegionBuffer::with_capacity(RegionId(region), std::path::PathBuf::new(), 128, 2usize);
+        RegionBuffer::with_capacity(RegionId(region), std::path::PathBuf::new(), 128, 2u16);
     drop(writer);
     let state = Arc::new(RtState::new());
     let inner = DiskSource::new(reader, state.clone());
@@ -1827,7 +1827,7 @@ fn a_voice_out_of_its_window_adds_nothing_at_any_gain() {
     };
     let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     for silent_gain in [3.0f32, f32::INFINITY, f32::NAN] {
-        let mut pool = VoicePool::with_channels(None, 2usize).expect("stereo");
+        let mut pool = VoicePool::with_channels(None, 2u16).expect("stereo");
         pool.insert_voice(SlotId(0), voice(0.0, None, 0.5));
         pool.insert_voice(SlotId(1), voice(1_000.0, None, silent_gain));
         // In its window for 20 frames, then out of it: audible only at a
@@ -2151,10 +2151,22 @@ fn reader_and_voice_node_default_to_stereo() {
 #[test]
 fn a_pool_wider_than_the_sampler_reads_is_refused() {
     let ceiling = crate::MAX_SAMPLER_CHANNELS;
-    assert!(VoicePool::with_channels(None, ceiling).is_ok());
-    let err = VoicePool::with_channels(None, ceiling + 1)
-        .expect_err("a pool past the ceiling must be refused");
-    assert_eq!(err.channels, ChannelLayout::from(ceiling + 1));
+    assert!(
+        VoicePool::with_channels(
+            None,
+            ChannelLayout::try_from(ceiling).expect("a test width is small")
+        )
+        .is_ok()
+    );
+    let err = VoicePool::with_channels(
+        None,
+        ChannelLayout::try_from(ceiling + 1).expect("a test width is small"),
+    )
+    .expect_err("a pool past the ceiling must be refused");
+    assert_eq!(
+        err.channels,
+        ChannelLayout::try_from(ceiling + 1).expect("a test width is small")
+    );
 }
 
 /// A voice node wider than the sampler reads writes silence on the
@@ -2176,7 +2188,7 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
             play: Playback::default(),
             channel_index: None,
         },
-        wide,
+        ChannelLayout::try_from(wide).expect("a test width is small"),
     );
     let mut direct = tutti_graph::contract::Direct::new(node, SampleRate(SR), 64);
     for ch in direct.outputs_mut() {
@@ -2206,11 +2218,15 @@ fn a_voice_node_wider_than_the_sampler_reads_leaves_no_stale_channels() {
 #[test]
 fn both_nodes_declare_their_width() {
     for w in [1usize, 2, 6, 8] {
-        let unit = VoicePool::with_channels(None, w).expect("a width the sampler reads");
+        let unit = VoicePool::with_channels(
+            None,
+            ChannelLayout::try_from(w).expect("a test width is small"),
+        )
+        .expect("a width the sampler reads");
         let sampler = MemorySource::with_config(
             indexed_wave(6, 64),
             MemorySourceConfig {
-                channels: ChannelLayout::from(w),
+                channels: ChannelLayout::try_from(w).expect("a test width is small"),
                 placement: Some(VoiceWindow::default()),
                 ..Default::default()
             },
@@ -2221,7 +2237,10 @@ fn both_nodes_declare_their_width() {
             play: Playback::default(),
             channel_index: None,
         };
-        let vn = VoiceNode::with_channels(voice, w);
+        let vn = VoiceNode::with_channels(
+            voice,
+            ChannelLayout::try_from(w).expect("a test width is small"),
+        );
         for (what, shape) in [("pool", unit.shape()), ("voice node", vn.shape())] {
             assert_eq!(shape.audio_out.count() as usize, w, "{what} at width {w}");
             assert_eq!(shape.audio_in.count(), 0, "{what}: no inputs");
@@ -2240,7 +2259,7 @@ fn both_nodes_declare_their_width() {
 #[test]
 fn six_channel_clip_reaches_all_six_reader_outputs() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let sampler = MemorySource::with_config(
@@ -2286,7 +2305,7 @@ fn six_channel_clip_reaches_all_six_reader_outputs() {
 #[test]
 fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
     let sampler = MemorySource::with_config(
@@ -2355,7 +2374,7 @@ fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
 #[test]
 fn send_builds_the_stretch_filter_not_the_drain() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, handle) = VoicePool::with_channels(None, 6usize)
+    let (mut unit, handle) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
 
@@ -2468,7 +2487,7 @@ fn send_builds_the_stretch_filter_not_the_drain() {
 #[test]
 fn a_missing_stretch_filter_reads_dry_not_silent() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
-    let (mut unit, _h) = VoicePool::with_channels(None, 6usize)
+    let (mut unit, _h) = VoicePool::with_channels(None, 6u16)
         .expect("a width the sampler reads")
         .with_handle();
 

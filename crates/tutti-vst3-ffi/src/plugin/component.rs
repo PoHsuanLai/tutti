@@ -61,18 +61,25 @@ impl Plugin {
     /// channels is reported as zero: that is a bus the plugin declared and then
     /// said is empty, which is a different fact from "no bus".
     ///
-    /// A negative `channelCount` is floored to 0. The ABI types it `int32` with
-    /// no negative meaning, so this is the sole out-of-contract clamp here.
+    /// A negative `channelCount` is floored to 0, and one past `u16::MAX`
+    /// saturates there (a layout holds no more, and a wrapped count would turn
+    /// 65 538 channels into a stereo bus). The ABI types it `int32` with no
+    /// negative meaning, so these are the only out-of-contract clamps here;
+    /// there is no error path to refuse through (a bus query answers `Option`
+    /// or a `Vec`), and the saturated width is one no arrangement names, so the
+    /// host proposes none and the plugin keeps its own.
     #[must_use]
     pub fn audio_bus_channel_count(&self, direction: BusDirection) -> Option<ChannelLayout> {
         if self.bus_count(MediaType::Audio, direction) <= 0 {
             return None;
         }
         let bus = self.bus_info(MediaType::Audio, direction, 0).ok()?;
-        Some(ChannelLayout::from(bus.channel_count().max(0) as u16))
+        Some(ChannelLayout::from(bus_width(bus.channel_count())))
     }
 
-    /// Channel count of every audio bus in `direction`, in bus-index order. A
+    /// Channel count of every audio bus in `direction`, in bus-index order,
+    /// each floored and saturated as [`audio_bus_channel_count`](Self::audio_bus_channel_count)
+    /// describes. A
     /// bus whose query fails contributes 0 so the vec length always equals the
     /// bus count.
     #[must_use]
@@ -84,9 +91,24 @@ impl Plugin {
         (0..num_buses)
             .map(|i| {
                 self.bus_info(MediaType::Audio, direction, i)
-                    .map_or(0, |bus| bus.channel_count().max(0) as usize)
+                    .map_or(0, |bus| usize::from(bus_width(bus.channel_count())))
             })
             .collect()
+    }
+
+    /// The first audio bus in `direction` whose raw `channelCount` no layout
+    /// holds (negative, or above `u16::MAX`), as `(bus index, channelCount)`.
+    ///
+    /// The accessors above saturate; the load path asks this to refuse such a
+    /// plugin instead, naming the bus.
+    #[must_use]
+    pub fn first_unrepresentable_audio_bus(&self, direction: BusDirection) -> Option<(i32, i32)> {
+        let num_buses = self.bus_count(MediaType::Audio, direction);
+        let counts = (0..num_buses.max(0)).map(|i| {
+            self.bus_info(MediaType::Audio, direction, i)
+                .map_or(0, |bus| bus.channel_count())
+        });
+        first_unrepresentable(counts)
     }
 
     /// `IAudioProcessor::setBusArrangements`.
@@ -318,5 +340,41 @@ pub(super) fn state_ok(code: vst3::Steinberg::tresult) -> Result<(), Vst3Error> 
     match check(code) {
         Err(Vst3Error::NotImplemented) => Ok(()),
         other => other,
+    }
+}
+
+/// A bus's `channelCount` as a width: negative is 0 and one past `u16::MAX`
+/// saturates, never wraps.
+fn bus_width(count: i32) -> u16 {
+    u16::try_from(count.max(0)).unwrap_or(u16::MAX)
+}
+
+/// `(index, count)` of the first count in `counts` no layout holds.
+fn first_unrepresentable(counts: impl IntoIterator<Item = i32>) -> Option<(i32, i32)> {
+    counts
+        .into_iter()
+        .zip(0..)
+        .find(|&(count, _)| u16::try_from(count).is_err())
+        .map(|(count, index)| (index, count))
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    /// A bus given a width past `u16::MAX`, or a negative one, is found with
+    /// its index; the widest a layout holds is not.
+    ///
+    /// Mutation (run): `first_unrepresentable` returning `None` always fails
+    /// the refusals; testing only `count > 65_535` fails the negative one.
+    #[test]
+    fn the_first_bus_no_layout_holds_is_found_with_its_index() {
+        assert_eq!(first_unrepresentable([2, 65_535, 0]), None);
+        assert_eq!(
+            first_unrepresentable([2, 65_536, 70_000]),
+            Some((1, 65_536))
+        );
+        assert_eq!(first_unrepresentable([2, 2, -1]), Some((2, -1)));
+        assert_eq!(first_unrepresentable([i32::MAX]), Some((0, i32::MAX)));
     }
 }

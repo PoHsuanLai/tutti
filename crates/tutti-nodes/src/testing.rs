@@ -107,7 +107,7 @@ impl Node for Const {
     fn shape(&self) -> Shape {
         Shape::audio(
             ChannelLayout::EMPTY,
-            ChannelLayout::from_count(self.values.len() as u16),
+            ChannelLayout::try_from(self.values.len()).expect("a stimulus has few channels"),
         )
         .with_cost(tutti_graph::Cost::Light)
     }

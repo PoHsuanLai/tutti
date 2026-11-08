@@ -87,7 +87,7 @@ fn svf_filter_wide_6ch_process_is_allocation_free() {
     // regression that (re)allocated it per buffer, or per-channel scratch in
     // `process`, would trip here.
     gate(
-        SvfFilterNode::<f64>::with_channels(6usize, SvfType::LowPass, 800.0, 0.707),
+        SvfFilterNode::<f64>::with_channels(6u16, SvfType::LowPass, 800.0, 0.707),
         |_, _| {},
     );
 }
@@ -95,7 +95,7 @@ fn svf_filter_wide_6ch_process_is_allocation_free() {
 #[test]
 fn ladder_filter_wide_6ch_process_is_allocation_free() {
     gate(
-        LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1_000.0, 0.6),
+        LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1_000.0, 0.6),
         |_, _| {},
     );
 }
@@ -126,7 +126,7 @@ fn ladder_with_moving_cutoff_and_drive_is_allocation_free() {
     // fails.
     let mut hz = 500.0f32;
     gate(
-        LadderFilterNode::<f64>::with_channels(6usize, LadderType::LP24, 1_000.0, 0.6),
+        LadderFilterNode::<f64>::with_channels(6u16, LadderType::LP24, 1_000.0, 0.6),
         move |params, i| {
             hz = if hz > 4_000.0 { 500.0 } else { hz + 7.0 };
             params.set(tutti_types::UnitParam::Cutoff, hz);

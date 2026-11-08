@@ -109,7 +109,10 @@ fn render(node: NodeParts<()>, fed: Option<(UnitParam, f32)>) -> Vec<Vec<f32>> {
         usize::from(shape.audio_in.count()),
         usize::from(shape.audio_out.count()),
     );
-    let mut g = GraphBuilder::new(ChannelLayout::from(ins), ChannelLayout::from(outs));
+    let mut g = GraphBuilder::new(
+        ChannelLayout::try_from(ins).expect("a test width is small"),
+        ChannelLayout::try_from(outs).expect("a test width is small"),
+    );
     let n = g.add(node);
     for c in 0..ins {
         g.connect_input(c, n, c);
@@ -155,13 +158,28 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     fn svf(w: usize) -> SvfFilterNode<f64> {
-        SvfFilterNode::with_channels(w, SvfType::LowPass, 1_000.0, 0.707)
+        SvfFilterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            SvfType::LowPass,
+            1_000.0,
+            0.707,
+        )
     }
     fn ladder(w: usize) -> LadderFilterNode<f64> {
-        LadderFilterNode::with_channels(w, LadderType::LP24, 1_000.0, 0.3)
+        LadderFilterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            LadderType::LP24,
+            1_000.0,
+            0.3,
+        )
     }
     fn delay(w: usize) -> DelayLineNode {
-        let d = DelayLineNode::with_channels(w, 0.01, 0.0003, 0.5);
+        let d = DelayLineNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            0.01,
+            0.0003,
+            0.5,
+        );
         d.set_mix(0.5);
         d
     }
@@ -172,7 +190,11 @@ fn cases() -> Vec<Case> {
         GateNode::with_channels(-30.0, 0.001, 0.004, 0.02, w as u8)
     }
     fn lim(w: usize) -> LimiterNode {
-        LimiterNode::with_channels(w, -6.0, -0.3)
+        LimiterNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            -6.0,
+            -0.3,
+        )
     }
     let mut cases = vec![
         Case {
@@ -270,7 +292,11 @@ fn cases() -> Vec<Case> {
             name: "distortion drive",
             param: UnitParam::Drive,
             make: |w, v| {
-                let n = DistortionNode::with_channels(w, ShapeKind::Tanh, 1.0);
+                let n = DistortionNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    ShapeKind::Tanh,
+                    1.0,
+                );
                 if let Some(v) = v {
                     n.set_drive(v);
                 }
@@ -336,7 +362,10 @@ fn cases() -> Vec<Case> {
             name: "brickwall ceiling",
             param: UnitParam::Ceiling,
             make: |w, v| {
-                let mut n = BrickwallLimiterNode::with_channels(w, 0.0);
+                let mut n = BrickwallLimiterNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    0.0,
+                );
                 if let Some(v) = v {
                     n.set_ceiling(v);
                 }
@@ -349,7 +378,9 @@ fn cases() -> Vec<Case> {
             name: "strip volume",
             param: UnitParam::Volume,
             make: |w, v| {
-                let n = BusStripNode::with_channels(w);
+                let n = BusStripNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
                 if let Some(v) = v {
                     n.set_volume(Amplitude(v));
                 }
@@ -362,7 +393,9 @@ fn cases() -> Vec<Case> {
             name: "strip pan",
             param: UnitParam::Pan,
             make: |w, v| {
-                let n = BusStripNode::with_channels(w);
+                let n = BusStripNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
                 if let Some(v) = v {
                     n.set_pan(tutti_types::Pan(v));
                 }
@@ -390,10 +423,13 @@ fn block_rate_cases() -> Vec<Case> {
         GateNode::with_channels(-3.0, 0.001, 0.0, 0.02, w as u8)
     }
     fn chorus(w: usize) -> ModDelayNode {
-        ModDelayNode::chorus(ChannelLayout::from(w))
+        ModDelayNode::chorus(ChannelLayout::try_from(w).expect("a test width is small"))
     }
     fn phaser(w: usize) -> PhaserNode {
-        PhaserNode::with_channels(ChannelLayout::from(w), 4)
+        PhaserNode::with_channels(
+            ChannelLayout::try_from(w).expect("a test width is small"),
+            4,
+        )
     }
     #[allow(unused_mut)]
     let mut cases = vec![
@@ -401,7 +437,12 @@ fn block_rate_cases() -> Vec<Case> {
             name: "delay mix",
             param: UnitParam::Wet,
             make: |w, v| {
-                let n = DelayLineNode::with_channels(w, 0.01, 0.0003, 0.5);
+                let n = DelayLineNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    0.01,
+                    0.0003,
+                    0.5,
+                );
                 n.set_mix(v.unwrap_or(0.5));
                 parts_of(n)
             },
@@ -412,7 +453,12 @@ fn block_rate_cases() -> Vec<Case> {
             name: "svf gain",
             param: UnitParam::GainDb,
             make: |w, v| {
-                let n = SvfFilterNode::<f64>::with_channels(w, SvfType::Bell, 1_000.0, 0.707);
+                let n = SvfFilterNode::<f64>::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    SvfType::Bell,
+                    1_000.0,
+                    0.707,
+                );
                 if let Some(v) = v {
                     n.set_gain_db(v);
                 }
@@ -505,7 +551,11 @@ fn block_rate_cases() -> Vec<Case> {
             make: |w, v| {
                 // Threshold and ceiling near the noise's peak: the limiter
                 // lets go between peaks, so its release is heard.
-                let n = LimiterNode::with_channels(w, -3.0, -2.5);
+                let n = LimiterNode::with_channels(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                    -3.0,
+                    -2.5,
+                );
                 if let Some(v) = v {
                     n.set_release(v);
                 }
@@ -570,7 +620,9 @@ fn block_rate_cases() -> Vec<Case> {
             name: "flanger depth",
             param: UnitParam::Depth,
             make: |w, v| {
-                let n = ModDelayNode::flanger(ChannelLayout::from(w));
+                let n = ModDelayNode::flanger(
+                    ChannelLayout::try_from(w).expect("a test width is small"),
+                );
                 if let Some(v) = v {
                     n.set_depth(v);
                 }
@@ -637,7 +689,11 @@ fn block_rate_cases() -> Vec<Case> {
         name: "convolver mix",
         param: UnitParam::Wet,
         make: |w, v| {
-            let n = tutti_nodes::ConvolverNode::shared_ir(w, &[0.0, 0.0, 1.0, -0.5], 64);
+            let n = tutti_nodes::ConvolverNode::shared_ir(
+                ChannelLayout::try_from(w).expect("a test width is small"),
+                &[0.0, 0.0, 1.0, -0.5],
+                64,
+            );
             if let Some(v) = v {
                 n.set_mix(v);
             }
@@ -717,7 +773,7 @@ fn each_fed_param_is_the_one_the_dsp_reads() {
 /// output of a modulated drive, from the unmodulated node.
 fn plain_distortion(d: f32) -> Vec<f32> {
     render(
-        parts_of(DistortionNode::with_channels(1, ShapeKind::Tanh, d)),
+        parts_of(DistortionNode::with_channels(1u16, ShapeKind::Tanh, d)),
         None,
     )
     .remove(0)
@@ -737,7 +793,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 /// never reaches the driven drive → fails.
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
-    let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
     let cell = node.drive();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
@@ -781,7 +837,7 @@ fn an_authored_write_moves_the_base_under_modulation() {
 /// `f32::clamp` panics on the crossed bounds → fails.
 #[test]
 fn a_crossed_range_is_survivable() {
-    let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -813,7 +869,7 @@ fn a_crossed_range_is_survivable() {
 /// connection was heard" fails.
 #[test]
 fn an_unmodulated_param_adds_nothing_to_the_plan() {
-    let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);
@@ -892,7 +948,7 @@ fn an_unmodulated_param_adds_nothing_to_the_plan() {
 /// in `ParamState::port`) → the first frames fade in from drive 1 → fails.
 #[test]
 fn a_fork_modulates_as_the_live_graph_does() {
-    let node = DistortionNode::with_channels(1, ShapeKind::Tanh, 1.0);
+    let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, 1.0);
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);

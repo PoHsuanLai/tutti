@@ -238,7 +238,7 @@ impl MicIn {
             &name,
         )?;
         let sample_rate = SampleRate::from(config.sample_rate().0);
-        let device_inputs = ChannelLayout::from(usize::from(config.channels()));
+        let device_inputs = ChannelLayout::from(config.channels());
 
         // Checked before the stream exists: an input the device lacks is an
         // error here, not silence in the callback.

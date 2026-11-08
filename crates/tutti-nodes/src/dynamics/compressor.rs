@@ -286,7 +286,7 @@ impl CompressorNode {
     ) -> Self {
         Self {
             core: CompressorCore::new(threshold_db, ratio, attack, release),
-            channels: ChannelLayout::from(channels.max(1) as u16),
+            channels: ChannelLayout::from(channels.max(1)),
             gains: Vec::new(),
         }
     }

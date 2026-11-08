@@ -40,9 +40,11 @@ impl FileChannels<'_> {
     ///
     /// [`ConfigError::Placement`] when the file's topology is not as wide as
     /// the file or cannot take the graph's channels, or the declared root is
-    /// not as wide as the graph.
+    /// not as wide as the graph, or the graph has more channels than a layout
+    /// holds ([`FoldError::TooWide`](tutti_types::FoldError::TooWide)).
     fn fold_from(&self, outputs: usize, root: Option<&ChannelTopology>) -> crate::Result<Fold> {
-        let graph = ChannelLayout::from(outputs);
+        let graph = ChannelLayout::try_from(outputs)
+            .map_err(|_| ConfigError::Placement(tutti_types::FoldError::TooWide(outputs)))?;
         if let Some(root) = root
             && root.layout() != graph
         {

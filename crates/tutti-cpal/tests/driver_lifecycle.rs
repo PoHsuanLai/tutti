@@ -284,7 +284,7 @@ fn a_restart_runs_its_hook_between_the_stop_and_the_start() {
     let (d2, s2) = ManualStreamDriver::new();
     let new = tutti_cpal::OutputSpec::new(
         tutti_types::SampleRate(96_000.0),
-        tutti_types::ChannelLayout::from(6usize),
+        tutti_types::ChannelLayout::from(6u16),
         cpal::SampleFormat::F32,
     );
     let mut seen = None;

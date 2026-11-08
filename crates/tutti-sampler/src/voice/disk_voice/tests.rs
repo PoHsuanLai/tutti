@@ -34,7 +34,7 @@ fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
 /// `start..` (where a placed voice reads them).
 fn make_reader_at(samples: &[(f32, f32)], start: u64) -> SharedReader {
     let (mut writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2usize);
+        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2u16);
     writer.reset(start);
     writer.set_play(start);
     let flat: Vec<f32> = samples.iter().flat_map(|&(l, r)| [l, r]).collect();
@@ -359,8 +359,7 @@ fn a_stopped_clock_silences_a_fork() {
 /// clears its ranges → fails.
 #[test]
 fn a_severed_copy_holds_no_live_reader() {
-    let (mut writer, ring) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2usize);
+    let (mut writer, ring) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4_096, 2u16);
     writer.push_interleaved(&[0.5; 2 * 1_000]);
     let mut live = DiskSource::new(ring, Arc::new(RtState::new()));
     free(&mut live, 64);
@@ -648,8 +647,12 @@ fn wide_value(k: u64, c: usize) -> f32 {
 /// `t` = 0 returns the frame itself.
 fn wide_clip(width: usize) -> DiskVoice {
     const AT: u64 = 22_000;
-    let (mut writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, width);
+    let (mut writer, reader) = RegionBuffer::with_capacity(
+        RegionId(1),
+        PathBuf::new(),
+        4096,
+        ChannelLayout::try_from(width).expect("a test width is small"),
+    );
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000)
@@ -929,7 +932,11 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
     use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
     const BLOCK: usize = 64;
     for (width, pool_width) in [(2usize, 1usize), (6, 2)] {
-        let mut pool = VoicePool::with_channels(None, pool_width).expect("a sampler width");
+        let mut pool = VoicePool::with_channels(
+            None,
+            ChannelLayout::try_from(pool_width).expect("a test width is small"),
+        )
+        .expect("a sampler width");
         pool.insert_voice(
             SlotId(0),
             Voice {
@@ -1118,7 +1125,7 @@ fn make_wide_reader(frames: &[f32], channels: usize) -> SharedReader {
         RegionId(1),
         PathBuf::new(),
         frames.len() / channels + 64,
-        channels,
+        ChannelLayout::try_from(channels).expect("a test width is small"),
     );
     writer.push_interleaved(frames);
     reader
@@ -1140,7 +1147,7 @@ fn outside_the_window_silences_every_channel() {
         let inner = DiskSource::new(ring, state.clone());
         assert_eq!(
             inner.channels(),
-            ChannelLayout::from(width),
+            ChannelLayout::try_from(width).expect("a test width is small"),
             "ring width must reach the unit"
         );
 
@@ -1349,7 +1356,7 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
     use crate::voice::{Playback, SlotId, Voice, VoicePool, VoiceSource};
     const BLOCK: usize = 64;
     let _guard = NoSkip::on(no_skip);
-    let mut pool = VoicePool::with_channels(None, 2usize).expect("a sampler width");
+    let mut pool = VoicePool::with_channels(None, 2u16).expect("a sampler width");
     pool.insert_voice(
         SlotId(0),
         Voice {
@@ -1496,8 +1503,7 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
 fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
-    let (mut writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1usize);
+    let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
     RegionBuffer::place(&mut writer, AT, 0, 0, 256);
     let from = writer.window().0;
     let flat: Vec<f32> = (from..from + 2_000).map(|k| k as f32).collect();
@@ -1551,8 +1557,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
 fn a_skipped_block_releases_the_ring_to_the_writer() {
     const BLOCK: usize = 64;
     const AT: u64 = 22_000;
-    let (mut writer, reader) =
-        RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1usize);
+    let (mut writer, reader) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 1u16);
     writer.reset(AT);
     writer.set_play(AT);
     let flat: Vec<f32> = (AT..AT + 2_000).map(|k| k as f32).collect();

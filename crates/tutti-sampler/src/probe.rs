@@ -133,7 +133,7 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     Ok(SampleFacts {
         frames: meta.total_frames.map(|f| Samples(f as usize)),
         sample_rate: SampleRate::from(meta.sample_rate),
-        layout: ChannelLayout::from(meta.channels()),
+        layout: meta.topology.layout(),
         streamable: streamable(path, &meta),
         topology: meta.topology,
     })

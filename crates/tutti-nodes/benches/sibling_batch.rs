@@ -110,7 +110,7 @@ struct StripBatch(Vec<Ramp>);
 
 impl Node for StripBatch {
     fn shape(&self) -> Shape {
-        let w = ChannelLayout::from_count(2 * self.0.len() as u16);
+        let w = ChannelLayout::try_from(2 * self.0.len()).expect("a test width is small");
         Shape::audio(w, w).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -132,7 +132,7 @@ struct StripSoa(Vec<Ramp>);
 
 impl Node for StripSoa {
     fn shape(&self) -> Shape {
-        let w = ChannelLayout::from_count(2 * self.0.len() as u16);
+        let w = ChannelLayout::try_from(2 * self.0.len()).expect("a test width is small");
         Shape::audio(w, w).with_cost(Cost::Light)
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -225,7 +225,7 @@ struct BiquadBatch(Vec<Biquad>);
 
 impl Node for BiquadBatch {
     fn shape(&self) -> Shape {
-        let w = ChannelLayout::from_count(self.0.len() as u16);
+        let w = ChannelLayout::try_from(self.0.len()).expect("a test width is small");
         Shape::audio(w, w).with_cost(Cost::Moderate)
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -280,7 +280,7 @@ impl BiquadSoa {
 
 impl Node for BiquadSoa {
     fn shape(&self) -> Shape {
-        let w = ChannelLayout::from_count(8 * self.0.len() as u16);
+        let w = ChannelLayout::try_from(8 * self.0.len()).expect("a test width is small");
         Shape::audio(w, w).with_cost(Cost::Moderate)
     }
     fn prepare(&mut self, _: &Prepare) {}
@@ -339,7 +339,7 @@ enum Variant {
 fn graph(kind: Kind, variant: Variant, members: usize, frames: usize) -> Executor {
     let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(SR), Samples(frames)));
     let w = kind.width();
-    ed.spec_mut().topology.inputs = ChannelLayout::from_count(w as u16);
+    ed.spec_mut().topology.inputs = ChannelLayout::try_from(w).expect("a test width is small");
     let mut outputs = Vec::with_capacity(members * w);
     let feed = |ed: &mut Editor, node: NodeKey, port: u16, c: usize| {
         ed.spec_mut().topology.edges.insert(

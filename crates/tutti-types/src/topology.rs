@@ -309,6 +309,15 @@ impl ChannelTopology {
 
     /// Returns the quad topology, `FL FR BL BR`: four speaker feeds.
     ///
+    /// The spelling is WAVE's (`KSAUDIO_SPEAKER_QUAD`, mask `0x33`, is
+    /// front pair and back pair). VST3's `k40Music` and AU's `Quadraphonic`
+    /// call the same pair `Ls Rs` and decode to `FL FR SL SR`; the engine's own
+    /// 5.1 uses side too. The two spellings are one set of feeds, not two:
+    /// [`Fold::between`](crate::Fold::between) moves a side or back pair whose
+    /// counterpart the source lacks to the destination's at gain 1.0, a bit-exact
+    /// relabelling either way (pinned in `fold/tests.rs`), so no decode is
+    /// rewritten to agree and a consumer need not normalise.
+    ///
     /// Separate from [`smpte`](Self::smpte) because a bare width of 4 cannot
     /// say whether it means this or B-format; a caller that *knows* it has quad
     /// says so by naming it.

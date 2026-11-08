@@ -16,6 +16,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 
 use super::error::{DecodeError, convert};
+use super::placement::{topology_of, unstated};
 use crate::Wave;
 
 /// Container metadata read from an audio file without decoding any audio.
@@ -98,7 +99,11 @@ impl Wave {
     /// `decode-ogg`). Supported formats are whatever those enable; see
     /// [`decodable_extensions`](crate::decodable_extensions). The wave keeps
     /// the file's own sample rate and channel count (44.1 kHz and 2 channels
-    /// when the container states neither); nothing is resampled. Reads and
+    /// when the container states neither); nothing is resampled. Its
+    /// [`topology`](Wave::topology) is what the container names, in the order
+    /// the samples are in: a mono file is the centre, and a speaker the
+    /// vocabulary has no name for (a second LFE) is
+    /// [`Speaker::Unknown`](tutti_types::Speaker::Unknown). Reads and
     /// decodes the whole file on the calling thread, so do not call it on the
     /// audio thread.
     ///
@@ -166,15 +171,19 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(convert)?;
-    let channels = track
+    let topology = track
         .codec_params
         .channels
-        .map(|ch| ch.count())
-        .unwrap_or(2);
+        .map_or_else(unstated, topology_of);
 
     // Pre-allocate using the metadata frame count when available (WAV, FLAC).
-    let mut wave: Option<Wave> =
-        total_frames.map(|total| Wave::with_capacity(channels, sample_rate, total as usize));
+    let mut wave: Option<Wave> = total_frames.map(|total| {
+        let mut wave = Wave::with_topology(topology, sample_rate);
+        for ch in 0..wave.channels() {
+            wave.channel_vec_mut(ch).reserve_exact(total as usize);
+        }
+        wave
+    });
 
     // Reuse a single decode buffer across all packets to avoid per-packet
     // allocation.
@@ -197,7 +206,7 @@ fn decode(mut reader: Box<dyn FormatReader>) -> Result<Wave, DecodeError> {
             decode_packet_into(&mut *decoder, &packet, &mut dest).map_err(convert)?;
         let wave_output = wave.get_or_insert_with(|| {
             let spec = *buf.spec();
-            Wave::new(spec.channels.count(), spec.rate as f64)
+            Wave::with_topology(topology_of(spec.channels), spec.rate as f64)
         });
 
         // Batch-append all channels at once.

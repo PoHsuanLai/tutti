@@ -768,3 +768,30 @@ fn a_tap_cannot_change_its_width_under_its_writer() {
     let want: Vec<f32> = (0..100).map(|t| chain_at(2, 10, t)).collect();
     assert_eq!(got, want);
 }
+
+/// `pop_planes` is `pop_into` without the interleave: the frames written
+/// together come out of each lane in order, up to what was asked and what is
+/// there, and a lane with no plane still drops the frames so the lanes stay
+/// level.
+///
+/// Mutation (run, recorded here): replacing `lane.skip(frames)` for the
+/// plane-less lane with nothing leaves lane 2 two frames behind, and the next
+/// read returns lane 0's third frame beside lane 2's first -> the second
+/// assertion fails; `.min(want.get())` dropped reads the whole ring -> the
+/// first fails.
+#[test]
+fn pop_planes_reads_whole_frames_and_keeps_the_lanes_level() {
+    let (mut reader, mut writer) = TapReader::standalone(TapId(7), 3, Samples(8));
+    writer.push_interleaved(&[1.0, 10.0, 100.0, 2.0, 20.0, 200.0, 3.0, 30.0, 300.0]);
+    let (mut a, mut b) = ([9.0f32; 4], [9.0f32; 4]);
+    // Two planes for three lanes, two frames wanted of three there.
+    let n = reader.pop_planes([&mut a[..], &mut b[..]], Samples(2));
+    assert_eq!(n.get(), 2);
+    assert_eq!((a, b), ([1.0, 2.0, 9.0, 9.0], [10.0, 20.0, 9.0, 9.0]));
+    // The third lane dropped its two frames with the others: the next frame
+    // is the third of every lane.
+    let (mut a, mut b, mut c) = ([0.0f32; 1], [0.0f32; 1], [0.0f32; 1]);
+    let n = reader.pop_planes([&mut a[..], &mut b[..], &mut c[..]], Samples(8));
+    assert_eq!(n.get(), 1);
+    assert_eq!((a[0], b[0], c[0]), (3.0, 30.0, 300.0));
+}

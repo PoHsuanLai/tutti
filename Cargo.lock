@@ -387,7 +387,6 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "raw-window-handle",
- "ringbuf",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
@@ -4321,7 +4320,6 @@ dependencies = [
  "assert_no_alloc",
  "cpal",
  "criterion",
- "ringbuf",
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-engine",
@@ -4414,7 +4412,6 @@ version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
  "hound",
- "ringbuf",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-codec",

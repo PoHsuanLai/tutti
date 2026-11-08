@@ -25,22 +25,14 @@ static A: AllocDisabler = AllocDisabler;
 /// gate aborts → fails.
 #[test]
 fn mic_monitor_process_is_allocation_free() {
-    use ringbuf::{
-        HeapRb,
-        traits::{Producer, Split},
-    };
     use tutti_io::{MicMonitorNode, MicRing};
+    use tutti_types::{ChannelLayout, Samples};
 
-    let rb = HeapRb::<[f32; 2]>::new(4096);
-    let (mut prod, cons) = rb.split();
-    let mut node = Direct::new(
-        MicMonitorNode::new(MicRing::new(cons)),
-        SampleRate(48_000.0),
-        64,
-    );
+    let (ring, mut prod) = MicRing::pair(ChannelLayout::STEREO, Samples(4096));
+    let mut node = Direct::new(MicMonitorNode::new(ring), SampleRate(48_000.0), 64);
 
     for _ in 0..2048 {
-        let _ = prod.try_push([0.2, 0.2]);
+        prod.push_interleaved(&[0.2, 0.2]);
     }
     for _ in 0..8 {
         node.block();

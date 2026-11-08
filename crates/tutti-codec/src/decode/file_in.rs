@@ -10,8 +10,9 @@
 //!
 //! It is the read edge, the counterpart of `tutti-io`'s `WavOut`.
 //!
-//! **It does not downmix.** A caller wanting stereo folds the frames itself
-//! through [`tutti_types::fold_frame`], as every other engine edge does.
+//! **It does not downmix.** [`topology`](FileIn::topology) says which speaker
+//! each channel feeds, and a caller wanting another width builds a
+//! [`tutti_types::Fold`] from it, as every other engine edge does.
 //!
 //! To read from an
 //! arbitrary position, call [`seek`] first — it hooks
@@ -33,9 +34,10 @@ use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
 use symphonia::core::errors::Error;
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
 use tutti_types::{AudioIn, OnEmpty};
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
 
 use super::error::{DecodeError, convert};
+use super::placement::{topology_of, unstated};
 use super::read::{decode_packet_into, first_audio_track, probe_path};
 
 /// A frame count from the file's `u64`, saturating where `usize` is narrower.
@@ -54,8 +56,9 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// [`Wave::read`](crate::Wave::read)). [`poll_into`](AudioIn::poll_into) fills a
 /// flat interleaved `f32` buffer **at the file's own channel width** and
 /// returns the frames produced; a short count and then `0` mark the end of the
-/// file. It does not downmix: a caller wanting stereo folds each frame through
-/// [`tutti_types::fold_frame`].
+/// file. It does not downmix: [`topology`](Self::topology) says which speaker each
+/// channel feeds, and a caller wanting another width builds a
+/// [`tutti_types::Fold`] from it.
 ///
 /// [`seek`](Self::seek) positions it at an exact frame. Decoding, seeking and
 /// file I/O all block, so use it from a loader or streaming thread, never the
@@ -80,7 +83,8 @@ pub struct FileIn {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
-    layout: ChannelLayout,
+    /// Which speaker each channel feeds; its length is the interleave stride.
+    topology: ChannelTopology,
     sample_rate: SampleRate,
     total_frames: Option<u64>,
     /// Scratch buffer reused by `decode_packet_into` (allocated on first decode).
@@ -114,7 +118,7 @@ impl std::fmt::Debug for FileIn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileIn")
             .field("track_id", &self.track_id)
-            .field("layout", &self.layout)
+            .field("topology", &self.topology)
             .field("sample_rate", &self.sample_rate)
             .field("total_frames", &self.total_frames)
             .field("leftover_frames", &(self.leftover.len() / self.width()))
@@ -139,9 +143,17 @@ impl FileIn {
         self.sample_rate
     }
 
+    /// Which speaker each channel of the interleaved frames feeds, in channel
+    /// order: what the container names, or stereo when it names none (see
+    /// [`Wave::read`](crate::Wave::read)). Its length is
+    /// [`layout`](AudioIn::layout)'s width.
+    pub fn topology(&self) -> &ChannelTopology {
+        &self.topology
+    }
+
     /// The interleave stride: the file's channel count.
     fn width(&self) -> usize {
-        usize::from(self.layout.count())
+        self.topology.positions().len()
     }
 
     /// Returns whether [`seek`](Self::seek) can serve arbitrary positions:
@@ -171,12 +183,11 @@ impl FileIn {
         // no container this build reads yields a zero-channel track, and a
         // fixture cannot be built or stubbed (symphonia's `Channels` come from
         // the demuxer).
-        let layout = ChannelLayout::from(
-            track
-                .codec_params
-                .channels
-                .map_or(2, |ch| ch.count().max(1)),
-        );
+        let topology = track
+            .codec_params
+            .channels
+            .filter(|ch| ch.count() > 0)
+            .map_or_else(unstated, topology_of);
 
         let decode_opts = DecoderOptions::default();
         let decoder = symphonia::default::get_codecs()
@@ -197,7 +208,7 @@ impl FileIn {
             reader,
             decoder,
             track_id,
-            layout,
+            topology,
             sample_rate,
             total_frames,
             convert_buf: None,
@@ -259,7 +270,7 @@ impl FileIn {
             self.leftover_pos = 0;
             // A packet whose channel count disagrees with `open`'s is
             // zero-filled up to the file's width, so the stride stays constant.
-            let width = usize::from(self.layout.count());
+            let width = self.topology.positions().len();
             let ch = num_ch.min(width);
             self.leftover.resize(frames * width, 0.0);
             for c in 0..ch {
@@ -454,8 +465,8 @@ impl FileIn {
 /// it back as a `Result`.
 ///
 /// No downmix happens here: `layout()` describes exactly what `poll_into`
-/// produces. A caller wanting stereo folds each frame through
-/// [`tutti_types::fold_frame`].
+/// produces. A caller wanting another width builds a [`tutti_types::Fold`] from
+/// [`topology`](FileIn::topology).
 impl AudioIn for FileIn {
     /// A file has an end, and a decode error ends the stream there too (see the
     /// doc above): either way `0` means there is no more to read, and
@@ -464,7 +475,7 @@ impl AudioIn for FileIn {
 
     /// The file's own width, which is what [`poll_into`](Self::poll_into) produces.
     fn layout(&self) -> ChannelLayout {
-        self.layout
+        self.topology.layout()
     }
 
     /// Flat interleaved at [`layout`](Self::layout)'s width. `out` holds

@@ -12,6 +12,8 @@ mod extensions;
 #[cfg(decode)]
 mod file_in;
 #[cfg(decode)]
+mod placement;
+#[cfg(decode)]
 mod read;
 
 #[cfg(decode)]

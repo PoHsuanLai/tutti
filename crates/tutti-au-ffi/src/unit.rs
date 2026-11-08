@@ -94,13 +94,6 @@ impl Unit {
         self.inner.instance
     }
 
-    pub(crate) fn from_inner(inner: Arc<Inner>) -> Self {
-        Self {
-            inner,
-            _not_sync: PhantomData,
-        }
-    }
-
     pub(crate) fn share(&self) -> Arc<Inner> {
         Arc::clone(&self.inner)
     }

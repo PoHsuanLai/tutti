@@ -718,7 +718,7 @@ mod tests {
         .to_raw(7, addr);
         assert_eq!(imm.eventType, kParameterEvent_Immediate);
         assert_eq!(imm.parameter, 7);
-        assert_eq!(imm.scope, kAudioUnitScope_Global);
+        assert_eq!(imm.scope, Scope::GLOBAL.raw());
         assert_eq!(imm.element, 3);
         // SAFETY: the tag above says this is the immediate arm.
         let raw_imm = unsafe { imm.eventValues.immediate };

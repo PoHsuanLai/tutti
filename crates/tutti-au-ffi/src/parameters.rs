@@ -16,8 +16,8 @@ use crate::unit::Unit;
 /// `coreaudio-sys` does not export it; the layout is pinned by
 /// `clump_name_request_matches_the_c_abi`.
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ClumpNameRequest {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClumpNameRequest {
     in_id: u32,
     out_name: sys::CFStringRef,
 }

@@ -80,7 +80,6 @@ use coreaudio_sys::OSStatus;
 use crate::callback::with_state;
 use crate::property::{Element, HostCallbacksProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
-use crate::unit::Unit;
 
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
 ///

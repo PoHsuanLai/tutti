@@ -402,8 +402,8 @@ impl Property for MidiOutputCallbackProperty {
     type Value = crate::midi_out::AuMidiOutputCallbackStruct;
 }
 
-/// The property `ParameterClumpName`.
-pub struct ParameterClumpName;
+/// The crate-private property `ParameterClumpName`.
+pub(crate) struct ParameterClumpName;
 
 impl Property for ParameterClumpName {
     const ID: u32 = sys::kAudioUnitProperty_ParameterClumpName;

@@ -104,7 +104,7 @@ the spec's where it speaks and tutti's where it is silent:
 |---|---|---|
 | polyphony | polyphonic; at least one voice, 64 by default | tutti |
 | a key struck again | the earlier strike is released, whatever holds it | tutti (spec silent) |
-| a full pool | a released voice gives way first, then the oldest | tutti (spec silent) |
+| a full pool | a released voice gives way first (the quietest of them), then the oldest | tutti (spec silent) |
 | exclusive class | ends the other notes of the class in the preset, quickly (10 ms at the longest) | spec, 8.1.2 generator 57 |
 | sustain (CC 64) | key-offs are stored and run when it goes inactive | spec, 9.2 |
 | sostenuto (CC 66) | holds the notes in key-on when it goes active | spec, 9.2, with MIDI's number |
@@ -113,7 +113,7 @@ the spec's where it speaks and tutti's where it is silent:
 
 The spec's section 9.2 lists CC 66 as "soft" and CC 67 as "sostenuto", the
 reverse of MIDI 1.0; this player follows MIDI 1.0, which a keyboard sends, and
-ignores CC 67.
+ignores CC 67. The owner decided this on 2026-11-08.
 
 A release starts at once, from the envelope's value (SF2 9.1.7), so a note
 let go in its delay stage, where that value is 0, never sounds: a key struck

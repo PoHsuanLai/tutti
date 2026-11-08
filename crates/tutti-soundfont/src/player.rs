@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: render_block, write_block, Effects and the preset id come from rustysynth's synthesizer.rs.
+
 //! The SoundFont player: the channels' controller state, the voices that
 //! sound, the core that decides when they start and end, and the mix.
 //!
@@ -44,14 +48,17 @@ const RATES: std::ops::RangeInclusive<i32> = 16_000..=192_000;
 ///   The earlier strike is released, whatever pedal holds it, so a repeated
 ///   key never stacks voices.
 /// - `By(Oldest)` (tutti): the spec does not say who gives way when the
-///   voices are all taken. A released voice goes first, then the one that
-///   started longest ago.
+///   voices are all taken. A released voice goes before any held one, the
+///   quietest of the released ones first (`Voicing::victim`); among held
+///   voices the one that started longest ago.
 /// - `exclusive_groups` (spec, section 8.1.2, generator 57): a note with an
 ///   exclusive class ends the other sounding notes of that class in its
 ///   preset, rapidly; the scope is the preset, which the patch names.
 /// - `sostenuto` (tutti, with MIDI 1.0): CC 66. The spec lists CC 66 as "soft"
 ///   and CC 67 as "sostenuto" in section 9.2, the reverse of MIDI 1.0, whose
-///   numbers a keyboard sends; tutti follows MIDI.
+///   numbers a keyboard sends. The owner decided on 2026-11-08 that tutti
+///   follows MIDI 1.0: 66 is the sostenuto and 67 the soft pedal (which is not
+///   followed).
 fn rules(polyphony: usize) -> Rules {
     Rules {
         mode: Mode::Poly,
@@ -96,11 +103,16 @@ impl Player {
     ///
     /// # Errors
     ///
-    /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz.
+    /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz and
+    /// [`Error::PolyphonyOutOfRange`] for more than [`Settings::MAX_POLYPHONY`]
+    /// voices (none is not representable: the polyphony is a `NonZeroUsize`).
     pub(crate) fn new(font: &Arc<SoundFont>, settings: &Settings) -> Result<Self> {
         let render = Render::new(settings.sample_rate());
         if !RATES.contains(&render.hz()) {
             return Err(Error::SampleRateOutOfRange(settings.sample_rate()));
+        }
+        if settings.polyphony().get() > Settings::MAX_POLYPHONY {
+            return Err(Error::PolyphonyOutOfRange(settings.polyphony().get()));
         }
         let polyphony = settings.polyphony().get();
 
@@ -435,7 +447,12 @@ impl Player {
 
     /// The longest the player can keep sounding once its last key is up:
     /// the longest release of any voice a preset can start, then the effects
-    /// ringing out. `None` if a release cannot be bounded (it is not finite).
+    /// ringing out. A release time is the time to fall 100 dB (SF2 2.04 section
+    /// 8.1.2, generator 38) and a voice is dropped at -60 dB, at 0.6 of it, so
+    /// the figure is a sound bound, and a loose one. Each summed release is
+    /// within the generator's range (section 10.5), so it is at most 8000
+    /// timecents, 101.6 s. `None` if a release cannot be bounded (it is not
+    /// finite).
     pub(crate) fn ring_out(&self) -> Option<f64> {
         let mut longest = 0_f64;
         for preset in self.font.presets() {

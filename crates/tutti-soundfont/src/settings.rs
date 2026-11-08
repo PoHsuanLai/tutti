@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the settings follow rustysynth's synthesizer_settings.rs.
+
 //! How a unit is built.
 
 use std::num::NonZeroUsize;
@@ -25,6 +29,10 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// The most voices a unit can be built with. A pool allocates every voice
+    /// when it is built, so a count past this is refused rather than tried;
+    /// 4096 is far beyond what a SoundFont plays.
+    pub const MAX_POLYPHONY: usize = 4096;
     /// The polyphony of [`new`](Self::new).
     pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 

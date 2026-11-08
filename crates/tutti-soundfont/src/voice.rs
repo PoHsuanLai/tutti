@@ -4,7 +4,8 @@
 
 use std::f32::consts;
 
-/// The longest an exclusive class's quick release takes, in seconds: the floor
+/// The longest an exclusive class's quick release takes, in seconds, to fall
+/// 100 dB as every release time does (section 8.1.2, generator 38): the floor
 /// every release is given at its start, to avoid a pop. The spec says "rapidly"
 /// and no more (SF2 2.04 section 8.1.2, generator 57); this is tutti's figure,
 /// the shortest release a voice can have.

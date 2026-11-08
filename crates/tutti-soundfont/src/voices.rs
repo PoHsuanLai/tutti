@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the pool follows rustysynth's voice_collection.rs.
+
 //! The voices that sound, and the commands that start and end them.
 
 use tutti_midi_protocol::narrow_velocity;

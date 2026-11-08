@@ -26,6 +26,8 @@ taking the unit vocabulary.
   into and one reader takes whole since its last take (a level meter's lane).
 - **`Doorbell`** — wakes one parked thread from the audio thread (a futex wake only
   if a sleeper is parked), with no wake-up lost between the sleeper's check and its park.
+- **`request_priority`** — asks the OS to raise the calling thread's priority and returns
+  what it granted (never real time on Linux), or the refusal.
 - **`ArcLend`/`Loan`/`Reader`** — the publish cell, re-exported from `arc-lend`:
   a control thread publishes non-scalar state, the audio thread only borrows it.
 

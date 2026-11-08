@@ -4,7 +4,7 @@
 //! Ported from the tests of `tutti-rustysynth`'s `Synthesizer`, which this
 //! unit replaced: the same properties, now through the unit's message face.
 //! (Two properties went with the type they tested: the block size is no longer
-//! a setting, and the polyphony has no upper bound.)
+//! a setting, and the polyphony is 1 to 4096 where it was 8 to 256.)
 
 mod support;
 
@@ -69,6 +69,25 @@ fn a_pool_of_one_voice_gives_way_to_the_next_note() {
         two > one * 1.8,
         "two voices sound both: {two} against {one}"
     );
+}
+
+// A count of voices past `Settings::MAX_POLYPHONY` is refused with its value
+// instead of panicking in the pool's allocation (`usize::MAX` overflows it);
+// the maximum itself and one voice build.
+//
+// Mutation (run): removing the upper bound in `Player::new` panics with a
+// capacity overflow on `usize::MAX` and fails the test.
+#[test]
+fn a_polyphony_past_the_maximum_is_refused_and_the_maximum_builds() {
+    let at = |voices: usize| Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
+    assert!(SoundFontUnit::new(timgm6mb(), &at(1)).is_ok());
+    assert!(SoundFontUnit::new(timgm6mb(), &at(Settings::MAX_POLYPHONY)).is_ok());
+    for too_many in [Settings::MAX_POLYPHONY + 1, usize::MAX] {
+        assert!(
+            matches!(refused(at(too_many)), Error::PolyphonyOutOfRange(n) if n == too_many),
+            "{too_many}"
+        );
+    }
 }
 
 #[test]

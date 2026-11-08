@@ -463,7 +463,21 @@ impl Row {
     /// around the node saw the delayed note-on on exactly the expected frame
     /// followed by the close of the same key, and the render is silent when the
     /// close is within `within` frames of the onset (so a stray onset still
-    /// fails) or has its usual response when it is later. Every other path is unchanged.
+    /// fails) or has its usual response when it is later. Every other path
+    /// is unchanged.
+    ///
+    /// `within` is derived, not measured: the default delayVolEnv is -12000
+    /// timecents, 1 ms, 46.9 frames at 48 kHz, during which a volume envelope is
+    /// 0; a node applies an event on its control chunk (8 frames for a
+    /// SoundFont), so a close up to 8 frames into the chunk reaches the voice
+    /// after the envelope has been computed once more. The SoundFont row sets
+    /// 48. The closes this path sees are 12, 13, 28, 41, 64, 65, 77, 78, 127
+    /// and 128 frames after the onset: those up to 41 are in the delay stage
+    /// and silent, those from 64 are audible. A close between 42 and 63 frames
+    /// after the onset has not been seen; the delay stage ends at 46.9 frames
+    /// and the chunk adds up to 8 more, so the answer there depends on the
+    /// chunk, and `within` sits at 48 in that gap. Such a close would have to
+    /// be looked at, not assumed.
     #[must_use]
     pub fn onset_release_is_silent(mut self, within: Samples) -> Self {
         self.onset_release_silent = Some(within.get() as u64);
@@ -759,14 +773,6 @@ impl Row {
         }
     }
 
-    /// Check `out` against the expected responses, each `(exact frame,
-    /// tolerance)` in time order.
-    ///
-    /// A [`Detect::Threshold`] row is held on its first response's start:
-    /// what follows (a limiter's release, an HRIR) is not known sample for
-    /// sample. A [`Detect::Exact`] row is held on the **whole render**: exact
-    /// silence except each expected response, so a duplicate, a missing
-    /// second response or a stray sample anywhere fails.
     /// The recompile path of a [`Row::onset_release_is_silent`] row, from
     /// evidence. The node was handed the delayed note-on on exactly frame
     /// `onset`, then the executor's close of the same key, and nothing else
@@ -821,6 +827,14 @@ impl Row {
         }
     }
 
+    /// Check `out` against the expected responses, each `(exact frame,
+    /// tolerance)` in time order.
+    ///
+    /// A [`Detect::Threshold`] row is held on its first response's start:
+    /// what follows (a limiter's release, an HRIR) is not known sample for
+    /// sample. A [`Detect::Exact`] row is held on the **whole render**: exact
+    /// silence except each expected response, so a duplicate, a missing
+    /// second response or a stray sample anywhere fails.
     fn assert_responses(&self, out: &[f32], expect: &[(u64, u64)], ctx: &str) {
         let place = |e: u64, tol: u64| {
             if tol == 0 {

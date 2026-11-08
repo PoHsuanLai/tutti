@@ -19,7 +19,8 @@ pub trait Design: Clone + Send {
     /// The network for `controls` at `rate`.
     ///
     /// Pure and allocation-free: the same controls give the same network, with
-    /// no clock, no state and no heap. Total: a control outside its range is
+    /// no clock, no state and no heap. A [`Network`] is large (about 56 KB), a
+    /// control-side value, so call this off the audio thread. Total: a control outside its range is
     /// clamped and a non-finite one takes the algorithm's default, so the
     /// network is always one the algorithm can run.
     fn design(&self, controls: &Self::Controls, rate: SampleRate) -> Network;
@@ -42,11 +43,16 @@ pub struct Ceiling {
 impl Ceiling {
     /// The default longest decay a control may ask for.
     pub const MAX_DECAY: Seconds = Seconds(8.0);
+    /// The most [`new`](Self::new) accepts for the longest decay: bounds sized
+    /// from it become a kernel's allocations, so it is capped (a 60 s decay at
+    /// 192 kHz is already some 11.5 M frames of line to hold).
+    pub const MAX_DECAY_CAP: Seconds = Seconds(60.0);
     /// The default tail floor.
     pub const FLOOR: Db = Db(-60.0);
 
     /// A ceiling, or `None` when the rate is not positive and finite, the
-    /// decay is not positive and finite, or the floor is not finite and below
+    /// decay is not positive and finite or is above
+    /// [`MAX_DECAY_CAP`](Self::MAX_DECAY_CAP), or the floor is not finite and below
     /// 0 dB.
     #[must_use]
     pub fn new(rate: SampleRate, max_decay: Seconds, floor: Db) -> Option<Self> {
@@ -54,6 +60,7 @@ impl Ceiling {
             && rate.get() > 0.0
             && max_decay.get().is_finite()
             && max_decay.get() > 0.0
+            && max_decay.get() <= Self::MAX_DECAY_CAP.get()
             && floor.get().is_finite()
             && floor.get() < 0.0;
         ok.then_some(Self {
@@ -113,8 +120,8 @@ pub struct Bounds {
     pub delay: f32,
     /// The longest FIR.
     pub ir: Samples,
-    /// The longest pre-delay, in frames.
-    pub pre_delay: f32,
+    /// The longest pre-delay.
+    pub pre_delay: Samples,
     /// The longest [`tail`](Network::tail) at [`Ceiling::floor`].
     pub tail: Ring,
 }
@@ -185,8 +192,9 @@ mod tests {
     /// `tutti_fixtures::check_range_contract`, which checks the `new`/`TryFrom`/
     /// `of`/serde shape of a one-raw type, does not apply.)
     ///
-    /// Mutation (run): dropping the `floor.get() < 0.0` test accepts a 0 dB
-    /// floor and fails the last row.
+    /// Mutations (run): dropping the `floor.get() < 0.0` test accepts a 0 dB
+    /// floor and fails the last row; dropping the `MAX_DECAY_CAP` test accepts
+    /// 60.001 s and fails the decay row.
     #[test]
     fn a_ceiling_refuses_what_it_cannot_hold() {
         let rate = SampleRate(48_000.0);
@@ -197,12 +205,13 @@ mod tests {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(Ceiling::at(SampleRate(bad)).is_none(), "rate {bad}");
         }
-        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        for bad in [0.0, -1.0, f32::NAN, f32::INFINITY, 60.001, 1e9] {
             assert!(
                 Ceiling::new(rate, Seconds(bad), floor).is_none(),
                 "decay {bad}"
             );
         }
+        assert!(Ceiling::new(rate, Ceiling::MAX_DECAY_CAP, floor).is_some());
         for bad in [0.0, 3.0, f32::NAN, f32::NEG_INFINITY] {
             assert!(Ceiling::new(rate, decay, Db(bad)).is_none(), "floor {bad}");
         }

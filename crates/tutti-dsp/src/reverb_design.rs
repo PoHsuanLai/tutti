@@ -1,19 +1,22 @@
 //! [`FreeverbDesign`]: [`Freeverb`] as a [`Design`].
 //!
-//! The network describes the reverb in `reverb.rs` exactly: per channel eight
-//! parallel damped combs (a diagonal [`Fdn`] of one-pole lines, the right
-//! channel's 23 frames longer) feeding four series all-passes, at Freeverb's
-//! tunings and constants. The comb loop gain is `room * 0.28 + 0.7` and the
+//! The network describes the linear filters of the reverb in `reverb.rs`: per
+//! channel eight parallel damped combs (a diagonal [`Fdn`] of one-pole lines,
+//! the right channel's 23 frames longer) feeding four series all-passes in
+//! [`AllPassForm::Freeverb`] (Freeverb's own, not the unit-magnitude lattice),
+//! at Freeverb's tunings and constants. What it leaves out is the kernel's
+//! flush of any value under 1e-6 to zero, a nonlinearity far below the tail's
+//! floor that no query models. The comb loop gain is `room * 0.28 + 0.7` and the
 //! damping `damp * 0.4`, computed in the same `f32` operations as
 //! [`Freeverb`]'s constants, so the General MIDI controls (room 0.5, damp 0.5)
 //! give today's coefficients to the bit. The kernel (design 022 step 1b) reads
 //! those two numbers from the network; this file changes no processing.
 
-use tutti_types::{Db, Mix, SampleRate};
+use tutti_types::{Amplitude, Db, Mix, SampleRate};
 
 use crate::network::{
-    Absorption, AllPass, Bounds, Ceiling, Design, Fdn, Gains, Inline, Line, MAX_CHANNELS,
-    MAX_LINES, Matrix, Modulation, Network, OutputMap, Stage,
+    Absorption, AllPass, AllPassForm, Bounds, Ceiling, Design, Fdn, Gains, Inline, Line,
+    MAX_CHANNELS, MAX_LINES, Matrix, Modulation, Network, OutputMap, Stage,
 };
 use crate::reverb::Freeverb;
 
@@ -100,7 +103,7 @@ impl Design for FreeverbDesign {
         // The same operations, in the same order, as `Freeverb::ROOM_FEEDBACK`
         // and `Freeverb::DAMPING`.
         let absorption = Absorption::OnePole {
-            gain: room * 0.28 + 0.7,
+            gain: Amplitude(room * 0.28 + 0.7),
             damp: damp * 0.4,
         };
 
@@ -147,6 +150,7 @@ impl Design for FreeverbDesign {
                 delay: Freeverb::scale_tuning(rate, tuning) as f32,
                 gain: Freeverb::ALLPASS_FEEDBACK,
                 modulation: Modulation::NONE,
+                form: AllPassForm::Freeverb,
             };
             let mut channels = Inline::new();
             let _ = channels.push(all_pass(l));
@@ -264,7 +268,7 @@ mod tests {
     #[test]
     fn a_defective_freeverb_fails_its_case() {
         // stable: a gain above 1.
-        let m = mutant(|n| map_absorption(n, |_| Absorption::Gain(1.02)));
+        let m = mutant(|n| map_absorption(n, |_| Absorption::Gain(Amplitude(1.02))));
         fails(cases::stable(&m), "unstable");
 
         // rt60: every comb gain scaled by 1.02.
@@ -294,7 +298,7 @@ mod tests {
         let m = mutant(|n| {
             map_absorption(n, |a| match a {
                 Absorption::OnePole { gain, damp } => Absorption::OnePole {
-                    gain: 1.68 - gain,
+                    gain: Amplitude(1.68 - gain.get()),
                     damp,
                 },
                 a => a,
@@ -303,7 +307,7 @@ mod tests {
         fails(cases::tail_monotone(&m), "tail fell");
 
         // lossless iff frozen: every gain 1 although nothing froze it.
-        let m = mutant(|n| map_absorption(n, |_| Absorption::Gain(1.0)));
+        let m = mutant(|n| map_absorption(n, |_| Absorption::Gain(Amplitude(1.0))));
         fails(cases::lossless_iff_frozen(&m), "lossless");
 
         // density: no stages, so no modes.
@@ -333,7 +337,7 @@ mod tests {
         fails(cases::no_direct_path(&m), "direct path");
 
         // pre-delay: a frame where there is none.
-        let m = mutant(|n| n.pre_delay += 1.0);
+        let m = mutant(|n| n.pre_delay = tutti_types::Samples(n.pre_delay.get() + 1));
         fails(cases::pre_delay(&m), "pre-delay");
     }
 
@@ -341,7 +345,8 @@ mod tests {
     /// constants to the bit: the comb loop gain, the damping, the all-pass
     /// feedback and the input gain.
     ///
-    /// Mutation (run): `* 0.28 + 0.7` written `* 0.28 + 0.70001` in the design
+    /// Mutations (run): `form: AllPassForm::Freeverb` -> `Lattice` fails the
+    /// form assertion; `* 0.28 + 0.7` written `* 0.28 + 0.70001` in the design
     /// fails the first assertion; `0.4` -> `0.41` fails the second.
     #[test]
     fn the_general_midi_controls_give_todays_coefficients_to_the_bit() {
@@ -353,7 +358,7 @@ mod tests {
             let Absorption::OnePole { gain, damp } = line.absorption else {
                 panic!()
             };
-            assert_eq!(gain.to_bits(), Freeverb::ROOM_FEEDBACK.to_bits());
+            assert_eq!(gain.get().to_bits(), Freeverb::ROOM_FEEDBACK.to_bits());
             assert_eq!(damp.to_bits(), Freeverb::DAMPING.to_bits());
         }
         assert!(
@@ -369,6 +374,8 @@ mod tests {
                 a.iter()
                     .all(|a| a.gain.to_bits() == Freeverb::ALLPASS_FEEDBACK.to_bits())
             );
+            // Freeverb's own all-pass, not the lattice (see `AllPassForm`).
+            assert!(a.iter().all(|a| a.form == AllPassForm::Freeverb));
         }
         // The literal figures too, so the constants themselves are pinned: the
         // loop gain 0.84, the damping 0.2, the all-pass feedback 0.5, the input 0.015.
@@ -423,7 +430,7 @@ mod tests {
             let Absorption::OnePole { gain, damp } = fdn.lines[0].absorption else {
                 panic!()
             };
-            assert_eq!((gain, damp), (feedback, damp1));
+            assert_eq!((gain.get(), damp), (feedback, damp1));
             assert_eq!(damp2, 1.0 - damp);
             assert_eq!(a_gain(&n), figures.all_pass_feedback);
         }

@@ -19,11 +19,11 @@
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use tutti_types::{Db, Hz, Mix, SampleRate, Seconds, StereoWidth};
+use tutti_types::{Amplitude, Db, Hz, Mix, SampleRate, Samples, Seconds, StereoWidth};
 
 use super::{
-    Absorption, AllPass, Band, Bounds, Ceiling, Design, Fdn, Gains, Inline, Line, MAX_LINES,
-    Matrix, Modulation, Network, OutputMap, Ring, Stage, loop_gain, pre_delay_frames,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Design, Fdn, Gains, Inline, Line,
+    MAX_LINES, Matrix, Modulation, Network, OutputMap, Ring, Stage, loop_gain, pre_delay_frames,
 };
 
 /// A design plus what the contract needs to know to test it.
@@ -131,7 +131,8 @@ pub(crate) mod cases {
     /// `g = 10^(-3m/(RT60 fs))`, within 1e-3 relative. The design must ask for
     /// at least one.
     ///
-    /// Mutation: every gain scaled by 1.02.
+    /// Mutation: every gain scaled by 0.98 on `ToyFdn` (a shorter RT60) or by
+    /// 1.02 on Freeverb (a longer one).
     pub(crate) fn rt60_matches<D: DesignCase>(d: &D) -> Result<(), String> {
         let mut asked = 0;
         for rate in d.rates() {
@@ -326,6 +327,81 @@ pub(crate) mod cases {
         Ok(())
     }
 
+    /// `is_stable` refuses hostile absorptions and lengths fed to it directly:
+    /// the design clamps its controls, so the design-level `stable` case cannot
+    /// reach them. Every recirculating stage of a sample of the design's
+    /// networks has each line set, in turn, to a one-pole with a pole at or past
+    /// the unit circle (or not a number), a negative pole that peaks above its
+    /// gain, a gain of 1.5, NaN, infinity or below zero, and a length of 0, a
+    /// negative, NaN or infinite one; none may be stable.
+    ///
+    /// Mutations: dropping the `|damp| < 1` guard in `Absorption::gain`; the
+    /// `length > 0` test in `lines_hold`.
+    pub(crate) fn stable_refuses_hostile<D: DesignCase>(d: &D) -> Result<(), String> {
+        let pole = |damp| Absorption::OnePole {
+            gain: Amplitude(0.9),
+            damp,
+        };
+        let bands = Absorption::Bands {
+            low: Amplitude(0.5),
+            mid: Amplitude(0.5),
+            high: Amplitude(1.5),
+            crossover: [Hz(250.0), Hz(4000.0)],
+        };
+        let hostile = [
+            pole(2.0),
+            pole(-2.0),
+            pole(1.0),
+            pole(f32::NAN),
+            pole(f32::INFINITY),
+            pole(-0.5),
+            Absorption::Gain(Amplitude(1.5)),
+            Absorption::Gain(Amplitude(f32::NAN)),
+            Absorption::Gain(Amplitude(f32::INFINITY)),
+            Absorption::Gain(Amplitude(-0.1)),
+            bands,
+        ];
+        let rate = d.rates()[0];
+        let mut tried = 0;
+        for c in d.reachable().into_iter().step_by(17) {
+            let base = d.design(&c, rate);
+            for (i, stage) in base.stages.iter().enumerate() {
+                let Stage::Fdn(f) = stage else { continue };
+                for a in hostile {
+                    let mut n = base.clone();
+                    let Stage::Fdn(f) = &mut n.stages.as_mut_slice()[i] else {
+                        unreachable!()
+                    };
+                    f.lines
+                        .as_mut_slice()
+                        .iter_mut()
+                        .for_each(|l| l.absorption = a);
+                    tried += 1;
+                    if n.is_stable() {
+                        return Err(format!("{a:?} on every line is called stable"));
+                    }
+                }
+                for length in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+                    let mut n = base.clone();
+                    let Stage::Fdn(f) = &mut n.stages.as_mut_slice()[i] else {
+                        unreachable!()
+                    };
+                    f.lines.as_mut_slice()[0].length = length;
+                    tried += 1;
+                    if n.is_stable() {
+                        return Err(format!("a line of length {length} is called stable"));
+                    }
+                }
+                let _ = f;
+            }
+        }
+        if tried == 0 {
+            Err("no recirculating stage to try".into())
+        } else {
+            Ok(())
+        }
+    }
+
     /// The same controls give the same network, however often they are asked.
     ///
     /// Mutation: the design reads a counter (a stand-in for a clock). The
@@ -371,9 +447,9 @@ pub(crate) mod cases {
                 let n = d.design(&c, rate);
                 let asked = d.pre_delay(&c);
                 let want = if asked.get().is_finite() && asked.get() > 0.0 {
-                    (f64::from(asked.get()) * rate.get()).round() as f32
+                    Samples((f64::from(asked.get()) * rate.get()).round() as usize)
                 } else {
-                    0.0
+                    Samples::ZERO
                 };
                 if n.pre_delay != want {
                     return Err(format!(
@@ -418,6 +494,10 @@ macro_rules! design_contract {
         #[test]
         fn contract_bounds_dominate() {
             $crate::network::contract::cases::bounds_dominate(&$design).unwrap();
+        }
+        #[test]
+        fn contract_stable_refuses_hostile() {
+            $crate::network::contract::cases::stable_refuses_hostile(&$design).unwrap();
         }
         #[test]
         fn contract_pure() {
@@ -500,6 +580,9 @@ impl<D: DesignCase> DesignCase for Mutant<D> {
     }
     fn wet_only(&self) -> bool {
         self.inner.wet_only()
+    }
+    fn ceiling(&self, rate: SampleRate) -> Ceiling {
+        self.inner.ceiling(rate)
     }
 }
 
@@ -634,6 +717,7 @@ impl Design for ToyFdn {
             delay: 142.0 * scale,
             gain: 0.5,
             modulation: Modulation::NONE,
+            form: AllPassForm::Lattice,
         };
         let mut channels = Inline::new();
         let _ = channels.push(ap);
@@ -805,10 +889,10 @@ mod tests {
     #[test]
     fn a_defective_design_fails_its_case() {
         // stable: a gain above 1.
-        let m = toy(|n| map_absorption(n, |_| Absorption::Gain(1.02)));
+        let m = toy(|n| map_absorption(n, |_| Absorption::Gain(Amplitude(1.02))));
         fails(cases::stable(&m), "unstable");
 
-        // rt60 matches: every gain scaled by 1.02.
+        // rt60 matches: every gain scaled by 0.98.
         let m = toy(|n| {
             map_absorption(n, |a| match a {
                 Absorption::Bands {
@@ -855,9 +939,9 @@ mod tests {
                     high,
                     crossover,
                 } => Absorption::Bands {
-                    low: 0.99 - low.min(0.99),
-                    mid: 0.99 - mid.min(0.99),
-                    high: 0.99 - high.min(0.99),
+                    low: Amplitude(0.99 - low.get().min(0.99)),
+                    mid: Amplitude(0.99 - mid.get().min(0.99)),
+                    high: Amplitude(0.99 - high.get().min(0.99)),
                     crossover,
                 },
                 a => a,
@@ -871,12 +955,12 @@ mod tests {
                 Absorption::Bands {
                     low,
                     mid,
-                    high: 1.0,
+                    high: Amplitude(1.0),
                     crossover,
                 } => Absorption::Bands {
                     low,
                     mid,
-                    high: 0.999,
+                    high: Amplitude(0.999),
                     crossover,
                 },
                 a => a,
@@ -928,7 +1012,7 @@ mod tests {
         fails(cases::no_direct_path(&m), "direct path");
 
         // pre-delay: one frame more.
-        let m = toy(|n| n.pre_delay += 1.0);
+        let m = toy(|n| n.pre_delay = Samples(n.pre_delay.get() + 1));
         fails(cases::pre_delay(&m), "pre-delay");
     }
 

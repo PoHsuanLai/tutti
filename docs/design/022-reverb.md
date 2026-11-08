@@ -524,25 +524,59 @@ written.
   `Kernel` in 1b (a placeholder trait with no methods would say nothing).
   Freeverb's design is `FreeverbDesign` with `FreeverbControls { room, damp }`;
   `Freeverb` stays the processor and is the 1b kernel.
-- **`Ceiling` is `{ rate, max_decay, floor }`** (checked: `new` refuses),
+- **`Ceiling` is `{ rate, max_decay, floor }`** (checked: `new` refuses,
+  including a `max_decay` above 60 s, since bounds become kernel allocations),
   because lengths in `Bounds` need the rate and the tail needs the floor.
   A design with no decay control (Freeverb) ignores `max_decay`.
 - **`design` is total**: a control out of range is clamped and a non-finite
   one takes the algorithm's default, so the node's `LastGood` is a second line,
   not the only one.
-- **The series chain cannot express a parallel branch.** Early reflections
-  added to a late tail (the usual shape) are not `Taps` then `Fdn` in series,
-  which would convolve them. Step 3b needs a parallel `Stage` or a second
-  list; 1a leaves it.
+- **BLOCKER for step 3b: the series chain cannot express a parallel branch.**
+  Early reflections added to a late tail (the usual shape) are not `Taps` then
+  `Fdn` in series, which would convolve them. Step 3b cannot start until the
+  model has a parallel `Stage` (a sum of branches) or a second list; 1a leaves
+  it open and its queries (`tail`, `min_delay`, the densities) assume series.
 - **No direct path is a path query**, not a field: `Network::min_delay` (a
   series all-pass counts 0, as its `-g` term is direct) and `has_direct_path`.
-- **`Network` is about 55 KB** (`MAX_STAGES` times the largest stage), not
-  "a few kilobytes"; a test holds it under 64 KiB.
+- **`Network` is about 56 KB** (`MAX_STAGES` times the largest stage, 7 KB
+  whatever its variant), not "a few kilobytes"; a test holds it under 64 KiB.
+  It is a **control-side value**, never built on an audio thread (stacks of
+  512 KB): this overrides section 3's "design runs on the audio thread once per
+  changed block". The node designs on the control side and hands the kernel
+  what `retarget` needs; step 1b settles how.
+- **Freeverb's all-pass is not the Schroeder lattice.** It computes
+  `out = buf - in; buf = in + g buf` (read `D` frames late), that is
+  `H = ((1 + g) z^-D - 1) / (1 - g z^-D)`, not unit magnitude (gain 1 at DC for
+  `g = 0.5`, `(2 + g) / (1 + g)` where `D w = pi`), with a direct term of `-1`.
+  `AllPass` carries an `AllPassForm::{Lattice, Freeverb}` so the network
+  describes Freeverb's filter and not a neighbour of it; step 1b's kernel
+  contract can then hold the kernel to its network exactly. Queries that assume
+  unit magnitude (lossless loops, the nested-diffuser delay) accept only the
+  lattice; the direct path counts each form's own term. The network still
+  leaves out the comb's and all-pass's flush of values under 1e-6.
+- **`rt60` is exact only for a diagonal `A` or one RT60 on every line**; for a
+  mixing `A` it is the length-weighted mean, an estimate that undercuts the
+  true decay when the lines differ (a simulated 40- and 70-frame pair set for
+  3 s and 1 s: estimate 1.32 s, state below -60 dB only after 1.9 s). `tail` and
+  `Bounds.tail` therefore use `rt60_bound`, the slowest line's per-frame decay
+  `max_i g_i^(1/m_i)` (times `max(||A||, 1)`), with the lag of one longest line:
+  the proof is a weighted-energy argument written on `Fdn::rt60_bound`. Lines
+  with a nested all-pass are read at its peak group delay, a conservative
+  reading outside the proof.
+- **`is_stable` is a sufficient test with named failure modes closed:** a
+  one-pole needs a finite `|damp| < 1` (its `gain()` reads infinity otherwise),
+  every line a finite positive length (no delay-free loop), a nested all-pass a
+  lattice with `|g| < 1`, and the orthogonality tolerance (1e-6) is folded into
+  the bound (`sqrt(1 + n e)`) rather than ignored.
 - **A one-pole's three bands** are its response at DC, a quarter of the rate
   and Nyquist. `tail` counts an all-pass by its geometric train (a delay times
   the trips to the floor), more than `Freeverb::ring_out`'s once-count, and
   takes the transit from the longest effective line.
 - **`Tap` has a `channel`, not a pan** (`Pan` is a reading, not a control).
+- **Units:** non-negative gains per trip are `Amplitude`, whole frames
+  (`pre_delay`) `Samples`; `f32` stays for fractional frames, signed
+  coefficients (taps, all-pass gain, the matrix, FDN input and output gains)
+  and where `Feedback`'s 0.99 cap cannot hold a loop gain of 1.
 - **`echo_density(t)` is echoes per second** from the loops alone: a diagonal
   sums `1/tau` over the lines that have come round; a mixing matrix gives
   `N^k / tau_mean` after `k` trips, capped at the rate.

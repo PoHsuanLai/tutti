@@ -7,12 +7,20 @@
 //! and analysis, never an instruction stream: no code interprets every network,
 //! so an algorithm's kernel stays free to run its own shape. Everything here is
 //! a pure function of the value (no kernel, no signal, no clock), fixed in
-//! capacity and allocation-free to build, so a design can run on the audio
-//! thread.
+//! capacity and allocation-free to build.
 //!
-//! The values are in frames (fractional, as `f32`: [`Samples`] is whole) and in
-//! loop coefficients (bare `f32`: a gain per trip is not a unit the vocabulary
-//! has). The queries ([`Network::rt60`], [`tail`](Network::tail),
+//! **A `Network` is a control-side value.** It holds room for [`MAX_STAGES`]
+//! stages of about 7 KB each, some 56 KB in all, which is too large to build or
+//! copy on an audio thread (whose stack may be 512 KB). It is allocation-free
+//! (no heap, so building one never waits on the allocator), not small.
+//!
+//! Units: whole frames are [`Samples`] (the pre-delay); non-negative gains per
+//! trip are [`Amplitude`] (an absorption's). Plain `f32` is kept where nothing
+//! covers the quantity, one reason per kind: delays and modulation depths in
+//! *fractional* frames ([`Samples`] is whole); *signed* coefficients, which
+//! [`Amplitude`] (floored at zero) cannot hold (tap and all-pass gains, the
+//! matrix, the input and output gains of an FDN); and `Feedback`, which caps at
+//! 0.99, cannot hold a loop gain of 1. The queries ([`Network::rt60`], [`tail`](Network::tail),
 //! [`is_stable`](Network::is_stable), the densities) read **centre** lengths:
 //! modulation moves a line by a few frames around its centre and the queries do
 //! not model that.
@@ -30,7 +38,7 @@ pub use gain::{loop_gain, rt60_from_gain};
 pub use inline::{Full, Inline};
 pub use queries::Ring;
 
-use tutti_types::{Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
+use tutti_types::{Amplitude, Db, Hz, SampleRate, Samples, Seconds, StereoWidth};
 
 /// The most delay lines one [`Fdn`] holds.
 pub const MAX_LINES: usize = 64;
@@ -84,9 +92,8 @@ impl Band {
 pub struct Network {
     /// The rate the frame counts are in.
     pub rate: SampleRate,
-    /// The pre-delay in whole frames: `round(seconds * rate)`, held as `f32`
-    /// to share the stages' arithmetic.
-    pub pre_delay: f32,
+    /// The pre-delay in whole frames: `round(seconds * rate)`.
+    pub pre_delay: Samples,
     /// The stages, in series.
     pub stages: Inline<Stage, MAX_STAGES>,
     /// The stereo width of the wet signal.
@@ -101,7 +108,7 @@ impl Network {
     pub fn new(rate: SampleRate) -> Self {
         Self {
             rate,
-            pre_delay: 0.0,
+            pre_delay: Samples::ZERO,
             stages: Inline::new(),
             width: StereoWidth::NATURAL,
             wet: Db(0.0),
@@ -111,13 +118,15 @@ impl Network {
 
 /// The pre-delay in whole frames, for [`Network::pre_delay`].
 #[must_use]
-pub fn pre_delay_frames(pre_delay: Seconds, rate: SampleRate) -> f32 {
-    pre_delay.to_samples(rate).get() as f32
+pub fn pre_delay_frames(pre_delay: Seconds, rate: SampleRate) -> Samples {
+    pre_delay.to_samples(rate)
 }
 
 /// One stage of a [`Network`].
-// Boxing the large variant would allocate on the audio thread: the size is the
-// price of a network built without the heap.
+// Boxing the large variant would allocate: the size is the price of a network
+// built without the heap. Every `Stage` is about 7 KB whatever its variant (an
+// `Inline` array of `Stage` is as large as its largest member), so a short
+// all-pass stage costs as much as an `Fdn`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Stage {
@@ -149,31 +158,66 @@ pub struct Taps {
 pub struct Tap {
     /// The delay in frames. A tap at less than one frame is a direct path.
     pub delay: f32,
-    /// The gain, a coefficient.
+    /// The gain: signed, so not an `Amplitude`.
     pub gain: f32,
     /// The output channel it feeds.
     pub channel: u8,
 }
 
-/// A Schroeder all-pass, `(z^-D - g) / (1 - g z^-D)`: the delay `D` in frames
-/// and the coefficient `g`, `|g| < 1`.
+/// The two all-pass filters a network describes, which differ in their
+/// transfer function.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AllPassForm {
+    /// The Schroeder (lattice) all-pass `H(z) = (z^-D - g) / (1 - g z^-D)`:
+    /// `|H| = 1` at every frequency, with a direct term `-g`.
+    #[default]
+    Lattice,
+    /// Freeverb's: `out = buf - in; buf = in + g buf` (the buffer read `D`
+    /// frames late), that is `H(z) = ((1 + g) z^-D - 1) / (1 - g z^-D)`. It is
+    /// not unit magnitude: `|H|` is 1 at DC for `g = 0.5` and reaches
+    /// `(2 + g) / (1 + g)` at Nyquist for an even `D`. Its direct term is always
+    /// `-1`.
+    Freeverb,
+}
+
+/// An all-pass of delay `D` frames and coefficient `g`, `|g| < 1`, in one of
+/// two [`AllPassForm`]s.
+///
+/// The impulse response of either form after its first echoes falls by `g`
+/// every `D` frames, so [`Network::tail`] treats them alike.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AllPass {
-    /// The delay in frames.
+    /// The delay in fractional frames.
     pub delay: f32,
-    /// The coefficient.
+    /// The coefficient: signed, so not an `Amplitude`.
     pub gain: f32,
     /// How its delay is modulated.
     pub modulation: Modulation,
+    /// Which transfer function.
+    pub form: AllPassForm,
 }
 
 impl AllPass {
-    /// The group delay at DC, `D (1 + g) / (1 - g)`, in frames: what the
-    /// all-pass adds to a loop's length at low frequency. An all-pass with
-    /// `|g| >= 1` has no finite figure: infinity.
+    /// Whether the output depends on the input of the same frame: the
+    /// [`Lattice`](AllPassForm::Lattice) form has the direct term `-g` (none
+    /// at `g = 0`, a plain delay), the [`Freeverb`](AllPassForm::Freeverb) form
+    /// always has `-1`.
+    #[must_use]
+    pub fn has_direct_term(&self) -> bool {
+        match self.form {
+            AllPassForm::Lattice => self.gain != 0.0,
+            AllPassForm::Freeverb => true,
+        }
+    }
+
+    /// The group delay at DC of a [`Lattice`](AllPassForm::Lattice) all-pass,
+    /// `D (1 + g) / (1 - g)`, in frames: what it adds to a loop's length at low
+    /// frequency. Infinity when `|g| >= 1`, and for the
+    /// [`Freeverb`](AllPassForm::Freeverb) form, which is not unit magnitude
+    /// and whose DC gain `g / (1 - g)` the loop analysis does not model.
     #[must_use]
     pub fn low_frequency_delay(&self) -> f32 {
-        if self.gain.abs() < 1.0 {
+        if self.form == AllPassForm::Lattice && self.gain.abs() < 1.0 {
             self.delay * (1.0 + self.gain) / (1.0 - self.gain)
         } else {
             f32::INFINITY
@@ -204,7 +248,9 @@ impl Default for Modulation {
     }
 }
 
-/// One gain per delay line (or per tap).
+/// One signed coefficient per delay line (or matrix row): the input and output
+/// gains of an FDN and a circulant's first row can be negative, so these are
+/// not `Amplitude`.
 pub type Gains = Inline<f32, MAX_LINES>;
 
 /// Delay lines with feedback: `s(n + m) = A G(s(n)) + B u(n)`,
@@ -231,7 +277,8 @@ pub struct OutputMap {
 /// One delay line of an [`Fdn`] and its absorption `G`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Line {
-    /// The centre length in frames.
+    /// The centre length in fractional frames. A stable line is finite and
+    /// positive: a delay-free loop is not a loop a network can have.
     pub length: f32,
     /// How the length is modulated.
     pub modulation: Modulation,
@@ -255,7 +302,7 @@ impl Default for Line {
         Line {
             length: 0.0,
             modulation: Modulation::NONE,
-            absorption: Absorption::Gain(0.0),
+            absorption: Absorption::Gain(Amplitude::SILENT),
             diffuser: None,
         }
     }
@@ -284,42 +331,55 @@ pub enum Matrix {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Absorption {
     /// The same gain at every frequency.
-    Gain(f32),
+    Gain(Amplitude),
     /// A one-pole low-pass `(1 - damp) / (1 - damp z^-1)` (unity at DC) times
-    /// `gain`: Freeverb's comb, the plate's damping.
+    /// `gain`: Freeverb's comb, the plate's damping. The pole `damp` is a
+    /// coefficient (signed, so not an `Amplitude`) and must satisfy
+    /// `|damp| < 1`: see [`Absorption::gain`] for what an out-of-range pole
+    /// reads as.
     OnePole {
         /// The gain at DC.
-        gain: f32,
+        gain: Amplitude,
         /// The pole.
         damp: f32,
     },
     /// A gain per band.
     Bands {
         /// The low band's gain.
-        low: f32,
+        low: Amplitude,
         /// The middle band's gain.
-        mid: f32,
+        mid: Amplitude,
         /// The high band's gain.
-        high: f32,
+        high: Amplitude,
         /// Where the bands meet.
         crossover: [Hz; 2],
     },
 }
 
 impl Absorption {
-    /// The gain per trip in `band`.
+    /// The gain per trip in `band`: for [`OnePole`](Self::OnePole) its
+    /// magnitude at DC, a quarter of the rate and Nyquist.
+    ///
+    /// A one-pole whose pole is not finite or has `|damp| >= 1` is not a
+    /// filter that settles, and has no response to read: every band returns
+    /// infinity, which no stability or decay query accepts. (A pole in
+    /// `-1 < damp < 0` is a valid high-pass-ish filter whose Nyquist gain
+    /// exceeds `gain`, and reads as such.)
     #[must_use]
-    pub fn gain(&self, band: Band) -> f32 {
+    pub fn gain(&self, band: Band) -> Amplitude {
         match *self {
             Absorption::Gain(g) => g,
             Absorption::OnePole { gain, damp } => {
+                if !(damp.is_finite() && damp.abs() < 1.0) {
+                    return Amplitude(f32::INFINITY);
+                }
                 let d = f64::from(damp);
                 let response = match band {
                     Band::Low => 1.0,
                     Band::Mid => (1.0 - d).abs() / libm::sqrt(1.0 + d * d),
                     Band::High => (1.0 - d).abs() / (1.0 + d).abs(),
                 };
-                (f64::from(gain) * response) as f32
+                Amplitude((f64::from(gain.get()) * response) as f32)
             }
             Absorption::Bands { low, mid, high, .. } => match band {
                 Band::Low => low,
@@ -376,11 +436,14 @@ mod tests {
     #[test]
     fn the_pre_delay_is_rounded_to_whole_frames() {
         let rate = SampleRate(48_000.0);
-        assert_eq!(pre_delay_frames(Seconds(0.001), rate), 48.0);
-        assert_eq!(pre_delay_frames(Seconds(0.6 / 48_000.0), rate), 1.0);
-        assert_eq!(pre_delay_frames(Seconds(0.4 / 48_000.0), rate), 0.0);
-        assert_eq!(pre_delay_frames(Seconds(-1.0), rate), 0.0);
-        assert_eq!(pre_delay_frames(Seconds(f32::NAN), rate), 0.0);
+        assert_eq!(pre_delay_frames(Seconds(0.001), rate), Samples(48));
+        assert_eq!(pre_delay_frames(Seconds(0.6 / 48_000.0), rate), Samples(1));
+        assert_eq!(
+            pre_delay_frames(Seconds(0.4 / 48_000.0), rate),
+            Samples::ZERO
+        );
+        assert_eq!(pre_delay_frames(Seconds(-1.0), rate), Samples::ZERO);
+        assert_eq!(pre_delay_frames(Seconds(f32::NAN), rate), Samples::ZERO);
     }
 
     /// A `Network` lives on the stack of the audio thread: the whole value stays
@@ -402,5 +465,76 @@ mod tests {
         assert_eq!(n.rt60(Band::Mid), Seconds(0.0));
         assert_eq!(n.tail(Db(-60.0)), Ring::Finite(Seconds(0.0)));
         assert!(n.is_stable() && !n.is_lossless());
+    }
+
+    /// The two forms differ in their direct term: a lattice has `-g` (none at
+    /// `g = 0`, a plain delay), Freeverb's always `-1`; only the lattice has a
+    /// finite low-frequency group delay for the loop analysis.
+    ///
+    /// Mutations (run): `self.gain != 0.0` -> `true` fails the lattice-at-zero
+    /// row; the Freeverb arm returning `self.gain != 0.0` fails the last row;
+    /// dropping the form test from `low_frequency_delay` fails the Freeverb row.
+    #[test]
+    fn the_forms_differ_in_their_direct_term_and_group_delay() {
+        let ap = |form, gain| AllPass {
+            delay: 100.0,
+            gain,
+            modulation: Modulation::NONE,
+            form,
+        };
+        assert!(ap(AllPassForm::Lattice, 0.5).has_direct_term());
+        assert!(ap(AllPassForm::Lattice, -0.5).has_direct_term());
+        assert!(!ap(AllPassForm::Lattice, 0.0).has_direct_term());
+        assert!(ap(AllPassForm::Freeverb, 0.0).has_direct_term());
+        assert!(ap(AllPassForm::Freeverb, 0.5).has_direct_term());
+        assert_eq!(ap(AllPassForm::Lattice, 0.5).low_frequency_delay(), 300.0);
+        assert_eq!(
+            ap(AllPassForm::Freeverb, 0.5).low_frequency_delay(),
+            f32::INFINITY
+        );
+    }
+
+    /// The lattice form is unit magnitude at every frequency, from its
+    /// recurrence `y[n] = -g x[n] + x[n-D] + g y[n-D]`; with the same `g` the
+    /// Freeverb form (`((1+g) z^-D - 1) / (1 - g z^-D)`) is not. Both
+    /// impulse responses are run from their difference equations.
+    ///
+    /// Mutation (run): the sign of `-g * x` flipped in the lattice recurrence
+    /// breaks its unit magnitude and fails the first loop.
+    #[test]
+    fn the_lattice_is_unit_magnitude_and_the_freeverb_form_is_not() {
+        let (d, g) = (8usize, 0.5f64);
+        let len = 40 * d;
+        let mut lattice = vec![0.0f64; len];
+        let mut freeverb = vec![0.0f64; len];
+        // Freeverb: buf[n] = x[n] + g buf[n-D]; y[n] = buf[n-D] - x[n].
+        let mut buf = vec![0.0f64; len];
+        for n in 0..len {
+            let x = if n == 0 { 1.0 } else { 0.0 };
+            let back = |v: &[f64]| if n >= d { v[n - d] } else { 0.0 };
+            lattice[n] = -g * x + (if n == d { 1.0 } else { 0.0 }) + g * back(&lattice);
+            buf[n] = x + g * back(&buf);
+            freeverb[n] = back(&buf) - x;
+        }
+        let mag = |h: &[f64], w: f64| {
+            let (re, im) = h.iter().enumerate().fold((0.0, 0.0), |(re, im), (n, &x)| {
+                (
+                    re + x * libm::cos(w * n as f64),
+                    im - x * libm::sin(w * n as f64),
+                )
+            });
+            f64::hypot(re, im)
+        };
+        let omegas = [0.0, 0.1, 0.4, std::f64::consts::PI / d as f64, 2.0, 3.0];
+        assert!(
+            omegas
+                .iter()
+                .all(|&w| (mag(&lattice, w) - 1.0).abs() < 1e-6)
+        );
+        assert!(
+            omegas
+                .iter()
+                .any(|&w| (mag(&freeverb, w) - 1.0).abs() > 0.5)
+        );
     }
 }

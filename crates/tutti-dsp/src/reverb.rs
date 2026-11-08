@@ -35,7 +35,9 @@ impl Freeverb {
     /// The gain the input is scaled by.
     pub const FIXED_GAIN: f32 = 0.015;
     /// The comb feedback: Freeverb's room size 0.5 scaled (`0.5 * 0.28 + 0.7`).
-    /// A bare `f32`: a loop coefficient, not a unit the vocabulary has.
+    /// A bare `f32` because the comb loop multiplies it per sample and this
+    /// change leaves that code alone; the design carries it as an `Amplitude`
+    /// (`Feedback` would also hold it, but caps at 0.99 and is for a control).
     pub(crate) const ROOM_FEEDBACK: f32 = 0.5 * 0.28 + 0.7;
     /// The comb damping: Freeverb's damp 0.5 scaled (`0.5 * 0.4`).
     pub(crate) const DAMPING: f32 = 0.5 * 0.4;
@@ -369,5 +371,59 @@ impl AllPassFilter {
             self.buffer_index += rem;
             block_index += rem;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Freeverb's all-pass is `H(z) = ((1 + g) z^-D - 1) / (1 - g z^-D)`, the
+    /// network's `AllPassForm::Freeverb`, not the unit-magnitude lattice. Its
+    /// impulse response, from the transfer function, is -1 at frame 0 and
+    /// `g^(k-1)` at frame `k D` for `k >= 1`, and zero elsewhere; its gain is 1
+    /// at DC for `g = 0.5` and `(2 + g) / (1 + g)` where `D w = pi`.
+    ///
+    /// Mutations (run): `bufout - input` -> `input - bufout` in
+    /// `AllPassFilter::process` flips the sign and fails the first assertion;
+    /// `input + bufout * feedback` -> `input` removes the recirculation and
+    /// fails the `g^(k-1)` train.
+    #[test]
+    fn the_all_pass_is_the_freeverb_form_not_the_lattice() {
+        let (d, g) = (8usize, 0.5f32);
+        let mut ap = AllPassFilter::new(d);
+        ap.feedback = g;
+        let mut h = vec![0.0f32; 18 * d + 1];
+        h[0] = 1.0;
+        ap.process(&mut h);
+        assert!((h[0] + 1.0).abs() < 1e-6, "h[0] = {}", h[0]);
+        for k in 1..=17usize {
+            assert!(
+                (h[k * d] - g.powi(k as i32 - 1)).abs() < 1e-5,
+                "h[{}] = {}",
+                k * d,
+                h[k * d]
+            );
+        }
+        assert!((0..h.len()).filter(|n| n % d != 0).all(|n| h[n] == 0.0));
+        let gain_at = |omega: f64| {
+            let (re, im) = h
+                .iter()
+                .enumerate()
+                .fold((0.0f64, 0.0f64), |(re, im), (n, &x)| {
+                    let a = omega * n as f64;
+                    (
+                        re + f64::from(x) * libm::cos(a),
+                        im - f64::from(x) * libm::sin(a),
+                    )
+                });
+            re.hypot(im)
+        };
+        assert!((gain_at(0.0) - 1.0).abs() < 1e-3, "DC {}", gain_at(0.0));
+        let peak = gain_at(std::f64::consts::PI / d as f64);
+        assert!(
+            (peak - (2.0 + 0.5) / (1.0 + 0.5)).abs() < 1e-3,
+            "peak {peak}"
+        );
     }
 }

@@ -7,7 +7,7 @@ use std::ops::Deref;
 /// It exists so a [`Network`](crate::Network) can be built on the audio thread
 /// without allocating. The slots past the length hold `T::default()` and are
 /// never read; equality compares only the live ones.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Inline<T, const N: usize> {
     items: [T; N],
     len: usize,
@@ -102,6 +102,14 @@ impl<T, const N: usize> Deref for Inline<T, N> {
     }
 }
 
+/// Prints the live items only, as a slice: a `Network` is hundreds of slots,
+/// nearly all dead.
+impl<T: std::fmt::Debug, const N: usize> std::fmt::Debug for Inline<T, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 impl<T: PartialEq, const N: usize> PartialEq for Inline<T, N> {
     fn eq(&self, other: &Self) -> bool {
         **self == **other
@@ -141,5 +149,15 @@ mod tests {
         assert_ne!(a, b);
         b = Inline::<u8, 3>::from_slice(&[1, 2]).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// `Debug` shows the live items and nothing of the dead slots.
+    ///
+    /// Mutation (run): `self.iter()` -> `self.items.iter()` prints the dead
+    /// slot and fails.
+    #[test]
+    fn debug_prints_only_the_live_slots() {
+        let list = Inline::<u8, 4>::from_slice(&[1, 2]).unwrap();
+        assert_eq!(format!("{list:?}"), "[1, 2]");
     }
 }

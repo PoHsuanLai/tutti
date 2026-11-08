@@ -127,9 +127,9 @@ pub use filter::{
 };
 pub use interp::cubic_hermite;
 pub use network::{
-    Absorption, AllPass, Band, Bounds, Ceiling, Design, Fdn, FirSummary, Full, Gains, Inline, Line,
-    MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation, Network,
-    OutputMap, Ring, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
+    Absorption, AllPass, AllPassForm, Band, Bounds, Ceiling, Design, Fdn, FirSummary, Full, Gains,
+    Inline, Line, MAX_CHANNELS, MAX_DENSE, MAX_LINES, MAX_STAGES, MAX_TAPS, Matrix, Modulation,
+    Network, OutputMap, Ring, Stage, Tap, Taps, loop_gain, pre_delay_frames, rt60_from_gain,
 };
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler};
 pub use reverb::Freeverb;

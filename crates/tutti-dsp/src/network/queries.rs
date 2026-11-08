@@ -3,12 +3,12 @@
 use tutti_types::{Db, Hz, Samples, Seconds};
 
 use super::gain::decay_seconds;
-use super::{AllPass, Band, Fdn, Matrix, Network, Stage};
+use super::{AllPass, AllPassForm, Band, Fdn, Matrix, Network, Stage};
 
 /// How far from 1 a gain may be and still be lossless.
 const LOSSLESS_TOLERANCE: f64 = 1e-6;
 /// How far a matrix may be from orthogonal and still be.
-const ORTHOGONAL_TOLERANCE: f64 = 1e-5;
+const ORTHOGONAL_TOLERANCE: f64 = 1e-6;
 
 /// How long a network rings: [`Network::tail`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,40 +55,66 @@ impl Fdn {
         }
     }
 
-    /// Whether `A` is orthogonal (the identity of a diagonal counts).
-    fn orthogonal(&self) -> bool {
+    /// The largest entry of `A Aᵀ - I`: zero for the structured kinds (orthogonal
+    /// by construction), measured for a circulant or dense matrix, `None` when
+    /// the matrix does not fit the line count.
+    fn orthogonality_error(&self) -> Option<f64> {
         let n = self.lines.len();
         if !self.matrix_fits(n) {
-            return false;
+            return None;
         }
-        match &self.matrix {
-            Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => true,
-            Matrix::Circulant(c) => (0..n).all(|k| {
-                let r: f64 = (0..n)
-                    .map(|j| f64::from(c[j]) * f64::from(c[(j + k) % n]))
-                    .sum();
-                (r - if k == 0 { 1.0 } else { 0.0 }).abs() <= ORTHOGONAL_TOLERANCE
-            }),
-            Matrix::Dense(a) => (0..n).all(|i| {
-                (0..n).all(|j| {
+        let delta = |i: usize, j: usize| if i == j { 1.0 } else { 0.0 };
+        Some(match &self.matrix {
+            Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => 0.0,
+            Matrix::Circulant(c) => (0..n)
+                .map(|k| {
+                    let r: f64 = (0..n)
+                        .map(|j| f64::from(c[j]) * f64::from(c[(j + k) % n]))
+                        .sum();
+                    (r - delta(k, 0)).abs()
+                })
+                .fold(0.0, f64::max),
+            Matrix::Dense(a) => (0..n)
+                .flat_map(|i| (0..n).map(move |j| (i, j)))
+                .map(|(i, j)| {
                     let dot: f64 = (0..n)
                         .map(|k| f64::from(a[i * n + k]) * f64::from(a[j * n + k]))
                         .sum();
-                    (dot - if i == j { 1.0 } else { 0.0 }).abs() <= ORTHOGONAL_TOLERANCE
+                    (dot - delta(i, j)).abs()
                 })
-            }),
-        }
+                .fold(0.0, f64::max),
+        })
     }
 
-    /// The Frobenius norm of `A`, an upper bound of its spectral norm.
-    fn frobenius(&self) -> f64 {
+    /// Whether `A` is orthogonal to the tolerance (the identity of a diagonal
+    /// counts).
+    fn orthogonal(&self) -> bool {
+        self.orthogonality_error()
+            .is_some_and(|e| e <= ORTHOGONAL_TOLERANCE)
+    }
+
+    /// An upper bound of the spectral norm `‖A‖₂`.
+    ///
+    /// Orthogonal to within `e` (every entry of `E = A Aᵀ - I` at most `e`):
+    /// `‖E‖₂ ≤ ‖E‖_F ≤ n e`, so `‖A‖₂² ≤ 1 + n e` and `‖A‖₂ ≤ sqrt(1 + n e)`;
+    /// exactly 1 where `e` is 0. The tolerance is `1e-6`, about a hundred times
+    /// an `f32` entry's rounding, which makes the bound at most `1 + 3.2e-5`
+    /// for the 64 lines of the largest network and is folded into the stability
+    /// test, so a nearly-orthogonal matrix is never taken for an orthogonal one.
+    /// Otherwise the Frobenius norm, sufficient and not necessary.
+    fn norm_bound(&self) -> f64 {
         let n = self.lines.len() as f64;
-        match &self.matrix {
-            Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => libm::sqrt(n),
-            Matrix::Circulant(c) => {
-                libm::sqrt(n * c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>())
-            }
-            Matrix::Dense(a) => libm::sqrt(a.iter().map(|&x| f64::from(x) * f64::from(x)).sum()),
+        match self.orthogonality_error() {
+            Some(e) if e <= ORTHOGONAL_TOLERANCE => libm::sqrt(1.0 + n * e),
+            _ => match &self.matrix {
+                Matrix::Diagonal | Matrix::Householder | Matrix::Hadamard => libm::sqrt(n),
+                Matrix::Circulant(c) => {
+                    libm::sqrt(n * c.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>())
+                }
+                Matrix::Dense(a) => {
+                    libm::sqrt(a.iter().map(|&x| f64::from(x) * f64::from(x)).sum())
+                }
+            },
         }
     }
 
@@ -97,7 +123,7 @@ impl Fdn {
         let mut max = 0.0f64;
         for line in self.lines.iter() {
             for band in Band::ALL {
-                let g = f64::from(line.absorption.gain(band));
+                let g = f64::from(line.absorption.gain(band).get());
                 if g.is_nan() || g < 0.0 {
                     return f64::INFINITY;
                 }
@@ -107,18 +133,37 @@ impl Fdn {
         max
     }
 
-    /// The RT60 of the network's loop in `band`, in seconds.
-    ///
-    /// For a diagonal `A` each line is its own loop and the slowest governs:
-    /// the largest `-3 m / (fs log10 g)`. For a mixing `A` the loop is all the
-    /// lines at once, the length-weighted `-3 Σm / (fs Σ log10 g)`, exact when
-    /// every line is set from one RT60. `m` is the effective length.
+    /// Whether every line can be analysed: a finite positive length (a
+    /// delay-free loop is not a loop), a finite modulation depth, and a nested
+    /// all-pass that is a lattice (the form this analysis models) with
+    /// `|g| < 1` and a finite non-negative delay.
+    fn lines_hold(&self) -> bool {
+        self.lines.iter().all(|l| {
+            l.length.is_finite()
+                && l.length > 0.0
+                && l.modulation.depth.is_finite()
+                && l.diffuser.is_none_or(|d| {
+                    d.form == AllPassForm::Lattice
+                        && d.gain.abs() < 1.0
+                        && d.delay.is_finite()
+                        && d.delay >= 0.0
+                })
+        })
+    }
+
+    /// The RT60 of the network's loop in `band`, in seconds: **an estimate**,
+    /// exact only for a diagonal `A` (each line is its own loop and the slowest
+    /// governs: the largest `-3 m / (fs log10 g)`) or when every line is set
+    /// from one RT60. For a mixing `A` it is the length-weighted
+    /// `-3 Σm / (fs Σ log10 g)`, a mean that can undercut the true decay when
+    /// the lines differ: use [`rt60_bound`](Self::rt60_bound) where a figure
+    /// must cover the ring. `m` is the effective length.
     #[must_use]
     pub fn rt60(&self, band: Band, rate: f64) -> Seconds {
         let lines = self.lines.iter().map(|l| {
             (
                 f64::from(l.effective_length()),
-                libm::log10(f64::from(l.absorption.gain(band))),
+                libm::log10(f64::from(l.absorption.gain(band).get())),
             )
         });
         let seconds = if self.mixing() {
@@ -136,40 +181,122 @@ impl Fdn {
         Seconds(seconds as f32)
     }
 
-    /// Whether every gain is 1 (within a tolerance) and `A` is orthogonal: a
-    /// loop that loses nothing.
+    /// The slowest line's per-frame figures in `band`: `(log10 ρ, log10 σ,
+    /// m)` where `ρ = max_i g_i^(1/m_i)` is the slowest amplitude factor per
+    /// frame, `σ = max(‖A‖₂, 1)` and `m` the longest line, or `None` when a
+    /// line cannot be analysed (a gain that is NaN or negative, a length that is
+    /// not positive). A line with a nested all-pass is read at its peak group
+    /// delay, `D (1 + |g|) / (1 - |g|)`, a conservative reading that is not part
+    /// of the proof in [`rt60_bound`](Self::rt60_bound).
+    fn slowest(&self, band: Band) -> Option<(f64, f64, f64)> {
+        let mut log_rho = f64::NEG_INFINITY;
+        let mut longest = 0.0f64;
+        for l in self.lines.iter() {
+            let peak = l.diffuser.map_or(0.0, |d| {
+                let g = f64::from(d.gain).abs();
+                f64::from(d.delay) * (1.0 + g) / (1.0 - g)
+            });
+            let m = f64::from(l.length) + peak;
+            let log_g = libm::log10(f64::from(l.absorption.gain(band).get()));
+            if m.is_nan() || m <= 0.0 || log_g.is_nan() {
+                return None;
+            }
+            log_rho = log_rho.max(log_g / m);
+            longest = longest.max(m);
+        }
+        Some((log_rho, libm::log10(self.norm_bound().max(1.0)), longest))
+    }
+
+    /// An RT60 in `band` that never undercuts the true decay: the slowest
+    /// line's, `-3 / (fs log10 (σ ρ))` with `ρ = max_i g_i^(1/m_i)` the slowest
+    /// amplitude factor per frame and `σ = max(‖A‖₂, 1)`. Infinite when
+    /// `σρ ≥ 1` or a line cannot be analysed. For a diagonal `A` it equals
+    /// [`rt60`](Self::rt60).
+    ///
+    /// **Why it covers.** Take the lines as shift registers of `m_i` samples
+    /// (`u` = frames since a sample entered), absorption `g_i` applied to a
+    /// sample as it leaves and `A` mapping the leaving samples onto the entering
+    /// ones. With `w = ρ²`, weigh each sample's energy by `w^u`:
+    /// `V = Σ x² w^u`. A step shifts every sample (`u → u+1`, so `V` is
+    /// multiplied by `w`), except that the samples leaving at `u = m_i - 1` are
+    /// scaled by `g_i ≤ ρ^(m_i)`, mapped by `A` (norm `≤ σ`) and enter at
+    /// `u = 0`: their weight becomes at most `σ² Σ g_i² y_i² ≤ σ² w · (their
+    /// weight before)`. So `V(n+1) ≤ σ² w V(n)` with zero input, for any delays
+    /// and any `A` of norm `≤ σ`. The weights lie in `[w^(m-1), 1]` for the
+    /// longest line `m`, so the state's energy `E` satisfies
+    /// `E(t) ≤ (σ²w)^t E(0) / w^(m-1)`: the state's amplitude is at most
+    /// `(σρ)^t ρ^-(m-1)` times its start, and a map of the state (the output)
+    /// is that times a constant. It reaches a fraction `a` after
+    /// `ln(1/a) / ln(1/σρ)` frames plus a lag of `(m-1) ln(1/ρ) / ln(1/σρ)`
+    /// frames, which [`Network::tail`] counts as the longest line plus
+    /// `lag_extra_frames`. The figure is relative to
+    /// the state's amplitude, as any floor is.
+    ///
+    /// [`rt60`](Self::rt60), the length-weighted mean, is not such a bound: for
+    /// a mixing `A` with lines of different decay it can be shorter than the
+    /// slowest line's.
+    #[must_use]
+    pub fn rt60_bound(&self, band: Band, rate: f64) -> Seconds {
+        if self.lines.is_empty() {
+            return Seconds(0.0);
+        }
+        let Some((log_rho, log_sigma, _)) = self.slowest(band) else {
+            return Seconds(f32::INFINITY);
+        };
+        let per_frame = log_rho + log_sigma;
+        Seconds(if per_frame >= 0.0 {
+            f32::INFINITY
+        } else if per_frame == f64::NEG_INFINITY {
+            0.0
+        } else {
+            (-3.0 / (rate * per_frame)) as f32
+        })
+    }
+
+    /// The frames the lag of [`rt60_bound`](Self::rt60_bound) exceeds the
+    /// longest line by, `(m-1) log σ / -log(σρ)`: zero where `σ = 1` (a
+    /// structured matrix), a few frames for a measured-orthogonal one.
+    fn lag_extra_frames(&self, band: Band) -> f64 {
+        match self.slowest(band) {
+            Some((log_rho, log_sigma, m)) if log_rho + log_sigma < 0.0 => {
+                (m - 1.0).max(0.0) * log_sigma / -(log_rho + log_sigma)
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// Whether every gain is 1 (within a tolerance), `A` is orthogonal and the
+    /// lines can be analysed: a loop that loses nothing. Marginal by
+    /// construction: the tolerances allow a growth of at most
+    /// `(1 + 1e-6) sqrt(1 + n e)` per trip.
     #[must_use]
     pub fn is_lossless(&self) -> bool {
         !self.lines.is_empty()
+            && self.lines_hold()
             && self.orthogonal()
             && self.lines.iter().all(|l| {
-                Band::ALL
-                    .iter()
-                    .all(|&b| (f64::from(l.absorption.gain(b)) - 1.0).abs() <= LOSSLESS_TOLERANCE)
+                Band::ALL.iter().all(|&b| {
+                    (f64::from(l.absorption.gain(b).get()) - 1.0).abs() <= LOSSLESS_TOLERANCE
+                })
             })
     }
 
-    /// Whether the loop cannot grow: every gain below 1 and `A` either
-    /// orthogonal or small enough by the Frobenius bound (sufficient, not
-    /// necessary), or the lossless case, marginally stable.
+    /// Whether the loop cannot grow: every line analysable (`lines_hold`:
+    /// no delay-free loop, no pole at or past the unit circle, no nested
+    /// all-pass but a lattice), every gain `g` below 1 and `g ‖A‖₂ < 1` by
+    /// `norm_bound` (sufficient, not necessary), or the
+    /// lossless case, marginally stable.
     #[must_use]
     pub fn is_stable(&self) -> bool {
         let n = self.lines.len();
-        if !self.matrix_fits(n) {
-            return false;
-        }
-        let diffusers_hold = self.lines.iter().all(|l| {
-            l.diffuser
-                .is_none_or(|d| d.gain.abs() < 1.0 && d.delay >= 0.0)
-        });
-        if !diffusers_hold {
+        if !self.matrix_fits(n) || !self.lines_hold() {
             return false;
         }
         let g = self.max_gain();
         if self.is_lossless() {
             return g <= 1.0 + LOSSLESS_TOLERANCE;
         }
-        g < 1.0 && (self.orthogonal() || g * self.frobenius() < 1.0)
+        g < 1.0 && g * self.norm_bound() < 1.0
     }
 
     /// The longest effective line, in frames.
@@ -208,6 +335,11 @@ impl Network {
     /// [`Stage::Fir`] reports its summary; taps and series all-passes add
     /// none). Zero for a network that does not recirculate; infinity for a
     /// loop that never settles.
+    ///
+    /// **Exact** for a diagonal `A`, or when every line is set from one RT60;
+    /// **an estimate** for a mixing `A` with lines of different decay (see
+    /// [`Fdn::rt60`]). Use [`rt60_bound`](Self::rt60_bound) for a figure that
+    /// must cover the ring; [`tail`](Self::tail) does.
     #[must_use]
     pub fn rt60(&self, band: Band) -> Seconds {
         let rate = self.rate.get();
@@ -223,10 +355,32 @@ impl Network {
         Seconds(slowest)
     }
 
+    /// The slowest recirculating stage's [`Fdn::rt60_bound`] in `band`, which
+    /// never undercuts the true decay (a FIR reports its summary; infinity when
+    /// a loop cannot be bounded).
+    #[must_use]
+    pub fn rt60_bound(&self, band: Band) -> Seconds {
+        let rate = self.rate.get();
+        let mut slowest = 0.0f32;
+        for stage in self.stages.iter() {
+            let r = match stage {
+                Stage::Fdn(f) => f.rt60_bound(band, rate).get(),
+                Stage::Fir(s) => s.rt60[band.index()].get(),
+                _ => 0.0,
+            };
+            slowest = slowest.max(r);
+        }
+        Seconds(slowest)
+    }
+
     /// How long the wet signal rings after the input stops, until it is `floor`
     /// below what it carried: the pre-delay, plus each stage's transit (the
     /// longest line, the longest tap, an all-pass's delay times the trips of its
-    /// train, a FIR's length), plus the slowest band's `RT60 |floor| / 60`.
+    /// train, a FIR's length), plus the slowest band's
+    /// [`rt60_bound`](Self::rt60_bound) times `|floor| / 60` (with the
+    /// lag the bound's proof adds). It uses the bound,
+    /// not the estimate, so it never undercuts a mixing network whose lines
+    /// differ.
     ///
     /// [`Ring::Unbounded`] when a loop never settles (lossless, or a gain at 1
     /// or above), or when `floor` is NaN. A positive `floor` is read as 0 dB.
@@ -238,7 +392,7 @@ impl Network {
         let depth = f64::from((-floor.get()).max(0.0));
         let amplitude = libm::exp10(-depth / 20.0);
         let mut decay = 0.0f64;
-        let mut frames = f64::from(self.pre_delay);
+        let mut frames = self.pre_delay.get() as f64;
         for stage in self.stages.iter() {
             match stage {
                 Stage::Taps(t) => {
@@ -260,7 +414,10 @@ impl Network {
                         return Ring::Unbounded;
                     }
                     for band in Band::ALL {
-                        decay = decay.max(f64::from(f.rt60(band, self.rate.get()).get()));
+                        let rate = self.rate.get();
+                        let seconds = f64::from(f.rt60_bound(band, rate).get()) * depth / 60.0
+                            + f.lag_extra_frames(band) / rate;
+                        decay = decay.max(seconds);
                     }
                 }
                 Stage::Fir(s) => frames += s.length.get() as f64,
@@ -269,9 +426,7 @@ impl Network {
         if !frames.is_finite() || !decay.is_finite() {
             return Ring::Unbounded;
         }
-        Ring::Finite(Seconds(
-            (frames / self.rate.get() + decay * depth / 60.0) as f32,
-        ))
+        Ring::Finite(Seconds((frames / self.rate.get() + decay) as f32))
     }
 
     /// Whether no loop can grow. Every recirculating stage must be stable
@@ -279,14 +434,17 @@ impl Network {
     /// figures must be finite.
     #[must_use]
     pub fn is_stable(&self) -> bool {
-        self.pre_delay.is_finite()
-            && self.pre_delay >= 0.0
-            && self.stages.iter().all(|s| match s {
-                Stage::Fdn(f) => f.is_stable(),
-                Stage::AllPass(a) => a.iter().all(|a| a.gain.abs() < 1.0 && a.delay >= 0.0),
-                Stage::Taps(t) => t.taps.iter().all(|t| t.gain.is_finite() && t.delay >= 0.0),
-                Stage::Fir(s) => s.rt60.iter().all(|r| !r.get().is_nan()),
-            })
+        self.stages.iter().all(|s| match s {
+            Stage::Fdn(f) => f.is_stable(),
+            Stage::AllPass(a) => a
+                .iter()
+                .all(|a| a.gain.abs() < 1.0 && a.delay.is_finite() && a.delay >= 0.0),
+            Stage::Taps(t) => t
+                .taps
+                .iter()
+                .all(|t| t.gain.is_finite() && t.delay.is_finite() && t.delay >= 0.0),
+            Stage::Fir(s) => s.rt60.iter().all(|r| !r.get().is_nan()),
+        })
     }
 
     /// Whether the network has a recirculating stage and every one loses
@@ -366,14 +524,19 @@ impl Network {
     /// The shortest path from the input to the output, in frames: the
     /// pre-delay plus each stage's shortest path (a series all-pass has a
     /// direct term, zero; a line, its length; a tap, its delay; a FIR, its
-    /// onset). Infinity when no path exists.
+    /// onset). Infinity when a stage has no path.
     #[must_use]
     pub fn min_delay(&self) -> f32 {
-        let mut frames = self.pre_delay;
+        let mut frames = self.pre_delay.get() as f32;
         for stage in self.stages.iter() {
             frames += match stage {
                 Stage::Taps(t) => t.taps.iter().map(|t| t.delay).fold(f32::INFINITY, f32::min),
-                Stage::AllPass(_) => 0.0,
+                // A form with a direct term (`-g`, or `-1`) is a path of no
+                // delay; a lattice at `g = 0` is a plain delay.
+                Stage::AllPass(a) => a
+                    .iter()
+                    .map(|a| if a.has_direct_term() { 0.0 } else { a.delay })
+                    .fold(f32::INFINITY, f32::min),
                 Stage::Fdn(f) => f
                     .lines
                     .iter()
@@ -420,11 +583,11 @@ fn fdn_density(f: &Fdn, rate: f64, t: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use tutti_types::SampleRate;
+    use tutti_types::{Amplitude, SampleRate};
 
     use super::super::{
-        Absorption, AllPass, Band, Bounds, Fdn, FirSummary, Gains, Inline, Line, Matrix,
-        Modulation, Network, OutputMap, Stage, Tap, Taps, loop_gain,
+        Absorption, AllPass, AllPassForm, Band, Bounds, Fdn, FirSummary, Gains, Inline, Line,
+        Matrix, Modulation, Network, OutputMap, Stage, Tap, Taps, loop_gain,
     };
     use super::*;
 
@@ -470,7 +633,7 @@ mod tests {
             &[line(48_000.0, Absorption::Gain(g))],
             Matrix::Diagonal,
         ))]);
-        n.pre_delay = 4_800.0;
+        n.pre_delay = Samples(4_800);
         let seconds = |floor| n.tail(Db(floor)).seconds().unwrap().get();
         assert!((seconds(-60.0) - 3.1).abs() < 1e-5, "{}", seconds(-60.0));
         assert!((seconds(-30.0) - 2.1).abs() < 1e-5);
@@ -490,6 +653,7 @@ mod tests {
             delay: 100.0,
             gain: 0.5,
             modulation: Modulation::NONE,
+            form: AllPassForm::Lattice,
         };
         let n = network(&[Stage::AllPass(Inline::from_slice(&[ap, ap]).unwrap())]);
         let t = n.tail(Db(-60.0)).seconds().unwrap().get();
@@ -540,19 +704,19 @@ mod tests {
     #[test]
     fn a_one_pole_has_its_gain_at_dc_a_quarter_rate_and_nyquist() {
         let a = Absorption::OnePole {
-            gain: 0.8,
+            gain: Amplitude(0.8),
             damp: 0.5,
         };
-        assert!((a.gain(Band::Low) - 0.8).abs() < 1e-7);
-        assert!((a.gain(Band::Mid) - 0.8 * 0.5 / 1.25f32.sqrt()).abs() < 1e-6);
-        assert!((a.gain(Band::High) - 0.8 * 0.5 / 1.5).abs() < 1e-6);
+        assert!((a.gain(Band::Low).get() - 0.8).abs() < 1e-7);
+        assert!((a.gain(Band::Mid).get() - 0.8 * 0.5 / 1.25f32.sqrt()).abs() < 1e-6);
+        assert!((a.gain(Band::High).get() - 0.8 * 0.5 / 1.5).abs() < 1e-6);
         let b = Absorption::Bands {
-            low: 0.9,
-            mid: 0.8,
-            high: 0.7,
+            low: Amplitude(0.9),
+            mid: Amplitude(0.8),
+            high: Amplitude(0.7),
             crossover: [tutti_types::Hz(200.0), tutti_types::Hz(2000.0)],
         };
-        assert_eq!(Band::ALL.map(|x| b.gain(x)), [0.9, 0.8, 0.7]);
+        assert_eq!(Band::ALL.map(|x| b.gain(x)), [0.9, 0.8, 0.7].map(Amplitude));
         let from = Absorption::from_rt60(
             [Seconds(2.0), Seconds(1.0), Seconds(0.5)],
             [tutti_types::Hz(200.0), tutti_types::Hz(2000.0)],
@@ -575,6 +739,7 @@ mod tests {
             delay: 100.0,
             gain: 0.5,
             modulation: Modulation::NONE,
+            form: AllPassForm::Lattice,
         };
         assert_eq!(ap.low_frequency_delay(), 300.0);
         assert_eq!(
@@ -582,7 +747,7 @@ mod tests {
             f32::INFINITY
         );
         let g = 0.9;
-        let plain = line(1000.0, Absorption::Gain(g));
+        let plain = line(1000.0, Absorption::Gain(Amplitude(g)));
         let nested = Line {
             diffuser: Some(ap),
             ..plain
@@ -610,8 +775,8 @@ mod tests {
         let stable = |lines: &[Line], m| network(&[Stage::Fdn(fdn(lines, m))]).is_stable();
         let two = |g| {
             [
-                line(100.0, Absorption::Gain(g)),
-                line(130.0, Absorption::Gain(g)),
+                line(100.0, Absorption::Gain(Amplitude(g))),
+                line(130.0, Absorption::Gain(Amplitude(g))),
             ]
         };
         for m in [Matrix::Diagonal, Matrix::Householder, Matrix::Hadamard] {
@@ -619,9 +784,9 @@ mod tests {
             assert!(!stable(&two(1.01), m));
         }
         let low_only = Absorption::Bands {
-            low: 1.0,
-            mid: 0.9,
-            high: 0.9,
+            low: Amplitude(1.0),
+            mid: Amplitude(0.9),
+            high: Amplitude(0.9),
             crossover: [tutti_types::Hz(200.0), tutti_types::Hz(2000.0)],
         };
         let n = network(&[Stage::Fdn(fdn(
@@ -630,7 +795,7 @@ mod tests {
         ))]);
         assert!(!n.is_stable() && !n.is_lossless());
         assert_eq!(n.tail(Db(-60.0)), Ring::Unbounded);
-        let three = [100.0, 130.0, 170.0].map(|m| line(m, Absorption::Gain(0.5)));
+        let three = [100.0, 130.0, 170.0].map(|m| line(m, Absorption::Gain(Amplitude(0.5))));
         assert!(!stable(&three, Matrix::Hadamard));
         assert!(stable(&three, Matrix::Householder));
         assert!(!stable(
@@ -649,11 +814,11 @@ mod tests {
         let dense_big = Matrix::Dense(Inline::from_slice(&[0.0, 2.0, 2.0, 0.0]).unwrap());
         assert!(!stable(&two(0.6), dense_big));
         assert!(!stable(
-            &[line(100.0, Absorption::Gain(-0.5))],
+            &[line(100.0, Absorption::Gain(Amplitude(-0.5)))],
             Matrix::Diagonal
         ));
         assert!(!stable(
-            &[line(100.0, Absorption::Gain(f32::NAN))],
+            &[line(100.0, Absorption::Gain(Amplitude(f32::NAN)))],
             Matrix::Diagonal
         ));
         let ap = |gain| {
@@ -662,6 +827,7 @@ mod tests {
                     delay: 10.0,
                     gain,
                     modulation: Modulation::NONE,
+                    form: AllPassForm::Lattice,
                 }])
                 .unwrap(),
             )])
@@ -676,7 +842,7 @@ mod tests {
     /// fails the last assertion.
     #[test]
     fn a_lossless_loop_is_marginally_stable_with_an_unbounded_tail() {
-        let one = Absorption::Gain(1.0);
+        let one = Absorption::Gain(Amplitude(1.0));
         let frozen = network(&[Stage::Fdn(fdn(
             &[line(100.0, one), line(130.0, one)],
             Matrix::Hadamard,
@@ -685,9 +851,9 @@ mod tests {
         assert_eq!(frozen.tail(Db(-60.0)), Ring::Unbounded);
         assert_eq!(frozen.rt60(Band::Mid).get(), f32::INFINITY);
         let almost = Absorption::Bands {
-            low: 1.0,
-            mid: 1.0,
-            high: 0.999,
+            low: Amplitude(1.0),
+            mid: Amplitude(1.0),
+            high: Amplitude(0.999),
             crossover: [tutti_types::Hz(200.0), tutti_types::Hz(2000.0)],
         };
         let n = network(&[Stage::Fdn(fdn(
@@ -712,8 +878,8 @@ mod tests {
     fn the_densities_are_the_modes_per_hertz_and_the_echoes_per_second() {
         let slow = SampleRate(1_000.0);
         let ls = [
-            line(10.0, Absorption::Gain(0.5)),
-            line(20.0, Absorption::Gain(0.5)),
+            line(10.0, Absorption::Gain(Amplitude(0.5))),
+            line(20.0, Absorption::Gain(Amplitude(0.5))),
         ];
         let mut diag = Network::new(slow);
         diag.stages
@@ -784,8 +950,9 @@ mod tests {
     /// The shortest path: a series all-pass has a direct term, a tap or a line
     /// its delay, the pre-delay adds; a network with no path has none to find.
     ///
-    /// Mutation (run): `Stage::AllPass(_) => 0.0` -> `a.delay` fails the
-    /// all-pass cases.
+    /// Mutations (run): treating every all-pass as direct (`has_direct_term`
+    /// true) fails the lattice-at-zero row; treating none as direct (`a.delay`)
+    /// fails the all-pass-only case.
     #[test]
     fn the_shortest_path_decides_the_direct_path() {
         let ap = Stage::AllPass(
@@ -793,16 +960,36 @@ mod tests {
                 delay: 100.0,
                 gain: 0.5,
                 modulation: Modulation::NONE,
+                form: AllPassForm::Lattice,
             }])
             .unwrap(),
         );
         assert!(network(std::slice::from_ref(&ap)).has_direct_path());
-        let comb = Stage::Fdn(fdn(&[line(100.0, Absorption::Gain(0.5))], Matrix::Diagonal));
+        let comb = Stage::Fdn(fdn(
+            &[line(100.0, Absorption::Gain(Amplitude(0.5)))],
+            Matrix::Diagonal,
+        ));
         let mut n = network(&[comb.clone(), ap]);
         assert_eq!(n.min_delay(), 100.0);
         assert!(!n.has_direct_path());
-        n.pre_delay = 20.0;
+        n.pre_delay = Samples(20);
         assert_eq!(n.min_delay(), 120.0);
+        // A lattice at g = 0 is a plain delay, no direct path; Freeverb's form
+        // keeps its -1 at g = 0 and is direct.
+        let plain = |form| {
+            Stage::AllPass(
+                Inline::from_slice(&[AllPass {
+                    delay: 100.0,
+                    gain: 0.0,
+                    modulation: Modulation::NONE,
+                    form,
+                }])
+                .unwrap(),
+            )
+        };
+        assert_eq!(network(&[plain(AllPassForm::Lattice)]).min_delay(), 100.0);
+        assert!(!network(&[plain(AllPassForm::Lattice)]).has_direct_path());
+        assert!(network(&[plain(AllPassForm::Freeverb)]).has_direct_path());
         let tap = |d| {
             Stage::Taps(Taps {
                 taps: Inline::from_slice(&[Tap {
@@ -829,7 +1016,7 @@ mod tests {
     /// matching row of the loop.
     #[test]
     fn a_bound_dominates_only_when_every_figure_does() {
-        let g = Absorption::Gain(0.5);
+        let g = Absorption::Gain(Amplitude(0.5));
         let mut f = fdn(
             &[
                 line(100.0, g),
@@ -845,10 +1032,10 @@ mod tests {
         );
         f.output.rows.push(Gains::filled(1.0, 2).unwrap()).unwrap();
         let mut n = network(&[Stage::Fdn(f)]);
-        n.pre_delay = 10.0;
+        n.pre_delay = Samples(10);
         let b = Bounds::of(&n, Db(-60.0));
         assert_eq!((b.lines, b.stages, b.taps, b.outputs), (2, 1, 0, 1));
-        assert_eq!((b.line, b.delay, b.pre_delay), (202.0, 302.0, 10.0));
+        assert_eq!((b.line, b.delay, b.pre_delay), (202.0, 302.0, Samples(10)));
         assert!(b.dominates(&b));
         let smaller: [fn(&mut Bounds); 8] = [
             |b| b.lines -= 1,
@@ -856,7 +1043,7 @@ mod tests {
             |b| b.outputs -= 1,
             |b| b.line -= 1.0,
             |b| b.delay -= 1.0,
-            |b| b.pre_delay -= 1.0,
+            |b| b.pre_delay = Samples(b.pre_delay.get() - 1),
             |b| b.tail = Ring::Finite(Seconds(0.0)),
             |b| b.ir = Samples::ZERO,
         ];
@@ -875,5 +1062,268 @@ mod tests {
             assert!(!small.dominates(big), "row {i}");
         }
         assert!(!b.dominates(&with_taps_and_ir), "taps");
+    }
+
+    fn one_pole(gain: f32, damp: f32) -> Absorption {
+        Absorption::OnePole {
+            gain: Amplitude(gain),
+            damp,
+        }
+    }
+
+    /// A one-pole whose pole is at or past the unit circle (or not a number)
+    /// has no response and is not stable, whatever its DC gain: the three-point
+    /// read of `|H|` alone would call `damp = 2.0` fine. A pole in
+    /// `(-1, 0)` is valid but peaks above its gain at Nyquist, which counts.
+    ///
+    /// Mutations (run): the whole `|damp| < 1` guard in `Absorption::gain`
+    /// replaced by `false` makes `damp = 2.0` read as a filter and fails here
+    /// and in the contract's hostile case; `.abs()` dropped from it fails the
+    /// `-2.0` row; `(1.0 + d)` read as `(1.0 - d)` in the High response fails
+    /// the `-0.5` row.
+    #[test]
+    fn a_one_pole_outside_the_unit_circle_is_not_stable() {
+        let stable = |a| {
+            network(&[Stage::Fdn(fdn(
+                &[line(100.0, a), line(130.0, a)],
+                Matrix::Hadamard,
+            ))])
+            .is_stable()
+        };
+        for damp in [
+            2.0,
+            -2.0,
+            1.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            let a = one_pole(0.9, damp);
+            for band in Band::ALL {
+                assert_eq!(a.gain(band).get(), f32::INFINITY, "damp {damp}");
+            }
+            assert!(!stable(a), "damp {damp}");
+            let n = network(&[Stage::Fdn(fdn(&[line(100.0, a)], Matrix::Diagonal))]);
+            assert_eq!(n.rt60_bound(Band::Mid).get(), f32::INFINITY);
+            assert_eq!(n.tail(Db(-60.0)), Ring::Unbounded);
+        }
+        // A valid low-pass pole is stable; a valid negative pole at gain 0.9
+        // reads 0.9 * 1.5 / 0.5 = 2.7 at Nyquist and is not.
+        assert!(stable(one_pole(0.9, 0.5)));
+        let high = one_pole(0.9, -0.5).gain(Band::High).get();
+        assert!((high - 2.7).abs() < 1e-5, "{high}");
+        assert!(!stable(one_pole(0.9, -0.5)));
+    }
+
+    /// A line must have a finite, positive length: a delay-free loop (length 0),
+    /// a negative or non-finite one, or a non-finite modulation depth is not
+    /// stable and not lossless, even at a gain of 1 under an orthogonal matrix.
+    ///
+    /// Mutation (run): dropping `l.length > 0.0` from `lines_hold` makes the 0
+    /// row stable and fails; `is_finite` replaced by `true` fails the infinity
+    /// row; dropping the depth test fails the first row.
+    #[test]
+    fn a_line_without_a_finite_positive_length_is_not_stable() {
+        let mut modulated = line(100.0, Absorption::Gain(Amplitude(0.5)));
+        modulated.modulation.depth = f32::NAN;
+        let mut lines = vec![modulated];
+        for length in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+            lines.push(line(length, Absorption::Gain(Amplitude(0.5))));
+        }
+        for l in lines {
+            for gain in [0.5, 1.0] {
+                let l = Line {
+                    absorption: Absorption::Gain(Amplitude(gain)),
+                    ..l
+                };
+                let f = fdn(
+                    &[l, line(130.0, Absorption::Gain(Amplitude(gain)))],
+                    Matrix::Hadamard,
+                );
+                assert!(!f.is_stable() && !f.is_lossless(), "{l:?} at {gain}");
+            }
+        }
+        let ok = fdn(
+            &[line(1.0, Absorption::Gain(Amplitude(0.5)))],
+            Matrix::Diagonal,
+        );
+        assert!(ok.is_stable(), "one frame is a loop");
+    }
+
+    /// The orthogonality tolerance is sound. A circulant `1.0000045 I` of 16
+    /// lines has `A Aᵀ - I` entries of 9e-6: loose enough to pass for
+    /// orthogonal at a tolerance of 1e-5, which would let a gain of `1 - 2e-6`
+    /// (not lossless) through although the loop gain is `1 + 2.5e-6`. At 1e-6 it
+    /// is not orthogonal, the Frobenius bound (`4 g` here) applies, and it is
+    /// refused. The bound folded into the test is a bound: for a nearly
+    /// orthogonal matrix it is at least the true norm, and exactly 1 for an
+    /// exactly orthogonal one.
+    ///
+    /// Mutations (run): `ORTHOGONAL_TOLERANCE` 1e-6 -> 1e-5 fails the first
+    /// assertion; `norm_bound` returning 1.0 for an orthogonal matrix fails the
+    /// bound assertion; dropping `n * e` from the `sqrt` fails the same.
+    #[test]
+    fn the_orthogonality_tolerance_cannot_let_a_growing_loop_through() {
+        let scaled = |c0: f32, n: usize| {
+            let mut row = Gains::filled(0.0, n).unwrap();
+            row.as_mut_slice()[0] = c0;
+            let lines: Vec<Line> = (0..n)
+                .map(|i| line(100.0 + i as f32, Absorption::Gain(Amplitude(1.0 - 2e-6))))
+                .collect();
+            fdn(&lines, Matrix::Circulant(row))
+        };
+        let loose = scaled(1.000_004_5, 16);
+        assert!(!loose.orthogonal());
+        assert!(
+            !loose.is_stable(),
+            "g = 1 - 2e-6 times norm 1.0000045 grows"
+        );
+        let exact = scaled(1.0, 64);
+        assert!(exact.orthogonal() && exact.is_stable());
+        assert_eq!(exact.norm_bound(), 1.0);
+        // Nearly orthogonal: c = [1 + e/2, e/2] has norm a + b = 1 + e exactly.
+        let eta = 9e-7f32;
+        let near = fdn(
+            &[
+                line(100.0, Absorption::Gain(Amplitude(0.5))),
+                line(130.0, Absorption::Gain(Amplitude(0.5))),
+            ],
+            Matrix::Circulant(Inline::from_slice(&[1.0 + eta / 2.0, eta / 2.0]).unwrap()),
+        );
+        let Matrix::Circulant(c) = &near.matrix else {
+            unreachable!()
+        };
+        let truth = f64::from(c[0]) + f64::from(c[1]);
+        assert!(near.orthogonal());
+        assert!(
+            near.norm_bound() >= truth,
+            "{} < {truth}",
+            near.norm_bound()
+        );
+        assert!(near.norm_bound() > 1.0);
+    }
+
+    /// For a mixing matrix with unequal lines the length-weighted RT60 is a
+    /// mean and undercuts the true decay, and the tail must not. Two lines of
+    /// 40 and 70 frames at 1 kHz, set for RT60 3 s and 1 s under a Hadamard
+    /// matrix: the estimate is `110 / (40/3 + 70)` = 1.32 s, the slowest line's
+    /// bound 3 s, and the state of the equations (simulated here, in `f64`)
+    /// last exceeds 1e-3 of its start at about 1.9 s: after the estimate, inside
+    /// the tail. For a diagonal matrix the bound equals the exact RT60.
+    ///
+    /// Mutations (run): `tail` reading `Fdn::rt60` for `rt60_bound` gives a tail
+    /// of 1.39 s and fails the coverage assertion; `f64::max` -> `f64::min` in
+    /// `slowest` takes the faster line (1 s) and fails the bound figure.
+    #[test]
+    fn the_tail_covers_a_mixing_network_whose_lines_decay_differently() {
+        let rate = SampleRate(1_000.0);
+        let lines = [(40.0f32, 3.0f32), (70.0, 1.0)]
+            .map(|(m, t)| line(m, Absorption::Gain(loop_gain(m, Seconds(t), rate))));
+        let mut mixed = Network::new(rate);
+        mixed
+            .stages
+            .push(Stage::Fdn(fdn(&lines, Matrix::Hadamard)))
+            .unwrap();
+        let estimate = mixed.rt60(Band::Mid).get();
+        assert!((estimate - 1.32).abs() < 1e-3, "{estimate}");
+        assert!((mixed.rt60_bound(Band::Mid).get() - 3.0).abs() < 1e-3);
+        let Ring::Finite(tail) = mixed.tail(Db(-60.0)) else {
+            panic!("finite")
+        };
+        assert!((tail.get() - (0.07 + 3.0)).abs() < 1e-3, "{tail:?}");
+
+        // The equations, run: Hadamard (1/sqrt 2 [[1, 1], [1, -1]]) over two
+        // shift registers, gain at the exit, an impulse in the first line.
+        let g: Vec<f64> = lines
+            .iter()
+            .map(|l| f64::from(l.absorption.gain(Band::Mid).get()))
+            .collect();
+        let mut regs = [vec![0.0f64; 40], vec![0.0f64; 70]];
+        regs[0][0] = 1.0;
+        let energy = |r: &[Vec<f64>; 2]| r.iter().flatten().map(|x| x * x).sum::<f64>();
+        let start = energy(&regs);
+        let mut last_above = 0usize;
+        for t in 1..20_000usize {
+            let y = [regs[0].pop().unwrap() * g[0], regs[1].pop().unwrap() * g[1]];
+            let h = std::f64::consts::FRAC_1_SQRT_2;
+            regs[0].insert(0, h * (y[0] + y[1]));
+            regs[1].insert(0, h * (y[0] - y[1]));
+            if (energy(&regs) / start).sqrt() > 1e-3 {
+                last_above = t;
+            }
+        }
+        let actual = last_above as f32 / 1_000.0;
+        assert!(
+            actual > estimate,
+            "the estimate {estimate} s undercuts the {actual} s the state needs"
+        );
+        assert!(
+            actual <= tail.get(),
+            "the tail {tail:?} must cover {actual} s"
+        );
+
+        let mut diagonal = Network::new(rate);
+        diagonal
+            .stages
+            .push(Stage::Fdn(fdn(&lines, Matrix::Diagonal)))
+            .unwrap();
+        assert!(
+            (diagonal.rt60_bound(Band::Mid).get() - diagonal.rt60(Band::Mid).get()).abs() < 1e-4
+        );
+    }
+
+    /// A measured-orthogonal matrix has a norm bound just above 1, and the
+    /// lag of the proof grows by `(m-1) log σ / -log(σρ)` frames; a structured
+    /// one has none.
+    ///
+    /// Mutation (run): `lag_extra_frames` returning 0 fails the circulant row.
+    #[test]
+    fn a_nearly_orthogonal_matrix_adds_a_lag_a_structured_one_does_not() {
+        let g = Absorption::Gain(Amplitude(0.9));
+        let lines = [line(100.0, g), line(130.0, g)];
+        let structured = fdn(&lines, Matrix::Householder);
+        assert_eq!(structured.lag_extra_frames(Band::Mid), 0.0);
+        let c = Matrix::Circulant(Inline::from_slice(&[1.000_000_2, 0.0]).unwrap());
+        let near = fdn(&lines, c);
+        assert!(near.orthogonal() && near.lag_extra_frames(Band::Mid) > 0.0);
+        assert!(
+            near.rt60_bound(Band::Mid, 48_000.0).get()
+                > structured.rt60_bound(Band::Mid, 48_000.0).get()
+        );
+    }
+
+    /// A nested all-pass must be a lattice with `|g| < 1` for the loop analysis:
+    /// a Freeverb-form one (not unit magnitude) or `|g| >= 1` makes the line
+    /// unstable and not lossless, and a lattice adds its group delay without
+    /// loss.
+    ///
+    /// Mutation (run): dropping `d.form == AllPassForm::Lattice` from
+    /// `lines_hold` makes the Freeverb row stable and fails.
+    #[test]
+    fn only_a_lattice_diffuser_is_inside_the_analysis() {
+        let nested = |form, gain| Line {
+            diffuser: Some(AllPass {
+                delay: 20.0,
+                gain,
+                modulation: Modulation::NONE,
+                form,
+            }),
+            ..line(100.0, Absorption::Gain(Amplitude(1.0)))
+        };
+        let f = |l| {
+            fdn(
+                &[l, line(130.0, Absorption::Gain(Amplitude(1.0)))],
+                Matrix::Hadamard,
+            )
+        };
+        assert!(f(nested(AllPassForm::Lattice, 0.5)).is_lossless());
+        assert!(f(nested(AllPassForm::Lattice, 0.5)).is_stable());
+        for l in [
+            nested(AllPassForm::Freeverb, 0.5),
+            nested(AllPassForm::Lattice, 1.0),
+        ] {
+            assert!(!f(l).is_stable() && !f(l).is_lossless(), "{l:?}");
+        }
     }
 }

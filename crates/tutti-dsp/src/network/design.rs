@@ -1,34 +1,67 @@
 //! [`Design`]: the pure half of a reverb algorithm, and [`Bounds`], its worst
 //! case.
 
-use tutti_types::{Db, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, Db, SampleRate, Samples, Seconds};
 
-use super::{Network, Ring, Stage};
+use super::{Kernel, Network, Ring, Stage};
 
-/// The pure half of a reverb algorithm (design 022 section 4): its controls and
-/// the function from controls to a [`Network`].
+/// The channel widths a [`Design`] is made for: what its node's ports and its
+/// kernel's [`Setup`](super::Setup) are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Channels {
+    /// The input width.
+    pub input: ChannelLayout,
+    /// The output width.
+    pub output: ChannelLayout,
+}
+
+/// An algorithm of reverb (design 022 section 4): its controls, the function
+/// from controls to a [`Network`], and the [`Kernel`] that runs the sound.
 ///
-/// A `Design` holds no audio, no state and no graph type. The algorithm's
-/// kernel (design 022 step 1b: `type Kernel`, `fn kernel`, `prepare`,
-/// `retarget`, `process`) runs the sound; the network is the description it is
-/// held to, and nothing here forces a runtime shape on it.
+/// The pure half is [`design_into`](Self::design_into) and
+/// [`bounds`](Self::bounds): no audio, no state and no graph type. The network
+/// is the description the kernel is held to ([`Kernel::retarget`] reads it, and
+/// the kernel contract measures the kernel against its queries); nothing here
+/// forces a runtime shape on the kernel.
 pub trait Design: Clone + Send {
     /// Plain values in tutti units, one struct per algorithm.
     type Controls: Copy + PartialEq + Send;
 
-    /// The network for `controls` at `rate`.
+    /// What runs this design's networks.
+    type Kernel: Kernel;
+
+    /// The widths of the signal this design takes and gives.
+    fn channels(&self) -> Channels;
+
+    /// Writes the network for `controls` at `rate` into `out`, replacing all of
+    /// it.
     ///
     /// Pure and allocation-free: the same controls give the same network, with
-    /// no clock, no state and no heap. A [`Network`] is large (about 56 KB), a
-    /// control-side value, so call this off the audio thread. Total: a control outside its range is
-    /// clamped and a non-finite one takes the algorithm's default, so the
-    /// network is always one the algorithm can run.
-    fn design(&self, controls: &Self::Controls, rate: SampleRate) -> Network;
+    /// no clock, no state and no heap. It writes **in place** because a
+    /// [`Network`] is about 56 KB, too large to build as a value on an audio
+    /// thread (whose stack may be 512 KB); a node designs into a network it
+    /// owns, and the implementation pushes into `out` without building a
+    /// whole one. Total: a control outside its range is clamped and a
+    /// non-finite one takes the algorithm's default, so the network is always
+    /// one the algorithm can run.
+    fn design_into(&self, controls: &Self::Controls, rate: SampleRate, out: &mut Network);
 
-    /// The worst case of [`design`](Self::design) over the controls' declared
-    /// ranges (and the ceilings in `ceiling`): what a kernel allocates for and
-    /// what the node declares as its tail ceiling.
+    /// The network for `controls` at `rate`, as a value: a test, a UI and the
+    /// control side call this; an audio thread calls
+    /// [`design_into`](Self::design_into).
+    fn design(&self, controls: &Self::Controls, rate: SampleRate) -> Network {
+        let mut network = Network::new(rate);
+        self.design_into(controls, rate, &mut network);
+        network
+    }
+
+    /// The worst case of [`design_into`](Self::design_into) over the controls'
+    /// declared ranges (and the ceilings in `ceiling`): what a kernel allocates
+    /// for and what the node declares as its tail ceiling.
     fn bounds(&self, ceiling: &Ceiling) -> Bounds;
+
+    /// An unprepared kernel for this design. Control side; allocates.
+    fn kernel(&self) -> Self::Kernel;
 }
 
 /// The limits a node builds a reverb to: the rate, the longest decay a control

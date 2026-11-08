@@ -32,7 +32,7 @@
 //! - Modulation effects: [`ModDelayNode`] ([`ModDelayConfig`]) and
 //!   [`PhaserNode`]; [`DistortionNode`] with [`ShapeKind`].
 //! - Modulation sources: [`LfoNode`] and [`ModulatorNode`], over a
-//!   [`Modulator`] (an LFO's is `tutti-mod`'s [`Wave`]).
+//!   [`Modulator`] (an LFO's is `tutti-modulation`'s [`Wave`]).
 //! - Signal-driven modulation sources (design doc 014 §6), feeding a
 //!   control lane's event input: [`EnvelopeFollowerNode`] and
 //!   [`NoteEnvelopeNode`].
@@ -64,7 +64,7 @@ pub use tutti_types::{
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /
 // controls surface a host drives them through, and the Bevy-free modulation
 // reconciler (`Modulation`) that builds this crate's lanes and signal nodes
-// from `tutti_mod` declarations. DAW-param ECS policy — the shared param
+// from `tutti_modulation` declarations. DAW-param ECS policy — the shared param
 // pool, node authoring markers, spawners, ECS reconcilers, deferred
 // convolver load — is the host's, and deliberately outside this workspace.
 
@@ -73,10 +73,10 @@ pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 
 mod lfo;
 // The `Modulator` trait the modulation node runs, and its impl for
-// `tutti-mod`'s `Wave` (the one wave function both tiers evaluate).
+// `tutti-modulation`'s `Wave` (the one wave function both tiers evaluate).
 mod modulator;
 // `LfoNode` is `ModulatorNode<Wave>` — the graph node over a pure
-// `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-mod` through
+// `Modulator`. `LfoShape` and `Wave` are re-exported from `tutti-modulation` through
 // `lfo`, so `use tutti_nodes::LfoShape` works.
 pub use lfo::{LFO_PARAMS, LfoMode, LfoNode, LfoShape, ModulatorNode, Wave};
 pub use modulator::Modulator;
@@ -133,7 +133,7 @@ pub use reverb::ReverbNode;
 mod modulation;
 pub use modulation::{MOD_DELAY_PARAMS, ModDelayConfig, ModDelayNode, PHASER_PARAMS, PhaserNode};
 
-// The signal-driven sources a `tutti_mod::compile` declaration describes
+// The signal-driven sources a `tutti_modulation::compile` declaration describes
 // (`SourceNode`): nodes that send a raw value into control lanes.
 mod signal;
 pub use signal::{
@@ -143,7 +143,7 @@ pub use signal::{
 // The reconcile step (doc 014 §8.2): declarations compiled and applied to
 // an `Editor` as lanes, signal-source nodes and edges, with no Bevy. It
 // lives here because this crate owns the lane and the signal nodes and
-// already names `tutti-mod` and `tutti-graph`.
+// already names `tutti-modulation` and `tutti-graph`.
 mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 

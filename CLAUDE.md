@@ -206,7 +206,7 @@ just test-all                      # both
   `alsa-lib-devel pkgconf-pkg-config`). Without them the build fails in
   `alsa-sys`'s build script.
 - **Bevy-free floor:** three engine crates have an optional, off-by-default
-  `bevy` feature (`tutti-types`, `tutti-mod`, `tutti-sampler`); the
+  `bevy` feature (`tutti-types`, `tutti-modulation`, `tutti-sampler`); the
   rest have none, and `tutti-session`, `tutti-graph`, `tutti-ump`, `tutti-io`
   and `tutti-codec` must never grow one (`WaveAsset`, the Bevy wrapper of a
   decoded `Wave`, is `bevy-tutti`'s). `bevy-tutti` is the only crate that
@@ -316,7 +316,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  `PrerollTable`, `MAX_ROOT_CHANNELS`; `Engine` renders it
   tutti-dsp      pure algorithms over slices: the real FFT, analyzers, filters,
                  dynamics, convolver, delay lines, waveshapers
-  tutti-mod      modulation compiler
+  tutti-modulation modulation compiler
   tutti-transport `Transport`, the motion state machine, timed commands, the
                  offline timeline, `ProjectMeter`
   tutti-metering `LoadMeter` (level meters are plan ops: `tutti-graph`'s `MeterReader`)
@@ -352,7 +352,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 
 0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`
-2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
+2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-midi-types`, `tutti-metering`,
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
@@ -824,8 +824,8 @@ read the `Cargo.toml`, grep for the type, run the probe.
   the master meter is now a plan op, `Editor::open_meter`) and `tutti-engine` (`Engine`; `MAX_ROOT_CHANNELS`
   is `tutti-graph`'s), `tutti-node` and `fundsp-tutti` →
   deleted (the node contract is `tutti_graph::Node`; the filters' `Real` is
-  `tutti-nodes`'), and tutti-mod's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
-  `modulation::legacy`) → deleted (doc 014 §10: `tutti_mod::compile` and
+  `tutti-nodes`'), `tutti-mod` → `tutti-modulation` (renamed: "mod" is unclear), and tutti-modulation's runtime (`ModMatrix`, `ModParams`, `ParamFrom`,
+  `modulation::legacy`) → deleted (doc 014 §10: `tutti_modulation::compile` and
   a `ControlLaneNode` per param). A comment or doc that disagrees with the
   code is the bug.
 - **MSVC render gate:** `render_is_bit_identical_to_the_audionode_era` is

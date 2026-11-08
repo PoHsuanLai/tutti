@@ -23,8 +23,8 @@ use tutti_graph::{
     Cx, Editor, EventOut, Executor, Io, Node, Offset, ParamIn, Prepare, Shape, Status, Transport,
     TransportChanges, Unforkable,
 };
-use tutti_mod::ControlProgram;
-use tutti_mod::Curve;
+use tutti_modulation::ControlProgram;
+use tutti_modulation::Curve;
 use tutti_nodes::automation::{CONTROL_STEP, ControlLaneNode};
 use tutti_types::graph::{OutPort, Source};
 use tutti_types::{

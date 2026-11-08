@@ -62,7 +62,7 @@ members = [
     # `DeviceTable`. Depends on no workspace crate.
     "crates/tutti-midi-device",
     "crates/tutti-graph",
-    "crates/tutti-mod",
+    "crates/tutti-modulation",
     "crates/tutti-export",
     "crates/tutti-io",
     "crates/tutti-alsa-ump-sys",
@@ -237,5 +237,5 @@ strip = "none"
 
 # NOTE: no `[patch.crates-io]` here. `audio-automation` is a direct git dep in
 # this workspace's `[workspace.dependencies]`, inherited by the four members that
-# use it (tutti-mod, tutti-nodes, tutti-plugin, tutti-plugin-types), so no
+# use it (tutti-modulation, tutti-nodes, tutti-plugin, tutti-plugin-types), so no
 # crates.io reference survives to redirect.

@@ -18,7 +18,7 @@
 
 use tutti_graph::Harmony;
 use tutti_midi_runtime::{HarmonyNode, TimedHarmony};
-use tutti_mod::{
+use tutti_modulation::{
     Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity, Wave,
 };
 use tutti_nodes::automation::ControlLaneNode;

@@ -23,15 +23,15 @@ mod control_lane;
 mod lane;
 mod recording;
 
-// The `Curve` trait (beat → value) lives in tutti-mod — modulation depends on it
-// and tutti-nodes already depends on tutti-mod, so the trait is homed there and
+// The `Curve` trait (beat → value) lives in tutti-modulation — modulation depends on it
+// and tutti-nodes already depends on tutti-modulation, so the trait is homed there and
 // re-exported here for the automation consumers.
 #[doc(hidden)]
 pub use control_lane::LaneProbe;
 pub use control_lane::{CONTROL_STEP, ControlLaneNode, LANE_EVENT_CAPACITY, LaneControls};
 pub use lane::{AutomationLaneNode, LiveAutomationLane, segment_shape};
 pub use recording::{RecordMode, Recorder, RecordingConfig};
-pub use tutti_mod::Curve;
+pub use tutti_modulation::Curve;
 
 pub use audio_automation::{
     AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,

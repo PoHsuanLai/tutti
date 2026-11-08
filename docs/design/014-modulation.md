@@ -13,7 +13,7 @@ All file references are to `main` at `8ae55f4b`.
 - **One value rule:** `value = clamp((automation(t) if the target's lane has
   automation, else knob) + Σ modulation offsets(t), range)`. Automation
   replaces the knob; modulation adds.
-- **The API compiles; a node evaluates.** `tutti-mod` compiles sources and
+- **The API compiles; a node evaluates.** `tutti-modulation` compiles sources and
   routes into one **control program** per target, published through
   `ArcLend`. A **control lane node** reads it once per block and sends
   `ParamSegment`s to a native param port or a hosted plugin's parameter.
@@ -38,14 +38,14 @@ runtime; at most it models "a value plus offsets, clamped", which is §2's
 shape. tutti modelled modulation twice, both times as an engine mechanism:
 the graph's fused step `clamp(base + Σ shape_j(source_j))`
 (`crates/core/tutti-graph/src/param.rs:11`), and a control-rate tier on
-Bevy's frame clock (`tutti-mod`'s `routing`, `bevy-tutti`'s driver, the
+Bevy's frame clock (`tutti-modulation`'s `routing`, `bevy-tutti`'s driver, the
 plugin path's `PluginAutomation`). Modulation that never reaches an export is the structural defect: a mechanism
 driven from outside the graph cannot be in a fork. The rest are second
 copies of something the graph already does.
 
 | Defect | Evidence |
 |---|---|
-| **Depth means different things per tier.** `PerFrame`/`PerBlock` scale by the span; `PerSample` does not. Ranged 0..10 at `Depth(0.5)` swings ±5 against ±0.5. | `crates/core/tutti-mod/src/driver.rs:335-339`, `curve_source.rs:182-184` against `crates/dsp/tutti-nodes/src/param_mod.rs:46-55`, `crates/bevy-tutti/src/modulation/audio_rate.rs:300-307` |
+| **Depth means different things per tier.** `PerFrame`/`PerBlock` scale by the span; `PerSample` does not. Ranged 0..10 at `Depth(0.5)` swings ±5 against ±0.5. | `crates/core/tutti-modulation/src/driver.rs:335-339`, `curve_source.rs:182-184` against `crates/dsp/tutti-nodes/src/param_mod.rs:46-55`, `crates/bevy-tutti/src/modulation/audio_rate.rs:300-307` |
 | **A depth edit restarts every free LFO.** `Changed<ModRoute>` rebuilds every `Sourced` from phase 0. | `crates/bevy-tutti/src/modulation/source.rs:225-232`, `:305-331`; `driver.rs:1-6` |
 | **Control-rate and plugin modulation never reach an export.** A fork freezes a plugin target to its authored part; there is no offline driver. | `crates/plugin/tutti-plugin/src/host/node/param_automation_source.rs:336-353`; `crates/core/tutti-graph/src/controls.rs:14-27`; doc 013 lines 1193-1200 |
 | **Plugin delivery drops parameters past 16**, uncounted. | `crates/plugin/tutti-plugin/src/host/node/automation_node.rs:249-270`, `graph_node.rs:297`, `crates/plugin/tutti-plugin-types/src/automation.rs:175-178` |
@@ -55,7 +55,7 @@ copies of something the graph already does.
 | **Automation is an offset, not a value.** 200→2000 Hz under a 1000 Hz knob renders 1200→3000 Hz. | `param.rs:173-185`, `crates/dsp/tutti-nodes/src/automation/lane.rs:191-201` |
 | **Two writers; a rebuild reseeds the base** from `ModParamRange.base`. | `crates/bevy-tutti/src/modulation/driver.rs` (`rebuild`); `crates/bevy-tutti/src/graph/param.rs:147-174` |
 | **The per-sample source node goes stale and leaks.** | `audio_rate.rs:149-189` |
-| **The sum is order-dependent** (`Vec` insertion order). | `crates/core/tutti-mod/src/layered.rs` (`value_at`) |
+| **The sum is order-dependent** (`Vec` insertion order). | `crates/core/tutti-modulation/src/layered.rs` (`value_at`) |
 | **Two producers for one job** into a plugin input. | `automation_node.rs`, `lane.rs:203-210` |
 
 ## 2. The value rule
@@ -95,23 +95,23 @@ base(t)  = automation(t)  where the lane's automation has a value at t
 ## 3. Where things live
 
 Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
-`tutti-types`; `tutti-mod` names `tutti-types` and `audio-automation`;
-`tutti-nodes` names `tutti-mod` and `tutti-graph`; `tutti-plugin` names
-`tutti-nodes`; `bevy-tutti` names `tutti-mod` (optional) and `tutti-nodes`.
+`tutti-types`; `tutti-modulation` names `tutti-types` and `audio-automation`;
+`tutti-nodes` names `tutti-modulation` and `tutti-graph`; `tutti-plugin` names
+`tutti-nodes`; `bevy-tutti` names `tutti-modulation` (optional) and `tutti-nodes`.
 
 | Piece | Crate | Why there |
 |---|---|---|
-| `ControlProgram` and its evaluation | `tutti-mod`, ungated | The compiler produces it; it holds `Arc<dyn Curve>`, which is `tutti-mod`'s; `tutti-mod` cannot name `tutti-nodes`; `tutti-graph` models no modulation and names only `tutti-types` |
-| `Curve`, `CurveSegment` | `tutti-mod`, moved out of `routing` into the floor | Automation needs them without routing |
-| The compiler (`tutti_mod::compile`) | `tutti-mod`, ungated | Pure: no Bevy, no runtime |
+| `ControlProgram` and its evaluation | `tutti-modulation`, ungated | The compiler produces it; it holds `Arc<dyn Curve>`, which is `tutti-modulation`'s; `tutti-modulation` cannot name `tutti-nodes`; `tutti-graph` models no modulation and names only `tutti-types` |
+| `Curve`, `CurveSegment` | `tutti-modulation`, moved out of `routing` into the floor | Automation needs them without routing |
+| The compiler (`tutti_modulation::compile`) | `tutti-modulation`, ungated | Pure: no Bevy, no runtime |
 | `PlayReading` | `tutti-types` (re-exported as `tutti_graph::PlayReading`) | A value type: the compiler takes one (§7) and names no graph |
-| `Modulator` (implemented for `Wave`) | **`tutti-nodes`** (`ModulatorNode`, and `LfoNode` = `ModulatorNode<Wave>`) | The per-sample adapter is a runtime, and `tutti-mod` has none. The wave is `tutti-mod`'s: the node and the control lane evaluate one `Wave::raw_at`, a pure function of the unwrapped cycle position, so a beat-synced random LFO is one sequence at either rate, seekable and fork-safe. A free-running (Hz) node runs from its insert and does not restart at play, so it matches a lane's `Hz` clock (the play clock) only in frequency, seed and phase. (The node's former copies, `Lfo`, `SampleHold` and the sequential `RandomState`, are deleted.) |
+| `Modulator` (implemented for `Wave`) | **`tutti-nodes`** (`ModulatorNode`, and `LfoNode` = `ModulatorNode<Wave>`) | The per-sample adapter is a runtime, and `tutti-modulation` has none. The wave is `tutti-modulation`'s: the node and the control lane evaluate one `Wave::raw_at`, a pure function of the unwrapped cycle position, so a beat-synced random LFO is one sequence at either rate, seekable and fork-safe. A free-running (Hz) node runs from its insert and does not restart at play, so it matches a lane's `Hz` clock (the play clock) only in frequency, seed and phase. (The node's former copies, `Lfo`, `SampleHold` and the sequential `RandomState`, are deleted.) |
 | `ControlLaneNode`, `LaneControls`, `EnvelopeFollowerNode`, `NoteEnvelopeNode`, `CONTROL_STEP` | `tutti-nodes` (re-exported at the root) | Graph nodes; `tutti-nodes` owns the lane |
 | The play clock (`Env::play: PlayClock`, `Env::play_at`, `Cx::play_at`) | `tutti-graph` | Transport plumbing every lane reads the same (§4.3) |
 | A port's event source replaces its base | `tutti-graph` | The engine's one rule |
 | `PackedAtomic<ParamRange>` (one `AtomicU64`) | `PackedAtomic` in `tutti-rt`; `ParamRange` in `tutti-graph` | A plugin lane's own range; `ParamRanges` reuses it |
 | Plugin delivery | `tutti-plugin{,-types,-server}` | Where `ParameterChanges` is built, carried, applied |
-| The reconcile (`Modulation`, `ModHost`) | `tutti-nodes` (re-exported at the root), Bevy-free | It builds `tutti-nodes`' lanes and signal-source nodes and edits a plain `Editor`; a headless host needs it as much as an app. `tutti-nodes` already names `tutti-mod` and `tutti-graph`, and `bevy-tutti` names `tutti-nodes` |
+| The reconcile (`Modulation`, `ModHost`) | `tutti-nodes` (re-exported at the root), Bevy-free | It builds `tutti-nodes`' lanes and signal-source nodes and edits a plain `Editor`; a headless host needs it as much as an app. `tutti-nodes` already names `tutti-modulation` and `tutti-graph`, and `bevy-tutti` names `tutti-nodes` |
 | Declarations (`Mods`, `ModRange`, `ParamRef`) and their adapter onto `Modulation` | `bevy-tutti` (`modulation`) | The API: entities to keys, `ModHost` over `AudioNode`s |
 
 ## 4. The control program
@@ -119,7 +119,7 @@ Dependency facts, from each `Cargo.toml`: `tutti-graph` names only
 ### 4.1 The type
 
 ```rust
-// tutti-mod. Ungated; re-exported at the crate root.
+// tutti-modulation. Ungated; re-exported at the crate root.
 
 /// What one target's lane evaluates: a base, plus offsets. A description:
 /// no clock, no state; equal programs evaluate to equal bits. Values are
@@ -500,7 +500,7 @@ the play clock plus every corner.
 **Corners** (exact, whatever the step): an automation breakpoint; a
 square's edge, a saw's wrap, a random step; a triangle's peak; a drawn
 point; and **every zero crossing of a bipolar layer with a non-Linear
-curve**, because `shape()` curves `|x|` (`shape` in `crates/tutti-mod/src/shape.rs`):
+curve**, because `shape()` curves `|x|` (`shape` in `crates/tutti-modulation/src/shape.rs`):
 the offset `sign(x)·f(|x|)` is continuous at a crossing (every curve has
 `f(0) = 0`; `Elastic` by a special case, its formula's limit being about
 −5e-4) with the same slope either side, but where `f''(0) ≠ 0` its
@@ -745,7 +745,7 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     ChannelLayout)` (the width is the audio graph's, which the compiler
     does not see) and `NoteEnvelopeNode::from_decl(&SourceNode)`, each
     `None` for the other kind. They live in `tutti-nodes` because
-    `tutti-nodes` already names `tutti-mod` (§3), never the reverse.
+    `tutti-nodes` already names `tutti-modulation` (§3), never the reverse.
   - **Capacity**: 256 events each. A follower sends one piece per grid
     point, so a block past 8192 frames drops pieces; each later piece
     carries both its ends, so the next one sent is exact again.
@@ -775,10 +775,10 @@ fork lane's `LaneControls`, not the node's `ParamSet`.
     silent), and a note envelope is owed a resync (it sends the 0 it stands
     at).
 
-## 7. `tutti-mod` as a pure compiler
+## 7. `tutti-modulation` as a pure compiler
 
 ```rust
-// tutti-mod
+// tutti-modulation
 pub struct Declarations<'a> {
     pub sources: &'a [(SourceKey, Source)],
     pub routes: &'a [(RouteKey, RouteDecl)],
@@ -809,7 +809,7 @@ pub struct Adsr { pub attack: Seconds, pub decay: Seconds,
 pub enum RouteTarget { Param(TargetKey), Depth(RouteKey) }
 
 /// Named so it cannot collide with `routing`'s `Route`/`RouteTo` root
-/// exports (`crates/tutti-mod/src/lib.rs:45`) while both existed.
+/// exports (`crates/tutti-modulation/src/lib.rs:45`) while both existed.
 pub struct RouteDecl {
     pub source: SourceKey,
     /// A target param, or another route's depth (`depth_by`).
@@ -890,7 +890,7 @@ open:
   reads 0 until its next segment (§6, "A held note envelope reads 0"),
   which the reconcile's source-side resync closes.
   Tests: `a_reused_source_id_starts_from_nothing` (`tutti-nodes`) and
-  `a_signal_source_keeps_its_id` (`tutti-mod`).
+  `a_signal_source_keeps_its_id` (`tutti-modulation`).
 - **`layer_id(route, depth_by)`** is a fixed 64-bit mix of the keys; two
   layers of one target that collide are refused.
 
@@ -911,12 +911,12 @@ open:
   `LayerId` collision (`LayerIdCollision`). The cycle refusal is the
   reconcile's (§6).
 
-| Module (`crates/tutti-mod/src`) | Fate |
+| Module (`crates/tutti-modulation/src`) | Fate |
 |---|---|
 | `shape.rs` (`shape`, `LfoShape`, `Polarity`) | kept; `fold` deleted; `shape` evaluates its curve with `audio-automation`'s `CurveType::interpolate`, the editor's evaluation |
 | `curve.rs` | kept, moved into the floor |
 | `curve_source.rs` | `hash_bipolar` and the position-derived random moved into `Wave` (`program.rs`); the rest deleted |
-| `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-mod` with `routing`. `tutti-mod` keeps no runtime. |
+| `lfo.rs`, `modulator.rs` | **moved to `tutti-nodes`** (`tutti-nodes/src/modulator.rs`; `ModulatorNode` and `LfoNode` use them); deleted from `tutti-modulation` with `routing`. `tutti-modulation` keeps no runtime. |
 | new `program.rs`, `compile.rs` | §4, §7 |
 | `driver.rs`, `layered.rs`, `matrix.rs`, `mod_params.rs`, `param.rs`, `router.rs`, `routing.rs`, `target.rs`, `id.rs` | deleted, with the `routing` and `std` features and `dashmap`, `arc-swap`, `atomic_float` |
 
@@ -959,7 +959,7 @@ A route needs a `ModRange` on its target. The example is
   (no `base`); `Automation { target: ParamRef, curve: Arc<dyn Curve> }`.
   `ModDelivery`, `per_block`, `per_sample` and `ModParamRange.base` go.
 - **A custom source kind** implements `ModSourceKind::declare(&self) ->
-  tutti_mod::Source`.
+  tutti_modulation::Source`.
 
 ### 8.2 The reconcile step
 
@@ -1380,7 +1380,7 @@ from the parameter's current host value, along its shape, as points (doc
 | Crate | Deleted |
 |---|---|
 | `tutti-graph` | `ParamFrom::Audio`, so **`ParamFrom` collapses to `EventOut`** and `connect_param(at, from: EventOut)` loses its shaping; `ParamShaping`, `ShapeLut`, `SHAPE_LUT_LEN`; `ParamSource`; `MAX_PARAM_SOURCES` and the per-source arrays; `signature`'s source hashing; `GraphInvalid::TooManyParamSources`, `UnsortedParamSources`; `DelayKey::ParamAudio`; the `Σ` of the fused step (`param.rs:11`). **`ParamTap` and its seqlock** (`param.rs:930-1060`) and **the fork seeds** (`PendingFork::seeds`, `fork.rs:207`; `Editor::param_seeds`, `seed_params`, `editor.rs:1539-1633`): a fresh lane (a fork's) has nothing in flight and sends at its first frame (§5.6: a lane never re-sends at a block edge), so a fork's port needs no seed. The one user outside the lane path is a host's hand-wired event source. The requirement now: **a fresh (forked) instance sends its current value on its first block**; the lane meets it by sending whenever nothing is in flight. Two classes need more: (1) **ramp-based sources**: re-sending a `ParamRamp` restarts it, so re-send the in-flight move as `ParamSegment::resumed`, or the held value as a step; (2) **sources driven by live input that cannot be replayed** (MIDI CC or OSC bridges, UI-driven event nodes): a `ForkByClone` fork does not know the held value, so either write the target's `Param` cell (the knob, which a fork reads) instead of an event source, or capture the current value in the node's `ForkSource::gather`. `ParamSet::set_authored`, `authored`. |
-| `tutti-mod` | The `routing` feature and its items: `AtomicTarget`, `LayeredCurve`, `ModBus`, `ModRouter`, `ModEdge`, `ModRoutingSnapshot`, `ModRoutingTable`, `ModPreFrame`, `ErasedModulator`, `Sourced`, `SourceRate`, `Rate`, `SourceClock`, `ModParams`, `ModMatrix`, `Route`, `RouteTo`, `TargetHandle`, `ShapedCurve`, `EdgeShape`, `CurveModulator`, `BeatLfo`. Also the ungated `ModTarget`, `LayerKey`, `ModTargetId` and `fold`; the `std` feature; the `bevy` feature's implied `routing`. The README and the lib doctest are rewritten for the compiler. |
+| `tutti-modulation` | The `routing` feature and its items: `AtomicTarget`, `LayeredCurve`, `ModBus`, `ModRouter`, `ModEdge`, `ModRoutingSnapshot`, `ModRoutingTable`, `ModPreFrame`, `ErasedModulator`, `Sourced`, `SourceRate`, `Rate`, `SourceClock`, `ModParams`, `ModMatrix`, `Route`, `RouteTo`, `TargetHandle`, `ShapedCurve`, `EdgeShape`, `CurveModulator`, `BeatLfo`. Also the ungated `ModTarget`, `LayerKey`, `ModTargetId` and `fold`; the `std` feature; the `bevy` feature's implied `routing`. The README and the lib doctest are rewritten for the compiler. |
 | `tutti-nodes` | `ParamModShaping`; the re-exports at `lib.rs:93-95`; `AutomationLaneNode::for_param`/`for_foreign` (now `ControlLaneNode`'s). `AutomationLaneNode::new` (the audio lane) stays. |
 | `tutti-polysynth` | The `ModParams` impl's `AtomicTarget::with_mirror` (`polysynth.rs:1221`); its params are reached through `ParamSet` |
 | `tutti-plugin` | `PluginAutomation`, `AutomationControls`, `AUTOMATION_EVENT_CAPACITY`, `TimedParam`, `PluginParamTarget`, `LfoCurve`, `LfoOffset`, `OffsetCurve`, `stride_for`, `MAX_POINTS`; `PluginControls::automation`, `param_target`; `impl ModParams for PluginClient` (`host/node/mod.rs:650`) |
@@ -1409,9 +1409,9 @@ differences from it:
   node's cells, so a fork starts from the knob. The compiler's arrival and
   `tutti_types::latency::plan` both count a param port's source as a
   predecessor (`a_param_source_counts_toward_arrival_in_both_solves`).
-- **`tutti-mod`:** its runtime copies of `Lfo`, `Modulator`,
+- **`tutti-modulation`:** its runtime copies of `Lfo`, `Modulator`,
   `RandomState` and `SampleHold` went too (not in the table): `tutti-nodes`
-  holds the ones its nodes run, and `tutti-mod` has no
+  holds the ones its nodes run, and `tutti-modulation` has no
   runtime.
 - **`tutti-plugin`:** `MAX_POINTS`'s one remaining role, the room a
   delivery has before `prepare`, is `param_delivery`'s private
@@ -1579,7 +1579,7 @@ automation constructors and the lane's tests.
 **The lane** (branch `claude/control-lane-node`), without the signal
 sources:
 
-- `tutti_mod::ControlProgram` (§4.1) with layers, input layers, rate
+- `tutti_modulation::ControlProgram` (§4.1) with layers, input layers, rate
   anchors, `value_at` / `value_before` and `next_corner`; `Curve` and
   `CurveSegment` are ungated (no `routing` feature needed).
 - `tutti_nodes::automation::ControlLaneNode` and `LaneControls` (§5),
@@ -1642,7 +1642,7 @@ sources:
   program's own tests cover them as corners); and the plugin live ==
   export points at one chunk size, which is the adapter's test (§12.5).
 
-**Scope.** `ControlProgram` in `tutti-mod` with `Curve` in the floor;
+**Scope.** `ControlProgram` in `tutti-modulation` with `Curve` in the floor;
 the packed range cell in `tutti-types`; `Env::play: PlayClock`, `Env::play_at`,
 `Cx::play_at`, the play clock in `TransportHistory` and the published
 `PlayReading` in `tutti-graph`; rate anchors; `ControlLaneNode`
@@ -1729,12 +1729,12 @@ lane or a node. Also: `LANE_EVENT_CAPACITY` 256, `CONTROL_STEP`, `Env::play`.
 **Exit.** Automation replaces the knob and the sum is order-independent;
 the lane is measured and declares the measurement (`Moderate`, §5.3).
 
-### 12.3 `tutti-mod` as a pure compiler
+### 12.3 `tutti-modulation` as a pure compiler
 
 **Scope.** §7 (`RouteDecl`, `RouteTarget`), refusals, stable ids, macros,
 followers, note envelopes, `depth_by`; `Lfo`, `SampleHold`, `RandomState`,
 `Modulator` **copied** into `tutti-nodes` for the new nodes. `routing`, and
-`tutti-mod`'s own copies it uses, stay untouched until the deletion (§12.6).
+`tutti-modulation`'s own copies it uses, stay untouched until the deletion (§12.6).
 
 **Properties.** Equal declarations (in any order) compile equal; for every
 source kind, polarity and curve the offset at raw ±1 is
@@ -1745,7 +1745,7 @@ previous program. **Breaking** (CHANGELOG): `Layer::depth_by`
 became `DepthBy` (a depth route has its own amount, §4.1);
 `ProgramError` gained `NotANumber` (a program refuses NaN so `Compiled` is
 `Eq`); and `tutti_nodes::{Lfo, Modulator}` became `tutti-nodes`' own
-copies (§3), so they are no longer `tutti-mod`'s types.
+copies (§3), so they are no longer `tutti-modulation`'s types.
 
 **Exit.** Compiling anything `bevy-tutti` expresses needs no runtime; the
 crate builds with and without `--features bevy`.
@@ -1771,7 +1771,7 @@ crate builds with and without `--features bevy`.
   the compiler names no graph. `ParamAddr` derives `Ord`.
 - `Lfo`, `SampleHold`, `RandomState` and `Modulator` are copied into
   `tutti-nodes`, and `ModulatorNode`/`LfoNode` were switched to the copies:
-  nothing in `routing` or `bevy-tutti` relies on them sharing `tutti-mod`'s
+  nothing in `routing` or `bevy-tutti` relies on them sharing `tutti-modulation`'s
   types.
 - No `Cycle` refusal: the compiler sees no audio graph (§6). The reconcile
   refuses it by route (§12.5).
@@ -1965,14 +1965,14 @@ sends its current value on a fork's first block, per §10's two classes).
 canonical-paths gate are green; every ported suite stays green.
 
 **Exit.** `grep` finds none of §10; a param port holds at most one event
-source; `tutti-mod` has no runtime.
+source; `tutti-modulation` has no runtime.
 
 Built on branch `claude/mod-delete-old`.
 Every item of §10's table is deleted, crate by crate, with the corrections
 recorded under §10: tutti-graph's param port is
 `ParamMod { range, source: Option<EventOut> }` and its fused step is
 `clamp(held, range)` (`ParamFrom`, `ParamShaping`, the shape LUT, `ParamTap`
-and the fork seeds gone; `ParamSet::authored` with them); tutti-mod keeps
+and the fork seeds gone; `ParamSet::authored` with them); tutti-modulation keeps
 only the compiler (§7) and its vocabulary, the runtime copies of `Lfo`,
 `Modulator`, `RandomState` and `SampleHold` being `tutti-nodes`'; tutti-nodes
 drops `ParamModShaping`; tutti-plugin drops `PluginAutomation` and its
@@ -2008,7 +2008,7 @@ spread), the sampler's lane tests on a voice's and a memory source's gain,
 and `mod_lanes`' `a_chorus_rate_and_a_phaser_mix_take_lanes`; and
 `removing_the_last_route_returns_the_param_to_its_knob`, the counterpart
 of `mod_value_path`'s `removing_a_route_returns_the_param_to_its_base`.
-Deleted with their subject: tutti-mod's runtime suites
+Deleted with their subject: tutti-modulation's runtime suites
 (`curve_source`, `driver`, `id`, `layered`, `lfo`, `matrix`, `modulator`,
 `param`, `router`, `routing`, `matrix_public_api`, the fold tests in
 `shape.rs`), tutti-plugin's `automation_node` and

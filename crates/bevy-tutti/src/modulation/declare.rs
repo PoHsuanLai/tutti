@@ -2,7 +2,7 @@
 //! keyed by entities (doc 014 §8.1).
 //!
 //! Each is plain data. [`reconcile()`](fn@super::reconcile) collects them every
-//! frame into a `tutti_mod::Declarations` whose keys are the entities' bits
+//! frame into a `tutti_modulation::Declarations` whose keys are the entities' bits
 //! (a `SourceKey` is a source entity's, a `RouteKey` a route entity's, a
 //! `TargetKey` the target entity's with the param), so no table maps an
 //! entity to a key: `Entity::to_bits` is the key and `Entity::try_from_bits`
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
 
-use tutti_mod::{Adsr, Curve, CurveType, Lfo, Macro, Polarity, Source};
+use tutti_modulation::{Adsr, Curve, CurveType, Lfo, Macro, Polarity, Source};
 use tutti_nodes::automation::{RecordMode, Recorder};
 use tutti_session::Take;
 use tutti_types::{Depth, ParamAddr, Seconds, UnitAddr, UnitParam};
@@ -67,15 +67,15 @@ impl ParamRef {
     }
 
     /// The reconciler's key: the entity's bits and the param.
-    pub(crate) fn key(self) -> tutti_mod::TargetKey {
-        tutti_mod::TargetKey {
+    pub(crate) fn key(self) -> tutti_modulation::TargetKey {
+        tutti_modulation::TargetKey {
             node: self.entity.to_bits(),
             param: self.param,
         }
     }
 
     /// The `ParamRef` a key names, `None` for one no entity could have.
-    pub(crate) fn from_key(key: tutti_mod::TargetKey) -> Option<Self> {
+    pub(crate) fn from_key(key: tutti_modulation::TargetKey) -> Option<Self> {
         Some(Self {
             entity: Entity::try_from_bits(key.node)?,
             param: key.param,
@@ -100,7 +100,7 @@ pub enum ModFeed {
 
 /// A kind of modulation source. The built-in kinds are [`Lfo`], [`Macro`],
 /// [`Follower`] and [`NoteEnvelope`]; a host's own declares itself as one of
-/// `tutti_mod::Source`'s.
+/// `tutti_modulation::Source`'s.
 pub trait ModSourceKind: Send + Sync + 'static {
     /// The source this kind is now.
     fn declare(&self) -> Source;
@@ -139,8 +139,8 @@ impl std::fmt::Debug for ModSource {
     }
 }
 
-// `Lfo` and `Macro` are `tutti-mod`'s builders, declared as they are. A
-// follower and a note envelope wrap `tutti-mod`'s too, adding what feeds
+// `Lfo` and `Macro` are `tutti-modulation`'s builders, declared as they are. A
+// follower and a note envelope wrap `tutti-modulation`'s too, adding what feeds
 // their node: an entity, which only this crate can name.
 
 impl ModSourceKind for Lfo {
@@ -162,17 +162,17 @@ pub struct Follower {
     /// The entity it follows.
     pub input: Entity,
     /// Its attack and release.
-    pub envelope: tutti_mod::Follower,
+    pub envelope: tutti_modulation::Follower,
 }
 
 impl Follower {
     /// Follows `input` with a 5 ms attack and a 100 ms release
-    /// (`tutti_mod::Follower::new`).
+    /// (`tutti_modulation::Follower::new`).
     #[must_use]
     pub const fn new(input: Entity) -> Self {
         Self {
             input,
-            envelope: tutti_mod::Follower::new(),
+            envelope: tutti_modulation::Follower::new(),
         }
     }
 
@@ -209,7 +209,7 @@ pub struct NoteEnvelope {
     /// Its event output.
     pub port: u16,
     /// The stages.
-    pub envelope: tutti_mod::NoteEnvelope,
+    pub envelope: tutti_modulation::NoteEnvelope,
 }
 
 impl NoteEnvelope {
@@ -219,7 +219,7 @@ impl NoteEnvelope {
         Self {
             midi,
             port: 0,
-            envelope: tutti_mod::NoteEnvelope::new(adsr),
+            envelope: tutti_modulation::NoteEnvelope::new(adsr),
         }
     }
 }

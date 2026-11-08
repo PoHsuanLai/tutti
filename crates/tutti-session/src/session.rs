@@ -124,8 +124,8 @@ impl<'a> PhaseCx<'a> {
 #[cfg(feature = "modulation")]
 #[derive(Clone, Copy)]
 pub struct ModInput<'a> {
-    /// The declarations, as `tutti_mod` takes them.
-    pub declarations: tutti_mod::Declarations<'a>,
+    /// The declarations, as `tutti_modulation` takes them.
+    pub declarations: tutti_modulation::Declarations<'a>,
     /// The host's keys, resolved.
     pub keys: &'a dyn crate::ModKeys,
 }
@@ -267,7 +267,7 @@ pub enum SessionEvent {
     #[cfg(feature = "modulation")]
     ModulationUnresolved {
         /// The target, in the host's key.
-        target: tutti_mod::TargetKey,
+        target: tutti_modulation::TargetKey,
         /// How long it has been unresolved.
         waited: std::time::Duration,
     },

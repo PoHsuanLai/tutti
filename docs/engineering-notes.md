@@ -112,7 +112,7 @@ crates/             everything shipped, directory name = package name
   tutti-io          # Live I/O edge: mic monitor node, TapIn, WavOut, Recorder.
                     #   Device-free, so tutti-cpal depends on it, not vice versa.
   tutti-codec       # File codecs: the encoders, and the decoder (Wave, FileIn).
-  tutti-mod         # Pure modulation: the route compiler, curves. Audio-free.
+  tutti-modulation         # Pure modulation: the route compiler, curves. Audio-free.
   tutti-export      # Offline rendering and export
   tutti-dsp         # Pure algorithms over slices. Names only tutti-types.
   tutti-nodes       # DSP nodes (LFO, dynamics, convolution, automation).

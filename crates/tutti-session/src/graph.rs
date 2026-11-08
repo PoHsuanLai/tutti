@@ -1368,7 +1368,7 @@ impl Graph {
     pub(crate) fn modulate(
         &mut self,
         m: &mut tutti_nodes::Modulation,
-        decl: &tutti_mod::Declarations<'_>,
+        decl: &tutti_modulation::Declarations<'_>,
         keys: &dyn ModKeys,
     ) -> Result<(tutti_nodes::Applied, PluginTargets), tutti_nodes::ReconcileError> {
         let host = ModHostOver {
@@ -2228,7 +2228,7 @@ pub(crate) enum AudioNodeTarget {
 
 /// Resolves a host's modulation keys to graph nodes.
 ///
-/// `tutti_mod`'s declarations key a target by `TargetKey { node: u64, param }`
+/// `tutti_modulation`'s declarations key a target by `TargetKey { node: u64, param }`
 /// and a source by `SourceKey(u64)`; the `u64` is the host's own minting (a
 /// Bevy entity's bits, say), and this is how the session's
 /// [`Modulation`](crate::Phase::Modulation) phase reads it ([`ModInput`](crate::ModInput)).
@@ -2237,7 +2237,7 @@ pub trait ModKeys {
     /// The node a target's key names.
     fn node(&self, target: u64) -> Option<NodeKey>;
     /// What feeds source `source`'s node.
-    fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed>;
+    fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed>;
 }
 
 /// `tutti_nodes::ModHost` over the graph's nodes and the host's keys: a
@@ -2258,11 +2258,11 @@ struct ModHostOver<'a> {
 
 /// A plugin parameter's modulation target, by its node and parameter id.
 #[cfg(feature = "modulation")]
-pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_mod::TargetKey>;
+pub(crate) type PluginTargets = BTreeMap<(NodeKey, u32), tutti_modulation::TargetKey>;
 
 #[cfg(feature = "modulation")]
 impl tutti_nodes::ModHost for ModHostOver<'_> {
-    fn target(&self, target: tutti_mod::TargetKey) -> Option<tutti_nodes::Target> {
+    fn target(&self, target: tutti_modulation::TargetKey) -> Option<tutti_nodes::Target> {
         let node = self.keys.node(target.node)?;
         Some(match target.param.as_unit() {
             // A native param, at any index: the node's own cell for that
@@ -2300,7 +2300,7 @@ impl tutti_nodes::ModHost for ModHostOver<'_> {
         })
     }
 
-    fn feed(&self, source: tutti_mod::SourceKey) -> Option<tutti_nodes::Feed> {
+    fn feed(&self, source: tutti_modulation::SourceKey) -> Option<tutti_nodes::Feed> {
         self.keys.feed(source)
     }
 }

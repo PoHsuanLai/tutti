@@ -830,7 +830,7 @@ fn each_refusal_fires_by_name() {
 ///
 /// Mutation: none applies (it pins that the declarations compile, which
 /// the type checker and the run assert; removing a source kind fails to
-/// build). The no-runtime half is `cargo check -p tutti-mod` without
+/// build). The no-runtime half is `cargo check -p tutti-modulation` without
 /// features, run when the compiler landed.
 #[test]
 fn what_bevy_tutti_expresses_compiles_without_a_runtime() {

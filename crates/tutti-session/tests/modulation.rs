@@ -12,7 +12,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use tutti_graph::ForkByClone;
-use tutti_mod::{
+use tutti_modulation::{
     Declarations, Follower, Lfo, RouteDecl, RouteKey, RouteTarget, Source, SourceKey, TargetDecl,
     TargetKey,
 };
@@ -217,8 +217,8 @@ impl HostDecl {
                     source: SourceKey(1),
                     to: RouteTarget::Param(HOST_TARGET),
                     depth: Depth(0.3),
-                    polarity: tutti_mod::Polarity::Bipolar,
-                    curve: tutti_mod::CurveType::Linear,
+                    polarity: tutti_modulation::Polarity::Bipolar,
+                    curve: tutti_modulation::CurveType::Linear,
                 },
             )],
             targets: if range {

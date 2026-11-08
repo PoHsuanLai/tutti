@@ -14,7 +14,7 @@ use tutti_graph::{
     ForkTarget, Io, Node, Offset, ParamIn, ParamSegment, Prepare, ScheduleError, Shape, Status,
     Transport, TransportChanges,
 };
-use tutti_mod::{
+use tutti_modulation::{
     Adsr, Clock, CurveType, Declarations, LfoShape, Polarity, RouteDecl, RouteKey, RouteTarget,
     Source as ModSource, SourceKey, TargetDecl, TargetKey, Wave,
 };
@@ -1546,7 +1546,7 @@ fn for_param_and_for_unit_send_the_same_segments() {
         decl.target(cutoff_of(1), 0.0, 1000.0);
         let s = decl.source(1, sine(7.0));
         decl.route(1, s, cutoff_of(1), 0.4);
-        let c = tutti_mod::compile(
+        let c = tutti_modulation::compile(
             &decl.get(),
             None,
             tutti_graph::PlayReading::default(),
@@ -1642,7 +1642,7 @@ fn reapply(r: &mut Rig) -> tutti_nodes::Applied {
 /// A frozen constant: an automation curve.
 struct Flat(f32);
 
-impl tutti_mod::Curve for Flat {
+impl tutti_modulation::Curve for Flat {
     fn value_at(&self, _: Beat) -> Option<f32> {
         Some(self.0)
     }

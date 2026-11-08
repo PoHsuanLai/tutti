@@ -219,7 +219,7 @@ travels bare, and is re-wrapped at the far end. Same shape as #108's AU latency.
   file (`:160,163`). Dead public API, so this is a deletion candidate as much as
   a typing one. That also caps the severity of the missing zero-guard: nothing
   reaches it today.
-- `tutti-mod/src/shape.rs:61` — `(phase * TAU).sin()` where
+- `tutti-modulation/src/shape.rs:61` — `(phase * TAU).sin()` where
   `Phase::to_radians()` exists and is documented "for the `sin`/`cos` call".
   The other match arms legitimately use the raw phase; only the Sine arm
   duplicates.
@@ -309,7 +309,7 @@ them cost real time.
 
 ## 7. Verified clean
 
-`tutti-mod` (all 15 files — the strongest crate audited), `tutti-cpal`,
+`tutti-modulation` (all 15 files — the strongest crate audited), `tutti-cpal`,
 `tutti-io`, `tutti-core/metering`, `tutti-analysis` except `pitch.rs`,
 `tutti-sampler/stretch` (`intake_rate` vs `input_rate` explicitly documented as
 two quantities that must not share a type), `bevy-tutti/graph/param.rs` (the

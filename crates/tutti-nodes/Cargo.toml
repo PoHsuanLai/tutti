@@ -39,7 +39,7 @@ tutti-ump = { path = "../tutti-ump", default-features = false }
 # `LfoShape`, `compile`): the control lane evaluates its programs, and the
 # reconcile (`Modulation`) calls the compiler. `default-features = false`
 # keeps its `bevy` feature (Reflect) off this deliberately bevy-free crate.
-tutti-mod = { path = "../tutti-mod", default-features = false }
+tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
 # The convolver's FFT: `tutti_dsp::StagedRealFft`. tutti-dsp names no tutti
 # crate but `tutti-types`, so the edge adds no cycle.

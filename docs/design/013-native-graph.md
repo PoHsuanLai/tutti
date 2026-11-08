@@ -1126,7 +1126,7 @@ dropped:
   is a follower, not a generator. Write one (typed `Seconds`/`Amplitude`) as
   part of the polysynth rewrite.
 - **Audio-rate band-limited oscillators** (`sine`, `saw`, `triangle`,
-  `poly_pulse`, `pink`): `tutti-mod`'s `Lfo` shapes are control-rate and not
+  `poly_pulse`, `pink`): `tutti-modulation`'s `Lfo` shapes are control-rate and not
   band-limited. The polysynth needs its own. Write them SoA across voices (see
   the per-node plan), not as ports of fundsp's per-voice `An` nodes.
 - **Test stimulus** (`dc`, `pass`, `sink`, `split`, `multipass`, `sine_hz`,
@@ -1536,7 +1536,7 @@ Seven gaps had to close before the flip:
    reach a fork.** A
    param-automation curve can be a live `PluginParamTarget` the mod router
    writes every frame; a fork freezes each curve (`Curve::frozen`, a new
-   defaulted method in tutti-mod) and a target freezes to its **authored**
+   defaulted method in tutti-modulation) and a target freezes to its **authored**
    part — base and `AUTOMATION` layer as they stood — with every
    modulation layer dropped. So an export renders a plugin's base plus
    authored automation, without LFOs, until export has an offline
@@ -5939,7 +5939,7 @@ under both.
 > **Superseded by [doc 014](014-modulation.md).** The param-port mechanism
 > below (ports on `Shape`, the fused base-plus-sources step, the port's
 > range) stays as the engine's guard, but modulation as a design is now
-> doc 014's: modulation is an API noun that `tutti-mod` compiles to lanes,
+> doc 014's: modulation is an API noun that `tutti-modulation` compiles to lanes,
 > event sources and a per-lane control program, not an engine mechanism.
 > Read doc 014 before extending what follows; this section is kept as the
 > record of the mechanism.
@@ -5959,7 +5959,7 @@ under both.
 > and past the pool a queue keeps its floor, grid points dropped before
 > corners, counted.
 >
-> **The compiler:** `tutti_mod::compile` turns declared sources, routes
+> **The compiler:** `tutti_modulation::compile` turns declared sources, routes
 > and targets into a `ControlProgram` per target, a `SourceNode`
 > description per signal source and the event edges, purely (014 §7,
 > §12.3). `PlayReading` moved to `tutti-types`
@@ -6106,7 +6106,7 @@ under both.
   branch: the base is the node's control, reached through the settings
   ring — so the two "known export limits" of the base cell and the clamp
   cell (above) are gone.
-- **Curves.** `ParamModShaping::shaping()` bakes `tutti_mod::shape` with
+- **Curves.** `ParamModShaping::shaping()` bakes `tutti_modulation::shape` with
   the old shaper's bake and lookup, and the fused sum folds from `-0.0` as
   `f32`'s `Sum` does, so the new step is bit-identical to the old chain:
   `tutti-nodes`' `param_mod_oracle.rs` compared them sample by sample
@@ -6346,7 +6346,7 @@ the source stands ("Shaped ramps" below).
   its curve as segments for one param. It is still a pure function of its
   block's `Env`: per transport piece (`Env::segments`) it walks the beat
   per frame and sends the piece the curve is on (`Curve::segment_at`,
-  tutti-mod) at the piece's first frame, at each breakpoint, and at each
+  tutti-modulation) at the piece's first frame, at each breakpoint, and at each
   loop wrap, with the fractional position the frame is at (beats to frames
   at the piece's tempo), so the port renders the curve's own value at
   every frame. While stopped it sends the value at its beat, held. A piece
@@ -6497,7 +6497,7 @@ generator sending segments of every shape (some resumed) interleaved with
 ramps, executor against reference bit for bit. `tests/parallel.rs` and
 `tests/rt_no_alloc.rs`: the ramp source there now alternates ramps with
 segments of each shape class, so the parallel renders and the no-alloc
-gate (serial and on a pool) cover them. tutti-mod: the envelope's pieces
+gate (serial and on a pool) cover them. tutti-modulation: the envelope's pieces
 (`an_envelopes_pieces_are_its_breakpoints`, `a_bent_piece_is_no_segment`).
 tutti-nodes `tests/automation_segments.rs`: an exponential, cubic-out,
 S-curve and linear envelope at a tempo whose beats fall between frames,
@@ -7490,7 +7490,7 @@ passes a value, so a bare `UnitParam` is index 0):
   `P` (`{ UnitAddr::new(UnitParam::Threshold, 1).to_u16() }`; `add_audio_param`
   asserts in debug that `P` decodes). The session's modulation resolves a native
   target of any index to the node's cell for that address (the lane's knob) and
-  to the port of that address; `tutti-mod` is unchanged, since a `TargetKey`
+  to the port of that address; `tutti-modulation` is unchanged, since a `TargetKey`
   holds a `ParamAddr`.
 - A node's params are not captured: its controls are its `ParamSet`, which the
   insert addresses by key (`SessionNode::params`). `assert_param_fork` covers

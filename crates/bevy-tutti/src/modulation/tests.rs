@@ -278,7 +278,7 @@ fn a_depth_slider_keeps_phase() {
 }
 
 /// The cutoff lane's program, as last published.
-fn program(app: &App, filter: Entity) -> Arc<tutti_mod::ControlProgram> {
+fn program(app: &App, filter: Entity) -> Arc<tutti_modulation::ControlProgram> {
     let state = app.world().resource::<AudioGraphRes>().modulation();
     state
         .lane(ParamRef::unit(filter, UnitParam::Cutoff))
@@ -290,7 +290,7 @@ fn program(app: &App, filter: Entity) -> Arc<tutti_mod::ControlProgram> {
 /// A frozen constant: an automation curve.
 struct Flat(f32);
 
-impl tutti_mod::Curve for Flat {
+impl tutti_modulation::Curve for Flat {
     fn value_at(&self, _: Beat) -> Option<f32> {
         Some(self.0)
     }

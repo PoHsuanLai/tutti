@@ -18,7 +18,7 @@ use tutti_graph::{
     Editor, EventEdge, EventIn, EventKind, EventOut, ForkMode, ForkTarget, ParamRamp, ParamSegment,
     Prepare, SegmentShape,
 };
-use tutti_mod::ControlProgram;
+use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::{
     AutomationEnvelope, AutomationPoint, ControlLaneNode, Curve, CurveType,
 };

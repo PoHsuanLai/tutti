@@ -17,7 +17,7 @@
 # - `arc-lend` and `tutti-ump` depend on no workspace crate, of any kind;
 # - `tutti-types` depends on no workspace crate, and `tutti-rt` on `arc-lend`
 #   alone;
-# - `tutti-dsp` and `tutti-mod` depend on `tutti-types` alone,
+# - `tutti-dsp` and `tutti-modulation` depend on `tutti-types` alone,
 #   `tutti-midi-types` on `tutti-types`, `tutti-rt` and `tutti-ump`, and
 #   `tutti-graph` on those three;
 # - `tutti-midi-protocol` depends on `tutti-ump` alone;
@@ -64,9 +64,9 @@
 #   a `[build-dependencies]` entry of `tutti-plugin`: "normal dependency on
 #   tutti-fixtures; crates/ depends on testing/" and "build dependency
 #   ...";
-# - `tutti-mod` moved to `crates/nest/tutti-mod`: "is a nested directory under
+# - `tutti-modulation` moved to `crates/nest/tutti-modulation`: "is a nested directory under
 #   crates/" (a nested directory under crates/ is refused);
-# - `tutti-mod` moved to `crates/modx`: "must be crates/tutti-mod";
+# - `tutti-modulation` moved to `crates/modx`: "must be crates/tutti-modulation";
 # - `mkdir crates/stray`: "crates/stray is not a workspace member";
 # - `tutti-graph` deleted from LAYERS: "tutti-graph is not in LAYERS";
 # - `tutti-types` as a `[dependencies]` entry of `tutti-ump`: "tutti-ump -> tutti-types
@@ -160,7 +160,7 @@ LAYERS = [
     # no workspace dependency at all
     ["arc-lend", "vst-tutti", "tutti-alsa-ump-sys", "tutti-ump"],
     ["tutti-types", "tutti-rt", "tutti-midi-protocol", "tutti-midi-device"],
-    ["tutti-graph", "tutti-dsp", "tutti-mod", "tutti-midi-types", "tutti-metering",
+    ["tutti-graph", "tutti-dsp", "tutti-modulation", "tutti-midi-types", "tutti-metering",
      "tutti-codec", "tutti-tempo", "tutti-voicing", "tutti-sf2"],
     ["tutti-transport", "tutti-plugin-types"],
     ["tutti-engine", "tutti-io", "tutti-nodes", "tutti-midi-runtime", "tutti-midi-file",
@@ -378,7 +378,7 @@ if "tutti-transport" in pkgs:
     only("tutti-transport", ["tutti-types", "tutti-rt", "tutti-graph"])
 if "tutti-plugin-db" in pkgs:
     only("tutti-plugin-db", ["tutti-plugin-types"])
-for n in ("tutti-dsp", "tutti-mod"):
+for n in ("tutti-dsp", "tutti-modulation"):
     if n in pkgs:
         only(n, ["tutti-types"])
 for n in ("tutti-graph", "tutti-midi-types"):

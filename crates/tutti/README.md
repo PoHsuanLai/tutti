@@ -100,7 +100,7 @@ Most of what a host names is in [`prelude`](crate::prelude).
 | `tutti::soundfont` | `tutti-soundfont` | SoundFont (.sf2) playback node | `soundfont` |
 | `tutti::spatial` | `tutti-spatial` | VBAP speaker panning, binaural HRTF | `spatial` |
 | `tutti::dsp` | `tutti-dsp` | real FFT, waveform, onsets, pitch, loudness, correlation, STFT | `dsp` |
-| `tutti::modulation` | `tutti-mod` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
+| `tutti::modulation` | `tutti-modulation` | modulation sources, routes and the compiler to per-param control programs | `modulation` |
 | `tutti::midi` | `tutti-midi-types` | MIDI value types, MIDI 2.0 / UMP native | `midi` |
 | `tutti::midi_runtime` | `tutti-midi-runtime` | MIDI graph nodes, MPE, MIDI-CI, SysEx | `midi` |
 | `tutti::midi_file` | `tutti-midi-file` | Standard MIDI File and MIDI 2.0 Clip File codecs | `midi` |

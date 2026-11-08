@@ -898,6 +898,7 @@ mod tests {
                 event_type: tag,
                 argument,
             };
+            // SAFETY: `raw` is a live `AudioUnitEvent` on this stack.
             let decoded = unsafe { AuEvent::from_raw(&raw, 0.25) };
             assert_eq!(decoded, Some(expected), "event type {tag} decoded wrongly");
         }
@@ -913,12 +914,14 @@ mod tests {
             event_type: 99,
             argument: AudioUnitParameter::default(),
         };
+        // SAFETY: `raw` is a live `AudioUnitEvent` on this stack.
         assert_eq!(unsafe { AuEvent::from_raw(&raw, 1.0) }, None);
     }
 
     /// A null event pointer must be rejected before any dereference.
     #[test]
     fn a_null_event_decodes_to_none() {
+        // SAFETY: a null pointer is the case under test; `from_raw` checks it before any read.
         assert_eq!(unsafe { AuEvent::from_raw(std::ptr::null(), 1.0) }, None);
     }
 

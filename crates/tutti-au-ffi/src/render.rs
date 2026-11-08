@@ -1333,6 +1333,7 @@ mod tests {
             let mut chans: Vec<Vec<f32>> = (0..n).map(|_| vec![0.0f32; 64]).collect();
             let abl = list.bind(&mut chans, 64);
 
+            // SAFETY: `abl` points at the list `bind` just filled for `n` buffers, live while `list` is.
             unsafe {
                 assert_eq!((*abl).mNumberBuffers as usize, n);
                 let base = &raw const (*abl).mBuffers[0];

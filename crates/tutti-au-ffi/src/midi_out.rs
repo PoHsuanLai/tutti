@@ -883,6 +883,7 @@ mod tests {
             // which is why the splitter exists.
             (&[0x90, 62, 90, 0x90, 64, 80], 384),
         ];
+        // SAFETY: `list` is a buffer this test sized for the packets it adds with `MIDIPacketListAdd`, within its capacity.
         unsafe {
             let mut pkt = coreaudio_sys::MIDIPacketListInit(list);
             for (bytes, ts) in messages {
@@ -898,6 +899,7 @@ mod tests {
             }
         }
 
+        // SAFETY: `list` is the packet list this test just built.
         let found = unsafe { split_packet_list_for_test(list) };
         // Five messages from four packets: the last packet held two.
         assert_eq!(
@@ -914,6 +916,7 @@ mod tests {
         assert_eq!(found[4], (384, vec![0x90, 64, 80]));
 
         // And the UMP conversion, so the two halves are pinned separately.
+        // SAFETY: `list` is the packet list this test just built.
         let events = unsafe { decode_packet_list_for_test(list) };
         assert_eq!(events.len(), 5);
         assert!(events[0].is_note_on());

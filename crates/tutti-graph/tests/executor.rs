@@ -1206,17 +1206,20 @@ fn ringer_after_silence(
     Arc<std::sync::atomic::AtomicU64>,
 ) {
     let (calls, report) = (Arc::clone(&ringer.calls), Arc::clone(&ringer.report));
+    let width = ringer.width;
     let (mut ed, mut exec) = Editor::new(prepare(64));
     ed.insert(
         SRC,
         "const",
-        Unforkable(TestNode::new(Kind::Const {
-            value: 0.0,
-            width: 1,
-        })),
+        Unforkable(TestNode::new(Kind::Const { value: 0.0, width })),
     );
     ed.insert(FX, "ringer", Unforkable(ringer));
-    wire(&mut ed, FX, SRC);
+    for port in 0..width as u16 {
+        ed.spec_mut().topology.edges.insert(
+            InPort { node: FX, port },
+            Edge::Direct(Source::Node(OutPort { node: SRC, port })),
+        );
+    }
     ed.spec_mut().topology.outputs = vec![Source::Node(OutPort { node: FX, port: 0 })];
     ed.commit().expect("commits");
     exec.apply_pending();
@@ -1349,4 +1352,39 @@ fn a_new_unit_starts_at_its_ceiling() {
         render(&mut exec, 1, 1);
     }
     assert_eq!(calls.load(Ordering::Relaxed), 100);
+}
+
+/// The report reaches the unit through every form the executor calls a node
+/// in: mono (the split form), stereo in and out (`Direct`), three channels
+/// (the general audio form) and a node with an event output (the general
+/// form, `Call::run`).
+///
+/// Mutation (run): drop `.with_tail(self.reported)` from `Call::run` → the
+/// event-output case is called for the ceiling's 100 frames, not 10 → fails;
+/// the same in `Call::process` → every case fails.
+#[test]
+fn a_report_reaches_every_call_form() {
+    use common::Ringer;
+    let ceiling = Tail::Finite(Samples(100));
+    let ringer = |width: usize| Ringer::new(ceiling, 5, 10).wide(width);
+    for (what, node) in [
+        ("mono", ringer(1)),
+        ("stereo (Direct)", ringer(2)),
+        ("three channels (Audio)", ringer(3)),
+        ("event output (General)", ringer(1).with_event_out()),
+        ("stereo and event output", ringer(2).with_event_out()),
+    ] {
+        assert_eq!(ringer_calls(node, 300), 10, "{what}");
+    }
+}
+
+/// An `Unknown` ceiling bounds nothing, so no report narrows it: a node that
+/// declares no tail is never skipped.
+///
+/// Mutation (run): `(Tail::Unknown, r) => Some(r)` in `narrow_tail` → the
+/// 10-frame report parks it → fails.
+#[test]
+fn nothing_narrows_an_unknown_ceiling() {
+    use common::Ringer;
+    assert_eq!(ringer_calls(Ringer::new(Tail::Unknown, 5, 10), 300), 300);
 }

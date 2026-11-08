@@ -1030,6 +1030,11 @@ pub(crate) fn narrow_tail(ceiling: Tail, reported: Tail) -> Option<Tail> {
 /// the larger end of the block's ramp. The rule errs long, because a figure
 /// too short lets the silence skip park a node that still sounds.
 ///
+/// The figure is measured from the last non-quiet input frame, not from
+/// the moment of the call. Only a node without event inputs is parked on its
+/// tail (one with event inputs parks on its own [`Status::Idle`]), so only
+/// such a node's report matters.
+///
 /// A report holds until the node's next call; a call that reports nothing
 /// restores the ceiling, as does every new unit (insert, replace, fork,
 /// re-prepare). The executor never calls [`reset`](Self::reset), so a node

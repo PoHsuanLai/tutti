@@ -881,6 +881,10 @@ pub struct Ringer {
     pub report: Arc<std::sync::atomic::AtomicU64>,
     pub calls: Arc<AtomicUsize>,
     pub latency: Samples,
+    /// Audio channels in and out; every channel rings together.
+    pub width: usize,
+    /// Declares an (unused) event output port: the general form.
+    pub event_out: bool,
     left: usize,
 }
 
@@ -892,6 +896,8 @@ impl Ringer {
             report: Arc::new(std::sync::atomic::AtomicU64::new(report)),
             calls: Arc::new(AtomicUsize::new(0)),
             latency: Samples::ZERO,
+            width: 1,
+            event_out: false,
             left: 0,
         }
     }
@@ -899,6 +905,18 @@ impl Ringer {
     /// This node, declaring `latency`.
     pub fn with_latency(mut self, latency: Samples) -> Self {
         self.latency = latency;
+        self
+    }
+
+    /// This node, `width` channels wide (2: the `Direct` form).
+    pub fn wide(mut self, width: usize) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// This node, with an event output port (the general form).
+    pub fn with_event_out(mut self) -> Self {
+        self.event_out = true;
         self
     }
 
@@ -910,28 +928,38 @@ impl Ringer {
 
 impl Node for Ringer {
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::MONO, ChannelLayout::MONO)
+        let ch = ChannelLayout::try_from(self.width).expect("a width");
+        let shape = Shape::audio(ch, ch)
             .with_latency(Latency::new(self.latency))
-            .with_tail(self.ceiling)
+            .with_tail(self.ceiling);
+        if self.event_out {
+            shape.with_events(0, 1)
+        } else {
+            shape
+        }
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        let (ins, mut outs) = io.split();
-        let (input, output) = (ins.get(0), outs.get(0));
         let mut loud = false;
-        for (o, &x) in output.iter_mut().zip(input) {
-            if x != 0.0 {
-                self.left = self.ring;
+        {
+            let (ins, mut outs) = io.split();
+            for i in 0..ins.get(0).len() {
+                if (0..self.width).any(|c| ins.get(c)[i] != 0.0) {
+                    self.left = self.ring;
+                }
+                let ringing = if self.left > 0 {
+                    self.left -= 1;
+                    0.25
+                } else {
+                    0.0
+                };
+                for c in 0..self.width {
+                    let o = ins.get(c)[i] + ringing;
+                    outs.get(c)[i] = o;
+                    loud |= o != 0.0;
+                }
             }
-            let ringing = if self.left > 0 {
-                self.left -= 1;
-                0.25
-            } else {
-                0.0
-            };
-            *o = x + ringing;
-            loud |= *o != 0.0;
         }
         match self.report.load(Ordering::Relaxed) {
             NO_REPORT => {}

@@ -318,7 +318,10 @@ the interpreter.
   there to restore. Only the task that runs a unit reads or writes its record,
   so a pooled render parks the blocks a serial one does. The node's duty is
   in the `Node` docs: cover the ring-out from the last non-quiet input under
-  the settings in force since, erring long. Pinned by `tests/executor.rs`
+  the settings in force since, erring long. The figure is measured from the last non-quiet input
+  frame, not from the call, and it matters only for a node **without event
+  inputs** (one with event inputs parks on its own `Status::Idle`).
+  `contract::assert_honest_tail` checks the duty for an impulse in. Pinned by `tests/executor.rs`
   (`a_reported_tail_shorter_than_the_ceiling_is_what_the_skip_waits`,
   `a_reported_tail_above_the_ceiling_is_clamped`,
   `a_call_that_reports_nothing_restores_the_ceiling`,

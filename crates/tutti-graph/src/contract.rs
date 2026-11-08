@@ -77,7 +77,7 @@
 
 use tutti_types::graph::OutPort;
 use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, UnitAddr,
+    At, Beat, Bpm, ChannelLayout, Frame, Latency, NodeKey, SampleRate, Samples, Tail, UnitAddr,
 };
 use tutti_ump::Ump;
 
@@ -1786,6 +1786,8 @@ pub struct Driven {
     pub audio: Vec<Vec<f32>>,
     /// One `Vec` per event output port, in the order the node wrote them.
     pub events: Vec<Vec<Event>>,
+    /// What the node passed to [`Io::report_tail`] in the call, if anything.
+    pub reported_tail: Option<Tail>,
 }
 
 /// The most events [`drive_input`] and [`Direct`] accept on each event output
@@ -1852,6 +1854,7 @@ pub fn drive_input(
         history: TransportHistory::none(),
     };
     let max = Prepare::new(env.sample_rate, Samples(frames)).max_block();
+    let reported = std::cell::Cell::new(None);
     let io = Io::new(
         max,
         frames,
@@ -1863,13 +1866,92 @@ pub fn drive_input(
         &events_in,
         &mut writers,
     )
-    .with_params(&params);
+    .with_params(&params)
+    .with_tail(&reported);
     node.process(&cx, io);
     Driven {
         audio: out,
         events: out_events,
+        reported_tail: reported.get(),
     }
 }
+
+/// Checks the duty of a node that reports its tail
+/// ([`Io::report_tail`]): after an impulse on every input channel at the
+/// first frame of a block, its output is **exactly silent** past the tail it
+/// reported, measured from that input frame (the last non-quiet one), plus
+/// its declared latency, and past its ceiling ([`Shape::tail`]) whether or
+/// not it reports. A node that reports too short is parked by the executor
+/// while it still sounds, so this is the safety net the executor's skip does
+/// not have.
+///
+/// The impulse is a sample of `1.0`; the node is driven by [`drive_input`] in
+/// blocks of 64 frames with silent input after it, and must already be
+/// [`prepare`](Node::prepare)d ([`prepared`]). Frame `0` is the impulse, so a
+/// tail of `T` allows sound on frames `0..=T` and requires silence on every
+/// frame after. An `Unbounded` or `Unknown` figure is not checkable and
+/// passes; a figure above [`MAX_CHECKED_TAIL`] is refused as unchecked rather
+/// than rendered.
+///
+/// Mutation (run): a `Ringer` (tests/contract.rs) reporting half its ring
+/// fails; one reporting its ring passes.
+///
+/// # Panics
+///
+/// On the first sound after the tail, naming the frame and channel, or when
+/// the figure to check is too long to render here.
+pub fn assert_honest_tail(node: &mut dyn Node, rate: SampleRate) {
+    const BLOCK: usize = 64;
+    let shape = node.shape();
+    let width = usize::from(shape.audio_in.count());
+    let latency = shape.latency.samples().get();
+    let env = |frame: u64| Env {
+        frame: Frame(frame),
+        sample_rate: rate,
+        block_len: Samples(BLOCK),
+        transport: Transport::default(),
+        changes: TransportChanges::NONE,
+        play: crate::PlayClock::ZERO,
+    };
+    let mut impulse = vec![0.0f32; BLOCK];
+    impulse[0] = 1.0;
+    let silence = vec![0.0f32; BLOCK];
+    let first = drive_input(node, &env(0), &vec![&impulse[..]; width], &[], &[]);
+    // What the executor would park on: the narrowed figure.
+    let tail = first
+        .reported_tail
+        .and_then(|r| crate::node::narrow_tail(shape.tail, r))
+        .unwrap_or(shape.tail);
+    let Some(tail) = tail.samples() else {
+        return;
+    };
+    let silent_from = latency + tail.get() + 1;
+    assert!(
+        silent_from <= MAX_CHECKED_TAIL,
+        "a tail of {silent_from} frames is too long to check here"
+    );
+    let mut audio = first.audio;
+    let mut frame = BLOCK as u64;
+    while audio.first().is_some_and(|c| c.len() < silent_from + BLOCK) {
+        let next = drive_input(node, &env(frame), &vec![&silence[..]; width], &[], &[]);
+        for (all, more) in audio.iter_mut().zip(next.audio) {
+            all.extend(more);
+        }
+        frame += BLOCK as u64;
+    }
+    for (c, ch) in audio.iter().enumerate() {
+        if let Some(i) = ch[silent_from..].iter().position(|&x| x != 0.0) {
+            panic!(
+                "channel {c} sounds at frame {} after an impulse, past its tail of \
+                 {tail:?} and latency {latency}: the reported tail is too short",
+                silent_from + i
+            );
+        }
+    }
+}
+
+/// The longest tail, with its latency, [`assert_honest_tail`] renders.
+pub const MAX_CHECKED_TAIL: usize = 1 << 20;
 
 /// `node`, prepared at `rate` for blocks of up to `max_block` frames: the
 /// state a graph hands [`drive`] a node in.

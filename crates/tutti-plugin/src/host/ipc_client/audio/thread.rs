@@ -11,13 +11,6 @@ use super::payload_pool::PayloadPool;
 use crate::util::transport::control::{self as ipc, ControlStream};
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
-
-/// Upper bound on how long the bridge thread stays parked with no command. In
-/// practice `push_command` unparks it immediately; this is only the backstop
-/// that guarantees `lifecycle.is_running()` is re-checked (shutdown) even if an
-/// unpark were ever missed.
-const IDLE_PARK_TIMEOUT: Duration = Duration::from_millis(1);
 
 pub struct BridgeThread {
     channels: Channels,
@@ -59,6 +52,8 @@ impl BridgeThread {
     pub fn shutdown(&mut self) {
         self.lifecycle.request_shutdown();
         self.channels.push_command(Command::Shutdown);
+        // The queue may have been full, so the push may have rung nothing.
+        self.channels.wake();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -78,9 +73,6 @@ fn run_thread(
     listener: ListenerSlot,
     socket_path: PathBuf,
 ) {
-    // Publish our handle before the first poll so `push_command` can unpark us.
-    channels.register_worker(thread::current());
-
     // A bridge that never connects is as dead as one whose socket drops later,
     // and the audio thread tells them apart only through `is_crashed`. Both
     // exits below must mark the crash: returning silently would leave the flag
@@ -146,15 +138,12 @@ fn pump(
     let mut inbox = Unsolicited::with_lifecycle(lifecycle.clone());
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
-            // Park rather than sleep: `push_command` unparks us the instant a
-            // block arrives, so the socket round-trip starts immediately
-            // instead of after a fixed poll interval.
-            //
-            // `park_timeout` may also return spuriously — harmless, the loop
-            // just re-polls. An unpark racing with this re-poll is likewise
-            // safe: `park_timeout` consumes the pending token and returns at
-            // once, so no command is ever left sitting in the queue.
-            thread::park_timeout(IDLE_PARK_TIMEOUT);
+            // Sleep on the doorbell: `push_command` rings it the instant a
+            // block arrives, so the socket round-trip starts immediately.
+            // The ring cannot be lost and `shutdown` rings it too, so there
+            // is no timeout: nothing else is polled while idle. A spurious
+            // return just loops.
+            channels.wait_for_command(|| !lifecycle.is_running());
             continue;
         };
 

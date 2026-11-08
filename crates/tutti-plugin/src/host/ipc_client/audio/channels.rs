@@ -12,10 +12,9 @@
 
 use super::messages::{AudioResponse, Command};
 use crossbeam::queue::ArrayQueue;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread::Thread;
+use tutti_rt::Doorbell;
 use tutti_types::SampleRate;
 
 /// How many commands the audio thread can queue before `push_command` fails.
@@ -32,10 +31,11 @@ pub(super) struct Channels {
     /// rather than on the batcher because the *bridge* thread is what reads it,
     /// to decide whether a dequeued block is still worth sending.
     newest_seq: Arc<AtomicU64>,
-    /// Handle to the bridge thread, so a pushed command can wake it
-    /// immediately instead of waiting out its park timeout. Published once at
-    /// spawn (see [`Self::register_worker`]) and read-only thereafter.
-    worker: Arc<Mutex<Option<Thread>>>,
+    /// The bridge thread's doorbell: the thread sleeps on it when the queue
+    /// is empty, and the audio thread rings it after a push. The ring is
+    /// wait-free (no lock, no allocation) and cannot be missed
+    /// ([`Doorbell`]'s protocol), so the bridge needs no polling timeout.
+    bell: Arc<Doorbell>,
     /// The negotiated sample rate, as `f64::to_bits`. Lives here rather than
     /// only on `AudioBridge` because *both* threads size a timeout from the
     /// block period — the bridge thread its reply timeout, and the staleness
@@ -82,7 +82,7 @@ impl Channels {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
             newest_seq: Arc::new(AtomicU64::new(0)),
-            worker: Arc::new(Mutex::new(None)),
+            bell: Arc::new(Doorbell::new()),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.get().to_bits())),
             settled: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(AtomicU64::new(0)),
@@ -105,11 +105,19 @@ impl Channels {
             .store(rate.get().to_bits(), Ordering::Relaxed);
     }
 
-    /// Called once by the bridge thread with its own handle, before it starts
-    /// polling. Until then `push_command` simply doesn't unpark and the thread
-    /// falls back on its park timeout.
-    pub(super) fn register_worker(&self, thread: Thread) {
-        *self.worker.lock() = Some(thread);
+    /// Park the bridge thread until a command is queued or `stop` says to
+    /// leave, whichever is already true or comes first. May return with
+    /// neither (a spurious wake-up): the caller rechecks. `stop` reads what
+    /// whoever ends the loop publishes before calling [`wake`](Self::wake).
+    pub(super) fn wait_for_command(&self, stop: impl FnOnce() -> bool) {
+        self.bell.wait(|| !self.commands.is_empty() || stop());
+    }
+
+    /// Wake the bridge thread to re-check its stop condition (shutdown).
+    /// Publish the condition first. Real-time safe, like the ring in
+    /// [`push_command`](Self::push_command).
+    pub(super) fn wake(&self) {
+        self.bell.ring();
     }
 
     /// Record that the audio thread has submitted block `seq`. Called from the
@@ -202,17 +210,16 @@ impl Channels {
         self.dropped_param_events.load(Ordering::Relaxed)
     }
 
-    /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking
-    /// futex/semaphore post — no allocation, no waiting — so it is safe from
-    /// the audio thread, and it starts the socket round-trip immediately rather
-    /// than after a poll interval. The audio thread never waits on the reply,
-    /// but the unpark still matters — it is what keeps a block's reply arriving
-    /// in time to be collected on the *next* block rather than the one after.
+    /// Pushes, then rings the bridge thread's doorbell, so the socket
+    /// round-trip starts immediately rather than after a poll interval. The
+    /// audio thread never waits on the reply, but the ring still matters: it
+    /// is what keeps a block's reply arriving in time to be collected on the
+    /// *next* block rather than the one after.
     ///
-    /// `try_lock` on the worker slot keeps that promise absolute: the slot is
-    /// written exactly once at spawn, so contention is effectively impossible,
-    /// and if it ever did happen the bridge thread's park timeout still picks
-    /// the command up.
+    /// The ring is wait-free and allocation-free (`Doorbell::ring`: a fence
+    /// and a load, plus a futex wake when the bridge is parked), and it
+    /// cannot be lost, so nothing backs it with a timeout. A push the queue
+    /// refuses rings nothing: the bridge is, or is about to be, draining.
     pub(super) fn push_command(&self, cmd: Command) -> bool {
         self.try_push_command(cmd).is_ok()
     }
@@ -222,11 +229,7 @@ impl Channels {
     /// to its pools instead of freeing it.
     pub(super) fn try_push_command(&self, cmd: Command) -> Result<(), Command> {
         self.commands.push(cmd)?;
-        if let Some(guard) = self.worker.try_lock()
-            && let Some(thread) = guard.as_ref()
-        {
-            thread.unpark();
-        }
+        self.bell.ring();
         Ok(())
     }
 
@@ -270,5 +273,96 @@ mod tests {
         assert_eq!(c.block_counts(), (3, 3), "owed replies taken back");
         c.note_settled(0);
         assert_eq!(c.block_counts(), (3, 3), "settling nothing is no reply");
+    }
+
+    /// A bridge thread as `pump` runs one: sleep for a command, take it,
+    /// report it, until `stop`. Returns the handle once it is parked.
+    fn bridge(
+        c: &Channels,
+        stop: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> (
+        std::thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<Command>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (c, stop) = (c.clone(), Arc::clone(stop));
+        let t = std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                match c.pop_command() {
+                    Some(cmd) => tx.send(cmd).unwrap(),
+                    None => c.wait_for_command(|| stop.load(Ordering::Acquire)),
+                }
+            }
+        });
+        (t, rx)
+    }
+
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+    /// **A push wakes a parked bridge, and the audio thread's half
+    /// allocates nothing.** The ring runs inside `assert_no_alloc` with the
+    /// bridge parked, so the futex-wake path is the one gated, not just the
+    /// fence and load.
+    ///
+    /// Mutations (run): the `self.bell.ring()` removed from
+    /// `try_push_command` -> the bridge sleeps on, the receive times out and
+    /// fails; the ring replaced by a `Box::new(0)` -> the gate aborts.
+    #[test]
+    fn a_push_wakes_a_parked_bridge_without_allocating() {
+        let c = channels();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (t, rx) = bridge(&c, &stop);
+        while !c.bell.is_asleep() {
+            std::thread::yield_now();
+        }
+        assert_no_alloc::assert_no_alloc(|| assert!(c.push_command(Command::Shutdown)));
+        let got = rx.recv_timeout(PATIENCE).expect("the push woke the bridge");
+        assert!(matches!(got, Command::Shutdown));
+        stop.store(true, Ordering::Release);
+        c.wake();
+        t.join().unwrap();
+    }
+
+    /// **No push is left sitting in the queue**: many hand-offs, each
+    /// answered before the next, race the bridge's park against the ring.
+    /// A lost wake-up leaves one unanswered and the receive times out (there
+    /// is no backstop timeout to hide it).
+    ///
+    /// Mutation (run): the ring removed from `try_push_command` -> the first
+    /// hand-off that finds the bridge parked never completes; fails.
+    #[test]
+    fn no_pushed_command_waits_on_a_missed_wake_up() {
+        let c = channels();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (t, rx) = bridge(&c, &stop);
+        for i in 0..20_000u32 {
+            // Alternate a spin so the push lands both before and after the park.
+            for _ in 0..(i % 64) {
+                std::hint::spin_loop();
+            }
+            assert!(c.push_command(Command::Shutdown));
+            rx.recv_timeout(PATIENCE)
+                .unwrap_or_else(|_| panic!("hand-off {i} was never woken"));
+        }
+        stop.store(true, Ordering::Release);
+        c.wake();
+        t.join().unwrap();
+    }
+
+    /// **`wake` ends a wait on a stop flag with no command queued**, which
+    /// is how `shutdown` reaches a parked bridge when its queue was full.
+    ///
+    /// Mutation (run): `wake` a no-op -> the join hangs (nextest times out).
+    #[test]
+    fn wake_ends_a_wait_with_nothing_queued() {
+        let c = channels();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (t, _rx) = bridge(&c, &stop);
+        while !c.bell.is_asleep() {
+            std::thread::yield_now();
+        }
+        stop.store(true, Ordering::Release);
+        c.wake();
+        t.join().unwrap();
     }
 }

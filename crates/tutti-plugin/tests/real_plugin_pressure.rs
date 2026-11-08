@@ -47,7 +47,7 @@
 //! 200 us per-plugin ceiling (`assert_working_steps_cheap`).
 //!
 //! How many blocks carry audio depends on the plugin subprocess running at
-//! realtime priority (`plugin-server`'s `raise_to_realtime`). Without it the
+//! realtime priority (`plugin-server`'s `request_audio_priority`). Without it the
 //! host's callback thread is realtime — the OS audio backend makes it so — but
 //! the subprocess it is waiting on is not, and the blocks that arrive in time
 //! swung between 29 and 492 of 500 across identical runs. With it: 491-498 of
@@ -1261,7 +1261,7 @@ fn working_plugins_cost_under_the_old_ceiling() {
 
 /// **`plugin-server` raises its audio thread, where the OS lets it.**
 ///
-/// How many blocks carry audio under load depends on `raise_to_realtime`
+/// How many blocks carry audio under load depends on `request_audio_priority`
 /// (see the module docs), but no audio floor loose enough to hold under load
 /// can tell a raised server from an unraised one. So this reads the server's
 /// audio thread directly: its scheduling policy, realtime priority and nice
@@ -1270,14 +1270,14 @@ fn working_plugins_cost_under_the_old_ceiling() {
 /// is the pid.
 ///
 /// What "raised" means is derived, not restated: a scratch thread of this
-/// process makes the same call `raise_to_realtime` makes
-/// (`set_current_thread_priority(ThreadPriority::Max)`), under the same
+/// process makes the same call `request_audio_priority` makes
+/// (`tutti_rt::request_priority(PriorityRequest::Highest)`), under the same
 /// limits the server inherits from it, and the server must match what it
 /// got. Where the OS refuses (an unprivileged CI runner: `RLIMIT_NICE` 0 and
 /// no `CAP_SYS_NICE`), both stay where they started, and this checks only
 /// that the server did not end up anywhere else; it says so.
 ///
-/// Mutation: `raise_to_realtime()` commented out of `PluginServer::run`.
+/// Mutation: `request_audio_priority()` commented out of `PluginServer::run`.
 /// As root, the server reads `(0, 0, 0)` against the scratch thread's
 /// `(0, 0, -20)` and this fails, 2 runs of 2. With `CAP_SYS_NICE` dropped
 /// (`setpriv --inh-caps=-sys_nice --bounding-set=-sys_nice`, `RLIMIT_NICE`
@@ -1304,9 +1304,7 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
 
     let _machine = exclusive();
     let (raised, expected) = std::thread::spawn(|| {
-        let raised =
-            thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max)
-                .is_ok();
+        let raised = tutti_rt::request_priority(tutti_rt::PriorityRequest::Highest).is_granted();
         (raised, sched("/proc/thread-self/stat"))
     })
     .join()
@@ -1338,8 +1336,8 @@ fn plugin_server_audio_thread_is_raised_where_the_os_allows() {
     assert_eq!(
         server, expected,
         "plugin-server's audio thread is not scheduled as a thread that \
-         called `raise_to_realtime`'s own call is (policy, rt_priority, nice). \
-         Is `raise_to_realtime` still called on entry to the audio phase?"
+         called `request_audio_priority`'s own call is (policy, rt_priority, nice). \
+         Is `request_audio_priority` still called on entry to the audio phase?"
     );
 }
 

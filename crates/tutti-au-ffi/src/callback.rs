@@ -19,12 +19,13 @@ pub(crate) unsafe fn with_state<S, R>(
     panic_answer: R,
     f: impl FnOnce(&S) -> R,
 ) -> R {
-    let _ = (name, panic_answer);
-    if refcon.is_null() {
-        return null_answer;
-    }
-    // SAFETY: mutation.
-    f(unsafe { &*refcon.cast::<S>() })
+    guard(name, panic_answer, || {
+        if refcon.is_null() {
+            return null_answer;
+        }
+        // SAFETY: non-null, and live and unaliased for the call by the contract.
+        f(unsafe { &*refcon.cast::<S>() })
+    })
 }
 
 /// As [`with_state`], for a state the callback mutates.

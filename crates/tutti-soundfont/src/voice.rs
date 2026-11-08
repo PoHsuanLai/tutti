@@ -10,15 +10,6 @@ use std::f32::consts;
 /// the shortest release a voice can have.
 pub(crate) const QUICK_RELEASE: f32 = 0.01;
 
-/// The shortest a voice sounds before a release is honoured, in seconds. This
-/// is tutti's rule and not the specification's: section 9.1.7 enters the
-/// release phase at once, from the envelope's current value, so a key let go
-/// in the delay or attack stage (a key struck again within a millisecond or two
-/// of its first strike, or a note-off a few frames after its note-on) leaves a
-/// voice that never sounded. Deferring the release by this much keeps a short
-/// note audible. It is the figure rustysynth used, 2 ms: a 500th of a second.
-const MIN_SOUNDING_PER_SECOND: i32 = 500;
-
 use crate::bi_quad_filter::BiQuadFilter;
 use crate::channel::Channel;
 use crate::lfo::Lfo;
@@ -33,9 +24,6 @@ use crate::volume_envelope::VolumeEnvelope;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum VoiceState {
     Playing,
-    /// Told to release; the release starts once the voice has sounded
-    /// [`MIN_SOUNDING_PER_SECOND`]'s 2 ms.
-    ReleaseRequested,
     Released,
 }
 
@@ -96,12 +84,8 @@ pub(crate) struct Voice {
     smoothed_cutoff: f32,
 
     voice_state: VoiceState,
-    /// Whether the release to come is the quick one of an exclusive class.
-    quick: bool,
-    /// Time elapsed in samples, so a voice's first block takes its gains whole
-    /// and a release waits for [`MIN_SOUNDING_PER_SECOND`]'s 2 ms.
+    /// Time elapsed in samples, so a voice's first block takes its gains whole.
     voice_length: usize,
-    min_sounding: usize,
 }
 
 impl Voice {
@@ -141,9 +125,7 @@ impl Voice {
             instrument_chorus: 0_f32,
             smoothed_cutoff: 0_f32,
             voice_state: VoiceState::Playing,
-            quick: false,
             voice_length: 0,
-            min_sounding: (settings.hz() / MIN_SOUNDING_PER_SECOND) as usize,
         }
     }
 
@@ -194,18 +176,20 @@ impl Voice {
         self.smoothed_cutoff = self.cutoff;
 
         self.voice_state = VoiceState::Playing;
-        self.quick = false;
         self.voice_length = 0;
     }
 
-    /// Lets the voice go into its release (SF2 2.04 section 9.1.7: the
-    /// volume and modulation envelopes' release stages, and a loop that runs
-    /// until the key is up ends). The release starts once the voice has
-    /// sounded [`MIN_SOUNDING_PER_SECOND`]'s 2 ms, at the next chunk. A voice already released
-    /// is left alone.
+    /// Lets the voice go into its release at once (SF2 2.04 section 9.1.7: the
+    /// envelope enters its release phase from its current value, so a voice
+    /// released in its delay stage, where that value is 0, never sounds). The
+    /// volume and modulation envelopes' release stages start, and a loop that
+    /// runs until the key is up ends. A voice already released is left alone.
     pub(crate) fn release(&mut self) {
         if self.voice_state == VoiceState::Playing {
-            self.voice_state = VoiceState::ReleaseRequested;
+            self.vol_env.release();
+            self.mod_env.release();
+            self.oscillator.release();
+            self.voice_state = VoiceState::Released;
         }
     }
 
@@ -214,29 +198,8 @@ impl Voice {
     /// envelope falls over [`QUICK_RELEASE`] at the longest, whatever its
     /// own release is. A voice already releasing is sped up, never slowed.
     pub(crate) fn damp(&mut self) {
-        match self.voice_state {
-            VoiceState::Released => self.vol_env.release_within(QUICK_RELEASE),
-            VoiceState::Playing | VoiceState::ReleaseRequested => {
-                self.quick = true;
-                self.release();
-            }
-        }
-    }
-
-    /// Starts a requested release once the voice has sounded long enough.
-    fn release_if_necessary(&mut self) {
-        if self.voice_length < self.min_sounding {
-            return;
-        }
-        if self.voice_state == VoiceState::ReleaseRequested {
-            if self.quick {
-                self.vol_env.release_within(QUICK_RELEASE);
-            }
-            self.vol_env.release();
-            self.mod_env.release();
-            self.oscillator.release();
-            self.voice_state = VoiceState::Released;
-        }
+        self.vol_env.release_within(QUICK_RELEASE);
+        self.release();
     }
 
     /// The volume envelope's level now: what the core steals by.
@@ -250,8 +213,6 @@ impl Voice {
         }
 
         let channel_info = &channels[self.channel as usize];
-
-        self.release_if_necessary();
 
         if !self.vol_env.process(self.block.len()) {
             return false;

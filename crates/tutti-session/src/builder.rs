@@ -7,7 +7,7 @@ use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::PrerollTable;
 use tutti_nodes::{ClickNode, ClickSettings};
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, NodeKey, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, NodeKey, SampleRate, Samples};
 
 use crate::graph::{Graph, LIVE_MAX_BLOCK};
 use crate::{Result, Session};
@@ -29,6 +29,7 @@ use crate::{Result, Session};
 pub struct SessionBuilder {
     inputs: usize,
     outputs_floor: usize,
+    root: Option<ChannelTopology>,
     render_workers: usize,
     render_worker_start: Option<crate::RenderWorkerStart>,
     #[cfg(feature = "midi-hardware")]
@@ -62,6 +63,7 @@ impl Default for SessionBuilder {
         Self {
             inputs: 0,
             outputs_floor: 2,
+            root: None,
             render_workers: 1,
             render_worker_start: None,
             #[cfg(feature = "midi-hardware")]
@@ -109,6 +111,18 @@ impl SessionBuilder {
     #[must_use]
     pub fn outputs_floor(mut self, outputs: usize) -> Self {
         self.outputs_floor = outputs;
+        self
+    }
+
+    /// Declares the graph root's channels from the start
+    /// ([`Session::declare_root_topology`]): the root is exactly as wide as
+    /// `root`, whatever [`outputs_floor`](Self::outputs_floor) and the device
+    /// say, and the build refuses a device that cannot place it
+    /// ([`Error::Output`](crate::Error::Output)). Default none: the root is the engine's order for
+    /// its width.
+    #[must_use]
+    pub fn root_topology(mut self, root: ChannelTopology) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -329,6 +343,8 @@ impl SessionBuilder {
             transport: parts.transport,
             load: engine.as_ref().map(|e| e.load_meter().clone()),
             heard: None,
+            root_request: self.root.clone(),
+            root_refusal: None,
             engine,
             click: parts.click,
             click_settings: parts.click_settings,
@@ -387,12 +403,13 @@ impl SessionBuilder {
         layout: ChannelLayout,
         max_block: Samples,
     ) -> Result<Session> {
-        let root = root_width(self.outputs_floor, layout);
-        check_placement(root, layout)?;
+        let root = self.root_width(layout);
+        self.check_placement(root, layout)?;
         let mut parts = self.parts(rate, max_block, None, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
         // The width of every block the host pulls.
         engine.support_output(layout)?;
+        self.declare(&mut parts.graph, layout)?;
         let heard = engine.heard_taps();
         let mut session = self.session(parts, Some(engine), true)?;
         session.heard = Some((heard, layout));
@@ -403,14 +420,22 @@ impl SessionBuilder {
     /// commit is applied at once, and [`Session::render_frame`] renders it
     /// (or [`Graph::take_audio_side`] hands it to a test). No metronome and
     /// no MIDI nodes are inserted, and no disk streamer is started: the
-    /// graph is exactly `outputs_floor` wide, empty, at `rate`.
+    /// graph is exactly `outputs_floor` wide (a declared
+    /// [`root_topology`](Self::root_topology)'s width, if there is one), empty,
+    /// at `rate`.
     ///
     /// # Errors
     ///
-    /// Never; `Result` for the build paths' common shape.
+    /// [`Error::Output`](crate::Error::Output) when the declared root topology is empty or wider
+    /// than the engine renders; there is no device to place it on.
     pub fn build_detached(self, rate: SampleRate) -> Result<Session> {
-        let mut graph = Graph::new(self.inputs, self.outputs_floor, rate, LIVE_MAX_BLOCK, None);
+        let outputs = self
+            .root
+            .as_ref()
+            .map_or(self.outputs_floor, |r| r.positions().len());
+        let mut graph = Graph::new(self.inputs, outputs, rate, LIVE_MAX_BLOCK, None);
         graph.set_render_workers(self.render_workers);
+        graph.declare_root(self.root.clone(), None)?;
         self.session(
             Parts {
                 graph,
@@ -486,10 +511,11 @@ impl SessionBuilder {
         ) -> tutti_cpal::Result<()>,
     ) -> Result<(Session, crate::Device)> {
         let spec = audio_engine.spec().clone();
-        let root = root_width(self.outputs_floor, spec.channels);
-        check_placement(root, spec.channels)?;
+        let root = self.root_width(spec.channels);
+        self.check_placement(root, spec.channels)?;
         let mut parts = self.parts(spec.sample_rate, LIVE_MAX_BLOCK, spec.quantum, root)?;
         let engine = parts.graph.engine(&parts.transport)?;
+        self.declare(&mut parts.graph, spec.channels)?;
         let mut session = self.session(parts, None, true)?;
         session.load = Some(engine.load_meter().clone());
         session.heard = Some((engine.heard_taps(), spec.channels));
@@ -501,15 +527,48 @@ impl SessionBuilder {
     }
 }
 
-/// Refuses a `(root, device)` pair whose root has a channel the device has no
-/// place for, before anything is built: the engine would render it silent.
-///
-/// The root is at least as wide as the device up to [`MAX_ROOT_CHANNELS`], so
-/// what this refuses is a project wider than the device where either width has
-/// no channel order (a 6-channel project on a 5-channel interface).
-fn check_placement(root: usize, device: ChannelLayout) -> Result<()> {
-    tutti_types::Fold::widths(ChannelLayout::from(root), device)?;
-    Ok(())
+impl SessionBuilder {
+    /// The root's width for `device`: the declared topology's, or else
+    /// [`root_width`] of the floor.
+    fn root_width(&self, device: ChannelLayout) -> usize {
+        self.root.as_ref().map_or_else(
+            || root_width(self.outputs_floor, device),
+            |root| root.positions().len(),
+        )
+    }
+
+    /// Refuses a `(root, device)` pair whose root has a channel the device has
+    /// no place for, before anything is built: the engine would render it
+    /// silent. A declared root is placed from its topology (and refused if it
+    /// is empty or wider than the engine renders); an undeclared one is a bare
+    /// width.
+    ///
+    /// The root is at least as wide as the device up to [`MAX_ROOT_CHANNELS`],
+    /// so what this refuses of an undeclared root is a project wider than the
+    /// device where either width has no channel order (a 6-channel project on
+    /// a 5-channel interface).
+    fn check_placement(&self, root: usize, device: ChannelLayout) -> Result<()> {
+        match &self.root {
+            // The same check `Graph::declare_root` makes a step later; made
+            // here so a refused root builds nothing (no engine, no device
+            // thread). Removing this arm alone changes no outcome, only
+            // how much is built before the refusal.
+            Some(declared) => Graph::check_root(declared, device)?,
+            None => {
+                tutti_types::Fold::widths(ChannelLayout::from(root), device)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Declares the builder's root on the graph the engine was just built
+    /// over, which publishes it to the engine.
+    fn declare(&self, graph: &mut Graph, device: ChannelLayout) -> Result<()> {
+        if self.root.is_some() {
+            graph.declare_root(self.root.clone(), Some(device))?;
+        }
+        Ok(())
+    }
 }
 
 /// How wide the graph root is built, given what the project asks for and

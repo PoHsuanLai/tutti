@@ -109,6 +109,78 @@ mod graph_wire {
         );
     }
 
+    /// `MasterTopology` is a pure translation into the session's declaration:
+    /// it sets the root's width and is what `Graph::root_topology` reads back; a
+    /// `MasterSources` longer than it is not widened under it; a declaration
+    /// the session refuses leaves the previous one standing; taking it back
+    /// leaves the root at its width, undeclared.
+    ///
+    /// Mutation (run): `rebuild` not calling `declare_root_topology` → the
+    /// root stays two wide and the first assertion fails; the status mirror
+    /// not writing the resource → the `RootWidth` assertion fails; the check
+    /// removed in `Graph::widen_outputs` → the six-entry `MasterSources`
+    /// widens the root to six; `rebuild` stating the width only when it is
+    /// wider than the root → the shrink to three leaves `Refused`.
+    #[test]
+    fn a_master_topology_is_the_sessions_declaration() {
+        use bevy_tutti::graph::{MasterTopology, MasterTopologyStatus};
+        use tutti_session::RootTopologyStatus;
+        use tutti_types::{ChannelTopology, FoldError};
+        let buses = |n: u16| ChannelTopology::discrete(ChannelLayout::from(n));
+        let mut app = app();
+        let osc = spawn_node(&mut app, Osc::sine(Hz(440.0)));
+
+        app.world_mut()
+            .insert_resource(MasterTopology(Some(buses(4))));
+        app.update();
+        let outputs = |app: &App| {
+            let graph = app.world().resource::<AudioGraphRes>();
+            (
+                graph.graph_ref().outputs(),
+                graph.graph_ref().root_topology().cloned(),
+            )
+        };
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+
+        let status = |app: &App| app.world().resource::<MasterTopologyStatus>().0;
+        assert_eq!(status(&app), RootTopologyStatus::Applied);
+
+        // Longer than the declaration: not widened under it, and said so.
+        app.world_mut()
+            .insert_resource(MasterSources::from_node_at_width(osc, 6u16));
+        app.update();
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+        assert_eq!(
+            status(&app),
+            RootTopologyStatus::Refused(FoldError::RootWidth {
+                declared: ChannelLayout::QUAD,
+                requested: ChannelLayout::from(6u16)
+            })
+        );
+
+        // Shrunk to fit the declared root: the refusal goes with its cause.
+        app.world_mut()
+            .insert_resource(MasterSources::from_node_at_width(osc, 3u16));
+        app.update();
+        assert_eq!(status(&app), RootTopologyStatus::Applied);
+
+        // A declaration past what the engine renders is refused; the last stands.
+        app.world_mut()
+            .insert_resource(MasterTopology(Some(buses(40))));
+        app.update();
+        assert_eq!(outputs(&app), (4, Some(buses(4))));
+        assert!(matches!(
+            status(&app),
+            RootTopologyStatus::Refused(FoldError::Unplaced { .. })
+        ));
+
+        // Taken back: undeclared, the root keeps its width, nothing is refused.
+        app.world_mut().insert_resource(MasterTopology(None));
+        app.update();
+        assert_eq!(outputs(&app), (4, None));
+        assert_eq!(status(&app), RootTopologyStatus::Applied);
+    }
+
     /// Removing the declaration silences the ports it claimed.
     ///
     /// The case that is unsolvable imperatively without every call site remembering

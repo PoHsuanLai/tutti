@@ -29,6 +29,12 @@ use tutti_ump::{MidiChannel, MidiGroup};
 /// preset 0 at 48 kHz.
 const LEAD: usize = 41;
 
+/// Frames a note's volume envelope stays at 0 after its onset on this font's
+/// preset 0: the default delay is -12000 timecents, a millisecond, 47 frames
+/// at 48 kHz. The closes this path sees are 12, 13, 28, 41, 64, 65, 77, 78, 127
+/// and 128 frames after the onset.
+const DELAY_STAGE: usize = 48;
+
 fn font() -> Arc<SoundFont> {
     let path = tutti_fixtures::asset("soundfonts/TimGM6mb.sf2");
     let mut file = std::fs::File::open(&path).unwrap_or_else(|e| {
@@ -56,6 +62,10 @@ fn soundfont_row() -> Row {
         Detect::Threshold(0.0),
     )
     .with_lead(Samples(LEAD))
+    // A note ended on the frame it starts is silent (SF2 2.04 section 9.1.7: a
+    // release starts from the envelope's value, 0 at the onset), and a
+    // regenerated source's held note is closed on that frame.
+    .onset_release_is_silent(Samples(DELAY_STAGE))
 }
 
 tutti_graph::contract_tests!(event soundfont => soundfont_row());

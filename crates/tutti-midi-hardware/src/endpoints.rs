@@ -46,7 +46,7 @@ use tutti_midi_types::MidiOut;
 
 /// An open input connection: a live subscription to one endpoint.
 ///
-/// **Method-less by design.** Events flow through the [`InputProducerHandle`]
+/// **No method moves events.** Events flow through the [`InputProducerHandle`]
 /// the backend was handed, never through this value; what it carries is a
 /// *lifetime*. Dropping it closes the port, which is why
 /// [`MidiEndpoints::open_input`] returns it rather than `()` and why a caller
@@ -58,7 +58,15 @@ use tutti_midi_types::MidiOut;
 /// precisely because a bare `Send` says nothing about what dropping the value
 /// does — this is where a backend author reads that contract, which is a
 /// distinct thing to be even with no behaviour attached.
-pub trait InputConnection: Send {}
+pub trait InputConnection: Send {
+    /// Whether the backend is still delivering. A backend whose reader can end
+    /// on its own, on an error, returns `false` from then on: the port is
+    /// silent while the connection is still held. The default is `true`, for a
+    /// backend that cannot tell.
+    fn is_alive(&self) -> bool {
+        true
+    }
+}
 
 /// A running watch over the OS's device list. Method-less like
 /// [`InputConnection`]: it is a lifetime. Dropping it stops the backend's

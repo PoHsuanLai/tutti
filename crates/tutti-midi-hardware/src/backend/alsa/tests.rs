@@ -623,3 +623,163 @@ fn a_device_that_takes_a_departed_clients_number_is_added_once() {
         a = b;
     }
 }
+
+/// Sends a note-on (UMP MIDI 1.0 channel voice, group 0) from `device`'s port 0
+/// to whoever is subscribed.
+fn send_note(device: &Virtual) {
+    let mut ev = sys::snd_seq_ump_event_t {
+        source: sys::snd_seq_addr_t {
+            client: device.0.id().unwrap() as u8,
+            port: 0,
+        },
+        dest: sys::snd_seq_addr_t {
+            client: sys::SND_SEQ_ADDRESS_SUBSCRIBERS,
+            port: 0,
+        },
+        queue: sys::SND_SEQ_QUEUE_DIRECT,
+        ..Default::default()
+    };
+    ev.ump[0] = 0x2090_3C64;
+    // SAFETY: the client is open; `ev` is fully initialised and not retained.
+    let rc = unsafe { sys::snd_seq_ump_event_output_direct(device.0.raw(), &mut ev) };
+    assert!(rc >= 0, "send failed: {rc}");
+}
+
+/// A device and an input pump connected to its port, with the ring the pump
+/// fills and the drain that reads it.
+struct Pumped {
+    device: Virtual,
+    drain: crate::HardwareMidiDrain,
+    connection: Option<Box<dyn crate::endpoints::InputConnection>>,
+    _ports: std::sync::Arc<HardwareMidiInputs>,
+}
+
+impl Pumped {
+    fn open() -> Self {
+        let ports = std::sync::Arc::new(HardwareMidiInputs::new(64, 44_100.0));
+        let device = plug(&unique("pump"));
+        let id = super::enumerate::pack_id(device.0.id().unwrap(), 0);
+        let producer = ports.open_input_port("pump");
+        let connection = super::input::open(id, producer).expect("the pump to open");
+        let drain = crate::HardwareMidiDrain::new(std::sync::Arc::clone(&ports));
+        Self {
+            device,
+            drain,
+            connection: Some(connection),
+            _ports: ports,
+        }
+    }
+
+    /// Sends a note-on from the device.
+    fn send(&self) {
+        send_note(&self.device);
+    }
+
+    /// Spins on the drain until one event arrives, and how long that took.
+    fn arrival(&mut self, limit: Duration) -> Option<Duration> {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if self.drain.cycle_start_read_all_inputs(64, |_, _| {}) > 0 {
+                return Some(start.elapsed());
+            }
+            std::thread::yield_now();
+        }
+        None
+    }
+}
+
+/// Input sent to a pump that has been idle arrives promptly: the pump is woken
+/// by the sequencer's descriptor, not by a timer. The median of nine, against a
+/// bound far above a wake and far below any timer the pump could be using.
+/// Mutation: `PollSet::wait` replaced by `std::thread::sleep(200 ms)` fails
+/// (median about 100 ms).
+#[test]
+fn input_sent_to_an_idle_pump_arrives_promptly() {
+    let mut pumped = Pumped::open();
+    let mut seen = Vec::new();
+    for _ in 0..9 {
+        // Idle long enough for the pump to be parked in `poll`.
+        std::thread::sleep(Duration::from_millis(30));
+        pumped.send();
+        seen.push(pumped.arrival(PATIENCE).expect("the event to arrive"));
+    }
+    seen.sort();
+    assert!(
+        seen[4] < Duration::from_millis(25),
+        "median arrival {:?}",
+        seen[4]
+    );
+}
+
+/// An idle pump sleeps: it does not come back from `poll` on a timer.
+/// Mutation: `libc::poll`'s timeout `-1` changed to `1` fails (about 300 wakes).
+#[test]
+fn an_idle_pump_does_not_wake() {
+    let pumped = Pumped::open();
+    std::thread::sleep(Duration::from_millis(50));
+    let before = super::input::PUMP_WAKES.load(std::sync::atomic::Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(300));
+    let woke = super::input::PUMP_WAKES.load(std::sync::atomic::Ordering::SeqCst) - before;
+    // Another client's traffic does not reach this port, so nothing should wake it.
+    assert!(woke <= 3, "{woke} wakes in 300 ms idle");
+    drop(pumped);
+}
+
+/// Dropping an input returns while its pump is blocked in `poll`.
+/// Mutation: `AlsaInput::drop` not closing `stop` first makes the join wait
+/// forever, and the test fails at its deadline.
+#[test]
+fn dropping_an_input_stops_a_blocked_pump_promptly() {
+    let mut pumped = Pumped::open();
+    std::thread::sleep(Duration::from_millis(100));
+    let connection = pumped.connection.take().unwrap();
+    let (done, finished) = std::sync::mpsc::channel();
+    let start = Instant::now();
+    std::thread::spawn(move || {
+        drop(connection);
+        let _ = done.send(());
+    });
+    finished
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the pump to stop");
+    assert!(start.elapsed() < Duration::from_millis(500));
+}
+
+/// A pump whose reads keep failing ends, and the input reads as gone: the
+/// holder can see that the device went silent, and `connect_input` replaces it.
+/// The failure is injected (`INJECT_READ_ERROR`): a healthy sequencer has no
+/// other way to a failing read.
+/// Mutations: `ErrorRun::failed` always false (the pump spins on the error for
+/// ever); the `died` store removed from `die`; `is_alive` always true. Each
+/// fails the final wait.
+#[test]
+fn an_input_whose_pump_fails_reads_as_gone() {
+    let devices = Watched::open();
+    let ports = std::sync::Arc::new(HardwareMidiInputs::new(16, 44_100.0));
+    let name = unique("dies");
+    let device = plug(&name);
+    let id = info(until(&devices, added(&name))).id;
+    let input = open_input_when_listed(&devices, &id, &ports);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(input.is_alive(), "a running pump is alive");
+
+    // Clears the injection when the test ends, however it ends: a pump that
+    // keeps failing would otherwise never stop for the `drop` below.
+    struct Injected;
+    impl Drop for Injected {
+        fn drop(&mut self) {
+            super::input::INJECT_READ_ERROR.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _injected = Injected;
+    super::input::INJECT_READ_ERROR.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Wakes the parked pump; its reads then fail until the cap.
+    send_note(&device);
+    let deadline = Instant::now() + PATIENCE;
+    while input.is_alive() {
+        assert!(Instant::now() < deadline, "the pump never ended");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Dropping a dead input is as prompt as any.
+    drop(input);
+}

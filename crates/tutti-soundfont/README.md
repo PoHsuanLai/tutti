@@ -115,9 +115,10 @@ The spec's section 9.2 lists CC 66 as "soft" and CC 67 as "sostenuto", the
 reverse of MIDI 1.0; this player follows MIDI 1.0, which a keyboard sends, and
 ignores CC 67.
 
-A release is not honoured before the voice has sounded for 2 ms (the spec
-releases at once, which leaves a note released in its delay stage silent); a
-note struck and let go within that time still sounds.
+A release starts at once, from the envelope's value (SF2 9.1.7), so a note
+let go in its delay stage, where that value is 0, never sounds: a key struck
+again within a millisecond of its first strike leaves the first voice silent.
+There is no minimum sounding time.
 
 ## Ring-out and reset
 

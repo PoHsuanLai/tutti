@@ -9,25 +9,10 @@ use crate::error::{AuError, Result};
 use crate::handle::AuHandle;
 use crate::types::*;
 
-/// Input/output channel layouts for an AU.
-///
-/// [`ChannelLayout`] cannot represent a zero channel count, so the
-/// "has an input bus at all" distinction (effect vs. generator/instrument) is
-/// carried separately in [`AuBusLayout::has_input`]; `inputs` is meaningful
-/// only when that flag is set.
-#[derive(Debug, Clone, Copy)]
-pub struct AuBusLayout {
-    /// Input channel layout. Meaningful only when [`AuBusLayout::has_input`] is
-    /// `true`; generators and instruments have no input bus.
-    pub inputs: ChannelLayout,
-    /// Output channel layout.
-    pub outputs: ChannelLayout,
-    /// Whether the AU has an input bus at all (effects do; generators /
-    /// instruments do not). AU probing reports `0` input channels for the
-    /// latter, which [`ChannelLayout`] cannot encode, so the presence bit is
-    /// tracked here.
-    pub has_input: bool,
-}
+/// Input/output channel layouts for an AU: `tutti-au-ffi`'s [`BusLayout`], whose
+/// `has_input` carries the "has an input bus at all" distinction that
+/// [`ChannelLayout`] (which cannot be zero) cannot.
+pub use tutti_au_ffi::BusLayout as AuBusLayout;
 
 /// Aggregate stream configuration applied to an AU before initialization.
 ///

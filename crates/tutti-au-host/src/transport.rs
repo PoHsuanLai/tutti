@@ -120,10 +120,10 @@ pub(crate) fn set_presentation_latency(
     use crate::types::K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY;
 
     let seconds = f64::from(latency.0);
-    unit.set(
+    Ok(unit.set(
         K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY,
         direction.scope(),
         bus,
         &seconds,
-    )
+    )?)
 }

@@ -169,4 +169,4 @@ pub use stream::{AuBusLayout, StreamConfig};
 // the thing a host writes each block, so a caller cannot use that method
 // without being able to name it.
 #[cfg(target_os = "macos")]
-pub use transport::TransportState;
+pub use tutti_au_ffi::TransportState;

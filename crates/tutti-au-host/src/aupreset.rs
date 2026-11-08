@@ -341,7 +341,6 @@ fn parse_facts(bytes: &[u8], source: &str) -> Result<PresetFacts> {
                 NotADictionary::NotADictionary => "the property list's root is not a dictionary; \
                      a .aupreset root must be the AU's ClassInfo dictionary"
                     .to_string(),
-                _ => "not a preset dictionary".to_string(),
             },
         )
     })

@@ -120,7 +120,7 @@ pub struct AuInstance {
     /// [`has_editor`](Self::has_editor) / [`open_editor`](Self::open_editor) /
     /// [`close_editor`](Self::close_editor) read like their VST3 and CLAP
     /// counterparts, with the Cocoa specifics staying inside [`AuEditor`].
-    editor: Option<crate::editor::AuEditor>,
+    editor: Option<tutti_au_ffi::AuEditor>,
     /// Reassembles the SysEx7 packets [`send_midi`](Self::send_midi) is
     /// handed into whole messages, in a buffer reserved by
     /// [`initialize`](Self::initialize) and never grown, so the audio thread
@@ -147,7 +147,7 @@ enum State {
 
 impl AuInstance {
     /// Instantiates an AU in the `Loaded` (pre-init) state.
-    pub fn new(component: AudioComponent, sample_rate: f64, block_size: u32) -> Result<Self> {
+    pub fn new(component: AuComponentRef, sample_rate: f64, block_size: u32) -> Result<Self> {
         Ok(AuInstance {
             state: State::Loaded(AuLoaded::new(component, sample_rate, block_size)?),
             editor: None,
@@ -171,7 +171,7 @@ impl AuInstance {
     /// instance, not of the registry entry — so this needs an instantiated AU
     /// rather than answering from the component description.
     pub fn has_editor(&self) -> bool {
-        crate::editor::AuEditor::has_editor(self.unit())
+        tutti_au_ffi::AuEditor::has_editor(self.unit())
     }
 
     /// Embeds the AU's editor into `parent`, returning the size it made.
@@ -190,7 +190,7 @@ impl AuInstance {
         preferred: EditorSize,
     ) -> Result<EditorSize> {
         self.close_editor();
-        let editor = crate::editor::AuEditor::open(self.unit(), Some(parent), preferred)?;
+        let editor = tutti_au_ffi::AuEditor::open(self.unit(), Some(parent), preferred)?;
         let size = editor.editor_size();
         self.editor = Some(editor);
         Ok(size)
@@ -390,13 +390,13 @@ impl AuInstance {
     /// Returns [`AuError::OsStatus`] with the AU's own status for an id it does
     /// not declare.
     pub fn set_parameter(&mut self, id: u32, value: f32) -> Result<()> {
-        crate::listener::set_parameter_notifying(
+        Ok(crate::listener::set_parameter_notifying(
             self.unit(),
             id,
             crate::listener::EventAddress::GLOBAL,
             value,
             0,
-        )
+        )?)
     }
 
     /// Clears the AU's internal audio state — reverb tails, delay lines, filter
@@ -518,7 +518,10 @@ impl AuInstance {
     where
         F: Fn(crate::render_notify::RenderNotification) + Send + Sync + 'static,
     {
-        crate::render_notify::RenderNotify::new(self.unit(), callback)
+        Ok(crate::render_notify::RenderNotify::new(
+            self.unit(),
+            callback,
+        )?)
     }
 
     /// This instance's unit, wrapped so a render-notify callback can capture it.
@@ -534,7 +537,7 @@ impl AuInstance {
     /// [`add_render_notify`](Self::add_render_notify), since the callback has to
     /// be built first.
     pub fn render_unit(&self) -> crate::render_notify::RenderUnit {
-        crate::render_notify::RenderUnit::new(self.unit())
+        self.unit().render_unit()
     }
 
     /// Schedules parameter events into the render call currently in flight.
@@ -565,7 +568,12 @@ impl AuInstance {
         address: crate::render_notify::ScheduleAddress,
         events: &[crate::render_notify::ParamEvent],
     ) -> Result<()> {
-        crate::render_notify::schedule(self.unit(), id, address, events)
+        Ok(crate::render_notify::schedule(
+            &self.unit().render_unit(),
+            id,
+            address,
+            events,
+        )?)
     }
 
     /// Delivers a block of UMP MIDI events to an instrument / music-effect AU as
@@ -877,7 +885,7 @@ impl AuInstance {
     /// either: a panic escaping `sink` is caught and reported as a render error
     /// rather than unwinding into AudioToolbox.
     pub fn install_midi_output(&mut self, sink: MidiOutSink) -> Result<AuMidiOutput> {
-        midi_out::install(self.unit(), sink)
+        Ok(midi_out::install(self.unit(), sink)?)
     }
 
     /// Tells the AU where it sits in the host's project — `"track 3"`.
@@ -2009,7 +2017,7 @@ impl AuLoaded {
         // and withdraws that callback before freeing it.
         let renderer = Renderer::new(
             self.handle.unit(),
-            self.config.channels,
+            self.config.channels.into(),
             self.config.block_size,
         );
         let mut ready = AuActive {

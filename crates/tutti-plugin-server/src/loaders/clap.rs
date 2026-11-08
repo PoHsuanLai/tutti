@@ -29,8 +29,8 @@ use crate::plugin::AsyncEvent;
 ///
 /// The engine's own pool lives in the host process, and a plugin's `process`
 /// runs here, in another: a request cannot reach it. So the server keeps a
-/// `WorkerPool` of its own, with its helpers raised to the audio thread's
-/// realtime priority, as `tutti_graph::WorkerPool` requires of helpers. A
+/// `WorkerPool` of its own, with its helpers asking for the audio thread's
+/// priority (the highest the OS grants, not real time), as `tutti_graph::WorkerPool` requires of helpers. A
 /// plugin that does not implement the extension costs no threads.
 ///
 /// Sized by [`pool_participants`]: half the cores, at most 4, the server's
@@ -61,7 +61,9 @@ fn thread_pool() -> Option<std::sync::Arc<dyn tutti_graph::Pool>> {
                 .thread_name(|i| format!("tutti-clap-pool-{i}"))
                 .spin_budget(std::time::Duration::from_micros(10))
                 .idle(std::time::Duration::from_micros(50))
-                .start_handler(|_| crate::server::raise_to_realtime("a clap.thread-pool helper"))
+                .start_handler(|_| {
+                    crate::server::request_audio_priority("a clap.thread-pool helper")
+                })
                 .build()
                 .inspect_err(|e| {
                     tracing::warn!(

@@ -275,8 +275,10 @@ crates/          everything shipped; directory name = package name; no nesting
                  `AudioThreadCell`, `RtVec`, the position ring, the sequence lock,
                  the parallel executor's claims and job gate, `with_no_denormals`,
                  and the `ArcLend`/`Loan`/`Reader` re-export. Holds the lock-free
-                 and `unsafe` runtime structure, with every loom model; depends
-                 on `arc-lend` alone, `publish = false`
+                 and `unsafe` runtime structure, with every loom model, and the one
+                 thread-priority call (`request_priority`, which reports what the OS
+                 granted); depends on `arc-lend` alone (and `thread-priority`),
+                 `publish = false`
   tutti-ump      the Universal MIDI Packet: `Ump`, `MidiGroup`, `MidiChannel`,
                  `CCNumber`, and `Message` with `decode` and `From<Message> for Ump`,
                  which hold every message's bit positions (`Ump::words` and
@@ -471,7 +473,10 @@ list (normal and build edges; dev-dependencies may go anywhere).
   feature. `FileIn` is here because it is the decoder's streaming state.
 - `tutti-rt` names no tutti crate. Its one workspace-member dependency is
   `arc-lend`, which depends on nothing at all. It holds the engine's lock-free and
-  `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates). Keep
+  `unsafe` runtime structure (apart from `arc-lend` and the `-ffi` crates), and
+  the one thread-priority call, `request_priority` (a request for an ordinary-
+  scheduler raise, never real time, whose `PriorityOutcome` is what a caller
+  logs; the plugin server and the sampler's butler both use it). Keep
   every module private (`tutti_rt::RtVec`, never `tutti_rt::vec::RtVec`; CI runs
   the per-module path gate on it).
 - `tutti-dsp` depends on no tutti crate but `tutti-types` (its outside deps are

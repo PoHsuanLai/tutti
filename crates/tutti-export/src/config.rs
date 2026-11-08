@@ -124,12 +124,16 @@ pub struct EncodeConfig {
     /// Width of the written file. A graph wider than this is folded with the
     /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
     pub channels: ChannelLayout,
-    /// Which speaker each file channel feeds, for the WAV speaker mask: `None`
+    /// Which speaker each file channel feeds, for the WAV speaker mask and Ogg
+    /// Vorbis's channel order: `None`
     /// is the engine's SMPTE order for `channels` (mono, stereo and 5.1 named;
     /// a bare 4 or 8 unassigned), and a caller that knows it is writing quad
     /// passes [`ChannelTopology::quad`](tutti_types::ChannelTopology::quad).
-    /// Its width must be `channels`. Samples are never reordered; the other
-    /// formats ignore it.
+    /// Its width must be `channels`. WAV writes the samples as given. Ogg
+    /// Vorbis permutes 3 to 8 channels into the order its specification fixes
+    /// for the width, and refuses a 3, 4, 5 or 7 channel export with no
+    /// topology (the engine has no default order for those widths) or one it
+    /// cannot place. The other formats ignore it.
     pub topology: Option<tutti_types::ChannelTopology>,
 }
 

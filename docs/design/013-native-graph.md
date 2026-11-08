@@ -7927,6 +7927,30 @@ by width alone.
   SMPTE order (3, 5, 7, 9 to 11, 13 and up) refuse under `assuming_smpte`.
 - **Application** does not allocate: `frame` (mic, sampler), `planar_channel`
   (`DownmixNode`) and `planar_to_interleaved` (engine, export).
+- **Input edges** (part 2). A decoded file states its topology: `Wave::topology`
+  and `FileIn::topology` list the speakers in sample order (symphonia writes
+  planes in ascending flag order, and reorders Vorbis's own order into it;
+  checked against its source and an ffmpeg decode of a six-channel Ogg). A lone
+  channel is the centre. A flag with no `Speaker` (LFE2, rear-of-centre, wide,
+  high) is `Unknown(bit)`: it keeps its slot, and a fold refuses it
+  (`FoldError::Unnamed`) rather than guess. A `Wave` built from a count is SMPTE
+  where the engine has an order and `Discrete` elsewhere. The mic is a
+  `TapReader`/`TapWriter` pair (whole frames, any width), delivers the inputs it
+  was opened with (`MicIn::open_inputs`, `Fold::select`) as `Discrete`, and
+  `MicMonitorNode` is as wide as its ring. The sampler places a mono source with
+  `MonoSpread`, the lone-centre rule: the centre of a 6, 8 or 12-wide memory
+  voice (a 12-wide one is placed as an 8-wide frame, the most the sampler
+  writes; its centre is the same channel), the front pair of a stereo one, and
+  every channel where the width has no order (3, 4, 5, 7), as before. Its
+  other width mismatches still use `fold_frame`.
+- **No consumer builds a `Fold` from `Wave::topology()` or `FileIn::topology()`
+  yet.** The sampler still reconciles a file's width by `fold_frame` and ignores
+  the topology, so a file with LFE2 or wide/high channels is still played (and
+  mis-placed); the `FoldError::Unnamed` refusal reaches it with the output-path
+  PR, when the sampler's mismatches move to `Fold`.
+- **Quad** is spelled `FL FR BL BR` (WAVE's `0x33`). VST3 `k40Music` and AU
+  `Quadraphonic` decode to `FL FR SL SR`; `Fold` relabels between the two at
+  gain 1.0, so neither is rewritten.
 
 ## Decisions for the owner
 

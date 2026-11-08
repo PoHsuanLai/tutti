@@ -4,6 +4,8 @@
 //! *into* a `Wave` is `Wave::read`, behind the `decode-*` features; the buffer
 //! itself needs none.
 
+use tutti_types::{ChannelLayout, ChannelTopology};
+
 /// Multichannel audio held in memory, one `Vec<f32>` per channel.
 ///
 /// What a sampler voice plays and what `Wave::read` decodes a file into
@@ -35,6 +37,15 @@ pub struct Wave {
     sample_rate: tutti_types::SampleRate,
     /// Length in frames. 0 if there are no channels.
     len: usize,
+    /// Which speaker each channel feeds; its length is the channel count.
+    topology: ChannelTopology,
+}
+
+/// What a bare channel count is taken to mean: the engine's own order where it
+/// has one, else channels that feed no speaker.
+fn assumed(channels: usize) -> ChannelTopology {
+    let layout = ChannelLayout::from(channels);
+    ChannelTopology::smpte(layout).unwrap_or_else(|| ChannelTopology::discrete(layout))
 }
 
 impl std::fmt::Debug for Wave {
@@ -65,7 +76,38 @@ impl Wave {
                 .collect(),
             sample_rate: sample_rate.into(),
             len: 0,
+            topology: assumed(channels),
         }
+    }
+
+    /// Creates an empty wave whose channels feed the speakers of `topology`,
+    /// one channel per speaker.
+    ///
+    /// [`new`](Self::new) takes a bare count, and a count is not a placement:
+    /// it assumes the engine's own order ([`ChannelTopology::smpte`]) for the
+    /// widths that have one (1, 2, 6, 8 and 12) and channels that feed no
+    /// speaker ([`ChannelTopology::discrete`]) for the rest. Use this when the
+    /// source says more.
+    pub fn with_topology(
+        topology: ChannelTopology,
+        sample_rate: impl Into<tutti_types::SampleRate>,
+    ) -> Self {
+        Self {
+            vec: vec![Vec::new(); topology.positions().len()],
+            sample_rate: sample_rate.into(),
+            len: 0,
+            topology,
+        }
+    }
+
+    /// Returns which speaker each channel feeds.
+    ///
+    /// A decoded file states its own (see [`Wave::read`]); a wave built from a
+    /// count carries the assumption [`new`](Self::new) describes. Its length is
+    /// [`channels`](Self::channels).
+    #[inline]
+    pub fn topology(&self) -> &ChannelTopology {
+        &self.topology
     }
 
     /// Creates an all-zero wave `duration` seconds long, rounded to the
@@ -89,6 +131,7 @@ impl Wave {
             vec: vec![vec![0.0; length]; channels],
             sample_rate,
             len: length,
+            topology: assumed(channels),
         }
     }
 
@@ -98,6 +141,7 @@ impl Wave {
             vec: vec![samples.to_vec()],
             sample_rate: sample_rate.into(),
             len: samples.len(),
+            topology: assumed(1),
         }
     }
 

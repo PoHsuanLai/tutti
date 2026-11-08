@@ -13,6 +13,7 @@
 //! `WaveIn` deliberately does not implement [`AudioIn`](tutti_types::AudioIn) —
 //! see its type docs, which is where that decision and its reasoning live.
 
+use crate::voice::interp::MonoSpread;
 use crate::{MAX_SAMPLER_CHANNELS, nonempty};
 use tutti_codec::Wave;
 use tutti_types::{ChannelLayout, fold_frame};
@@ -23,13 +24,13 @@ use tutti_types::{ChannelLayout, fold_frame};
 /// # Channel policy
 ///
 /// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s: a
-/// mono source fans to every channel; anything else folds through
+/// mono source is placed by `mono` ([`MonoSpread`]); anything else folds through
 /// [`fold_frame`]. The two tiers must agree here — this is the butler's
 /// unpack and that is the RT reader, and a voice that unpacked differently on
 /// disk than in memory is precisely the divergence the shared kernel exists to
 /// prevent.
 #[inline]
-pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
+pub(crate) fn wave_frame_into(wave: &Wave, mono: &MonoSpread, idx: usize, out: &mut [f32]) {
     if out.is_empty() {
         return;
     }
@@ -39,9 +40,9 @@ pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
         return;
     }
 
-    // Mono fans out — a mono sample has no channel identity.
+    // A mono sample has no channel identity: the spread places it.
     if src_ch == 1 {
-        out.fill(wave.at(0, idx));
+        mono.frame(wave.at(0, idx), out);
         return;
     }
 
@@ -107,6 +108,8 @@ pub(crate) struct WaveIn<'w> {
     /// Output interleave width — independent of `wave.channels()`, which
     /// [`wave_frame_into`]'s policy reconciles per frame.
     channels: ChannelLayout,
+    /// Where a mono wave goes in a frame of [`channels`](Self::channels).
+    mono: MonoSpread,
     cursor: usize,
 }
 
@@ -116,9 +119,11 @@ impl<'w> WaveIn<'w> {
     /// independent of `wave.channels()`, which [`wave_frame_into`]'s policy
     /// reconciles per frame.
     pub(crate) fn new(wave: &'w Wave, start: usize, channels: impl Into<ChannelLayout>) -> Self {
+        let channels = nonempty(channels.into());
         Self {
             wave,
-            channels: nonempty(channels.into()),
+            channels,
+            mono: MonoSpread::to(channels),
             cursor: start,
         }
     }
@@ -142,7 +147,7 @@ impl<'w> WaveIn<'w> {
         let ch = self.channels.count() as usize;
         let mut frames = 0;
         for frame in out.chunks_exact_mut(ch) {
-            wave_frame_into(self.wave, self.cursor, frame);
+            wave_frame_into(self.wave, &self.mono, self.cursor, frame);
             self.cursor += 1;
             frames += 1;
         }
@@ -162,6 +167,12 @@ mod tests {
         wave
     }
 
+    /// `wave_frame_into` with the spread a reader of `out`'s width has.
+    fn frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
+        let mono = MonoSpread::to(ChannelLayout::from(out.len()));
+        wave_frame_into(wave, &mono, idx, out);
+    }
+
     fn indexed_wave(channels: usize, len: usize) -> Wave {
         let mut w = Wave::zero(channels, 48000.0, len as f64 / 48000.0);
         for i in 0..w.len() {
@@ -176,9 +187,9 @@ mod tests {
     fn wave_frame_reads_stereo() {
         let wave = test_wave(&[(0.1, 0.2), (0.3, 0.4)]);
         let mut f = [0.0f32; 2];
-        wave_frame_into(&wave, 0, &mut f);
+        frame_into(&wave, 0, &mut f);
         assert_eq!(f, [0.1, 0.2]);
-        wave_frame_into(&wave, 1, &mut f);
+        frame_into(&wave, 1, &mut f);
         assert_eq!(f, [0.3, 0.4]);
     }
 
@@ -186,7 +197,7 @@ mod tests {
     fn wave_frame_pads_zeros_past_end() {
         let wave = test_wave(&[(0.5, 0.6)]);
         let mut f = [9.0f32; 2];
-        wave_frame_into(&wave, 1, &mut f);
+        frame_into(&wave, 1, &mut f);
         assert_eq!(f, [0.0, 0.0]);
     }
 
@@ -195,36 +206,34 @@ mod tests {
         let mut wave = Wave::new(1, 48000.0);
         wave.push_frame(&[0.7]);
         let mut f = [0.0f32; 2];
-        wave_frame_into(&wave, 0, &mut f);
+        frame_into(&wave, 0, &mut f);
         assert_eq!(f, [0.7, 0.7]);
     }
 
     /// The butler's unpack must follow the SAME channel policy as the RT
-    /// reader's `interp::read_frame`: mono fans, anything else folds. Two
+    /// reader's `interp::read_frame`: mono is placed by the spread, anything else folds. Two
     /// implementations of a channel policy is how the two tiers drift apart.
     #[test]
     fn wave_frame_matches_the_rt_readers_channel_policy() {
-        // Mono fans to every channel.
+        // Mono goes to the centre of a 5.1 frame and nowhere else (the lone
+        // centre rule of `Fold`; the memory tier's pinned in `interp`).
         let mut mono = Wave::new(1, 48000.0);
         mono.push_frame(&[0.4]);
-        let mut f = [0.0f32; 6];
-        wave_frame_into(&mono, 0, &mut f);
-        assert!(
-            f.iter().all(|&s| (s - 0.4).abs() < 1e-6),
-            "mono must fan: {f:?}"
-        );
+        let mut f = [9.0f32; 6];
+        frame_into(&mono, 0, &mut f);
+        assert_eq!(f, [0.0, 0.0, 0.4, 0.0, 0.0, 0.0], "mono is the centre");
 
         // Six channels reach six slots.
         let six = indexed_wave(6, 4);
         let mut f = [0.0f32; 6];
-        wave_frame_into(&six, 0, &mut f);
+        frame_into(&six, 0, &mut f);
         for (c, &s) in f.iter().enumerate() {
             assert_eq!(s, (c + 1) as f32, "channel {c} dropped: {f:?}");
         }
 
         // Narrowing folds through the engine matrix rather than truncating.
         let mut narrow = [0.0f32; 2];
-        wave_frame_into(&six, 0, &mut narrow);
+        frame_into(&six, 0, &mut narrow);
         let mut expected = [0.0f32; 2];
         fold_frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut expected);
         assert_eq!(narrow, expected, "narrowing must use fold_frame");
@@ -232,7 +241,7 @@ mod tests {
         // Stereo into a wide frame zero-fills rather than fanning.
         let stereo = indexed_wave(2, 4);
         let mut wide = [9.0f32; 6];
-        wave_frame_into(&stereo, 0, &mut wide);
+        frame_into(&stereo, 0, &mut wide);
         assert_eq!(wide[0], 1.0);
         assert_eq!(wide[1], 2.0);
         assert!(

@@ -60,7 +60,7 @@ use tutti_types::SamplePosition;
 use crate::MAX_SAMPLER_CHANNELS;
 use crate::butler::{Arrangement, RingMap, RtState, SharedReader};
 
-use super::interp::{hermite_lanes, interpolate_taps};
+use super::interp::{MonoSpread, hermite_lanes, interpolate_taps};
 use super::loop_span::blend;
 use crate::lanes::{Gather, Lane};
 
@@ -635,7 +635,9 @@ fn read_ring(
         claim.frame(taps[2]),
         claim.frame(taps[3]),
     ];
-    interpolate_taps(src, frac, out, |c, t| frames[t].get(c));
+    // The ring is as wide as the voice (`LiveRead::new`), so a mono ring is a
+    // one-wide frame and the spread is the identity.
+    interpolate_taps(src, &MonoSpread::FAN, frac, out, |c, t| frames[t].get(c));
     true
 }
 
@@ -660,7 +662,7 @@ fn read_frames(
     if !taps.iter().all(|&t| t >= start && t < end) {
         return false;
     }
-    interpolate_taps(src, frac, out, |c, t| {
+    interpolate_taps(src, &MonoSpread::FAN, frac, out, |c, t| {
         data[(taps[t] - start) as usize * src + c]
     });
     true

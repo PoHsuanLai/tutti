@@ -970,3 +970,21 @@ fn select_picks_channels_one_to_one() {
         Err(FoldError::Empty(FoldEnd::Source))
     );
 }
+
+/// A list longer than a width can count is refused, so `narrow` cannot panic
+/// on a destination width. The longest list that still counts is built.
+///
+/// Mutation (run): removing the `try_from` guard in `select` panics in
+/// `dst_layout` (`narrow`) on the 65536-long list, failing this test.
+#[test]
+fn select_refuses_a_list_past_u16() {
+    let wide = ChannelLayout::from(2u16);
+    let ok = vec![1usize; usize::from(u16::MAX)];
+    let f = Fold::select(wide, &ok).unwrap();
+    assert_eq!(f.dst_layout().count(), u16::MAX);
+    let too_many = vec![1usize; usize::from(u16::MAX) + 1];
+    assert_eq!(
+        Fold::select(wide, &too_many),
+        Err(FoldError::TooWide(usize::from(u16::MAX) + 1))
+    );
+}

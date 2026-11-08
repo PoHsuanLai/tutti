@@ -230,13 +230,18 @@ impl EventList {
         self.try_begin().expect("the list is not in use")
     }
 
-    /// Empties the list, ready for the next block; counted in
-    /// [`busy`](Self::busy) and left as it is while a plugin thread holds it.
-    pub fn clear(&self) {
+    /// Empties the list, ready for the next block. While a plugin thread holds
+    /// it the list is left as it is, counted in [`busy`](Self::busy), and this
+    /// returns `false`: a caller that is about to hand the list to the plugin
+    /// must not, for it still holds the last block's events.
+    #[must_use = "a list that was not cleared still holds the last block"]
+    pub fn clear(&self) -> bool {
         if let Some(mut inner) = self.inner.try_borrow_mut() {
             inner.clear();
+            true
         } else {
             self.busy.fetch_add(1, Relaxed);
+            false
         }
     }
 
@@ -263,6 +268,13 @@ impl EventList {
     /// If a plugin thread is inside a call on the list.
     pub fn with_events<R>(&self, read: impl FnOnce(&Staged<'_>) -> R) -> R {
         self.try_with_events(read).expect("the list is not in use")
+    }
+
+    /// A hold on the list as a plugin thread inside `getEvent` has one, for a
+    /// conformance test of what the host does while the plugin holds it.
+    #[cfg(feature = "conformance")]
+    pub fn hold_as_plugin(&self) -> impl Sized + '_ {
+        self.inner.borrow()
     }
 
     /// How many calls the host skipped because a plugin thread held the list.

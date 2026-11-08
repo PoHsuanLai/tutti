@@ -234,10 +234,15 @@ impl std::fmt::Debug for Plugin {
 // are refused while an `AudioSide` exists. What runs beside `process` is what the
 // SDK allows in the `Processing` state; a plugin that races its own `process`
 // breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
-// and touch atomics, queues and mutexes only. The editor view and the
-// controller are UI-thread by spec: each entry takes a `&MainThread`, which
-// only the claiming thread holds. `Drop` has no token: it detaches the view if
-// `MainThread::current()` finds one, and leaks the view otherwise.
+// and touch atomics, queues and mutexes only. The editor view, the controller,
+// the component's buses and state, and the lifecycle calls are main-thread by
+// spec: each of those entries takes a `&MainThread`, which only the claiming
+// thread holds. The tokenless entries are `latency_samples` and `tail_samples`
+// (plain getters; see their docs), `is_active`, `set_processing` and
+// `audio_side` (audio-half bookkeeping under the claim), and the
+// `MidiLearn` handle, which forwards live MIDI. `Drop` has no token: with an
+// editor open and no main thread under it, it leaks the whole plugin (see
+// `Drop for Plugin`); otherwise it tears down as usual.
 unsafe impl Send for Plugin {}
 
 impl Plugin {

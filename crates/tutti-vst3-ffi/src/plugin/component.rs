@@ -39,7 +39,8 @@ impl Plugin {
     ///
     /// # Errors
     ///
-    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists.
+    /// [`Vst3Error::Busy`] while an [`AudioSide`] exists, or the plugin's
+    /// refusal (a plugin may decline an optional bus).
     pub fn activate_bus(
         &self,
         main: &MainThread,
@@ -51,11 +52,10 @@ impl Plugin {
         let _state = self.shared.lock_for_control()?;
         // SAFETY: a plain call on a live component, under the claim, with no
         // audio half out.
-        unsafe {
+        check(unsafe {
             self.component
-                .activateBus(media.raw(), direction.raw(), index, 1);
-        }
-        Ok(())
+                .activateBus(media.raw(), direction.raw(), index, 1)
+        })
     }
 
     /// Channel layout of **bus 0** of the audio buses in `direction`, exactly
@@ -218,6 +218,11 @@ impl Plugin {
     }
 
     /// `IAudioProcessor::getLatencySamples`.
+    ///
+    /// Takes no `&MainThread`, deliberately: a plain getter that the host reads
+    /// beside the processing figures. The SDK annotates both this and
+    /// `getTailSamples` `[UI-thread & Setup Done]`, so every caller in the host
+    /// crate holds a token anyway; the FFI signature leaves them tokenless.
     #[must_use]
     pub fn latency_samples(&self) -> u32 {
         // SAFETY: a plain getter on a live processor.

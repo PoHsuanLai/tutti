@@ -130,6 +130,10 @@ name = "vst3_process_no_alloc"
 path = "tests/vst3_process_no_alloc.rs"
 
 [[test]]
+name = "vst3_busy_list"
+path = "tests/vst3_busy_list.rs"
+
+[[test]]
 name = "vst3_run_loop"
 path = "tests/vst3_run_loop.rs"
 

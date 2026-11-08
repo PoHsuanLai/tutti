@@ -1466,13 +1466,13 @@ mod message {
             .collect();
         let list = EventList::input();
         let mut stager = Stager::default();
-        stager.stage(
+        assert!(stager.stage(
             &list,
             &InputEvents {
                 midi: &events,
                 ..Default::default()
             },
-        );
+        ));
         let seen: Vec<(i16, f32, i32)> = list.with_events(|staged| {
             staged
                 .events

@@ -355,7 +355,7 @@ impl PluginInfo {
 /// SDK defines, and the constants below must agree with the buffers the FFI
 /// crate binds for each, so an outside impl could only get one wrong.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// use tutti_plugin_types::Sample;
 /// use tutti_plugin_types::SampleFormat;
 /// use tutti_vst3_ffi::{BoundBuses, BusBuffers, SampleWidth, Vst3Error};

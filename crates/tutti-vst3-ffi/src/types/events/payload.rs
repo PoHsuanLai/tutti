@@ -133,7 +133,7 @@ impl ExpressionInt {
 /// `bytes`, so it must never exceed [`CAPACITY`](Self::CAPACITY), and every
 /// constructor keeps it so. A literal cannot say otherwise:
 ///
-/// ```compile_fail
+/// ```compile_fail,E0451
 /// use tutti_vst3_ffi::Data;
 ///
 /// let _ = Data { size: 1_000_000, data_type: 0, bytes: [0; 16] };

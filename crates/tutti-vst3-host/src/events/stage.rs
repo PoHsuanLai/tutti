@@ -66,11 +66,14 @@ impl Stager {
     /// in frame order, stably: on one frame they keep the order of the sources
     /// above and each source's own. Never allocates.
     ///
-    /// A plugin thread inside a call on `list` leaves it unstaged: the block
-    /// is skipped and counted ([`EventList::busy`]), never waited on.
-    pub fn stage(&mut self, list: &EventList, src: &InputEvents<'_>) {
+    /// A plugin thread inside a call on `list` leaves it unstaged, counted
+    /// ([`EventList::busy`]), never waited on, and this returns `false`: the
+    /// list still holds the last block, so the caller must not hand it to the
+    /// plugin.
+    #[must_use = "a list that was not staged still holds the last block"]
+    pub fn stage(&mut self, list: &EventList, src: &InputEvents<'_>) -> bool {
         let Some(mut stage) = list.try_begin() else {
-            return;
+            return false;
         };
         // In frame order, so a per-note bend sensitivity applies to the bends after it.
         for event in src.midi {
@@ -101,6 +104,7 @@ impl Stager {
             stage_with_text(&mut stage, |s| text.to_event(s));
         }
         stage.finish();
+        true
     }
 
     /// Stages one MIDI event: a SysEx7 packet through the reassembler (a

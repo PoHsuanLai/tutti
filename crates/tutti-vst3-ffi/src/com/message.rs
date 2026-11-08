@@ -18,11 +18,12 @@ use super::attr_list::AttributeList;
 #[derive(Default)]
 struct Ids {
     current: Option<Arc<CStr>>,
-    /// Ids handed out by pointer, held until the message is dropped:
-    /// `getMessageID` returns a bare pointer and releases the lock, so a
-    /// `setMessageID` must not free what an earlier pointer names. One entry
-    /// per distinct id lent.
-    lent: Vec<Arc<CStr>>,
+    /// The id `getMessageID` last pointed a plugin at, held until the next
+    /// `getMessageID` or the message's drop: it returns a bare pointer and
+    /// releases the lock, so a `setMessageID` must not free what that pointer
+    /// names. The SDK states no lifetime; the bound is one id, however often a
+    /// message is reused.
+    lent: Option<Arc<CStr>>,
 }
 
 pub struct Message {
@@ -47,16 +48,15 @@ impl IMessageTrait for Message {
     unsafe fn getMessageID(&self) -> FIDString {
         guard(std::ptr::null(), || {
             // A bare pointer: `FIDString` carries no lifetime. The id is kept
-            // in `lent` once handed out, so it stays valid until the message
-            // is dropped, whatever `setMessageID` does after.
+            // in `lent` once handed out, so it stays valid until the next
+            // `getMessageID` or the message's drop, whatever `setMessageID`
+            // does after.
             let mut ids = self.message_id.lock();
             let Some(current) = ids.current.clone() else {
                 return std::ptr::null();
             };
             let ptr = current.as_ptr();
-            if !ids.lent.iter().any(|held| Arc::ptr_eq(held, &current)) {
-                ids.lent.push(current);
-            }
+            ids.lent = Some(current);
             ptr
         })
     }
@@ -96,16 +96,18 @@ mod tests {
     /// The lifetime is observed through a `Weak` of the stored id, not by
     /// reading freed memory.
     ///
-    /// Mutation (run: fails at the `weak.upgrade()` assertion): drop the `lent`
-    /// push in `getMessageID`.
+    /// Mutations (run, each fails): drop the `lent` store in `getMessageID` ->
+    /// the `weak.upgrade()` assertion after the replacement; never release the
+    /// previous lent id (a growing list) -> the last `weak` assertion.
     #[test]
     fn an_id_pointer_outlives_its_replacement() {
         let message = Message::new();
+        let weak;
         // SAFETY: a COM method on a live object the test owns; the ids are NUL-terminated.
         unsafe {
             message.setMessageID(c"first".as_ptr());
             let seen = message.getMessageID();
-            let weak = Arc::downgrade(message.message_id.lock().current.as_ref().unwrap());
+            weak = Arc::downgrade(message.message_id.lock().current.as_ref().unwrap());
             message.setMessageID(c"second".as_ptr());
             assert!(
                 weak.upgrade().is_some(),
@@ -114,6 +116,19 @@ mod tests {
             assert_eq!(CStr::from_ptr(seen), c"first");
             assert_eq!(CStr::from_ptr(message.getMessageID()), c"second");
         }
-        assert_eq!(message.message_id.lock().lent.len(), 2);
+        // The second `getMessageID` replaced the lent first id: one is held.
+        assert!(message.message_id.lock().lent.is_some());
+        // SAFETY: as above.
+        unsafe {
+            for round in 0..1000 {
+                let id = std::ffi::CString::new(format!("round{round}")).unwrap();
+                message.setMessageID(id.as_ptr());
+                assert_eq!(CStr::from_ptr(message.getMessageID()), id.as_c_str());
+            }
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "the first id went at the next get"
+        );
     }
 }

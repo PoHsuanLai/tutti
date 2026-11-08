@@ -23,12 +23,14 @@ enum AttributeValue {
 
 pub struct AttributeList {
     attributes: Mutex<HashMap<String, AttributeValue>>,
-    /// The binary values `getBinary` has handed out a pointer to, held until
-    /// the list is dropped. `getBinary` returns a pointer with no lifetime
-    /// and releases the lock, so a `setBinary` on the same key (or a plugin
-    /// thread that reads after the sender reuses the message) must not free
-    /// what the pointer points at. One entry per distinct value lent.
-    lent: Mutex<Vec<Arc<[u8]>>>,
+    /// The value `getBinary` last handed a pointer to, per key.
+    /// `getBinary` returns a pointer with no lifetime and releases the lock, so
+    /// a `setBinary` on the same key must not free what the pointer points at.
+    /// The SDK states no lifetime; its reference host (`HostAttributeList`)
+    /// keeps the bytes until the attribute is next set. This keeps them longer,
+    /// until the next `getBinary` of the same key (or the list's drop), which
+    /// bounds the hold at one value per key however often a message is reused.
+    lent: Mutex<HashMap<String, Arc<[u8]>>>,
 }
 
 impl Class for AttributeList {
@@ -39,7 +41,7 @@ impl AttributeList {
     pub fn new() -> ComWrapper<Self> {
         ComWrapper::new(Self {
             attributes: Mutex::new(HashMap::new()),
-            lent: Mutex::new(Vec::new()),
+            lent: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -214,9 +216,11 @@ impl IAttributeListTrait for AttributeList {
     ///
     /// # Lifetime
     ///
-    /// The pointer stays valid until the list is dropped: the value is kept in
-    /// `lent` when it is handed out, so a later `setBinary` on the same key
-    /// replaces the attribute and leaves the bytes this pointer names alone.
+    /// The pointer stays valid until the next `getBinary` of the same key or the
+    /// list's drop: the value is kept in `lent` when it is handed out, so a
+    /// `setBinary` on the key replaces the attribute and leaves the bytes this
+    /// pointer names alone. One value is held per key, so a message reused for
+    /// many rounds holds a bounded amount.
     unsafe fn getBinary(
         &self,
         id: AttrID,
@@ -235,12 +239,7 @@ impl IAttributeListTrait for AttributeList {
             };
             match value {
                 Some(v) => {
-                    {
-                        let mut lent = self.lent.lock();
-                        if !lent.iter().any(|held| Arc::ptr_eq(held, &v)) {
-                            lent.push(Arc::clone(&v));
-                        }
-                    }
+                    self.lent.lock().insert(k, Arc::clone(&v));
                     if !data.is_null() {
                         // SAFETY: a COM method: the plugin passes pointers valid for this call,
                         // per the
@@ -458,8 +457,9 @@ mod tests {
     /// reading freed memory: the buffer must still be alive after the key is
     /// replaced.
     ///
-    /// Mutation (run: fails at the `weak.upgrade()` assertion): have `getBinary`
-    /// skip the `lent` push.
+    /// Mutations (run, each fails): have `getBinary` skip the `lent` insert ->
+    /// the `weak.upgrade()` assertion; make `lent` a list that only grows ->
+    /// the bounded assertion.
     #[test]
     fn a_binary_pointer_outlives_its_replacement() {
         let attrs = AttributeList::new();
@@ -498,16 +498,23 @@ mod tests {
             );
         }
         assert_eq!(attrs.lent.lock().len(), 1, "one value lent");
+        // Rounds of set and get on the key hold one value, not one per round.
         // SAFETY: as above.
         unsafe {
-            let (mut again, mut n) = (std::ptr::null(), 0u32);
-            assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
-            assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
+            for round in 0..1000u32 {
+                let bytes = round.to_le_bytes();
+                assert_eq!(
+                    ptr.setBinary(key.as_ptr(), bytes.as_ptr().cast(), 4),
+                    kResultOk
+                );
+                let (mut again, mut n) = (std::ptr::null(), 0u32);
+                assert_eq!(ptr.getBinary(key.as_ptr(), &mut again, &mut n), kResultOk);
+            }
         }
-        assert_eq!(
-            attrs.lent.lock().len(),
-            2,
-            "a value is lent once, however often it is read"
+        assert_eq!(attrs.lent.lock().len(), 1, "bounded: one value per key");
+        assert!(
+            weak.upgrade().is_none(),
+            "the first buffer went at the next get"
         );
     }
 }

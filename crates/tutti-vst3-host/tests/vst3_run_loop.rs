@@ -233,3 +233,28 @@ fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
 fn main_thread() -> tutti_plugin_types::MainThread {
     tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }
+
+/// **`activate_bus` reports the plugin's refusal.** The shared plugin has the
+/// one bus of each kind, at index 0, and refuses any other index; the result
+/// used to be dropped and `Ok(())` returned.
+///
+/// Mutation (run, fails): discard the `activateBus` result in
+/// `Plugin::activate_bus` and return `Ok(())` again.
+#[test]
+fn activate_bus_reports_a_refusal() {
+    let main = MainThread::claim().unwrap();
+    let module = module();
+    let mut plugin = create(&module);
+    plugin.initialize_component(&main).expect("initialize");
+    use tutti_vst3_ffi::{BusDirection, MediaType};
+    assert!(
+        plugin
+            .activate_bus(&main, MediaType::Audio, BusDirection::Input, 0)
+            .is_ok()
+    );
+    assert!(
+        plugin
+            .activate_bus(&main, MediaType::Audio, BusDirection::Input, 5)
+            .is_err()
+    );
+}

@@ -72,6 +72,9 @@ struct Plugin {
     /// This class refuses `initialize`, so a test can show that a host does not
     /// `terminate` what never initialized.
     refuses_initialize: bool,
+    /// This class refuses `setProcessing(1)`, so a test can show the host
+    /// reports it.
+    refuses_processing: bool,
     /// The thread `initialize` ran on: `terminate` on another aborts, as a
     /// plugin that keeps thread-affine state may crash.
     init_thread: AtomicUsize,
@@ -193,8 +196,9 @@ impl IComponentTrait for Plugin {
     unsafe fn getRoutingInfo(&self, _a: *mut RoutingInfo, _b: *mut RoutingInfo) -> tresult {
         kNotImplemented
     }
-    unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, _i: i32, _s: TBool) -> tresult {
-        kResultOk
+    unsafe fn activateBus(&self, _m: MediaType, _d: BusDirection, i: i32, _s: TBool) -> tresult {
+        // Each kind has the one bus, index 0.
+        if i == 0 { kResultOk } else { kInvalidArgument }
     }
     unsafe fn setActive(&self, _state: TBool) -> tresult {
         kResultOk
@@ -282,6 +286,9 @@ impl IAudioProcessorTrait for Plugin {
         kResultOk
     }
     unsafe fn setProcessing(&self, state: TBool) -> tresult {
+        if state != 0 && self.refuses_processing {
+            return kInternalError;
+        }
         if state == 0 {
             self.core
                 .reset(&mut self.dsp.lock().unwrap_or_else(|e| e.into_inner()));
@@ -499,6 +506,9 @@ type HostContext = std::sync::Arc<view::SharedContext>;
 #[cfg(not(target_os = "linux"))]
 type HostContext = ();
 
+/// The class that refuses `setProcessing(1)`.
+const STUBBORN_CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0003);
+
 /// The class that refuses `initialize`.
 const REFUSING_CID: TUID = uid(0x5453_4850, 0x5348_4152, 0x4544_5445, 0x5354_0002);
 
@@ -513,6 +523,10 @@ fn class_at(index: i32) -> Option<(TUID, &'static str)> {
         1 => Some((
             REFUSING_CID,
             "Tutti Shared Test Plugin (initialize refused)",
+        )),
+        2 => Some((
+            STUBBORN_CID,
+            "Tutti Shared Test Plugin (processing refused)",
         )),
         _ => None,
     }
@@ -583,7 +597,7 @@ impl IPluginFactoryTrait for Factory {
         kResultOk
     }
     unsafe fn countClasses(&self) -> i32 {
-        2
+        3
     }
     unsafe fn getClassInfo(&self, index: i32, info: *mut PClassInfo) -> tresult {
         let Some((cid, name)) = class_at(index) else {
@@ -605,7 +619,7 @@ impl IPluginFactoryTrait for Factory {
     ) -> tresult {
         // SAFETY, for this function's `unsafe` blocks: `cid` points at a TUID; `iid` and `obj` are `queryInterface`'s arguments.
         let wanted = unsafe { *(cid as *const TUID) };
-        if wanted != CID && wanted != REFUSING_CID {
+        if wanted != CID && wanted != REFUSING_CID && wanted != STUBBORN_CID {
             return kInvalidArgument;
         }
         let plugin = ComWrapper::new(Plugin {
@@ -613,6 +627,7 @@ impl IPluginFactoryTrait for Factory {
             dsp: Mutex::new(Dsp::default()),
             initialized: AtomicBool::new(false),
             refuses_initialize: wanted == REFUSING_CID,
+            refuses_processing: wanted == STUBBORN_CID,
             init_thread: AtomicUsize::new(0),
             context: self.context.clone(),
         });

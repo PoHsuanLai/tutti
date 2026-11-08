@@ -488,12 +488,12 @@ fn staging_is_allocation_free_after_warmup() {
         note_off(64, 96),
     ];
     stage(&list, events);
-    list.clear();
+    assert!(list.clear());
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
             stage(&list, events);
-            list.clear();
+            assert!(list.clear());
         }
     });
 }
@@ -504,7 +504,7 @@ fn clear_empties_a_staged_block() {
     let list = EventList::input();
     stage(&list, [note_on(60, 0), note_off(60, 10)]);
     assert_eq!(list.len(), 2);
-    list.clear();
+    assert!(list.clear());
     assert_eq!(list.len(), 0);
 }
 
@@ -663,7 +663,7 @@ fn a_list_in_use_by_the_plugin_is_skipped_and_counted() {
     {
         let _plugin_reading = list.inner.borrow();
         assert!(list.try_begin().is_none());
-        list.clear();
+        assert!(!list.clear());
         list.add_dropped(1);
         assert_eq!(list.busy(), 3);
     }

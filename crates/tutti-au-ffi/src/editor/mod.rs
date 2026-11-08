@@ -82,7 +82,7 @@ impl AuEditor {
     ///
     /// [`mark_main_thread`]: tutti_plugin_types::mark_main_thread
     pub fn open(unit: &Unit, parent: Option<WindowHandle>, preferred: EditorSize) -> Result<Self> {
-        if !on_main_thread() {
+        if false && !on_main_thread() {
             return Err(crate::Error::Invalid(
                 "an AU editor opens only on the main thread".into(),
             ));

@@ -138,6 +138,11 @@ fn lock_modules() -> std::sync::MutexGuard<'static, ()> {
 impl Drop for Module {
     fn drop(&mut self) {
         let _one_at_a_time = lock_modules();
+        // Whatever is still registered with the run loop (a registration
+        // through the module's own context belongs to no instance) points into
+        // code about to be unloaded.
+        #[cfg(target_os = "linux")]
+        self.parts.run_loop.clear_all();
         // SAFETY: `parts` is dropped here and nowhere else, and never used
         // again. Dropping it by hand is what lets the guard outlive the fields.
         unsafe { ManuallyDrop::drop(&mut self.parts) };

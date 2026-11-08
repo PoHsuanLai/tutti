@@ -30,7 +30,8 @@
 //! timer and one file descriptor when the view is attached, as VSTGUI does on
 //! Linux, and unregisters both when it is removed; `EDITOR_LEAKY` registers the
 //! same and never unregisters them. The host's run-loop bookkeeping is the
-//! witness, so the behaviour needs no transcript. The view also aborts the
+//! witness, so the behaviour needs no transcript. `EDITOR_FAILING` registers and
+//! then fails `attached`; `EDITOR_LATE` registers (and leaks) from `onSize`. The view also aborts the
 //! process if `removed` runs on a thread other than the one `attached` did.
 //!
 //! # State
@@ -84,8 +85,13 @@ pub const EDITOR_NONE: u32 = 0;
 pub const EDITOR_TIDY: u32 = 1;
 /// The view registers as [`EDITOR_TIDY`]'s does and never unregisters.
 pub const EDITOR_LEAKY: u32 = 2;
+/// The view registers as [`EDITOR_LEAKY`]'s does during `attached`, then fails it.
+pub const EDITOR_FAILING: u32 = 3;
+/// The view registers nothing in `attached` and a timer and a file descriptor in
+/// `onSize`, and never unregisters them.
+pub const EDITOR_LATE: u32 = 4;
 /// Number of editor behaviours.
-pub const EDITORS: u32 = 3;
+pub const EDITORS: u32 = 5;
 /// Latency of the Delay mode, in frames.
 pub const LATENCY: u32 = 137;
 /// Reported tail, in frames.

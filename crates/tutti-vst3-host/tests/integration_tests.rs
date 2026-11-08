@@ -769,9 +769,11 @@ fn plain_range_probe_recovers_real_ranges() {
 
     for path in &corpus {
         let resolved = resolve_bundle(path);
-        let Ok(loaded) =
-            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
-        else {
+        let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(
+            &main_thread(),
+            &resolved,
+            tutti_vst3_host::LoadOptions::new(),
+        ) else {
             eprintln!("  {}: failed to load, skipping", path.display());
             continue;
         };

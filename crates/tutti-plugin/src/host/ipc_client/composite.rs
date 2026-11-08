@@ -331,7 +331,7 @@ impl PluginBridge {
         if guard.is_none() {
             tracing::info!("[bridge] open_editor: lazy-loading in-process GUI");
             let instance =
-                crate::format::gui::load_gui_instance(&self.plugin_path).map_err(|e| {
+                crate::format::gui::load_gui_instance(main, &self.plugin_path).map_err(|e| {
                     EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
                 })?;
             tracing::info!("[bridge] open_editor: in-process GUI loaded successfully");
@@ -390,7 +390,7 @@ impl PluginBridge {
         let mut guard = self.gui.lock().map_err(|_| EditorError::Busy)?;
         if guard.is_none() {
             let instance =
-                crate::format::gui::load_gui_instance(&self.plugin_path).map_err(|e| {
+                crate::format::gui::load_gui_instance(main, &self.plugin_path).map_err(|e| {
                     EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
                 })?;
             *guard = Some(instance);

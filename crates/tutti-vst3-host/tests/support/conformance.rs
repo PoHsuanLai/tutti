@@ -378,7 +378,7 @@ pub fn require_sample(bundle: &str) -> Vst3Loaded {
                 .collect::<Vec<_>>()
         )
     });
-    Vst3Loaded::load(&path, LoadOptions::new())
+    Vst3Loaded::load(&main_thread(), &path, LoadOptions::new())
         .unwrap_or_else(|e| panic!("{bundle} is present at {path:?} but failed to load: {e:?}"))
 }
 
@@ -698,7 +698,7 @@ pub fn supports_f64(path: &Path) -> bool {
 
 /// Load a named sample bundle, or `None` when this machine lacks it.
 pub fn sample(name: &str) -> Option<Vst3Loaded> {
-    Vst3Loaded::load(&sample_path(name)?, LoadOptions::new()).ok()
+    Vst3Loaded::load(&main_thread(), &sample_path(name)?, LoadOptions::new()).ok()
 }
 
 /// Locate a sample bundle by file name, **searching both plugin directories**.

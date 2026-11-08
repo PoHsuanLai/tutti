@@ -16,9 +16,11 @@ use std::time::Duration;
 use tutti_plugin_types::{ContentScale, MainThread, WindowHandle};
 use tutti_vst3_ffi::{Module, Plugin};
 
-/// `core::EDITOR_TIDY` and `core::EDITOR_LEAKY`, from the plugin's spec.
+/// `core::EDITOR_*`, from the plugin's spec.
 const TIDY: u32 = 1;
 const LEAKY: u32 = 2;
+const FAILING: u32 = 3;
+const LATE: u32 = 4;
 
 fn module() -> Arc<Module> {
     let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
@@ -36,20 +38,29 @@ fn create(module: &Arc<Module>) -> Plugin {
 /// A plugin initialized, with its editor behaviour set through its state.
 fn plugin_with_editor(module: &Arc<Module>, editor: u32) -> Plugin {
     let mut plugin = create(module);
-    plugin.initialize_component().expect("initialize");
-    let mut blob = plugin.component_state().expect("state");
+    plugin
+        .initialize_component(&main_thread())
+        .expect("initialize");
+    let mut blob = plugin.component_state(&main_thread()).expect("state");
     // The second byte of the mode word, at offset 4.
     blob[4..8].copy_from_slice(&(editor << 8).to_le_bytes());
-    plugin.set_component_state(&blob).expect("load");
+    plugin
+        .set_component_state(&main_thread(), &blob)
+        .expect("load");
     plugin
 }
 
-fn open(plugin: &mut Plugin, main: &MainThread) {
+fn try_open(
+    plugin: &mut Plugin,
+    main: &MainThread,
+) -> Result<Option<tutti_plugin_types::EditorSize>, tutti_vst3_ffi::EditorError> {
     // SAFETY: the plugin ignores the handle; it is never dereferenced.
     let parent = unsafe { WindowHandle::from_raw(std::ptr::dangling_mut()) };
-    plugin
-        .open_editor(main, parent, ContentScale::default())
-        .expect("the editor opens");
+    plugin.open_editor(main, parent, ContentScale::default())
+}
+
+fn open(plugin: &mut Plugin, main: &MainThread) {
+    try_open(plugin, main).expect("the editor opens");
 }
 
 fn registered(plugin: &Plugin) -> (usize, usize) {
@@ -119,6 +130,72 @@ fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
     assert_eq!(bystander.run_loop_activity().timers_fired, 0);
 }
 
+/// **A view that registers and then fails `attached` leaves nothing in the run
+/// loop.** `open_editor` returns the error; the registration the view made
+/// before failing has no editor to be closed with.
+///
+/// Mutation (run, fails): drop the `purge_run_loop` call in `open_editor`'s
+/// error arm -> the module's run loop still holds (1, 1).
+#[test]
+fn a_failed_attach_leaves_nothing_in_the_run_loop() {
+    let main = MainThread::claim().unwrap();
+    let module = module();
+    let mut plugin = plugin_with_editor(&module, FAILING);
+    assert!(try_open(&mut plugin, &main).is_err());
+    assert_eq!(registered(&plugin), (0, 0));
+    std::thread::sleep(Duration::from_millis(5));
+    plugin.run_editor_loop_iteration(&main);
+    assert_eq!(plugin.run_loop_activity().timers_fired, 0);
+}
+
+/// **A registration made in a later call (a toolkit's first layout, in
+/// `onSize`) is the plugin's, and goes when its editor closes.** It arrives
+/// through the module's own host context, which names no owner; the scope
+/// every token-taking call runs under is what names one.
+///
+/// Mutation (run, fails): drop the `let _scope = self.scoped(main)` in
+/// `resize_editor` -> the registration is unowned, the purge leaves it, and the
+/// last assertion reads (1, 1).
+#[test]
+fn a_registration_from_a_later_call_is_purged_on_close() {
+    let main = MainThread::claim().unwrap();
+    let module = module();
+    let mut plugin = plugin_with_editor(&module, LATE);
+    open(&mut plugin, &main);
+    assert_eq!(registered(&plugin), (0, 0), "attached registered nothing");
+    plugin
+        .resize_editor(
+            &main,
+            tutti_plugin_types::EditorSize {
+                width: 300,
+                height: 200,
+            },
+        )
+        .expect("resize");
+    assert_eq!(registered(&plugin), (1, 1), "onSize registered");
+    plugin.close_editor(&main);
+    assert_eq!(registered(&plugin), (0, 0));
+}
+
+/// **A class whose `initialize` fails is not terminated.** The shared plugin's
+/// second class refuses `initialize`, and aborts the process on `terminate`
+/// without a successful one.
+///
+/// Mutation (run, aborts): terminate the component whether or not it
+/// initialized (`if true` for the `component_initialized` check in
+/// `Plugin::drop`).
+#[test]
+fn a_plugin_whose_initialize_failed_is_not_terminated() {
+    let module = module();
+    let class = module
+        .classes()
+        .find(|c| c.name.contains("refused"))
+        .expect("the class that refuses initialize");
+    let mut plugin = module.create_plugin(&class.cid).expect("a plugin");
+    assert!(plugin.initialize_component(&main_thread()).is_err());
+    drop(plugin);
+}
+
 /// **A plugin that never initialized is not terminated.** The SDK allows
 /// `terminate` after a successful `initialize` only, and the shared plugin
 /// aborts the process on any other.
@@ -132,15 +209,15 @@ fn a_plugin_never_initialized_is_not_terminated() {
     drop(create(&module));
 }
 
-/// **A plugin dropped off the main thread with its editor open leaves the view
-/// alone.** A view belongs to the thread that attached it (the shared plugin's
-/// aborts the process if `removed` runs elsewhere, as a toolkit may crash), and
-/// `Drop` has no token to prove the thread. It detaches only where
-/// `MainThread::current` finds one, and leaks the view otherwise; the run loop
-/// is purged either way.
+/// **A plugin dropped off the main thread with its editor open is leaked whole.**
+/// A view belongs to the thread that attached it, and `setActive(0)`/`terminate`
+/// are main-thread calls (the shared plugin aborts the process if `removed` runs
+/// off the attaching thread or `terminate` off the initializing one, as a real
+/// plugin may crash). `Drop` has no token, so with an editor open and no main
+/// thread under it, it tears nothing down; the run loop is purged all the same.
 ///
-/// Mutation: make `release_editor` close the editor whatever `main` is ->
-/// `removed` runs on the spawned thread and the plugin aborts the test.
+/// Mutation (run, aborts): skip the leak (`if false && ...` for the check at the
+/// head of `Plugin::drop`) -> `terminate` runs on the spawned thread.
 #[test]
 fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
     let main = MainThread::claim().unwrap();
@@ -151,4 +228,8 @@ fn a_plugin_dropped_off_the_main_thread_is_not_detached_there() {
     assert_eq!(registered(&bystander), (1, 1));
     std::thread::spawn(move || drop(plugin)).join().unwrap();
     assert_eq!(registered(&bystander), (0, 0), "purged though not detached");
+}
+
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

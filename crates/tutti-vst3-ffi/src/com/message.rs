@@ -93,9 +93,11 @@ mod tests {
     /// **An id pointer `getMessageID` returned stays readable after
     /// `setMessageID` replaces the id.**
     ///
-    /// Mutation: drop the `lent` push in `getMessageID` -> the replaced id is
-    /// freed and the read below is a use-after-free (visible under Miri; the
-    /// string compare can pass by luck), and the `lent` count assertion fails.
+    /// The lifetime is observed through a `Weak` of the stored id, not by
+    /// reading freed memory.
+    ///
+    /// Mutation (run: fails at the `weak.upgrade()` assertion): drop the `lent`
+    /// push in `getMessageID`.
     #[test]
     fn an_id_pointer_outlives_its_replacement() {
         let message = Message::new();
@@ -103,7 +105,12 @@ mod tests {
         unsafe {
             message.setMessageID(c"first".as_ptr());
             let seen = message.getMessageID();
+            let weak = Arc::downgrade(message.message_id.lock().current.as_ref().unwrap());
             message.setMessageID(c"second".as_ptr());
+            assert!(
+                weak.upgrade().is_some(),
+                "the lent id outlives its replacement"
+            );
             assert_eq!(CStr::from_ptr(seen), c"first");
             assert_eq!(CStr::from_ptr(message.getMessageID()), c"second");
         }

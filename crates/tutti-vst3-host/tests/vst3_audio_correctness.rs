@@ -1374,7 +1374,8 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 #[test]
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
-    let loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
     let want = Some(tutti_vst3_host::process_context_flags::NEED_TEMPO);
     assert_eq!(
@@ -1495,7 +1496,8 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     use tutti_plugin_types::{Control, Normalized};
 
     let _guard = plugin_guard();
-    let mut loaded = Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads");
+    let mut loaded = Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+        .expect("audio-probe loads");
 
     let listed = loaded.parameter_ids(&main_thread());
     let unlisted = (0..=u32::MAX)
@@ -1540,7 +1542,8 @@ mod loaded_writes {
     const RAMP_LEVEL: f64 = 0.75;
 
     fn load() -> Vst3Loaded {
-        Vst3Loaded::load(probe_path(), LoadOptions::new()).expect("audio-probe loads")
+        Vst3Loaded::load(&main_thread(), probe_path(), LoadOptions::new())
+            .expect("audio-probe loads")
     }
 
     fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {

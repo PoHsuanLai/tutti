@@ -656,7 +656,7 @@ fn a_plugin_text_is_copied_into_the_arena() {
 /// audio thread's `try_begin` and `try_with_events` used to `borrow`, which
 /// panics when a plugin thread is inside `getEventCount` or `getEvent`.
 ///
-/// Mutation: make `try_begin` use `borrow_mut` again -> the first call panics.
+/// Mutation (run, fails): make `try_begin` use `borrow_mut` again -> the first call panics.
 #[test]
 fn a_list_in_use_by_the_plugin_is_skipped_and_counted() {
     let list = EventList::input();

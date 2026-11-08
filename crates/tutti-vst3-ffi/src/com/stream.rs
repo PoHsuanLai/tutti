@@ -84,11 +84,6 @@ impl IBStreamTrait for BStream {
                 return kInvalidArgument;
             }
             let mut cursor = self.cursor.lock();
-            // `Cursor<Vec<u8>>` zero-fills up to a seek position on write, so an
-            // unbounded position is an unbounded allocation.
-            if cursor.position().saturating_add(num_bytes as u64) > MAX_STREAM_BYTES {
-                return kInvalidArgument;
-            }
             // SAFETY: `buffer` is non-null and `num_bytes` positive (both checked above); the
             // ABI makes `buffer` valid for `num_bytes` writable bytes for the call, and the
             // plugin does not alias it while this method runs.
@@ -417,8 +412,8 @@ mod tests {
     /// writing.** `Cursor<Vec<u8>>` zero-fills up to the position, so a seek to
     /// 1 TiB and a one-byte write used to ask for a terabyte.
     ///
-    /// Mutation: delete the position check in `write` (and the `Ok(_)` arm of
-    /// `seek`) -> the write below succeeds, allocating 1 GiB, and the test
+    /// Mutations (run, each fails): delete the position check in `write`; or the
+    /// `Ok(_)` arm of `seek` -> the write below succeeds, allocating 1 GiB, and the test
     /// fails on its status.
     #[test]
     fn a_far_seek_then_a_write_is_refused() {

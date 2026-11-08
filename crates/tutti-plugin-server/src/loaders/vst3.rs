@@ -121,8 +121,8 @@ impl Vst3Instance {
         before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let loaded =
-            Vst3Loaded::load(&resolved, LoadOptions::new()).map_err(|e| map_vst3_error(e, path))?;
+        let loaded = Vst3Loaded::load(main, &resolved, LoadOptions::new())
+            .map_err(|e| map_vst3_error(e, path))?;
         let format = if prefer_f64 && loaded.plugin_info().supports_f64 {
             SampleFormat::Float64
         } else {

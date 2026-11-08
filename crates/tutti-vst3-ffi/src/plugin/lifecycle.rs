@@ -42,7 +42,8 @@ impl Plugin {
     /// # Errors
     ///
     /// The plugin's refusal.
-    pub fn initialize_component(&mut self) -> Result<(), Vst3Error> {
+    pub fn initialize_component(&mut self, main: &MainThread) -> Result<(), Vst3Error> {
+        let _scope = self.scoped(main);
         let host = self.host_context()?;
         // SAFETY: `host` is the live host application, which `self` keeps
         // alive; `initialize` borrows it.
@@ -77,7 +78,8 @@ impl Plugin {
     /// # Errors
     ///
     /// The plugin's refusal.
-    pub fn initialize_controller(&mut self) -> Result<(), Vst3Error> {
+    pub fn initialize_controller(&mut self, main: &MainThread) -> Result<(), Vst3Error> {
+        let _scope = self.scoped(main);
         let host = self.host_context()?;
         if let ControllerLink::Separate(ctrl) = &self.controller {
             // SAFETY: `host` is the live host application, which `self` keeps
@@ -104,7 +106,8 @@ impl Plugin {
     /// the first and refused the second would be wired one way only, which
     /// surfaces much later as an editor that does not track the processor.
     #[must_use]
-    pub fn connect_controller(&self) -> bool {
+    pub fn connect_controller(&self, main: &MainThread) -> bool {
+        let _scope = self.scoped(main);
         let ControllerLink::Separate(ctrl) = &self.controller else {
             return false;
         };
@@ -147,7 +150,8 @@ impl Plugin {
     }
 
     /// Gives the controller the host's component handler.
-    pub fn attach_component_handler(&self) {
+    pub fn attach_component_handler(&self, main: &MainThread) {
+        let _scope = self.scoped(main);
         let Some(ctrl) = self.controller.get() else {
             return;
         };
@@ -171,7 +175,8 @@ impl Plugin {
     ///
     /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; otherwise the plugin's
     /// refusal, after which a failed activation leaves the plugin inactive.
-    pub fn set_active(&mut self, active: bool) -> Result<(), Vst3Error> {
+    pub fn set_active(&mut self, main: &MainThread, active: bool) -> Result<(), Vst3Error> {
+        let _scope = self.scoped(main);
         let mut state = self.shared.lock_for_control()?;
         // SAFETY: a plain call on a live component, under the claim, with no
         // audio half out.
@@ -184,8 +189,8 @@ impl Plugin {
             // the plugin as it stands once active (it may settle its buses
             // only then), and forgotten on deactivation.
             state.buses = (active && result.is_ok()).then(|| Arrangement {
-                inputs: self.audio_bus_channels(BusDirection::Input).into(),
-                outputs: self.audio_bus_channels(BusDirection::Output).into(),
+                inputs: self.audio_bus_channels(main, BusDirection::Input).into(),
+                outputs: self.audio_bus_channels(main, BusDirection::Output).into(),
             });
         }
         result
@@ -240,6 +245,35 @@ impl Drop for Plugin {
         // out one in flight. The state is cleared under the lock, so an audio
         // thread that gets the lock later finds neither an active nor a set-up
         // plugin (and `retired`, checked again under the lock).
+        // An editor open and no main thread under us: the view cannot be
+        // detached here (a toolkit's `removed` on another thread is a crash),
+        // and `setActive(0)`/`terminate` are main-thread calls too, as is
+        // closing a module whose view is still alive. So the whole plugin is
+        // leaked: every COM object gets one extra reference that is never
+        // released, the module one extra owner, and no `terminate` runs. The
+        // run loop is purged, so nothing of it is ever called. Memory and a
+        // loaded library are the cost; the control side has no retirement path
+        // for a `Plugin` to route this to.
+        if self.editor.is_some() && MainThread::current().is_none() {
+            self.purge_run_loop();
+            eprintln!(
+                "tutti-vst3-ffi: a plugin with an open editor was dropped off the main thread; \
+                 leaking the plugin and its module rather than tear it down on this thread"
+            );
+            std::mem::forget(self.component.clone());
+            std::mem::forget(self.processor.clone());
+            if let Some(controller) = self.controller.get() {
+                std::mem::forget(controller.clone());
+            }
+            std::mem::forget(self.application.clone());
+            std::mem::forget(self.handler.clone());
+            if let Some(editor) = &self.editor {
+                std::mem::forget(editor.view.clone());
+                std::mem::forget(editor.plug_frame.clone());
+            }
+            std::mem::forget(self.module.clone());
+            return;
+        }
         let shared = self.shared.clone();
         let (state, was_active) = shared.teardown();
         // A plugin dropped while activated (its halves were never rejoined)

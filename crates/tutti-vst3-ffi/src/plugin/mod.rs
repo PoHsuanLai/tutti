@@ -209,6 +209,15 @@ pub struct Plugin {
     module: Arc<Module>,
 }
 
+/// The guard [`Plugin::scoped`] returns.
+#[cfg(target_os = "linux")]
+pub(super) struct CallScope(
+    #[allow(dead_code, reason = "held for its drop")] crate::com::OwnedScope,
+);
+/// The guard [`Plugin::scoped`] returns: nothing to scope off Linux.
+#[cfg(not(target_os = "linux"))]
+pub(super) struct CallScope;
+
 impl std::fmt::Debug for Plugin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Plugin")
@@ -283,6 +292,22 @@ impl Plugin {
             _not_sync: PhantomData,
             module: module.clone(),
         })
+    }
+
+    /// Until it drops, what the plugin registers with the module's run loop
+    /// through a context that names no owner is this plugin's. Every call into
+    /// the plugin that takes a `&MainThread` runs under one: a toolkit
+    /// registers lazily (in `onSize`, on an event, from a controller call), not
+    /// only inside `attached`.
+    pub(super) fn scoped(&self, _main: &MainThread) -> CallScope {
+        #[cfg(target_os = "linux")]
+        {
+            CallScope(self.module.run_loop().scope_owned(self.owner))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            CallScope
+        }
     }
 
     /// The module this plugin came from.

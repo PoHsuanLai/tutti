@@ -147,11 +147,11 @@ impl Vst3Loaded {
     /// empty and the component half is still returned.
     pub(in crate::host) fn read_state(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         undrained: &[(ParamId, Normalized)],
     ) -> Result<Vec<u8>> {
-        let component = self.read_component_state()?;
-        let controller = self.read_controller_state();
+        let component = self.read_component_state(main)?;
+        let controller = self.read_controller_state(main);
         let pending = latest_per_parameter(
             self.carried
                 .iter()
@@ -168,8 +168,8 @@ impl Vst3Loaded {
     /// Failure is folded into `None` rather than surfaced: see
     /// [`save_state`](tutti_plugin_types::Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
-    pub(super) fn read_controller_state(&self) -> Option<Vec<u8>> {
-        self.plugin.controller_state()
+    pub(super) fn read_controller_state(&self, main: &MainThread) -> Option<Vec<u8>> {
+        self.plugin.controller_state(main)
     }
 
     /// Writes the component's `getState` blob into a fresh `IBStream` and return
@@ -178,9 +178,9 @@ impl Vst3Loaded {
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
     /// only a genuine error tresult is surfaced as [`Vst3Error::PluginError`].
-    pub(super) fn read_component_state(&self) -> Result<Vec<u8>> {
+    pub(super) fn read_component_state(&self, main: &MainThread) -> Result<Vec<u8>> {
         self.plugin
-            .component_state()
+            .component_state(main)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: e.code(),
@@ -194,8 +194,8 @@ impl Vst3Loaded {
     /// return `kResultFalse` when they have no controller state to load) —
     /// this is best-effort synchronisation, shared by
     /// [`load_state`](tutti_plugin_types::Control::load_state) and [`initialize`](Self::initialize).
-    pub(super) fn push_controller_state(&self, data: &[u8]) {
-        self.plugin.sync_controller_to_component_state(data);
+    pub(super) fn push_controller_state(&self, main: &MainThread, data: &[u8]) {
+        self.plugin.sync_controller_to_component_state(main, data);
     }
 
     /// Restores plugin state from a blob produced by [`save_state`](tutti_plugin_types::Control::save_state).
@@ -240,17 +240,17 @@ impl Vst3Loaded {
         // parameters, which the component's stream cannot hold.
         if !component.is_empty() {
             self.plugin
-                .set_component_state(component)
+                .set_component_state(main, component)
                 .map_err(|e| Vst3Error::PluginError {
                     stage: LoadStage::Initialization,
                     code: e.code(),
                 })?;
 
-            self.push_controller_state(component);
+            self.push_controller_state(main, component);
         }
 
         if let Some(controller) = controller {
-            self.push_controller_own_state(controller);
+            self.push_controller_own_state(main, controller);
         }
 
         // The writes the component's stream did not yet hold are newer than it:
@@ -274,8 +274,8 @@ impl Vst3Loaded {
     /// [`read_controller_state`](Self::read_controller_state): losing the UI's
     /// scroll position must not fail a project load whose audio state restored
     /// perfectly.
-    pub(super) fn push_controller_own_state(&self, data: &[u8]) {
-        self.plugin.set_controller_state(data);
+    pub(super) fn push_controller_own_state(&self, main: &MainThread, data: &[u8]) {
+        self.plugin.set_controller_state(main, data);
     }
 }
 

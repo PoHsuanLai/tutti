@@ -19,10 +19,10 @@ pub(crate) struct Vst3GuiInstance {
 }
 
 impl Vst3GuiInstance {
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(main: &MainThread, path: &Path) -> Result<Self> {
         let resolved = crate::host::subprocess::resolve_bundle(path)?;
         let inner =
-            tutti_vst3_host::Vst3Loaded::load(&resolved, tutti_vst3_host::LoadOptions::new())
+            tutti_vst3_host::Vst3Loaded::load(main, &resolved, tutti_vst3_host::LoadOptions::new())
                 .map_err(|e| BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Opening,
@@ -108,8 +108,8 @@ impl PluginEditor for Vst3GuiInstance {
         edits
     }
 
-    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
-        let inner = self.inner.editor_capabilities();
+    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+        let inner = self.inner.editor_capabilities(main);
         EditorCapabilities {
             resize: inner.resize,
             appkit_autoresize_friendly: true,

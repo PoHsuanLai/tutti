@@ -432,7 +432,7 @@ fn concurrent_edits_all_reach_the_host() {
 /// event documents a normalized value and a host writes automation from it, so
 /// a plugin's `f64` is clamped at the edge, as `addPoint`'s is.
 ///
-/// Mutation: pass `value_normalized` through unclamped -> 7.5 and -3.0 come out
+/// Mutation (run, fails): pass `value_normalized` through unclamped -> 7.5 and -3.0 come out
 /// as sent and the test fails.
 #[test]
 fn an_edit_value_is_clamped_to_the_unit_interval() {

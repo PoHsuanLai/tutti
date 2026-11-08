@@ -51,7 +51,7 @@ impl Vst3Loaded {
     /// a near-miss on a display name is the likely cause), or the component
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
-    pub fn load(path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
+    pub fn load(main: &MainThread, path: impl AsRef<Path>, options: LoadOptions) -> Result<Self> {
         Self::reap_retired();
         let path = path.as_ref();
         let class_name = options.class.as_deref();
@@ -90,7 +90,10 @@ impl Vst3Loaded {
             class: options.class,
         };
         let mut loaded = Self::assemble(library, plugin, info, origin);
-        loaded.initialize()?;
+        loaded.initialize(main)?;
+        // Whether there is an editor is asked of the plugin here, on the main
+        // thread; `Control::info` has no token and reads the answer.
+        let _ = loaded.descriptor.set(loaded.measured_descriptor(main));
         Ok(loaded)
     }
 
@@ -248,9 +251,9 @@ impl Vst3Loaded {
         self.midi_learn.is_armed()
     }
 
-    pub(super) fn initialize(&mut self) -> Result<()> {
+    pub(super) fn initialize(&mut self, main: &MainThread) -> Result<()> {
         self.plugin
-            .initialize_component()
+            .initialize_component(main)
             .map_err(|e| Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: e.code(),
@@ -260,7 +263,8 @@ impl Vst3Loaded {
             (BusDirection::Input, "input"),
             (BusDirection::Output, "output"),
         ] {
-            if let Some((index, channels)) = self.plugin.first_unrepresentable_audio_bus(direction)
+            if let Some((index, channels)) =
+                self.plugin.first_unrepresentable_audio_bus(main, direction)
             {
                 return Err(Vst3Error::BusTooWide {
                     direction: name,
@@ -270,7 +274,7 @@ impl Vst3Loaded {
             }
         }
 
-        self.reconcile_bus_counts();
+        self.reconcile_bus_counts(main);
 
         self.plugin.read_process_context_requirements();
 
@@ -280,14 +284,14 @@ impl Vst3Loaded {
         // wired to the component. Neither answer is fatal: the plugin simply
         // runs unconnected.
         if separate_controller {
-            let _ = self.plugin.initialize_controller();
-            let _connected = self.plugin.connect_controller();
+            let _ = self.plugin.initialize_controller(main);
+            let _connected = self.plugin.connect_controller(main);
         }
 
-        self.plugin.attach_component_handler();
+        self.plugin.attach_component_handler(main);
 
-        if separate_controller && let Ok(state) = self.read_component_state() {
-            self.push_controller_state(&state);
+        if separate_controller && let Ok(state) = self.read_component_state(main) {
+            self.push_controller_state(main, &state);
         }
 
         Ok(())

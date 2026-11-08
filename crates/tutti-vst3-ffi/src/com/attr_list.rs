@@ -454,10 +454,12 @@ mod tests {
     /// stored `Vec`, which `setBinary` dropped: a plugin that read it after the
     /// sender reused the message read freed memory.
     ///
-    /// Mutation: have `getBinary` skip the `lent` push -> the replacing
-    /// `setBinary` frees the first buffer and the read below is a
-    /// use-after-free (Miri or the allocator's poisoning shows it; the byte
-    /// check can pass by luck).
+    /// The lifetime is observed through a `Weak` of the stored buffer, not by
+    /// reading freed memory: the buffer must still be alive after the key is
+    /// replaced.
+    ///
+    /// Mutation (run: fails at the `weak.upgrade()` assertion): have `getBinary`
+    /// skip the `lent` push.
     #[test]
     fn a_binary_pointer_outlives_its_replacement() {
         let attrs = AttributeList::new();
@@ -474,11 +476,22 @@ mod tests {
                 kResultOk
             );
             assert_eq!(ptr.getBinary(key.as_ptr(), &mut data, &mut size), kResultOk);
+        }
+        let weak = match attrs.attributes.lock().get("blob") {
+            Some(AttributeValue::Binary(v)) => Arc::downgrade(v),
+            other => panic!("expected Binary, got {other:?}"),
+        };
+        // SAFETY: as above.
+        unsafe {
             let second = [9u8; 4096];
             assert_eq!(
                 ptr.setBinary(key.as_ptr(), second.as_ptr().cast(), 4096),
                 kResultOk
             );
+        }
+        assert!(weak.upgrade().is_some(), "the lent buffer outlives its key");
+        // SAFETY: the buffer is alive (just asserted), held by `lent`.
+        unsafe {
             assert_eq!(
                 std::slice::from_raw_parts(data.cast::<u8>(), size as usize),
                 &first

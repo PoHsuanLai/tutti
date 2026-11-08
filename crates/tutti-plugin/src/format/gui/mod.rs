@@ -94,7 +94,7 @@ pub(crate) trait PluginEditor: Send {
 }
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
+pub(crate) fn load_gui_instance(main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
     use tutti_plugin_db::{PluginFormat, format_from_path};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
@@ -105,7 +105,7 @@ pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
 
     match format {
         #[cfg(feature = "vst3")]
-        PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(path)?)),
+        PluginFormat::Vst3 => Ok(Box::new(vst3::Vst3GuiInstance::load(main, path)?)),
         #[cfg(feature = "clap")]
         PluginFormat::Clap => Ok(Box::new(clap::ClapGuiInstance::load(path)?)),
         #[cfg(all(feature = "au", target_os = "macos"))]
@@ -136,7 +136,7 @@ pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
 }
 
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
-pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
+pub(crate) fn load_gui_instance(_main: &MainThread, path: &Path) -> Result<Box<dyn PluginEditor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,

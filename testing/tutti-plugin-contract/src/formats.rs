@@ -36,7 +36,7 @@ impl Format for Vst2 {
 }
 
 fn vst3(module: std::path::PathBuf) -> tutti_vst3_host::Vst3Loaded {
-    tutti_vst3_host::Vst3Loaded::load(module, tutti_vst3_host::LoadOptions::new())
+    tutti_vst3_host::Vst3Loaded::load(&main_thread(), module, tutti_vst3_host::LoadOptions::new())
         .expect("the plugin loads")
 }
 

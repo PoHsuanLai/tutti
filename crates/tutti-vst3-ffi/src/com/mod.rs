@@ -50,5 +50,5 @@ pub(crate) use param_changes::param_changes_ptr;
 pub use param_queue::MIN_POINT_ROOM;
 pub(crate) use plug_frame::HostPlugFrame;
 #[cfg(target_os = "linux")]
-pub(crate) use run_loop::{Owner, RunLoop};
+pub(crate) use run_loop::{OwnedScope, Owner, RunLoop};
 pub(crate) use stream::BStream;

@@ -7,7 +7,8 @@ impl Plugin {
 
     /// How many parameters the controller reports; zero without a controller.
     #[must_use]
-    pub fn parameter_count(&self, _main: &MainThread) -> u32 {
+    pub fn parameter_count(&self, main: &MainThread) -> u32 {
+        let _scope = self.scoped(main);
         match self.controller.get() {
             // SAFETY: a plain getter on a live controller.
             // A negative count is a broken plugin's, not four billion parameters.
@@ -18,7 +19,8 @@ impl Plugin {
 
     /// The `index`-th parameter's description.
     #[must_use]
-    pub fn parameter_info(&self, _main: &MainThread, index: u32) -> Option<Vst3ParameterInfo> {
+    pub fn parameter_info(&self, main: &MainThread, index: u32) -> Option<Vst3ParameterInfo> {
+        let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::ParameterInfo>();
         // SAFETY: `raw` is a valid out-parameter.
@@ -29,7 +31,8 @@ impl Plugin {
     /// `normalizedParamToPlain` for the parameter `id`; `None` without a
     /// controller.
     #[must_use]
-    pub fn normalized_to_plain(&self, _main: &MainThread, id: u32, normalized: f64) -> Option<f64> {
+    pub fn normalized_to_plain(&self, main: &MainThread, id: u32, normalized: f64) -> Option<f64> {
+        let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         // SAFETY: a plain conversion on a live controller.
         Some(unsafe { controller.normalizedParamToPlain(id, normalized) })
@@ -37,14 +40,16 @@ impl Plugin {
 
     /// The parameter's current normalized value; `None` without a controller.
     #[must_use]
-    pub fn parameter_normalized(&self, _main: &MainThread, id: ParamId) -> Option<f64> {
+    pub fn parameter_normalized(&self, main: &MainThread, id: ParamId) -> Option<f64> {
+        let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         // SAFETY: a plain getter on a live controller.
         Some(unsafe { controller.getParamNormalized(id.get()) })
     }
 
     /// Sets the parameter's normalized value; `false` without a controller.
-    pub fn set_parameter_normalized(&self, _main: &MainThread, id: ParamId, value: f64) -> bool {
+    pub fn set_parameter_normalized(&self, main: &MainThread, id: ParamId, value: f64) -> bool {
+        let _scope = self.scoped(main);
         let Some(controller) = self.controller.get() else {
             return false;
         };
@@ -57,10 +62,11 @@ impl Plugin {
     #[must_use]
     pub fn parameter_text(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         id: ParamId,
         normalized: f64,
     ) -> Option<String> {
+        let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         let mut string: String128 = [0; 128];
         // SAFETY: `string` is a valid out-parameter of the size the ABI names.
@@ -74,7 +80,8 @@ impl Plugin {
     ///
     /// `text` is cut to 127 UTF-16 units, the `String128` the ABI allows.
     #[must_use]
-    pub fn parameter_from_text(&self, _main: &MainThread, id: ParamId, text: &str) -> Option<f64> {
+    pub fn parameter_from_text(&self, main: &MainThread, id: ParamId, text: &str) -> Option<f64> {
+        let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
         buf.push(0);
@@ -92,7 +99,8 @@ impl Plugin {
     /// `INoteExpressionController::getNoteExpressionCount`, floored at zero;
     /// zero without the interface.
     #[must_use]
-    pub fn note_expression_count(&self, _main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn note_expression_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+        let _scope = self.scoped(main);
         match &self.ext.note_expression {
             // SAFETY: a plain getter on a live interface.
             Some(c) => unsafe {
@@ -108,11 +116,12 @@ impl Plugin {
     #[must_use]
     pub fn note_expression_info(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
     ) -> Option<Vst3NoteExpressionInfo> {
+        let _scope = self.scoped(main);
         let controller = self.ext.note_expression.as_ref()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::NoteExpressionTypeInfo>();
         // SAFETY: `raw` is a valid out-parameter.
@@ -131,7 +140,8 @@ impl Plugin {
     /// `IKeyswitchController::getKeyswitchCount`, floored at zero; zero without
     /// the interface.
     #[must_use]
-    pub fn keyswitch_count(&self, _main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn keyswitch_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+        let _scope = self.scoped(main);
         match &self.ext.keyswitch {
             // SAFETY: a plain getter on a live interface.
             Some(c) => unsafe {
@@ -147,11 +157,12 @@ impl Plugin {
     #[must_use]
     pub fn keyswitch_info(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
         index: u32,
     ) -> Option<Vst3KeyswitchInfo> {
+        let _scope = self.scoped(main);
         let controller = self.ext.keyswitch.as_ref()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::KeyswitchInfo>();
         // SAFETY: `raw` is a valid out-parameter.
@@ -168,10 +179,11 @@ impl Plugin {
     #[must_use]
     pub fn compatible_param_id(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: u32,
     ) -> Option<u32> {
+        let _scope = self.scoped(main);
         let remap = self.ext.remap_param_id.as_ref()?;
         let mut new_param_id: u32 = 0;
         // SAFETY: the uid points at 16 bytes for the call and the id is a valid
@@ -190,10 +202,11 @@ impl Plugin {
     #[must_use]
     pub fn param_id_for_function_name(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         unit_id: i32,
         function_name: &str,
     ) -> Option<u32> {
+        let _scope = self.scoped(main);
         let ctrl = self.ext.parameter_function_name.as_ref()?;
         let c_name = std::ffi::CString::new(function_name).ok()?;
         let mut param_id: u32 = 0;
@@ -208,7 +221,8 @@ impl Plugin {
 
     /// Every program list the plugin declares.
     #[must_use]
-    pub fn program_lists(&self, _main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+    pub fn program_lists(&self, main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+        let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
         };
@@ -229,6 +243,7 @@ impl Plugin {
     /// against the lists the plugin actually has.
     #[must_use]
     pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
+        let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
         };
@@ -252,10 +267,11 @@ impl Plugin {
     #[must_use]
     pub fn program_name(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         list_id: i32,
         program_index: u32,
     ) -> Option<String> {
+        let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         let mut name: String128 = [0; 128];
         // SAFETY: `name` is a valid out-parameter of the size the ABI names.
@@ -268,7 +284,8 @@ impl Plugin {
 
     /// The selected unit.
     #[must_use]
-    pub fn selected_unit(&self, _main: &MainThread) -> Option<i32> {
+    pub fn selected_unit(&self, main: &MainThread) -> Option<i32> {
+        let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         // SAFETY: a plain getter on a live interface.
         Some(unsafe { ctrl.getSelectedUnit() })
@@ -276,7 +293,8 @@ impl Plugin {
 
     /// Selects a unit; `false` without the interface or if refused.
     #[must_use]
-    pub fn select_unit(&self, _main: &MainThread, unit_id: i32) -> bool {
+    pub fn select_unit(&self, main: &MainThread, unit_id: i32) -> bool {
+        let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return false;
         };
@@ -289,12 +307,13 @@ impl Plugin {
     #[must_use]
     pub fn unit_by_bus(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         media_type: i32,
         direction: i32,
         bus_index: i32,
         channel: i32,
     ) -> Option<i32> {
+        let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         let mut unit_id: i32 = 0;
         // SAFETY: `unit_id` is a valid out-parameter.
@@ -311,10 +330,11 @@ impl Plugin {
     #[must_use]
     pub fn physical_ui_mapping(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         bus_index: i32,
         channel: i16,
     ) -> Vec<(u32, u32)> {
+        let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.physical_ui_mapping.as_ref() else {
             return Vec::new();
         };
@@ -346,12 +366,13 @@ impl Plugin {
     #[must_use]
     pub fn xml_representation(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         vendor: &str,
         name: &str,
         version: &str,
         host: &str,
     ) -> Option<String> {
+        let _scope = self.scoped(main);
         let ctrl = self.ext.xml_representation.as_ref()?;
         let mut info = zeroed::<RepresentationInfo>();
         fill_char8_64(&mut info.vendor, vendor);
@@ -369,7 +390,8 @@ impl Plugin {
     }
 
     /// `IAutomationState::setAutomationState`; `false` without the interface.
-    pub fn set_automation_state(&self, _main: &MainThread, state: i32) -> bool {
+    pub fn set_automation_state(&self, main: &MainThread, state: i32) -> bool {
+        let _scope = self.scoped(main);
         match &self.ext.automation_state {
             Some(a) => {
                 // SAFETY: a plain call on a live interface.
@@ -384,7 +406,8 @@ impl Plugin {
 
     /// Whether the controller implements `IMidiMapping`.
     #[must_use]
-    pub fn has_midi_mapping(&self, _main: &MainThread) -> bool {
+    pub fn has_midi_mapping(&self, main: &MainThread) -> bool {
+        let _scope = self.scoped(main);
         self.controller
             .get()
             .is_some_and(|c| c.cast::<IMidiMapping>().is_some())
@@ -395,10 +418,11 @@ impl Plugin {
     #[must_use]
     pub fn midi_controller_assignment(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         channel: i16,
         controller: i16,
     ) -> Option<u32> {
+        let _scope = self.scoped(main);
         let mapping = self.controller.get()?.cast::<IMidiMapping>()?;
         self.midi_assignment_with(&mapping, channel, controller)
     }
@@ -420,11 +444,12 @@ impl Plugin {
     /// whole sweep.
     pub fn midi_controller_assignments(
         &self,
-        _main: &MainThread,
+        main: &MainThread,
         channels: std::ops::Range<i16>,
         controllers: std::ops::Range<i16>,
         mut visit: impl FnMut(i16, i16, u32),
     ) {
+        let _scope = self.scoped(main);
         let Some(mapping) = self.controller.get().and_then(|c| c.cast::<IMidiMapping>()) else {
             return;
         };

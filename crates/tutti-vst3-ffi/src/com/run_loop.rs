@@ -42,8 +42,8 @@ use std::time::{Duration, Instant};
 use tutti_plugin_types::MainThread;
 
 use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
-use vst3::Steinberg::kResultOk;
 use vst3::Steinberg::tresult;
+use vst3::Steinberg::{kResultFalse, kResultOk};
 
 /// Which plugin instance a registration belongs to.
 ///
@@ -124,6 +124,26 @@ opaque_debug!(RunLoop);
 enum Due {
     Timer(usize, *mut ITimerHandler, Option<Owner>),
     Fd(i32, *mut IEventHandler, Option<Owner>),
+}
+
+/// [`Scope`] for a caller that cannot borrow the loop: it holds the `Arc`.
+pub(crate) struct OwnedScope {
+    run_loop: Arc<RunLoop>,
+    previous: Option<Owner>,
+}
+
+impl Drop for OwnedScope {
+    fn drop(&mut self) {
+        self.run_loop.state().scope = self.previous;
+    }
+}
+
+/// Whether the caller is the thread that claimed the process's main thread.
+/// `IRunLoop` is UI-thread by spec, and a registration from another thread
+/// would put a handler in a table only the UI thread may dispatch from: it is
+/// refused (`kResultFalse`).
+fn on_main_thread() -> bool {
+    MainThread::current().is_some()
 }
 
 /// While it lives, registrations that name no owner belong to one
@@ -256,6 +276,26 @@ impl RunLoop {
         }
     }
 
+    /// [`scope`](Self::scope), holding the loop by `Arc` instead of borrowing it.
+    pub(crate) fn scope_owned(self: &Arc<Self>, owner: Owner) -> OwnedScope {
+        let previous = self.state().scope.replace(owner);
+        OwnedScope {
+            run_loop: Arc::clone(self),
+            previous,
+        }
+    }
+
+    /// Forgets every registration, owned or not. The module calls it as it
+    /// closes: whatever a plugin left registered through the module's own
+    /// context (owned by no instance) points into code about to be unloaded.
+    pub(crate) fn clear_all(&self) -> usize {
+        let mut state = self.state();
+        let n = state.timers.len() + state.event_handlers.len();
+        state.timers.clear();
+        state.event_handlers.clear();
+        n
+    }
+
     /// Forgets every timer and file descriptor `owner` registered and has not
     /// unregistered, and says how many. Nothing is dereferenced. The host calls
     /// it when an editor closes and when a plugin drops: from then on nothing
@@ -303,6 +343,9 @@ impl RunLoop {
         if handler.is_null() {
             return kResultOk;
         }
+        if !on_main_thread() {
+            return kResultFalse;
+        }
         let mut state = self.state();
         let owner = owner.or(state.scope);
         state.event_handlers.insert(fd, FdEntry { handler, owner });
@@ -335,6 +378,9 @@ impl RunLoop {
     ) -> tresult {
         if handler.is_null() {
             return kResultOk;
+        }
+        if !on_main_thread() {
+            return kResultFalse;
         }
         // Zero would mean "every iteration"; clamp so a misbehaving plugin
         // cannot spin the host's UI loop.
@@ -407,6 +453,7 @@ mod tests {
             .expect("the class implements ITimerHandler")
             .as_ptr();
         handler.me.store(ptr, Ordering::SeqCst);
+        let _main = MainThread::claim().unwrap();
         // SAFETY: `ptr` is the live `handler` above, which outlives its
         // registration (it unregisters itself, and is dropped after the test).
         unsafe { run_loop.register_timer(ptr, 1, None) };
@@ -441,13 +488,14 @@ mod tests {
     /// registration that names no owner takes the scope's, and one outside any
     /// scope stays unowned (the module's own, which nothing purges).
     ///
-    /// Mutation: `purge` retaining everything -> the count is 0 and the loop
+    /// Mutations (run, each fails): `purge` retaining everything -> the count is 0 and the loop
     /// still holds the owner's timers; `purge` removing every entry -> the other
     /// owner's timer is gone too; `register_timer` ignoring the scope -> the
     /// scoped timer is unowned, survives the purge, and the count is short.
     #[test]
     fn a_purge_takes_back_one_owners_registrations() {
         let run_loop = RunLoop::new();
+        let _main = MainThread::claim().unwrap();
         let (a, b, scoped, unowned) = (Owner::next(), Owner::next(), idle(), idle());
         let (named_a, named_b) = (idle(), idle());
         // SAFETY: every handler outlives the registrations, which the test
@@ -469,7 +517,7 @@ mod tests {
 
     /// **A handler that leaks is not called once its owner is purged.**
     ///
-    /// Mutation: skip the purge -> the leaked timer fires and `calls` is 1.
+    /// Mutation (run, fails): skip the purge -> the leaked timer fires and `calls` is 1.
     #[test]
     fn a_purged_timer_is_not_fired() {
         struct Counting(AtomicUsize);
@@ -484,6 +532,7 @@ mod tests {
         let run_loop = RunLoop::new();
         let handler = ComWrapper::new(Counting(AtomicUsize::new(0)));
         let ptr = handler.as_com_ref::<RawTimerHandler>().unwrap().as_ptr();
+        let _main = MainThread::claim().unwrap();
         let owner = Owner::next();
         // SAFETY: `handler` outlives the registration.
         unsafe { run_loop.register_timer(ptr, 1, Some(owner)) };
@@ -491,5 +540,35 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
         run_loop.run_iteration(&MainThread::claim().unwrap());
         assert_eq!(handler.0.load(Ordering::SeqCst), 0);
+    }
+
+    /// **A registration from a thread that is not the main thread is refused,
+    /// and `clear_all` empties the table.** `IRunLoop` is UI-thread by spec.
+    ///
+    /// Mutations (run, each fails): drop the `on_main_thread` check in
+    /// `register_timer` -> the spawned thread's registration succeeds; make
+    /// `clear_all` a no-op -> the count and the table are not empty.
+    #[test]
+    fn registration_is_main_thread_only_and_clear_all_empties() {
+        let run_loop = RunLoop::new();
+        let (handler, ptr) = idle();
+        let off = {
+            let run_loop = run_loop.clone();
+            let ptr = ptr as usize;
+            let _main = MainThread::claim().unwrap();
+            std::thread::spawn(move || {
+                // SAFETY: `handler` outlives the call, which registers nothing.
+                unsafe { run_loop.register_timer(ptr as *mut RawTimerHandler, 1, None) }
+            })
+            .join()
+            .unwrap()
+        };
+        assert_eq!(off, kResultFalse);
+        assert!(run_loop.state().timers.is_empty());
+        // SAFETY: `handler` outlives the registration, cleared below.
+        unsafe { run_loop.register_timer(ptr, 1, None) };
+        assert_eq!(run_loop.clear_all(), 1);
+        assert!(run_loop.state().timers.is_empty());
+        drop(handler);
     }
 }

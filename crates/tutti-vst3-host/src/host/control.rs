@@ -90,13 +90,13 @@ impl Vst3Loaded {
 
     /// The descriptor for this plugin as loaded: its factory info, with whether
     /// it has an editor measured from the plugin itself.
-    fn measured_descriptor(&self) -> PluginDescriptor {
-        descriptor_of(&self.info, EditorPresence::measured(self.has_editor()))
+    pub(super) fn measured_descriptor(&self, main: &MainThread) -> PluginDescriptor {
+        descriptor_of(&self.info, EditorPresence::measured(self.has_editor(main)))
     }
 
     /// The capabilities this plugin has, as the shared vocabulary names them.
     fn features(&self, main: &MainThread) -> Features {
-        let has_editor = self.has_editor();
+        let has_editor = self.has_editor(main);
         let mut features = Features::empty();
         // 64-bit only while activated as such: the session's format and the
         // activation agree.
@@ -106,7 +106,7 @@ impl Vst3Loaded {
         features.set(Features::EDITOR, has_editor);
         features.set(
             Features::EDITOR_RESIZE,
-            has_editor && self.editor_capabilities().resize.resizable,
+            has_editor && self.editor_capabilities(main).resize.resizable,
         );
         // VST3 always carries sample-accurate parameter automation
         // (IParameterChanges).
@@ -223,7 +223,8 @@ impl Vst3Loaded {
 
 impl Control for Vst3Loaded {
     fn info(&self) -> &PluginDescriptor {
-        self.descriptor.get_or_init(|| self.measured_descriptor())
+        self.descriptor
+            .get_or_init(|| descriptor_of(&self.info, EditorPresence::Unknown))
     }
 
     /// The wiring read from the plugin now. Latency is read only while the
@@ -239,8 +240,8 @@ impl Control for Vst3Loaded {
         LoadedPlugin {
             inputs: bus_channels(&self.info.input_bus_channels, self.info.num_inputs),
             outputs: bus_channels(&self.info.output_bus_channels, self.info.num_outputs),
-            input_topology: self.input_bus_topologies().into_iter().collect(),
-            output_topology: self.output_bus_topologies().into_iter().collect(),
+            input_topology: self.input_bus_topologies(main).into_iter().collect(),
+            output_topology: self.output_bus_topologies(main).into_iter().collect(),
             latency_samples,
             tail: self.tail_figure(main),
             features: self.features(main),

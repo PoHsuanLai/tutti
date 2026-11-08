@@ -232,7 +232,8 @@ fn finished<T>(outcome: Outcome<T>) -> T {
 /// As [`write_buffers`], plus [`Error::InvalidConfig`] if the graph was
 /// prepared at another rate or its editor does not feed its executor, and
 /// [`Error::ForkFailed`] if a forked node (a hosted plugin) failed during the
-/// render — the file may exist but is not a valid render — and
+/// render — checked before the file is put in place, so `path` keeps what it
+/// held — and
 /// [`Error::EventsDropped`] if the graph lost an event and
 /// `config.render.on_event_loss` is [`EventLossPolicy::Fail`] (the default):
 /// checked before the file is put in place, so `path` keeps what it held.
@@ -362,10 +363,16 @@ fn render_pass(
         clock,
         &file_channels(config),
         |src| {
-            render::drive(src, config.encode.channels, &plan, control, |block| {
+            let driven = render::drive(src, config.encode.channels, &plan, control, |block| {
                 block.append_to_planes(&mut planes);
                 Ok(())
-            })
+            })?;
+            // Before the planes are handed back: a unit that failed rendered
+            // silence into them.
+            if driven == Outcome::Finished(()) {
+                src.check_health()?;
+            }
+            Ok(driven)
         },
     )?;
     // A cancelled render is no render: it is not judged.

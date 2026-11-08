@@ -103,6 +103,21 @@ pub(crate) trait FrameSource {
     fn lost_events(&self) -> u64 {
         0
     }
+    /// Whether the units behind this source are still healthy: a forked unit
+    /// (a hosted plugin) that failed mid-render rendered silence from then
+    /// on, and `process` has no error channel to say so. A replay has no unit
+    /// to fail.
+    ///
+    /// Asked before a file is put in place, so a failed render never replaces
+    /// the user's file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ForkFailed`](crate::Error::ForkFailed) naming the first unit
+    /// that failed.
+    fn check_health(&self) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// The render source for the graph: a `tutti_graph::Executor` (a
@@ -261,6 +276,16 @@ impl FrameSource for GraphSource<'_> {
             ),
         )
     }
+
+    fn check_health(&self) -> crate::Result<()> {
+        self.editor
+            .fork_health()
+            .map_err(|fault| crate::Error::ForkFailed {
+                key: fault.key,
+                kind: fault.kind,
+                cause: fault.cause,
+            })
+    }
 }
 
 /// Run `f` over the frame source for `graph`, then check the fork's health.
@@ -285,17 +310,10 @@ pub(crate) fn with_source<R>(
     let mut src = GraphSource::new(editor, executor, sample_rate, clock, file, root.as_ref())?;
     let rendered = f(&mut src)?;
     let lost = src.lost_events();
-    // A forked unit that failed mid-render (a plugin's server crashed or
-    // hung) rendered silence from then on, and `process` has no error
-    // channel: the probe is the only place the failure shows. A render that
-    // passed it is a render of what the graph describes.
-    editor
-        .fork_health()
-        .map_err(|fault| crate::Error::ForkFailed {
-            key: fault.key,
-            kind: fault.kind,
-            cause: fault.cause,
-        })?;
+    // The fallback: the entry points that put a file in place ask before they
+    // do (`encode_to_file`), and the one that holds planes asks before it
+    // returns them (`render_pass`); this one covers any caller that did not.
+    src.check_health()?;
     Ok((rendered, lost))
 }
 

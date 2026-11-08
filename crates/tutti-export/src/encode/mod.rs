@@ -128,9 +128,10 @@ pub(crate) fn encode_to_file(
     if outcome == Outcome::Cancelled {
         return Ok(Outcome::Cancelled);
     }
-    // Before the file is put in place: a render that lost events is never
-    // written, and `path` keeps what it held (the encoder removes its file
-    // when it drops).
+    // Before the file is put in place: a render that lost events, or that a
+    // forked unit failed in (silence from then on), is never written, and
+    // `path` keeps what it held (the encoder removes its file when it drops).
+    src.check_health()?;
     let lost = src.lost_events();
     crate::render::check_loss(config.render.on_event_loss, lost)?;
     encoder.finish()?;

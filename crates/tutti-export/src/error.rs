@@ -106,8 +106,9 @@ pub enum Error {
     /// render holds silence where the unit's output belongs, so the export is
     /// reported as failed rather than written as if it had succeeded. The
     /// editor's `fork_health` is checked after every graph render
-    /// (see "When a forked unit fails" in tutti-graph's `fork` docs). A file
-    /// export may already have written the file; it is not a valid render.
+    /// (see "When a forked unit fails" in tutti-graph's `fork` docs), and for a
+    /// file export before the file is put in place: the file at the path keeps
+    /// what it held.
     #[error("Export failed: forked node {key:?} {kind:?} during the render: {cause}")]
     ForkFailed {
         /// The node, as the live graph keys it.

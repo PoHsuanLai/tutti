@@ -277,7 +277,6 @@ impl PropertyWatch {
     fn install(unit: &tutti_au_host::Unit) -> Option<Self> {
         use std::sync::atomic::Ordering;
 
-        use tutti_au_host::types::{Latency::ID, ParameterList::ID, TailTime::ID};
         use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 
         let flags = std::sync::Arc::new(PropertyFlags::default());

@@ -127,6 +127,8 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_au_ffi::Property;
+use tutti_au_ffi::property::{BypassEffect, Latency, PresentPreset};
 
 mod support;
 use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
@@ -135,8 +137,8 @@ use tutti_au_host::component::{self, AuType};
 use tutti_au_host::midi_out::MidiOutputInfo;
 use tutti_au_host::parameters::{self, ParamAddress};
 use tutti_au_host::types::{
-    self, AudioComponentDescription, K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT,
-    K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, K_AUDIO_UNIT_TYPE_EFFECT,
+    self, AudioComponentDescription, BypassEffect::ID, K_AUDIO_UNIT_TYPE_EFFECT, Latency::ID,
+    PresentPreset::ID,
 };
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::{BusDirection, TransportInfo, TransportState};
@@ -279,7 +281,7 @@ fn a_host_property_write_reaches_a_property_listener() {
     let listener =
         AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDelay");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch_property on kAudioUnitProperty_BypassEffect");
 
     au.set_bypass(true).expect("AUDelay accepts a bypass write");
@@ -291,9 +293,9 @@ fn a_host_property_write_reaches_a_property_listener() {
     );
     let ids = property_ids(&log.snapshot());
     assert!(
-        ids.contains(&K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        ids.contains(&BypassEffect::ID),
         "expected kAudioUnitProperty_BypassEffect \
-         ({K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT}) among {ids:?}"
+         ({BypassEffect::ID}) among {ids:?}"
     );
 }
 
@@ -319,7 +321,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     let log = EventLog::default();
     let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_LATENCY, EventAddress::GLOBAL)
+        .watch_property(Latency::ID, EventAddress::GLOBAL)
         .expect("watch_property on kAudioUnitProperty_Latency");
 
     au.set_bypass(true).expect("bypass on");
@@ -335,7 +337,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     );
 
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("now also watch BypassEffect");
     au.set_bypass(true).expect("bypass on again");
     assert!(
@@ -348,8 +350,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     // a contract. What *is* a contract is that no other property appears.
     let ids = property_ids(&log.snapshot());
     assert!(
-        ids.iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        ids.iter().all(|id| *id == BypassEffect::ID),
         "only the newly-watched property may appear; got {ids:?}"
     );
 }
@@ -375,10 +376,10 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     let listener =
         AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDistortion");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, EventAddress::GLOBAL)
+        .watch_property(PresentPreset::ID, EventAddress::GLOBAL)
         .expect("watch PresentPreset");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch BypassEffect");
 
     // AUDistortion ships 22 factory presets, numbered 0..=21 (see
@@ -393,9 +394,7 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     // id appears is the contract, and it is what a collapsed union decode breaks.
     let preset_phase = property_ids(&log.snapshot());
     assert!(
-        preset_phase
-            .iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET),
+        preset_phase.iter().all(|id| *id == PresentPreset::ID),
         "a preset load posts PresentPreset and nothing else; got {preset_phase:?}"
     );
 
@@ -412,9 +411,7 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     );
     let bypass_phase = property_ids(&log.snapshot());
     assert!(
-        bypass_phase
-            .iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        bypass_phase.iter().all(|id| *id == BypassEffect::ID),
         "a bypass write posts BypassEffect, not PresentPreset — the two ids must \
          not collapse; got {bypass_phase:?}"
     );
@@ -490,7 +487,7 @@ fn a_dropped_property_listener_stops_delivering() {
     let log = EventLog::default();
     let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch BypassEffect");
 
     au.set_bypass(true).expect("bypass on");

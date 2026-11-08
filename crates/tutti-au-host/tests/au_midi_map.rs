@@ -64,6 +64,8 @@
 #![cfg(target_os = "macos")]
 
 use std::sync::Mutex;
+use tutti_au_ffi::property::MidiControlMapping;
+use tutti_au_ffi::{Property, Scope};
 
 mod support;
 #[cfg(feature = "installed-units")]
@@ -73,10 +75,7 @@ use support::corpus::{
 };
 
 use tutti_au_host::AuInstance;
-use tutti_au_host::types::{
-    K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING, K_AUDIO_UNIT_SCOPE_GLOBAL,
-    K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
-};
+use tutti_au_host::types::{MidiControlMapping::ID, Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT};
 use tutti_au_host::{AuError, AuMidiMapping, MidiEvent, MidiTrigger};
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
@@ -249,11 +248,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
             if phase == "initialized" && au.initialize().is_err() {
                 break;
             }
-            for scope in [
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
-                K_AUDIO_UNIT_SCOPE_INPUT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-            ] {
+            for scope in [Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT] {
                 let mut size = 0u32;
                 let mut writable = 0u8;
                 // Raw, because there is no wrapper for a property this crate
@@ -262,7 +257,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
                 let status = unsafe {
                     tutti_au_host::types::AudioUnitGetPropertyInfo(
                         au.raw_unit(),
-                        K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING,
+                        MidiControlMapping::ID,
                         scope,
                         0,
                         &mut size,
@@ -965,7 +960,7 @@ fn an_unarmed_hot_map_read_answers_noerr_not_the_documented_error() {
             tutti_au_host::types::AudioUnitGetProperty(
                 au.raw_unit(),
                 44, // kAudioUnitProperty_HotMapParameterMIDIMapping
-                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                Scope::GLOBAL,
                 0,
                 buf.as_mut_ptr() as *mut std::os::raw::c_void,
                 &mut size,

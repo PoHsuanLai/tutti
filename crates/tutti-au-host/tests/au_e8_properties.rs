@@ -50,12 +50,11 @@ use support::corpus;
 use support::probe_au::{
     Misbehaviour, PROBE_DEPENDENT_PARAMS, PROBE_META_PARAM_ID, last_presentation_latency,
 };
+use tutti_au_ffi::Scope;
 
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, DependentParam, MetaScope, ParamAddress};
-use tutti_au_host::types::{
-    K_AUDIO_UNIT_SCOPE_GLOBAL, K_AUDIO_UNIT_SCOPE_INPUT, K_AUDIO_UNIT_SCOPE_OUTPUT,
-};
+use tutti_au_host::types::{Scope::GLOBAL, Scope::INPUT, Scope::OUTPUT};
 use tutti_types::Seconds;
 
 const RATE: f64 = 48_000.0;
@@ -87,7 +86,7 @@ fn a_presentation_latency_write_arrives_with_its_seconds_intact() {
     au.set_presentation_latency(BusDirection::Output, 0, written)
         .expect("the probe implements PresentationLatency");
 
-    let seen = last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_OUTPUT, 0)
+    let seen = last_presentation_latency(&au, Scope::OUTPUT, 0)
         .expect("the probe recorded a write at output/0");
     assert_eq!(
         seen,
@@ -120,23 +119,23 @@ fn presentation_latency_is_recorded_per_bus_not_per_unit() {
         .expect("probe accepts input/0");
 
     assert_eq!(
-        last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_OUTPUT, 0),
+        last_presentation_latency(&au, Scope::OUTPUT, 0),
         Some(f64::from(out0.0)),
     );
     assert_eq!(
-        last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_OUTPUT, 1),
+        last_presentation_latency(&au, Scope::OUTPUT, 1),
         Some(f64::from(out1.0)),
         "output bus 1 must not receive bus 0's value"
     );
     assert_eq!(
-        last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_INPUT, 0),
+        last_presentation_latency(&au, Scope::INPUT, 0),
         Some(f64::from(in0.0)),
         "the input scope must not receive the output scope's value"
     );
     // Nothing was written globally, and `None` is how the probe spells that —
     // distinct from a zero, which would be a real value.
     assert_eq!(
-        last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_GLOBAL, 0),
+        last_presentation_latency(&au, Scope::GLOBAL, 0),
         None,
         "a bus-addressed write must not leak onto the global scope"
     );
@@ -158,7 +157,7 @@ fn a_zero_presentation_latency_is_still_written() {
         .expect("probe accepts the zero write");
 
     assert_eq!(
-        last_presentation_latency(&au, K_AUDIO_UNIT_SCOPE_OUTPUT, 0),
+        last_presentation_latency(&au, Scope::OUTPUT, 0),
         Some(0.0),
         "the zero must overwrite the earlier 0.5, not be skipped"
     );
@@ -267,7 +266,7 @@ fn the_dependents_query_carries_the_parameter_id_in_the_element_position() {
     // A non-zero element with the meta id: the id must still be what selects the
     // answer, so this succeeds and returns the same table.
     let addr = ParamAddress {
-        scope: K_AUDIO_UNIT_SCOPE_GLOBAL,
+        scope: Scope::GLOBAL,
         element: 9,
     };
     let got = parameters::dependents_of_at(au.unit(), addr, PROBE_META_PARAM_ID)
@@ -413,14 +412,14 @@ fn dependent_parameter_matches_the_c_abi() {
     assert_eq!(std::mem::align_of::<AUDependentParameter>(), 4);
 
     let probe = AUDependentParameter {
-        mScope: K_AUDIO_UNIT_SCOPE_INPUT,
+        mScope: Scope::INPUT,
         mParameterID: 0xDEAD_BEEF,
     };
     // Field order, not just size: a swapped binding would still be 8 bytes.
     let bytes: [u8; 8] = unsafe { std::mem::transmute(probe) };
     assert_eq!(
         u32::from_ne_bytes(bytes[0..4].try_into().unwrap()),
-        K_AUDIO_UNIT_SCOPE_INPUT,
+        Scope::INPUT,
         "mScope must be the first word"
     );
     assert_eq!(

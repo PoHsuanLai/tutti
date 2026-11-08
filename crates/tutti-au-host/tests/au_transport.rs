@@ -53,6 +53,8 @@
 
 use std::os::raw::c_void;
 use std::sync::Mutex;
+use tutti_au_ffi::property::HostCallbacks;
+use tutti_au_ffi::{Property, Scope};
 
 mod support;
 use support::corpus::{
@@ -61,7 +63,7 @@ use support::corpus::{
 };
 use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 
-use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
+use tutti_au_host::types::{HostCallbacks::ID, Scope::GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
 use tutti_types::{BarNumber, TimeSignature};
 use tutti_types::{Bpm, Samples};
@@ -807,8 +809,8 @@ fn host_callback_info_matches_apples_layout() {
     let status = unsafe {
         coreaudio_sys::AudioUnitGetPropertyInfo(
             au.raw_unit(),
-            K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            HostCallbacks::ID,
+            Scope::GLOBAL,
             0,
             &mut size,
             &mut writable,

@@ -49,6 +49,8 @@
 
 use std::os::raw::c_void;
 use std::sync::OnceLock;
+use tutti_au_ffi::Property;
+use tutti_au_ffi::property::HostCallbacks;
 
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
@@ -1365,7 +1367,7 @@ unsafe extern "C" fn probe_set_property(
             };
             return 0;
         }
-        if id == tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS {
+        if id == HostCallbacks::ID {
             if p.behaviour == Misbehaviour::RefusesHostCallbacks {
                 return ERR_INVALID_PROPERTY;
             }

@@ -46,11 +46,10 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_au_ffi::Property;
+use tutti_au_ffi::property::{Latency, ParameterList, TailTime};
 
-use tutti_au_host::types::{
-    K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-    K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-};
+use tutti_au_host::types::{Latency::ID, ParameterList::ID, TailTime::ID};
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_types::Samples;
 
@@ -131,11 +130,7 @@ impl Watched {
         let log = Arc::new(Log::default());
         let listener = AuParameterListener::new(au.unit(), log.sink())
             .expect("create a listener on the probe");
-        for id in [
-            K_AUDIO_UNIT_PROPERTY_LATENCY,
-            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-        ] {
+        for id in [Latency::ID, TailTime::ID, ParameterList::ID] {
             listener
                 .watch_property(id, EventAddress::GLOBAL)
                 .unwrap_or_else(|e| panic!("watch_property({id}) failed: {e:?}"));
@@ -169,7 +164,7 @@ fn a_latency_change_reaches_a_watching_host() {
     set_latency_seconds(&w.au, 512.0 / RATE);
 
     assert!(
-        w.log.wait_for(K_AUDIO_UNIT_PROPERTY_LATENCY),
+        w.log.wait_for(Latency::ID),
         "no Latency PropertyChanged arrived within {SETTLE:?}; delivered {:?}",
         w.log.snapshot()
     );
@@ -200,13 +195,13 @@ fn a_tail_change_reaches_a_watching_host_under_its_own_id() {
     set_tail_seconds(&w.au, new_tail);
 
     assert!(
-        w.log.wait_for(K_AUDIO_UNIT_PROPERTY_TAIL_TIME),
+        w.log.wait_for(TailTime::ID),
         "no TailTime PropertyChanged arrived within {SETTLE:?}; delivered {:?}",
         w.log.snapshot()
     );
     let delivered = w.log.snapshot();
     assert!(
-        !delivered.contains(&K_AUDIO_UNIT_PROPERTY_LATENCY),
+        !delivered.contains(&Latency::ID),
         "a tail change must not be reported as a latency change; got {delivered:?}"
     );
 
@@ -245,7 +240,7 @@ fn a_parameter_list_change_reaches_a_watching_host() {
     set_param_count(&w.au, grown);
 
     assert!(
-        w.log.wait_for(K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST),
+        w.log.wait_for(ParameterList::ID),
         "no ParameterList PropertyChanged arrived within {SETTLE:?}; delivered {:?}",
         w.log.snapshot()
     );
@@ -295,7 +290,7 @@ fn a_watcher_is_not_woken_by_an_unrelated_property() {
     // listener, so the silence above is filtering rather than a dead path.
     set_latency_seconds(&w.au, 128.0 / RATE);
     assert!(
-        w.log.wait_for(K_AUDIO_UNIT_PROPERTY_LATENCY),
+        w.log.wait_for(Latency::ID),
         "the control half failed: even a watched Latency change did not arrive, \
          so the silence above proves nothing about filtering"
     );
@@ -316,7 +311,7 @@ fn a_dropped_listener_stops_receiving() {
     // the same observation as "nothing ever arrived".
     set_latency_seconds(&w.au, 64.0 / RATE);
     assert!(
-        w.log.wait_for(K_AUDIO_UNIT_PROPERTY_LATENCY),
+        w.log.wait_for(Latency::ID),
         "the pre-drop control failed; nothing below would be meaningful"
     );
 

@@ -2,9 +2,11 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
-#[cfg(all(target_os = "macos", feature = "au"))]
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(all(target_os = "macos", feature = "au"))]
+use tutti_au_host::Property;
+use tutti_au_host::property::{Latency, ParameterList, TailTime};
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::PluginError;
 use tutti_plugin::server::{
@@ -275,10 +277,7 @@ impl PropertyWatch {
     fn install(unit: &tutti_au_host::Unit) -> Option<Self> {
         use std::sync::atomic::Ordering;
 
-        use tutti_au_host::types::{
-            K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-        };
+        use tutti_au_host::types::{Latency::ID, ParameterList::ID, TailTime::ID};
         use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 
         let flags = std::sync::Arc::new(PropertyFlags::default());
@@ -292,9 +291,9 @@ impl PropertyWatch {
                 // does not mean.
                 if let AuEvent::PropertyChanged { id, .. } = ev {
                     let flag = match id {
-                        K_AUDIO_UNIT_PROPERTY_LATENCY => &sink.latency,
-                        K_AUDIO_UNIT_PROPERTY_TAIL_TIME => &sink.tail,
-                        K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST => &sink.param_list,
+                        Latency::ID => &sink.latency,
+                        TailTime::ID => &sink.tail,
+                        ParameterList::ID => &sink.param_list,
                         _ => return,
                     };
                     // `Release` pairs with the `AcqRel` swap in
@@ -307,11 +306,7 @@ impl PropertyWatch {
         }
         .ok()?;
 
-        for id in [
-            K_AUDIO_UNIT_PROPERTY_LATENCY,
-            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-        ] {
+        for id in [Latency::ID, TailTime::ID, ParameterList::ID] {
             let _ = listener.watch_property(id, EventAddress::GLOBAL);
         }
 

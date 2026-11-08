@@ -213,11 +213,9 @@ enum Staged {
 
 // SAFETY: the raw pointers inside `event_ptrs` point into this struct's own
 // `api_events` / `sysex_events` Vecs, and the ones in `sysex_events` into
-// `sysex`'s buffer; none is shared between threads. Same justification
-// as `RenderScratch` — callers serialize externally.
+// `sysex`'s buffer, so moving the whole struct moves what they point at with it
+// (a `Vec`'s heap block does not move). Not `Sync`: nothing shares one.
 unsafe impl Send for MidiSendBuffer {}
-// SAFETY: as for `Send` above; shared references never dereference the pointers.
-unsafe impl Sync for MidiSendBuffer {}
 
 impl MidiSendBuffer {
     /// A buffer for a block's whole MIDI cap: every event a plugin node

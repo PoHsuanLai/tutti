@@ -51,14 +51,11 @@ impl std::fmt::Debug for RenderScratch {
     }
 }
 
-// SAFETY: the raw pointers point into the owned `Vec<Vec<_>>` fields
-// within the same struct. They are never read concurrently — callers
-// ensure exclusive access (subprocess server holds a single instance;
-// in-process backend serializes via Mutex). `Sync` rests on the same
-// serialization: every actual touch of the pointers is exclusive.
+// SAFETY: the raw pointers point into the owned `Vec<Vec<_>>` fields within the same
+// struct, whose heap blocks move with it, so moving the struct to another thread moves
+// what they point at. Not `Sync`: nothing shares one, and an argument that "callers
+// serialize" is not one for `Sync`.
 unsafe impl Send for RenderScratch {}
-// SAFETY: as for `Send` above; shared references never touch the pointers.
-unsafe impl Sync for RenderScratch {}
 
 impl RenderScratch {
     /// Creates scratch buffers for the given channel counts, allocating both

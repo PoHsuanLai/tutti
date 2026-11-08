@@ -105,7 +105,8 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// main thread.
 ///
 /// Dropping it closes the editor, suspends the plugin if it is resumed and
-/// dispatches `effClose`, so drop it on the main thread, as it was loaded there
+/// dispatches `effClose` (when the last handle on the plugin is gone, which is this
+/// drop unless a Processor still holds one), so drop it on the main thread, as it was loaded there
 /// (a drop has no token, so nothing checks it). The plugin's shared
 /// library is never unloaded, because unloading runs static destructors that
 /// crash many JUCE-based plugins.
@@ -456,7 +457,7 @@ impl Vst2Loaded {
     /// plugin never had. An unnamed slot yields an empty string and is kept,
     /// not skipped — dropping it would renumber every program after it, and the
     /// number is the identifier.
-    pub fn programs(&self) -> Vec<(i32, String)> {
+    pub fn programs(&self, _main: &MainThread) -> Vec<(i32, String)> {
         let count = self.handle.instance.read_num_programs().max(0);
         (0..count)
             .map(|i| (i, self.params.get_preset_name(i)))
@@ -474,7 +475,7 @@ impl Vst2Loaded {
     }
 
     /// Returns the index of the program the plugin reports as active.
-    pub fn current_program(&self) -> i32 {
+    pub fn current_program(&self, _main: &MainThread) -> i32 {
         self.params.get_preset_num()
     }
 
@@ -490,7 +491,7 @@ impl Vst2Loaded {
     /// Returns `false` for an out-of-range index without dispatching anything.
     /// VST2 gives no confirmation that an in-range change took — `effProgramChange`
     /// returns nothing — so `true` means "dispatched", not "the plugin moved".
-    pub fn set_program(&mut self, index: i32) -> bool {
+    pub fn set_program(&mut self, _main: &MainThread, index: i32) -> bool {
         if index < 0 || index >= self.handle.instance.read_num_programs() {
             return false;
         }

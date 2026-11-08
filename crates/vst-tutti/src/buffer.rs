@@ -255,11 +255,27 @@ impl<'a, T> Outputs<'a, T> {
         unsafe { slice::from_raw_parts(self.bufs[i], self.samples) }
     }
 
-    /// Mutably access channel at the given index
-    pub fn get_mut(&mut self, i: usize) -> &'a mut [T] {
-        // SAFETY: NOT ESTABLISHED: bounds and length are as in `get`, but the returned
-        // `&'a mut` outlives the `&mut self` borrow, so two calls with the same `i`
-        // yield aliasing `&mut [T]`; nothing prevents that.
+    /// Mutably access channel at the given index.
+    ///
+    /// The slice borrows `self`, so two live slices of one channel cannot exist:
+    ///
+    /// ```compile_fail
+    /// # use vst_tutti::host::HostBuffer;
+    /// // Mutation (run): return `&'a mut [T]` from `get_mut` again and this
+    /// // compiles, so the doctest fails.
+    /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(0, 1);
+    /// let inputs: Vec<Vec<f32>> = vec![];
+    /// let mut outputs = vec![vec![0.0f32; 4]];
+    /// let mut buffer = host_buffer.bind(&inputs, &mut outputs);
+    /// let (_, mut out) = buffer.split();
+    /// let a = out.get_mut(0);
+    /// let b = out.get_mut(0);
+    /// a[0] = b[0];
+    /// ```
+    pub fn get_mut(&mut self, i: usize) -> &mut [T] {
+        // SAFETY: bounds and length are as in `get`. The output channels do not alias each
+        // other (the `AudioBuffer` constructor contract), and the returned slice borrows
+        // `&mut self`, so a second call for the same `i` cannot overlap it.
         unsafe { slice::from_raw_parts_mut(self.bufs[i], self.samples) }
     }
 
@@ -312,7 +328,12 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.i < self.data.len() {
-            let val = self.data.get_mut(self.i);
+            // SAFETY: `i` is in bounds (checked above). `data` is borrowed mutably for `'b`
+            // and `i` only grows, so each channel is handed out once per iterator and no
+            // two items overlap; the output channels do not alias each other (the
+            // `AudioBuffer` constructor contract), each addressing `samples` elements.
+            let val =
+                unsafe { slice::from_raw_parts_mut(self.data.bufs[self.i], self.data.samples) };
             self.i += 1;
             Some(val)
         } else {
@@ -420,7 +441,10 @@ use std::mem;
 /// The purpose of this is to convert outgoing midi events from `event::Event` to `api::Events`.
 /// It only allocates memory in new() and reuses the memory between calls.
 pub struct SendEventBuffer {
-    buf: Vec<u8>,
+    /// The `api::Events` header and its pointer array, in `u64` words: the storage is
+    /// aligned for `api::Events` (8) and holds at least `size_of::<api::Events>()`
+    /// bytes whatever the capacity.
+    buf: Vec<u64>,
     api_events: Vec<PlaceholderEvent>, // using SysExEvent to store both because it's larger than MidiEvent
 }
 
@@ -444,7 +468,8 @@ impl SendEventBuffer {
     pub fn new(capacity: usize) -> Self {
         let header_size = mem::size_of::<api::Events>() - (mem::size_of::<*mut api::Event>() * 2);
         let body_size = mem::size_of::<*mut api::Event>() * capacity;
-        let mut buf = vec![0u8; header_size + body_size];
+        let bytes = (header_size + body_size).max(mem::size_of::<api::Events>());
+        let mut buf = vec![0u64; bytes.div_ceil(mem::size_of::<u64>())];
         // SAFETY: all-zero is a valid `SysExEvent`: integers, null pointers and
         // `EventType::_Placeholder` (discriminant 0).
         let api_events = vec![unsafe { mem::zeroed::<PlaceholderEvent>() }; capacity];
@@ -510,13 +535,12 @@ impl SendEventBuffer {
     /// Returns a reference to the stored events
     #[inline(always)]
     pub fn events(&self) -> &api::Events {
-        #[allow(clippy::cast_ptr_alignment)]
-        // SAFETY: NOT ESTABLISHED: `buf` is a `Vec<u8>` (align 1, not guaranteed to be 8)
-        // and for `capacity < 2` it is shorter than `size_of::<api::Events>()`; both are
-        // assumed to hold in practice (allocator alignment, default capacity 1024).
-        unsafe {
-            &*(self.buf.as_ptr() as *const api::Events)
-        }
+        // SAFETY: `buf` is a `Vec<u64>`, aligned to 8 as `api::Events` is, and `new` sizes
+        // it to at least `size_of::<api::Events>()` bytes (all of them initialised: zeroed
+        // words, then `num_events` and the pointers written through this same type), and
+        // every bit pattern of its integer and pointer fields is valid. The reference
+        // borrows `self`, so the words are not written while it lives.
+        unsafe { &*(self.buf.as_ptr() as *const api::Events) }
     }
 
     /// Clears the buffer
@@ -526,13 +550,10 @@ impl SendEventBuffer {
     }
 
     #[inline(always)]
-    fn buf_as_api_events(buf: &mut [u8]) -> &mut api::Events {
-        #[allow(clippy::cast_ptr_alignment)]
-        // SAFETY: NOT ESTABLISHED: same as `events`: `Vec<u8>` alignment is not
-        // guaranteed to satisfy `api::Events` and the buffer is short for `capacity < 2`.
-        unsafe {
-            &mut *(buf.as_mut_ptr() as *mut api::Events)
-        }
+    fn buf_as_api_events(buf: &mut [u64]) -> &mut api::Events {
+        // SAFETY: as for `events`: `buf` is aligned for `api::Events` and `new` sizes it to
+        // at least `size_of::<api::Events>()` bytes; the borrow of `buf` is the reference's.
+        unsafe { &mut *(buf.as_mut_ptr() as *mut api::Events) }
     }
 
     #[inline(always)]
@@ -683,6 +704,29 @@ mod tests {
                     assert_eq!(*output, 0.0);
                     acc + 1
                 });
+        }
+    }
+
+    /// `SendEventBuffer`'s header storage is aligned for `api::Events` and holds
+    /// the whole struct at every capacity, `0` and `1` included (they formed a
+    /// `&mut Events` over a 16-byte buffer).
+    ///
+    /// Mutation (run): size the buffer as `header_size + body_size` alone and
+    /// make it a `Vec<u8>` again: the size assertion fails for capacity 0 and 1
+    /// (the alignment half is the allocator's luck and cannot be shown).
+    #[test]
+    fn send_event_buffer_storage_holds_an_events_header_at_any_capacity() {
+        use super::SendEventBuffer;
+        for capacity in 0..4 {
+            let buffer = SendEventBuffer::new(capacity);
+            let events = buffer.events() as *const crate::api::Events;
+            assert!(events.is_aligned(), "capacity {capacity}");
+            assert!(
+                buffer.buf.len() * std::mem::size_of::<u64>()
+                    >= std::mem::size_of::<crate::api::Events>(),
+                "capacity {capacity}"
+            );
+            assert_eq!(buffer.events().num_events, capacity as i32);
         }
     }
 }

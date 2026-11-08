@@ -933,7 +933,8 @@ and from CLAP and VST3:
   no rate or block size, and `Vst2Quirks` is step 9's. `RESTARTS` is
   `RestartRules::NONE`: the core reads a changed pin count, latency or tail again.
 - The Processor holds a `vst_tutti::RenderHandle` (a copy of the `AEffect` pointer and
-  the flags `process` checks; `PluginInstance::render_handle`), so the Controller's
+  the flags `process` checks, with an `Arc` of the instance's core so `effClose` waits
+  for it; `PluginInstance::render_handle`), so the Controller's
   `&mut Vst2Loaded` has no Rust-level alias of anything the Processor calls, and its
   own clone of the plugin's parameter object (`Sync`) for the block's automation. The
   `PluginInfo` it keeps is what the plugin declared at load; the pins, latency and tail

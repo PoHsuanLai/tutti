@@ -67,7 +67,20 @@ pub mod consts {
 }
 
 /// `VSTPluginMain` function signature.
-pub type PluginMain = fn(callback: HostCallbackProc) -> *mut AEffect;
+///
+/// `extern "C"`: the host calls the symbol a plugin exports, so the Rust ABI would be
+/// undefined behaviour (it agrees with the C one only by coincidence on x86-64).
+///
+/// ```compile_fail
+/// # use vst_tutti::api::{AEffect, HostCallbackProc, PluginMain};
+/// // Mutation (run): declare `PluginMain` as a plain `fn` again and this compiles,
+/// // so the doctest fails.
+/// fn rust_abi_main(_: HostCallbackProc) -> *mut AEffect {
+///     std::ptr::null_mut()
+/// }
+/// let _: PluginMain = rust_abi_main;
+/// ```
+pub type PluginMain = extern "C" fn(callback: HostCallbackProc) -> *mut AEffect;
 
 /// Host callback function passed to plugin.
 /// Can be used to query host information from plugin side.
@@ -694,15 +707,13 @@ impl Events {
     #[inline]
     pub(crate) fn events_raw(&self) -> &[*const Event] {
         use std::slice;
+        // A negative count is no events.
+        let len = usize::try_from(self.num_events).unwrap_or(0);
         // SAFETY: VST2 ABI: `events` is a variable-length array and the host allocates
         // `num_events` contiguous pointers from `events[0]`; `*mut Event` and
-        // `*const Event` share a layout. `num_events` is not checked for being negative.
-        unsafe {
-            slice::from_raw_parts(
-                &self.events[0] as *const *mut _ as *const *const _,
-                self.num_events as usize,
-            )
-        }
+        // `*const Event` share a layout. The count is the sender's word and is not
+        // otherwise checked (the allocation behind a `&Events` cannot be measured).
+        unsafe { slice::from_raw_parts(&self.events[0] as *const *mut _ as *const *const _, len) }
     }
 
     #[inline]
@@ -710,11 +721,11 @@ impl Events {
         use std::slice;
         // SAFETY: as in `events_raw`: the allocation holds `num_events` contiguous
         // pointers from `events[0]` (`SendEventBuffer` allocates exactly this), and
-        // `&mut self` gives exclusive access. `num_events` is not checked for sign.
+        // `&mut self` gives exclusive access. A negative count is no events.
         unsafe {
             slice::from_raw_parts_mut(
                 &mut self.events[0] as *mut *mut _ as *mut *const _,
-                self.num_events as usize,
+                usize::try_from(self.num_events).unwrap_or(0),
             )
         }
     }
@@ -751,8 +762,9 @@ impl Events {
     pub fn events<'a>(&'a self) -> impl Iterator<Item = crate::event::Event<'a>> {
         self.events_raw()
             .iter()
-            // SAFETY: VST2 ABI: each entry of the host's event array points at a valid
-            // event of the type its `event_type` names. Entries are not null-checked.
+            .filter(|ptr| !ptr.is_null())
+            // SAFETY: VST2 ABI: each non-null entry of the host's event array points at a
+            // valid event of the type its `event_type` names.
             .map(|ptr| unsafe { crate::event::Event::from_raw_event(*ptr) })
     }
 }
@@ -926,9 +938,9 @@ pub struct SysExEvent {
     pub _reserved2: isize,
 }
 
-// SAFETY: NOT ESTABLISHED: the struct is plain `#[repr(C)]` data and moving it never
-// dereferences `system_data`, but nothing guarantees the pointee is valid or unaliased
-// on the receiving thread; that is left to whoever sends one.
+// SAFETY: the struct is plain `#[repr(C)]` data, and moving it to another thread never
+// dereferences `system_data`: a raw pointer is only an address. Reading through it is an
+// `unsafe` act of whoever does, who owns the pointee's validity and aliasing there.
 unsafe impl Send for SysExEvent {}
 
 #[repr(C)]
@@ -1326,5 +1338,36 @@ mod tests {
         assert_eq!(ParameterFlags::USES_CATEGORY.bits(), 8);
         assert_eq!(ParameterFlags::CAN_RAMP.bits(), 16);
         assert_eq!(MidiProgramFlags::IS_OMNI.bits(), 1);
+    }
+
+    /// A negative event count is no events, not `usize::MAX` of them.
+    ///
+    /// Mutation (run): `num_events as usize` in `events_raw`: the slice is built
+    /// with a length of about 2^64 and iterating it dereferences a null pointer.
+    #[test]
+    fn a_negative_event_count_is_empty() {
+        let events = Events {
+            num_events: -3,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        assert_eq!(events.events().count(), 0);
+        let mut events = events;
+        events.num_events = i32::MIN;
+        assert_eq!(events.events().count(), 0);
+    }
+
+    /// A null entry in the event array is skipped, not read.
+    ///
+    /// Mutation (run): remove the `filter` in `Events::events`: the null entry is
+    /// dereferenced and the test aborts on a signal.
+    #[test]
+    fn a_null_event_entry_is_skipped() {
+        let events = Events {
+            num_events: 2,
+            _reserved: 0,
+            events: [std::ptr::null_mut(); 2],
+        };
+        assert_eq!(events.events().count(), 0);
     }
 }

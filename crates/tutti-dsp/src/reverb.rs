@@ -36,37 +36,37 @@ impl Freeverb {
     pub const FIXED_GAIN: f32 = 0.015;
     /// The comb feedback: Freeverb's room size 0.5 scaled (`0.5 * 0.28 + 0.7`).
     /// A bare `f32`: a loop coefficient, not a unit the vocabulary has.
-    const ROOM_FEEDBACK: f32 = 0.5 * 0.28 + 0.7;
+    pub(crate) const ROOM_FEEDBACK: f32 = 0.5 * 0.28 + 0.7;
     /// The comb damping: Freeverb's damp 0.5 scaled (`0.5 * 0.4`).
-    const DAMPING: f32 = 0.5 * 0.4;
+    pub(crate) const DAMPING: f32 = 0.5 * 0.4;
     /// The all-pass feedback.
-    const ALLPASS_FEEDBACK: f32 = 0.5;
-    const STEREO_SPREAD: usize = 23;
+    pub(crate) const ALLPASS_FEEDBACK: f32 = 0.5;
+    pub(crate) const STEREO_SPREAD: usize = 23;
 
-    const CF_TUNING_L1: usize = 1116;
-    const CF_TUNING_R1: usize = 1116 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L2: usize = 1188;
-    const CF_TUNING_R2: usize = 1188 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L3: usize = 1277;
-    const CF_TUNING_R3: usize = 1277 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L4: usize = 1356;
-    const CF_TUNING_R4: usize = 1356 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L5: usize = 1422;
-    const CF_TUNING_R5: usize = 1422 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L6: usize = 1491;
-    const CF_TUNING_R6: usize = 1491 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L7: usize = 1557;
-    const CF_TUNING_R7: usize = 1557 + Freeverb::STEREO_SPREAD;
-    const CF_TUNING_L8: usize = 1617;
-    const CF_TUNING_R8: usize = 1617 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L1: usize = 556;
-    const APF_TUNING_R1: usize = 556 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L2: usize = 441;
-    const APF_TUNING_R2: usize = 441 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L3: usize = 341;
-    const APF_TUNING_R3: usize = 341 + Freeverb::STEREO_SPREAD;
-    const APF_TUNING_L4: usize = 225;
-    const APF_TUNING_R4: usize = 225 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L1: usize = 1116;
+    pub(crate) const CF_TUNING_R1: usize = 1116 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L2: usize = 1188;
+    pub(crate) const CF_TUNING_R2: usize = 1188 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L3: usize = 1277;
+    pub(crate) const CF_TUNING_R3: usize = 1277 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L4: usize = 1356;
+    pub(crate) const CF_TUNING_R4: usize = 1356 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L5: usize = 1422;
+    pub(crate) const CF_TUNING_R5: usize = 1422 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L6: usize = 1491;
+    pub(crate) const CF_TUNING_R6: usize = 1491 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L7: usize = 1557;
+    pub(crate) const CF_TUNING_R7: usize = 1557 + Freeverb::STEREO_SPREAD;
+    pub(crate) const CF_TUNING_L8: usize = 1617;
+    pub(crate) const CF_TUNING_R8: usize = 1617 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L1: usize = 556;
+    pub(crate) const APF_TUNING_R1: usize = 556 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L2: usize = 441;
+    pub(crate) const APF_TUNING_R2: usize = 441 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L3: usize = 341;
+    pub(crate) const APF_TUNING_R3: usize = 341 + Freeverb::STEREO_SPREAD;
+    pub(crate) const APF_TUNING_L4: usize = 225;
+    pub(crate) const APF_TUNING_R4: usize = 225 + Freeverb::STEREO_SPREAD;
 
     /// A reverb at `rate`, rounded to whole hertz. Allocates the filter lines.
     #[must_use]
@@ -145,7 +145,7 @@ impl Freeverb {
         }
     }
 
-    fn scale_tuning(rate: SampleRate, tuning: usize) -> usize {
+    pub(crate) fn scale_tuning(rate: SampleRate, tuning: usize) -> usize {
         (rate.get() / 44100_f64 * (tuning as f64)).round() as usize
     }
 
@@ -182,6 +182,24 @@ impl Freeverb {
         }
     }
 
+    /// The comb and all-pass lengths and the first comb's coefficients, for the
+    /// design's tests: `(left combs, right combs, left all-passes, right
+    /// all-passes, (feedback, damp1, damp2))`.
+    #[cfg(test)]
+    pub(crate) fn figures(&self) -> Figures {
+        let len = |v: &[CombFilter]| v.iter().map(|c| c.buffer.len()).collect();
+        let alen = |v: &[AllPassFilter]| v.iter().map(|a| a.buffer.len()).collect();
+        let c = &self.cfs_l[0];
+        Figures {
+            combs_left: len(&self.cfs_l),
+            combs_right: len(&self.cfs_r),
+            all_passes_left: alen(&self.apfs_l),
+            all_passes_right: alen(&self.apfs_r),
+            comb: (c.feedback, c.damp1, c.damp2),
+            all_pass_feedback: self.apfs_l[0].feedback,
+        }
+    }
+
     /// How long the wet signal takes to fall to `floor` of what it carried
     /// when the input stops. Each trip round the longest comb loop keeps the
     /// room size's fraction of what it carried (at the lowest frequency the
@@ -203,6 +221,17 @@ impl Freeverb {
         let loops = (floor.to_amplitude().get().ln() / Self::ROOM_FEEDBACK.ln()).ceil() + 1_f32;
         Seconds((loops * longest as f32 + chain as f32) / self.rate.get() as f32)
     }
+}
+
+/// What [`Freeverb::figures`] reads.
+#[cfg(test)]
+pub(crate) struct Figures {
+    pub(crate) combs_left: Vec<usize>,
+    pub(crate) combs_right: Vec<usize>,
+    pub(crate) all_passes_left: Vec<usize>,
+    pub(crate) all_passes_right: Vec<usize>,
+    pub(crate) comb: (f32, f32, f32),
+    pub(crate) all_pass_feedback: f32,
 }
 
 #[derive(Debug, Clone)]

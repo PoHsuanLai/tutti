@@ -515,6 +515,43 @@ Each step is a PR that passes `just ci`. #354 merges first.
 | 3b | Early-reflection generator, then as the early stage of the FDN and plate | 1b; 1c and 3 for wiring | ~450 |
 | 4 | `Generic` kernel (opt-in, §4.2) | 1c | ~300 |
 
+### Step 1a as built
+
+Where the code made a decision the text above leaves open; the rest is as
+written.
+
+- **`Design` has no `Kernel` yet.** `type Kernel` and `fn kernel` arrive with
+  `Kernel` in 1b (a placeholder trait with no methods would say nothing).
+  Freeverb's design is `FreeverbDesign` with `FreeverbControls { room, damp }`;
+  `Freeverb` stays the processor and is the 1b kernel.
+- **`Ceiling` is `{ rate, max_decay, floor }`** (checked: `new` refuses),
+  because lengths in `Bounds` need the rate and the tail needs the floor.
+  A design with no decay control (Freeverb) ignores `max_decay`.
+- **`design` is total**: a control out of range is clamped and a non-finite
+  one takes the algorithm's default, so the node's `LastGood` is a second line,
+  not the only one.
+- **The series chain cannot express a parallel branch.** Early reflections
+  added to a late tail (the usual shape) are not `Taps` then `Fdn` in series,
+  which would convolve them. Step 3b needs a parallel `Stage` or a second
+  list; 1a leaves it.
+- **No direct path is a path query**, not a field: `Network::min_delay` (a
+  series all-pass counts 0, as its `-g` term is direct) and `has_direct_path`.
+- **`Network` is about 55 KB** (`MAX_STAGES` times the largest stage), not
+  "a few kilobytes"; a test holds it under 64 KiB.
+- **A one-pole's three bands** are its response at DC, a quarter of the rate
+  and Nyquist. `tail` counts an all-pass by its geometric train (a delay times
+  the trips to the floor), more than `Freeverb::ring_out`'s once-count, and
+  takes the transit from the longest effective line.
+- **`Tap` has a `channel`, not a pan** (`Pan` is a reading, not a control).
+- **`echo_density(t)` is echoes per second** from the loops alone: a diagonal
+  sums `1/tau` over the lines that have come round; a mixing matrix gives
+  `N^k / tau_mean` after `k` trips, capped at the rate.
+- **The no-allocation half of "pure"** lives in `tests/network_alloc.rs`
+  (a counting allocator needs `unsafe`, which the crate's unit tests cannot
+  have). The other cases are `network::contract` (crate-private, `cfg(test)`),
+  run over Freeverb and a test-only `ToyFdn` that has the controls Freeverb
+  lacks; each case also has a deliberately defective design it must fail.
+
 Step 1 is three PRs. The old plan's two were ~2,200 lines together; the model
 adds the `Network` and its queries (~1,000 lines with their tests), which is
 reviewable on its own and needs no audio, so it comes first and can start in

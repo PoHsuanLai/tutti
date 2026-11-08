@@ -493,7 +493,9 @@ list (normal and build edges; dev-dependencies may go anywhere).
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
   (`DitherNoise`), the Freeverb reverb (`Freeverb`, which `ReverbNode`
-  adapts), the
+  adapts), the reverb model of doc 022 (`Network`, `Design`, `Bounds`,
+  `FreeverbDesign`: a plain fixed-capacity description with analytic queries,
+  never an instruction stream a kernel must follow), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,

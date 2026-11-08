@@ -49,11 +49,16 @@ use tutti_types::SamplePosition;
 use tutti_types::Samples;
 
 use super::LoopSetting;
-use super::interp::{interpolate_taps, read_frame, read_looped_frame, tap_indices};
+use super::interp::{MonoSpread, interpolate_taps, read_frame, read_looped_frame, tap_indices};
 use super::loop_span::{LoopSpan, blend};
 use super::types::Direction;
 use crate::MAX_SAMPLER_CHANNELS;
 use crate::butler::control::StreamFile;
+
+// A disk voice is as wide as its file (`DiskSource::with_reader` takes its
+// width from the ring), so a mono file is read into a one-wide frame and
+// nothing here places a mono source in a wider one: every read below passes
+// `MonoSpread::FAN`, which is then the identity.
 
 /// Frames per page. Two pages are resident; see [`Pages`].
 const PAGE_FRAMES: usize = 1 << 15;
@@ -328,7 +333,7 @@ impl Open {
         }
         match self {
             // The memory tier's own read, on the same kind of wave.
-            Self::Resident(wave) => read_frame(wave, p, out),
+            Self::Resident(wave) => read_frame(wave, &MonoSpread::FAN, p, out),
             Self::Paged(pages) => pages.read_into(p, out),
         }
     }
@@ -343,7 +348,7 @@ impl Open {
         }
         match self {
             // The memory tier's own looped read, on the same kind of wave.
-            Self::Resident(wave) => read_looped_frame(wave, span, p, looped, out),
+            Self::Resident(wave) => read_looped_frame(wave, &MonoSpread::FAN, span, p, looped, out),
             Self::Paged(pages) => pages.read_looped_into(span, p, looped, out),
         }
     }
@@ -402,7 +407,7 @@ impl Pages {
         for (frame, &at) in frames.iter_mut().zip(taps.iter()) {
             frame[..ch].copy_from_slice(&self.frame(at)[..ch]);
         }
-        interpolate_taps(ch, frac, out, |c, t| frames[t][c]);
+        interpolate_taps(ch, &MonoSpread::FAN, frac, out, |c, t| frames[t][c]);
     }
 
     /// Interpolate position `p` (`< len`), placed on `span`, into `out`: the
@@ -421,7 +426,7 @@ impl Pages {
                 }
             }
         }
-        interpolate_taps(ch, frac, out, |c, t| frames[t][c]);
+        interpolate_taps(ch, &MonoSpread::FAN, frac, out, |c, t| frames[t][c]);
     }
 
     /// Frame `at` (`< len`), interleaved at the file's width, paging it in if

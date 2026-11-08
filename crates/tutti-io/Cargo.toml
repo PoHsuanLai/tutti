@@ -21,10 +21,6 @@ thiserror.workspace = true
 # tutti-graph names no tutti crate but tutti-types, tutti-rt and tutti-ump.
 tutti-graph = { path = "../tutti-graph" }
 
-# The capture ring `MicMonitorNode` drains. The producer half lives in the
-# device layer (`tutti-cpal`), which sits *above* this crate.
-ringbuf = "0.6"
-
 # The WAV writer behind the `WavOut` sink, the one an export writes through.
 tutti-codec = { path = "../tutti-codec", features = ["encode-wav"] }
 
@@ -43,8 +39,6 @@ tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 tempfile = "3.8"
 # The RT gate: `MicMonitorNode::process` must not allocate.
 assert_no_alloc = { version = "1", default-features = false }
-# The gate builds a ring by hand to feed the node under a disabled allocator.
-ringbuf = "0.6"
 
 [package.metadata.docs.rs]
 all-features = true

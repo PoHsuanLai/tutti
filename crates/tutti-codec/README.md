@@ -19,6 +19,7 @@ or a streaming `FileIn`.
   failed `write`.
 - Decoding is plain functions and types of our own, no trait: `Wave::read`
   decodes a file into a `Wave` (a resident, planar sample buffer),
+  `Wave::topology` and `FileIn::topology` say which speaker each channel feeds,
   `Wave::read_metadata` reads a header, `Wave::from_bytes` decodes a file held
   in memory, and `FileIn` streams a file as an `AudioIn` with a
   sample-accurate `seek`. A failure is a `DecodeError`. `symphonia` does the

@@ -21,7 +21,7 @@ use tutti_types::{
 
 use super::clock::{BlockClock, Clock};
 use super::interp::{
-    Gate, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
+    Gate, MonoSpread, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
 };
 use super::loop_span::{LoopSpan, blend};
 use super::slot::Piece;
@@ -268,6 +268,9 @@ pub struct MemorySource {
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
     channels: ChannelLayout,
 
+    /// Where a mono wave goes in a frame of [`channels`](Self::channels).
+    spread: MonoSpread,
+
     /// A block's placed positions when this source is a graph node of its
     /// own, sized from `Prepare::max_block` in `prepare` (empty until then,
     /// and in a clone: a source that only plays in a pool or a `VoiceNode`,
@@ -318,6 +321,7 @@ impl Clone for MemorySource {
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
             channels: self.channels,
+            spread: self.spread.clone(),
             // Unsized, so a clone stays allocation-free: a copy inserted as
             // a node is prepared, which sizes it.
             positions: Vec::new(),
@@ -349,6 +353,7 @@ impl MemorySource {
             looped: AtomicBool::new(false),
             clock: Clock::new(),
             channels: ChannelLayout::STEREO,
+            spread: MonoSpread::FAN,
             positions: Vec::new(),
             gather: Gather::empty(),
             tail: Vec::new(),
@@ -361,8 +366,10 @@ impl MemorySource {
     /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
     /// channel policy (mono fans, anything else folds).
     pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
+        let channels = nonempty(channels.into());
         Self {
-            channels: nonempty(channels.into()),
+            channels,
+            spread: MonoSpread::to(channels),
             ..Self::new(wave)
         }
     }
@@ -380,11 +387,13 @@ impl MemorySource {
     /// loops with no crossfade.
     #[must_use]
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
+        let channels = nonempty(config.channels);
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
             placement: config.placement,
-            channels: nonempty(config.channels),
+            channels,
+            spread: MonoSpread::to(channels),
             ..Self::new(wave)
         };
         if let LoopSetting::On {
@@ -736,7 +745,7 @@ impl MemorySource {
 
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
         // bound-clamped), unifying this path with `DiskSource`.
-        super::interp::read_frame(&self.wave, position, out);
+        super::interp::read_frame(&self.wave, &self.spread, position, out);
     }
 
     /// Read one un-gained frame of a placed voice at `pos`, the position
@@ -790,7 +799,7 @@ impl MemorySource {
             out.fill(0.0);
             return;
         }
-        read_looped_frame(&self.wave, span, p, looped, out);
+        read_looped_frame(&self.wave, &self.spread, span, p, looped, out);
     }
 
     /// The gate a placed read seats at, for a read stepping at
@@ -1047,11 +1056,9 @@ impl MemorySource {
             );
         }
         if src_ch == 1 {
-            let (first, rest) = lanes.split_at_mut(1);
-            let first = &first[0].as_mut()[..frames];
-            for lane in rest.iter_mut().take(n.saturating_sub(1)) {
-                lane.as_mut()[..frames].copy_from_slice(first);
-            }
+            // `y[0]` is free now: the mono block is placed from a copy while
+            // lane 0 is itself rewritten.
+            self.spread.lanes(lanes, n, 0..frames, &mut y[0]);
         }
     }
 

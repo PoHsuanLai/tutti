@@ -1,7 +1,7 @@
 //! Live-input monitoring node.
 //!
 //! [`MicMonitorNode`] drains a ring a *capture device* fills: a graph
-//! node with no inputs and two outputs whose whole job is "pop the next frame
+//! node with no inputs and one output a captured channel, whose whole job is "pop the next frame
 //! the producer pushed, or emit silence on underrun." The producer end lives
 //! in the device layer (`tutti-cpal`'s `MicIn`); this node is device-free so
 //! it can sit anywhere in the graph — wire it through effects and the mic is
@@ -11,7 +11,8 @@
 //! # The ring handle
 //!
 //! The node owns its ring consumer, wrapped in [`MicRing`]: a plain newtype
-//! over `HeapCons` that pops through `&mut self`, so the borrow checker, not
+//! over a tap's reader (one lane a channel, popped by whole frames) that pops
+//! through `&mut self`, so the borrow checker, not
 //! a cell, is what keeps it to one popper. The ring is single-consumer, so no
 //! lock is required — the same reasoning the streaming reader runs on.
 //!
@@ -42,96 +43,91 @@
 //! The device callback only ever *pushes* (the producer half, holding
 //! `HeapProd` directly), never pops.
 
-use ringbuf::{HeapCons, traits::Consumer};
-use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status};
-use tutti_types::{Amplitude, ChannelLayout, SampleRate, Tail};
+use tutti_graph::{
+    Cx, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status, TapReader, TapWriter,
+};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples, Tail, TapId};
 
-/// The consumer end of a stereo capture ring, as an opaque handle for
-/// [`MicMonitorNode`].
+/// The consumer end of a capture ring, as an opaque handle for
+/// [`MicMonitorNode`]: any number of channels, written and read by whole
+/// frames.
 ///
-/// Built with [`MicRing::new`]: the device layer splits a
-/// [`HeapRb<[f32; 2]>`](ringbuf::HeapRb), keeps the producer to push captured
-/// frames from its input callback, and wraps the consumer here. Only the
-/// monitor node, on the audio thread, can pop from it, so the ring keeps
-/// exactly one consumer. Not `Clone`: the handle *is* the one consumer, and
-/// the node that owns it pops through `&mut self`.
+/// Built with [`MicRing::pair`]: the device layer keeps the [`TapWriter`] to
+/// push captured frames from its input callback
+/// ([`push_interleaved`](TapWriter::push_interleaved)) and hands this to the
+/// monitor node. It is a [`TapReader`] with one lane a channel, so a frame
+/// cannot tear across channels, and a frame the ring has no room for is
+/// refused whole and counted. Only the monitor node, on the audio thread, can
+/// pop from it, so the ring keeps exactly one consumer. Not `Clone`: the
+/// handle *is* the one consumer, and the node that owns it pops through
+/// `&mut self`.
 ///
 /// ```
-/// use ringbuf::{traits::Split, HeapRb};
 /// use tutti_io::MicRing;
+/// use tutti_types::{ChannelLayout, Samples};
 ///
-/// let (_device_side, consumer) = HeapRb::<[f32; 2]>::new(64).split();
-/// let ring = MicRing::new(consumer);
-/// # let _ = ring;
+/// let (ring, mut device_side) = MicRing::pair(ChannelLayout::STEREO, Samples(64));
+/// device_side.push_interleaved(&[0.5, -0.5]);
+/// assert_eq!(ring.layout(), ChannelLayout::STEREO);
 /// ```
 ///
 /// A second consumer cannot be made:
 ///
 /// ```compile_fail
-/// use ringbuf::{traits::Split, HeapRb};
 /// use tutti_io::MicRing;
+/// use tutti_types::{ChannelLayout, Samples};
 ///
-/// let (_device_side, consumer) = HeapRb::<[f32; 2]>::new(64).split();
-/// let ring = MicRing::new(consumer);
+/// let (ring, _device_side) = MicRing::pair(ChannelLayout::STEREO, Samples(64));
 /// let second = ring.clone();
 /// ```
 // Mutation (run) for the `compile_fail` doctest: a `Clone` impl on
-// `MicRing` (`unimplemented!()` in its body, since `HeapCons` has none) →
+// `MicRing` (`unimplemented!()` in its body, since `TapReader` has none) →
 // the doctest compiles → fails.
-// A newtype rather than a bare `ringbuf::HeapCons`, so `ringbuf` stays an
-// implementation detail, as `tutti-graph`'s `TapReader` is for the tap rings.
-pub struct MicRing(HeapCons<[f32; 2]>);
+pub struct MicRing(TapReader);
 
 impl MicRing {
-    /// Wraps a freshly split ring consumer, ready to hand to
-    /// [`MicMonitorNode::new`]. Allocates nothing.
-    #[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
-    pub fn new(consumer: HeapCons<[f32; 2]>) -> Self {
-        Self(consumer)
+    /// A ring of `width` channels holding `capacity` frames, and the writer
+    /// that fills it. Allocates; control side.
+    #[must_use = "the writer is the only way to fill the ring, and the ring the only way to read it"]
+    pub fn pair(width: ChannelLayout, capacity: Samples) -> (Self, TapWriter) {
+        let (reader, writer) =
+            TapReader::standalone(TapId(0), usize::from(width.count()), capacity);
+        (Self(reader), writer)
     }
 
-    /// Pop up to `left.len()` captured frames into the two planes, scaled by
-    /// `gain`, returning how many were popped. Crate-internal so only
-    /// `MicMonitorNode`'s audio-thread `process` can advance the SPSC read
-    /// index.
+    /// The ring's width: one lane a channel.
+    #[must_use]
+    pub fn layout(&self) -> ChannelLayout {
+        self.0.layout()
+    }
+
+    /// Pop up to `frames` captured frames into the planes, one a channel,
+    /// returning how many were popped. Crate-internal so only
+    /// `MicMonitorNode`'s audio-thread `process` can advance the read index.
     ///
-    /// Reads what the producer had pushed when it is called (one read of its
-    /// index), copies straight out of the ring's storage, then advances the
-    /// read index once: two atomics per block, where a pop per frame paid
-    /// two per frame.
+    /// Each lane copies straight out of its ring's storage and advances its
+    /// read index once: two atomics a lane per block.
     #[inline]
-    pub(crate) fn pop_planes(&mut self, left: &mut [f32], right: &mut [f32], gain: f32) -> usize {
-        let want = left.len().min(right.len());
-        let (head, tail) = self.0.as_slices();
-        let mut n = 0;
-        for run in [head, tail] {
-            let take = run.len().min(want - n);
-            for ((l, r), &[a, b]) in left[n..n + take]
-                .iter_mut()
-                .zip(&mut right[n..n + take])
-                .zip(&run[..take])
-            {
-                *l = a * gain;
-                *r = b * gain;
-            }
-            n += take;
-        }
-        self.0.skip(n);
-        n
+    pub(crate) fn pop_planes<'p>(
+        &mut self,
+        planes: impl IntoIterator<Item = &'p mut [f32]>,
+        frames: usize,
+    ) -> usize {
+        self.0.pop_planes(planes, Samples(frames)).get()
     }
 }
 
 impl std::fmt::Debug for MicRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The inner `HeapCons` isn't `Debug`, and its occupancy is a hot-path
-        // read this must not take.
+        // Its occupancy is a hot-path read this must not take.
         f.debug_struct("MicRing").finish_non_exhaustive()
     }
 }
 
-/// Live microphone monitoring as a graph node: no inputs, two outputs.
+/// Live microphone monitoring as a graph node: no inputs, one output a channel
+/// of its ring.
 ///
-/// Each block it pops one captured stereo frame per output frame from its
+/// Each block it pops one captured frame per output frame from its
 /// [`MicRing`], scaled by its gain; an empty ring (the device has not pushed
 /// yet, or the audio thread outran it) yields silence rather than stalling.
 /// It does not resample: the device must run at the graph's rate, which
@@ -198,19 +194,19 @@ impl MicMonitorNode {
 }
 
 impl Node for MicMonitorNode {
-    /// Stereo out, deliberately — unlike the voice units, which take a
-    /// runtime width.
+    /// As wide as the ring: one output a captured channel.
     ///
-    /// The producer is the CPAL input callback in `tutti-cpal`, which downmixes
-    /// each interleaved device frame to a stereo pair before it ever reaches
-    /// [`MicRing`] (a `HeapCons<[f32; 2]>`). Widening this node without widening
-    /// that callback and the ring would declare an arity its own source can
-    /// never fill.
+    /// The producer is the device layer's input callback, which writes the
+    /// channels the mic was opened with (`tutti_cpal::MicIn`), so the ring's
+    /// width is the arity the source can fill. Graph ports are counts; the
+    /// channels are the device's inputs, which feed no speaker
+    /// ([`Speaker::Discrete`](tutti_types::Speaker::Discrete)), and where they
+    /// go is the wiring's.
     ///
     /// A live source: [`Tail::Unbounded`], so the executor never skips it as
     /// silent (a skipped block would leave its frames to pile up in the ring).
     fn shape(&self) -> Shape {
-        Shape::audio(ChannelLayout::EMPTY, ChannelLayout::STEREO)
+        Shape::audio(ChannelLayout::EMPTY, self.ring.layout())
             .with_tail(Tail::Unbounded)
             // A block copy out of the ring: measured 0.4–0.6 ns per frame and
             // channel, against a gain's 0.05 and `SvfFilterNode`'s 4.0 on the
@@ -237,20 +233,24 @@ impl Node for MicMonitorNode {
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let (_, mut outputs) = io.split();
-        let mut channels = outputs.iter_mut();
         // Width check BEFORE any pop: `pop_planes` consumes from the ring, so
         // popping and then declining to write would throw captured frames
-        // away. Unreachable through the graph — the node declares stereo and
-        // is handed two outputs — but a discard is never the branch you want
-        // on a path whose whole job is not losing frames.
-        let (Some(left), Some(right)) = (channels.next(), channels.next()) else {
+        // away. Unreachable through the graph, which hands the node the
+        // outputs it declared, but a discard is never the branch you want on a
+        // path whose whole job is not losing frames.
+        if outputs.is_empty() || outputs.len() != usize::from(self.ring.layout().count()) {
             return Status::Modified;
-        };
+        }
+        let frames = outputs.get(0).len();
         // The frames the ring holds, then silence for the rest: an underrun
         // yields silence rather than stalling.
-        let n = self.ring.pop_planes(left, right, self.gain.get());
-        left[n..].fill(0.0);
-        right[n..].fill(0.0);
+        let n = self.ring.pop_planes(outputs.iter_mut(), frames);
+        let gain = self.gain.get();
+        for plane in outputs.iter_mut() {
+            let (heard, rest) = plane.split_at_mut(n);
+            heard.iter_mut().for_each(|s| *s *= gain);
+            rest.fill(0.0);
+        }
         Status::Modified
     }
 

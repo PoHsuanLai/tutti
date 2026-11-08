@@ -255,6 +255,40 @@ impl TapReader {
         Samples(frames)
     }
 
+    /// Pops up to `want` whole frames into `planes`, one slice per lane in lane
+    /// order, and returns the frame count: each plane's first frames are
+    /// written and the rest of it is as it was. A lane with no plane (the
+    /// iterator ends early) still drops the same frames, so the lanes stay
+    /// level; a plane shorter than the count is the caller's to size
+    /// (`want` at most its length).
+    ///
+    /// The shape of a graph node's outputs: no interleaved scratch to
+    /// allocate, and the lanes copy straight out of their rings.
+    ///
+    /// # Panics
+    ///
+    /// If a plane is shorter than the frames popped.
+    pub fn pop_planes<'p>(
+        &mut self,
+        planes: impl IntoIterator<Item = &'p mut [f32]>,
+        want: Samples,
+    ) -> Samples {
+        let frames = self.available().get().min(want.get());
+        let mut planes = planes.into_iter();
+        for lane in &mut self.lanes {
+            match planes.next() {
+                Some(plane) => {
+                    let popped = lane.pop_slice(&mut plane[..frames]);
+                    debug_assert_eq!(popped, frames, "available counted every lane");
+                }
+                None => {
+                    lane.skip(frames);
+                }
+            }
+        }
+        Samples(frames)
+    }
+
     /// Frames the executor could not push since the last call, and clears the
     /// count: nonzero is a gap in what was read.
     pub fn take_lost(&self) -> Samples {

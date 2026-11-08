@@ -4374,6 +4374,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tutti-codec",
  "tutti-dsp",
+ "tutti-export",
  "tutti-graph",
  "tutti-nodes",
  "tutti-sampler",

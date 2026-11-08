@@ -78,7 +78,7 @@ tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 # SoundFont playback. A separate crate, not a feature of the polysynth: a `.sf2`
 # player shares no voice engine with a subtractive synth.
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-midi-hardware = { path = "../tutti-midi-hardware", optional = true }
 # SMF / Clip File codecs. Separate from `tutti-midi-hardware` because reading a
 # `.mid` needs no OS MIDI port.
@@ -129,6 +129,7 @@ full = [
     "sampler",
     "audio-io",
     "export",
+    "export-flac", "export-aiff", "export-ogg",
     "spatial",
     "hrtf",
     "modulation",
@@ -223,7 +224,15 @@ clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap", "tutti-sessio
 au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au", "tutti-session/au"]
 
 # Export.
-export = ["dep:tutti-export", "tutti-session/export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav", "tutti-session/export"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac", "tutti-session/export-flac"]
+export-aiff = ["export", "tutti-export/aiff", "tutti-session/export-aiff"]
+export-ogg = ["export", "tutti-export/ogg", "tutti-session/export-ogg"]
 
 [dev-dependencies]
 # `contract::Direct`: a node driven by hand as a graph drives it, for the

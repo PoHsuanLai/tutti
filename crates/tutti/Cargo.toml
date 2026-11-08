@@ -31,7 +31,7 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../tutti-io", optional = true }
 tutti-codec = { path = "../tutti-codec", optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
@@ -85,6 +85,9 @@ full = [
     "sampler",
     "audio-io",
     "export",
+    "export-flac",
+    "export-aiff",
+    "export-ogg",
     "spatial",
     "dsp",
     "modulation",
@@ -141,7 +144,15 @@ synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
 soundfont = ["midi", "dep:tutti-soundfont", "tutti-session?/soundfont"]
 sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
-export = ["dep:tutti-export", "tutti-session?/export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav", "tutti-session?/export"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
+export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]
+export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
 spatial = ["dep:tutti-spatial", "tutti-session?/spatial"]
 modulation = ["dep:tutti-mod", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]

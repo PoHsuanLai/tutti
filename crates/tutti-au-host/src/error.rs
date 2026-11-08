@@ -347,6 +347,7 @@ impl AuError {
                     return "preset belongs to a different Audio Unit";
                 }
                 AuError::LoadFailed(_) => return "failed to load AudioUnit",
+                AuError::BusTooWide { .. } => return "bus wider than a channel layout holds",
             };
             os_status_message(code)
         }
@@ -361,6 +362,7 @@ impl AuError {
                 AuError::InvalidPreset(_) => "not a valid .aupreset",
                 AuError::PresetIdentityMismatch(_) => "preset belongs to a different Audio Unit",
                 AuError::LoadFailed(_) => "failed to load AudioUnit",
+                AuError::BusTooWide { .. } => "bus wider than a channel layout holds",
                 _ => "unknown error",
             }
         }

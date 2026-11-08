@@ -10,8 +10,6 @@ use std::sync::Arc;
 use atomic_float::AtomicF64;
 use dashmap::DashMap;
 use std::sync::atomic::Ordering;
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_types::AudioIn;
 use tutti_types::{SampleRate, SrcRatio};
 
 use super::cache::LruCache;
@@ -247,12 +245,12 @@ fn handle_stream_file(
     // back to the whole-file `load_wave` + `LruCache` path when the format
     // isn't seekable (no frame count) or opening the stream decoder fails.
     #[cfg(codec)]
-    let (file_length, file_sr, file_channels, decoder, resident) = match open_stream(&file_path) {
+    let (file_length, file_sr, file_topology, decoder, resident) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
             // Decoder metadata carries the header's integer rate.
             SampleRate::from(meta.sample_rate),
-            usize::from(decoder.layout().count()),
+            decoder.topology().clone(),
             Some(decoder),
             None,
         ),
@@ -263,21 +261,21 @@ fn handle_stream_file(
             (
                 wave.len() as u64,
                 wave.sample_rate(),
-                wave.channels(),
+                wave.topology().clone(),
                 None,
                 Some(wave),
             )
         }
     };
     #[cfg(not(codec))]
-    let (file_length, file_sr, file_channels, resident) = {
+    let (file_length, file_sr, file_topology, resident) = {
         let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
             return;
         };
         (
             wave.len() as u64,
             wave.sample_rate(),
-            wave.channels(),
+            wave.topology().clone(),
             Some(wave),
         )
     };
@@ -287,9 +285,11 @@ fn handle_stream_file(
     let buffer_capacity = buffer_size_for_file(file_length, shared.session_rate.get());
     let region_id = local.mint_region_id();
 
-    // The ring carries the file at its OWN width: the streaming tier reads it
-    // back through the same channel policy the in-memory tier uses, so folding
-    // here would discard channels before that policy ever sees them.
+    // The ring carries the file at its OWN width and order, and its topology:
+    // the voice that reads the ring places it through the same `Place` the
+    // in-memory tier uses, so folding or permuting here would only be a second
+    // copy of that placement (and the loop's crossfades, the preroll and an
+    // offline fork's own read of the file all work at the file's width).
     // `mut` is used by the `set_decoder` call below, which every codec feature
     // gates — so a build with none of them on sees an unused `mut` rather than
     // a dead binding.
@@ -297,7 +297,7 @@ fn handle_stream_file(
         region_id,
         file_path.clone(),
         buffer_capacity,
-        file_channels,
+        file_topology,
         file_length as usize,
     );
 

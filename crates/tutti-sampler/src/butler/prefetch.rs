@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use tutti_codec::Wave;
 use tutti_rt::{ArcLend, MAX_POS_RING_FRAMES, PosReader, PosRing, PosWriter, Reader};
-use tutti_types::{ChannelLayout, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, Samples};
 
 #[cfg(codec)]
 use tutti_codec::FileIn;
@@ -64,7 +64,7 @@ use crate::nonempty;
 pub(crate) const HISTORY_FRAMES: u64 = 4;
 
 /// Why a live voice could not be taken from a channel's stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum TakeVoiceError {
     /// The channel streams nothing yet: the butler has not applied its
@@ -76,12 +76,24 @@ pub enum TakeVoiceError {
     /// would pull its window back and forth, each starving the other. Take one
     /// voice per stream, or stream the file again on another channel.
     ReaderTaken,
+    /// The file's channels cannot be placed into the width asked for: a
+    /// channel no speaker names (a second LFE, a wide or high speaker), or a
+    /// narrowing with an unordered end (a 5.1 file into 5 channels). Nothing
+    /// was taken: the stream still has its reader.
+    Place(crate::PlaceError),
+}
+
+impl From<crate::PlaceError> for TakeVoiceError {
+    fn from(error: crate::PlaceError) -> Self {
+        Self::Place(error)
+    }
 }
 
 impl std::fmt::Display for TakeVoiceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::NotStreaming => "the channel streams nothing yet",
+            Self::Place(error) => return write!(f, "the stream cannot be placed: {error}"),
             Self::ReaderTaken => {
                 "the stream already has a live reader; a ring serves one (stream the file \
                  again on another channel for a second voice)"
@@ -90,7 +102,14 @@ impl std::fmt::Display for TakeVoiceError {
     }
 }
 
-impl std::error::Error for TakeVoiceError {}
+impl std::error::Error for TakeVoiceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Place(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// A region's ring, shared by the butler's writer and the audio thread's
 /// reader.
@@ -98,6 +117,10 @@ pub(crate) struct Ring {
     region_id: RegionId,
     file_path: PathBuf,
     channels: ChannelLayout,
+    /// Which speaker each of the file's channels feeds: what the voice that
+    /// reads the ring places by. The ring itself is at the file's width and
+    /// order.
+    topology: ChannelTopology,
     /// Glances at the window and where the reader plays (the writer's
     /// `watch`): no sample is read through it.
     core: Arc<PosRing>,
@@ -141,6 +164,11 @@ impl Ring {
     /// Declared width — the file's own layout.
     pub(crate) fn channels(&self) -> ChannelLayout {
         self.channels
+    }
+
+    /// The speakers the file's channels feed, in the ring's order.
+    pub(crate) fn topology(&self) -> &ChannelTopology {
+        &self.topology
     }
 
     /// Slots, in frames.
@@ -439,7 +467,10 @@ impl RegionBuffer {
         capacity: usize,
         channels: impl Into<ChannelLayout>,
     ) -> (RegionOut, SharedReader) {
-        Self::for_file(region_id, file_path, capacity, channels, usize::MAX)
+        let layout = nonempty(channels.into());
+        let topology =
+            ChannelTopology::assumed(layout).unwrap_or_else(|| ChannelTopology::discrete(layout));
+        Self::for_file(region_id, file_path, capacity, topology, usize::MAX)
     }
 
     /// `RegionBuffer::with_capacity` for a file `len` frames long.
@@ -447,10 +478,10 @@ impl RegionBuffer {
         region_id: RegionId,
         file_path: PathBuf,
         capacity: usize,
-        channels: impl Into<ChannelLayout>,
+        topology: ChannelTopology,
         len: usize,
     ) -> (RegionOut, SharedReader) {
-        let channels = nonempty(channels.into());
+        let channels = nonempty(topology.layout());
         let stride = channels.count() as usize;
         let frames = capacity.clamp(4096, MAX_POS_RING_FRAMES);
         let mapping = Mapping::plain(len);
@@ -459,6 +490,7 @@ impl RegionBuffer {
             region_id,
             file_path,
             channels,
+            topology,
             core: writer.watch(),
             reader: Mutex::new(Some(reader)),
             preroll: AtomicU64::new(0),

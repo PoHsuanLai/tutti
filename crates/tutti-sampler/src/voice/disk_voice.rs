@@ -31,7 +31,7 @@ use tutti_types::{
 
 use super::clock::{BlockClock, Clock};
 use super::fault::FaultLatch;
-use super::interp::{Gate, past_window, place};
+use super::interp::{Gate, Place, past_window, place};
 use super::live_read::{LiveRead, Out};
 use super::memory_source::VoiceWindow;
 use super::offline_read::OfflineRead;
@@ -119,21 +119,29 @@ impl DiskSource {
     #[cfg(test)]
     pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
         let reader = consumer.take_reader(false).ok();
-        Self::with_reader(consumer, reader, shared_state)
+        let width = crate::voice_width(consumer.channels());
+        let place = Place::for_topology(consumer.topology(), width)
+            .expect("a test ring is placeable at its own width");
+        Self::with_reader(consumer, reader, shared_state, width, place)
     }
 
-    /// A source over `consumer` through its one `reader`. Width comes from
-    /// the ring (narrowed to [`MAX_SAMPLER_CHANNELS`], the widest frame the
-    /// read path stacks): the file's own layout.
+    /// A source over `consumer` through its one `reader`, `width` wide (at
+    /// most [`MAX_SAMPLER_CHANNELS`], the widest frame the read path stacks),
+    /// placing the ring's channels by `place`: the [`Place`] of the ring's
+    /// topology into `width` ([`Place::for_topology`], built, and so
+    /// refusing, before the reader is taken). The file's own width and order
+    /// give the identity.
     pub(crate) fn with_reader(
         consumer: SharedReader,
         reader: Option<tutti_rt::PosReader>,
         shared_state: Arc<RtState>,
+        width: ChannelLayout,
+        place: Place,
     ) -> Self {
-        let stride = (consumer.channels().count() as usize).clamp(1, MAX_SAMPLER_CHANNELS);
-        let channels = ChannelLayout::from(stride);
+        let channels = crate::voice_width(width);
+        let stride = channels.count() as usize;
         Self {
-            read: Box::new(LiveRead::new(consumer, reader, stride)),
+            read: Box::new(LiveRead::new(consumer, reader, stride, place)),
             playing: AtomicBool::new(true),
             sample_rate: SampleRate::SR_44K1,
             shared_state: Some(shared_state),
@@ -834,7 +842,9 @@ impl DiskVoice {
                 continue;
             }
             match offline.read.as_mut() {
-                Some(read) => read.read_into(*pos, direction, &mut frame[..w]),
+                Some(read) => {
+                    read.read_into(*pos, direction, self.inner.read.place(), &mut frame[..w]);
+                }
                 None => frame[..w].fill(0.0),
             }
             for s in frame[..w].iter_mut() {

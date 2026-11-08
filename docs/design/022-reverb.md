@@ -28,11 +28,15 @@ other branches; `docs/design` on `main` ends at 018.
   taps, the all-pass diffuser, width/decorrelation.
 - **One generic node, `ReverbNode<R: Reverb>`** in `tutti-nodes` (§4), declaring
   only `R`'s params and its tail from `R::tail`.
+- **Decisions of 2026-11-08** (owner): the graph re-reads the tail (§10, step 0b);
+  fork is `fresh()` with preroll; `ReverbKind` ships in step 1 beside a second
+  algorithm, the FDN; freeze comes with the FDN (§11).
 - **Modulation holds up** with one convention and no code change (§9): a tail
   declared at the worst case of the node's own range, controls read once per block
   with coefficient interpolation, and `UnitParam` kinds appended.
-- **Build order:** trait + contract suite + Freeverb (bit-identical), then
-  convolution, FDN, plate, early reflections (§8).
+- **Build order** (§8): kinds, the graph's dynamic tail, then the trait, suite,
+  node and Freeverb, then the FDN with `ReverbKind` and freeze, then convolution,
+  the plate and early reflections.
 
 ## 1. Current state
 
@@ -138,11 +142,13 @@ N -> N is native to an FDN (N output taps) and to the convolver
 
 ### 2.5 Freeze
 
-Freeze (loop gain 1, input gated) makes the tail unbounded and does not fit
-`Seconds`. It is out of the trait for now; if the FDN needs it, `tail` returns
-`Option<Seconds>`-like through a documented sentinel or the node declares
-`Tail::Unbounded` from a separate `fn holds(&self, &Controls) -> bool`. Open
-question (§9).
+Freeze (loop gain 1, input gated) makes the tail unbounded, which does not fit
+`Seconds`. It comes with the FDN (step 1b): `UnitParam::Freeze` (`Mix`-free, a
+`>= 0.5` toggle encoded as `Mute` is), a `freeze: bool` in the FDN's `Controls`,
+and one more method on the trait, `fn holds(&self, controls: &Self::Controls) ->
+bool { false }`. The node reports `Tail::Unbounded` through `report_tail` (§10)
+when `holds` is true and `Tail::Finite(R::tail(..))` otherwise. Entering freeze
+ramps the loop gain and the input gate, so it does not click.
 
 ## 3. The trait
 
@@ -173,6 +179,9 @@ pub trait Reverb: Send + Sized {
 
     /// Processing latency only. Never pre-delay, never early-reflection spacing.
     fn latency(&self) -> Samples { Samples(0) }
+
+    /// Whether the output never decays at `controls` (freeze). Default false.
+    fn holds(&self, controls: &Self::Controls) -> bool { false }
 
     /// How heavy a block is, for the executor.
     fn effort(&self) -> Effort { Effort::Heavy }
@@ -255,11 +264,11 @@ the same params, replacing `ForkByClone`; a fork starts from silence.
 
 - `Shape::audio(in, out)`, `.with_cost(inner.effort().into())`,
   `.with_latency(Latency::new(inner.latency()))`.
-- **Tail:** `Shape` is read at compile, so it declares from `R::tail` at controls
-  where each tail-driving param sits at the *top of its declared range* (the
-  decay param's `max`, set when the node is built; default 8 s). The node clamps
-  the live param to that range. A longer ceiling is a rebuild. The graph does not
-  re-read `Shape` after a param change (§9.1).
+- **Tail:** `Shape::tail` is the *ceiling* (`R::tail` at the controls' maxima, or
+  `Tail::Unbounded` for an algorithm that can freeze); the node reports the
+  current tail each block with `io.report_tail(..)` (§10), from `R::tail` at the
+  block's controls. The node clamps the live decay to its own `max_decay`
+  build parameter (default 8 s), which sets the ceiling.
 - `process` returns `Status::Modified`. Returning silent when mix is 0 and the
   state is empty is an optimisation after the first PR.
 
@@ -368,34 +377,23 @@ compared with the old version as a reference.
 
 Each step is a PR that passes `just ci`. #354 merges first.
 
-| Step | Content | After |
-|---|---|---|
-| 0 | `tutti-types`: `UnitParam::{Decay, Diffusion}` and the table test; `Mix` doc | #354 (can start now) |
-| 1 | `tutti-dsp`: `Reverb`, `Setup`, `Effort`, `reverb_contract!`, `Freeverb` implements it; `tutti-nodes`: `ReverbNode<R>` and `ReverbParams`, fork by `fresh`; GM unchanged | 0 |
-| 2 | Convolution as a `Reverb`; `DryAlign` shared | 1 |
-| 3 | The shared blocks (loop gain, absorption, pre-delay, width) with the FDN, the first user pair | 1 |
-| 4 | Plate (takes `Diffuser` and the blocks) | 3 for shared blocks; otherwise 1 |
-| 5 | Early-reflection generator, then as the early stage of 3 and 4 | 1 (generator), 3 and 4 (wiring) |
+| Step | Content | After | Rough size |
+|---|---|---|---|
+| 0 | `tutti-types`: `UnitParam::{Decay, Diffusion}` (ids 25, 26), the `PINNED` table, the `Mix` doc line | #354 (can start now) | ~80 lines |
+| 0b | `tutti-graph` (+ `tutti-export`, `tutti-types`): the dynamic tail, §10; doc 013 change note | none (parallel with 0) | ~500 lines, ~60% tests |
+| 1a | `tutti-dsp`: `Reverb`, `Setup`, `Effort`, the shared blocks the Freeverb needs, `reverb_contract!`, `Freeverb` as a `Reverb`; `tutti-nodes`: `ReverbNode<R>`, `ReverbParams`, fork by `fresh`, quiet-input counter and `report_tail`; bevy registration; GM unchanged; the export-fork test that pins `fresh()` + preroll | 0, 0b | ~1,200 lines, ~600 of them the suite |
+| 1b | `tutti-dsp`: the FDN (absorption design with `lerp`, loop gain, orthogonal matrix, diffusion, modulation, freeze); `UnitParam::Freeze` (id 27); `ReverbKind { Freeverb, Fdn }` in `tutti-nodes` (spawns the matching node, nothing more); registration; the FDN exercises the three-band RT60 case, size, diffusion, modulation and the unbounded tail | 1a | ~1,000 lines |
+| 2 | Convolution as a `Reverb` (`ReverbKind` gains a variant); `DryAlign` shared | 1a | ~400 |
+| 3 | Plate (shares the diffuser and blocks from 1b) | 1b | ~500 |
+| 4 | Early-reflection generator, then as the early stage of the FDN and plate | 1a; 1b and 3 for the wiring | ~450 |
 
-After step 1, steps 2, 3 and the generator half of 5 are independent files and
-can run in parallel. Step 4 waits on 3 only for the blocks it shares; it may
-write its own and be refactored when 3 lands, which is cheap. Step 0 starts now.
-
-## 9. Open questions (recommended answers)
-
-| Question | Recommendation |
-|---|---|
-| Generic or boxed node? | Generic `ReverbNode<R>` (§4.1): the type states what is honoured and no second settings struct is needed. Cost: a registration line per algorithm and a `match` at a picker |
-| Is the enum convenience wanted? | Not in step 1. Add `ReverbKind` when a second algorithm is on `main` and a picker needs it; it spawns the matching `ReverbNode<R>` and nothing else. No engine-level "auto" |
-| Which algorithms first? | Freeverb (exists), convolution (exists), FDN, plate, early reflections (§5) |
-| Chorus and the other modulation effects? | Later. They share rate/depth/voices/feedback and several algorithms, and `ModDelayNode` is already one node. Extract what really generalises (the tail, `DryAlign`, the smoothing split) after reverb has two or three users; not before |
-| `Diffusion` and `Size` as `Mix`? | Yes, per the owner's direction (no new unit). They are positions on `0..1` each algorithm maps to its own scale; `Mix` gets a doc line saying so |
-| `UnitParam::Decay` and `Diffusion` new kinds? | Yes (§2.2); `Freeze` only with the FDN |
-| Tail with a live decay? | Declare at the node's own ceiling (default 8 s) and clamp; the graph does not re-read `Shape` (§9.1) |
-| Freeze and the unbounded tail? | Defer to step 3. Either `tail` returns a documented sentinel or a second method `holds(&Controls) -> bool` lets the node declare `Tail::Unbounded` |
-| Fork: fresh or cloned state? | `fresh()`, as for the stretcher; preroll warms the tail. Today's `ForkByClone` copies a ringing tail, so a fork taken mid-reverb now starts silent; an export-fork test pins it |
-| Does `ConvolverNode` stay? | Yes in step 2 (per-channel IR layouts, the bench); thin it onto the same implementation; retire only if nothing needs its API |
-| Do `Param<U>` cells smooth? | No: the node ramps from where the last block ended, as `DelayLineNode` does (§9.2) |
+Step 1 is two PRs because one would be about 2,200 lines of which the suite and
+the FDN are each a separate review. 1a ships with one algorithm and no enum
+(an enum of one is not a choice); 1b is where the choice becomes real. Parallel
+work: 0 and 0b are independent and can start now; 1a needs both (its node calls
+`report_tail`, its freeze-less kinds need step 0). After 1a, 1b, 2 and the
+generator half of 4 are independent files; 3 waits on 1b only for the shared
+blocks.
 
 ## 9. What the reverb asks of modulation
 
@@ -428,13 +426,11 @@ reads `io.param(k)`: `ParamInput::Base` (unmodulated, read your own cell) or
   build parameter) and clamps the value it reads to that ceiling, whatever the
   port's range says. A `ModRange.max` above the ceiling is therefore harmless, not
   an under-declared tail.
-- **What breaks if the tail is under-declared?** Not the live render. The
-  executor parks a node only if it returned a silence claim (`Silent`, `Idle`,
-  all-silent masks) *and* latency plus declared tail have elapsed; a node
-  returning `Status::Modified` is never parked. So a reverb returns `Modified`
-  while it rings. A wrong tail affects the *export* extension and the silence
-  skip, nothing else. That is why the ceiling is conservative and a longer one is
-  a rebuild.
+- **What does the tail do for a reverb?** The executor parks a node only if it
+  returned a silence claim (`Silent`, `Idle`, all-silent masks) *and* latency plus
+  tail have elapsed; a node returning `Status::Modified` is never parked. The
+  tail is the guard for a reverb that reads silent while still busy (pre-delay
+  gaps), and the length export extends by.
 - **Park and wake.** `Status::Idle` is "silent and nothing pending". A reverb
   that returns `Modified` forever costs its full block when the input is silent.
   The node keeps a counter of consecutive silent input frames; once it exceeds
@@ -534,9 +530,139 @@ FDN's dozen params, so the cap does not bind.
 
 | Finding | Smallest change |
 |---|---|
-| The tail is fixed at prepare, the node cannot see a `ModRange` | Declare from the node's own ceiling and clamp (a convention; no code in `tutti-graph`) |
+| The tail is fixed at prepare, the node cannot see a `ModRange` | A ceiling in `Shape::tail`, plus a per-block report (§10, step 0b) |
 | `Idle` is the node's call and `Modified` is never parked | A quiet-input counter in the node, reset and `Idle` after the tail |
 | Per-block last-frame reads plus the node's own ramp is the cadence | Document it as the `Reverb` convention; add `lerp` to the absorption design |
 | A node cannot learn a `ParamRange` at prepare, and should not | The node's own `max_size` / `max_decay` build parameters |
-| New kinds are append-only ids with one pinned table | Append `Decay`, `Diffusion`; `Freeze` with the FDN |
+| New kinds are append-only ids with one pinned table | Append `Decay`, `Diffusion` (step 0) and `Freeze` (with the FDN, step 1b) |
 | `MAX_PARAM_PORTS` is 32 | Does not bind; an FDN has about twelve params |
+
+## 10. The graph's dynamic tail (step 0b)
+
+Owner decision, 2026-11-08: the graph re-reads the tail. The worst-case
+workaround is rejected. This is the smallest change to `tutti-graph` that lets
+a node's tail follow its params at runtime, with the plan immutable.
+
+### 10.1 What the graph does with a tail today
+
+Read from the code on `main`:
+
+| Use | Where | Reads |
+|---|---|---|
+| Declared | `Shape::tail`, via `NodeSpec` and `Editor` (`node.tail = shape.tail`) | the shape at insert/prepare |
+| Silence skip | `exec.rs`: `tail_elapsed(rec.park_after, u.quiet)`; `NodeRec::park_after` = latency then tail, copied into the plan (`plan.rs`), verified in `compile/verify.rs` | the plan's copy |
+| Graph tail | `tutti_types::graph_tail`, a fold over `TailGraph::tail(node)`, implemented by `Topology` from each node's spec tail | the spec |
+| Export | `RenderGraph::reported_tail()` (`tutti-export/src/graph.rs`) is `graph_tail(editor.spec().topology)`; `ExportRequest::with_reported_tail(cap)` resolves it (Unbounded -> `cap`); `RenderPlan::new` fixes `output_length = duration + tail` before the render | the spec, before the render |
+| Contract | doc 013: "A tail excludes latency"; `Node::shape` "must not change after `prepare`" | n/a |
+
+The tail has two readers with different needs: the executor (audio thread, per
+block, per unit) and export (control side, once). The plan stays immutable
+because both can be served by a value that is *not* in the plan.
+
+### 10.2 Options
+
+| | A. `Status` carries the tail | B. Ceiling in `Shape`, node reports each block (recommended) | C. `Tail::Dynamic { max }` + report | D. Tail published as a control cell |
+|---|---|---|---|---|
+| Change | `Status` is returned by every node; add a field | `Shape::tail` keeps its meaning as an upper bound; `Io::report_tail(Tail)` | A new `Tail` variant in `tutti-types`; same report | A shared atomic in the shape, written by the node, read elsewhere |
+| Churn | Every node and `Status` match in the workspace | Additive: nodes that do not report keep today's behaviour | `then`, `beside`, `from_*`, every `match` on `Tail`, serde | The shape holds shared mutable state; `Eq`/`Hash` on shapes |
+| Plan | untouched | untouched | `Dynamic` flows into `park_after`, `verify` | untouched, but a cell in each rec |
+| Audio thread | free | one store into the unit record | same as B | an atomic load per block per reader, cross-thread cache line |
+| Pooled = serial | yes | yes (below) | yes | yes |
+| Control-side read | none | via an executor view (10.4) | via the same | direct, but of a value the audio thread wrote and the control side cannot tie to a block |
+
+**Recommend B.** A is a workspace-wide signature change for a figure only a few
+nodes vary. C adds a variant that the ceiling already expresses (`Finite(max)`
+is "at most this long"). D puts shared mutable state in a value that is
+compared and hashed and violates "nodes communicate only through ports", for a
+number the executor needs privately.
+
+### 10.3 The mechanism
+
+- `Shape::tail` is the **ceiling**: the longest the node can ever ring, or
+  `Tail::Unbounded` if it can hold. All existing readers (compile, `verify`,
+  PDC, `graph_tail` over the spec) keep reading it. Nothing in the plan or the
+  spec changes; a static reader gets a safe over-estimate.
+- `Io::report_tail(&mut self, Tail)` records the node's current tail in its own
+  executor unit record (the same record as `u.quiet`, `u.last_quiet`). It is a
+  plain field store, no allocation and no atomic: only the task that runs the
+  unit touches it, which is why pooled and serial renders agree (the park
+  decision is a function of that unit's own inputs and reports). The value is
+  clamped to the ceiling (debug-assert on an excess), `Unknown` never narrows.
+  It resets to the ceiling at `prepare`, `reset` and on a fork.
+- The silence skip becomes `tail_elapsed(min(ceiling, reported).after(latency),
+  u.quiet)`. `Tail::Unbounded` reported means never skip, which is how freeze
+  rides the same mechanism with no special case.
+- **The node's duty** (stated in the `Node` docs): the reported tail must cover
+  the ring-out from the last non-quiet input frame under the settings in force
+  since. A node that shortens its decay keeps the longer figure until its state
+  has decayed (a high-water mark that falls by the frames elapsed). A figure too
+  short would let the executor skip a node that still sounds, so the rule errs
+  long; a modulated decay reports from the larger end of the block's ramp.
+- The reverb node reports `R::tail(controls, floor)` after its `Controls` are
+  built, in `process`, every block.
+
+### 10.4 Export: the tail at the render's end
+
+**Recommendation: the tail the graph reports at the programme's end, not the
+max.** The max is the ceiling already, and for an FDN that can freeze it is
+`Unbounded`, i.e. `cap` for every bounce. What rings after the last programme
+frame is what the render must keep.
+
+- The fork's executor exposes a view implementing `TailGraph` (the spec's
+  topology with each unit's reported tail in place of its spec tail), so
+  `graph_tail` folds it unchanged. Control side, offline: allocation is fine.
+- `RenderGraph::reported_tail_now()` asks it once the `duration` frames are
+  rendered. `RenderPlan` fixes `total` up front today, so it gains a second
+  phase: the tail resolved from that view (against `cap`) extends the plan
+  before the pull loop ends. `reported_tail()` (the spec) stays for callers
+  that need a figure before rendering, and is the ceiling.
+- Exports without a dynamic node behave exactly as now: the view equals the
+  spec.
+- Unbounded freeze at the end of the programme resolves to `cap`, as an
+  unbounded graph does today.
+
+Unresolved by reading: how `RenderPlan`'s pull loop is structured around
+`total`; if the second phase is awkward the fallback is the ceiling against
+`cap`, today's behaviour. Step 0b settles it with a test.
+
+### 10.5 Doc 013 change note
+
+Step 0b adds a note to doc 013's contract section ("A tail excludes latency"):
+`Shape::tail` is an upper bound; a node may narrow it per block with
+`Io::report_tail`; the executor and export read the narrowed value, the plan
+and spec the bound; the reverb is the first user. It is recorded there with the
+step, not before.
+
+### 10.6 Tests for step 0b
+
+A node that reports a shorter then a longer tail than its ceiling; the skip
+waits the reported figure (`tests/executor.rs`, beside
+`the_skip_waits_for_latency_plus_tail`); an excess report is clamped; `Unbounded`
+is never skipped; serial and pooled renders are bit-identical with reporting
+nodes (`tests/parallel.rs`); export of a reverb-like node renders the tail at
+the end, not the ceiling. Mutations: ignore the report (fails the shorter
+case); skip the clamp (fails the excess case).
+
+## 11. Decisions and open questions
+
+Decided by the owner on 2026-11-08, in this doc's terms:
+
+| Question | Decision |
+|---|---|
+| Tail with a live decay | The graph re-reads the tail: §10, step 0b. The max-decay workaround is rejected as the mechanism (the ceiling remains the bound the node declares) |
+| Fork: fresh or cloned state | `fresh()`; the graph's preroll warms it. The export-fork test that pins it ships in step 1a |
+| Enum convenience | `ReverbKind` ships in step 1b with the FDN beside Freeverb; it only spawns the matching node. No engine-level "auto" |
+| Second algorithm | The FDN, in step 1, because it exercises the model (three-band RT60, size, diffusion, modulation) and the runtime tail |
+| Freeze | With the FDN (1b): `UnitParam::Freeze`, and `Tail::Unbounded` through the §10 mechanism |
+| Generic or boxed node | Generic `ReverbNode<R>` (§4.1). Owner stated the generic shape; the boxed argument is in §4.1 |
+
+Remaining, **recommended, owner did not object**:
+
+| Question | Recommendation |
+|---|---|
+| Which algorithms after step 1? | Convolution, plate, early reflections (§5) |
+| Chorus and the other modulation effects? | Later, after reverb has two or three users; extract what generalises (the tail report, `DryAlign`, the smoothing split) then |
+| `Diffusion` and `Size` as `Mix`? | Yes, with a `Mix` doc line (§2.1) |
+| `UnitParam::Decay` and `Diffusion` new kinds? | Yes (§2.2); `Freeze` with the FDN |
+| Does `ConvolverNode` stay? | Yes in step 2; thin it onto the same implementation |
+| Do `Param<U>` cells smooth? | No: the node ramps from where the last block ended (§9.2) |

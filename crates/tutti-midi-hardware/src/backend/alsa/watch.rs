@@ -13,12 +13,23 @@
 //! it can create a port or set a name (`snd_seq_open`). Only the old owner's
 //! `CLIENT_EXIT` can come late. So the watch reads the queue again after each
 //! enumeration and enumerates again while it finds events (`settle`): a quiet
-//! read proves every start queued before the enumeration has been read. A start
-//! read for a handle the watch has already reported is then a new occupant of
-//! that number, and the handle is reported removed and added even when the new
-//! device is identical. Exits and changes are only events seen: an exit says
-//! nothing about the occupant the enumeration shows, and a rename is an
-//! identity change the enumeration shows by itself.
+//! read proves every `CLIENT_START` queued before the enumeration has been read.
+//! A `CLIENT_START` read for a handle the watch has already reported is then a
+//! new occupant of that number, and the handle is reported removed and added
+//! even when the new device is identical.
+//!
+//! A `PORT_START` is not so: the kernel makes a port visible
+//! (`snd_seq_insert_port`) before it posts the start, so an enumeration, quiet or
+//! not, can list a port whose own start is yet to come. The first `PORT_START`
+//! read for a port the watch listed that way is the port's own. One read for a
+//! port whose start was seen is a port made again on a live client: a new
+//! occupant too.
+//!
+//! Exits and changes are only events seen: an exit says nothing about the
+//! occupant the enumeration shows, and a rename is an identity change the
+//! enumeration shows by itself. An enumeration cut short is not a look; the
+//! watch asks to be woken again until one is whole, so a removal it has read
+//! does not wait for an unrelated announcement.
 //!
 //! Enumeration runs on the watch's own client. A client opened to enumerate would
 //! announce its own start, port and exit to this very port, and the watch would
@@ -101,6 +112,12 @@ struct Drained {
 }
 
 impl Drained {
+    /// Whether the read has taken [`MAX_DRAIN_EVENTS`]; it stops there, and the
+    /// settle reads again.
+    fn full(&self) -> bool {
+        self.events.len() >= MAX_DRAIN_EVENTS
+    }
+
     /// Records a failed read other than `-EAGAIN`.
     fn failed(&mut self) {
         self.any = true;
@@ -163,13 +180,34 @@ struct Tracker {
     reporter: Reporter,
     /// The handles of the last look reported.
     last: BTreeSet<EndpointId>,
-    /// Handles first listed by a look whose settle did not quiet, so their own
-    /// start may not have been read yet: the first start read for one confirms
-    /// it and is no new occupant. A handle listed by a quiet look is not here,
-    /// because the quiet read proves its start has been read.
+    /// Handles first listed by a look whose settle did not quiet, so their
+    /// client's start may not have been read yet: the first start read for one
+    /// confirms it and is no new occupant. A handle listed by a quiet look is not
+    /// here, because the quiet read proves its client's start has been read.
     unconfirmed: BTreeSet<EndpointId>,
+    /// Handles whose own `PORT_START` may not have been read: the first one read
+    /// for such a handle is its own, not a port made again. The kernel makes a
+    /// port visible (`snd_seq_insert_port`) before it posts the start, so even a
+    /// quiet look can list a port whose start is yet to come.
+    port_pending: BTreeSet<EndpointId>,
     /// Announcements read while no look succeeded; they precede the next look.
     pending: Vec<Event>,
+    /// Wakes in a row that had no look. The watch asks to be woken again until
+    /// one has.
+    failures: u32,
+}
+
+/// Announcements kept while no look succeeds. Past it they are dropped as an
+/// overrun drops them, and the next look is the truth.
+const MAX_PENDING: usize = 4096;
+/// Announcements one read of the port takes before it lets the settle look.
+const MAX_DRAIN_EVENTS: usize = 4096;
+
+/// How long to wait before looking again after `failures` wakes without a look:
+/// 10 ms, doubling, up to one second.
+fn backoff(failures: u32) -> std::time::Duration {
+    let ms = 10_u64.saturating_mul(1 << failures.saturating_sub(1).min(7));
+    std::time::Duration::from_millis(ms.min(1000))
 }
 
 impl Tracker {
@@ -178,17 +216,40 @@ impl Tracker {
             reporter,
             last: BTreeSet::new(),
             unconfirmed: BTreeSet::new(),
+            port_pending: BTreeSet::new(),
             pending: Vec::new(),
+            failures: 0,
         }
+    }
+
+    /// When to wake without an announcement: while the last wake had no look, a
+    /// removal it has read would otherwise wait for an unrelated announcement.
+    fn retry_after(&self) -> Option<std::time::Duration> {
+        (self.failures > 0).then(|| backoff(self.failures))
+    }
+
+    /// Keeps `events` for the next look, within [`MAX_PENDING`].
+    fn keep(&mut self, mut events: Vec<Event>) {
+        self.failures = self.failures.saturating_add(1);
+        if events.len() > MAX_PENDING {
+            tracing::debug!("ALSA device watch: dropping {} announcements", events.len());
+            events.clear();
+        }
+        tracing::debug!(
+            "ALSA device watch: no complete enumeration ({} in a row); keeping the last",
+            self.failures
+        );
+        self.pending = events;
     }
 
     /// Lists what is there as already present. The announcements read until a
     /// quiet read are those of the devices it lists (their starts), so none is
-    /// held for later.
+    /// held for later. If no look succeeds, the first wake that has one reports
+    /// the devices as added.
     fn seed(&mut self, drain: impl FnMut() -> Drained, look: impl Fn() -> Option<Vec<OsDevice>>) {
         let settled = settle(Drained::default(), drain, look);
         let Some(present) = settled.seen else {
-            tracing::debug!("ALSA device watch: no complete first enumeration");
+            self.keep(settled.events);
             return;
         };
         let handles = present.iter().map(|d| d.handle).collect();
@@ -199,6 +260,10 @@ impl Tracker {
             &settled.events,
             settled.quiet,
         );
+        // A seeded port's start was read above, or came before the watch did and
+        // never will. The one still to come, for a port made in the instant
+        // between, would flap a device nobody has opened yet.
+        self.port_pending = BTreeSet::new();
         self.last = handles;
         self.reporter.seed(present);
     }
@@ -218,22 +283,25 @@ impl Tracker {
         } = settle(first, drain, look);
         events.splice(0..0, self.pending.drain(..));
         let Some(present) = seen else {
-            tracing::debug!("ALSA device watch: no complete enumeration; keeping the last");
-            self.pending = events;
+            self.keep(events);
             return;
         };
-        let (replaced, unconfirmed) = self.replaced(&events);
+        self.failures = 0;
+        let fold = self.replaced(&events);
         let handles = present.iter().map(|d| d.handle).collect();
         self.unconfirmed =
-            Self::unconfirmed_after(unconfirmed, &self.last, &handles, &events, quiet);
+            Self::unconfirmed_after(fold.unconfirmed, &self.last, &handles, &events, quiet);
+        self.port_pending =
+            Self::port_pending_after(fold.port_pending, &self.last, &handles, &events);
         self.last = handles;
-        self.reporter.report(present, |id| replaced.contains(&id));
+        self.reporter
+            .report(present, |id| fold.replaced.contains(&id));
     }
 
-    /// The handles whose own start may still be unread after a look: none after a
-    /// quiet one; after one that did not quiet, those listed first by it that no
-    /// start read in `events` names, and those that were unconfirmed before and
-    /// still are.
+    /// The handles whose client's start may still be unread after a look: none
+    /// after a quiet one; after one that did not quiet, those listed first by it
+    /// that no start read in `events` names, and those that were unconfirmed
+    /// before and still are.
     fn unconfirmed_after(
         kept: BTreeSet<EndpointId>,
         last: &BTreeSet<EndpointId>,
@@ -260,39 +328,60 @@ impl Tracker {
             .collect()
     }
 
-    /// The reported handles that a start in `events` gives a new occupant, and
-    /// those still unconfirmed after them.
-    ///
-    /// A client's `CLIENT_START` names a new owner of its number; a
-    /// `PORT_START` after it in the stream is that owner's own port. A
-    /// `PORT_START` with no `CLIENT_START` before it names a port made again on
-    /// a client that lives. Either is a new occupant of a handle already
-    /// reported, unless the handle is unconfirmed, whose first start is its own.
-    fn replaced(&self, events: &[Event]) -> (BTreeSet<EndpointId>, BTreeSet<EndpointId>) {
-        let mut unconfirmed = self.unconfirmed.clone();
-        let mut replaced = BTreeSet::new();
-        let mut touch = |handle: EndpointId| {
-            if !unconfirmed.remove(&handle) {
-                replaced.insert(handle);
-            }
+    /// The handles whose own `PORT_START` may be unread after a look: those that
+    /// were and still are, and those listed first by it that no `PORT_START` read
+    /// in `events` names.
+    fn port_pending_after(
+        kept: BTreeSet<EndpointId>,
+        last: &BTreeSet<EndpointId>,
+        handles: &BTreeSet<EndpointId>,
+        events: &[Event],
+    ) -> BTreeSet<EndpointId> {
+        let started = |h: EndpointId| {
+            let (client, port) = unpack_id(h);
+            events.contains(&Event::PortStart(client, port))
         };
-        let mut fresh = BTreeSet::new();
-        let mut created = BTreeSet::new();
+        let listed_first = handles
+            .iter()
+            .filter(|&&h| !last.contains(&h) && !started(h))
+            .copied();
+        kept.into_iter()
+            .chain(listed_first)
+            .filter(|h| handles.contains(h))
+            .collect()
+    }
+
+    /// What the starts in `events` say about the reported handles.
+    ///
+    /// A `CLIENT_START(N)` names a new owner of the number, so every reported
+    /// handle on it has a new occupant (unless it was unconfirmed, whose first
+    /// start is its own), and the new owner's own `PORT_START`s are yet to come.
+    /// A `PORT_START` for a reported handle is that owner's own when the handle
+    /// is pending one, and otherwise a port made again on a client that lives:
+    /// a new occupant too.
+    fn replaced(&self, events: &[Event]) -> Fold {
+        let mut fold = Fold {
+            replaced: BTreeSet::new(),
+            unconfirmed: self.unconfirmed.clone(),
+            port_pending: self.port_pending.clone(),
+        };
         for &event in events {
             match event {
                 Event::ClientStart(n) => {
-                    fresh.insert(n);
-                    created.retain(|&(c, _)| c != n);
-                    self.last
-                        .iter()
-                        .filter(|&&h| unpack_id(h).0 == n)
-                        .for_each(|&h| touch(h));
+                    for &h in self.last.iter().filter(|&&h| unpack_id(h).0 == n) {
+                        if !fold.unconfirmed.remove(&h) {
+                            fold.replaced.insert(h);
+                        }
+                        fold.port_pending.insert(h);
+                    }
                 }
                 Event::PortStart(n, p) => {
-                    let own = fresh.contains(&n) && created.insert((n, p));
                     let handle = pack_id(n, p);
-                    if !own && self.last.contains(&handle) {
-                        touch(handle);
+                    if self.last.contains(&handle) {
+                        fold.unconfirmed.remove(&handle);
+                        if !fold.port_pending.remove(&handle) {
+                            fold.replaced.insert(handle);
+                        }
                     }
                 }
                 Event::ClientExit(_)
@@ -301,14 +390,24 @@ impl Tracker {
                 | Event::PortChange(..) => {}
             }
         }
-        (replaced, unconfirmed)
+        fold
     }
+}
+
+/// What [`Tracker::replaced`] found.
+struct Fold {
+    /// Reported handles with a new occupant.
+    replaced: BTreeSet<EndpointId>,
+    unconfirmed: BTreeSet<EndpointId>,
+    port_pending: BTreeSet<EndpointId>,
 }
 
 /// Why `Announce::wait` returned.
 enum Woken {
     /// The sequencer announced something.
     Announced(Drained),
+    /// The time given to `wait` passed with nothing announced.
+    Timeout,
     Stopped,
 }
 
@@ -373,8 +472,12 @@ impl Announce {
         })
     }
 
-    /// Blocks until the sequencer announces something or the stop pair closes.
-    fn wait(&mut self) -> Result<Woken> {
+    /// Blocks until the sequencer announces something or the stop pair closes,
+    /// or `timeout` passes.
+    fn wait(&mut self, timeout: Option<std::time::Duration>) -> Result<Woken> {
+        let timeout_ms = timeout.map_or(-1, |t| {
+            c_int::try_from(t.as_millis().max(1)).unwrap_or(c_int::MAX)
+        });
         loop {
             for p in &mut self.polls {
                 p.revents = 0;
@@ -384,7 +487,7 @@ impl Announce {
                 libc::poll(
                     self.polls.as_mut_ptr(),
                     self.polls.len() as libc::nfds_t,
-                    -1,
+                    timeout_ms,
                 )
             };
             if ready < 0 {
@@ -393,6 +496,9 @@ impl Announce {
                     continue;
                 }
                 return Err(error.into());
+            }
+            if ready == 0 {
+                return Ok(Woken::Timeout);
             }
             let (stop, seq) = self.polls.split_last().expect("the stop descriptor");
             if stop.revents != 0 {
@@ -447,6 +553,9 @@ impl Announce {
                 _ => None,
             };
             found.events.extend(event);
+            if found.full() {
+                return found;
+            }
         }
     }
 }
@@ -499,10 +608,14 @@ pub(super) fn start(
         .spawn(move || {
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 loop {
-                    match announce.wait() {
-                        Ok(Woken::Announced(first)) => {
+                    match announce.wait(tracker.retry_after()) {
+                        Ok(woken @ (Woken::Announced(_) | Woken::Timeout)) => {
                             #[cfg(test)]
                             WAKES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let first = match woken {
+                                Woken::Announced(first) => first,
+                                _ => Drained::default(),
+                            };
                             tracker.step(first, || announce.drain(), || snapshot(&announce.seq));
                         }
                         Ok(Woken::Stopped) => return None,

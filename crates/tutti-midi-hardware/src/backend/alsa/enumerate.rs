@@ -129,7 +129,9 @@ fn walk<const N: usize>(seq: &SeqClient, directions: [Direction; N]) -> Walk<N> 
             loop {
                 let rc = sys::snd_seq_query_next_port(seq.raw(), pinfo);
                 if rc < 0 {
-                    // A client that exits mid-walk ends its ports the same way.
+                    // `-ENOENT` is the last port. A client that exits mid-walk
+                    // answers `-ENXIO` (`snd_seq_ioctl_query_next_port`): not the end
+                    // of its ports, so the walk is short and is taken again.
                     complete &= rc == ENOENT;
                     break;
                 }

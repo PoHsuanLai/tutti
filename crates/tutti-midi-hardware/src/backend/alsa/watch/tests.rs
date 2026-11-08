@@ -30,8 +30,6 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   and `a_rename_lost_in_an_overrun_does_not_hide_a_later_replug`;
 // - `replaced` not touching a `PortStart` with no `ClientStart` before it:
 //   `a_port_made_again_on_a_live_client_is_a_new_occupant`;
-// - `replaced` treating a `PortStart` after its client's start as another start:
-//   `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
 // - `step` not marking the handles listed first unconfirmed after a settle that
 //   did not quiet: `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
 // - `unconfirmed_after` marking every present handle:
@@ -40,7 +38,19 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   `a_look_that_never_succeeds_reports_nothing_and_keeps_the_starts`;
 // - `step` not keeping `pending`: the same test, in its second round;
 // - `seed` taking one look and no read: `a_seeded_devices_queued_start_is_its_own`;
-// - `Drained::failed` not setting `any`: `a_failed_read_is_not_quiet`.
+// - `Drained::failed` not setting `any`: `a_failed_read_is_not_quiet`;
+// - `retry_after` always `None`, or `keep` not counting the failure:
+//   `a_removal_read_while_every_look_fails_is_reported_by_the_retry`;
+// - `seed` not counting a failed first look:
+//   `a_first_look_that_fails_is_retried`;
+// - `keep` not dropping past `MAX_PENDING`: `pending_announcements_are_bounded`;
+// - `Drained::full` with `>` for `>=`: `a_read_stops_at_its_cap`;
+// - `port_pending_after` listing no handle first (a new port's start is taken for
+//   a port made again): `a_new_port_listed_before_its_start_is_posted_is_not_made_again`;
+// - `step` clearing `port_pending` each wake:
+//   `a_port_start_still_to_come_survives_other_wakes`;
+// - `replaced` not marking the handles of a `ClientStart` pending
+//   (`fold.port_pending.insert(h)`): `a_replug_listed_before_its_port_start_is_not_made_again`.
 
 use crate::devices::os_devices;
 use crate::test_support::endpoint;
@@ -243,6 +253,11 @@ impl World {
     /// Client 5 is the device `name`, and `queued` is in the announce port
     /// before the first look.
     fn with(name: &str, queued: &[Event]) -> Self {
+        Self::build(name, queued, 0)
+    }
+
+    /// As [`with`](Self::with), the first `failing` looks of which fail.
+    fn build(name: &str, queued: &[Event], failing: usize) -> Self {
         let slot = Arc::new(Mutex::new(None));
         let devices = crate::Devices::open_over(Box::new(Capture(Arc::clone(&slot)))).unwrap();
         let events = devices.subscribe();
@@ -250,7 +265,7 @@ impl World {
         let model = Model {
             stream: RefCell::new(queued.to_vec()),
             present: RefCell::new(Self::device(name)),
-            failing: Cell::new(0),
+            failing: Cell::new(failing),
             storm: Cell::new(false),
         };
         let mut tracker = Tracker::new(Reporter::new(sink));
@@ -285,6 +300,11 @@ impl World {
             model.look()
         };
         self.tracker.step(first, || model.drain(), look);
+    }
+
+    /// A wake for want of an announcement, as the retry timer makes.
+    fn timeout_wake(&mut self) {
+        self.wake(Drained::default(), |_| {});
     }
 
     /// A wake that reads what the port holds.
@@ -462,9 +482,8 @@ fn a_seeded_devices_queued_start_is_its_own() {
 /// not be read yet. The handle is unconfirmed: the first start read for it is its
 /// own, and the port start that follows its client's start is the same owner's.
 ///
-/// Mutations: `step` not marking the handles unconfirmed reports the first
-/// start as a replacement; `replaced` treating a `PortStart` after its client's
-/// start as another start reports it for the pair.
+/// Mutation: `step` not marking the handles unconfirmed reports the first start
+/// as a replacement.
 #[test]
 fn a_start_read_late_for_an_unconfirmed_handle_is_its_own() {
     let mut world = World::with("One", &[]);
@@ -543,4 +562,147 @@ fn a_look_that_fails_once_costs_nothing() {
     world.model.failing.set(1);
     world.wake(heard(&[Event::PortChange(5, 0)]), |_| {});
     assert_eq!(world.shape(), Vec::new());
+}
+
+/// A new port is visible (`snd_seq_insert_port`) before its `PORT_START` is
+/// posted, so a look lists a device whose own port start is read by a later
+/// wake. That start is the port's own, not a port made again.
+///
+/// Mutation: `port_pending_after` listing no handle first reports "Two" removed
+/// and added again by the later wake.
+#[test]
+fn a_new_port_listed_before_its_start_is_posted_is_not_made_again() {
+    let mut world = World::with("One", &[]);
+    world.wake(heard(&[Event::ClientStart(6)]), |m| {
+        m.present.borrow_mut().extend(World::device_on(6, "Two"));
+    });
+    assert_eq!(world.shape(), vec![("added", "Two".to_string())]);
+    world.wake(heard(&[Event::PortStart(6, 0)]), |_| {});
+    assert_eq!(world.shape(), Vec::new());
+    // The start was its own; the next one is a port made again.
+    world.wake(
+        heard(&[Event::PortExit(6, 0), Event::PortStart(6, 0)]),
+        |_| {},
+    );
+    assert_eq!(world.shape(), pair("Two", "Two"));
+}
+
+/// The own start can come several wakes after the port is listed.
+///
+/// Mutation: `step` clearing `port_pending` each wake reports the late start as
+/// a port made again.
+#[test]
+fn a_port_start_still_to_come_survives_other_wakes() {
+    let mut world = World::with("One", &[]);
+    world.wake(heard(&[Event::ClientStart(6)]), |m| {
+        m.present.borrow_mut().extend(World::device_on(6, "Two"));
+    });
+    world.shape();
+    for other in [Event::PortChange(6, 0), Event::ClientChange(6)] {
+        world.wake(heard(&[other]), |_| {});
+    }
+    world.wake(heard(&[Event::PortStart(6, 0)]), |_| {});
+    assert_eq!(world.shape(), Vec::new());
+}
+
+/// An identical client takes the number and its port is listed before its
+/// `PORT_START` is posted: the client's start already replaced the handle, and
+/// the port start after it is that owner's own.
+///
+/// Mutation: `replaced` not marking the handles of a `ClientStart` pending
+/// reports the replug twice.
+#[test]
+fn a_replug_listed_before_its_port_start_is_not_made_again() {
+    let mut world = World::with("One", &[]);
+    world.wake(
+        heard(&[
+            Event::PortExit(5, 0),
+            Event::ClientExit(5),
+            Event::ClientStart(5),
+        ]),
+        |_| {},
+    );
+    assert_eq!(world.shape(), pair("One", "One"));
+    world.wake(heard(&[Event::PortStart(5, 0)]), |_| {});
+    assert_eq!(world.shape(), Vec::new());
+}
+
+/// The announcements of an unplug are read, then every look fails: the watch
+/// has nothing to wait on, so it asks to be woken again, and the removal is
+/// reported by that wake and not by some other announcement.
+///
+/// Mutations: `retry_after` always `None`, or `keep` not counting the failure,
+/// leaves `retry_after` empty here.
+#[test]
+fn a_removal_read_while_every_look_fails_is_reported_by_the_retry() {
+    let mut world = World::with("One", &[]);
+    world.model.failing.set(1000);
+    world.wake(heard(&[Event::PortExit(5, 0), Event::ClientExit(5)]), |m| {
+        m.present.borrow_mut().clear();
+    });
+    assert_eq!(world.shape(), Vec::new());
+    assert!(world.tracker.retry_after().is_some());
+    world.model.failing.set(0);
+    world.timeout_wake();
+    assert_eq!(world.shape(), vec![("removed", "One".to_string())]);
+    assert!(
+        world.tracker.retry_after().is_none(),
+        "a look ends the retries"
+    );
+}
+
+#[test]
+fn the_retry_backs_off_to_a_second() {
+    use std::time::Duration;
+    let ms = |n| backoff(n).as_millis();
+    assert_eq!((ms(1), ms(2), ms(3)), (10, 20, 40));
+    assert_eq!((ms(8), ms(9), ms(u32::MAX)), (1000, 1000, 1000));
+    assert!(backoff(1) < Duration::from_secs(1));
+}
+
+/// A first look that fails is retried; until one is whole nothing is listed.
+///
+/// Mutation: `seed` not counting the failure leaves no retry, and the device is
+/// not reported until some announcement comes.
+#[test]
+fn a_first_look_that_fails_is_retried() {
+    let mut world = World::build("One", &[], 1000);
+    assert!(world.devices.list().is_empty());
+    assert!(world.tracker.retry_after().is_some());
+    world.model.failing.set(0);
+    world.timeout_wake();
+    assert_eq!(world.shape(), vec![("added", "One".to_string())]);
+    assert!(world.tracker.retry_after().is_none());
+}
+
+/// Announcements held while no look succeeds are bounded; past the bound they are
+/// dropped as an overrun drops them, and the next look is the truth.
+///
+/// Mutation: `keep` not dropping lets `pending` grow past `MAX_PENDING`.
+#[test]
+fn pending_announcements_are_bounded() {
+    let mut world = World::with("One", &[]);
+    world.model.failing.set(10_000);
+    world.wake(heard(&[Event::PortChange(5, 0); 3]), |_| {});
+    assert_eq!(world.tracker.pending.len(), 3);
+    world.wake(
+        heard(&vec![Event::PortChange(5, 0); MAX_PENDING + 1]),
+        |_| {},
+    );
+    assert!(world.tracker.pending.is_empty());
+    world.model.failing.set(0);
+    world.timeout_wake();
+    assert_eq!(world.shape(), Vec::new());
+    world.wake(heard(&REPLUG), |_| {});
+    assert_eq!(world.shape(), pair("One", "One"));
+}
+
+#[test]
+fn a_read_stops_at_its_cap() {
+    let at = |n| Drained {
+        events: vec![Event::PortChange(5, 0); n],
+        any: true,
+    };
+    assert!(!at(MAX_DRAIN_EVENTS - 1).full());
+    assert!(at(MAX_DRAIN_EVENTS).full());
 }

@@ -9,9 +9,6 @@ pub mod error;
 #[cfg(target_os = "macos")]
 pub mod types;
 
-#[cfg(target_os = "macos")]
-mod ffi;
-
 pub mod component;
 
 #[cfg(target_os = "macos")]

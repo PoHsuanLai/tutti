@@ -423,6 +423,11 @@ impl From<tutti_au_ffi::Error> for AuError {
         match e {
             tutti_au_ffi::Error::Os(e) => e.into(),
             tutti_au_ffi::Error::Invalid(why) => AuError::InvalidBuffer(why),
+            tutti_au_ffi::Error::RenderFailed {
+                function,
+                status,
+                last,
+            } => AuError::render_failed(function, status, last),
             other => AuError::InvalidBuffer(other.to_string()),
         }
     }

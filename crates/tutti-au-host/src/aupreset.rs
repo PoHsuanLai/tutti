@@ -78,8 +78,6 @@ const KEY_SUBTYPE: &str = "subtype";
 const KEY_MANUFACTURER: &str = "manufacturer";
 /// `kAUPresetVersionKey` — the AU's own state-format version.
 const KEY_VERSION: &str = "version";
-/// `kAUPresetNameKey` — the preset's display name.
-const KEY_NAME: &str = "name";
 
 /// Who a `.aupreset` file says it belongs to, plus its display name.
 ///

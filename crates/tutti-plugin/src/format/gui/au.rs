@@ -73,7 +73,7 @@ impl AuGuiInstance {
         // render-time query, which is what makes a GUI-only instance able to
         // build the table at all.
         let mut param_ranges: Vec<(u32, (f64, f64))> =
-            tutti_au_host::parameters::list(inner.raw_unit())
+            tutti_au_host::parameters::list(inner.unit())
                 .into_iter()
                 .map(|p| (p.id, (p.range.min as f64, p.range.max as f64)))
                 .collect();
@@ -94,16 +94,16 @@ impl PluginEditor for AuGuiInstance {
         // No size to offer here either: this entry point receives a
         // parent handle and a scale, no size. See the sibling in
         // `tutti-plugin-server`.
-        let size = unsafe {
-            self.inner.open_editor(
+        let size = self
+            .inner
+            .open_editor(
                 parent_handle,
                 tutti_plugin_types::EditorSize {
                     width: 800,
                     height: 600,
                 },
             )
-        }
-        .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
+            .map_err(|e| BridgeError::ProtocolError(format!("AU open_editor failed: {e}")))?;
         Ok(EditorSize {
             width: size.width,
             height: size.height,

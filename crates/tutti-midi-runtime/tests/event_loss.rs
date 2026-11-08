@@ -111,7 +111,7 @@ impl Rig {
     fn roll(&mut self, frames: u64, block: usize) -> Vec<EventLoss> {
         let mut f = 0;
         while f < frames {
-            let t = Transport::new(true, Bpm(120.0), beat_of(f), None);
+            let t = Transport::new(true, Bpm::of(120.0), beat_of(f), None);
             self.exec.process(block, &t, &[], &mut []);
             f += block as u64;
         }
@@ -223,7 +223,7 @@ fn a_refused_note_off_goes_out_in_a_following_block() {
     let second = (200..400).flat_map(|i| [at(65, on(i)), at(1_000, off(i))]);
     let mut r = rig(first.chain(second), 64);
     // Through the first 64 frames: the first 200 sound.
-    let transport = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    let transport = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), None);
     r.exec.process(64, &transport(0), &[], &mut []);
     {
         let t = r.tally.lock().unwrap();
@@ -360,7 +360,7 @@ fn a_note_off_refused_twice_and_sent_is_not_lost() {
     });
     let more = (400..700).map(|i| at(130 + 64, on(i)));
     let mut r = rig(held.chain(more), 64);
-    let t = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    let t = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), None);
     for k in 0..7u64 {
         r.exec.process(64, &t(64 * k), &[], &mut []);
     }
@@ -408,7 +408,7 @@ fn a_seek_forgets_what_the_port_refused() {
     let filler = (1..257).map(|i| at(10, on(i)));
     let events: Vec<_> = filler.chain([at(10, on(0)), at(10_000, off(0))]).collect();
     let mut r = rig(events, 64);
-    let t = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    let t = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), None);
     r.exec.process(64, &t(0), &[], &mut []);
     assert_eq!(r.exec.dropped_event_count(), 1);
     // Seek to just before the note-off: the pass starts after the note-on.
@@ -462,13 +462,13 @@ fn a_block_past_the_cap_overflows_and_says_so() {
 fn a_release_the_port_cannot_hold_counts_every_note_left_on() {
     let events = (0..400).map(|i| at(if i < 200 { 10 } else { 70 }, on(i)));
     let mut r = rig(events, 64);
-    let rolling = |f: u64| Transport::new(true, Bpm(120.0), beat_of(f), None);
+    let rolling = |f: u64| Transport::new(true, Bpm::of(120.0), beat_of(f), None);
     for k in 0..3u64 {
         r.exec.process(64, &rolling(64 * k), &[], &mut []);
     }
     assert_eq!(r.tally.lock().unwrap().held.len(), 400);
     // Stopped: the clip releases everything it holds.
-    let stopped = Transport::new(false, Bpm(120.0), beat_of(192), None);
+    let stopped = Transport::new(false, Bpm::of(120.0), beat_of(192), None);
     r.exec.process(64, &stopped, &[], &mut []);
     assert_eq!(r.tally.lock().unwrap().held.len(), 104, "296 ended");
     assert_eq!(r.exec.dropped_event_count(), 104);

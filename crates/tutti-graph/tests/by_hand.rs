@@ -60,7 +60,7 @@ fn drive_in_plays_events_under_the_env() {
         frame: Frame(1_000),
         sample_rate: RATE,
         block_len: Samples(64),
-        transport: Transport::new(true, Bpm(120.0), Beat(4.0), None),
+        transport: Transport::new(true, Bpm::of(120.0), Beat(4.0), None),
         changes: TransportChanges::NONE,
         play: tutti_graph::PlayClock::ZERO,
     };
@@ -89,7 +89,7 @@ fn drive_in_plays_events_under_the_env() {
 #[test]
 fn direct_plays_events_once_advances_and_rolls() {
     let mut probe = Direct::new(Probe, RATE, 64);
-    probe.set_transport(Transport::new(true, Bpm(120.0), Beat(2.0), None));
+    probe.set_transport(Transport::new(true, Bpm::of(120.0), Beat(2.0), None));
     probe.events(0, &[Event::midi(at(5, 64), [0x2090_3c64, 0, 0, 0])]);
     probe.block();
     assert_eq!(probe.output(0)[5], 1.0);

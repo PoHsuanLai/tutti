@@ -177,6 +177,8 @@ pub(crate) fn device_fault_poll(
     mut faults: MessageWriter<AudioDeviceFault>,
     mut changes: MessageWriter<AudioDeviceEvent>,
     mut commands: Commands,
+    watched: Option<Res<DevicesWatched>>,
+    lister: Res<OutputsLister>,
 ) {
     // `engine_ready` reads a state a host may insert without an engine.
     let Some(mut graph) = graph else { return };
@@ -219,10 +221,21 @@ pub(crate) fn device_fault_poll(
                  AudioDeviceState::output_devices stays empty until it does"
             ),
             SessionEvent::DeviceRestarted(_) => {
-                if let (Some(state), Some(driver)) = (state.as_mut(), driver.as_ref())
-                    && let Ok(name) = driver.device_name()
-                {
-                    state.current_device = name;
+                if let (Some(state), Some(driver)) = (state.as_mut(), driver.as_ref()) {
+                    match (lister.name)(driver) {
+                        // A host-supplied driver that restarted onto a real
+                        // device names one now: the session lists once.
+                        Ok(Some(name)) => {
+                            state.current_device = name;
+                            if watched.is_none() {
+                                list_outputs(&mut graph, &lister);
+                            }
+                        }
+                        // Restarted onto a driver the host supplied: the
+                        // old device's name is no longer the device's.
+                        Ok(None) => state.current_device.clear(),
+                        Err(e) => bevy_log::warn!("the restarted audio device has no name: {e}"),
+                    }
                 }
             }
             _ => {}
@@ -320,7 +333,7 @@ pub(crate) fn startup_retry_system(world: &mut World) {
                 world.resource_scope(|world, mut graph: Mut<AudioGraphRes>| {
                     watch_with(world, &plugin, graph.session(), &device, source);
                 });
-                if let (Ok(name), Some(mut state)) = (
+                if let (Ok(Some(name)), Some(mut state)) = (
                     device.device_name(),
                     world.get_resource_mut::<AudioDeviceState>(),
                 ) {
@@ -377,8 +390,8 @@ impl Plugin for DeviceStatePlugin {
 #[derive(Resource)]
 pub(crate) struct OutputsLister {
     list: Box<dyn Fn() -> tutti_cpal::Result<tutti_cpal::DeviceListing> + Send + Sync>,
-    /// The name of the device the engine runs on, `None` when it names none.
-    name: Box<dyn Fn(&Device) -> Option<String> + Send + Sync>,
+    /// The name of the device the engine runs on, `Ok(None)` when it names none.
+    name: Box<dyn Fn(&Device) -> tutti_session::Result<Option<String>> + Send + Sync>,
 }
 
 impl OutputsLister {
@@ -393,10 +406,26 @@ impl OutputsLister {
         }
     }
 
+    /// Names the device `name` while `named` is set and none otherwise, as a
+    /// driver does before and after a restart onto a real card.
+    #[cfg(test)]
+    pub(crate) fn naming_while(
+        mut self,
+        named: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        name: &'static str,
+    ) -> Self {
+        self.name = Box::new(move |_| {
+            Ok(named
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then(|| name.to_owned()))
+        });
+        self
+    }
+
     /// Names every device `name`, as a driver on a real card would.
     #[cfg(test)]
     pub(crate) fn naming(mut self, name: &'static str) -> Self {
-        self.name = Box::new(move |_| Some(name.to_owned()));
+        self.name = Box::new(move |_| Ok(Some(name.to_owned())));
         self
     }
 }
@@ -405,18 +434,17 @@ impl Default for OutputsLister {
     fn default() -> Self {
         Self {
             list: Box::new(|| tutti_cpal::DeviceListing::outputs(tutti_cpal::AudioHost::Default)),
-            name: Box::new(|device| device.device_name().ok()),
+            name: Box::new(Device::device_name),
         }
     }
 }
 
-/// Starts the enumeration of the output devices on a thread of its own: the
+/// Starts the enumeration of the output devices, once per session, on a thread of its own: the
 /// session takes the answer without blocking in a later frame
 /// ([`SessionEvent::OutputsListed`]).
 fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
-    match (lister.list)() {
-        Ok(listing) => graph.session().list_outputs(listing),
-        Err(e) => bevy_log::warn!("the output devices could not be listed: {e}"),
+    if let Err(e) = graph.session().list_outputs_once(|| (lister.list)()) {
+        bevy_log::warn!("the output devices could not be listed: {e}");
     }
 }
 
@@ -429,9 +457,13 @@ fn list_outputs(graph: &mut AudioGraphRes, lister: &OutputsLister) {
 ///
 /// An engine whose driver names no device (a host-supplied one, such as
 /// `build_device_on`) enumerates nothing: it has no use for the machine's
-/// devices, and must not open them. Both lookups are allowed to fail quietly:
-/// a driver that cannot name its device leaves those fields at their defaults
-/// rather than failing the startup schedule over a status display.
+/// devices, and must not open them. The name is the one the engine opened
+/// ([`Device::device_name`]), never a look at the host, so it cannot block.
+/// A driver that cannot name its device leaves those fields at their defaults
+/// rather than failing the startup schedule over a status display, and says
+/// so in a warning if the host could not name a real device; the listing
+/// then starts at the first restart that names one ([`device_fault_poll`]).
+/// The session lists once (`Session::list_outputs_once`).
 pub(crate) fn device_state_init_system(
     driver: Option<NonSend<Device>>,
     watched: Option<Res<DevicesWatched>>,
@@ -441,8 +473,17 @@ pub(crate) fn device_state_init_system(
 ) {
     let Some(driver) = driver else { return };
 
-    let Some(name) = (lister.name)(&driver) else {
-        return;
+    let name = match (lister.name)(&driver) {
+        Ok(Some(name)) => name,
+        // A driver the host supplied names no device, by design.
+        Ok(None) => return,
+        Err(e) => {
+            bevy_log::warn!(
+                "the audio device could not be named ({e}); \
+                 AudioDeviceState::output_devices stays empty until a restart names one"
+            );
+            return;
+        }
     };
     state.current_device = name;
     if watched.is_none()
@@ -727,6 +768,83 @@ mod tests {
         };
         assert_eq!(run(false), (1, vec!["Card".to_string(), "USB".to_string()]));
         assert_eq!(run(true), (0, Vec::new()));
+    }
+
+    /// A host-supplied driver that restarts onto a real device gets its
+    /// listing then: the init system names nothing and lists nothing, the
+    /// restart that names a device starts one enumeration, and a second
+    /// restart starts no other.
+    ///
+    /// Mutation: the `list_outputs` call left out of the `Ok(Some)` arm of
+    /// the `DeviceRestarted` handler leaves the count 0 and fails the second
+    /// assertion; `Session::list_outputs_once` replaced by `list_outputs`
+    /// makes the final count 2.
+    #[test]
+    fn a_restart_onto_a_real_device_starts_the_listing_once() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let named = std::sync::Arc::new(AtomicBool::new(false));
+        let mut app = running_app_with(|app| {
+            app.insert_resource(
+                counting(&calls, &["Card"]).naming_while(std::sync::Arc::clone(&named), "Card"),
+            );
+        });
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(calls.load(SeqCst), 0, "no device named at startup");
+
+        named.store(true, SeqCst);
+        for _ in 0..2 {
+            let (driver, _stream) = ManualStreamDriver::new();
+            crate::engine::restart::restart_device_on(app.world_mut(), spec(), driver, None)
+                .expect("restarts");
+            for _ in 0..3 {
+                app.update();
+            }
+        }
+        assert_eq!(calls.load(SeqCst), 1, "listed once, at the first name");
+        let state = app.world().resource::<AudioDeviceState>();
+        assert_eq!(state.current_device, "Card");
+    }
+
+    /// A restart onto a driver the host supplies leaves the old device's name
+    /// behind no longer: `current_device` is cleared, and a later restart
+    /// onto a named device sets it again.
+    ///
+    /// Mutation: the `Ok(None)` arm of the `DeviceRestarted` handler doing
+    /// nothing leaves "Card" in `current_device` and fails the middle
+    /// assertion.
+    #[test]
+    fn a_restart_onto_a_supplied_driver_clears_the_device_name() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let named = std::sync::Arc::new(AtomicBool::new(true));
+        let mut app = running_app_with(|app| {
+            app.insert_resource(
+                counting(&calls, &["Card"]).naming_while(std::sync::Arc::clone(&named), "Card"),
+            );
+        });
+        let current = |app: &App| {
+            app.world()
+                .resource::<AudioDeviceState>()
+                .current_device
+                .clone()
+        };
+        for _ in 0..3 {
+            app.update();
+        }
+        assert_eq!(current(&app), "Card");
+        for (is_named, expected) in [(false, ""), (true, "Card")] {
+            named.store(is_named, SeqCst);
+            let (driver, _stream) = ManualStreamDriver::new();
+            crate::engine::restart::restart_device_on(app.world_mut(), spec(), driver, None)
+                .expect("restarts");
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_eq!(current(&app), expected);
+        }
     }
 
     /// The device list follows the session's events instead of being

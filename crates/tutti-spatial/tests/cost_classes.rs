@@ -121,7 +121,7 @@ fn render(exec: &mut Executor) -> Vec<Vec<f32>> {
         let mut chunk = vec![vec![0.0f32; n]; 2];
         {
             let mut outs: Vec<&mut [f32]> = chunk.iter_mut().map(Vec::as_mut_slice).collect();
-            let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+            let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
             exec.process(n, &t, &ins, &mut outs);
         }
         for (a, c) in all.iter_mut().zip(chunk) {

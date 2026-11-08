@@ -2,7 +2,7 @@
 
 use std::io;
 use thiserror::Error;
-use tutti_types::ChannelLayout;
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 /// Anything that can go wrong creating, writing or finishing an encode.
 ///
@@ -121,6 +121,21 @@ pub enum SpecError {
         topology: ChannelLayout,
         /// The file's layout.
         file: ChannelLayout,
+    },
+    /// A file of 3 to 8 channels that Ogg Vorbis cannot place: the format
+    /// fixes what those widths mean (Vorbis I, 4.3.9), and the spec's topology
+    /// is not that layout, or is absent where the engine has no default order
+    /// for the width.
+    #[error(
+        "Ogg Vorbis gives {channels} channels a fixed speaker layout, and this file's \
+         topology ({topology:?}) is not it; state the speakers (or use a width past 8, \
+         whose order is the application's)"
+    )]
+    VorbisLayout {
+        /// The file's width.
+        channels: u16,
+        /// The topology the spec stated, or `None` for the engine's default.
+        topology: Option<ChannelTopology>,
     },
 }
 

@@ -12,7 +12,7 @@
 //! |---|---|
 //! | `.round() as u32` → `as u32` in the beat→tick conversion | `a_tick_is_rounded_to_nearest_not_truncated` |
 //! | `sort_by` → `sort_unstable_by` on equal keys | `parse_write_parse_is_byte_stable` (non-deterministically; see the note there) |
-//! | write `Bpm(0.0)` as a saturated `u32` | `a_nonpositive_bpm_writes_the_wire_zero` |
+//! | `.clamp(1, u24::max_value().as_int())` → `.min(..)` or `.max(1)` on the written microseconds | `a_tempo_above_the_wire_range_writes_the_fastest_quarter` |
 
 mod support;
 
@@ -48,7 +48,7 @@ fn note_off(beat: f64, key: u8) -> SmfTimedEvent {
 fn config() -> MidiWriteConfig {
     MidiWriteConfig {
         ticks_per_beat: TPQ,
-        tempo_bpm: Some(Bpm(120.0)),
+        tempo_bpm: Some(Bpm::of(120.0)),
         time_signature: Some((4, 4)),
     }
 }
@@ -140,42 +140,48 @@ fn parse_write_parse_is_byte_stable() {
     );
 }
 
-/// **A non-positive BPM writes the wire zero rather than a saturated tempo.**
+/// **A tempo outside the wire's range writes the nearest value it holds**, not
+/// the wire zero ("no valid tempo") and not a wrapped 24-bit field.
 ///
-/// The read side of this guard is already tested
-/// (`a_degenerate_tempo_is_absent_rather_than_infinite`); the write side was
-/// asserted only through `midly`. Reading the Set Tempo payload back with the
-/// independent decoder closes the loop: `Bpm(0.0)` must produce
-/// microseconds-per-quarter of 0, which the reader then reports as *absent*,
-/// not `u32::MAX`, which it would report as an absurd-but-finite tempo.
+/// A `Bpm` is never zero or negative, so the wire zero can only come from a
+/// tempo above 60 million BPM (the quotient casts to 0), and a tempo below
+/// about 3.6 BPM overflows the 24-bit field, which masks. Reading the Set Tempo
+/// payload back with the independent decoder closes the loop.
+///
+/// Mutation (run): `build_track`'s `.clamp(1, u24::max_value())` becomes
+/// `.min(u24::max_value())`: the fast cases read back 0 and fail. Mutation
+/// (run): it becomes `.max(1)`: the slow cases read back a wrapped 24-bit
+/// value and fail.
 #[test]
-fn a_nonpositive_bpm_writes_the_wire_zero() {
-    let bytes = smf::to_bytes(
-        &[vec![note_on(0.0, 60), note_off(1.0, 60)]],
-        &MidiWriteConfig {
-            ticks_per_beat: TPQ,
-            tempo_bpm: Some(Bpm(0.0)),
-            time_signature: None,
-        },
-    )
-    .expect("encodes");
+fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
+    for (bpm, want_us) in [
+        (1.0e9, 1),
+        (6.0e7, 1),
+        (120.0, 500_000),
+        (1.0, 0xFF_FFFF),
+        (f64::MIN_POSITIVE, 0xFF_FFFF),
+    ] {
+        let bytes = smf::to_bytes(
+            &[vec![note_on(0.0, 60), note_off(1.0, 60)]],
+            &MidiWriteConfig {
+                ticks_per_beat: TPQ,
+                tempo_bpm: Some(Bpm::of(bpm)),
+                time_signature: None,
+            },
+        )
+        .expect("encodes");
 
-    let decoded = decode_smf(&bytes).expect("decodable");
-    assert_eq!(
-        decoded.first_tempo_us(),
-        Some(0),
-        "a zero BPM must be written as a zero microseconds-per-quarter, not \
-         saturated — a saturated value reads back as a real (tiny) tempo"
-    );
+        let decoded = decode_smf(&bytes).expect("decodable");
+        assert_eq!(decoded.first_tempo_us(), Some(want_us), "{bpm} BPM");
 
-    // And the reader's half: absent, not infinite, not 0 BPM.
-    let parsed = smf::ParsedMidiFile::from_bytes(&bytes).expect("parses");
-    assert!(
-        parsed.tempo_bpm.get().is_finite() && parsed.tempo_bpm.get() > 0.0,
-        "a file declaring a degenerate tempo must fall back to a usable one, \
-         got {}",
-        parsed.tempo_bpm.get()
-    );
+        // And the reader's half: a usable tempo, never absent or infinite.
+        let parsed = smf::ParsedMidiFile::from_bytes(&bytes).expect("parses");
+        assert!(
+            parsed.tempo_bpm.get().is_finite() && parsed.tempo_bpm.get() > 0.0,
+            "got {}",
+            parsed.tempo_bpm.get()
+        );
+    }
 }
 
 /// The writer's own output must be readable by an independent decoder at all

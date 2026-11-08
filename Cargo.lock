@@ -4684,6 +4684,7 @@ dependencies = [
  "tutti-nodes",
  "tutti-types",
  "tutti-ump",
+ "tutti-voicing",
  "wide",
 ]
 
@@ -4881,6 +4882,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "tutti-fixtures",
 ]
 
 [[package]]
@@ -4894,6 +4896,16 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tutti-voicing"
+version = "0.0.1"
+dependencies = [
+ "assert_no_alloc",
+ "tutti-midi-protocol",
+ "tutti-types",
+ "tutti-ump",
 ]
 
 [[package]]

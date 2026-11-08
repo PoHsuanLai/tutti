@@ -263,7 +263,7 @@ fn header_round_trips_tempo_and_time_signature() {
     // Signature. A clip carries its own tempo map; an importer that can't
     // read it back places every note at the wrong wall-clock time.
     let header = ClipHeader {
-        tempo_bpm: Bpm(174.0),
+        tempo_bpm: Bpm::of(174.0),
         time_signature: (7, 8),
     };
     let bytes = write_clip_file_with_header(
@@ -280,7 +280,7 @@ fn header_round_trips_tempo_and_time_signature() {
         !clip
             .tempo_bpm()
             .expect("tempo present")
-            .differs_from(Bpm(174.0), 0.05),
+            .differs_from(Bpm::of(174.0), 0.05),
         "tempo survives the round trip"
     );
     assert_eq!(clip.time_signature(), Some((7, 8)));

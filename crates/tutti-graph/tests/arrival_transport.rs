@@ -288,7 +288,7 @@ fn mostly_rolling(
 }
 
 fn rolling(beat: f64) -> Transport {
-    Transport::new(true, Bpm(120.0), Beat(beat), None)
+    Transport::new(true, Bpm::of(120.0), Beat(beat), None)
 }
 
 /// The block-`b` scene for a block of `n` frames after `prev` (the block
@@ -306,7 +306,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
                 changes
                     .push(
                         at(n / 2),
-                        Transport::new(true, Bpm(90.0), Beat(64.0 + b as f64), None),
+                        Transport::new(true, Bpm::of(90.0), Beat(64.0 + b as f64), None),
                     )
                     .expect("inside");
             }
@@ -314,7 +314,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
         }
         3 => Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(4.0),
             Some(LoopRange {
                 start: Beat(4.0),
@@ -325,7 +325,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (Transport, TransportChanges
         4 => prev.map_or(rolling(2.0), |p| {
             p.transport_at(Offset::new(p.block_len.get() - 1, p.block_len).expect("last"))
         }),
-        5 => Transport::new(false, Bpm(100.0), Beat(3.0), None),
+        5 => Transport::new(false, Bpm::of(100.0), Beat(3.0), None),
         _ => rolling(32.0 + b as f64).with_recording(true),
     };
     (t, changes)

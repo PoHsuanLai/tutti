@@ -118,7 +118,7 @@ impl TransportClock {
     /// writeback forgotten.
     pub fn new(links: ClockLinks, sample_rate: impl Into<tutti_types::SampleRate>) -> Self {
         let sample_rate = sample_rate.into();
-        let initial_tempo = Bpm(links.tempo.load(Ordering::Acquire));
+        let initial_tempo = links.tempo.load(Ordering::Acquire);
 
         let clock = Self {
             links,
@@ -132,7 +132,7 @@ impl TransportClock {
     /// Publish the tempo in force to the live transport.
     fn publish_tempo(&self) {
         if let Some(ref out) = self.links.tempo_in_force {
-            out.store(self.clock.tempo().get(), Ordering::Release);
+            out.store(self.clock.tempo(), Ordering::Release);
         }
     }
 
@@ -177,7 +177,7 @@ impl TransportClock {
     /// [`starting_at`](Self::starting_at) is).
     #[cfg(test)]
     #[must_use]
-    pub fn at_tempo(&self, bpm: impl Into<tutti_types::Bpm>) -> Self {
+    pub fn at_tempo(&self, bpm: Bpm) -> Self {
         let mut derived = self.severed();
         derived.set_tempo(bpm);
         derived
@@ -194,9 +194,8 @@ impl TransportClock {
 
     /// Set this clock's tempo, from its current frame on.
     #[cfg(test)]
-    fn set_tempo(&mut self, bpm: impl Into<tutti_types::Bpm>) {
-        let bpm = bpm.into();
-        self.links.tempo.store(bpm.get(), Ordering::Release);
+    fn set_tempo(&mut self, bpm: Bpm) {
+        self.links.tempo.store(bpm, Ordering::Release);
         self.clock.set_tempo(bpm);
         self.publish_tempo();
     }
@@ -370,7 +369,7 @@ impl TransportClock {
     #[cfg(test)]
     pub(crate) fn step_in(&mut self, frames: usize, loop_region: LoopRegion) -> Beat {
         let control = Control {
-            tempo: Bpm(self.links.tempo.load(Ordering::Acquire)),
+            tempo: self.links.tempo.load(Ordering::Acquire),
             paused: self.links.paused.load(Ordering::Acquire),
             loop_region,
             recording: false,
@@ -385,23 +384,23 @@ impl TransportClock {
 
 #[cfg(test)]
 mod tests {
-    use super::super::state::SeekSlot;
+    use super::super::state::{AtomicBpm, SeekSlot};
     use super::*;
     use atomic_float::AtomicF64;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use tutti_types::LoopRange;
 
-    fn create_test_atomics() -> (Arc<AtomicF64>, Arc<AtomicBool>) {
+    fn create_test_atomics() -> (Arc<AtomicBpm>, Arc<AtomicBool>) {
         (
-            Arc::new(AtomicF64::new(120.0)),  // 120 BPM
-            Arc::new(AtomicBool::new(false)), // Not paused
+            Arc::new(AtomicBpm::new(Bpm::default())), // 120 BPM
+            Arc::new(AtomicBool::new(false)),         // Not paused
         )
     }
 
     /// A clock plus the seek slot that drives it.
     fn clock_with_seek(
-        tempo: Arc<AtomicF64>,
+        tempo: Arc<AtomicBpm>,
         paused: Arc<AtomicBool>,
     ) -> (TransportClock, SeekSlot) {
         let seek = SeekSlot::new();
@@ -594,7 +593,7 @@ mod tests {
             tick(&mut clock);
         }
 
-        tempo.store(240.0, Ordering::Release);
+        tempo.store(Bpm::of(240.0), Ordering::Release);
 
         let mut beat = 0.0;
         for _ in 0..44100 {
@@ -673,18 +672,18 @@ mod tests {
     #[test]
     fn a_rate_change_keeps_the_tempo_in_force() {
         let (tempo, paused) = create_test_atomics();
-        let in_force = Arc::new(AtomicF64::new(0.0));
+        let in_force = Arc::new(AtomicBpm::new(Bpm::of(1.0)));
         let mut links = ClockLinks::bare(Arc::clone(&tempo), paused);
         links.tempo_in_force = Some(Arc::clone(&in_force));
         let mut clock = TransportClock::new(links, 44100.0);
         // Inside the hysteresis: asked, but not taken.
-        tempo.store(120.0005, Ordering::Release);
+        tempo.store(Bpm::of(120.0005), Ordering::Release);
         clock.set_sample_rate(tutti_types::SampleRate(48_000.0));
         tick(&mut clock);
-        assert_eq!(in_force.load(Ordering::Acquire), 120.0);
+        assert_eq!(in_force.load(Ordering::Acquire), Bpm::of(120.0));
         assert_eq!(
             clock.current_beat(),
-            Beat(0.0) + tutti_types::beats_per_sample(Bpm(120.0), 48_000.0),
+            Beat(0.0) + tutti_types::beats_per_sample(Bpm::of(120.0), 48_000.0),
         );
     }
 
@@ -752,7 +751,7 @@ mod tests {
         let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         // One second of samples at 240 BPM = 4 beats.
-        let mut derived = live.at_tempo(240.0);
+        let mut derived = live.at_tempo(Bpm::of(240.0));
         let mut beat = 0.0;
         for _ in 0..44100 {
             beat = tick(&mut derived);
@@ -769,7 +768,7 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
-        let mut derived = live.at_tempo(240.0).starting_at(8.0);
+        let mut derived = live.at_tempo(Bpm::of(240.0)).starting_at(8.0);
         assert!((tick(&mut derived) - 8.0).abs() < 1e-4);
 
         // Still at the derived tempo: one second later is 4 beats on.
@@ -795,7 +794,7 @@ mod tests {
         let (tempo, paused) = create_test_atomics();
         let live = TransportClock::new(ClockLinks::bare(Arc::clone(&tempo), paused), 48_000.0);
         let mut derived = live.starting_at(0.0);
-        tempo.store(140.0, Ordering::Release);
+        tempo.store(Bpm::of(140.0), Ordering::Release);
         derived.step(48_000);
         assert_eq!(derived.current_beat(), Beat(2.0), "one second at 120 BPM");
     }

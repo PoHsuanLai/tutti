@@ -8,8 +8,6 @@ pub enum TempoError {
     Empty,
     /// The first point is not at beat 0.
     FirstNotAtZero,
-    /// A tempo that is not finite and positive.
-    BadTempo(usize),
     /// A beat that is not finite, or not after the previous point's.
     BadOrder(usize),
     /// The last point is a ramp, which has no next tempo to move to.
@@ -24,7 +22,6 @@ impl fmt::Display for TempoError {
         match self {
             Self::Empty => f.write_str("a tempo map needs at least one point"),
             Self::FirstNotAtZero => f.write_str("the first tempo point must be at beat 0"),
-            Self::BadTempo(i) => write!(f, "tempo point {i} is not a finite, positive tempo"),
             Self::BadOrder(i) => write!(
                 f,
                 "tempo point {i} is not at a finite beat after the previous point"

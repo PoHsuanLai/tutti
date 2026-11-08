@@ -20,6 +20,7 @@
 //! [`NoteAttribute`](crate::NoteAttribute) extends for note attributes.
 
 use midi2::prelude::*;
+use tutti_types::Bpm;
 use tutti_ump::MidiGroup;
 
 use super::MidiEvent;
@@ -97,22 +98,20 @@ pub struct BarAccents {
 const TEN_NS_UNITS_PER_MINUTE: f64 = 6_000_000_000.0;
 
 /// Beats-per-minute → the Set Tempo wire field (10-ns units per quarter note).
-/// `0` (an invalid rate) maps to `0`, which the inverse reports as "no tempo".
+/// The field saturates at both ends, at 1 (a tempo above 6e9 BPM) and at
+/// `u32::MAX`; `0`, the wire's "no valid tempo", is never written for a tempo.
 #[inline]
-pub const fn bpm_to_ten_ns_per_quarter(bpm: f64) -> u32 {
-    if bpm > 0.0 {
-        (TEN_NS_UNITS_PER_MINUTE / bpm) as u32
-    } else {
-        0
-    }
+pub const fn bpm_to_ten_ns_per_quarter(bpm: Bpm) -> u32 {
+    let units = (TEN_NS_UNITS_PER_MINUTE / bpm.get()) as u32;
+    if units == 0 { 1 } else { units }
 }
 
 /// The Set Tempo wire field (10-ns units per quarter note) → beats-per-minute.
 /// `0` (no valid tempo) yields `None`. Inverse of [`bpm_to_ten_ns_per_quarter`].
 #[inline]
-pub const fn ten_ns_per_quarter_to_bpm(ten_ns_per_qn: u32) -> Option<f64> {
+pub const fn ten_ns_per_quarter_to_bpm(ten_ns_per_qn: u32) -> Option<Bpm> {
     if ten_ns_per_qn != 0 {
-        Some(TEN_NS_UNITS_PER_MINUTE / ten_ns_per_qn as f64)
+        Bpm::new(TEN_NS_UNITS_PER_MINUTE / ten_ns_per_qn as f64)
     } else {
         None
     }
@@ -122,7 +121,7 @@ impl MidiEvent {
     /// Flex Data **Set Tempo** from beats-per-minute. See
     /// [`bpm_to_ten_ns_per_quarter`] for the BPM ↔ wire-field conversion.
     #[inline]
-    pub fn flex_set_tempo(group: MidiGroup, bpm: f64) -> Self {
+    pub fn flex_set_tempo(group: MidiGroup, bpm: Bpm) -> Self {
         use midi2::flex_data::SetTempo;
         let mut m = SetTempo::<[u32; 4]>::new();
         m.set_group(u4::new(group.get()));
@@ -451,7 +450,7 @@ fn flex_text_from_words(words: &[u32]) -> Option<(FlexTextKind, String)> {
 
 /// Recover BPM from a Flex Data Set Tempo [`MidiEvent`], or `None` if `event`
 /// isn't one. Inverse of [`MidiEvent::flex_set_tempo`].
-pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
+pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<Bpm> {
     use midi2::UmpMessage;
     use midi2::flex_data::FlexData;
     let UmpMessage::FlexData(FlexData::SetTempo(m)) =

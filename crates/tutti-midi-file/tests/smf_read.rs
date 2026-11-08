@@ -32,6 +32,7 @@ mod support;
 use support::{Division, RawEvent, build_smf};
 use tutti_midi_file::SmfFile;
 use tutti_midi_file::smf::ParsedMidiFile;
+use tutti_types::{Beat, Bpm};
 use tutti_ump::MidiChannel;
 
 /// 480 ticks per quarter, the value `MidiWriteConfig` defaults to.
@@ -385,4 +386,35 @@ fn merged_events_are_sorted_across_tracks() {
         2,
         "beats [0,3) hold the two onsets at 0 and 2, and neither offset"
     );
+}
+
+/// **A tempo meta event is read as written, except the one the type refuses.**
+///
+/// Microseconds per quarter is 24 bits on the wire. Zero divides to an infinity,
+/// which `Bpm` refuses, so that event is skipped and the next one governs; every
+/// other value is a tempo, however absurd (1 us is 60 million BPM, 0xFFFFFF us
+/// about 3.58 BPM), because the type carries no 20 to 999 policy.
+///
+/// Mutation (run): `track_tempos` keeps a zero event as `Bpm::of(f64::MAX)`
+/// (`Bpm::new(..).or(Some(Bpm::of(f64::MAX)))`) instead of skipping it; the
+/// beats assertion fails. Mutation (run): `track_tempos` clamps each tempo to
+/// 20..=999 BPM; the 1 us assertion fails.
+#[test]
+fn a_zero_tempo_is_skipped_and_an_absurd_one_is_read_as_written() {
+    let data = metrical(&[vec![
+        RawEvent::tempo(0, 0),
+        RawEvent::tempo(u32::from(TPQ), 1),
+        RawEvent::tempo(u32::from(TPQ), 0xFF_FFFF),
+        RawEvent::note_on(0, 0, 60, 100),
+    ]]);
+    let file = ParsedMidiFile::from_bytes(&data).expect("parses");
+
+    // The zero at tick 0 is skipped, so beat 0 has no declared tempo and the
+    // file's 120 BPM default stands.
+    assert_eq!(file.tempo_bpm, Bpm::of(120.0));
+    let beats: Vec<_> = file.tempo_changes.iter().map(|&(b, _)| b).collect();
+    assert_eq!(beats, [Beat(1.0), Beat(2.0)]);
+    assert_eq!(file.tempo_changes[0].1, Bpm::of(60_000_000.0));
+    let slow = file.tempo_changes[1].1.get();
+    assert!((slow - 60_000_000.0 / 16_777_215.0).abs() < 1e-12, "{slow}");
 }

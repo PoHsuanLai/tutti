@@ -565,7 +565,7 @@ mod tests {
     }
 
     fn stopped_at(beat: f64) -> Transport {
-        Transport::new(false, Bpm(120.0), Beat(beat), None)
+        Transport::new(false, Bpm::of(120.0), Beat(beat), None)
     }
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
     /// (the block's first beat) → the frames inside a block hold → fails.
     #[test]
     fn a_rolling_transport_is_read_frame_by_frame() {
-        let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 120 BPM at 48 kHz: 24 000 frames a beat, 96 000 a cycle.
         let out = render_at(
             LfoNode::new(LfoShape::Sine).with_beat_sync(4.0),
@@ -795,7 +795,7 @@ mod tests {
                 .with_seed(seed)
                 .with_beat_sync(1.0)
         };
-        let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         // 7.5 beats at 120 BPM and 48 kHz.
         let rolled = render_at(lfo(), rolling, 180_001);
         let want = random(seed).raw_at(7.5, false);
@@ -862,7 +862,7 @@ mod tests {
         for (i, &v) in free.iter().enumerate() {
             assert_eq!(v, w.raw_at((i / 256) as f64, false), "free frame {i}");
         }
-        let rolling = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+        let rolling = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
         let synced = render_at(
             LfoNode::new(LfoShape::Random).with_beat_sync(0.5),
             rolling,

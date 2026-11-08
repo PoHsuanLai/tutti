@@ -337,12 +337,6 @@ impl ClockMaster {
         }
 
         let tempo = transport.tempo;
-        if tempo.get() <= 0.0 {
-            // Not moving: the next block starts where this one did.
-            self.prev.end.store(beat.get(), Ordering::Release);
-            self.prev.wrapped.store(false, Ordering::Release);
-            return;
-        }
         // Kept as the `BeatDuration` the shared derivation returns rather than
         // unwrapped to f64: this is a *span* of beats per sample, while `beat`
         // is a *position*. Both are beats-denominated and neither is an

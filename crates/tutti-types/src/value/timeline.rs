@@ -109,8 +109,28 @@ pub fn first_frame_at_or_after(frames_ahead: f64) -> i64 {
 /// One spelling, `(tempo / 60) / sample_rate`, so every reader that divides
 /// by it divides by the same `f64`.
 #[inline]
-pub fn beats_per_sample(tempo: impl Into<Bpm>, sample_rate: impl Into<SampleRate>) -> BeatDuration {
-    BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
+pub fn beats_per_sample(tempo: Bpm, sample_rate: impl Into<SampleRate>) -> BeatDuration {
+    BeatDuration((tempo.get() / 60.0) / sample_rate.into().get())
+}
+
+/// Frames one beat spans at `tempo` and `rate`: the one rule for whether a
+/// tempo moves.
+///
+/// `None` when the rate is not finite and above zero, or when the count is not
+/// finite (a tempo too slow for an `f64` count of frames, such as the smallest
+/// `Bpm`): the clock does not move. The tempo itself needs no check, a `Bpm`
+/// being finite and above zero.
+///
+/// Raw `f64` on purpose: the frame counts it scales run past what an `f32`
+/// unit type holds exactly.
+#[inline]
+pub fn frames_per_beat(tempo: Bpm, rate: SampleRate) -> Option<f64> {
+    let rate = rate.get();
+    // `is_finite` and `> 0.0` together also refuse a NaN.
+    let usable = rate.is_finite() && rate > 0.0;
+    usable
+        .then(|| rate * 60.0 / tempo.get())
+        .filter(|frames| frames.is_finite())
 }
 
 /// Returns a fractional frame position landed on the whole frame it is within
@@ -147,7 +167,7 @@ pub fn snap_to_whole_frame(position: f64) -> f64 {
 ///
 /// ```
 /// use tutti_types::{Beat, Bpm, Frame, SampleRate, TimelineSegment};
-/// let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm(90.0), SampleRate(48_000.0));
+/// let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SampleRate(48_000.0));
 /// // Exact, not 2.999999999999891: no accumulation.
 /// assert_eq!(seg.beat_at(Frame(96_000)), Beat(3.0));
 /// assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame(96_000)));
@@ -183,17 +203,15 @@ impl TimelineSegment {
         }
     }
 
-    /// Returns the frames per beat, when the tempo and rate are both finite
-    /// and positive (`None` otherwise: the segment does not move).
+    /// Returns the frames per beat, when the rate is finite and positive and
+    /// the count is finite (`None` otherwise: the segment does not move, as
+    /// at a rate of zero or a tempo too slow for an `f64` count of frames).
     ///
     /// Raw `f64` on purpose: the frame counts it scales run past what an `f32`
     /// unit type holds exactly.
     #[inline]
     pub fn frames_per_beat(&self) -> Option<f64> {
-        let (tempo, rate) = (self.tempo.get(), self.sample_rate.get());
-        // `is_finite` and `> 0.0` together also refuse a NaN.
-        let usable = tempo.is_finite() && tempo > 0.0 && rate.is_finite() && rate > 0.0;
-        usable.then(|| rate * 60.0 / tempo)
+        frames_per_beat(self.tempo, self.sample_rate)
     }
 
     /// Returns the beat at `frame`, in closed form: `origin_beat + n × tempo /
@@ -267,11 +285,11 @@ mod tests {
     #[test]
     fn beats_per_sample_is_tempo_over_sixty_over_rate() {
         assert_eq!(
-            beats_per_sample(Bpm(120.0), SR),
+            beats_per_sample(Bpm::of(120.0), SR),
             BeatDuration(2.0 / 48_000.0)
         );
         assert_eq!(
-            beats_per_sample(Bpm(90.0), SR),
+            beats_per_sample(Bpm::of(90.0), SR),
             BeatDuration(1.5 / 48_000.0)
         );
     }
@@ -298,11 +316,11 @@ mod tests {
     /// not beat 7 → fails.
     #[test]
     fn a_frame_on_a_beat_is_that_beat_exactly() {
-        let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm(90.0), SR);
+        let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
         assert_eq!(seg.beat_at(Frame(96_000)), Beat(3.0));
         // Every whole beat, where the step `tempo / 60 / rate` rounded and
         // scaled misses some.
-        let fast = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm(140.0), SR);
+        let fast = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(140.0), SR);
         for k in 1..=2_000u64 {
             let frame = k * 60 * 48_000;
             if frame % 140 == 0 {
@@ -313,7 +331,7 @@ mod tests {
         assert_eq!(seg.frame_of(Beat(3.0)), Some(Frame(96_000)));
         assert_eq!(seg.frame_of(Beat(1.0)), Some(Frame(32_000)));
         // From a later origin, the same frames by their distance.
-        let later = TimelineSegment::new(Frame(1_000), Beat(0.5), Bpm(90.0), SR);
+        let later = TimelineSegment::new(Frame(1_000), Beat(0.5), Bpm::of(90.0), SR);
         assert_eq!(later.beat_at(Frame(1_000 + 80_000)), Beat(3.0));
     }
 
@@ -324,7 +342,7 @@ mod tests {
     /// ulp past frame 32 000 lands on 32 001 → fails.
     #[test]
     fn a_beat_lands_on_the_first_frame_at_or_after_it() {
-        let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm(90.0), SR);
+        let seg = TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR);
         let ulp_past = Beat(f64::from_bits(1.0f64.to_bits() + 1));
         let ulp_before = Beat(f64::from_bits(1.0f64.to_bits() - 1));
         assert_eq!(seg.frame_of(ulp_past), Some(Frame(32_000)));
@@ -355,9 +373,9 @@ mod tests {
                 let start = block * 64;
                 let seg = TimelineSegment::new(
                     Frame::ZERO,
-                    TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm(90.0), SR)
+                    TimelineSegment::new(Frame::ZERO, Beat(0.0), Bpm::of(90.0), SR)
                         .beat_at(Frame(start)),
-                    Bpm(90.0),
+                    Bpm::of(90.0),
                     SR,
                 );
                 if let Some(f) = seg.frame_of(beat)
@@ -372,12 +390,28 @@ mod tests {
         }
     }
 
-    /// Mutation (run): accept any tempo in `frames_per_beat` → a zero tempo
-    /// is infinitely many frames a beat, and beat 2 "lands" on a frame →
-    /// fails.
+    /// **One rule for whether a tempo moves**: a rate that is not finite and
+    /// above zero, or a non-finite frame count, is `None`.
+    ///
+    /// Mutation (run): drop the finite filter in `frames_per_beat` → the
+    /// smallest tempo gives `Some(inf)` → fails.
+    #[test]
+    fn frames_per_beat_is_none_when_nothing_moves() {
+        assert_eq!(frames_per_beat(Bpm::of(120.0), SR), Some(24_000.0));
+        assert_eq!(frames_per_beat(Bpm::of(f64::from_bits(1)), SR), None);
+        for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(frames_per_beat(Bpm::of(120.0), SampleRate(rate)), None);
+        }
+    }
+
+    /// The slowest tempo a `Bpm` holds is infinitely many frames a beat (a
+    /// zero tempo cannot be built).
+    ///
+    /// Mutation (run): drop the finite filter in `frames_per_beat` → beat 2
+    /// "lands" on a frame → fails.
     #[test]
     fn a_segment_that_does_not_move_places_nothing() {
-        let seg = TimelineSegment::new(Frame::ZERO, Beat(1.0), Bpm(0.0), SR);
+        let seg = TimelineSegment::new(Frame::ZERO, Beat(1.0), Bpm::of(f64::from_bits(1)), SR);
         assert_eq!(seg.frame_of(Beat(2.0)), None);
         assert!(!seg.reached_by(Frame(10), Beat(0.5)));
         assert_eq!(seg.beat_at(Frame(1_000)), Beat(1.0));
@@ -387,7 +421,7 @@ mod tests {
     /// start an ulp past the origin's beat is not reached there → fails.
     #[test]
     fn reached_by_is_the_frame_rule() {
-        let seg = TimelineSegment::new(Frame(100), Beat(3.0), Bpm(90.0), SR);
+        let seg = TimelineSegment::new(Frame(100), Beat(3.0), Bpm::of(90.0), SR);
         // Behind the origin: reached.
         assert!(seg.reached_by(Frame(100), Beat(2.5)));
         // On it, and an ulp past it: reached.

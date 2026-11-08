@@ -2524,11 +2524,8 @@ fn u7(v: u8) -> U7 {
 
 /// Voices whose key is still held.
 fn sounding(synth: &PolySynth) -> usize {
-    synth
-        .allocator
-        .slots()
-        .iter()
-        .filter(|s| s.is_key_held())
+    (0..synth.allocator.slots().len())
+        .filter(|&i| synth.allocator.holds_of(i).is_some_and(|h| h.key()))
         .count()
 }
 
@@ -2653,9 +2650,10 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
     ] {
         let mut synth = poly_synth();
         synth.apply_midi(ump(message));
+        // The synth keeps where the pitch stands: the wheel times the range.
         assert_eq!(
-            synth.bends.position(MidiChannel::FIRST),
-            expected,
+            synth.bends[usize::from(MidiChannel::FIRST.get())],
+            synth.config.pitch_bend_range * expected,
             "{message:?}"
         );
     }
@@ -2678,7 +2676,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
                 velocity: u7(0),
             },
         )));
-        synth.allocator.slots()[0].is_sustained()
+        synth.allocator.holds_of(0).is_some_and(|h| h.sustained())
     };
     let pedal = cc::SUSTAIN;
     assert!(sustain(Message::Midi1(
@@ -2911,4 +2909,83 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
     s.tick(&[], &mut out);
     assert_eq!(s.voices[0].sound_controllers(), (cutoff, resonance));
     assert_eq!(s.voices[0].mod_wheel(), 0.0);
+}
+
+/// The MPE switch is live: turning it on after construction makes the master
+/// channel's bend reach every channel, and turning it off takes that back.
+///
+/// Mutation (run): `set_mpe_enabled` not telling the note logic
+/// (`allocator.set_zone_masters`) leaves channel 5 centred.
+#[test]
+fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
+    let bend = |synth: &mut PolySynth, channel: u8| {
+        synth.apply_midi(ump(Message::Midi2(
+            address(channel),
+            Voice2::PitchBend(u32::MAX),
+        )));
+    };
+    let mut synth = poly_synth();
+    synth.set_mpe_enabled(true);
+    bend(&mut synth, 0);
+    assert_ne!(synth.bends[5].0, 0.0, "a master bend reaches channel 5");
+    synth.set_mpe_enabled(false);
+    bend(&mut synth, 15);
+    assert_ne!(synth.bends[15].0, 0.0, "and its own channel");
+    // Off again, a bend on channel 0 stays on channel 0.
+    synth.apply_midi(ump(Message::Midi2(address(0), Voice2::PitchBend(0))));
+    assert_ne!(
+        synth.bends[5].0, synth.bends[0].0,
+        "channel 5 keeps the bend it had"
+    );
+}
+
+/// Letting go of the sounding key in a mono synth returns to the most recent
+/// key still held (tutti's rule), and the voice then plays that key: the
+/// return starts from the note-off, so the synth must carry it out.
+///
+/// Mutation (run): `carry_out_gates` ignoring `Gate::Start` leaves the voice
+/// on 64, or silent, and fails the pitch assertions.
+#[test]
+fn a_mono_synth_returns_to_the_held_key_and_sounds_it() {
+    let on = |k, v| {
+        ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOn {
+                note: note_number(k),
+                velocity: u7(v),
+            },
+        ))
+    };
+    let off = |k| {
+        ump(Message::Midi1(
+            address(0),
+            Voice1::NoteOff {
+                note: note_number(k),
+                velocity: u7(0),
+            },
+        ))
+    };
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: tutti_types::SampleRate::SR_44K1,
+        max_voices: 4,
+        voice_mode: VoiceMode::Mono,
+        ..Default::default()
+    })
+    .expect("synth builds");
+    synth.apply_midi(on(60, 100));
+    synth.apply_midi(on(64, 90));
+    assert_eq!(synth.voices[0].note(), note_number(64));
+    synth.apply_midi(off(64));
+    assert_eq!(synth.active_voice_count(), 1);
+    assert_eq!(
+        synth.voices[0].note(),
+        note_number(60),
+        "back to the held key"
+    );
+    assert_eq!(synth.allocator.slots()[0].note(), note_number(60));
+    synth.apply_midi(off(60));
+    assert!(
+        synth.allocator.slots()[0].is_releasing(),
+        "the last key released it"
+    );
 }

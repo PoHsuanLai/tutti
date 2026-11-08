@@ -126,7 +126,7 @@ fn an_in_process_vst2_plugin_is_given_the_project_meter() {
     app.world_mut()
         .resource_mut::<AudioGraphRes>()
         .render_frame_at(
-            &tutti_graph::Transport::new(true, Bpm(120.0), Beat(3.5), None),
+            &tutti_graph::Transport::new(true, Bpm::of(120.0), Beat(3.5), None),
             &mut out,
         );
     let cap = read_capture();

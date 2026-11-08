@@ -69,7 +69,9 @@ fn graph(frame: u64) -> (Editor, Executor) {
 /// Render `frames` of the left channel, rolling at 120 BPM from beat 0.
 fn render(ed: Editor, exec: Executor, frames: usize) -> Vec<f32> {
     let mut r = Renderer::new(ed, exec);
-    r.set_transport_fn(|f| Transport::new(true, Bpm(120.0), Beat(f.get() as f64 / 24_000.0), None));
+    r.set_transport_fn(|f| {
+        Transport::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
+    });
     r.render(frames).swap_remove(0)
 }
 

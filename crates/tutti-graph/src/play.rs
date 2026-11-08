@@ -207,7 +207,7 @@ mod tests {
     use tutti_types::{Beat, Bpm, SampleRate};
 
     fn t(playing: bool) -> Transport {
-        Transport::new(playing, Bpm(120.0), Beat(0.0), None)
+        Transport::new(playing, Bpm::of(120.0), Beat(0.0), None)
     }
 
     fn env(first: bool, changes: &[(usize, bool)], play: PlayClock) -> Env {

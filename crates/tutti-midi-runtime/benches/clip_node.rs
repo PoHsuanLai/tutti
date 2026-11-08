@@ -78,7 +78,7 @@ fn rig(events: Vec<TimedMidiEvent>) -> Executor {
 
 fn roll(mut exec: Executor, frames: u64) -> Executor {
     for f in (0..frames).step_by(BLOCK) {
-        let t = Transport::new(true, Bpm(120.0), Beat(f as f64 / FRAMES_PER_BEAT), None);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(f as f64 / FRAMES_PER_BEAT), None);
         exec.process(BLOCK, &t, &[], &mut []);
     }
     exec

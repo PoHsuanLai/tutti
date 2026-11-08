@@ -2,18 +2,99 @@
 
 use super::*;
 
-unit! {
-    /// Tempo in beats per minute. Distinct from `Hz`: beats/minute, not cycles/second.
-    ///
-    /// `f64`-backed because every real consumer widens tempo to f64 for beat math
-    /// (beats ↔ seconds conversions with sample-accurate precision), and f32 BPM
-    /// would silently round-trip through the widening conversion at every read.
-    pub struct Bpm(pub f64): Unit, Ordered, Bounded;
-}
+/// Tempo in beats per minute: finite and above zero.
+///
+/// [`new`](Self::new) refuses NaN, the infinities, zero and negative numbers;
+/// there is no musical ceiling or floor here (a UI limit such as 20 to 999 is
+/// the caller's). Distinct from `Hz`: beats/minute, not cycles/second.
+///
+/// `f64`-backed because every real consumer widens tempo to f64 for beat math
+/// (beats ↔ seconds conversions with sample-accurate precision), and f32 BPM
+/// would silently round-trip through the widening conversion at every read.
+///
+/// There is no `Unit` impl and no `From<f64>`: both would be an unchecked
+/// constructor.
+///
+/// ```
+/// use tutti_types::Bpm;
+///
+/// assert_eq!(Bpm::new(120.0).map(Bpm::get), Some(120.0));
+/// assert_eq!(Bpm::new(0.0), None);
+/// assert_eq!(Bpm::new(f64::NAN), None);
+/// ```
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
+pub struct Bpm(f64);
+
 // NOT `Additive`: the difference of two tempos is not a tempo, and
 // returning `Bpm` would let it be fed to a beat-rate calculation. Use
 // `differs_from` for the "did the tempo move?" test.
+// NOT `Scalable`, and no `Neg`: a scaled or negated tempo can leave the range
+// (a negative factor, an overflow). Scale the raw number and call `new`.
 impl Bpm {
+    /// The tempo, or `None` when `raw` is NaN, infinite, zero or negative.
+    #[inline]
+    #[must_use]
+    pub const fn new(raw: f64) -> Option<Bpm> {
+        if raw.is_finite() && raw > 0.0 {
+            Some(Bpm(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The tempo for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is not finite and above zero; in a `const` that is a compile
+    /// error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: f64) -> Bpm {
+        match Self::new(raw) {
+            Some(bpm) => bpm,
+            None => panic!("a tempo is finite and above zero"),
+        }
+    }
+
+    /// Returns the raw beats per minute, for a boundary the unit types do not
+    /// cross (C ABI, IPC, WIT) or for beat math.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+
+    /// Returns the smaller of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn min(self, other: Bpm) -> Bpm {
+        Bpm(self.0.min(other.0))
+    }
+
+    /// Returns the larger of the two, in this unit.
+    #[inline]
+    #[must_use]
+    pub fn max(self, other: Bpm) -> Bpm {
+        Bpm(self.0.max(other.0))
+    }
+
+    /// Clamps into `lo..=hi`, in this unit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `lo > hi`, matching `f64::clamp`.
+    #[inline]
+    #[must_use]
+    pub fn clamp(self, lo: Bpm, hi: Bpm) -> Bpm {
+        Bpm(self.0.clamp(lo.0, hi.0))
+    }
+
     /// Whether this tempo differs from `other` by more than `epsilon` BPM.
     ///
     /// The transport clock re-derives its per-sample beat increment only when
@@ -25,6 +106,50 @@ impl Bpm {
         (self.0 - other.0).abs() > epsilon
     }
 }
+
+/// 120 BPM, the tempo a new transport runs at.
+impl Default for Bpm {
+    #[inline]
+    fn default() -> Bpm {
+        Bpm::of(120.0)
+    }
+}
+
+impl core::fmt::Display for Bpm {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl TryFrom<f64> for Bpm {
+    type Error = BpmOutOfRange;
+
+    #[inline]
+    fn try_from(raw: f64) -> Result<Bpm, BpmOutOfRange> {
+        Bpm::new(raw).ok_or(BpmOutOfRange(raw))
+    }
+}
+
+impl From<Bpm> for f64 {
+    #[inline]
+    fn from(bpm: Bpm) -> f64 {
+        bpm.0
+    }
+}
+
+/// A raw number that is not a tempo: NaN, infinite, zero or negative (see
+/// [`Bpm::new`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BpmOutOfRange(pub f64);
+
+impl core::fmt::Display for BpmOutOfRange {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "a tempo is finite and above zero, got {}", self.0)
+    }
+}
+
+impl core::error::Error for BpmOutOfRange {}
 
 unit! {
     /// A position on the musical timeline, in beats.
@@ -397,7 +522,8 @@ impl BeatDuration {
     #[inline]
     #[must_use]
     pub fn to_seconds(self, tempo: Bpm) -> Seconds {
-        if tempo.0 <= 0.0 {
+        // A tempo too slow for a finite seconds-per-beat reads as zero, not inf.
+        if !(60.0 / tempo.0).is_finite() {
             return Seconds(0.0);
         }
         Seconds((self.0 * 60.0 / tempo.0) as f32)

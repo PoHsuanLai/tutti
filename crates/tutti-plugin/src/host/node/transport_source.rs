@@ -203,7 +203,7 @@ impl ProjectTime {
     pub(crate) fn at(&mut self, t: &Transport, rate: SampleRate, steady: i64) -> Option<f64> {
         let usable = |v: f64| v.is_finite() && v > 0.0;
         let (tempo, hz) = (t.tempo.get(), rate.get());
-        if !(usable(tempo) && usable(hz)) {
+        if !usable(hz) {
             self.last = None;
             return None;
         }
@@ -260,7 +260,7 @@ fn played_between(
             return None;
         }
         let frames_at = |tempo: Bpm| (beats * 60.0 / tempo.get() * rate.get()).round();
-        let least = frames_at(Bpm(from.tempo.get().max(to.tempo.get())));
+        let least = frames_at(from.tempo.max(to.tempo));
         let room = gap.saturating_sub(usize::try_from(b.frame.get()).ok()?) as f64;
         // More than the fewest is not capped, so the check below re-seats it.
         let before = frames_at(from.tempo).min(least.max(room));
@@ -517,7 +517,7 @@ mod tests {
     /// `transport_info` → fails.
     #[test]
     fn the_snapshot_is_env_at_the_frame() {
-        let t = Transport::new(true, Bpm(120.0), Beat(2.0), None).with_recording(true);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(2.0), None).with_recording(true);
         let e = env(1_000, 64, t, TransportChanges::NONE);
         let meter = MeterMap::default();
 
@@ -570,7 +570,7 @@ mod tests {
         });
         let t = Transport::counted(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             SegmentOrigin {
                 beat: Beat(4.0),
                 frame: Frame(0),
@@ -582,7 +582,7 @@ mod tests {
         changes
             .push(
                 at(40, 64),
-                Transport::new(true, Bpm(90.0), Beat(16.0), None),
+                Transport::new(true, Bpm::of(90.0), Beat(16.0), None),
             )
             .expect("a change inside the block");
         let e = env(0, 64, t, changes);
@@ -643,7 +643,7 @@ mod tests {
         let first = env(
             0,
             64,
-            Transport::new(true, Bpm(120.0), Beat(2.0), None),
+            Transport::new(true, Bpm::of(120.0), Beat(2.0), None),
             TransportChanges::NONE,
         );
         history.observe(&first);
@@ -651,7 +651,7 @@ mod tests {
         let second = env(
             64,
             64,
-            Transport::new(true, Bpm(120.0), Beat(32.0), None),
+            Transport::new(true, Bpm::of(120.0), Beat(32.0), None),
             TransportChanges::NONE,
         );
         history.observe(&second);
@@ -688,7 +688,7 @@ mod tests {
         let e = env(
             0,
             64,
-            Transport::new(true, Bpm(120.0), Beat(3.5), None),
+            Transport::new(true, Bpm::of(120.0), Beat(3.5), None),
             TransportChanges::NONE,
         );
         let out = from_cx(
@@ -737,7 +737,7 @@ mod tests {
     impl Host {
         fn new(playing: bool, bpm: f64, beat: f64) -> Self {
             Self {
-                clock: FrameClock::new(Beat(beat), Bpm(bpm), SR),
+                clock: FrameClock::new(Beat(beat), Bpm::of(bpm), SR),
                 playing,
                 looping: None,
                 frame: 0,
@@ -767,7 +767,7 @@ mod tests {
                 Cmd::Play => self.playing = true,
                 Cmd::Stop => self.playing = false,
                 Cmd::Seek(beat) => self.clock.seat(Beat(beat)),
-                Cmd::Tempo(bpm) => self.clock.set_tempo(Bpm(bpm)),
+                Cmd::Tempo(bpm) => self.clock.set_tempo(Bpm::of(bpm)),
                 Cmd::Loop(l) => {
                     self.looping = l.map(|(start, end)| LoopRange {
                         start: Beat(start),
@@ -953,9 +953,10 @@ mod tests {
         );
         assert_eq!(read(&mut project, &[started], &[0]), [(128, Some(240_000))]);
 
-        let stalled = Transport::new(true, Bpm(0.0), Beat(2.0), None);
-        let e = env(192, 64, stalled, TransportChanges::NONE);
-        assert_eq!(read(&mut project, &[e], &[0]), [(192, None)]);
+        // A tempo cannot be zero (`Bpm` refuses it); a rate of zero still
+        // leaves no project time.
+        let playing = Transport::new(true, Bpm::of(120.0), Beat(2.0), None);
+        assert_eq!(project.at(&playing, SampleRate(0.0), 192), None);
     }
 
     /// **Stopping holds project time, and a start where it stood continues
@@ -1140,7 +1141,7 @@ mod tests {
                 frame: Frame(frame),
                 sample_rate: SR,
             };
-            Transport::counted(true, Bpm(bpm), origin, None)
+            Transport::counted(true, Bpm::of(bpm), origin, None)
         };
         let mut p = ProjectTime::default();
         assert_eq!(p.at(&counted(120.0, 100.0, 0), SR, 0), Some(2_400_000.0));
@@ -1296,21 +1297,21 @@ mod tests {
             let first = env(
                 0,
                 64,
-                Transport::new(true, Bpm(120.0), Beat(10.0), None),
+                Transport::new(true, Bpm::of(120.0), Beat(10.0), None),
                 TransportChanges::NONE,
             );
-            let on = Transport::new(playing, Bpm(121.0), Beat(b1), looping);
+            let on = Transport::new(playing, Bpm::of(121.0), Beat(b1), looping);
             let second = env(64, 64, on, TransportChanges::NONE);
             let mut third = env(128, 64, to, TransportChanges::NONE);
             third.sample_rate = rate;
             read_firsts(&[first, second, third])
         };
         let stopped = |moved: f64, looping| {
-            Transport::new(false, Bpm(121.0), Beat(b1 + per(moved, 121.0)), looping)
+            Transport::new(false, Bpm::of(121.0), Beat(b1 + per(moved, 121.0)), looping)
         };
         let past = |n: f64| reseat(b1 + per(n, 121.0), 121.0);
-        let faster = Transport::new(false, Bpm(242.0), Beat(b1 + per(40.0, 242.0)), None);
-        let rolling = Transport::new(true, Bpm(121.0), Beat(b1 + per(64.0, 121.0)), None);
+        let faster = Transport::new(false, Bpm::of(242.0), Beat(b1 + per(40.0, 242.0)), None);
+        let rolling = Transport::new(true, Bpm::of(121.0), Beat(b1 + per(64.0, 121.0)), None);
         let cases = [
             (None, true, rolling, SR, Some(240_128)),
             (crossing, true, stopped(20.0, crossing), SR, past(20.0)),
@@ -1348,7 +1349,7 @@ mod tests {
         let e = env(
             0,
             64,
-            Transport::new(true, Bpm(120.0), Beat(0.0), None),
+            Transport::new(true, Bpm::of(120.0), Beat(0.0), None),
             TransportChanges::NONE,
         );
         let block_ns = Some(5_000_000_000);

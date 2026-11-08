@@ -75,8 +75,8 @@ pub enum Error {
         /// Half the sample rate, in [`Hz`].
         nyquist: Hz,
     },
-    /// A tempo range with `min` not below `max`, or a bound that is not finite
-    /// and above zero, or one that leaves no whole-frame lag to search.
+    /// A tempo range with `min` not below `max`, or a bound outside what the
+    /// analysis searches, or one that leaves no whole-frame lag to search.
     #[error("empty tempo range: min {min} is not below max {max}, or no lag falls in it")]
     EmptyTempoRange {
         /// The slower bound, in [`Bpm`].

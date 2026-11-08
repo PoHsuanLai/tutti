@@ -72,11 +72,11 @@ fn beat_of(frame: u64) -> Beat {
 }
 
 fn rolling(frame: u64) -> Transport {
-    Transport::new(true, Bpm(120.0), beat_of(frame), None)
+    Transport::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
 fn stopped(frame: u64) -> Transport {
-    Transport::new(false, Bpm(120.0), beat_of(frame), None)
+    Transport::new(false, Bpm::of(120.0), beat_of(frame), None)
 }
 
 fn on(n: u8) -> MidiEvent {
@@ -1066,7 +1066,7 @@ fn play(exec: &mut Executor, events: &[TimedMidiEvent], passes: u64) {
     });
     for f in 0..len * passes {
         if f % 64 == 0 {
-            let t = Transport::new(true, Bpm(120.0), beat_of(f % len), lp);
+            let t = Transport::new(true, Bpm::of(120.0), beat_of(f % len), lp);
             exec.process(64, &t, &[], &mut []);
         }
     }

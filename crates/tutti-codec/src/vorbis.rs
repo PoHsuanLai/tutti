@@ -4,6 +4,26 @@
 //! on the way through. Vorbis's channel mappings cover mono, stereo, and 3 to 8
 //! surround; a width past 8 is vorbis's own limit, reported by its builder.
 //!
+//! # Channel order
+//!
+//! The engine's channels are in its own order (SMPTE / WAVE: `FL FR FC LFE ..`);
+//! Vorbis I section 4.3.9 fixes a different one for each width from 3 to 8
+//! (`FL FC FR` for 3, `FL FC FR RL RR LFE` for 5.1, and so on), and a decoder
+//! places stream channel `i` by it. So the writer permutes the planes from the
+//! file's [`Spec::topology`] (the engine's default order where it has one) to
+//! Vorbis's, by speaker, before encoding. A rear channel and a side channel
+//! stand for each other (the engine's 5.1 has sides where Vorbis says rear).
+//! Mono and stereo are the same in every order and are not touched.
+//!
+//! A permutation, not a [`Fold`](tutti_types::Fold): a fold mixes a speaker the
+//! destination lacks into its neighbours, and an encoder must never change the
+//! signal. Where the topology is not a rearrangement of Vorbis's layout for
+//! that width (or is absent for a width the engine has no default order for:
+//! 3, 4, 5 and 7) the file is refused ([`SpecError::VorbisLayout`]), because a
+//! decoder would read the channels as the speakers Vorbis names and place them
+//! wrongly. A width past 8 is "defined by the application" in the spec: its
+//! channels are written as they come, and the topology is not consulted.
+//!
 //! Vorbis is lossy and float internally: the format has no sample width, and
 //! the stream is not dithered.
 //!
@@ -26,7 +46,7 @@ use std::io::{Seek, Write};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use tutti_types::{ChannelLayout, Interleaved};
+use tutti_types::{ChannelLayout, ChannelTopology, Interleaved, Speaker};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoder, VorbisEncoderBuilder};
 
 /// Blocks in flight between the caller and the encoder thread.
@@ -82,6 +102,7 @@ impl<W: Write + Seek + Send + 'static> VorbisWriter<W> {
             },
         )?;
         let layout = spec.layout;
+        let order = vorbis_order(spec)?;
         let (jobs, queue) = mpsc::sync_channel(QUEUE);
         let (back, spare) = mpsc::channel();
         let (built, ready) = mpsc::sync_channel(1);
@@ -91,7 +112,7 @@ impl<W: Write + Seek + Send + 'static> VorbisWriter<W> {
         let thread = std::thread::spawn(move || match build(rate, ch, quality, sink) {
             Ok(encoder) => {
                 let _ = built.send(Ok(()));
-                run(encoder, layout, queue, back, &failed)
+                run(encoder, layout, order.as_deref(), queue, back, &failed)
             }
             Err(e) => {
                 let _ = built.send(Err(()));
@@ -162,6 +183,122 @@ impl<W: Write + Seek + Send + 'static> FormatWriter for VorbisWriter<W> {
     }
 }
 
+/// Vorbis I section 4.3.9: the speaker of each stream channel, for the widths
+/// it defines from 3 to 8.
+fn vorbis_speakers(width: u16) -> Option<&'static [Speaker]> {
+    use Speaker::*;
+    Some(match width {
+        3 => &[FrontLeft, FrontCenter, FrontRight],
+        4 => &[FrontLeft, FrontRight, BackLeft, BackRight],
+        5 => &[FrontLeft, FrontCenter, FrontRight, BackLeft, BackRight],
+        6 => &[
+            FrontLeft,
+            FrontCenter,
+            FrontRight,
+            BackLeft,
+            BackRight,
+            LowFrequency,
+        ],
+        7 => &[
+            FrontLeft,
+            FrontCenter,
+            FrontRight,
+            SideLeft,
+            SideRight,
+            BackCenter,
+            LowFrequency,
+        ],
+        8 => &[
+            FrontLeft,
+            FrontCenter,
+            FrontRight,
+            SideLeft,
+            SideRight,
+            BackLeft,
+            BackRight,
+            LowFrequency,
+        ],
+        _ => return None,
+    })
+}
+
+/// A rear speaker for the side one and the reverse: the pair a bed may use
+/// either of.
+fn counterpart(speaker: Speaker) -> Option<Speaker> {
+    match speaker {
+        Speaker::SideLeft => Some(Speaker::BackLeft),
+        Speaker::SideRight => Some(Speaker::BackRight),
+        Speaker::BackLeft => Some(Speaker::SideLeft),
+        Speaker::BackRight => Some(Speaker::SideRight),
+        _ => None,
+    }
+}
+
+/// Which file channel feeds each Vorbis stream channel: stream channel `i` is
+/// file channel `order[i]`. `None` when the stream is the file's own order
+/// (mono, stereo, a width past 8, or a file already in Vorbis's order).
+///
+/// # Errors
+///
+/// [`SpecError::TopologyWidth`] for a topology of another width than the file,
+/// [`SpecError::VorbisLayout`] for a width Vorbis defines whose speakers the
+/// topology does not name, or does not have.
+fn vorbis_order(spec: &Spec) -> Result<Option<Box<[usize]>>> {
+    let width = spec.channels()?;
+    let Some(target) = vorbis_speakers(width) else {
+        return Ok(None);
+    };
+    let stated = match &spec.topology {
+        Some(t) if t.layout() != spec.layout => {
+            return Err(SpecError::TopologyWidth {
+                topology: t.layout(),
+                file: spec.layout,
+            }
+            .into());
+        }
+        Some(t) => Some(t.clone()),
+        None => ChannelTopology::smpte(spec.layout),
+    };
+    let refused = || SpecError::VorbisLayout {
+        channels: width,
+        topology: spec.topology.clone(),
+    };
+    let source = stated.ok_or_else(refused)?;
+    let have = source.positions();
+    let mut taken = vec![false; have.len()];
+    let mut order: Vec<Option<usize>> = vec![None; target.len()];
+    // Exact speakers first, so a rear never takes the place of a side that is
+    // present; then the stand-ins.
+    for stand_in in [false, true] {
+        for (slot, &want) in target.iter().enumerate() {
+            if order[slot].is_some() {
+                continue;
+            }
+            let want = if stand_in {
+                counterpart(want)
+            } else {
+                Some(want)
+            };
+            let found = want.and_then(|want| {
+                have.iter()
+                    .enumerate()
+                    .position(|(i, &p)| p == want && !taken[i])
+            });
+            if let Some(i) = found {
+                taken[i] = true;
+                order[slot] = Some(i);
+            }
+        }
+    }
+    let order: Option<Vec<usize>> = order.into_iter().collect();
+    let order = order.ok_or_else(refused)?;
+    Ok(order
+        .iter()
+        .enumerate()
+        .any(|(slot, &i)| slot != i)
+        .then(|| order.into_boxed_slice()))
+}
+
 fn stopped() -> Error {
     Error::encoding(Codec::Ogg, "the encoder thread stopped")
 }
@@ -182,23 +319,41 @@ fn build<W: Write>(
         .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}")))
 }
 
-/// The encoder thread: deinterleave each block, encode it, and finish the
+/// The encoder thread: deinterleave each block, put the planes in Vorbis's
+/// order, encode it, and finish the
 /// stream when the queue closes. After a failure it keeps draining the queue
 /// (so the caller is never left blocked) and still finishes, to hand the sink
 /// back. `VorbisEncoder::finish` does not flush the sink, so this does.
 fn run<W: Write>(
     mut encoder: VorbisEncoder<W>,
     layout: ChannelLayout,
+    order: Option<&[usize]>,
     queue: mpsc::Receiver<Vec<f32>>,
     back: mpsc::Sender<Vec<f32>>,
     failure: &Mutex<Option<Error>>,
 ) -> Result<W> {
     let mut planes: Vec<Vec<f32>> = vec![Vec::new(); usize::from(layout.count())];
+    // The planes in stream order, moved (not copied) out of `planes`.
+    let mut ordered: Vec<Vec<f32>> =
+        vec![Vec::new(); if order.is_some() { planes.len() } else { 0 }];
     let mut failed = false;
     for samples in queue {
         if !failed {
             Interleaved::new(&samples, layout).deinterleave_into(&mut planes);
-            if let Err(e) = encoder.encode_audio_block(&planes) {
+            let result = match order {
+                None => encoder.encode_audio_block(&planes),
+                Some(order) => {
+                    for (slot, &channel) in ordered.iter_mut().zip(order) {
+                        *slot = std::mem::take(&mut planes[channel]);
+                    }
+                    let result = encoder.encode_audio_block(&ordered);
+                    for (slot, &channel) in ordered.iter_mut().zip(order) {
+                        planes[channel] = std::mem::take(slot);
+                    }
+                    result
+                }
+            };
+            if let Err(e) = result {
                 failed = true;
                 let e = Error::encoding(Codec::Ogg, format!("encoding failed: {e}"));
                 if let Ok(mut slot) = failure.lock() {

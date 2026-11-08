@@ -81,8 +81,8 @@ impl TransportRes {
     ///
     /// // The clone shares state rather than snapshotting it: a tempo set after
     /// // the handle was taken is visible through it.
-    /// app.world().resource::<TransportRes>().settings.set_tempo(128.0);
-    /// assert_eq!(app.world().resource::<Sequencer>().0.tempo(), Bpm(128.0));
+    /// app.world().resource::<TransportRes>().settings.set_tempo(Bpm::of(128.0));
+    /// assert_eq!(app.world().resource::<Sequencer>().0.tempo(), Bpm::of(128.0));
     /// ```
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::new(self.0.clone())

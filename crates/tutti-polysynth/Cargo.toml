@@ -44,6 +44,7 @@ thiserror = "2"
 tutti-types = { path = "../tutti-types", default-features = false }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
+tutti-voicing = { path = "../tutti-voicing" }
 
 [dev-dependencies]
 # The filter nodes the bank is compared against (`bank.rs`), and the mixing and

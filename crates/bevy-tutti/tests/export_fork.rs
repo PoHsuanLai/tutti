@@ -456,7 +456,7 @@ fn a_node_export_follows_a_90_bpm_timeline() {
 
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: tutti_types::Beat(0.0),
-        tempo: tutti_types::Bpm(90.0),
+        tempo: tutti_types::Bpm::of(90.0),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }));
@@ -982,7 +982,7 @@ mod plugin {
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: tutti_types::Beat(0.0),
-            tempo: tutti_types::Bpm(90.0),
+            tempo: tutti_types::Bpm::of(90.0),
             sample_rate: SampleRate(rate),
             loop_range: None,
         }));
@@ -1174,7 +1174,7 @@ mod synths {
     fn timeline(rate: f64) -> Arc<OfflineTimeline> {
         Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
-            tempo: Bpm(90.0),
+            tempo: Bpm::of(90.0),
             sample_rate: SampleRate(rate),
             loop_range: None,
         }))
@@ -1243,7 +1243,7 @@ mod synths {
         for i in 0..4_096 {
             let t = tutti_graph::Transport::new(
                 true,
-                Bpm(120.0),
+                Bpm::of(120.0),
                 Beat(1.0 + f64::from(i) / (RATE / 2.0)),
                 None,
             );
@@ -1449,7 +1449,7 @@ mod disk {
     fn timeline(tempo: f64) -> Arc<OfflineTimeline> {
         Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: Beat(0.0),
-            tempo: Bpm(tempo),
+            tempo: Bpm::of(tempo),
             sample_rate: SampleRate(RATE),
             loop_range: None,
         }))
@@ -1688,7 +1688,7 @@ mod disk {
                     let _ = streamer.step_until_settled(64);
                     live.set_transport(tutti_graph::Transport::new(
                         true,
-                        Bpm(120.0),
+                        Bpm::of(120.0),
                         live_clock.beat(),
                         None,
                     ));

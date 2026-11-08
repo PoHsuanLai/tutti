@@ -125,7 +125,9 @@ fn render(synth: PolySynth, drive: Option<Drive>) -> [Vec<f32>; 2] {
         ed.commit().expect("the lane commits");
     }
     let mut r = Renderer::new(ed, exec);
-    r.set_transport_fn(|f| Transport::new(true, Bpm(120.0), Beat(f.get() as f64 / 24_000.0), None));
+    r.set_transport_fn(|f| {
+        Transport::new(true, Bpm::of(120.0), Beat(f.get() as f64 / 24_000.0), None)
+    });
     let mut out = r.render(FRAMES);
     let right = out.swap_remove(1);
     let left = out.swap_remove(0);

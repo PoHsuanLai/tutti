@@ -239,7 +239,7 @@ impl MidiFile {
             Self::Smf(smf) => smf.stream.tempo_changes.clone(),
             Self::Clip(clip) => clip
                 .iter()
-                .filter_map(|(at, e)| flex_tempo_bpm(&e).map(|bpm| (at, Bpm(bpm))))
+                .filter_map(|(at, e)| flex_tempo_bpm(&e).map(|bpm| (at, bpm)))
                 .collect(),
         }
     }
@@ -255,7 +255,7 @@ impl MidiFile {
     /// `f64`, not `Seconds`: `Seconds` is `f32`, which cannot carry an
     /// hour-long file to the frame (and `duration_seconds` is `f64`).
     pub fn seconds_at(&self, at: Beat) -> f64 {
-        let mut tempo = self.tempo().unwrap_or(Bpm(120.0));
+        let mut tempo = self.tempo().unwrap_or(Bpm::of(120.0));
         let mut from = 0.0_f64;
         let mut seconds = 0.0_f64;
         let to = at.0.max(0.0);
@@ -265,12 +265,12 @@ impl MidiFile {
                 break;
             }
             if change > from {
-                seconds += (change - from) * 60.0 / tempo.0;
+                seconds += (change - from) * 60.0 / tempo.get();
                 from = change;
             }
             tempo = bpm;
         }
-        seconds + (to - from) * 60.0 / tempo.0
+        seconds + (to - from) * 60.0 / tempo.get()
     }
 
     /// Where the last event lands: the position of the final event

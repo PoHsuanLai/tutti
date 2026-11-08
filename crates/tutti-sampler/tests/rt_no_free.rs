@@ -64,7 +64,7 @@ fn frees_during(f: impl FnOnce()) -> usize {
 /// box are freed in the drain → fails.
 #[test]
 fn the_add_voice_drain_frees_nothing() {
-    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let wave = Arc::new(Wave::from_samples(48_000.0, &vec![0.5f32; 48_000]));
     let (pool, handle) = VoicePool::new().with_handle();
     let mut rig = Direct::new(pool, SampleRate(48_000.0), 64);

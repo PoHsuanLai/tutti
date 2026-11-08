@@ -361,7 +361,7 @@ fn non_discovery_event_yields_no_reply() {
         .is_empty()
     );
     // A Flex message isn't UMP Stream either.
-    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, 120.0);
+    let ev = MidiEvent::flex_set_tempo(MidiGroup::FIRST, tutti_types::Bpm::of(120.0));
     assert!(matches!(
         UmpMessage::try_from(ev.data_words()).unwrap(),
         UmpMessage::FlexData(FlexData::SetTempo(_))

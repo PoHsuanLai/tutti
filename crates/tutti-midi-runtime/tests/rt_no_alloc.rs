@@ -61,7 +61,7 @@ fn the_border_nodes_process_without_allocating() {
     into_out(&mut ed, 2, 0);
     into_out(&mut ed, 3, 0);
     ed.commit().unwrap();
-    let t = Transport::new(true, Bpm(120.0), Beat(0.0), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut drain = [MidiEvent::noop(); 256];
     // Warm up outside the gate.
     exec.process(512, &t, &[], &mut []);
@@ -74,7 +74,7 @@ fn the_border_nodes_process_without_allocating() {
             let at = Beat(f64::from(b) * 512.0 / 24_000.0);
             exec.process(
                 512,
-                &Transport::new(true, Bpm(120.0), at, None),
+                &Transport::new(true, Bpm::of(120.0), at, None),
                 &[],
                 &mut [],
             );
@@ -265,12 +265,12 @@ fn a_block_of_many_loop_passes_walks_without_allocating() {
     ed.commit().unwrap();
     let region = tutti_types::LoopRange::new(start, end).unwrap();
     let looping = Some(LoopRange { start, end });
-    let mut clock = FrameClock::new(start, Bpm(120.0), SampleRate(RATE));
+    let mut clock = FrameClock::new(start, Bpm::of(120.0), SampleRate(RATE));
     let mut drain = [MidiEvent::noop(); 256];
     let mut block = |exec: &mut tutti_graph::Executor, clock: &mut FrameClock| {
         exec.process(
             512,
-            &Transport::new(true, Bpm(120.0), clock.beat(), looping),
+            &Transport::new(true, Bpm::of(120.0), clock.beat(), looping),
             &[],
             &mut [],
         );
@@ -349,7 +349,7 @@ fn a_clip_overflowing_its_port_refuses_and_retries_without_allocating() {
     let mut block = |exec: &mut tutti_graph::Executor| {
         exec.process(
             64,
-            &Transport::new(true, Bpm(120.0), beat(f as f64), None),
+            &Transport::new(true, Bpm::of(120.0), beat(f as f64), None),
             &[],
             &mut [],
         );
@@ -415,7 +415,7 @@ fn a_clip_with_a_full_table_sends_and_pays_without_allocating() {
     // Note-ons less note-offs the sink was sent.
     let mut sounding = 0i64;
     let mut block = |exec: &mut tutti_graph::Executor, rolling: bool, frame: u64| {
-        let t = Transport::new(rolling, Bpm(120.0), beat(frame), None);
+        let t = Transport::new(rolling, Bpm::of(120.0), beat(frame), None);
         exec.process(512, &t, &[], &mut []);
         let n = out.poll_into(&mut drain);
         for e in &drain[..n] {

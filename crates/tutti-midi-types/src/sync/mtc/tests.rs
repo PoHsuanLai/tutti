@@ -199,7 +199,7 @@ fn test_to_beats() {
         frame_rate: SmpteFrameRate::Fps30,
     };
     // 60 seconds at 120 BPM = 120 beats
-    assert!((tc.to_beats(120.0) - 120.0).abs() < 0.001);
+    assert!((tc.to_beats(Bpm::of(120.0)) - 120.0).abs() < 0.001);
 }
 
 #[test]

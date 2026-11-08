@@ -76,6 +76,9 @@ impl From<OsError> for Error {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Turn a raw `OSStatus` into a `Result`, naming the function that returned it.
+///
+/// # Errors
+/// An [`OsError`] carrying `function` and `status` when `status` is non-zero.
 pub fn check(function: &'static str, status: i32) -> std::result::Result<(), OsError> {
     if status == 0 {
         Ok(())

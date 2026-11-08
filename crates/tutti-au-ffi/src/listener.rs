@@ -292,6 +292,7 @@ impl AuEvent {
         if raw.is_null() {
             return None;
         }
+        // SAFETY: `raw` was just checked non-null and points at the `AudioUnitEvent` AudioToolbox passed for this call, live for the borrow.
         let ev = unsafe { &*raw };
         let address = EventAddress {
             scope: ev.argument.mScope,

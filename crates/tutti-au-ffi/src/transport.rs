@@ -652,20 +652,25 @@ unsafe fn write_transport_common(
     out_cycle_start_beat: *mut f64,
     out_cycle_end_beat: *mut f64,
 ) {
+    // SAFETY: the out-param is null or writable (the caller's contract of this fn).
     unsafe { write_opt(out_is_playing, Boolean::from(state.is_playing())) };
+    // SAFETY: the out-param is null or writable (the caller's contract of this fn).
     unsafe { write_opt(out_is_cycling, Boolean::from(state.is_cycling())) };
+    // SAFETY: the out-param is null or writable (the caller's contract of this fn).
     unsafe {
         write_opt(
             out_current_sample_in_timeline,
             f64::from_bits(state.sample_time_bits.load(Ordering::Relaxed)),
         )
     };
+    // SAFETY: the out-param is null or writable (the caller's contract of this fn).
     unsafe {
         write_opt(
             out_cycle_start_beat,
             f64::from_bits(state.cycle_start_bits.load(Ordering::Relaxed)),
         )
     };
+    // SAFETY: the out-param is null or writable (the caller's contract of this fn).
     unsafe {
         write_opt(
             out_cycle_end_beat,
@@ -676,6 +681,7 @@ unsafe fn write_transport_common(
     // never read would drop the locate: the plugin would be told nothing
     // changed on the block where it most needed to flush.
     if !out_transport_state_changed.is_null() {
+        // SAFETY: `out_transport_state_changed` is non-null (checked) and writable by the caller's contract.
         unsafe { *out_transport_state_changed = Boolean::from(state.take_state_changed()) };
     }
 }

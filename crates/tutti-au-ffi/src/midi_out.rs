@@ -500,6 +500,7 @@ unsafe fn decode_and_dispatch(
     if user_data.is_null() || pktlist.is_null() {
         return -1;
     }
+    // SAFETY: `user_data` is non-null (checked) and is the `MidiOutState` box `install` registered; the AU calls only from inside its own render, one call at a time, and the host side touches the box only before installing and after the withdrawing write, so this is the only reference.
     let state = unsafe { &mut *(user_data as *mut MidiOutState) };
 
     // A list cut short by a panic last time leaves events staged; they belong
@@ -507,6 +508,7 @@ unsafe fn decode_and_dispatch(
     state.decoder.begin_list();
     let MidiOutState { sink, decoder, .. } = &mut *state;
     let mut flush = |events: &[MidiEvent]| (*sink)(midi_out_num, events);
+    // SAFETY: `pktlist` is non-null (checked) and a valid packet list for the call (the callback contract of `for_each_packet`).
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
             decoder.decode(bytes, frame_offset, &mut flush);
@@ -562,6 +564,7 @@ unsafe fn decode_and_dispatch(
 /// packets laid out per `MIDIPacketNext`, each `length` bytes of `data` within the
 /// allocation.
 unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32, &[u8])) {
+    // SAFETY: `pktlist` is a valid packet list: its `numPackets` header field lies within it (unaligned read, as the list may be packed).
     let num_packets = unsafe {
         std::ptr::read_unaligned(
             (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, numPackets))
@@ -570,14 +573,17 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
     };
     // The first packet begins at the `packet` field's offset — 4, immediately
     // after `numPackets`.
+    // SAFETY: the first packet starts at `offset_of!(MIDIPacketList, packet)`, within the list.
     let mut p = unsafe { (pktlist as *const u8).add(std::mem::offset_of!(MIDIPacketList, packet)) };
 
     for _ in 0..num_packets {
+        // SAFETY: `p` points at a packet header inside the list: the walk advances only by each packet's own length.
         let time_stamp = unsafe {
             std::ptr::read_unaligned(
                 p.add(std::mem::offset_of!(MIDIPacket, timeStamp)) as *const u64
             )
         };
+        // SAFETY: as for the timestamp read above: within the packet header.
         let length = unsafe {
             std::ptr::read_unaligned(p.add(std::mem::offset_of!(MIDIPacket, length)) as *const u16)
         };
@@ -596,6 +602,7 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
         // this prevents is a read outside the allocation entirely, which would be
         // ours.
         let length = length.min(MAX_PACKET_PAYLOAD);
+        // SAFETY: the data follows the packet header, within the packet.
         let data = unsafe { p.add(PACKET_HEADER_SIZE) };
 
         // Apple's header: "The time stamp values contained within the MIDIPackets
@@ -607,12 +614,14 @@ unsafe fn for_each_packet(pktlist: *const MIDIPacketList, mut f: impl FnMut(u32,
         // wrapping, would place a late event at the start of the block).
         let frame_offset = u32::try_from(time_stamp).unwrap_or(u32::MAX);
 
+        // SAFETY: `length` bytes follow the header (clamped to the maximum packet size), within the list the AU built.
         let bytes = unsafe { std::slice::from_raw_parts(data, length as usize) };
         f(frame_offset, bytes);
 
         // `MIDIPacketNext`: advance past the header and payload, then align. On
         // arm64 Apple rounds up to 4; on x86_64 it does not round at all, and
         // rounding there would skip bytes of the next packet.
+        // SAFETY: the end of this packet, from which the next header starts (rounded on ARM by `next_packet`).
         let raw_next = unsafe { p.add(PACKET_HEADER_SIZE + length as usize) };
         p = next_packet(raw_next);
     }
@@ -684,6 +693,7 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
     let mut out = Vec::new();
     let mut decoder = Midi1Decoder::new();
     let mut flush = |events: &[MidiEvent]| out.extend_from_slice(events);
+    // SAFETY: the test passes a packet list it built; see `for_each_packet`.
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
             decoder.decode(bytes, frame_offset, &mut flush);
@@ -707,6 +717,7 @@ pub unsafe fn decode_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec
 pub unsafe fn split_packet_list_for_test(pktlist: *const MIDIPacketList) -> Vec<(u32, Vec<u8>)> {
     let mut out = Vec::new();
     let mut splitter = Midi1Splitter::new();
+    // SAFETY: the test passes a packet list it built; see `for_each_packet`.
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
             splitter.split(bytes, frame_offset, &mut |frame, message| match message {

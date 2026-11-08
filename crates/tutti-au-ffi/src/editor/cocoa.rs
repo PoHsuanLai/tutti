@@ -78,6 +78,7 @@ fn load_cocoa_view_info(unit: &Unit) -> Result<(CfUrl, CfString)> {
     // rule (the header: "the host owns these"), one retain each to adopt.
     let bundle_url = unsafe { CfUrl::from_copied(url_raw) }
         .ok_or_else(|| Error::Invalid("CocoaUI info has null bundle URL".into()))?;
+    // SAFETY: the CocoaUI property hands back its class name under the Copy rule: one retain to adopt (the URL above is the same).
     let class_name = unsafe { CfString::from_copied(class_raw) }
         .ok_or_else(|| Error::Invalid("CocoaUI info has null class name".into()))?;
 

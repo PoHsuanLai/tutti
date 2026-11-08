@@ -478,11 +478,10 @@ impl std::fmt::Debug for RenderNotify {
     }
 }
 
-// SAFETY: the fields are an opaque AudioUnit handle and an `Arc` whose payload
-// is a `Send + Sync` closure plus an atomic. The AU calls the notify on its
-// render thread, which is why `new` requires `Send + Sync` of the host closure.
-unsafe impl Send for RenderNotify {}
-unsafe impl Sync for RenderNotify {}
+// `RenderNotify` is `Send + Sync` without an `unsafe impl`: its fields are a
+// shared unit (`Inner` is `Send + Sync`) and an `Arc` of a `Send + Sync` closure
+// plus an atomic. The AU calls the notify on its render thread, which is why
+// `new` requires `Send + Sync` of the host closure.
 
 impl RenderNotify {
     /// Installs a render notification on `unit`.

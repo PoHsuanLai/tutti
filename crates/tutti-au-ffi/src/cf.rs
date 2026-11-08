@@ -145,11 +145,6 @@ impl CfArray {
         self.0.len().max(0) as usize
     }
 
-    /// Whether the array has no elements.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Raw element pointer at `index`, or `None` if out of bounds. The pointer
     /// borrows from the array: copy out of it immediately.
     pub(crate) fn value_at(&self, index: usize) -> Option<*const std::os::raw::c_void> {

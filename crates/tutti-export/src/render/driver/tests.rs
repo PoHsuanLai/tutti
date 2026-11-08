@@ -41,6 +41,7 @@ fn render(
             ChannelLayout::try_from(ch).expect("a test width is small"),
             &plan,
             &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+            crate::EventLossPolicy::default(),
             |b| {
                 out.extend(b.iter_frames().map(<[f32]>::to_vec));
                 Ok(())
@@ -73,6 +74,7 @@ fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outco
             ChannelLayout::MONO,
             &plan,
             &mut Control::new(Pass::ONLY, tick),
+            crate::EventLossPolicy::default(),
             |b| {
                 consumed += b.iter_frames().count();
                 Ok(())
@@ -267,7 +269,7 @@ fn the_clock_advances_exactly_once_per_frame_and_never_ahead() {
 #[test]
 fn plane_source_zero_fills_a_missing_channel_every_block() {
     let planes = vec![vec![1.0f32; 64]];
-    let mut src = PlaneSource::new(&planes);
+    let mut src = PlaneSource::new(&planes, None);
     let mut out = vec![9.9f32; 4 * 4];
     let quad = ChannelLayout::from(4u16);
     assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)), 4);
@@ -296,4 +298,102 @@ fn a_recovery_of_an_older_refusal_does_not_mask_a_new_loss() {
     // Nothing owed: a recovery in the span is of a refusal in it.
     assert_eq!(lost_over((4, 4), (6, 5)), 1);
     assert_eq!(lost_over((0, 0), (3, 0)), 3);
+}
+
+mod loss {
+    use super::*;
+    use tutti_graph::{Cx, Event, ForkByClone, Io, Node, Prepare, Shape, Status};
+
+    /// Ten note-ons into a port of four, every block: six refused.
+    #[derive(Clone)]
+    struct Burst;
+
+    impl Node for Burst {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY)
+                .with_events(0, 1)
+                .with_event_capacity(4)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+            for i in 0..10 {
+                let at = cx.env.offset(i).expect("inside the block");
+                let _ = io
+                    .event_out(0)
+                    .push(Event::midi(at, [0x2090_3c64, 0, 0, 0]));
+            }
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    #[derive(Clone)]
+    struct Discard;
+
+    impl Node for Discard {
+        fn shape(&self) -> Shape {
+            Shape::audio(ChannelLayout::EMPTY, ChannelLayout::EMPTY).with_events(1, 0)
+        }
+        fn prepare(&mut self, _: &Prepare) {}
+        fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+            Status::Silent
+        }
+        fn reset(&mut self) {}
+    }
+
+    fn lossy() -> RenderGraph {
+        let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+        let k = g.add(tutti_nodes::testing::Const::mono(0.5));
+        let burst = g.add(ForkByClone(Burst));
+        let sink = g.add(ForkByClone(Discard));
+        g.connect_events(burst, 0, sink, 0);
+        g.pipe_output(k);
+        let (editor, executor) = g.build(RenderGraph::prepare(RATE)).expect("builds");
+        RenderGraph::new(editor, executor).expect("built together")
+    }
+
+    fn lost_in_one_block(graph: &mut RenderGraph) -> u64 {
+        let plan = crate::render::RenderPlan {
+            total: Samples(GRAPH_MAX_BLOCK.get()),
+            output_length: Samples(GRAPH_MAX_BLOCK.get()),
+            latency: Samples(0),
+        };
+        let file = FileChannels {
+            layout: ChannelLayout::MONO,
+            topology: None,
+        };
+        with_source(graph, RATE, &FrozenClock, &file, |src| {
+            drive(
+                src,
+                ChannelLayout::MONO,
+                &plan,
+                &mut Control::new(Pass::ONLY, &mut crate::control::never_stop),
+                crate::EventLossPolicy::Allow,
+                |_| Ok(()),
+            )
+        })
+        .unwrap()
+        .1
+    }
+
+    /// A render counts its losses from where the graph last settled, not from
+    /// the instant its source is built, so what the executor dropped in
+    /// between (installing a commit can drop a note-off closing into a full
+    /// delay) is in its figure; and a render settles the graph, so the next
+    /// one does not count it again.
+    ///
+    /// Mutation (run): `with_source` handing `GraphSource::new` the executor's
+    /// current counts instead of `graph.settled()` -> 6 for the second
+    /// render, not 12; fails. Mutation (run): not calling `graph.settle` ->
+    /// 18 for the third; fails.
+    #[test]
+    fn a_render_counts_what_the_graph_dropped_since_it_settled() {
+        let mut graph = lossy();
+        assert_eq!(lost_in_one_block(&mut graph), 6);
+        // As if the 6 were dropped after the graph settled, not in the render
+        // that reported them.
+        graph.settle((0, 0));
+        assert_eq!(lost_in_one_block(&mut graph), 12);
+        assert_eq!(lost_in_one_block(&mut graph), 6, "settled by the last");
+    }
 }

@@ -22,8 +22,9 @@
 //! # let _ = config;
 //! ```
 //!
-//! A literal is what keeps a setter off a path that ignores it: the fields a
-//! stage reads are the fields in the struct it is handed.
+//! A literal is not a guarantee that every field is read: one config serves
+//! four entry points, and each ignores some of it. What each reads is on
+//! [`ExportConfig`].
 //!
 //! This module is data, and only data. No method here reads a graph, opens a
 //! file, or decides anything — the derivations live next to the code that needs
@@ -44,7 +45,12 @@ pub struct RenderConfig {
     /// Rate the graph is rendered at. The output rate may differ — see
     /// [`ExportConfig::resample`].
     pub sample_rate: SampleRate,
-    /// Length of the audible span, in seconds. `f64` deliberately — see
+    /// Length of the audible span, in seconds; a render of no frames (this
+    /// default's `0.0`, with no [`tail`](Self::tail)) is
+    /// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), and a
+    /// NaN, infinite or negative value
+    /// [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration).
+    /// `f64` deliberately — see
     /// [`duration_to_frames`](crate::duration_to_frames), which explains why
     /// `Seconds` (an f32) cannot carry an hour-long render.
     pub duration_seconds: f64,
@@ -91,8 +97,10 @@ pub struct RenderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum EventLossPolicy {
-    /// The render fails with [`Error::EventsDropped`](crate::Error::EventsDropped), and a
-    /// file it wrote is removed.
+    /// The render stops at the first block that dropped an event with
+    /// [`Error::EventsDropped`](crate::Error::EventsDropped), and a file it
+    /// wrote is removed. [`write_buffers`](crate::write_buffers) applies it to
+    /// the planes' own count.
     #[default]
     Fail,
     /// The render succeeds and says how many events were dropped
@@ -121,8 +129,13 @@ pub struct EncodeConfig {
     /// width among them. A width that does not quantize (`Pcm::Float32`, and
     /// Ogg Vorbis) is also where [`ExportConfig::dither`] is ignored.
     pub format: Format,
-    /// Width of the written file. A graph wider than this is folded with the
-    /// ITU/Dolby matrix, never truncated; a narrower one is zero-filled.
+    /// Width of the written file. A graph (or, for
+    /// [`write_buffers`](crate::write_buffers), a set of planes) of another
+    /// width is folded onto it by speaker position: a wider one with the
+    /// ITU/Dolby matrix, a narrower one by the engine's order, with the
+    /// channels the source lacks left silent. A width the fold cannot place
+    /// is [`ConfigError::Placement`](crate::ConfigError::Placement), never a
+    /// dropped channel.
     pub channels: ChannelLayout,
     /// Which speaker each file channel feeds, for the WAV speaker mask and Ogg
     /// Vorbis's channel order: `None`
@@ -182,15 +195,36 @@ impl Resample {
 /// optional resample and dither on the way out.
 ///
 /// Plain data, built by struct literal with `..Default::default()` for the rest
-/// (see the [crate-level example](crate)). The default is a zero-length
-/// render at 44.1 kHz to a stereo WAV with triangular dither and no resample,
-/// so set at least [`RenderConfig::duration_seconds`].
+/// (see the [crate-level example](crate)). The default renders at 44.1 kHz to
+/// a stereo WAV with triangular dither and no resample, and has **no
+/// duration**: a render of no frames is
+/// [`ConfigError::EmptyRender`](crate::ConfigError::EmptyRender), so set at
+/// least [`RenderConfig::duration_seconds`] (a NaN, infinite or negative one
+/// is [`ConfigError::InvalidDuration`](crate::ConfigError::InvalidDuration)).
 ///
 /// There is no `normalize` field: normalization needs the whole signal
 /// measured before a gain can be chosen, which is two passes. Use
 /// [`render_normalized_to_file`](crate::render_normalized_to_file), or measure
 /// with [`tutti_dsp::measure_loudness`], take `Loudness::gain_to` and
 /// apply it with [`Rendered::apply_gain`](crate::Rendered::apply_gain).
+///
+/// # What each entry point reads
+///
+/// One config serves every entry point, and a field an entry point has no use
+/// for is ignored, not refused:
+///
+/// - [`render_to_file`](crate::render_to_file): all of it.
+/// - [`render_normalized_to_file`](crate::render_normalized_to_file): all of
+///   it; `resample` is applied before the measurement, and for an integer
+///   format the peak target and ceiling are pulled down to leave the format's
+///   headroom.
+/// - [`render_to_buffers`](crate::render_to_buffers): `render`, and
+///   `encode.channels` and `encode.topology` for the fold. **Ignores**
+///   `encode.format`, `resample` and `dither`: the planes are not an output.
+/// - [`write_buffers`](crate::write_buffers): `encode`, `resample` and
+///   `dither`, and `render.on_event_loss` for the planes' own loss count.
+///   **Ignores** the rest of `render` (`sample_rate`, `duration_seconds`,
+///   `latency`, `tail`): the frames exist and carry their own rate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExportConfig {
     /// What to produce, and for how long.
@@ -204,8 +238,8 @@ pub struct ExportConfig {
     pub dither: Dither,
 }
 
-/// A zero-length render to a 24-bit stereo WAV. Only with the `wav` feature,
-/// like [`EncodeConfig`]'s.
+/// A 24-bit stereo WAV with no duration, which a render refuses until one is
+/// set. Only with the `wav` feature, like [`EncodeConfig`]'s.
 #[cfg(feature = "wav")]
 impl Default for ExportConfig {
     fn default() -> Self {

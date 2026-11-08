@@ -44,7 +44,7 @@ fn a_plan_that_cannot_fit_is_refused_before_the_file_is_touched() {
     std::fs::write(&path, b"sentinel").unwrap();
     let planes = vec![vec![0.0f32; 8]];
     let err = encode_to_file(
-        &mut PlaneSource::new(&planes),
+        &mut PlaneSource::new(&planes, None),
         rate,
         &plan,
         &config,
@@ -96,7 +96,7 @@ fn the_limit_is_judged_at_the_output_rate() {
 #[test]
 fn the_planned_frames_follow_the_plan_and_the_resample() {
     let mut config = config(2, Pcm::Int16);
-    let plan = RenderPlan::new(&config.render);
+    let plan = RenderPlan::new(&config.render).unwrap();
     let rate = config.render.sample_rate;
     assert_eq!(planned_frames(&plan, rate, &config), 8);
     config.resample = Some(crate::Resample::to(1_100.0));
@@ -134,9 +134,9 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
         cfg.encode.topology = topology;
         let path = dir.path().join(format!("m{channels}_{mask}.wav"));
         let planes = vec![vec![0.5f32; 8]; usize::from(channels)];
-        let plan = RenderPlan::new(&cfg.render);
+        let plan = RenderPlan::new(&cfg.render).unwrap();
         let _ = encode_to_file(
-            &mut PlaneSource::new(&planes),
+            &mut PlaneSource::new(&planes, None),
             cfg.render.sample_rate,
             &plan,
             &cfg,
@@ -159,9 +159,9 @@ fn the_topology_reaches_the_file_and_must_match_its_width() {
     let mut cfg = config(2, Pcm::Int24);
     cfg.encode.topology = Some(tutti_types::ChannelTopology::quad());
     let path = dir.path().join("bad.wav");
-    let plan = RenderPlan::new(&cfg.render);
+    let plan = RenderPlan::new(&cfg.render).unwrap();
     let err = encode_to_file(
-        &mut PlaneSource::new(&vec![vec![0.0f32; 8]; 2]),
+        &mut PlaneSource::new(&vec![vec![0.0f32; 8]; 2], None),
         cfg.render.sample_rate,
         &plan,
         &cfg,

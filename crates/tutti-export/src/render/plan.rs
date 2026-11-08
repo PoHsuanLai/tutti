@@ -3,6 +3,7 @@
 //! Derived once from (duration, rate, latency), and drives both how many frames
 //! the graph must produce and how many leading frames the sink drops.
 
+use crate::ConfigError;
 use crate::config::RenderConfig;
 use tutti_types::SampleRate;
 use tutti_types::{BeatDuration, Bpm, Samples};
@@ -32,7 +33,17 @@ impl RenderPlan {
     /// tested, reused, or reasoned about without building one first. The caller
     /// resolves the latency (see [`RenderGraph::reported_latency`](crate::RenderGraph::reported_latency))
     /// and passes a number.
-    pub fn new(config: &RenderConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::InvalidDuration`] for a duration that is NaN, infinite
+    /// or negative, and [`ConfigError::EmptyRender`] for a plan that keeps no
+    /// frame at all: neither is a render anyone meant, and a silent empty file
+    /// reported as success hides which one it was.
+    pub fn new(config: &RenderConfig) -> Result<Self, ConfigError> {
+        if !config.duration_seconds.is_finite() || config.duration_seconds < 0.0 {
+            return Err(ConfigError::InvalidDuration);
+        }
         let duration = duration_to_frames(config.duration_seconds, config.sample_rate);
         // The tail extends what the sink KEEPS, not just what the graph produces.
         // Two gates truncate independently — `total` bounds the pull loop and
@@ -44,12 +55,15 @@ impl RenderPlan {
         // Both are frame counts, so this is `Samples`' own saturating `Add`
         // rather than an unwrapped `usize` one.
         let total = output_length + config.latency;
+        if output_length == Samples(0) {
+            return Err(ConfigError::EmptyRender);
+        }
 
-        Self {
+        Ok(Self {
             total,
             output_length,
             latency: config.latency,
-        }
+        })
     }
 }
 
@@ -57,7 +71,8 @@ impl RenderPlan {
 ///
 /// The one duration conversion in the crate, so the rounding happens once. A
 /// non-finite or negative span is no frames rather than a panic or a wrapped
-/// length.
+/// length; a render refuses such a span before it gets here
+/// ([`ConfigError::InvalidDuration`]), so this is for a caller sizing one.
 ///
 /// # Why `f64` and not [`Seconds`](tutti_types::Seconds)
 ///

@@ -17,10 +17,16 @@ use std::path::Path;
 
 use tutti_graph::contract;
 use tutti_sampler::testing::MockTransport;
-use tutti_sampler::{Command, DiskStreamer, DiskVoice, PlaceError, TakeVoiceError};
+use tutti_sampler::{
+    Command, Direction, DiskStreamer, DiskVoice, LoopSetting, PlaceError, TakeVoiceError,
+};
 use tutti_types::{
     Beat, Bpm, ChannelLayout, ChannelTopology, FoldEnd, FoldError, SamplePosition, SampleRate,
 };
+
+/// Only inside an `assert_no_alloc` region does this abort.
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 const SR: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -169,7 +175,19 @@ fn a_wav_order_seven_one_is_permuted_to_the_engines_order() {
 /// `Fold::to_width`'s, so removing it alone changes nothing for a wide file.)
 #[test]
 fn a_file_with_a_second_lfe_is_refused() {
-    let (_dir, streamer) = stream(2, 0x0200_0001);
+    let (dir, streamer) = stream(2, 0x0200_0001);
+    // The fixture is what it says: bit 25 is the decoder's second LFE
+    // (`tutti-codec`'s `a_flag_with_no_speaker_keeps_its_slot_as_unknown`).
+    assert_eq!(
+        tutti_codec::FileIn::open(dir.path().join("placed.wav"))
+            .expect("opens")
+            .topology()
+            .positions(),
+        [
+            tutti_types::Speaker::FrontLeft,
+            tutti_types::Speaker::Unknown(25)
+        ]
+    );
     let status = streamer.status();
     let refused = TakeVoiceError::Place(PlaceError::Fold(FoldError::Unnamed {
         end: FoldEnd::Source,
@@ -185,10 +203,12 @@ fn a_file_with_a_second_lfe_is_refused() {
             .err(),
         Some(refused)
     );
-    // Refused before the reader was taken: it is not `ReaderTaken`.
-    assert_ne!(
+    // Refused before the reader was taken: asked again, it is still the
+    // placement that is refused, never `ReaderTaken`. (No width places an
+    // unnamed channel, so the retake that succeeds is in the 5.1 case.)
+    assert_eq!(
         status.take_disk_voice(0, Beat::new(0.0), None).err(),
-        Some(TakeVoiceError::ReaderTaken)
+        Some(refused)
     );
 }
 
@@ -215,10 +235,23 @@ fn a_five_one_file_into_a_five_wide_voice_is_refused() {
         ),
         "{refused:?}"
     );
+    // Refused again, not `ReaderTaken`, and then the reader is still there.
+    assert_eq!(
+        status
+            .take_disk_voice_into(0, ChannelLayout::from(5u16), Beat::new(0.0), None)
+            .err(),
+        refused
+    );
     let stereo = status
         .take_disk_voice_into(0, ChannelLayout::STEREO, Beat::new(0.0), None)
         .expect("a refusal leaves the reader, and 5.1 folds to stereo");
     assert_eq!(settled_block(stereo).len(), 2);
+    // That take is the stream's one: the next is `ReaderTaken`, so the
+    // refusals above were not it.
+    assert_eq!(
+        status.take_disk_voice(0, Beat::new(0.0), None).err(),
+        Some(TakeVoiceError::ReaderTaken)
+    );
 }
 
 /// A stereo file plays as it was: the voice is two wide and every sample is the
@@ -268,26 +301,346 @@ fn a_fork_places_the_file_as_the_live_voice_does() {
     assert_channels(&out, &want, "the fork of a 7.1 in WAV order");
 }
 
-/// A file wider than a frame folds into it by position (10 and 12 channels
-/// into 8, where the tier cut them to their first 8): a file with no mask is
-/// given the first speakers of WAVE's order, all of them named.
+/// What a placed file plays in the engine's 7.1 order (FL FR FC LFE SL SR BL
+/// BR), channel `c` of the file holding [`value`]`(c)`: the figures `Fold`'s
+/// rules give (a speaker the destination has goes straight across; one it
+/// lacks folds into its nearest at -3 dB, summed first where the file has
+/// overhead speakers), written out here and not asked of `Place`.
+struct Fixture {
+    channels: u16,
+    mask: u32,
+    /// The decoder's names for the file's channels, pinned so a change in how
+    /// a mask-less file is named fails here and not as a wrong figure.
+    speakers: &'static [tutti_types::Speaker],
+    want: [f32; 8],
+}
+
+fn fixtures() -> [Fixture; 3] {
+    use tutti_types::Speaker::*;
+    let m = tutti_types::M3DB;
+    let v = value;
+    [
+        // The rears before the sides.
+        Fixture {
+            channels: 8,
+            mask: WAV_7_1,
+            speakers: &[
+                FrontLeft,
+                FrontRight,
+                FrontCenter,
+                LowFrequency,
+                BackLeft,
+                BackRight,
+                SideLeft,
+                SideRight,
+            ],
+            want: [v(0), v(1), v(2), v(3), v(6), v(7), v(4), v(5)],
+        },
+        // No mask: WAVE's first ten speakers. The left and right of centre
+        // fold into the centre, the back centre into both backs, and the right
+        // side has no source.
+        Fixture {
+            channels: 10,
+            mask: 0,
+            speakers: &[
+                FrontLeft,
+                FrontRight,
+                FrontCenter,
+                LowFrequency,
+                BackLeft,
+                BackRight,
+                FrontLeftOfCenter,
+                FrontRightOfCenter,
+                BackCenter,
+                SideLeft,
+            ],
+            want: [
+                v(0),
+                v(1),
+                v(2) + m * v(6) + m * v(7),
+                v(3),
+                v(9),
+                0.0,
+                v(4) + m * v(8),
+                v(5) + m * v(8),
+            ],
+        },
+        // Twelve: the right side and a top centre join. The top centre (an
+        // overhead speaker) folds into the front pair.
+        Fixture {
+            channels: 12,
+            mask: 0,
+            speakers: &[
+                FrontLeft,
+                FrontRight,
+                FrontCenter,
+                LowFrequency,
+                BackLeft,
+                BackRight,
+                FrontLeftOfCenter,
+                FrontRightOfCenter,
+                BackCenter,
+                SideLeft,
+                SideRight,
+                TopCenter,
+            ],
+            want: [
+                v(0) + m * v(11),
+                v(1) + m * v(11),
+                v(2) + m * (v(6) + v(7)),
+                v(3),
+                v(9),
+                v(10),
+                v(4) + m * v(8),
+                v(5) + m * v(8),
+            ],
+        },
+    ]
+}
+
+/// A file with a Fixture's shape, streamed on channel 0.
+fn stream_fixture(f: &Fixture) -> (tempfile::TempDir, DiskStreamer) {
+    let (dir, streamer) = stream(f.channels, f.mask);
+    assert_eq!(
+        tutti_codec::FileIn::open(dir.path().join("placed.wav"))
+            .expect("opens")
+            .topology()
+            .positions(),
+        f.speakers
+    );
+    (dir, streamer)
+}
+
+/// Every sample of `block` is within rounding of `want` (a fold sums in `f32`).
+fn assert_near(block: &[Vec<f32>], want: &[f32; 8], what: &str) {
+    assert_eq!(block.len(), 8, "{what}: width");
+    for (c, (lane, &w)) in block.iter().zip(want).enumerate() {
+        assert!(
+            lane.iter().all(|s| (s - w).abs() < 1e-6),
+            "{what}: channel {c} is not {w}: {:?}",
+            &lane[..4]
+        );
+    }
+}
+
+/// A file wider than a frame folds into it by position (10 and 12 channels into
+/// 8, where the tier cut them to their first 8), to the figures `Fold`'s rules
+/// give, and a WAV-order 7.1 is permuted.
 ///
 /// Mutation (run): `take_streaming_unit` building `Place::native(width)` ->
 /// the read has no fold (a `debug_assert` in `Place::frame`, a read of the
-/// first 8 in release) and the test fails.
+/// first 8 in release) and the figures are the file's first eight channels.
 #[test]
 fn a_file_wider_than_a_frame_folds_into_it() {
-    for channels in [10, 12] {
-        let (_dir, streamer) = stream(channels, 0);
+    for f in fixtures() {
+        let (_dir, streamer) = stream_fixture(&f);
         let voice = streamer
             .status()
             .take_disk_voice(0, Beat::new(0.0), None)
-            .expect("named speakers fold by position");
-        let block = settled_block(voice);
-        assert_eq!(block.len(), 8, "{channels} channels");
-        assert!(
-            block.iter().flatten().any(|&s| s != 0.0),
-            "{channels} channels: the fold is silent"
+            .expect("named speakers place");
+        assert_near(
+            &settled_block(voice),
+            &f.want,
+            &format!("{} channels", f.channels),
         );
+    }
+}
+
+/// `n` blocks of `node` from a transport rolling from beat 0, planar.
+fn render(node: &mut dyn tutti_graph::Node, clock: &MockTransport, n: usize) -> Vec<Vec<f32>> {
+    let mut out: Vec<Vec<f32>> = Vec::new();
+    for _ in 0..n {
+        let env = clock.env(BLOCK, SR);
+        let b = contract::drive_input(node, &env, &[], &[], &[]).audio;
+        if out.is_empty() {
+            out = vec![Vec::new(); b.len()];
+        }
+        for (o, c) in out.iter_mut().zip(b) {
+            o.extend(c);
+        }
+        clock.advance(BLOCK as i64, SR);
+    }
+    out
+}
+
+/// Fork `voice` as an export does, not yet prepared.
+fn fork_unprepared(voice: &DiskVoice) -> Box<dyn tutti_graph::Node> {
+    use tutti_graph::{ForkMode, IntoNode};
+    voice
+        .clone()
+        .into_parts()
+        .fork
+        .expect("forkable")
+        .fork(ForkMode::Offline)
+        .expect("forks")
+        .node
+}
+
+/// A boxed node, as a node (for `Direct`).
+struct Boxed(Box<dyn tutti_graph::Node>);
+
+impl tutti_graph::Node for Boxed {
+    fn shape(&self) -> tutti_graph::Shape {
+        self.0.shape()
+    }
+    fn prepare(&mut self, p: &tutti_graph::Prepare) {
+        self.0.prepare(p);
+    }
+    fn process(
+        &mut self,
+        cx: &tutti_graph::Cx<'_>,
+        io: tutti_graph::Io<'_>,
+    ) -> tutti_graph::Status {
+        self.0.process(cx, io)
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+/// [`fork_unprepared`], prepared.
+fn fork(voice: &DiskVoice) -> Box<dyn tutti_graph::Node> {
+    let mut node = fork_unprepared(voice);
+    node.prepare(&tutti_graph::Prepare::new(
+        SampleRate(SR),
+        tutti_types::Samples(BLOCK),
+    ));
+    node
+}
+
+/// Channel `c` of `direct`'s last block, all channels, as owned lanes
+/// (allocating: call it outside a guard).
+fn lanes<N: tutti_graph::Node>(direct: &contract::Direct<N>) -> Vec<Vec<f32>> {
+    (0..8).map(|c| direct.output(c).to_vec()).collect()
+}
+
+fn loop_1000_3000() -> Command {
+    Command::Loop {
+        channel_index: 0,
+        setting: LoopSetting::On {
+            start: SamplePosition(1_000.0),
+            end: SamplePosition(3_000.0),
+            crossfade_frames: 64,
+        },
+    }
+}
+
+/// A fork reads a placed file through every one of its paths: forward, looped
+/// (the loop wrapping three times, its crossfade included), reversed, and the
+/// paged read of a file wider than a frame, to the same figures as the live
+/// voice.
+///
+/// Mutation (run): `Pages::read_looped_into` handed `&Place::FAN` -> the looped
+/// rows (and the looped no-alloc rows) fail, the forward and reversed ones not. Mutation (run): the reverse arm of `OfflineRead::read_into`
+/// handed `&Place::FAN` -> the reversed row alone fails. Mutation (run): the
+/// page's `MAX_WAVE_CHANNELS` back to `MAX_SAMPLER_CHANNELS` (the tier's old
+/// cut to 8) -> the 10- and 12-channel rows fail.
+#[test]
+fn a_fork_places_every_read_path() {
+    for f in fixtures() {
+        for path in ["forward", "looped", "reversed"] {
+            let (_dir, mut streamer) = stream_fixture(&f);
+            if path == "looped" {
+                streamer.commands().send(loop_1000_3000()).expect("alive");
+                assert!(streamer.step_until_settled(1_000) < 1_000);
+            }
+            let mut voice = streamer
+                .status()
+                .take_disk_voice(0, Beat::new(0.0), None)
+                .expect("places");
+            if path == "reversed" {
+                voice.set_direction(Direction::Reverse);
+            }
+            let mut node = fork(&voice);
+            let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+            // 6 000 frames: three trips round the 2 000-frame loop, and well
+            // inside the 8 192-frame file when it is not looped.
+            let out = render(&mut *node, &clock, 6_000 / BLOCK);
+            let what = format!("{} channels, {path}", f.channels);
+            for chunk in 0..out[0].len() / BLOCK {
+                let block: Vec<Vec<f32>> = out
+                    .iter()
+                    .map(|l| l[chunk * BLOCK..(chunk + 1) * BLOCK].to_vec())
+                    .collect();
+                assert_near(&block, &f.want, &format!("{what}, block {chunk}"));
+            }
+        }
+    }
+}
+
+/// A fork's placed read allocates nothing once its page is in (forward and
+/// looped, the permuting and the folding file).
+///
+/// Mutation (run): `Place::frame` collecting the fold's source into a `Vec`
+/// -> the folding rows abort in the guarded region.
+#[test]
+fn a_fork_placed_read_is_allocation_free() {
+    for f in fixtures() {
+        for looped in [false, true] {
+            let (_dir, mut streamer) = stream_fixture(&f);
+            if looped {
+                streamer.commands().send(loop_1000_3000()).expect("alive");
+                assert!(streamer.step_until_settled(1_000) < 1_000);
+            }
+            let voice = streamer
+                .status()
+                .take_disk_voice(0, Beat::new(0.0), None)
+                .expect("places");
+            let mut direct =
+                contract::Direct::new(Boxed(fork_unprepared(&voice)), SampleRate(SR), BLOCK);
+            let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+            // The first block opens the file and pages it in.
+            direct.block_in(&clock.env(BLOCK, SR));
+            clock.advance(BLOCK as i64, SR);
+            assert_no_alloc::assert_no_alloc(|| {
+                for _ in 0..80 {
+                    direct.block_in(&clock.env(BLOCK, SR));
+                    clock.advance(BLOCK as i64, SR);
+                }
+            });
+            assert_near(
+                &lanes(&direct),
+                &f.want,
+                &format!("{} channels", f.channels),
+            );
+        }
+    }
+}
+
+/// A live placed voice allocates nothing in a block that crosses a loop edit
+/// (the reader's crossfade from the old mapping, `cross_switch`) or a loop's
+/// wrap, and plays its figures throughout.
+///
+/// Mutation (run): `cross_switch`'s read passing `&Place::FAN` -> the 7.1 and
+/// the fold's blocks in the crossfade are in the file's order and fail.
+/// Mutation (run): `Place::frame` collecting into a `Vec` -> aborts.
+#[test]
+fn a_loop_edit_and_wrap_on_a_placed_stream_allocate_nothing() {
+    for f in fixtures() {
+        let (_dir, mut streamer) = stream_fixture(&f);
+        let voice = streamer
+            .status()
+            .take_disk_voice(0, Beat::new(0.0), None)
+            .expect("places");
+        let mut direct = contract::Direct::new(voice, SampleRate(SR), BLOCK);
+        let clock = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
+        for b in 0..90 {
+            // Frame 2 816: the loop's end (3 000) is within the 256 frames a
+            // change near the playhead is crossfaded over, so the reader
+            // crosses a switch (`cross_switch`).
+            if b == 44 {
+                streamer.commands().send(loop_1000_3000()).expect("alive");
+            }
+            assert_no_alloc::assert_no_alloc(|| direct.block_in(&clock.env(BLOCK, SR)));
+            clock.advance(BLOCK as i64, SR);
+            let _ = streamer.step_once();
+            if b >= 4 {
+                assert_near(
+                    &lanes(&direct),
+                    &f.want,
+                    &format!("{} channels, block {b}", f.channels),
+                );
+            }
+        }
     }
 }

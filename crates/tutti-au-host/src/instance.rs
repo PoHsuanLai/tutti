@@ -6,9 +6,7 @@
 
 #![cfg(target_os = "macos")]
 
-use tutti_au_ffi::property::{
-    BypassEffect, ClassInfo, ClassInfoFromDocument, Latency, StreamFormat,
-};
+use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{Element, Scope};
 use tutti_au_ffi::{HostCallbacks, Renderer, TransportState, Unit};
 

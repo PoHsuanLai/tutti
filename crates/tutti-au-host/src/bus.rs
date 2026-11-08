@@ -18,7 +18,6 @@ use tutti_au_ffi::{Element, Scope};
 use tutti_plugin_types::ChannelLayout;
 
 use crate::error::{AuError, Result};
-use crate::types::*;
 use tutti_au_ffi::Unit;
 
 /// Which side of an AU a bus sits on.

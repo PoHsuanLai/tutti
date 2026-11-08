@@ -740,3 +740,51 @@ comments and docs, and treat it as a bug when you find it:
 
   There is no `tutti-plugin-host` package either — `bevy_tutti::plugin_host`
   is a *module*.
+
+## Playing an instrument live: a frame is on the engine's clock
+
+`Session::add_instrument` puts a `TimedQueueNode` before the instrument's event
+input and a strip after its main pair (`Instrument::main_outputs`). A send
+takes an `At`: `NextBlock` and `Frame` work, `Beat` is refused with a typed
+error because a beat is resolved against the transport and a control thread's
+send has none. Events leave in due order, and those due together (a late one, a
+`NextBlock`, the same frame) in the order they were sent.
+
+**An absolute `At::Frame` is on the engine's clock, which is not a count of
+frames rendered.** The executor counts frames at the current rate, and a
+re-prepare at another rate moves the clock, and every frame-timed command, to
+the same wall-clock time at the new rate (`Executor`, the rate branch of the
+commit; `Frame::scaled`). That is intended: a command scheduled before the
+change lands at the same moment after it. A sender that counted the frames it
+had rendered landed about 21 frames late on `PolySynth` and the plugin after a
+48 to 44.1 kHz change (256 x (1 - 0.91875)), and a plugin re-prepared twice 11
+frames early. The skew was in the sender, and the missing piece was a way to
+read the clock. `InstrumentHandle::clock` is a `Moment`, a frame and the rate it
+was counted at; a message sent for a moment (`send_at`) names that wall-clock
+instant whatever the rate becomes, including between the read and the send: the
+queue rescales what it takes on arrival, and what waits when it is prepared at
+another rate, with the executor's own arithmetic. An event whose frame passed
+while the node did not run (the re-prepare suspends it) lands on the next
+block's first frame. When more events wait than the list holds the latest that
+may be lost are dropped and counted, never a note-off or a panic (CC 120, 123)
+while anything else can go (a note that began does not hang), and a due event is
+never held up by later ones.
+`a_rate_change_keeps_the_note_on_its_frame` and the two cases after it pin it.
+
+## A plugin's state is restored before it is activated
+
+Every format allows a state on a plugin that is open and not yet active (CLAP
+`state.load`, VST3 `setState` before `setActive`, VST2 `setChunk` before resume,
+AU before initialize), and a plugin may take its mode, its sample set or its
+routing from the state when it is activated. The shared test plugin's `Notes`
+mode is one. The server's `LoadPlugin` activated at once and the state came
+after `PluginLoaded`, so such a plugin kept the default: every first load with
+a state, a crash-recovery reload, and a graph fork (four runs in six came up in
+the default mode). The state is now staged before the load
+(`HostMessage::StageStateChunk`), the loader restores it between opening the
+plugin and activating it, and the `PluginLoaded` reply (buses, latency) is the
+state's; a plugin that refuses the state loads at its defaults and the reply
+says so. The load declares the state it restores (`LoadPlugin { state: Some(StagedState { len }) }`) and the server refuses one that does not match what it holds; a stage is discarded by any other request. The server says `RestoringState` just before the restore, and from then the host waits a flat 60 s (a restore is one opaque call with nothing in it to measure progress by) and blames a failure on the state (`BridgeError::StateRestoreError`, which the session answers by withholding the snapshot); a failure before it, in the library or its init, is a load failure and blames nothing. `PluginClient::new_with_state`, `Plugin::open_with_state` and
+`PluginLoad::run` carry it; the in-process VST2 fork restores the program and
+the state before it activates. The AU change mirrors the others and is not
+built here (macOS only).

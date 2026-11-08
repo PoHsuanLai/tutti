@@ -17,7 +17,7 @@ constexpr size_t kStateHead = 24;
 
 inline float tag (uint32_t bus, size_t ch) { return float (bus * 1000 + ch + 1); }
 
-struct Ev { int kind; uint32_t offset; uint32_t id; double value; }; // 1 param, 2 on, 3 off
+struct Ev { int kind; uint32_t offset; uint32_t id; double value; }; // 1 param, 2 on, 3 off, 4 control change (recorded, never acted on; this plugin's VST3 shell receives none)
 
 struct Core
 {

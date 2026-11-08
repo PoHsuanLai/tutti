@@ -40,7 +40,8 @@ pub use crate::protocol::{
     PROTOCOL_VERSION, ParamFlags, ParamId, ParamRange, ParamSteps, ParameterChanges, ParameterInfo,
     ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor, PluginTail, PointBuf, Preset,
     PresetId, ProcessAudioData, STATE_CHUNK_BYTES, SampleFormat, Samples, ScaleChanges, ScaleValue,
-    SlabLayout, TimeSignature, TransportInfo, Vst2Category, Vst3PlugType, Vst3SubCategories,
+    SlabLayout, StagedState, TimeSignature, TransportInfo, Vst2Category, Vst3PlugType,
+    Vst3SubCategories,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};

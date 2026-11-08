@@ -40,7 +40,12 @@
 //! | after | `m` (u32), then `m` events of 24 bytes in arrival order |
 //!
 //! An event is `kind << 32 | offset` (u64; kind 1 parameter, 2 note on, 3 note
-//! off), the parameter id or key (u64), the value (f64). A host that wraps the
+//! off, 4 control change), the parameter id, key or controller number (u64), the
+//! value (f64; a control change's value, 0 to 127). A control change is
+//! recorded and has no effect on the output: the plugin is a black box to the
+//! host, and the transcript is how a test sees that the host delivered one, and
+//! where (a format delivers it as an event: CLAP and VST2 do; VST3 carries a
+//! controller as a parameter and records none). A host that wraps the
 //! blob in a container of its own leaves the bytes intact; a reader finds the
 //! magic.
 
@@ -111,14 +116,21 @@ pub enum Ev {
     NoteOn { offset: u32, key: u8 },
     /// A note off.
     NoteOff { offset: u32, key: u8 },
+    /// A control change: recorded, never acted on.
+    Control {
+        offset: u32,
+        controller: u8,
+        value: u8,
+    },
 }
 
 impl Ev {
     fn offset(&self) -> u32 {
         match *self {
-            Ev::Param { offset, .. } | Ev::NoteOn { offset, .. } | Ev::NoteOff { offset, .. } => {
-                offset
-            }
+            Ev::Param { offset, .. }
+            | Ev::NoteOn { offset, .. }
+            | Ev::NoteOff { offset, .. }
+            | Ev::Control { offset, .. } => offset,
         }
     }
 }
@@ -312,6 +324,11 @@ impl Core {
             Ev::Param { id, offset, value } => self.log(1, offset, id, value),
             Ev::NoteOn { offset, key } => self.log(2, offset, u32::from(key), 0.0),
             Ev::NoteOff { offset, key } => self.log(3, offset, u32::from(key), 0.0),
+            Ev::Control {
+                offset,
+                controller,
+                value,
+            } => self.log(4, offset, u32::from(controller), f64::from(value)),
         }
         if dsp.events.len() < MAX_EVENTS {
             dsp.events.push(ev);
@@ -396,6 +413,8 @@ impl Core {
                         dsp.held = None;
                     }
                 }
+                // Recorded when it arrived; the output ignores it.
+                Ev::Control { .. } => {}
             }
         }
         self.render(dsp, pos, frames, bus, ins, outs);

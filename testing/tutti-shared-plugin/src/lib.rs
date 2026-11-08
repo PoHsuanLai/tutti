@@ -5,6 +5,7 @@
 //! only what that SDK forces.
 
 pub mod core;
+pub mod transcript;
 
 mod clap;
 mod vst2;

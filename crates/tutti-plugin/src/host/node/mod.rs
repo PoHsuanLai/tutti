@@ -319,8 +319,27 @@ impl PluginClient<Unbound> {
         plugin_path: PathBuf,
         sample_rate: impl Into<SampleRate>,
     ) -> Result<Self> {
+        Self::new_with_state(config, plugin_path, sample_rate, None).map(|(client, _)| client)
+    }
+
+    /// [`new`](Self::new), restoring `state` into the plugin **before it is
+    /// activated**, the order every format allows and a plugin that takes its
+    /// mode from the state at activation needs. The second value is what became
+    /// of it: `None` when none was given, else the plugin's refusal as text (the
+    /// plugin is then loaded at its defaults, which beats no plugin).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn new_with_state(
+        config: BridgeConfig,
+        plugin_path: PathBuf,
+        sample_rate: impl Into<SampleRate>,
+        state: Option<&[u8]>,
+    ) -> Result<(Self, Option<std::result::Result<(), String>>)> {
         let sample_rate = sample_rate.into();
-        let server = subprocess::launch(&config, &plugin_path, sample_rate)?;
+        let server = subprocess::launch(&config, &plugin_path, sample_rate, state)?;
+        let state_restore = server.state_restore.clone();
         // Guard the process before the first fallible step below: an `Err`
         // from `PluginBridge::new` would otherwise drop a bare `Child`, which
         // std neither kills nor waits.
@@ -421,7 +440,7 @@ impl PluginClient<Unbound> {
             }
         };
 
-        Ok(Self {
+        let client = Self {
             bridge,
             descriptor: server.descriptor,
             loaded: server.loaded,
@@ -438,7 +457,8 @@ impl PluginClient<Unbound> {
             fork_watch: None,
             params,
             state: Unbound { _private: () },
-        })
+        };
+        Ok((client, state_restore))
     }
 
     /// Allocates the audio path and returns the [`PluginClient<Bound>`] that

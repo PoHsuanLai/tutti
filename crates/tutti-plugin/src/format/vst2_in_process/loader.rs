@@ -45,16 +45,37 @@ pub fn load_client(
     path: &Path,
     sample_rate: impl Into<tutti_types::SampleRate>,
 ) -> Result<(InProcessVst2Client, PluginHandle)> {
+    load_client_restoring(path, sample_rate, None).map(|(client, handle, _)| (client, handle))
+}
+
+/// [`load_client`], with `restore` run on the plugin before it is activated
+/// (see the instance's `load`). The outcome is returned as the third value.
+///
+/// # Errors
+///
+/// As [`load_client`].
+pub fn load_client_restoring(
+    path: &Path,
+    sample_rate: impl Into<tutti_types::SampleRate>,
+    restore: Option<
+        &mut dyn FnMut(&mut tutti_vst2_host::Vst2Loaded) -> std::result::Result<(), String>,
+    >,
+) -> Result<(
+    InProcessVst2Client,
+    PluginHandle,
+    Option<std::result::Result<(), String>>,
+)> {
     // `.get()` here and not at the caller: this is the last hop before
     // `Instance::load`, which crosses the VST2 ABI and takes a bare rate.
     let sample_rate = sample_rate.into().get();
-    let inner = Instance::load(path, sample_rate, MAX_BLOCK_SIZE).map_err(|(stage, reason)| {
-        BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage,
-            reason,
-        }
-    })?;
+    let (inner, restored) =
+        Instance::load(path, sample_rate, MAX_BLOCK_SIZE, restore).map_err(|(stage, reason)| {
+            BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage,
+                reason,
+            }
+        })?;
 
     let host_meta = inner.metadata().clone();
     let descriptor = Control::info(&**inner).clone();
@@ -143,5 +164,5 @@ pub fn load_client(
     )
     .with_invalidate_sink(invalidate_sink);
 
-    Ok((client, handle))
+    Ok((client, handle, restored))
 }

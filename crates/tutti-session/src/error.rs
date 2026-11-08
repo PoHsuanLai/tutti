@@ -71,6 +71,18 @@ pub enum Error {
     #[error("{0:?} takes no MIDI: it is not in the graph, or has no event input")]
     NoEventInput(tutti_types::NodeKey),
 
+    /// [`Session::instrument`](crate::Session::instrument) (or
+    /// `add_instrument`, `instrument_plugin`) was given a node that cannot be
+    /// played as an instrument.
+    #[cfg(feature = "midi")]
+    #[error("{node:?} is not an instrument: {why}")]
+    NotInstrument {
+        /// The node.
+        node: tutti_types::NodeKey,
+        /// Why not.
+        why: crate::NotInstrument,
+    },
+
     /// A route rule on a session with no MIDI input node (one built
     /// detached).
     #[cfg(feature = "midi")]

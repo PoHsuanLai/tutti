@@ -90,11 +90,47 @@ impl Departed {
     }
 }
 
+/// A client or port starting or changing, from an announcement. The kernel
+/// posts a change when a client sets its info (`snd_seq_ioctl_set_client_info`,
+/// which `snd_seq_set_client_name` calls) or a port's (`set_port_info`), and a
+/// new client does that right after it starts, so a change after a start
+/// belongs to the new owner and a change with no start is a rename.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Live {
+    Started(c_int),
+    PortStarted(c_int, c_int),
+    Changed(c_int),
+    PortChanged(c_int, c_int),
+}
+
+fn client_of(d: Departed) -> c_int {
+    match d {
+        Departed::Client(c) | Departed::Port(c, _) => c,
+    }
+}
+
+impl Live {
+    fn client(self) -> c_int {
+        match self {
+            Self::Started(c)
+            | Self::PortStarted(c, _)
+            | Self::Changed(c)
+            | Self::PortChanged(c, _) => c,
+        }
+    }
+
+    fn starts(self) -> bool {
+        matches!(self, Self::Started(_) | Self::PortStarted(..))
+    }
+}
+
 /// What one read of the announce queue found.
 #[derive(Debug, Default)]
 struct Drained {
     /// What left the sequencer.
     departed: Vec<Departed>,
+    /// What started or changed, in the order it was announced.
+    lives: Vec<Live>,
     /// Whether the queue held any event at all, or a read failed: a failed read
     /// is not a quiet one.
     any: bool,
@@ -119,6 +155,8 @@ struct Settled<T> {
     seen: T,
     /// Every departure read on the way.
     departed: Vec<Departed>,
+    /// Every start and change read on the way.
+    lives: Vec<Live>,
     /// Whether any read overran.
     overrun: bool,
 }
@@ -141,6 +179,7 @@ fn settle<T>(
     look: impl Fn() -> T,
 ) -> Settled<T> {
     let mut departed = first.departed;
+    let mut lives = first.lives;
     let mut overrun = first.overrun;
     let mut seen = look();
     let mut quiet = false;
@@ -151,6 +190,7 @@ fn settle<T>(
             break;
         }
         departed.extend(more.departed);
+        lives.extend(more.lives);
         overrun |= more.overrun;
         seen = look();
     }
@@ -160,17 +200,32 @@ fn settle<T>(
     Settled {
         seen,
         departed,
+        lives,
         overrun,
     }
 }
 
+/// What a report left owing for one client number that is not yet known to be a
+/// replacement.
+#[derive(Debug, Default)]
+struct Tentative {
+    ports: Vec<(c_int, c_int)>,
+    client: bool,
+}
+
 /// Exits the kernel owes the watch: it frees a client number and only then
 /// posts the exit, so a new client can take the number, and a look can show it,
-/// before the old owner's exit is read. When a report finds the owner of a
-/// number replaced without having read that owner's exits, it records one of
+/// before the old owner's exit is read. When a report finds a number's owner
+/// replaced or gone without having read that owner's exits, it records one of
 /// each, and the exit that arrives later pays the debt instead of reaching the
 /// number's new owner. A replacement that is identical to its predecessor is
 /// not seen as one, so its exits are read as the departure they are.
+///
+/// A look that shows another identity on a number, or none, is a replacement or
+/// a rename (or a port whose capabilities changed) of the owner it had, and
+/// only the announcements tell which: the new owner's start comes first (and
+/// confirms the debt), a rename only has a change, which cancels it, and an
+/// exit that arrives pays it. Until one of them is read the debt is tentative.
 ///
 /// Debts are only as good as the announcements: an overrun may have lost the
 /// exits they wait for, so [`forget`](Self::forget) clears them all.
@@ -178,9 +233,32 @@ fn settle<T>(
 struct Owed {
     ports: BTreeMap<(c_int, c_int), u32>,
     clients: BTreeMap<c_int, u32>,
+    tentative: BTreeMap<c_int, Tentative>,
 }
 
 impl Owed {
+    /// Settles the tentative debts the starts and changes read decide.
+    fn resolve(&mut self, lives: &[Live]) {
+        for live in lives {
+            let Some(t) = self.tentative.remove(&live.client()) else {
+                continue;
+            };
+            if live.starts() {
+                continue;
+            }
+            for key in t.ports {
+                if let Some(n) = self.ports.get_mut(&key) {
+                    *n = n.saturating_sub(1);
+                }
+            }
+            if t.client
+                && let Some(n) = self.clients.get_mut(&live.client())
+            {
+                *n = n.saturating_sub(1);
+            }
+        }
+    }
+
     /// The departures that are not an owed exit arriving.
     fn pay(&mut self, departed: Vec<Departed>) -> Vec<Departed> {
         departed
@@ -193,6 +271,8 @@ impl Owed {
                 match debt {
                     Some(n) if *n > 0 => {
                         *n -= 1;
+                        // The owner exited: the debt was no rename.
+                        self.tentative.remove(&client_of(*d));
                         false
                     }
                     _ => true,
@@ -202,37 +282,59 @@ impl Owed {
     }
 
     /// Records the exits a report leaves owing. `kept` is what it was told
-    /// departed, `gone` the handles it reported gone, `present` the handles of
-    /// the look it reported.
-    fn owe(&mut self, kept: &[Departed], gone: &[EndpointId], present: &BTreeSet<EndpointId>) {
-        let mut clients = BTreeSet::new();
+    /// departed and `lives` what started or changed, `gone` the handles it
+    /// reported gone, `present` the handles of the look it reported.
+    fn owe(
+        &mut self,
+        kept: &[Departed],
+        lives: &[Live],
+        gone: &[EndpointId],
+        present: &BTreeSet<EndpointId>,
+    ) {
+        // Per client: whether every debt recorded for it is tentative.
+        let mut clients: BTreeMap<c_int, bool> = BTreeMap::new();
         for &handle in gone {
             let (client, port) = unpack_id(handle);
             let named = kept.iter().any(|d| d.names(handle));
             let replaced = present.contains(&handle);
-            // A handle missing from a look with no exit read for it may only
-            // have been listed before its capabilities were set: nothing is
-            // owed for it, or the debt would swallow a later real exit.
-            if !named && !replaced {
+            let started = lives.iter().any(|l| l.client() == client && l.starts());
+            let changed = lives.iter().any(|l| l.client() == client && !l.starts());
+            // Another identity or gone, with no exit and no start but a change:
+            // a rename, or a port whose capabilities changed. The owner did not
+            // exit, so nothing is owed.
+            if !named && !started && changed {
                 continue;
             }
+            let tentative = !named && !started;
             if !named {
                 *self.ports.entry((client, port)).or_default() += 1;
+                if tentative {
+                    self.tentative
+                        .entry(client)
+                        .or_default()
+                        .ports
+                        .push((client, port));
+                }
             }
             // A port that closed on a client that lives owes no client exit.
             let client_gone = !present.iter().any(|&h| unpack_id(h).0 == client);
             if (replaced || client_gone) && !kept.contains(&Departed::Client(client)) {
-                clients.insert(client);
+                let all = clients.entry(client).or_insert(true);
+                *all &= tentative;
             }
         }
-        for client in clients {
+        for (client, tentative) in clients {
             *self.clients.entry(client).or_default() += 1;
+            if tentative {
+                self.tentative.entry(client).or_default().client = true;
+            }
         }
     }
 
     fn forget(&mut self) {
         self.ports.clear();
         self.clients.clear();
+        self.tentative.clear();
     }
 }
 
@@ -248,17 +350,19 @@ fn step(
     let Settled {
         seen: present,
         departed,
+        lives,
         overrun,
     } = settle(first, drain, snapshot);
     let kept = if overrun {
         owed.forget();
         departed
     } else {
+        owed.resolve(&lives);
         owed.pay(departed)
     };
     let handles: BTreeSet<EndpointId> = present.iter().map(|d| d.handle).collect();
     let gone = reporter.report(present, |id| kept.iter().any(|d| d.names(id)));
-    owed.owe(&kept, &gone, &handles);
+    owed.owe(&kept, &lives, &gone, &handles);
 }
 
 /// Why `Announce::wait` returned.
@@ -395,6 +499,10 @@ impl Announce {
             let (client, port) = (c_int::from(data[0]), c_int::from(data[1]));
             match kind {
                 sys::SND_SEQ_EVENT_CLIENT_EXIT => found.departed.push(Departed::Client(client)),
+                sys::SND_SEQ_EVENT_CLIENT_START => found.lives.push(Live::Started(client)),
+                sys::SND_SEQ_EVENT_CLIENT_CHANGE => found.lives.push(Live::Changed(client)),
+                sys::SND_SEQ_EVENT_PORT_START => found.lives.push(Live::PortStarted(client, port)),
+                sys::SND_SEQ_EVENT_PORT_CHANGE => found.lives.push(Live::PortChanged(client, port)),
                 sys::SND_SEQ_EVENT_PORT_EXIT => found.departed.push(Departed::Port(client, port)),
                 _ => {}
             }

@@ -470,6 +470,32 @@ fn a_renamed_client_is_removed_and_added_under_its_new_name() {
     assert_ne!(after.id, before);
 }
 
+/// A client renamed in place is reported removed and added, and the kernel posts
+/// no exit for it: its change announcement must cancel what the watch expected,
+/// or the exits of an identical device that later takes the number are swallowed
+/// and its removal is never reported. Mutation: `Owed::resolve` not cancelling on
+/// a change together with `owe` without its rename skip makes the wait for
+/// `Removed` time out (the kernel posts the change at once, so either alone is
+/// covered by the other).
+#[test]
+fn a_renamed_client_replaced_by_an_identical_one_is_removed_then_added() {
+    let devices = Watched::open();
+    let name = unique("rename-replug");
+    let device = plug(&name);
+    let mut backlog = Vec::new();
+    until_in(&devices, &mut backlog, added(&name));
+    let renamed = format!("{name}-two");
+    device.rename(&renamed);
+    let id = info(until_in(&devices, &mut backlog, added(&renamed))).id;
+    drop(device);
+    let _next = plug(&renamed);
+    until_in(&devices, &mut backlog, removed(id.clone()));
+    assert_eq!(
+        info(until_in(&devices, &mut backlog, added(&renamed))).id,
+        id
+    );
+}
+
 /// The kernel's own client is not a device. Mutation: dropping the
 /// `SND_SEQ_CLIENT_SYSTEM` skip lists `System: Announce` and `System: Timer`.
 #[test]

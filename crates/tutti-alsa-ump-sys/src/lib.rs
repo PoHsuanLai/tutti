@@ -117,12 +117,24 @@ pub const SND_SEQ_CLIENT_SYSTEM: c_int = 0;
 /// whenever a client or port starts, exits or changes.
 pub const SND_SEQ_PORT_SYSTEM_ANNOUNCE: c_int = 1;
 
+/// `SND_SEQ_EVENT_CLIENT_START` — announced when a client opens; the event's data
+/// begins with its `snd_seq_addr_t`.
+pub const SND_SEQ_EVENT_CLIENT_START: u8 = 60;
 /// `SND_SEQ_EVENT_CLIENT_EXIT` — announced when a client closes; the event's data
 /// begins with its `snd_seq_addr_t`.
 pub const SND_SEQ_EVENT_CLIENT_EXIT: u8 = 61;
+/// `SND_SEQ_EVENT_CLIENT_CHANGE` — announced when a client sets its info (its
+/// name among it); the data begins with its address.
+pub const SND_SEQ_EVENT_CLIENT_CHANGE: u8 = 62;
+/// `SND_SEQ_EVENT_PORT_START` — announced when a port is created; the data begins
+/// with its address.
+pub const SND_SEQ_EVENT_PORT_START: u8 = 63;
 /// `SND_SEQ_EVENT_PORT_EXIT` — announced when a port is deleted; the data begins
 /// with its address.
 pub const SND_SEQ_EVENT_PORT_EXIT: u8 = 64;
+/// `SND_SEQ_EVENT_PORT_CHANGE` — announced when a port's info is set (its name or
+/// capabilities); the data begins with its address.
+pub const SND_SEQ_EVENT_PORT_CHANGE: u8 = 65;
 
 /// `SND_SEQ_ADDRESS_SUBSCRIBERS` — deliver to everything subscribed to the
 /// sending port, rather than to one named address.

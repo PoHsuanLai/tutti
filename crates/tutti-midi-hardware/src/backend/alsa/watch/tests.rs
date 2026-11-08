@@ -43,8 +43,14 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   `an_identical_replug_is_removed_then_added_each_time`;
 // - `owe` recording a client debt for every gone handle:
 //   `a_closed_port_does_not_swallow_its_clients_exit`;
-// - `owe` without the `!named && !replaced` skip:
-//   `a_handle_missing_from_one_look_owes_no_exit`;
+// - `resolve` not cancelling on a change:
+//   `a_rename_then_an_identical_replug_is_removed_then_added` and
+//   `a_port_unlisted_for_a_look_by_a_change_owes_no_exit`;
+// - `owe` without the rename skip: `a_rename_announced_with_its_look_owes_nothing`;
+// - `resolve` treating a start like a change:
+//   `a_new_owners_own_change_does_not_cancel_the_old_owners_exits`;
+// - `owe` recording nothing for a gone handle with no exit read:
+//   `an_owner_whose_announcements_are_all_late_does_not_remove_its_successor`;
 // - `Drained::failed` not setting `any`:
 //   `a_failed_read_is_not_quiet_and_enospc_is_an_overrun`;
 // - the one-look `settle` together with no `owe`:
@@ -58,7 +64,12 @@ use std::sync::{Arc, Mutex};
 use tutti_midi_device::DeviceEvent;
 
 fn read(departed: &[Departed]) -> Drained {
+    seen(departed, &[])
+}
+
+fn seen(departed: &[Departed], lives: &[Live]) -> Drained {
     Drained {
+        lives: lives.to_vec(),
         departed: departed.to_vec(),
         any: true,
         overrun: false,
@@ -66,6 +77,7 @@ fn read(departed: &[Departed]) -> Drained {
 }
 
 const NOTHING: Drained = Drained {
+    lives: Vec::new(),
     departed: Vec::new(),
     any: false,
     overrun: false,
@@ -169,8 +181,10 @@ impl Model {
     /// A read of the announce port.
     fn drain(&self) -> Drained {
         let events = self.queue.take();
+        let lives = self.lives.take();
         Drained {
-            any: !events.is_empty(),
+            any: !events.is_empty() || !lives.is_empty(),
+            lives,
             departed: events,
             overrun: false,
         }
@@ -180,6 +194,7 @@ impl Model {
 /// The sequencer: the announce port and the clients.
 struct Model {
     queue: RefCell<Vec<Departed>>,
+    lives: RefCell<Vec<Live>>,
     present: RefCell<Vec<OsDevice>>,
 }
 
@@ -199,6 +214,7 @@ impl World {
             owed: Owed::default(),
             model: Model {
                 queue: RefCell::new(Vec::new()),
+                lives: RefCell::new(Vec::new()),
                 present: RefCell::new(present),
             },
         }
@@ -330,6 +346,7 @@ fn an_overrun_clears_what_is_owed() {
     world.wake(
         Drained {
             departed: Vec::new(),
+            lives: Vec::new(),
             any: true,
             overrun: true,
         },
@@ -387,23 +404,97 @@ fn a_closed_port_does_not_swallow_its_clients_exit() {
     );
 }
 
-/// A handle that is missing from one look with no exit read for it (a port
-/// listed before its capabilities are set) owes nothing, and the real replug
-/// after it is reported.
+/// A client renamed in place looks like a replacement (the identity is the
+/// name) and is reported removed and added; no exit follows it. Its change
+/// announcement, read after the report, cancels the exits the report expected,
+/// so an identical device that later takes the number is still a replug.
 ///
-/// Mutation: `owe` without the `!named && !replaced` skip leaves a debt that
-/// swallows the replug's exits, and the last pair is missing.
+/// Mutation: `resolve` not cancelling on a change leaves the debt, the replug's
+/// exits are swallowed, and the last pair is missing.
 #[test]
-fn a_handle_missing_from_one_look_owes_no_exit() {
+fn a_rename_then_an_identical_replug_is_removed_then_added() {
+    let mut world = World::with("One");
+    world.wake(read(&[]), |w| {
+        *w.present.borrow_mut() = World::device("Renamed")
+    });
+    world.wake(seen(&[], &[Live::Changed(5)]), |_| {});
+    world.wake(read(&World::exits()), |_| {});
+    let mut want = pair("One", "Renamed");
+    want.extend(pair("Renamed", "Renamed"));
+    assert_eq!(world.shape(), want);
+}
+
+/// The change is read in the same round as the look that shows the new name:
+/// nothing is owed at all.
+///
+/// Mutation: `owe` without the rename skip records a debt, and the last pair is
+/// missing.
+#[test]
+fn a_rename_announced_with_its_look_owes_nothing() {
+    let mut world = World::with("One");
+    world.wake(seen(&[], &[Live::Changed(5)]), |w| {
+        *w.present.borrow_mut() = World::device("Renamed");
+    });
+    world.wake(read(&World::exits()), |_| {});
+    let mut want = pair("One", "Renamed");
+    want.extend(pair("Renamed", "Renamed"));
+    assert_eq!(world.shape(), want);
+}
+
+/// A new owner's start comes before its own change (a client names itself right
+/// after it opens), and confirms the debt: the change after it does not cancel
+/// the exits still owed.
+///
+/// Mutation: `resolve` treating a start like a change cancels the debt, and the
+/// late exits remove "Two".
+#[test]
+fn a_new_owners_own_change_does_not_cancel_the_old_owners_exits() {
+    let mut world = World::with("One");
+    world.wake(read(&[]), |w| {
+        *w.present.borrow_mut() = World::device("Two")
+    });
+    world.wake(seen(&[], &[Live::Started(5), Live::Changed(5)]), |_| {});
+    world.wake(read(&World::exits()), |_| {});
+    assert_eq!(world.shape(), pair("One", "Two"));
+}
+
+/// A port whose capabilities change can drop out of one look (it is no longer
+/// listed) and come back; the kernel posts a port change, and no exit is owed.
+/// The replug after it is reported.
+///
+/// Mutation: `resolve` not cancelling on a change leaves a debt that swallows
+/// the replug's exits.
+#[test]
+fn a_port_unlisted_for_a_look_by_a_change_owes_no_exit() {
     let mut world = World::with("One");
     world.wake(read(&[]), |w| w.present.borrow_mut().clear());
-    world.wake(read(&[]), |w| {
-        *w.present.borrow_mut() = World::device("One")
+    world.wake(seen(&[], &[Live::PortChanged(5, 0)]), |w| {
+        *w.present.borrow_mut() = World::device("One");
     });
     world.wake(read(&World::exits()), |_| {});
     let mut want = vec![("removed", "One".to_string()), ("added", "One".to_string())];
     want.extend(pair("One", "One"));
     assert_eq!(world.shape(), want);
+}
+
+/// A client whose every announcement is late: the look drops it with nothing
+/// read, another takes the number in a later round, and the old owner's exits
+/// arrive after that. They are owed, not the new owner's.
+///
+/// Mutation: `owe` recording nothing for a handle that is gone with no exit read
+/// removes "Two" when the exits arrive.
+#[test]
+fn an_owner_whose_announcements_are_all_late_does_not_remove_its_successor() {
+    let mut world = World::with("One");
+    world.wake(read(&[]), |w| w.present.borrow_mut().clear());
+    world.wake(read(&[]), |w| {
+        *w.present.borrow_mut() = World::device("Two")
+    });
+    world.wake(read(&World::exits()), |_| {});
+    assert_eq!(
+        world.shape(),
+        [("removed", "One".to_string()), ("added", "Two".to_string())]
+    );
 }
 
 /// A failed read is not a quiet one, and `-ENOSPC` is an overrun. Mutation:

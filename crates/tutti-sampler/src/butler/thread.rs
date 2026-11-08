@@ -196,9 +196,13 @@ impl ButlerThread {
                 // loop ends (a panic included) its drop tells every sender
                 // the butler is gone instead of letting them queue into
                 // nothing.
-                // Disk streaming wants to stay ahead of background work, not
-                // of the audio threads: a raised, never real-time priority,
-                // and a refusal is harmless, so it is only logged.
+                // Disk streaming should stay ahead of background work, not
+                // compete with the audio threads (Ardour's butler sets no CPU
+                // priority, LinuxSampler's disk thread runs at nice -10): a
+                // raised, never real-time priority, nice -10 on Linux and
+                // ABOVE_NORMAL on Windows. This replaced the highest the OS
+                // grants (nice -20, HIGHEST) on purpose. A refusal is
+                // harmless, so the outcome is only logged.
                 tracing::debug!("butler: {}", request_priority(PriorityRequest::Raised));
                 butler_loop(&queue, shared, cycle, shutdown, pacing);
             })

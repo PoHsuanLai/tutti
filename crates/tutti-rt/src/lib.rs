@@ -5,7 +5,8 @@
 //!
 //! Interior mutability, fixed-capacity buffers, and the denormals flush: each
 //! is allocation-free on the audio path (`tests/rt_no_alloc.rs` gates it) and
-//! carries no engine dependency.
+//! carries no engine dependency. The crate also holds the one thread-priority
+//! call, [`request_priority`], which says what the OS granted.
 //!
 //! # How the buffers relate
 //!

@@ -83,12 +83,14 @@ impl PluginServer {
     /// # The two-phase connection dance
     ///
     /// The host connects twice, and the split is what lets the second phase run
-    /// at realtime priority without the load-time work behind it:
+    /// at the highest priority the OS grants (not real time) without the
+    /// load-time work behind it:
     ///
     /// 1. **Handshake** — plugin load, format negotiation, shared-memory setup.
     ///    Returns early if the host asks for shutdown before any audio flows.
     /// 2. **Audio** — per-block traffic for the rest of the session. The thread
-    ///    is raised to realtime priority on entry, and async plugin events are
+    ///    asks for the highest priority on entry (`request_audio_priority`), and
+    ///    async plugin events are
     ///    drained to the host after each block.
     ///
     /// Each phase opens with a [`BridgeMessage::Ready`] carrying

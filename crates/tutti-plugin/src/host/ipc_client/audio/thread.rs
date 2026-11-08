@@ -122,6 +122,20 @@ fn run_thread(
     pump(&channels, &payloads, &lifecycle, &listener, &mut stream);
 }
 
+/// The bridge's command loop.
+///
+/// **Idle, the bridge reads nothing from the socket, and did not before the
+/// doorbell either.** The old 1 ms park only re-polled an empty queue; the one
+/// place this thread reads the plugin's socket is inside `handle`, while a
+/// command waits for its reply, and unsolicited events (a GUI edit, a changed
+/// parameter) ride in on that read and go to the listener afterwards. So
+/// events and a plugin that died while no command is queued surface with the
+/// next command, as they always did, and no timeout is kept for them. The
+/// audio thread sends a `Process` command every block while an engine runs, a
+/// session with no engine sends none, and the host's control calls (state,
+/// parameters, a GUI edit that `editor_idle` forwards) are commands too. A wake-up for the
+/// socket itself would be a change of design (polling the socket while idle),
+/// not a restored timeout.
 fn pump(
     channels: &Channels,
     payloads: &PayloadPool,

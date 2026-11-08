@@ -47,7 +47,7 @@
 //! 200 us per-plugin ceiling (`assert_working_steps_cheap`).
 //!
 //! How many blocks carry audio depends on the plugin subprocess running at
-//! realtime priority (`plugin-server`'s `request_audio_priority`). Without it the
+//! the highest priority the OS grants (`plugin-server`'s `request_audio_priority`). Without it the
 //! host's callback thread is realtime — the OS audio backend makes it so — but
 //! the subprocess it is waiting on is not, and the blocks that arrive in time
 //! swung between 29 and 492 of 500 across identical runs. With it: 491-498 of

@@ -594,7 +594,7 @@ impl Node for DelayLineNode {
     /// to be late. The dry half of the blend is undelayed, so the output's earliest
     /// energy leaves with the input.
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::from_count(self.width() as u16);
+        let width = ChannelLayout::try_from(self.width()).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
             .with_params(&DELAY_PARAMS)
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn delay_with_channels_reports_arity() {
-        let d = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.3);
+        let d = DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.3);
         let shape = d.shape();
         assert_eq!(shape.audio_in.count(), 6);
         assert_eq!(shape.audio_out.count(), 6);
@@ -869,10 +869,7 @@ mod tests {
     fn wide_delay_channels_are_independent_no_crossfeed() {
         // 6-channel delay: an impulse on channel 3 echoes only on channel 3,
         // and cross_feedback (a stereo-only notion) is inert.
-        let mut node = at(
-            DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.0),
-            1_000.0,
-        );
+        let mut node = at(DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.0), 1_000.0);
         node.set_cross_feedback(0.9); // must have NO effect above width 2
 
         let x = impulses(6, 13, &[3]);
@@ -924,7 +921,7 @@ mod tests {
             &[UnitParam::Feedback, UnitParam::DelayTime, UnitParam::Wet][..]
         );
         assert_eq!((shape.audio_in.count(), shape.audio_out.count()), (2, 2));
-        let wide = DelayLineNode::with_channels(6usize, 1.0, 0.01, 0.5).shape();
+        let wide = DelayLineNode::with_channels(6u16, 1.0, 0.01, 0.5).shape();
         assert_eq!((wide.audio_in.count(), wide.audio_out.count()), (6, 6));
         assert_eq!(d.param_base(0), Some(0.5), "feedback's base is its control");
         assert_eq!(
@@ -1047,7 +1044,7 @@ mod tests {
         use crate::test_support::{change_between_node_blocks, noise};
         let x = noise(4, 128);
         let run = change_between_node_blocks(
-            || DelayLineNode::with_channels(6usize, 0.1, 0.0005, 0.3),
+            || DelayLineNode::with_channels(6u16, 0.1, 0.0005, 0.3),
             |n| n.set_mix(0.0),
             &(0..6).map(|_| &x[..64]).collect::<Vec<_>>(),
             &(0..6).map(|_| &x[64..]).collect::<Vec<_>>(),
@@ -1069,7 +1066,13 @@ mod tests {
             ring[c * n + (c + n - 1) % n] = 1.0; // c is fed by c - 1
         }
         let mut node = at(
-            DelayLineNode::with_channels(n, 1.0, 0.01, 0.0).with_cross_feedback_matrix(&ring),
+            DelayLineNode::with_channels(
+                ChannelLayout::try_from(n).expect("a test width is small"),
+                1.0,
+                0.01,
+                0.0,
+            )
+            .with_cross_feedback_matrix(&ring),
             1_000.0,
         );
         node.set_cross_feedback(0.8);
@@ -1103,8 +1106,13 @@ mod tests {
     fn a_dense_matrix_at_full_feedback_stays_bounded() {
         let n = 4usize;
         let mut node = at(
-            DelayLineNode::with_channels(n, 0.1, 0.002, 0.99)
-                .with_cross_feedback_matrix(&vec![1.0; n * n]),
+            DelayLineNode::with_channels(
+                ChannelLayout::try_from(n).expect("a test width is small"),
+                0.1,
+                0.002,
+                0.99,
+            )
+            .with_cross_feedback_matrix(&vec![1.0; n * n]),
             8_000.0,
         );
         node.set_cross_feedback(0.99);

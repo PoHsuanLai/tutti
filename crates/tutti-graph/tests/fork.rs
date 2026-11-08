@@ -29,7 +29,7 @@ impl Node for Consts {
     fn shape(&self) -> Shape {
         Shape::audio(
             ChannelLayout::EMPTY,
-            ChannelLayout::from_count(self.outs as u16),
+            ChannelLayout::try_from(self.outs).expect("a test width is small"),
         )
     }
     fn prepare(&mut self, _: &Prepare) {}

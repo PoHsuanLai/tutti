@@ -80,7 +80,7 @@ fn render(engine: &Engine, frames: usize, width: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; frames * width];
     engine.process(&mut InterleavedMut::new(
         &mut out,
-        ChannelLayout::from(width),
+        ChannelLayout::try_from(width).expect("a test width is small"),
     ));
     out
 }

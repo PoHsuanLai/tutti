@@ -204,7 +204,8 @@ struct Shared {
 impl Shared {
     fn wiring(&self) -> LoadedPlugin {
         self.log.push(Call::Wiring);
-        let outputs = ChannelLayout::from_count(self.outputs.load(Ordering::Relaxed) as u16);
+        let outputs = ChannelLayout::try_from(self.outputs.load(Ordering::Relaxed))
+            .expect("a fake plugin has few outputs");
         LoadedPlugin {
             inputs: vec![ChannelLayout::STEREO],
             outputs: vec![outputs],

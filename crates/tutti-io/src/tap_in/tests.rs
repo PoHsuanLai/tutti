@@ -174,7 +174,7 @@ fn the_layout_follows_the_taps_width() {
             .expect("the sources exist");
         assert_eq!(
             TapIn::new(reader).layout(),
-            ChannelLayout::from_count(width as u16)
+            ChannelLayout::try_from(width).expect("a test width is small")
         );
     }
 }

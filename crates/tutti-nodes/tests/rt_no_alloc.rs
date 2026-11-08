@@ -216,7 +216,7 @@ fn distortion_process_is_allocation_free_fed_and_unfed() {
         let mut unfed: Vec<Vec<f32>> = Vec::new();
         for fed in [false, true] {
             let mut node = Direct::new(
-                DistortionNode::with_channels(3, kind, 2.0),
+                DistortionNode::with_channels(3u16, kind, 2.0),
                 SampleRate(48_000.0),
                 64,
             );

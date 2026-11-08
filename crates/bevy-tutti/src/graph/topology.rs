@@ -144,6 +144,11 @@ pub fn entity_of(key: NodeKey) -> Entity {
 /// spec for it would make the value claim a node exists that does not, and the
 /// next frame's comparison would see a change that is really an arrival. Absent
 /// is the honest answer, and it is the same one `rebuild`'s `continue` gives.
+///
+/// # Panics
+///
+/// If the graph reports a port count above `u16::MAX`: the counts are read back
+/// from `ChannelLayout`s the graph holds, so none can be.
 pub fn build(
     graph: &AudioGraphRes,
     nodes: &Query<(Entity, &AudioNode)>,
@@ -151,7 +156,8 @@ pub fn build(
     master: &MasterSources,
 ) -> Topology {
     let mut topology = Topology {
-        inputs: ChannelLayout::from_count(graph.graph_ref().inputs() as u16),
+        inputs: ChannelLayout::try_from(graph.graph_ref().inputs())
+            .expect("a count read from a layout"),
         ..Default::default()
     };
 
@@ -402,8 +408,10 @@ pub fn disagreements(
 fn spec_of(graph: &AudioGraphRes, node: NodeKey) -> NodeSpec {
     NodeSpec {
         kind: ENTITY_NODE_KIND.to_string(),
-        inputs: ChannelLayout::from_count(graph.graph_ref().node_inputs(node) as u16),
-        outputs: ChannelLayout::from_count(graph.graph_ref().node_outputs(node) as u16),
+        inputs: ChannelLayout::try_from(graph.graph_ref().node_inputs(node))
+            .expect("a count read from a layout"),
+        outputs: ChannelLayout::try_from(graph.graph_ref().node_outputs(node))
+            .expect("a count read from a layout"),
         latency: graph.graph_ref().node_latency(node),
         tail: graph.graph_ref().node_tail(node),
         params: BTreeMap::new(),

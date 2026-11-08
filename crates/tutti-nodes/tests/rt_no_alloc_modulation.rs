@@ -105,7 +105,7 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
     // The per-channel delay-line Vec must be built at construction; the wide
     // path must not allocate per buffer.
-    let node = DelayLineNode::with_channels(6usize, 2.0_f32, 0.30_f32, 0.4_f32);
+    let node = DelayLineNode::with_channels(6u16, 2.0_f32, 0.30_f32, 0.4_f32);
     node.set_mix(0.5_f32);
     gate(node, 0.5, 2_000, |_| {});
 }
@@ -154,14 +154,14 @@ fn delay_and_modulation_with_moving_controls_are_allocation_free() {
         d.set_delay_time(0.05 + 0.4 * t);
         d.set_mix(t);
     });
-    let chorus = ModDelayNode::chorus(6usize);
+    let chorus = ModDelayNode::chorus(6u16);
     let c = chorus.clone();
     gate(chorus, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;
         c.set_depth(0.002 + 0.01 * t);
         c.set_mix(1.0 - t);
     });
-    let phaser = PhaserNode::with_channels(6usize, 8);
+    let phaser = PhaserNode::with_channels(6u16, 8);
     let p = phaser.clone();
     gate(phaser, 0.5, 2_000, |i| {
         let t = (i % 50) as f32 / 50.0;

@@ -271,7 +271,7 @@ fn random_graph(seed: u64) -> Desc {
         used: BTreeSet::new(),
         recent: Vec::new(),
         spec: GraphSpec::new(Topology {
-            inputs: ChannelLayout::from_count(1 + rng.below(3) as u16),
+            inputs: ChannelLayout::from_count(1 + u16::try_from(rng.below(3)).expect("below 3")),
             ..Topology::default()
         }),
     };

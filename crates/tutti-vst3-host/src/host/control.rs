@@ -4,14 +4,15 @@
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusChannels, ChannelLayout, Control, EditorPresence, Features, LoadedPlugin,
-    Normalized, ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Preset, PresetId, RescanScope, Samples, Vst3SubCategories,
+    AutomationMode, BusChannels, Control, EditorPresence, Features, LoadedPlugin, Normalized,
+    ParamId, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail,
+    Preset, PresetId, RescanScope, Samples, Vst3SubCategories,
 };
 
 use crate::error::Vst3Error;
 use crate::types::PluginInfo;
 
+use super::instance::bus_layout;
 use super::loaded::Vst3Loaded;
 
 /// A `Vst3Error` as the shared vocabulary's error.
@@ -58,9 +59,9 @@ pub fn descriptor_of(info: &PluginInfo, editor: EditorPresence) -> PluginDescrip
 /// reported no per-bus list.
 fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
     if host_buses.is_empty() {
-        vec![ChannelLayout::from(main_channels)]
+        vec![bus_layout(main_channels)]
     } else {
-        host_buses.iter().map(|&c| ChannelLayout::from(c)).collect()
+        host_buses.iter().map(|&c| bus_layout(c)).collect()
     }
 }
 

@@ -1464,7 +1464,7 @@ mod disk {
                 play: Playback::default(),
                 channel_index: None,
             },
-            2usize,
+            2u16,
         )
     }
 

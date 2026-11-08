@@ -40,7 +40,7 @@ fn lat(frames: usize) -> Latency {
 }
 
 fn ch(n: usize) -> ChannelLayout {
-    ChannelLayout::from_count(n as u16)
+    ChannelLayout::try_from(n).expect("a test width is small")
 }
 
 /// What a test node does. `Clone` so the harness can build two identical

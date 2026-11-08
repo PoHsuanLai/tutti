@@ -202,9 +202,10 @@ impl StreamConfig {
             if let Ok(asbd) = out_accepted.as_ref() {
                 self.check_sample_rate("output", asbd.mSampleRate)?;
             }
-            let effective_outputs = out_accepted
-                .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-                .unwrap_or(self.channels.outputs);
+            let effective_outputs = match out_accepted.as_ref() {
+                Ok(asbd) => accepted_layout("output", asbd.mChannelsPerFrame)?,
+                Err(_) => self.channels.outputs,
+            };
 
             let mut effective_inputs = self.channels.inputs;
             if self.channels.has_input {
@@ -229,9 +230,10 @@ impl StreamConfig {
                 if let Ok(asbd) = in_accepted.as_ref() {
                     self.check_sample_rate("input", asbd.mSampleRate)?;
                 }
-                effective_inputs = in_accepted
-                    .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-                    .unwrap_or(self.channels.inputs);
+                effective_inputs = match in_accepted.as_ref() {
+                    Ok(asbd) => accepted_layout("input", asbd.mChannelsPerFrame)?,
+                    Err(_) => self.channels.inputs,
+                };
             }
 
             AuBusLayout {
@@ -397,4 +399,10 @@ mod tests {
         // One hertz off is already 20x the tolerance window: rejected.
         assert!(config.check_sample_rate("output", 48_001.0).is_err());
     }
+}
+
+/// The layout of a bus whose stream format the AU accepted with `channels`
+/// channels per frame, or [`AuError::BusTooWide`] when no layout holds that.
+fn accepted_layout(scope: &'static str, channels: u32) -> Result<ChannelLayout> {
+    ChannelLayout::try_from(channels).map_err(|_| AuError::BusTooWide { scope, channels })
 }

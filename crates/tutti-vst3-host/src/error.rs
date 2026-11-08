@@ -69,6 +69,18 @@ pub enum Vst3Error {
         code: i32,
     },
 
+    /// An audio bus reports a channel count no layout holds (negative, or
+    /// above `u16::MAX`). Refused at load, naming the bus.
+    #[error("The plugin's audio {direction} bus {index} reports {channels} channels")]
+    BusTooWide {
+        /// `"input"` or `"output"`.
+        direction: &'static str,
+        /// The bus index within its direction.
+        index: i32,
+        /// The raw `channelCount` the plugin reported.
+        channels: i32,
+    },
+
     /// Operation requires the plugin to be in the active (processing) state.
     #[error("Plugin is not active")]
     NotActive,

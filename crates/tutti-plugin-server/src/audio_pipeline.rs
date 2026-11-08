@@ -839,8 +839,14 @@ mod tests {
         Meta {
             descriptor: PluginDescriptor::default(),
             loaded: LoadedPlugin {
-                inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
-                outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
+                inputs: inputs
+                    .iter()
+                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .collect(),
+                outputs: outputs
+                    .iter()
+                    .map(|&c| ChannelLayout::try_from(c).expect("a test bus is narrow"))
+                    .collect(),
                 latency_samples: Samples::ZERO,
                 tail: PluginTail::Unknown,
                 // This fixture is about bus widths; no capability is claimed,

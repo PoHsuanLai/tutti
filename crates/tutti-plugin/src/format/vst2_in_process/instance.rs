@@ -239,7 +239,11 @@ impl Instance {
     #[cfg(test)]
     pub(super) fn lose(&mut self) {
         let (processor, controller) = self.halves.take().expect("the plugin is not lost");
-        let Ok(loaded) = Vst2Loaded::deactivate(&main_thread(), processor, controller) else {
+        let Ok(loaded) = Vst2Loaded::deactivate(
+            &MainThread::claim().expect("one test, one process"),
+            processor,
+            controller,
+        ) else {
             panic!("the halves are a pair");
         };
         self.lost = Some(loaded);

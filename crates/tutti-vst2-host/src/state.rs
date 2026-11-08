@@ -91,7 +91,7 @@ pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
 
 impl Vst2Loaded {
     /// Captures the plugin's current state as a byte blob that
-    /// [`write_state`](Self::write_state) can restore.
+    /// `write_state` can restore.
     ///
     /// Uses the plugin's own chunk format (`effGetChunk`) when it declares
     /// `effFlagsProgramChunks` and returns a non-empty chunk; otherwise saves

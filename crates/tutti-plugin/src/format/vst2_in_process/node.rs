@@ -340,7 +340,12 @@ impl InProcessVst2Client {
 /// `tests/vst2_in_process_params.rs`.
 #[cfg(test)]
 mod owed_tests {
-    use super::main_thread;
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::sync::atomic::Ordering;
@@ -505,11 +510,4 @@ mod owed_tests {
         assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-#[cfg(test)]
-fn main_thread() -> tutti_plugin_types::MainThread {
-    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

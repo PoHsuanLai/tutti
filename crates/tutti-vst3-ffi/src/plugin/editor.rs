@@ -163,6 +163,8 @@ impl Plugin {
     pub fn run_editor_loop_iteration(&self, main: &MainThread) {
         #[cfg(target_os = "linux")]
         self.module.run_loop().run_iteration(main);
+        #[cfg(not(target_os = "linux"))]
+        let _ = main;
     }
 
     /// What the run loop has registered and fired.

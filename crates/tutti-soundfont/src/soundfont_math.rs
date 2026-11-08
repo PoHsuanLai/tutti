@@ -9,7 +9,16 @@ pub(crate) struct SoundFontMath {}
 
 impl SoundFontMath {
     pub(crate) const HALF_PI: f32 = consts::PI / 2_f32;
+    /// The level (-60 dB) below which a voice's envelope is dropped: tutti's
+    /// threshold, not the spec's. A release time is the time to -100 dB, so a
+    /// released voice is dropped at 0.6 of it. `LOG_NON_AUDIBLE` is its natural
+    /// log.
     pub(crate) const NON_AUDIBLE: f32 = 1.0e-3_f32;
+    /// The natural-log fall of a 100 dB amplitude change: `100 / 20 * ln 10`.
+    /// The volume envelope's decay and release times are the time to fall this
+    /// far (SF2 2.04 section 8.1.2, generators 36 and 38: "a 100% change", the
+    /// time "until 100dB attenuation were reached"), at a constant dB per second.
+    pub(crate) const HUNDRED_DB_NEPERS: f64 = 11.512_925_464_970_229;
     pub(crate) const LOG_NON_AUDIBLE: f32 = -6.907_755_4_f32;
 
     pub(crate) fn max(x: f32, y: f32) -> f32 {

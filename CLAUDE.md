@@ -291,7 +291,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  depends on `tutti-ump` alone
   tutti-voicing  what a note-driven instrument decides before it makes sound, as one
                  pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
-                 (`Start`, `Retarget`, `Release`, `Cut`, `Retune`) over channel state, the
+                 (`Start`, `Retarget`, `Release`, `Damp`, `Cut`, `Retune`) over channel state, the
                  note table and the note gate (`Holds`), with the differences between
                  instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
                  allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and

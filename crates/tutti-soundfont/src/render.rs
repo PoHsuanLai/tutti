@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the render grid follows rustysynth's synthesizer_settings.rs (hz, block_len).
+
 //! The grid the voices render on.
 //!
 //! A voice renders in chunks of [`Render::BLOCK`] frames: its envelopes, LFOs,

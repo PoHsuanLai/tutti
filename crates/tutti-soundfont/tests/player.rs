@@ -4,7 +4,7 @@
 //! Ported from the tests of `tutti-rustysynth`'s `Synthesizer`, which this
 //! unit replaced: the same properties, now through the unit's message face.
 //! (Two properties went with the type they tested: the block size is no longer
-//! a setting, and the polyphony has no upper bound.)
+//! a setting, and the polyphony is 1 to 4096 where it was 8 to 256.)
 
 mod support;
 
@@ -39,15 +39,29 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
     }
 }
 
-// Mutation (run): letting a polyphony of 0 through leaves a core that can start
-// no voice, and fails the first assertion.
+// The polyphony is 1 to `Settings::MAX_POLYPHONY`: none is refused with its
+// value, one is enough, and a count that would overflow the pool's allocation
+// is refused instead of panicking in it.
+//
+// Mutation (run): letting a polyphony of 0 through fails the first assertion;
+// removing the upper bound panics with a capacity overflow on `usize::MAX` and
+// fails the last two.
 #[test]
-fn no_voices_is_refused_with_the_value_and_one_is_enough() {
+fn the_polyphony_is_one_to_the_maximum_and_nothing_else_is_tried() {
     let mut settings = Settings::new(RATE);
     settings.max_polyphony = 0;
     assert!(matches!(refused(settings), Error::PolyphonyOutOfRange(0)));
     settings.max_polyphony = 1;
     assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
+    settings.max_polyphony = Settings::MAX_POLYPHONY;
+    assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
+    for too_many in [Settings::MAX_POLYPHONY + 1, usize::MAX] {
+        settings.max_polyphony = too_many;
+        assert!(
+            matches!(refused(settings), Error::PolyphonyOutOfRange(n) if n == too_many),
+            "{too_many}"
+        );
+    }
 }
 
 #[test]

@@ -73,7 +73,8 @@ fn sustain_down_after_the_key_off_holds_nothing() {
 
 /// 9.2 lists CC 66 as "soft" and CC 67 as "sostenuto"; MIDI 1.0 numbers them
 /// the other way (66 sostenuto, 67 soft), and a keyboard sends MIDI's. The
-/// listing is an erratum in the spec's text, which this player does not copy:
+/// listing is an erratum in the spec's text, which this player does not copy (the
+/// owner decided so on 2026-11-08):
 /// CC 66 is the sostenuto here, and CC 67 holds nothing. The behaviour is the
 /// spec's: sostenuto holds the notes in key-on when it goes active; a note
 /// struck after it behaves normally; and what it holds stays held through the

@@ -12,14 +12,65 @@ pub(crate) struct RegionPair<'a> {
     pub(crate) instrument: &'a InstrumentRegion,
 }
 
+/// The range of a value generator, from the minimum and maximum columns of the
+/// generator summary (SF2 2.04 section 8.1.3). `None` for what is not summed
+/// into a voice's parameter: the address offsets (their range is the sample's),
+/// the ranges, the indexes, the sample modes and the instrument-only
+/// generators.
+fn limits(generator: GeneratorType) -> Option<(i32, i32)> {
+    use GeneratorType::*;
+    Some(match generator {
+        ModulationLfoToPitch
+        | VibratoLfoToPitch
+        | ModulationEnvelopeToPitch
+        | ModulationLfoToFilterCutoffFrequency
+        | ModulationEnvelopeToFilterCutoffFrequency => (-12000, 12000),
+        InitialFilterCutoffFrequency => (1500, 13500),
+        InitialFilterQ => (0, 960),
+        ModulationLfoToVolume => (-960, 960),
+        ChorusEffectsSend | ReverbEffectsSend => (0, 1000),
+        Pan => (-500, 500),
+        DelayModulationLfo
+        | DelayVibratoLfo
+        | DelayModulationEnvelope
+        | HoldModulationEnvelope
+        | DelayVolumeEnvelope
+        | HoldVolumeEnvelope => (-12000, 5000),
+        FrequencyModulationLfo | FrequencyVibratoLfo => (-16000, 4500),
+        AttackModulationEnvelope
+        | DecayModulationEnvelope
+        | ReleaseModulationEnvelope
+        | AttackVolumeEnvelope
+        | DecayVolumeEnvelope
+        | ReleaseVolumeEnvelope => (-12000, 8000),
+        SustainModulationEnvelope => (0, 1000),
+        KeyNumberToModulationEnvelopeHold
+        | KeyNumberToModulationEnvelopeDecay
+        | KeyNumberToVolumeEnvelopeHold
+        | KeyNumberToVolumeEnvelopeDecay => (-1200, 1200),
+        SustainVolumeEnvelope | InitialAttenuation => (0, 1440),
+        CoarseTune => (-120, 120),
+        FineTune => (-99, 99),
+        ScaleTuning => (0, 1200),
+        _ => return None,
+    })
+}
+
 impl<'a> RegionPair<'a> {
     pub(crate) fn new(preset: &'a PresetRegion, instrument: &'a InstrumentRegion) -> Self {
         Self { preset, instrument }
     }
 
+    /// The generator's value in a voice: the preset's added to the instrument's
+    /// (section 9.4), then replaced by the nearest value of its range when the
+    /// sum is out of it (section 10.5; the ranges are section 8.1.3's).
     fn gs(&self, generator: GeneratorType) -> i32 {
-        i32::from(self.preset.generator(generator))
-            + i32::from(self.instrument.generator(generator))
+        let sum = i32::from(self.preset.generator(generator))
+            + i32::from(self.instrument.generator(generator));
+        match limits(generator) {
+            Some((min, max)) => sum.clamp(min, max),
+            None => sum,
+        }
     }
 
     pub(crate) fn sample_start(&self) -> i32 {
@@ -259,6 +310,35 @@ mod tests {
         let default = pair(vec![], vec![]);
         let delay = with(&default, |p| p.delay_volume_envelope());
         assert!((delay - 2f32.powf(-10.0)).abs() < 1e-6, "{delay}");
+    }
+
+    /// SF2 2.04 sections 9.4 and 10.5: a sum of a preset and an instrument value
+    /// that is out of the generator's range (section 8.1.3) is replaced by the
+    /// nearest value of the range. A release of 8000 timecents (101.6 s, the
+    /// range's top) at both levels is 8000, not 16000; an attenuation of 1000
+    /// and 1000 centibels is the 1440 of the range (144 dB); a pan of -400 and
+    /// -400 is hard left, -500. A sum inside the range is not touched.
+    ///
+    /// Mutation (run): `gs` returning the bare sum fails all three rows.
+    #[test]
+    fn an_out_of_range_sum_is_replaced_by_the_nearest_value() {
+        let both = |generator, amount| pair(vec![(generator, amount)], vec![(generator, amount)]);
+        let font = both(generator::RELEASE_VOL_ENV, 8000);
+        let release = with(&font, |p| p.release_time());
+        assert!(
+            (release - 2f32.powf(8000.0 / 1200.0)).abs() < 1e-2,
+            "{release}"
+        );
+        let font = both(generator::INITIAL_ATTENUATION, 1000);
+        assert_eq!(with(&font, |p| p.initial_attenuation()), 144.0);
+        let font = both(17, -400);
+        assert_eq!(with(&font, |p| p.pan()), -50.0);
+        let font = pair(
+            vec![(generator::RELEASE_VOL_ENV, 1200)],
+            vec![(generator::RELEASE_VOL_ENV, 1200)],
+        );
+        let release = with(&font, |p| p.release_time());
+        assert!((release - 4.0).abs() < 1e-4, "inside the range: {release}");
     }
 
     /// The release is never shorter than 10 ms, whatever the generators sum to

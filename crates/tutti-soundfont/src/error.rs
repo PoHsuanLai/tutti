@@ -1,3 +1,7 @@
+// Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
+// MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: the errors follow rustysynth's error.rs.
+
 //! The crate's error type.
 
 use thiserror::Error;
@@ -22,6 +26,6 @@ pub enum Error {
     SampleRateOutOfRange(SampleRate),
 
     /// The unit was asked for no voices.
-    #[error("the polyphony must be at least 1 voice, but was {0}")]
+    #[error("the polyphony must be between 1 and 4096 voices, but was {0}")]
     PolyphonyOutOfRange(usize),
 }

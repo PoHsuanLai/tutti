@@ -91,7 +91,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// velocity (SF2 2.04 section 8.1.2, generators 43 and 44; section 9.4). The
 /// rules the SoundFont adds are named in the `player` module: polyphonic, a key
 /// struck again releases its earlier strike, a full pool gives up a released
-/// voice first and then the oldest, an exclusive class ends the other notes of
+/// voice first (the quietest of them) and then the oldest, an exclusive class ends the other notes of
 /// its class in its preset quickly (generator 57), and the pedals hold notes
 /// (section 9.2: CC 64 sustain; CC 66 sostenuto, as MIDI 1.0 numbers it).
 ///
@@ -185,7 +185,8 @@ impl SoundFontUnit {
     /// # Errors
     ///
     /// Returns [`Error::SampleRateOutOfRange`] or
-    /// [`Error::PolyphonyOutOfRange`] if `settings` is out of range.
+    /// [`Error::PolyphonyOutOfRange`] if `settings` is out of range (the rate
+    /// 16 to 192 kHz, the polyphony 1 to [`Settings::MAX_POLYPHONY`]).
     pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
         let player = Player::new(
             &soundfont,

@@ -18,6 +18,7 @@ use tutti_clap_ffi::GuiError;
 use tutti_clap_ffi::chars_to_string;
 #[cfg(unix)]
 use tutti_clap_ffi::{Extension, FdPoller};
+use tutti_plugin_types::MainThread;
 
 #[cfg(feature = "clap-extras")]
 fn menu_target(target: ContextMenuTarget) -> tutti_clap_ffi::MenuTarget {
@@ -70,13 +71,12 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin does not expose a GUI, if the
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize> {
-        self.assert_main_thread();
+    pub fn open_editor(
+        &mut self,
+        _main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize> {
         self.host_state
             .gui
             .window_destroyed
@@ -117,17 +117,12 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::EditorError`] if the plugin exposes no GUI, if it does not
     /// support a floating window, or if `create` fails.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
     pub fn open_floating_editor(
         &mut self,
+        _main: &MainThread,
         transient: Option<WindowHandle>,
         title: &std::ffi::CStr,
     ) -> Result<()> {
-        self.assert_main_thread();
         self.host_state
             .gui
             .window_destroyed
@@ -269,13 +264,15 @@ impl ClapLoaded {
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
     /// Skipping it leaked those resources for the instance's lifetime.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn close_editor(&mut self) {
-        self.assert_main_thread();
+    pub fn close_editor(&mut self, _main: &MainThread) {
+        self.destroy_editor();
+    }
+
+    /// [`close_editor`](Self::close_editor) without a token, for `Drop`, which
+    /// has none: the thread a drop runs on is the owner's. The per-format lane
+    /// that gives the plugin a main-thread handle makes this unreachable off the
+    /// main thread.
+    pub(crate) fn destroy_editor(&mut self) {
         if !self.flags.gui_created {
             return;
         }
@@ -369,13 +366,8 @@ impl ClapLoaded {
     ///
     /// `on_timer` is `[main-thread]` (`ext/timer-support.h`), and a UI
     /// framework's tick need not run on the thread that loaded the plugin.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn poll_timers(&mut self) -> usize {
-        self.poll_timers_at(std::time::Instant::now())
+    pub fn poll_timers(&mut self, main: &MainThread) -> usize {
+        self.poll_timers_at(main, std::time::Instant::now())
     }
 
     /// Like [`poll_timers`](Self::poll_timers), with the current time supplied
@@ -385,13 +377,7 @@ impl ClapLoaded {
     /// period restarts from the fire instant. An instant earlier than a timer's
     /// last fire is treated as not due. Useful for driving timers
     /// deterministically in tests; production code calls `poll_timers`.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn poll_timers_at(&mut self, now: std::time::Instant) -> usize {
-        self.assert_main_thread();
+    pub fn poll_timers_at(&mut self, _main: &MainThread, now: std::time::Instant) -> usize {
         if !self.plugin.has_on_timer() {
             // Nothing can fire, so nothing is due: the per-block pass need not
             // come back for these timers.
@@ -479,13 +465,7 @@ impl ClapLoaded {
     /// [`Self::poll_timers`]. A plugin reached here off-thread runs whatever
     /// deferred work it queued on the wrong thread, which tends to show up as a
     /// crash somewhere else entirely.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn on_main_thread(&mut self) -> &mut Self {
-        self.assert_main_thread();
+    pub fn on_main_thread(&mut self, _main: &MainThread) -> &mut Self {
         self.plugin.on_main_thread();
         self
     }
@@ -574,19 +554,16 @@ impl ClapLoaded {
     /// callbacks invoked.
     ///
     /// `on_fd` is `[main-thread]`.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
     #[cfg(unix)]
-    pub fn poll_posix_fds(&mut self) -> usize {
-        self.assert_main_thread();
+    pub fn poll_posix_fds(&mut self, main: &MainThread) -> usize {
         if self.scan_fds().is_none() {
             return 0;
         }
         let ready: Vec<i32> = self.work.ready_fds().iter().map(|&(fd, _)| fd).collect();
-        ready.into_iter().filter(|&fd| self.fire_fd(fd)).count()
+        ready
+            .into_iter()
+            .filter(|&fd| self.fire_fd(main, fd))
+            .count()
     }
 
     /// Polls the registered descriptors without calling the plugin: fills
@@ -614,8 +591,7 @@ impl ClapLoaded {
     /// is still registered (an earlier callback may have unregistered it).
     /// Returns whether the plugin was called.
     #[cfg(unix)]
-    pub(crate) fn fire_fd(&mut self, fd: i32) -> bool {
-        self.assert_main_thread();
+    pub(crate) fn fire_fd(&mut self, _main: &MainThread, fd: i32) -> bool {
         if !self.plugin.has_on_fd() {
             return false;
         }
@@ -638,8 +614,7 @@ impl ClapLoaded {
     /// Calls the plugin's `on_timer` for timer `id` if it is still registered
     /// (an earlier callback may have unregistered it), and caches the next
     /// deadline. Returns whether the plugin was called.
-    pub(crate) fn fire_timer(&mut self, id: u32) -> bool {
-        self.assert_main_thread();
+    pub(crate) fn fire_timer(&mut self, _main: &MainThread, id: u32) -> bool {
         let on_timer = self.plugin.has_on_timer();
         let state = &self.host_state.timer;
         let registered = state

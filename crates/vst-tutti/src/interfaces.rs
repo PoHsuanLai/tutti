@@ -30,9 +30,14 @@ pub extern "C" fn process_replacing(
     samples: i32,
 ) {
     // Handle to the VST
+    // SAFETY: VST2 ABI: `effect` is the `AEffect` this library created (it is the one passed back to its own entry points) and the host serialises calls per instance. `effect` is not null-checked.
     let plugin = unsafe { (*effect).get_plugin() };
+    // SAFETY: as above; `user` holds the `PluginCache` installed at creation.
     let info = unsafe { (*effect).get_info() };
     let (input_count, output_count) = (info.inputs as usize, info.outputs as usize);
+    // SAFETY: VST2 ABI: the host passes `numInputs`/`numOutputs` channel pointers,
+    // each addressing `samples` elements, with distinct output buffers. The counts are
+    // the ones this plugin declared; `samples` is not checked for being negative.
     let mut buffer = unsafe {
         AudioBuffer::from_raw(
             input_count,
@@ -52,9 +57,14 @@ pub extern "C" fn process_replacing_f64(
     raw_outputs: *mut *mut f64,
     samples: i32,
 ) {
+    // SAFETY: as in `process_replacing`: the host passes this library's own `effect`.
     let plugin = unsafe { (*effect).get_plugin() };
+    // SAFETY: as above.
     let info = unsafe { (*effect).get_info() };
     let (input_count, output_count) = (info.inputs as usize, info.outputs as usize);
+    // SAFETY: VST2 ABI: the host passes `numInputs`/`numOutputs` channel pointers,
+    // each addressing `samples` elements, with distinct output buffers. The counts are
+    // the ones this plugin declared; `samples` is not checked for being negative.
     let mut buffer = unsafe {
         AudioBuffer::from_raw(
             input_count,
@@ -69,6 +79,7 @@ pub extern "C" fn process_replacing_f64(
 
 /// VST2.4 set parameter function.
 pub extern "C" fn set_parameter(effect: *mut AEffect, index: i32, value: f32) {
+    // SAFETY: VST2 ABI: `effect` is the `AEffect` this library created (it is the one passed back to its own entry points) and the host serialises calls per instance.
     unsafe { (*effect).get_params() }.set_parameter(index, value);
 }
 
@@ -77,6 +88,7 @@ pub extern "C" fn get_parameter(effect: *mut AEffect, index: i32) -> f32 {
     // The C ABI has no way to say "absent", and a plugin implementing this
     // trait always has a value — `None` here means the plugin did not override
     // `get_parameter` at all, for which 0.0 is the SDK's historical answer.
+    // SAFETY: VST2 ABI: `effect` is the `AEffect` this library created (it is the one passed back to its own entry points) and the host serialises calls per instance.
     unsafe { (*effect).get_params() }
         .get_parameter(index)
         .unwrap_or(0.0)
@@ -86,6 +98,9 @@ pub extern "C" fn get_parameter(effect: *mut AEffect, index: i32) -> f32 {
 ///
 /// String will be cut at `max` characters.
 fn copy_string(dst: *mut c_void, src: &str, max: usize) -> isize {
+    // SAFETY: NOT ESTABLISHED: `dst` is the host's buffer for the opcode and is assumed
+    // to hold at least `max` writable bytes (callers pass the SDK's fixed size); this
+    // safe fn does not and cannot check it. `src` is a live `&str`, read for `min(max, len)`.
     unsafe {
         use libc::{memcpy, memset};
         use std::cmp::min;
@@ -136,12 +151,21 @@ fn dispatch_inner(
     let opcode = OpCode::try_from(opcode);
     // Only query plugin or editor when needed to avoid creating multiple
     // concurrent mutable references to the same object.
+    // SAFETY: VST2 ABI: `effect` is the `AEffect` this library created and the host
+    // serialises calls per instance. Each call hands out a fresh `&mut`, and callers
+    // take only one at a time (see the comment above).
     let get_plugin = || unsafe { (*effect).get_plugin() };
+    // SAFETY: as for `get_plugin`.
     let get_editor = || unsafe { (*effect).get_editor() };
+    // SAFETY: as above; `params` is a shared `&Arc` into the `PluginCache`, which
+    // lives until `Shutdown`.
     let params = unsafe { (*effect).get_params() };
 
     match opcode {
         Ok(OpCode::Initialize) => get_plugin().init(),
+        // SAFETY: `effClose` arrives once per instance; `effect` was made by
+        // `Box::into_raw` in `VSTPluginMain`, so it is freed exactly once, after its
+        // contents. Nothing in this arm uses `params` or the plugin afterwards.
         Ok(OpCode::Shutdown) => unsafe {
             (*effect).drop_plugin();
             drop(Box::from_raw(effect))
@@ -265,6 +289,8 @@ fn dispatch_inner(
             chunks.shrink_to_fit();
             let len = chunks.len() as isize; // eventually we should be using ffi::size_t
 
+            // SAFETY: VST2 ABI: for `effGetChunk`, `ptr` is the host's `void**` out-param.
+            // The data is then leaked below so the pointer stays valid; not null-checked.
             unsafe {
                 *(ptr as *mut *mut c_void) = chunks.as_ptr() as *mut c_void;
             }
@@ -273,6 +299,8 @@ fn dispatch_inner(
             return len;
         }
         Ok(OpCode::SetData) => {
+            // SAFETY: VST2 ABI: for `effSetChunk`, `ptr` addresses `value` bytes owned by
+            // the host for the call. Not checked for null or a negative `value`.
             let chunks = unsafe { slice::from_raw_parts(ptr as *mut u8, value as usize) };
 
             // VST 2.4: `effSetChunk` returns 1 when the plugin accepted the
@@ -288,6 +316,8 @@ fn dispatch_inner(
         }
 
         Ok(OpCode::ProcessEvents) => {
+            // SAFETY: VST2 ABI: for `effProcessEvents`, `ptr` is a valid `VstEvents` for the
+            // call. Not checked for null.
             get_plugin().process_events(unsafe { &*(ptr as *const api::Events) });
         }
         Ok(OpCode::CanBeAutomated) => return params.can_be_automated(index) as isize,
@@ -301,6 +331,8 @@ fn dispatch_inner(
 
         Ok(OpCode::GetInputInfo) => {
             if index >= 0 && index < get_plugin().get_info().inputs {
+                // SAFETY: VST2 ABI: for `effGetInputProperties`, `ptr` is a host-owned
+                // `VstPinProperties` to fill. Not checked for null.
                 unsafe {
                     let ptr = ptr as *mut api::ChannelProperties;
                     *ptr = get_plugin().get_input_info(index).into();
@@ -309,6 +341,8 @@ fn dispatch_inner(
         }
         Ok(OpCode::GetOutputInfo) => {
             if index >= 0 && index < get_plugin().get_info().outputs {
+                // SAFETY: VST2 ABI: for `effGetOutputProperties`, `ptr` is a host-owned
+                // `VstPinProperties` to fill. Not checked for null.
                 unsafe {
                     let ptr = ptr as *mut api::ChannelProperties;
                     *ptr = get_plugin().get_output_info(index).into();
@@ -401,9 +435,11 @@ fn dispatch_inner(
         Ok(OpCode::SetPrecision) => get_plugin().set_precision(value != 0),
 
         Ok(OpCode::GetNumMidiInputs) => {
+            // SAFETY: as for `params` above: `user` is the live `PluginCache`.
             return unsafe { (*effect).get_info() }.midi_inputs as isize;
         }
         Ok(OpCode::GetNumMidiOutputs) => {
+            // SAFETY: as for `params` above: `user` is the live `PluginCache`.
             return unsafe { (*effect).get_info() }.midi_outputs as isize;
         }
 
@@ -469,6 +505,8 @@ pub fn host_dispatch(
             return copy_string(ptr, &host.get_info().2, MAX_PRODUCT_STR_LEN);
         }
         Ok(OpCode::ProcessEvents) => {
+            // SAFETY: VST2 ABI: for `audioMasterProcessEvents`, `ptr` is the plugin's
+            // `VstEvents`, valid for the call. Not checked for null.
             host.process_events(unsafe { &*(ptr as *const api::Events) });
         }
 
@@ -540,5 +578,7 @@ pub fn host_dispatch(
 fn read_string(ptr: *mut c_void) -> String {
     use std::ffi::CStr;
 
+    // SAFETY: NOT ESTABLISHED: `ptr` is assumed to be a non-null, NUL-terminated C
+    // string from the host/plugin; this safe fn checks neither (some callers check null).
     String::from_utf8_lossy(unsafe { CStr::from_ptr(ptr as *mut c_char).to_bytes() }).into_owned()
 }

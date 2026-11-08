@@ -5,6 +5,7 @@
 // top of this file is what kept those bugs invisible.
 //
 // The remaining allows are narrow and each has a reason:
+#![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![allow(missing_docs)]
 // Elided-lifetime style across a 2021-edition port of a 2018-edition crate.
 #![allow(mismatched_lifetime_syntaxes)]
@@ -243,6 +244,8 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
     let editor = plugin.get_editor();
 
     // Update AEffect in place
+    // SAFETY: `raw_effect` came from `Box::into_raw` just above, so it is non-null,
+    // aligned and uniquely owned here.
     let effect = unsafe { &mut *raw_effect };
     effect.numPrograms = info.presets;
     effect.numParams = info.parameters;
@@ -424,6 +427,7 @@ mod tests {
         let aeffect = VSTPluginMain(pass_callback);
         assert!(!aeffect.is_null());
 
+        // SAFETY: `aeffect` was installed by this library and is dropped exactly once.
         unsafe { (*aeffect).drop_plugin() };
 
         // Assert that the VST is shut down and dropped.
@@ -440,6 +444,7 @@ mod tests {
         assert!(!aeffect.is_null());
 
         // Make sure this doesn't crash.
+        // SAFETY: `aeffect` was installed by this library and is dropped exactly once.
         unsafe { (*aeffect).drop_plugin() };
     }
 
@@ -448,6 +453,7 @@ mod tests {
         let aeffect = VSTPluginMain(pass_callback);
         assert!(!aeffect.is_null());
 
+        // SAFETY: `aeffect` was installed by this library and nothing else accesses it.
         let plugin = unsafe { (*aeffect).get_plugin() };
         // Assert that deref works correctly.
         assert!(plugin.get_info().name == "Test Plugin");
@@ -471,6 +477,8 @@ mod tests {
             };
         }
 
+        // SAFETY: `VSTPluginMain` returns the leaked `Box<AEffect>`; `pass_callback`
+        // reports a VST version, so it is non-null and uniquely used by this test.
         let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
 
         assert_eq!(aeffect.magic, VST_MAGIC);
@@ -509,6 +517,8 @@ mod tests {
     fn edit_get_rect_reuses_one_buffer_rather_than_leaking_per_call() {
         use crate::plugin::OpCode;
 
+        // SAFETY: `VSTPluginMain` returns the leaked `Box<AEffect>`; `pass_callback`
+        // reports a VST version, so it is non-null and uniquely used by this test.
         let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
         let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
 
@@ -565,6 +575,8 @@ mod tests {
         use crate::editor::Rect;
         use crate::plugin::OpCode;
 
+        // SAFETY: `VSTPluginMain` returns the leaked `Box<AEffect>`; `pass_callback`
+        // reports a VST version, so it is non-null and uniquely used by this test.
         let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
         let dispatch = aeffect.dispatcher.expect("dispatcher must be installed");
 
@@ -582,6 +594,8 @@ mod tests {
         }
         assert!(!out.is_null());
 
+        // SAFETY: `out` is non-null (asserted) and points at the plugin's thread-local
+        // `Rect`, written on this thread and still live.
         let rect = unsafe { *out };
         assert_eq!((rect.left, rect.top), (10, 20), "origin");
         assert_eq!(

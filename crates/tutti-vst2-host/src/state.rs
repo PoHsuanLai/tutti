@@ -103,7 +103,11 @@ impl Vst2Loaded {
     ///
     /// Returns [`Vst2Error::StateError`] if the plugin's chunk save fails, or if
     /// it declares parameters but exposes no `getParameter` to read them.
-    pub(crate) fn read_state(&self) -> Result<Vec<u8>> {
+    ///
+    /// Takes no [`MainThread`](tutti_plugin_types::MainThread): the in-process
+    /// backend serializes a project, or forks a session, from whichever thread
+    /// does that, behind its own lock.
+    pub fn read_state(&self) -> Result<Vec<u8>> {
         let info = self.handle.instance.get_info();
 
         if info.preset_chunks {

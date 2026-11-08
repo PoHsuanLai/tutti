@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tutti_plugin_types::MainThread;
 
 use parking_lot::Mutex;
 use tutti_graph::{Cx, Offset};
@@ -276,14 +277,18 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: f64) {
 /// The rate is claimed out of the cell before the lock is tried and put back if
 /// the lock is unavailable — but only if nothing newer arrived meanwhile, so a
 /// stale rate cannot overwrite a fresh one.
-pub(super) fn drain_sample_rate(cell: &AtomicU64, inner: &Mutex<Instance>) -> bool {
+pub(super) fn drain_sample_rate(
+    main: &MainThread,
+    cell: &AtomicU64,
+    inner: &Mutex<Instance>,
+) -> bool {
     let bits = cell.swap(NO_PENDING_RATE, Ordering::Relaxed);
     if bits == NO_PENDING_RATE {
         return false;
     }
     match inner.try_lock() {
         Some(mut instance) => {
-            instance.set_sample_rate(f64::from_bits(bits));
+            instance.set_sample_rate(main, f64::from_bits(bits));
             true
         }
         None => {
@@ -406,9 +411,16 @@ impl InProcessVst2Client {
             RateDelivery::Parked => queue_sample_rate(&self.pending_sample_rate, sample_rate),
             // Only on a change: the fork was loaded at `self.sample_rate`, and
             // a redundant bracket makes a plugin reallocate its buffers.
-            RateDelivery::InPrepare if changed => {
-                self.inner.lock().set_sample_rate(sample_rate);
-            }
+            // A fork's `prepare` runs on the main thread its gather was called
+            // on (`fork.rs`); `prepare` has no token to be handed, so it asks
+            // for the proof. Off the main thread the bracket is not run: the
+            // plugin keeps the rate it was loaded at, and the log says so.
+            RateDelivery::InPrepare if changed => match MainThread::current() {
+                Some(main) => self.inner.lock().set_sample_rate(&main, sample_rate),
+                None => tracing::warn!(
+                    "a forked VST2 plugin was prepared off the main thread; it keeps its rate"
+                ),
+            },
             RateDelivery::InPrepare => {}
         }
     }

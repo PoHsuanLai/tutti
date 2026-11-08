@@ -381,10 +381,11 @@ fn load_n(count: usize) -> Option<(Vec<GraphUnit>, Vec<tutti_plugin::handles::Pl
         // dispatch on the extension itself. `available_effects` has already
         // filtered to what is installed, and the whole function is cfg'd on the
         // formats `EFFECTS` can name.
-        let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
-            let handle = plugin.handle().clone();
-            (GraphUnit::from_plugin(plugin), handle)
-        });
+        let built = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), path, SAMPLE_RATE)
+            .map(|plugin| {
+                let handle = plugin.handle().clone();
+                (GraphUnit::from_plugin(plugin), handle)
+            });
         match built {
             Ok((unit, handle)) => {
                 units.push(unit);
@@ -1555,10 +1556,12 @@ fn load_passthrough(path: &str) -> Option<(GraphUnit, tutti_plugin::handles::Plu
         eprintln!("{path} not installed — skipping");
         return None;
     }
-    let built = tutti_plugin::catalog::Plugin::open(path, SAMPLE_RATE).map(|plugin| {
-        let handle = plugin.handle().clone();
-        (GraphUnit::from_plugin(plugin), handle)
-    });
+    let built = tutti_plugin::catalog::Plugin::open(Some(&main_thread()), path, SAMPLE_RATE).map(
+        |plugin| {
+            let handle = plugin.handle().clone();
+            (GraphUnit::from_plugin(plugin), handle)
+        },
+    );
     Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
 }
 
@@ -1717,4 +1720,10 @@ fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64)
         }
     }
     best
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

@@ -3,6 +3,7 @@
 use super::*;
 use crate::types::PlainRange;
 use tutti_plugin_types::AutomationMode;
+use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     // VST3 enumerates parameters by index (`getParameterInfo`) and addresses
@@ -52,8 +53,8 @@ impl Vst3Loaded {
     /// A parameter whose descriptor the plugin declines to hand over is
     /// skipped rather than substituted, so the list is short instead of
     /// carrying an invented entry.
-    pub fn parameter_list(&self) -> Vec<ParameterInfo> {
-        let units = self.units();
+    pub fn parameter_list(&self, main: &MainThread) -> Vec<ParameterInfo> {
+        let units = self.units(main);
         let groups = unit_names(&units);
 
         (0..self.parameter_count())
@@ -191,17 +192,12 @@ impl Vst3Loaded {
     /// The host does **not** call this automatically anywhere — like JUCE, it's
     /// exposed for a caller-driven migration flow to use. Must run on the
     /// main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn remap_param_id(
         &self,
+        _main: &MainThread,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: ParamId,
     ) -> Option<ParamId> {
-        tutti_plugin_types::assert_main_thread();
         self.plugin
             .compatible_param_id(plugin_to_replace_uid, old_param_id.get())
             .map(ParamId::new)
@@ -214,13 +210,12 @@ impl Vst3Loaded {
     ///
     /// Lets a host bind a generic "mix" knob to whatever parameter the plugin
     /// uses for it, without hard-coding parameter indices. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<ParamId> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn param_id_for_function_name(
+        &self,
+        _main: &MainThread,
+        unit_id: i32,
+        function_name: &str,
+    ) -> Option<ParamId> {
         self.plugin
             .param_id_for_function_name(unit_id, function_name)
             .map(ParamId::new)
@@ -235,13 +230,12 @@ impl Vst3Loaded {
     ///
     /// The host allocates the list; the plugin fills the note-expression id each
     /// physical control is wired to. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn physical_ui_mapping(
+        &self,
+        _main: &MainThread,
+        bus_index: i32,
+        channel: i16,
+    ) -> Vec<(u32, u32)> {
         self.plugin.physical_ui_mapping(bus_index, channel)
     }
 
@@ -252,19 +246,14 @@ impl Vst3Loaded {
     ///
     /// Hardware controller surfaces use this to lay out a plugin's parameters.
     /// Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn xml_representation(
         &self,
+        _main: &MainThread,
         vendor: &str,
         name: &str,
         version: &str,
         host: &str,
     ) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
         self.plugin.xml_representation(vendor, name, version, host)
     }
 
@@ -275,13 +264,7 @@ impl Vst3Loaded {
     /// (e.g. snapping a knob to the automation lane while reading). No-op if the
     /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
     /// was delivered. Must run on the main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn apply_automation_state(&mut self, mode: AutomationMode) -> bool {
-        tutti_plugin_types::assert_main_thread();
+    pub fn apply_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) -> bool {
         self.plugin
             .set_automation_state(tutti_vst3_ffi::automation_state::from_mode(mode))
     }

@@ -119,7 +119,7 @@ struct Loaded {
 fn load() -> Loaded {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let (unit, handle) = in_process_vst2_client(&path, SAMPLE_RATE)
+    let (unit, handle) = in_process_vst2_client(&main_thread(), &path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of reference plugin at {path:?}: {e:?}"));
     Loaded { unit, handle, path }
 }
@@ -269,7 +269,7 @@ fn a_rate_change_keeps_the_render_mode() {
     assert!(loaded.handle.set_render_mode(RenderMode::Offline));
     drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
     // The drain point of the rate the audio side parked.
-    loaded.handle.editor_idle();
+    loaded.handle.editor_idle(&main_thread());
     drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
     let cap = read_capture(&loaded.path);
 
@@ -279,4 +279,10 @@ fn a_rate_change_keeps_the_render_mode() {
         cap.process_level, LEVEL_OFFLINE,
         "the rate change re-activated the plugin in realtime mode"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

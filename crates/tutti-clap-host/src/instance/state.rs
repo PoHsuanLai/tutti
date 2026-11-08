@@ -6,6 +6,7 @@ use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
 use std::path::Path;
 use tutti_clap_ffi::{CallError, Extension};
+use tutti_plugin_types::MainThread;
 
 impl ClapLoaded {
     /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
@@ -13,13 +14,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `save` callback returns failure.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub(crate) fn read_state(&self) -> Result<Vec<u8>> {
-        self.assert_main_thread();
+    pub(crate) fn read_state(&self, _main: &MainThread) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
         match self.plugin.state_save(&mut stream) {
             Ok(()) => Ok(stream.into_data()),
@@ -41,13 +36,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `load` callback rejects the data.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub(crate) fn write_state(&mut self, data: &[u8]) -> Result<()> {
-        self.assert_main_thread();
+    pub(crate) fn write_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -85,13 +74,7 @@ impl ClapLoaded {
     /// silently answer a *preset* request with a project-context blob tagged
     /// `Ok`; the two legitimately differ, so that writes the wrong bytes into
     /// a `.preset` and surfaces only when someone loads it.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
-        self.assert_main_thread();
+    pub fn state_with_context(&self, main: &MainThread, context: StateContext) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
         match self
             .plugin
@@ -103,7 +86,7 @@ impl ClapLoaded {
             ))),
             // A plugin without the context extension, or without its `save`,
             // is asked for its plain state instead.
-            Err(CallError::NoExtension | CallError::NoFunction) => self.read_state(),
+            Err(CallError::NoExtension | CallError::NoFunction) => self.read_state(main),
         }
     }
 
@@ -122,13 +105,12 @@ impl ClapLoaded {
     /// [`Self::state_with_context`]): retrying a rejected blob through the
     /// context-free `load` either gets `Ok` on state the plugin said was wrong
     /// for this context, or an error naming the wrong entry point.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
-        self.assert_main_thread();
+    pub fn set_state_with_context(
+        &mut self,
+        main: &MainThread,
+        data: &[u8],
+        context: StateContext,
+    ) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -141,7 +123,7 @@ impl ClapLoaded {
             Err(CallError::Failed | CallError::WrongState) => Err(ClapError::StateError(format!(
                 "Context-aware load failed for {context:?}"
             ))),
-            Err(CallError::NoExtension | CallError::NoFunction) => self.write_state(data),
+            Err(CallError::NoExtension | CallError::NoFunction) => self.write_state(main, data),
         }
     }
 
@@ -169,13 +151,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin doesn't implement preset
     /// loading, the path isn't valid UTF-8, or the plugin rejects the load.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
-    pub fn load_preset_file(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        self.assert_main_thread();
+    pub fn load_preset_file(&mut self, _main: &MainThread, path: impl AsRef<Path>) -> Result<()> {
         match self.plugin.preset_load_file(path.as_ref()) {
             Ok(()) => Ok(()),
             Err(CallError::NoExtension) => Err(ClapError::StateError(

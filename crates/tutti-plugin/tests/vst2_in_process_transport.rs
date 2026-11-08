@@ -98,7 +98,7 @@ fn read_capture() -> ProcessCapture {
 
 fn load() -> (InProcessVst2Client, PluginHandle) {
     let path = probe_path::probe_path();
-    in_process_vst2_client(path, SAMPLE_RATE)
+    in_process_vst2_client(&main_thread(), path, SAMPLE_RATE)
         .unwrap_or_else(|e| panic!("in-process load of the probe at {path:?}: {e:?}"))
 }
 
@@ -369,8 +369,12 @@ fn the_live_node_tells_the_plugin_its_meter() {
 fn plugin_set_meter_reaches_an_in_process_vst2() {
     let _lock = lock_probe();
     reset_probe();
-    let plugin = tutti_plugin::catalog::Plugin::open(probe_path::probe_path(), SAMPLE_RATE)
-        .expect("the probe opens");
+    let plugin = tutti_plugin::catalog::Plugin::open(
+        Some(&main_thread()),
+        probe_path::probe_path(),
+        SAMPLE_RATE,
+    )
+    .expect("the probe opens");
     let handle = plugin.handle().clone();
     assert!(plugin.set_meter(seven_eight()), "a VST2 takes the meter");
     let (mut r, _) = rig(plugin, 0);
@@ -438,4 +442,10 @@ fn a_live_node_is_told_project_time_the_midi_clock_and_the_host_clock() {
         last_ns = cap.time_nanoseconds;
     }
     drop(handle);
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

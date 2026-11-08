@@ -1,19 +1,14 @@
 //! Bus configuration: the layout read back from the component, topologies, latency and tail.
 
 use super::*;
+use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     /// Reads the current processing latency directly from
     /// `IAudioProcessor::getLatencySamples`. Call this at load time and
     /// whenever [`RestartOutcome::latency_changed`] is set to get the fresh
     /// value for PDC.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn latency_samples(&self) -> u32 {
-        tutti_plugin_types::assert_main_thread();
+    pub fn latency_samples(&self, _main: &MainThread) -> u32 {
         self.plugin.latency_samples()
     }
 
@@ -24,26 +19,14 @@ impl Vst3Loaded {
     /// effectively unbounded one) both reach the caller as the plugin stated
     /// them. `PluginTail::from_vst3_samples` is what turns those into the shared
     /// vocabulary; this stays at the ABI's own type so nothing is decided here.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn tail_samples(&self) -> u32 {
-        tutti_plugin_types::assert_main_thread();
+    pub fn tail_samples(&self, _main: &MainThread) -> u32 {
         self.plugin.tail_samples()
     }
 
     /// Queries the plugin's offline/prefetch processing support via
     /// `IPrefetchableSupport`. `None` if the plugin doesn't implement the
     /// interface. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn prefetchable_support(&self) -> Option<PrefetchSupport> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn prefetchable_support(&self, _main: &MainThread) -> Option<PrefetchSupport> {
         self.plugin
             .prefetchable_support()
             .map(PrefetchSupport::from_raw)
@@ -55,18 +38,13 @@ impl Vst3Loaded {
     /// compensate. `dir` is the VST3 `kInput` / `kOutput` bus-direction constant.
     /// Returns `true` if delivered; no-op if the plugin doesn't implement the
     /// interface. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn set_audio_presentation_latency(
         &mut self,
+        _main: &MainThread,
         dir: i32,
         bus_index: i32,
         latency_samples: u32,
     ) -> bool {
-        tutti_plugin_types::assert_main_thread();
         self.plugin
             .set_audio_presentation_latency(dir, bus_index, latency_samples)
     }

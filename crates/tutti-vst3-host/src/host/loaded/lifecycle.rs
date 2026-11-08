@@ -1,6 +1,7 @@
 //! Loading, initialization and the plugin's requests and notifications.
 
 use super::*;
+use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     /// Reads a plugin's metadata without initializing it.
@@ -154,16 +155,11 @@ impl Vst3Loaded {
     ///
     /// Must be called on the main thread; not while inside
     /// [`Vst3Processor::process`](crate::Vst3Processor::process).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn poll_plugin_notifications(
         &mut self,
+        _main: &MainThread,
         mut on_event: impl FnMut(PluginNotification),
     ) -> RestartOutcome {
-        tutti_plugin_types::assert_main_thread();
         // `kIoChanged` is deliberately NOT acted on here. The spec requires
         // deactivate → re-ask → reactivate (`ivsteditcontroller.h:125-127`),
         // and this method holds a `&mut Vst3Loaded`, which cannot deactivate
@@ -241,13 +237,7 @@ impl Vst3Loaded {
     /// `kMidiCCAssignmentChanged` restart, then disarm.
     ///
     /// No observable effect if the plugin doesn't implement `IMidiLearn`.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn arm_midi_learn(&mut self, armed: bool) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn arm_midi_learn(&mut self, _main: &MainThread, armed: bool) {
         self.midi_learn.arm(armed);
     }
 
@@ -339,13 +329,7 @@ impl Vst3Loaded {
     /// and unit news stay for
     /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) or
     /// [`discard_notifications`](Self::discard_notifications).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn take_requests(&self, out: &mut Vec<Request>) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
@@ -360,13 +344,7 @@ impl Vst3Loaded {
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
     /// [`Request::MidiCcAssignmentChanged`]. Allocates.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn rebuild_midi_cc_mapping(&mut self) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn rebuild_midi_cc_mapping(&mut self, _main: &MainThread) {
         self.midi_cc
             .publish(MidiCcCell(MidiCcMapping::query(&self.plugin)));
         self.midi_cc.reclaim();

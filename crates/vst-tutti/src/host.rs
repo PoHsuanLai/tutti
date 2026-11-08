@@ -445,7 +445,21 @@ impl fmt::Debug for PluginParametersInstance {
     }
 }
 
+// SAFETY: the only field is a pointer cell that is written once at construction and only
+// read afterwards, so the type itself holds no unsynchronised mutable state. What the
+// pointer reaches is the plugin's own `AEffect`, which stays live until `PluginInstance`
+// drops (`effClose`). NOT ESTABLISHED beyond that: VST2 does not make the plugin thread-safe
+// in general, and moving this value (and the `Arc` of it) to another thread lets safe code
+// call any dispatcher opcode there; the spec only asks for that to work for
+// `getParameter`/`setParameter` and the audio calls, and the host must keep the rest on one
+// thread.
 unsafe impl Send for PluginParametersInstance {}
+// SAFETY: NOT ESTABLISHED for every method. Shared access to the field is only reads of an
+// immutable pointer, which is fine. But `&PluginParametersInstance` also exposes the
+// `PluginParameters` methods that dispatch `changePreset`, preset names, `effGetChunk`/
+// `effSetChunk` and the like; VST2 allows concurrent calls from different threads only for
+// `getParameter`/`setParameter` (and their audio-thread peers), so those other methods are
+// sound under `Sync` only if the caller serialises them. Nothing here enforces that.
 unsafe impl Sync for PluginParametersInstance {}
 
 impl Drop for PluginInstance {
@@ -483,6 +497,10 @@ impl EditorInstance {
         if result == 0 || rect.is_null() {
             return None;
         }
+        // SAFETY: `rect` is non-null (checked above) and `effEditGetRect` returned non-zero, so
+        // per the VST2 contract the plugin set it to its own valid, aligned `ERect`; `Rect` is
+        // `Copy`, so this copies it out. Validity is the plugin's word and is not checked, and
+        // the plugin owns the memory (never freed here).
         Some(unsafe { *rect }) // TODO: Who owns rect? Who should free the memory?
     }
 }
@@ -629,6 +647,12 @@ impl<T: Host + Send + Sync + 'static> PluginLoader<T> {
     ///     `/Library/Audio/Plug-Ins/VST/iZotope Ozone 5.vst/Contents/MacOS/PluginHooksVST`
     pub fn load(path: &Path, host: Arc<T>) -> Result<PluginLoader<T>, PluginLoadError> {
         // Try loading the library at the given path
+        //
+        // SAFETY: loading a library runs its initialisers, which is inherent to hosting a
+        // plugin and trusts the file at `path`. `lib.get` asks for `VSTPluginMain` as the
+        // `PluginMain` fn type; that the exported symbol has that signature is the VST2 entry
+        // point ABI and cannot be checked. The copied fn pointer stays valid because `lib` is
+        // stored beside it in the loader (and `PluginInstance` never unloads it).
         unsafe {
             let lib = match Library::new(path) {
                 Ok(l) => l,
@@ -919,6 +943,9 @@ impl PluginInstance {
             host_ref: None,
         };
 
+        // SAFETY: `effect` is the non-null `AEffect*` just returned by the plugin's `main`
+        // (`PluginLoader::instance` rejects null before calling `new`), and the plugin keeps
+        // it live until `effClose`, which only runs when this instance drops.
         unsafe {
             let effect: &AEffect = &*effect;
             let flags = PluginFlags::from_bits_truncate(effect.flags);
@@ -1026,6 +1053,10 @@ impl PluginInstance {
 
         // Initialised either way: we zeroed it, and the plugin may have
         // overwritten it in place.
+        //
+        // SAFETY: every byte was zeroed before the plugin ran, so none is uninitialised; the
+        // only field with a restricted bit pattern (`arrangement_type`) was clamped to a valid
+        // discriminant above, and the rest are integers and byte arrays.
         unsafe { props.assume_init() }
     }
 
@@ -1266,6 +1297,8 @@ trait Dispatch {
         ptr: *mut c_void,
         opt: f32,
     ) -> isize {
+        // SAFETY: `get_effect` is the plugin's non-null `AEffect`, live until `effClose` on drop,
+        // so reading the `dispatcher` field is in bounds and initialised.
         let Some(dispatcher) = (unsafe { (*self.get_effect()).dispatcher }) else {
             panic!("Plugin was not loaded correctly.");
         };
@@ -1329,6 +1362,8 @@ impl Dispatch for PluginInstance {
 
 impl Dispatch for PluginParametersInstance {
     fn get_effect(&self) -> *mut AEffect {
+        // SAFETY: the cell is written once, in `PluginInstance::new`, before it is shared, and
+        // never afterwards, so this read cannot race a write.
         unsafe { *self.effect.get() }
     }
 }
@@ -1397,6 +1432,9 @@ unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Result<Vec<u8>, ChunkError> {
         warn!("plugin reported {len} bytes of chunk data but left the pointer null");
         return Err(ChunkError::NullBuffer(len));
     }
+    // SAFETY: `len > 0` and `ptr` is non-null here (both checked above), and the caller's
+    // contract (this fn's `# Safety`) is that `ptr` is readable for `len` bytes; `u8` has no
+    // alignment or validity requirement.
     Ok(unsafe { slice::from_raw_parts(ptr, len as usize) }.to_vec())
 }
 
@@ -1458,6 +1496,10 @@ impl RenderEntry {
         }
         let effect = self.effect;
         let samples = buffer.samples() as i32;
+        // SAFETY: `effect` is live for the holder's lifetime (type docs). The slot is read as
+        // an `Option` fn pointer and only called when `Some`. The buffer has at least the
+        // plugin's declared pin counts (checked above), each channel pointer addressing
+        // `samples` frames (`AudioBuffer` invariant), and the plugin's own ABI is trusted.
         unsafe {
             if let Some(replacing) = (*effect).processReplacing.filter(|_| self.can_replacing) {
                 replacing(
@@ -1509,6 +1551,8 @@ impl RenderEntry {
             panic!("Too few outputs in AudioBuffer");
         }
         let effect = self.effect;
+        // SAFETY: as for `process`: live `effect`, the `Option` slot is called only when `Some`,
+        // and the buffer has the declared pin counts with `samples` frames per channel.
         unsafe {
             let replacing = (*effect)
                 .processReplacingF64
@@ -2010,6 +2054,13 @@ impl<T: Float> HostBuffer<T> {
         let length = length.unwrap_or(0);
 
         // Construct AudioBuffer
+        //
+        // SAFETY: NOT ESTABLISHED for the lifetime. The first `input_arrays.len()` /
+        // `output_arrays.len()` slots of `self.inputs`/`self.outputs` were just set (the counts
+        // fit, checked above), each from a slice of `length` samples, and the output slices are
+        // distinct `&mut` so they do not alias. But `'a` only bounds the types `I`/`O`, not the
+        // borrows of `input_arrays`/`output_arrays`, so the returned buffer can outlive the
+        // data its pointers address; `from_raw` requires that it not.
         unsafe {
             AudioBuffer::from_raw(
                 input_arrays.len(),
@@ -2068,6 +2119,13 @@ extern "C" fn callback_wrapper<T: Host>(
     // AssertUnwindSafe: on a panic we return 0 and touch none of the captured
     // state again — the host is behind a shared reference and the raw pointers
     // are not re-read.
+    //
+    // SAFETY: the plugin calls this with the `effect` it got from `main`. A non-null `effect`
+    // is readable (VST2 ABI). `reserved1`, when non-zero, was set by `PluginLoader::instance`
+    // to a `Box<Arc<T>>` that the instance keeps alive until after `effClose`, and this
+    // callback is monomorphised for the same `T`; this assumes the plugin leaves `reserved1`
+    // zero until then, which is unchecked. Otherwise `LOAD_HOST` is either null (returns early)
+    // or points at the loader's `Arc<T>`, which outlives `main` (see `call_main`).
     let result = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
         // If the effect pointer is not null and the host pointer is not null, the plugin has
         // already been initialized
@@ -2174,6 +2232,7 @@ mod tests {
     fn undefined_channel_flag_bits_do_not_panic() {
         use crate::channels::ChannelInfo;
 
+        // SAFETY: `ChannelProperties` is `repr(C)` of byte arrays, an `i32` and a `repr(i32)` enum whose discriminant 0 (`Mono`) exists, so the all-zero bit pattern is a valid value.
         let mut props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
         // ACTIVE plus a pile of bits the SDK says nothing about.
         props.flags = api::ChannelFlags::ACTIVE.bits() | 0x7FF0_0000;
@@ -2189,6 +2248,7 @@ mod tests {
     fn zeroed_channel_properties_convert_cleanly() {
         use crate::channels::ChannelInfo;
 
+        // SAFETY: `ChannelProperties` is `repr(C)` of byte arrays, an `i32` and a `repr(i32)` enum whose discriminant 0 (`Mono`) exists, so the all-zero bit pattern is a valid value.
         let props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
         let _info = ChannelInfo::from(props);
     }
@@ -2205,16 +2265,19 @@ mod tests {
         //
         // `Ok(empty)`, not an error: the plugin answered, and the answer is
         // "nothing saved".
+        // SAFETY: `copy_chunk` reads through `ptr` only when `len > 0` and `ptr` is non-null; here `len <= 0` so it returns before any read.
         assert_eq!(unsafe { copy_chunk(ptr::null_mut(), 0) }, Ok(Vec::new()));
 
         // An error return. `-1 as usize` was `usize::MAX`.
         assert_eq!(
+            // SAFETY: `copy_chunk` reads through `ptr` only when `len > 0` and `ptr` is non-null; here `len <= 0` so it returns before any read.
             unsafe { copy_chunk(ptr::null_mut(), -1) },
             Err(ChunkError::Failed(-1))
         );
 
         // A plugin that sized the chunk but failed to hand back the buffer.
         assert_eq!(
+            // SAFETY: `copy_chunk` returns `NullBuffer` on a null `ptr` with `len > 0` before any read.
             unsafe { copy_chunk(ptr::null_mut(), 4096) },
             Err(ChunkError::NullBuffer(4096))
         );
@@ -2223,12 +2286,14 @@ mod tests {
         // length is what would be cast, and it must never reach `as usize`.
         let mut data = [1u8, 2, 3, 4];
         assert_eq!(
+            // SAFETY: `len` is negative, so `copy_chunk` returns before any read; `data` is a live 4-byte array regardless.
             unsafe { copy_chunk(data.as_mut_ptr(), -1) },
             Err(ChunkError::Failed(-1))
         );
 
         // The good case still copies.
         assert_eq!(
+            // SAFETY: `data` is a live local 4-byte array, so `ptr` is valid for reads of `len` = 4 bytes.
             unsafe { copy_chunk(data.as_mut_ptr(), 4) },
             Ok(vec![1, 2, 3, 4])
         );
@@ -2268,6 +2333,7 @@ mod tests {
             0
         }
 
+        // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
         let params = Arc::new(PluginParametersInstance {
@@ -2380,6 +2446,7 @@ mod tests {
             0
         }
 
+        // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
         let params = Arc::new(PluginParametersInstance {
@@ -2472,6 +2539,7 @@ mod tests {
             ANSWER.load(Ordering::SeqCst)
         }
 
+        // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         effect.dispatcher = Some(dispatch as DispatcherProc);
         let params = PluginParametersInstance {
@@ -2554,7 +2622,9 @@ mod tests {
     /// "no chunk state" and silently write a parameter snapshot instead.
     #[test]
     fn failed_chunk_save_is_distinguishable_from_an_empty_one() {
+        // SAFETY: `copy_chunk` reads through `ptr` only when `len > 0` and `ptr` is non-null; here `len <= 0` so it returns before any read.
         let empty = unsafe { copy_chunk(ptr::null_mut(), 0) };
+        // SAFETY: `copy_chunk` reads through `ptr` only when `len > 0` and `ptr` is non-null; here `len <= 0` so it returns before any read.
         let failed = unsafe { copy_chunk(ptr::null_mut(), -1) };
         assert_ne!(
             empty, failed,
@@ -2597,6 +2667,7 @@ mod tests {
         // per-field: every function slot is `Option` now, so an all-zero
         // `AEffect` would in fact be valid, but building one would assert far
         // less precisely than naming each slot that must read as absent.
+        // SAFETY: `Option<fn>` has the size of a pointer and null is its `None` niche, so the zero word is a valid `None`.
         let absent: Option<ProcessProc> = unsafe { std::mem::transmute(0usize) };
         assert!(
             absent.is_none(),
@@ -2604,9 +2675,11 @@ mod tests {
              guard in `process` is decorative and release builds jump to 0"
         );
 
+        // SAFETY: `Option<fn>` has the size of a pointer and null is its `None` niche, so the zero word is a valid `None`.
         let absent_f64: Option<ProcessProcF64> = unsafe { std::mem::transmute(0usize) };
         assert!(absent_f64.is_none());
 
+        // SAFETY: `Option<fn>` has the size of a pointer and null is its `None` niche, so the zero word is a valid `None`.
         let absent_dispatch: Option<DispatcherProc> = unsafe { std::mem::transmute(0usize) };
         assert!(
             absent_dispatch.is_none(),
@@ -2616,6 +2689,7 @@ mod tests {
 
         // A real pointer still reads as present — the guard rejects null, not
         // everything.
+        // SAFETY: `process_replacing` is an `extern "C"` fn of `ProcessProc`'s shape, so its address as a pointer-sized word is a valid `Some(ProcessProc)`; it is only compared, never called.
         let present: Option<ProcessProc> = unsafe {
             std::mem::transmute(crate::interfaces::process_replacing as *const () as usize)
         };
@@ -2637,8 +2711,10 @@ mod tests {
         // lets a plugin with `numParams == 0` leave these null, so an ordinary
         // parameterless effect reaches the same jump-to-zero.
         use crate::api::{GetParameterProc, SetParameterProc};
+        // SAFETY: `Option<fn>` has the size of a pointer and null is its `None` niche, so the zero word is a valid `None`.
         let absent_get: Option<GetParameterProc> = unsafe { std::mem::transmute(0usize) };
         assert!(absent_get.is_none());
+        // SAFETY: `Option<fn>` has the size of a pointer and null is its `None` niche, so the zero word is a valid `None`.
         let absent_set: Option<SetParameterProc> = unsafe { std::mem::transmute(0usize) };
         assert!(absent_set.is_none());
         assert_eq!(
@@ -2663,6 +2739,7 @@ mod tests {
     #[test]
     fn an_absent_parameter_accessor_is_not_a_real_zero() {
         // Every slot null: the plugin filled in nothing.
+        // SAFETY: `AEffect` is `repr(C)` of integers, floats, raw pointers and `Option` fn pointers, all valid when zero (null pointers, `None`).
         let mut effect: AEffect = unsafe { std::mem::zeroed() };
         let params = PluginParametersInstance {
             effect: UnsafeCell::new(&mut effect as *mut AEffect),

@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use vst::plugin::Plugin as _;
 
@@ -104,63 +105,68 @@ impl Control for Vst2Controller {
         Control::info(&**self)
     }
 
-    fn wiring(&self) -> LoadedPlugin {
-        Control::wiring(&**self)
+    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+        Control::wiring(&**self, main)
     }
 
-    fn parameters(&self) -> Vec<ParameterInfo> {
-        Control::parameters(&**self)
+    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+        Control::parameters(&**self, main)
     }
 
-    fn parameter(&self, id: ParamId) -> Option<Normalized> {
-        Control::parameter(&**self, id)
+    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+        Control::parameter(&**self, main, id)
     }
 
     /// A direct `setParameter` on the plugin: the SDK allows it from either
     /// thread, and the Processor's own automation writes go the same way.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
-        Control::set_parameter(&mut **self, id, value);
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+        Control::set_parameter(&mut **self, main, id, value);
     }
 
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(&**self, id, value)
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        Control::parameter_text(&**self, main, id, value)
     }
 
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        Control::parameter_value_from_text(&**self, id, text)
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        Control::parameter_value_from_text(&**self, main, id, text)
     }
 
-    fn save_state(&mut self) -> PluginResult<Vec<u8>> {
-        Control::save_state(&mut **self)
+    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        Control::save_state(&mut **self, main)
     }
 
-    fn load_state(&mut self, bytes: &[u8]) -> PluginResult<()> {
-        Control::load_state(&mut **self, bytes)
+    fn load_state(&mut self, main: &MainThread, bytes: &[u8]) -> PluginResult<()> {
+        Control::load_state(&mut **self, main, bytes)
     }
 
-    fn presets(&mut self) -> Vec<Preset> {
-        Control::presets(&mut **self)
+    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+        Control::presets(&mut **self, main)
     }
 
-    fn load_preset(&mut self, id: &PresetId) -> bool {
-        Control::load_preset(&mut **self, id)
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+        Control::load_preset(&mut **self, main, id)
     }
 
-    fn current_preset(&mut self) -> Option<PresetId> {
-        Control::current_preset(&mut **self)
+    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        Control::current_preset(&mut **self, main)
     }
 
-    fn set_automation_state(&mut self, mode: AutomationMode) {
-        Control::set_automation_state(&mut **self, mode);
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+        Control::set_automation_state(&mut **self, main, mode);
     }
 
-    fn rescan_parameters(&mut self, scope: RescanScope) {
-        Control::rescan_parameters(&mut **self, scope);
+    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+        Control::rescan_parameters(&mut **self, main, scope);
     }
 
     /// A tick is a control-side moment: plugins whose last holder was a
     /// Processor are destroyed here, not on its thread.
-    fn flush_edits(&mut self) {
+    fn flush_edits(&mut self, _main: &MainThread) {
         crate::shell::reap();
     }
 }
@@ -169,11 +175,11 @@ impl Controller for Vst2Controller {
     type Loaded = Vst2Loaded;
     type Processor = Vst2Processor;
 
-    fn latency(&self) -> Samples {
+    fn latency(&self, _main: &MainThread) -> Samples {
         self.latency_samples()
     }
 
-    fn tail(&self) -> PluginTail {
+    fn tail(&self, _main: &MainThread) -> PluginTail {
         Vst2Loaded::tail(self)
     }
 }
@@ -207,9 +213,9 @@ impl Loaded for Vst2Loaded {
     /// failed licence claim, say) is not an error the host can see.
     fn activate(
         mut self,
+        _main: &MainThread,
         prepare: Prepare,
     ) -> Result<(Vst2Processor, Vst2Controller), Refused<Self>> {
-        tutti_plugin_types::assert_main_thread();
         crate::shell::warm_retirement();
         crate::shell::reap();
         let rate = prepare.rate().0;
@@ -295,10 +301,10 @@ impl Loaded for Vst2Loaded {
     /// The halves come back, with the reason, when they are of two activations
     /// or a third handle exists.
     fn deactivate(
+        _main: &MainThread,
         mut processor: Vst2Processor,
         mut controller: Vst2Controller,
     ) -> Result<Self, Stuck<Vst2Processor, Vst2Controller>> {
-        tutti_plugin_types::assert_main_thread();
         if !Arc::ptr_eq(processor.shell(), controller.shell()) {
             return Err(Stuck {
                 processor,

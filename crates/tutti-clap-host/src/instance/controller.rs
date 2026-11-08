@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::{
     Control, Controller, Edit, EditSink, Loaded, Normalized, ParamId, PluginError, PluginTail,
@@ -133,11 +134,11 @@ impl Controller for ClapController {
     type Loaded = ClapLoaded;
     type Processor = ClapProcessor;
 
-    fn latency(&self) -> Samples {
+    fn latency(&self, _main: &MainThread) -> Samples {
         Samples(self.latency_samples() as usize)
     }
 
-    fn tail(&self) -> PluginTail {
+    fn tail(&self, _main: &MainThread) -> PluginTail {
         self.tail_samples()
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
     }
@@ -200,6 +201,7 @@ impl ClapLoaded {
     // The error carries the halves and the whole plugin back, which is the point.
     #[allow(clippy::result_large_err)]
     fn rejoin(
+        main: &MainThread,
         mut processor: ClapProcessor,
         mut controller: ClapController,
     ) -> Result<ClapLoaded, (ClapProcessor, ClapController, PluginError)> {
@@ -233,7 +235,7 @@ impl ClapLoaded {
         // An inactive plugin takes a `params.flush` on the main thread, so the
         // writes land now and the next activation starts from them.
         for (id, value) in pending {
-            Control::set_parameter(&mut loaded, id, value);
+            Control::set_parameter(&mut loaded, main, id, value);
         }
         Ok(loaded)
     }
@@ -246,15 +248,20 @@ impl Loaded for ClapLoaded {
     /// CLAP restarts for latency and for the audio ports.
     const RESTARTS: RestartRules = RestartRules::CLAP;
 
-    fn activate(self, prepare: Prepare) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
-        self.activate_now(prepare)
+    fn activate(
+        self,
+        main: &MainThread,
+        prepare: Prepare,
+    ) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
+        self.activate_now(main, prepare)
     }
 
     fn deactivate(
+        main: &MainThread,
         processor: ClapProcessor,
         controller: ClapController,
     ) -> Result<Self, Stuck<ClapProcessor, ClapController>> {
-        Self::rejoin(processor, controller).map_err(|(processor, controller, reason)| Stuck {
+        Self::rejoin(main, processor, controller).map_err(|(processor, controller, reason)| Stuck {
             processor,
             controller,
             reason,

@@ -62,14 +62,15 @@ below.
 `no_run`: the load needs a real VST2 binary on disk.
 
 ```rust,no_run
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate, Samples};
 use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 
-let plugin = Vst2Loaded::load("/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst")?;
+let plugin = Vst2Loaded::load(&main, "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst")?;
 let (inputs_width, outputs_width) = plugin.pins();
 
 // The rate, block size and precision are the activation's.
-let Ok((mut processor, controller)) = plugin.activate(Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
+let Ok((mut processor, controller)) = plugin.activate(&main, Prepare::new(SampleRate(48_000.0), MaxBlock::of(Samples(512)))
     .expect("a real rate")) else {
     panic!("the plugin refused to run");
 };
@@ -88,7 +89,7 @@ let _midi_out: &tutti_vst2_host::MidiEventVec =
     processor.process_f32(&in_refs, &mut out_refs, 512, &ctx);
 
 // Ending it rejoins the halves.
-let Ok(_plugin) = Vst2Loaded::deactivate(processor, controller) else {
+let Ok(_plugin) = Vst2Loaded::deactivate(&main, processor, controller) else {
     panic!("the plugin would not stop");
 };
 # Ok::<(), tutti_vst2_host::Vst2Error>(())
@@ -111,15 +112,16 @@ does the type.
 # use tutti_plugin_types::{Control, Normalized};
 # use tutti_vst2_host::Vst2Loaded;
 # fn ex() -> tutti_vst2_host::Result<()> {
-let mut plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 
-for info in plugin.parameters() {
+for info in plugin.parameters(&main) {
     println!("{}: {} ({:?})", info.id, info.qualified_name(), info.bounds());
 }
 
 // A normalized `0..=1` value, written to the parameter at position 0.
-let first = plugin.parameters()[0].id;
-plugin.set_parameter(first, Normalized::of(0.5));
+let first = plugin.parameters(&main)[0].id;
+plugin.set_parameter(&main, first, Normalized::of(0.5));
 # Ok(()) }
 ```
 
@@ -129,17 +131,18 @@ plugin.set_parameter(first, Normalized::of(0.5));
 # use tutti_plugin_types::Control;
 # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 # fn ex(native_view_ptr: *mut std::ffi::c_void) -> tutti_vst2_host::Result<()> {
-# let mut plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
+# let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+# let mut plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
 // fallback; `load_state` reads the header back and reports a refusal rather
 // than swallowing it.
-let saved = plugin.save_state().expect("saves");
-plugin.load_state(&saved).expect("restores");
+let saved = plugin.save_state(&main).expect("saves");
+plugin.load_state(&main, &saved).expect("restores");
 
 // The editor is the same `AEffect` the audio path drives — hence in-process.
-let size = plugin.open_editor(unsafe { WindowHandle::from_raw(native_view_ptr) })?;
+let size = plugin.open_editor(&main, unsafe { WindowHandle::from_raw(native_view_ptr) })?;
 println!("editor is {}x{}", size.width, size.height);
-plugin.close_editor();
+plugin.close_editor(&main);
 # Ok(()) }
 ```
 
@@ -179,8 +182,8 @@ None. The crate is the VST2 loader.
 allocate or lock, and are meant for the audio thread; a block the plugin cannot
 take (a channel shorter than the block, a 32-bit block for a 64-bit activation)
 is an error and renders nothing. Loading, the editor, and the activation and
-rejoin belong on the main thread; debug builds assert it once
-`tutti_plugin_types::mark_main_thread` has been called. The plugin is not
+rejoin belong on the main thread, and take a `tutti_plugin_types::MainThread`
+as proof. The plugin is not
 thread-safe: the Controller and the Processor are the two threads it is
 reached from, and nothing else touches it. A Processor that outlives its
 Controller does not destroy the plugin on the audio thread: it queues it for the

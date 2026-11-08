@@ -87,7 +87,7 @@ impl Activate for Vst3Loaded {
         mode: ProcessMode,
     ) -> Result<Active<T>, (Vst3Loaded, PluginError)> {
         let prepare = prepare_for::<T>(rate, frames, mode);
-        match self.activate_typed::<T>(prepare) {
+        match self.activate_typed::<T>(&main_thread(), prepare) {
             Ok(pair) => Ok(Active {
                 pair: Some(pair),
                 prepare,
@@ -233,7 +233,7 @@ impl<T: Vst3Sample> Active<T> {
     /// Ends the activation: the plugin comes back deactivated.
     pub fn deactivate(mut self) -> Vst3Loaded {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        Vst3Loaded::deactivate_typed(processor, controller)
+        Vst3Loaded::deactivate_typed(&main_thread(), processor, controller)
             .map_err(|(_, _, reason)| reason)
             .expect("the halves are a pair")
     }
@@ -243,10 +243,10 @@ impl<T: Vst3Sample> Active<T> {
     /// refusal.
     pub fn reconfigure(&mut self, wanted: Prepare) -> Result<(), PluginError> {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        let loaded = Vst3Loaded::deactivate_typed(processor, controller)
+        let loaded = Vst3Loaded::deactivate_typed(&main_thread(), processor, controller)
             .map_err(|(_, _, reason)| reason)
             .expect("the halves are a pair");
-        match loaded.activate_typed::<T>(wanted) {
+        match loaded.activate_typed::<T>(&main_thread(), wanted) {
             Ok(pair) => {
                 self.pair = Some(pair);
                 self.prepare = wanted;
@@ -256,7 +256,7 @@ impl<T: Vst3Sample> Active<T> {
                 let reason = refused.reason;
                 let plugin = refused.plugin.expect("VST3 hands the plugin back");
                 let previous = self.prepare;
-                match plugin.activate_typed::<T>(previous) {
+                match plugin.activate_typed::<T>(&main_thread(), previous) {
                     Ok(pair) => self.pair = Some(pair),
                     Err(_) => panic!("the plugin refused the configuration it had"),
                 }
@@ -311,21 +311,31 @@ pub trait ParamExt {
 
 impl ParamExt for Vst3Loaded {
     fn get_parameter(&self, id: u32) -> f64 {
-        Control::parameter(self, ParamId::new(id)).map_or(0.0, Normalized::get)
+        Control::parameter(self, &main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        Control::set_parameter(self, ParamId::new(id), Normalized::clamped(value));
+        Control::set_parameter(
+            self,
+            &main_thread(),
+            ParamId::new(id),
+            Normalized::clamped(value),
+        );
     }
 }
 
 impl ParamExt for Vst3Controller {
     fn get_parameter(&self, id: u32) -> f64 {
-        Control::parameter(self, ParamId::new(id)).map_or(0.0, Normalized::get)
+        Control::parameter(self, &main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        Control::set_parameter(self, ParamId::new(id), Normalized::clamped(value));
+        Control::set_parameter(
+            self,
+            &main_thread(),
+            ParamId::new(id),
+            Normalized::clamped(value),
+        );
     }
 }
 
@@ -350,21 +360,21 @@ pub trait StateExt {
 
 impl StateExt for Vst3Loaded {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self)
+        Control::save_state(self, &main_thread())
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        Control::load_state(self, bytes)
+        Control::load_state(self, &main_thread(), bytes)
     }
 }
 
 impl StateExt for Vst3Controller {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self)
+        Control::save_state(self, &main_thread())
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
-        Control::load_state(self, bytes)
+        Control::load_state(self, &main_thread(), bytes)
     }
 }
 
@@ -376,4 +386,10 @@ impl<T: Vst3Sample> StateExt for Active<T> {
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
         StateExt::set_state(&mut **self, bytes)
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

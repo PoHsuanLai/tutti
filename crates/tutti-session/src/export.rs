@@ -877,7 +877,6 @@ impl Session {
         &mut self,
         rendered: ExportRendered,
     ) -> crate::Result<Outcome<ExportOutput>> {
-        crate::main_thread();
         let ExportRendered {
             result,
             graph,
@@ -908,10 +907,9 @@ impl Session {
     /// dropped return held (its fork, a hook's edit). `Phase::Collect` (each
     /// [`update`](Self::update)) and [`finish_export`](Self::finish_export)
     /// do this; a host that polls its exports on a frame of its own calls it
-    /// there. A main-thread call: a forked in-process VST2 plugin closes
-    /// when dropped.
+    /// there. A forked in-process VST2 plugin closes when dropped, so call it
+    /// on the main thread.
     pub fn drop_export_leftovers(&mut self) {
-        crate::main_thread();
         self.export.drop_leftovers();
     }
 

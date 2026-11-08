@@ -10,6 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tutti_plugin_types::MainThread;
 
 use vst::host::PluginLoader;
 use vst::plugin::{Category, Plugin as _};
@@ -100,12 +101,12 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 ///
 /// The type is `Send`, not `Sync`: the plugin behind it is not thread-safe, and
 /// the caller owns it on one thread at a time. Methods documented as main-thread
-/// only must be called from the thread registered with
-/// [`tutti_plugin_types::mark_main_thread`]; debug builds assert it.
+/// only take a [`MainThread`], the proof that the caller is on the process's
+/// main thread.
 ///
 /// Dropping it closes the editor, suspends the plugin if it is resumed and
 /// dispatches `effClose`, so drop it on the main thread, as it was loaded there
-/// (debug builds assert it, once a main thread is marked). The plugin's shared
+/// (a drop has no token, so nothing checks it). The plugin's shared
 /// library is never unloaded, because unloading runs static destructors that
 /// crash many JUCE-based plugins.
 ///
@@ -125,7 +126,8 @@ fn map_category(c: Category, raw: i32) -> Vst2Category {
 /// ```no_run
 /// use tutti_vst2_host::Vst2Loaded;
 ///
-/// let plugin = Vst2Loaded::load("/usr/lib/vst/MyPlugin.so")?;
+/// let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
+/// let plugin = Vst2Loaded::load(&main, "/usr/lib/vst/MyPlugin.so")?;
 /// println!("{} by {}", plugin.metadata().name, plugin.metadata().vendor);
 /// # Ok::<(), tutti_vst2_host::Vst2Error>(())
 /// ```
@@ -212,15 +214,9 @@ impl Vst2Loaded {
     /// module ([`LoadStage::Factory`]) or the plugin's entry point fails to
     /// produce an instance ([`LoadStage::Instantiation`]).
     ///
-    /// # Panics
-    ///
-    /// Main thread only. In debug builds, panics if called off the thread
-    /// registered with [`tutti_plugin_types::mark_main_thread`].
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn load(_main: &MainThread, path: impl AsRef<Path>) -> Result<Self> {
         // Loading runs the plugin's init sequence and probes its editor — VST2
-        // requires this happen on the host main thread. A no-op until
-        // `mark_main_thread()` has been called (headless tests are safe).
-        tutti_plugin_types::assert_main_thread();
+        // requires this happen on the host main thread, which `_main` proves.
 
         let path = path.as_ref();
         let resolved = resolve_bundle(path);
@@ -424,13 +420,7 @@ impl Vst2Loaded {
     /// of their names. Feed them to [`Lifecycle::drive`](tutti_plugin_types::Lifecycle::drive);
     /// the core reads the figures again rather than restarting the plugin
     /// ([`RestartRules::NONE`](tutti_plugin_types::RestartRules::NONE)).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn take_requests(&self, out: &mut Vec<Request>) {
-        tutti_plugin_types::assert_main_thread();
+    pub fn take_requests(&self, _main: &MainThread, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(self.host.requests()));
     }
 

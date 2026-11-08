@@ -17,6 +17,7 @@ use crate::types::{ParameterChanges, ParameterQueue, PluginInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_clap_ffi::ActivateError;
+use tutti_plugin_types::MainThread;
 use tutti_plugin_types::{PluginError, Prepare, Refused, Request, SampleFormat, negotiate, taken};
 use tutti_rt::ArcLend;
 
@@ -75,20 +76,6 @@ impl ClapLoaded {
         self.audio.max_frames
     }
 
-    /// Debug-only guard: panic if called from a thread other than the one that
-    /// created this instance's `HostState` (the main/UI thread). CLAP requires
-    /// all calls except the audio-thread process path to run on the main
-    /// thread; this turns a silent spec violation into a located panic in
-    /// dev/test. No-op in release.
-    #[inline]
-    pub(crate) fn assert_main_thread(&self) {
-        debug_assert_eq!(
-            std::thread::current().id(),
-            self.host_state.main_thread_id,
-            "CLAP main-thread call made off the main thread"
-        );
-    }
-
     /// The format an activation runs at when `requested` is asked of this
     /// plugin: 64-bit only when asked for and every port advertises it, else
     /// 32-bit (`tutti_plugin_types::negotiate`). The audio ports are read
@@ -105,8 +92,12 @@ impl ClapLoaded {
     ///
     /// [`Loaded::activate`]: tutti_plugin_types::Loaded::activate
     /// [`ClapError::NotSupported`]: crate::ClapError::NotSupported
-    pub fn negotiate_format(&mut self, requested: SampleFormat) -> crate::Result<SampleFormat> {
-        self.rescan_audio_ports()?;
+    pub fn negotiate_format(
+        &mut self,
+        main: &MainThread,
+        requested: SampleFormat,
+    ) -> crate::Result<SampleFormat> {
+        self.rescan_audio_ports(main)?;
         Ok(negotiate(requested, self.audio.supports_f64))
     }
 
@@ -129,21 +120,16 @@ impl ClapLoaded {
     /// library and the same instance. Both failure paths preserve it: the
     /// `f64` check returns before any FFI runs, and a plugin-side refusal
     /// leaves the instance untouched and not active.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called from a thread other than the one that
-    /// loaded the plugin.
     // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
     // the caller can retry or fall back; boxing it would defeat that ownership
     // return and add a heap alloc on the (rare) failure path.
     #[allow(clippy::result_large_err)]
     pub(crate) fn activate_now(
         mut self,
+        main: &MainThread,
         prepare: Prepare,
     ) -> std::result::Result<(ClapProcessor, ClapController), Refused<Self>> {
         let wide = prepare.format() == SampleFormat::Float64;
-        self.assert_main_thread();
         let refuse = |plugin: Self, error: ClapError| Refused {
             plugin: Some(plugin),
             reason: plugin_error(error),
@@ -162,7 +148,7 @@ impl ClapLoaded {
 
         // The plugin may have changed its ports since it was loaded or last
         // deactivated, and the 64-bit flag is part of them.
-        if let Err(e) = self.rescan_audio_ports() {
+        if let Err(e) = self.rescan_audio_ports(main) {
             self.audio = previous;
             return Err(refuse(self, e));
         }
@@ -386,7 +372,7 @@ impl Drop for ClapLoaded {
         // gui.destroy() before plugin.destroy(). A `ClapLoaded` that is dropped
         // is never active (the Controller deactivates the plugin before it lets
         // go of it), so there is no stop/deactivate to do here.
-        self.close_editor();
+        self.destroy_editor();
 
         // The FFI `Plugin`'s drop destroys the instance, then drops the host
         // vtable; the library unloads last.

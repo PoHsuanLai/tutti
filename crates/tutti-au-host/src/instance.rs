@@ -25,7 +25,8 @@ use crate::transport;
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
 use tutti_plugin_types::{
-    ChannelLayout, EditorSize, SYSEX_MESSAGE_CAPACITY, SysExAssembler, TransportInfo, WindowHandle,
+    ChannelLayout, EditorSize, MainThread, SYSEX_MESSAGE_CAPACITY, SysExAssembler, TransportInfo,
+    WindowHandle,
 };
 use tutti_types::Samples;
 use tutti_types::value::units::Seconds;
@@ -207,10 +208,11 @@ impl AuInstance {
     /// loaded or returns no view.
     pub fn open_editor(
         &mut self,
+        main: &MainThread,
         parent: WindowHandle,
         preferred: EditorSize,
     ) -> Result<EditorSize> {
-        self.close_editor();
+        self.close_editor(main);
         let editor = tutti_au_ffi::AuEditor::open(self.unit(), Some(parent), preferred)?;
         let size = editor.editor_size();
         self.editor = Some(editor);
@@ -222,7 +224,7 @@ impl AuInstance {
     /// Must be called on the macOS main thread — the teardown is AppKit's
     /// `removeFromSuperview` / `release`, and touching AppKit off the main
     /// thread is undefined behavior.
-    pub fn close_editor(&mut self) {
+    pub fn close_editor(&mut self, _main: &MainThread) {
         if let Some(mut editor) = self.editor.take() {
             editor.close();
         }
@@ -1563,13 +1565,7 @@ impl AuInstance {
     ///
     /// [`AuError::OsStatus`] if the AU refuses to give up its `ClassInfo`, and
     /// [`AuError::InvalidBuffer`] if that property list cannot be serialized.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn get_state(&self) -> Result<Vec<u8>> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn get_state(&self, _main: &MainThread) -> Result<Vec<u8>> {
         // The `ClassInfo` plist comes back under the Copy rule; empty when the
         // AU answers null.
         Ok(self
@@ -1591,13 +1587,7 @@ impl AuInstance {
     /// # Errors
     /// Returns [`AuError::OsStatus`] if the AU rejects the state blob. A failure
     /// of the *notify* is deliberately not propagated — see the inline comment.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn set_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -1635,13 +1625,7 @@ impl AuInstance {
     /// Returns the **fallback's** error if both properties fail, since that is the
     /// path a host without this method would have taken anyway. A refusal of
     /// property 50 alone is not an error — it is the documented normal case.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn load_document_state(&mut self, data: &[u8]) -> Result<()> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn load_document_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -1651,7 +1635,7 @@ impl AuInstance {
             self.unit()
                 .set_plist::<ClassInfoFromDocument>(Scope::GLOBAL, Element::ZERO, data);
         if from_document.is_err() {
-            return self.set_state(data);
+            return self.set_state(main, data);
         }
         let _ = crate::listener::notify_all_parameters(self.unit());
         Ok(())
@@ -1669,13 +1653,12 @@ impl AuInstance {
     /// [`AuError::PresetIo`] if the file cannot be written, [`AuError::OsStatus`]
     /// if the AU refuses to hand over its `ClassInfo`, or
     /// [`AuError::InvalidPreset`] if what it hands over is not a dictionary.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn save_preset_file(&self, path: &std::path::Path, name: &str) -> Result<()> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn save_preset_file(
+        &self,
+        _main: &MainThread,
+        path: &std::path::Path,
+        name: &str,
+    ) -> Result<()> {
         crate::aupreset::save_preset_file(self.unit(), self.handle().component(), path, name)
     }
 
@@ -1700,16 +1683,11 @@ impl AuInstance {
     /// [`AuError::PresetIdentityMismatch`], or [`AuError::OsStatus`] if the AU
     /// rejects a correctly-identified dictionary. On every error path the AU keeps
     /// the state it had and is still renderable.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn load_preset_file(
         &mut self,
+        _main: &MainThread,
         path: &std::path::Path,
     ) -> Result<crate::aupreset::AuPresetIdentity> {
-        tutti_plugin_types::assert_main_thread();
         let identity =
             crate::aupreset::load_preset_file(self.unit(), self.handle().component(), path)?;
         // As in `set_state`: the state is loaded, so a failed notify is a stale
@@ -2367,9 +2345,10 @@ mod tests {
         let mut inst = AuInstance::new(comp, 44100.0, 512).unwrap();
         inst.initialize().unwrap();
 
-        let state = inst.get_state().unwrap();
+        let state = inst.get_state(&MainThread::claim().unwrap()).unwrap();
         assert!(!state.is_empty());
-        inst.set_state(&state).unwrap();
+        inst.set_state(&MainThread::claim().unwrap(), &state)
+            .unwrap();
     }
 
     /// Presets and bypass must work in the `Loaded` state, before

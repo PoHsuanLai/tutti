@@ -78,10 +78,12 @@ where
 
 fn reset_probe(path: &PathBuf) {
     probe_call(path, b"tutti_vst2_probe_reset_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
     probe_call(path, b"tutti_vst2_probe_reset_switches\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
@@ -91,8 +93,11 @@ fn reset_probe(path: &PathBuf) {
 fn read_capture(path: &PathBuf) -> ProcessCapture {
     let mut cap = ProcessCapture::empty();
     let valid = probe_call(path, b"tutti_vst2_probe_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: unsafe extern "C" fn(*mut ProcessCapture) -> bool =
             unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `f` is the probe's capture export; it writes one
+        // `ProcessCapture` through the pointer, and `cap` is a live local.
         unsafe { f(&mut cap) }
     });
     assert!(
@@ -118,7 +123,10 @@ fn host_loads_probe_and_reports_declared_metadata() {
     assert_eq!(instance.pins().0.count(), 2);
     assert_eq!(instance.pins().1.count(), 2);
     assert_eq!(instance.parameter_count(), 4);
-    assert_eq!(instance.wiring().latency_samples, Samples::ZERO);
+    assert_eq!(
+        instance.wiring(&main_thread()).latency_samples,
+        Samples::ZERO
+    );
 }
 
 #[test]
@@ -263,4 +271,10 @@ fn tag_passthrough_oracle_produces_exact_samples() {
         channel_tag(1),
         "the routing oracle depends on per-channel tags being distinct"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

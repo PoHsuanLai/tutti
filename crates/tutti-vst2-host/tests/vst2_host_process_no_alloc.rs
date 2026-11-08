@@ -122,10 +122,12 @@ where
 
 fn reset_probe(path: &PathBuf) {
     probe_call(path, b"tutti_vst2_probe_reset_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
     probe_call(path, b"tutti_vst2_probe_reset_switches\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: extern "C" fn() = unsafe { std::mem::transmute(*sym) };
         f();
     });
@@ -134,8 +136,11 @@ fn reset_probe(path: &PathBuf) {
 fn read_capture(path: &PathBuf) -> ProcessCapture {
     let mut cap = ProcessCapture::empty();
     probe_call(path, b"tutti_vst2_probe_capture\0", |sym| {
+        // SAFETY: the probe exports this symbol with exactly this signature.
         let f: unsafe extern "C" fn(*mut ProcessCapture) -> bool =
             unsafe { std::mem::transmute(*sym) };
+        // SAFETY: `f` is the probe's capture export; it writes one
+        // `ProcessCapture` through the pointer, and `cap` is a live local.
         unsafe { f(&mut cap) }
     });
     cap
@@ -357,7 +362,8 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
     );
 
     // A second activation, at another rate, is a single, real transition.
-    let loaded = Vst2Loaded::load(probe_path::probe_path()).expect("the probe loads");
+    let loaded =
+        Vst2Loaded::load(&main_thread(), probe_path::probe_path()).expect("the probe loads");
     assert_eq!(
         read_capture(&path).resume_count,
         1,
@@ -385,7 +391,7 @@ fn a_prepare_that_is_no_rate_cannot_be_built() {
     let _guard = lock_probe();
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
-    let loaded = Vst2Loaded::load(&path).expect("the probe loads");
+    let loaded = Vst2Loaded::load(&main_thread(), &path).expect("the probe loads");
 
     for (rate, block) in [
         (0.0, BLOCK),
@@ -462,4 +468,10 @@ fn plugin_still_renders_after_repeated_reconfigure() {
         cap.sample_rate, SAMPLE_RATE as f32,
         "the last configured rate must be the one in effect"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

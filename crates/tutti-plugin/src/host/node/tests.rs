@@ -479,7 +479,18 @@ fn handle_open_editor_errors_for_missing_plugin() {
     let (handle, _bridge_handle, _server_thread) = handle_with_mock_server(|_| None);
     assert!(
         handle
-            .open_editor(FakeWindow, crate::handles::ContentScale::IDENTITY)
+            .open_editor(
+                &main_thread(),
+                FakeWindow,
+                crate::handles::ContentScale::IDENTITY
+            )
             .is_err()
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+#[cfg(test)]
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

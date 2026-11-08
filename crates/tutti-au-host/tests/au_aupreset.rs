@@ -183,7 +183,8 @@ fn a_saved_preset_restores_the_parameter_it_captured() {
     );
 
     let tmp = TempPreset::new("roundtrip");
-    au.save_preset_file(tmp.path(), "RoundTrip").unwrap();
+    au.save_preset_file(&main_thread(), tmp.path(), "RoundTrip")
+        .unwrap();
 
     // Move it away, so a no-op load cannot pass.
     au.set_parameter(target.id, MUTATED).unwrap();
@@ -194,7 +195,7 @@ fn a_saved_preset_restores_the_parameter_it_captured() {
          untestable; got {moved}"
     );
 
-    let identity = au.load_preset_file(tmp.path()).unwrap();
+    let identity = au.load_preset_file(&main_thread(), tmp.path()).unwrap();
     let restored = au.get_parameter(target.id).unwrap();
     assert!(
         (restored - SAVED).abs() < 1e-4,
@@ -222,7 +223,8 @@ fn a_written_preset_is_a_plist_with_the_documented_keys() {
     let _g = lock();
     let au = DELAY.open(RATE, BLOCK);
     let tmp = TempPreset::new("keys");
-    au.save_preset_file(tmp.path(), "KeyCheck").unwrap();
+    au.save_preset_file(&main_thread(), tmp.path(), "KeyCheck")
+        .unwrap();
 
     // Parse with `plutil`, i.e. with CoreFoundation's own reader through a
     // completely separate process. Asserting via this crate's parser would be
@@ -295,7 +297,9 @@ fn metadata_can_be_read_without_applying_anything() {
         .expect("AUDelay must expose 'Delay Time'");
     delay.set_parameter(delay_target.id, 0.9).unwrap();
     let tmp = TempPreset::new("metaonly");
-    delay.save_preset_file(tmp.path(), "MetaOnly").unwrap();
+    delay
+        .save_preset_file(&main_thread(), tmp.path(), "MetaOnly")
+        .unwrap();
 
     // A live AULowpass, whose state must be undisturbed by reading the file.
     let mut lowpass = LOWPASS.open(RATE, BLOCK);
@@ -345,13 +349,13 @@ fn a_preset_from_a_different_au_is_refused() {
     let delay = DELAY.open(RATE, BLOCK);
     let delay_file = TempPreset::new("xdelay");
     delay
-        .save_preset_file(delay_file.path(), "FromDelay")
+        .save_preset_file(&main_thread(), delay_file.path(), "FromDelay")
         .unwrap();
 
     let distortion = DISTORTION.open(RATE, BLOCK);
     let dist_file = TempPreset::new("xdist");
     distortion
-        .save_preset_file(dist_file.path(), "FromDistortion")
+        .save_preset_file(&main_thread(), dist_file.path(), "FromDistortion")
         .unwrap();
 
     for (label, mut victim, foreign, expected_sub) in [
@@ -370,7 +374,7 @@ fn a_preset_from_a_different_au_is_refused() {
             .map(|p| victim.get_parameter(p.id).unwrap_or(f32::NAN))
             .collect();
 
-        match victim.load_preset_file(foreign) {
+        match victim.load_preset_file(&main_thread(), foreign) {
             Err(AuError::PresetIdentityMismatch(mismatch)) => {
                 let (file_sub_type, au_sub_type) = (&mismatch.file_sub_type, &mismatch.au_sub_type);
                 assert_eq!(
@@ -527,7 +531,8 @@ fn every_malformed_preset_is_a_typed_error_and_leaves_the_au_renderable() {
     let good = {
         let au = DELAY.open(RATE, BLOCK);
         let tmp = TempPreset::new("tosnip");
-        au.save_preset_file(tmp.path(), "ToSnip").unwrap();
+        au.save_preset_file(&main_thread(), tmp.path(), "ToSnip")
+            .unwrap();
         std::fs::read(tmp.path()).unwrap()
     };
     assert!(
@@ -569,7 +574,7 @@ fn every_malformed_preset_is_a_typed_error_and_leaves_the_au_renderable() {
         // The load must fail, and specifically as InvalidPreset: these are broken
         // FILES, which a host reports differently from "wrong plugin"
         // (PresetIdentityMismatch) and from an AU's own refusal (OsStatus).
-        match au.load_preset_file(tmp.path()) {
+        match au.load_preset_file(&main_thread(), tmp.path()) {
             Err(AuError::InvalidPreset(_)) => {}
             Err(other) => panic!(
                 "{label}: expected AuError::InvalidPreset so a host can say 'this \
@@ -610,7 +615,7 @@ fn a_missing_file_is_an_io_error_not_a_format_error() {
     let _ = std::fs::remove_file(&missing);
 
     let mut au = DELAY.open(RATE, BLOCK);
-    match au.load_preset_file(&missing) {
+    match au.load_preset_file(&main_thread(), &missing) {
         Err(AuError::PresetIo(_)) => {}
         other => panic!(
             "a nonexistent path must report PresetIo, not a format error — a host \
@@ -686,15 +691,17 @@ fn an_apple_authored_preset_file_loads_and_applies() {
     );
 
     let mut au = SPATIAL_MIXER.open(RATE, BLOCK);
-    let applied = au.load_preset_file(&preset).unwrap_or_else(|e| {
-        panic!(
-            "AUSpatialMixer refused an Apple-authored preset ({}): {e}. Either the \
+    let applied = au
+        .load_preset_file(&main_thread(), &preset)
+        .unwrap_or_else(|e| {
+            panic!(
+                "AUSpatialMixer refused an Apple-authored preset ({}): {e}. Either the \
              identity comparison is wrong or the dictionary is not reaching the AU \
              intact — this host's validation must not reject files the format's \
              own author wrote.",
-            preset.display()
-        )
-    });
+                preset.display()
+            )
+        });
     assert_eq!(
         applied, metadata,
         "the identity reported by the load must match the metadata-only read of \
@@ -724,7 +731,7 @@ fn a_preset_crosses_between_two_instances() {
         let target = params.iter().find(|p| p.name == target_name).unwrap();
         writer.set_parameter(target.id, SAVED).unwrap();
         writer
-            .save_preset_file(tmp.path(), "CrossInstance")
+            .save_preset_file(&main_thread(), tmp.path(), "CrossInstance")
             .unwrap();
         writer.get_parameter(target.id).unwrap()
     };
@@ -741,7 +748,7 @@ fn a_preset_crosses_between_two_instances() {
          could not tell a real restore from a no-op. Pick a different value."
     );
 
-    reader.load_preset_file(tmp.path()).unwrap();
+    reader.load_preset_file(&main_thread(), tmp.path()).unwrap();
     let restored = reader.get_parameter(target.id).unwrap();
     assert!(
         (restored - saved_value).abs() < 1e-4,
@@ -774,19 +781,20 @@ fn document_state_restores_through_the_documented_fallback() {
     let target = params.iter().find(|p| p.name == "Delay Time").unwrap();
 
     au.set_parameter(target.id, 0.8).unwrap();
-    let blob = au.get_state().unwrap();
+    let blob = au.get_state(&main_thread()).unwrap();
     assert!(!blob.is_empty(), "get_state produced nothing to restore");
 
     au.set_parameter(target.id, 0.1).unwrap();
     assert!((au.get_parameter(target.id).unwrap() - 0.1).abs() < 1e-4);
 
-    au.load_document_state(&blob).unwrap_or_else(|e| {
-        panic!(
-            "load_document_state failed: {e}. Every unit measured refuses \
+    au.load_document_state(&main_thread(), &blob)
+        .unwrap_or_else(|e| {
+            panic!(
+                "load_document_state failed: {e}. Every unit measured refuses \
              ClassInfoFromDocument (-10879), so this must have fallen back to \
              ClassInfo — propagating the refusal would break every project load."
-        )
-    });
+            )
+        });
     let restored = au.get_parameter(target.id).unwrap();
     assert!(
         (restored - 0.8).abs() < 1e-4,
@@ -795,7 +803,7 @@ fn document_state_restores_through_the_documented_fallback() {
 
     // Empty input is a documented no-op, not an error: a project with no saved
     // plugin state must load rather than fail.
-    au.load_document_state(&[]).unwrap();
+    au.load_document_state(&main_thread(), &[]).unwrap();
     assert!(
         (au.get_parameter(target.id).unwrap() - 0.8).abs() < 1e-4,
         "an empty document blob must be inert, not destructive"
@@ -825,12 +833,12 @@ fn presets_round_trip_before_initialize() {
     au.set_parameter(target.id, 0.42).unwrap();
 
     let tmp = TempPreset::new("preinit");
-    au.save_preset_file(tmp.path(), "PreInit")
+    au.save_preset_file(&main_thread(), tmp.path(), "PreInit")
         .expect("saving a preset in the Loaded state must work");
 
     au.set_parameter(target.id, 0.9).unwrap();
     let identity = au
-        .load_preset_file(tmp.path())
+        .load_preset_file(&main_thread(), tmp.path())
         .expect("loading a preset in the Loaded state must work");
     assert_eq!(identity.name.as_deref(), Some("PreInit"));
     let restored = au.get_parameter(target.id).unwrap();
@@ -843,4 +851,10 @@ fn presets_round_trip_before_initialize() {
     au.initialize()
         .expect("the AU must still initialize after pre-init preset I/O");
     assert_still_renders(&mut au, "after a pre-initialize round trip");
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

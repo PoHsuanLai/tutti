@@ -6,6 +6,7 @@
 //! core's notices and the server's [`AsyncEvent`]s.
 
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, ContentScale, EditorPresence, EditorSize, LoadedPlugin,
@@ -87,13 +88,22 @@ impl Vst3Instance {
     /// [`Features::F64_AUDIO`]: tutti_plugin::server::Features::F64_AUDIO
     #[cfg(test)]
     pub fn load(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
-            .map(|(instance, _)| instance)
+        Self::load_with_state(
+            main,
+            path,
+            sample_rate,
+            block_size,
+            prefer_f64,
+            None,
+            &mut || {},
+        )
+        .map(|(instance, _)| instance)
     }
 
     /// `load`, restoring `state` **before the plugin is
@@ -102,6 +112,7 @@ impl Vst3Instance {
     /// activated. The second value is the plugin's refusal of the state, if it
     /// refused: the plugin is then activated at its defaults.
     pub fn load_with_state(
+        main: &MainThread,
         path: &Path,
         sample_rate: f64,
         block_size: usize,
@@ -140,11 +151,11 @@ impl Vst3Instance {
         let state_error = state.and_then(|data| {
             before_restore();
             match instance.lifecycle.control() {
-                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                Some(control) => control.load_state(main, data).err().map(|e| e.to_string()),
                 None => Some("the plugin is lost".to_string()),
             }
         });
-        let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
+        let refused = instance.drive(main, Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
             let reason = refused.map_or_else(|| "refused".to_string(), |r| r.to_string());
             return Err(BridgeError::LoadFailed {
@@ -153,7 +164,7 @@ impl Vst3Instance {
                 reason: format!("activate failed: {reason}"),
             });
         }
-        instance.refresh_meta();
+        instance.refresh_meta(main);
         // Whatever the activation told the host is what the load reply carries.
         instance.events.clear();
         Ok((instance, state_error))
@@ -161,17 +172,17 @@ impl Vst3Instance {
 
     /// Steps one event through the core, applying its effects. Returns the
     /// reason of a refusal it told, if any.
-    fn drive(&mut self, event: Event) -> Option<PluginError> {
+    fn drive(&mut self, main: &MainThread, event: Event) -> Option<PluginError> {
         let mut told = Vec::new();
         // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
         // in its place is built without allocating and is replaced below.
         let state = std::mem::replace(&mut self.state, Lifecycle::<Vst3Loaded>::initial_state());
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, |n| told.push(n));
+            .drive(state, event, &mut self.hand, main, |n| told.push(n));
         let mut refusal = None;
         for notice in told {
-            if let Some(reason) = self.absorb(notice) {
+            if let Some(reason) = self.absorb(main, notice) {
                 refusal = Some(reason);
             }
         }
@@ -180,7 +191,7 @@ impl Vst3Instance {
 
     /// Turns a notice into what the host hears, keeping the cached metadata in
     /// step. Returns the reason when the notice is a refusal.
-    fn absorb(&mut self, notice: Notice) -> Option<PluginError> {
+    fn absorb(&mut self, main: &MainThread, notice: Notice) -> Option<PluginError> {
         match notice {
             Notice::LatencyChanged(samples) => {
                 self.meta.loaded.latency_samples = samples;
@@ -191,7 +202,7 @@ impl Vst3Instance {
                 self.events.push(AsyncEvent::TailChanged { tail });
             }
             Notice::IoChanged => {
-                self.refresh_meta();
+                self.refresh_meta(main);
                 self.events.push(AsyncEvent::IoChanged);
             }
             Notice::ParamValuesChanged => self.events.push(AsyncEvent::ParamValuesChanged),
@@ -204,7 +215,7 @@ impl Vst3Instance {
                 tracing::warn!("VST3 plugin refused {} Hz: {reason}", rate.0);
                 // Whether the host must re-read the instance depends on whether
                 // a rollback revives it: `finish_refusals` decides.
-                self.refresh_meta();
+                self.refresh_meta(main);
                 self.refused = true;
                 return Some(reason);
             }
@@ -241,17 +252,17 @@ impl Vst3Instance {
     /// plugin with a separate component hears of the write in the next block's
     /// `inputParameterChanges`; and no write needs `process` to be heard, so
     /// no parameter is held back from the controller.
-    fn settle_edits(&mut self) {
+    fn settle_edits(&mut self, main: &MainThread) {
         if let Some(control) = self.lifecycle.control() {
-            control.flush_edits();
+            control.flush_edits(main);
         }
     }
 
     /// Reads the plugin's wiring again into the metadata the host is given.
-    fn refresh_meta(&mut self) {
+    fn refresh_meta(&mut self, main: &MainThread) {
         if let Some(control) = self.lifecycle.control() {
             self.meta.descriptor = control.info().clone();
-            self.meta.loaded = control.wiring();
+            self.meta.loaded = control.wiring(main);
         }
     }
 
@@ -269,14 +280,14 @@ impl Vst3Instance {
     /// idle pass every dispatch takes) does not enter the lifecycle and
     /// allocates nothing. A pass that has work allocates, as a rate change does:
     /// the core queues its effects.
-    pub fn poll(&mut self) -> Vec<AsyncEvent> {
-        self.serve();
+    pub fn poll(&mut self, main: &MainThread) -> Vec<AsyncEvent> {
+        self.serve(main);
         std::mem::take(&mut self.events)
     }
 
     /// [`poll`](Self::poll)'s pass, leaving what the host should be told in
     /// `events`.
-    fn serve(&mut self) {
+    fn serve(&mut self, main: &MainThread) {
         // A restart the pass performs may itself make the plugin ask for more
         // (an activation that raises `kIoChanged`), so the word is taken again
         // until a pass finds it empty. Bounded, so a plugin that asks from every
@@ -287,20 +298,20 @@ impl Vst3Instance {
             requests.clear();
             if let Some(loaded) = self.loaded_ref() {
                 loaded.discard_notifications();
-                loaded.take_requests(&mut requests);
+                loaded.take_requests(main, &mut requests);
             }
             let asked = !requests.is_empty();
             if !asked && self.state.is_quiet() {
                 // All a tick would do: retry what a full edit ring refused.
                 if let Some(control) = self.lifecycle.control() {
-                    control.flush_edits();
+                    control.flush_edits(main);
                 }
                 break;
             }
             for request in requests.drain(..) {
-                self.drive(Event::Request(request));
+                self.drive(main, Event::Request(request));
             }
-            self.drive(Event::Tick);
+            self.drive(main, Event::Tick);
             if !asked {
                 break;
             }
@@ -339,17 +350,20 @@ impl Vst3Instance {
     /// rollback took, or `Ok` when `wanted` did.
     fn reconfigure(
         &mut self,
+        main: &MainThread,
         previous: Prepare,
         wanted: Prepare,
     ) -> std::result::Result<(), (PluginError, bool)> {
-        let result = match self.drive(Event::Op(HostOp::Reconfigure(wanted))) {
+        let result = match self.drive(main, Event::Op(HostOp::Reconfigure(wanted))) {
             None => Ok(()),
             Some(reason) => {
                 // Put back what the plugin accepted once.
-                let rolled_back =
-                    self.drive(Event::Op(HostOp::Activate(previous))).is_none() && self.is_active();
+                let rolled_back = self
+                    .drive(main, Event::Op(HostOp::Activate(previous)))
+                    .is_none()
+                    && self.is_active();
                 if rolled_back {
-                    self.refresh_meta();
+                    self.refresh_meta(main);
                 }
                 Err((reason, rolled_back))
             }
@@ -404,7 +418,7 @@ impl PluginAudio for Vst3Instance {
     ///
     /// The plugin may also change its bus layout and its latency across the
     /// re-activation; the metadata follows them and the host is told.
-    fn set_sample_rate(&mut self, rate: f64) -> PluginResult<()> {
+    fn set_sample_rate(&mut self, main: &MainThread, rate: f64) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "VST3 plugin has no configuration to change".to_string(),
@@ -419,7 +433,7 @@ impl PluginAudio for Vst3Instance {
                 standing(self.is_active(), previous.rate())
             )));
         };
-        self.reconfigure(previous, wanted)
+        self.reconfigure(main, previous, wanted)
             .map_err(|(reason, rolled_back)| {
                 PluginError::Other(format!(
                     "VST3 plugin refused sample rate {rate} ({}): {reason}",
@@ -448,62 +462,68 @@ impl PluginAudio for Vst3Instance {
     /// The realtime and prefetch pair is the one exception the spec carves out
     /// and is `Vst3Processor::set_prefetch`, not this; prefetch is not reachable
     /// through [`RenderMode`] by design (see its docs).
-    fn set_render_mode(&mut self, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
         let Some(previous) = self.state.prepare() else {
             return false;
         };
         if previous.mode() == mode && self.is_active() {
             return true;
         }
-        self.reconfigure(previous, previous.with_mode(mode)).is_ok()
+        self.reconfigure(main, previous, previous.with_mode(mode))
+            .is_ok()
     }
 }
 
 impl PluginParams for Vst3Instance {
     /// Normalized `0..=1`, which is VST3's own domain.
-    fn get_parameter(&self, id: ParamId) -> f64 {
+    fn get_parameter(&self, main: &MainThread, id: ParamId) -> f64 {
         self.loaded_ref()
-            .and_then(|loaded| Control::parameter(loaded, id))
+            .and_then(|loaded| Control::parameter(loaded, main, id))
             .map_or(0.0, Normalized::get)
     }
 
     /// Normalized `0..=1` in. On an active plugin the write reaches the edit
     /// controller now and is queued to the Processor, which hands it to the
     /// plugin at the head of the next block.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
         if let Some(control) = self.lifecycle.control() {
-            control.set_parameter(id, value);
+            control.set_parameter(main, id, value);
         }
     }
 
     /// VST3's `getParamStringByValue` takes the value already normalized, so
     /// this is the one format where no conversion stands between the seam's
     /// domain and the ABI's.
-    fn parameter_text(&self, id: ParamId, value: Normalized) -> Option<String> {
-        Control::parameter_text(self.loaded_ref()?, id, value)
+    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+        Control::parameter_text(self.loaded_ref()?, main, id, value)
     }
 
     /// The inverse. `getParamValueByString` answers normalized too, so the
     /// result passes through `Normalized::clamped` only.
-    fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        Control::parameter_value_from_text(self.loaded_ref()?, id, text)
+    fn parameter_value_from_text(
+        &self,
+        main: &MainThread,
+        id: ParamId,
+        text: &str,
+    ) -> Option<Normalized> {
+        Control::parameter_value_from_text(self.loaded_ref()?, main, id, text)
     }
 
-    fn set_automation_state(&mut self, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
         // Runs on the server's main thread (same as set_parameter), satisfying
         // the host's main-thread assertion.
         if let Some(control) = self.lifecycle.control() {
-            control.set_automation_state(mode);
+            control.set_automation_state(main, mode);
         }
     }
 
-    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self, main: &MainThread) -> Vec<ParameterInfo> {
         self.loaded_ref()
-            .map(Control::parameters)
+            .map(|loaded| Control::parameters(loaded, main))
             .unwrap_or_default()
     }
 
-    fn parameter_count(&self) -> usize {
+    fn parameter_count(&self, _main: &MainThread) -> usize {
         self.loaded_ref()
             .map_or(0, |loaded| loaded.parameter_count() as usize)
     }
@@ -512,6 +532,7 @@ impl PluginParams for Vst3Instance {
 impl PluginEditorHost for Vst3Instance {
     fn open_editor(
         &mut self,
+        main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<EditorSize> {
@@ -520,7 +541,7 @@ impl PluginEditorHost for Vst3Instance {
             .loaded_mut()
             .ok_or_else(|| PluginError::Other("the plugin is lost".to_string()))?;
         loaded
-            .open_editor(parent, scale)
+            .open_editor(main, parent, scale)
             .map(|size| EditorSize {
                 width: size.width,
                 height: size.height,
@@ -528,9 +549,9 @@ impl PluginEditorHost for Vst3Instance {
             .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
     }
 
-    fn close_editor(&mut self) {
+    fn close_editor(&mut self, main: &MainThread) {
         if let Some(loaded) = self.loaded_mut() {
-            loaded.close_editor();
+            loaded.close_editor(main);
         }
     }
 }
@@ -538,42 +559,42 @@ impl PluginEditorHost for Vst3Instance {
 impl PluginPresets for Vst3Instance {
     /// The plugin's programs, flattened out of its named program lists; see
     /// [`Control::presets`].
-    fn get_presets(&mut self) -> Vec<Preset> {
+    fn get_presets(&mut self, main: &MainThread) -> Vec<Preset> {
         self.lifecycle
             .control()
-            .map(Control::presets)
+            .map(|loaded| Control::presets(loaded, main))
             .unwrap_or_default()
     }
 
     /// Select a program by writing the parameter that owns its list; see
     /// [`Control::load_preset`].
-    fn load_preset(&mut self, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
         self.lifecycle
             .control()
-            .is_some_and(|control| control.load_preset(id))
+            .is_some_and(|control| control.load_preset(main, id))
     }
 
     /// The program the plugin currently has selected, read back off the same
     /// parameter [`load_preset`](Self::load_preset) writes.
-    fn get_current_preset(&mut self) -> Option<PresetId> {
-        self.lifecycle.control()?.current_preset()
+    fn get_current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+        self.lifecycle.control()?.current_preset(main)
     }
 }
 
 impl PluginState for Vst3Instance {
-    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
-        self.settle_edits();
+    fn get_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+        self.settle_edits(main);
         self.lifecycle
             .control()
             .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
-            .save_state()
+            .save_state(main)
     }
 
-    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
         self.lifecycle
             .control()
             .ok_or_else(|| PluginError::State("the plugin is lost".to_string()))?
-            .load_state(data)
+            .load_state(main, data)
     }
 }
 
@@ -596,6 +617,13 @@ impl Vst3Instance {
 #[cfg(feature = "vst3")]
 mod tests {
     use super::*;
+
+    /// This process's main thread. Each test is its own process under nextest, so
+    /// the claim cannot be refused.
+    fn main_thread() -> tutti_plugin_types::MainThread {
+        tutti_plugin_types::MainThread::claim().expect("one test, one process")
+    }
+
     use std::path::Path;
     use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, Features, MidiEvent};
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -663,6 +691,7 @@ mod tests {
     /// believes.
     fn activations_seen_by_the_plugin(instance: &mut Vst3Instance) -> u32 {
         instance.set_parameter(
+            &main_thread(),
             tutti_plugin_types::ParamId::new(PARAM_MODE),
             Normalized::clamped(MODE_ACTIVATION_COUNT),
         );
@@ -720,15 +749,21 @@ mod tests {
         const K_PARAM_VALUES_CHANGED: i32 = 1 << 2;
 
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
         let mut requests: Vec<Request> = Vec::with_capacity(16);
 
         // Nothing pending: the idle read every pass takes.
         assert_no_alloc::assert_no_alloc(|| {
             let loaded = instance.vst3_loaded();
             loaded.discard_notifications();
-            loaded.take_requests(&mut requests);
+            loaded.take_requests(&main_thread(), &mut requests);
         });
         assert!(requests.is_empty());
 
@@ -744,7 +779,7 @@ mod tests {
 
         assert_no_alloc::assert_no_alloc(|| {
             loaded.discard_notifications();
-            loaded.take_requests(&mut requests);
+            loaded.take_requests(&main_thread(), &mut requests);
         });
         assert_eq!(
             loaded.pending_notifications(),
@@ -759,16 +794,19 @@ mod tests {
             "two flags are one request"
         );
         requests.clear();
-        loaded.take_requests(&mut requests);
+        loaded.take_requests(&main_thread(), &mut requests);
         assert!(requests.is_empty(), "a take consumes the requests");
 
         // And the bridge turns one into the host's event, once.
         plugin_restart_component(loaded, K_PARAM_VALUES_CHANGED);
         assert!(matches!(
-            instance.poll().as_slice(),
+            instance.poll(&main_thread()).as_slice(),
             [AsyncEvent::ParamValuesChanged]
         ));
-        assert!(instance.poll().is_empty(), "a poll consumes the restart");
+        assert!(
+            instance.poll(&main_thread()).is_empty(),
+            "a poll consumes the restart"
+        );
     }
 
     /// **A latency that moves with the rate is read again after a rate
@@ -783,22 +821,30 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveLatencyFollowsRate`: the latency is the rate in kHz.
         let _misbehaviour = ProbeMisbehaviour::set("12");
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 44_100.0, 128, false)
-            .expect("the vendored VST3 probe loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            44_100.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
         assert_eq!(instance.meta.loaded.latency_samples, Samples(44));
-        assert!(instance.poll().is_empty());
+        assert!(instance.poll(&main_thread()).is_empty());
 
-        instance.set_sample_rate(96_000.0).expect("rate change");
+        instance
+            .set_sample_rate(&main_thread(), 96_000.0)
+            .expect("rate change");
 
         assert_eq!(instance.meta.loaded.latency_samples, Samples(96));
         assert!(
             matches!(
-                instance.poll().as_slice(),
+                instance.poll(&main_thread()).as_slice(),
                 [AsyncEvent::LatencyChanged { samples }] if *samples == Samples(96)
             ),
             "the new figure reaches the host"
         );
-        assert!(instance.poll().is_empty(), "once");
+        assert!(instance.poll(&main_thread()).is_empty(), "once");
     }
 
     /// **`kPrefetchableSupportChanged` runs the deactivate and activate the
@@ -813,18 +859,24 @@ mod tests {
         // `RestartFlags_::kPrefetchableSupportChanged`.
         const K_PREFETCHABLE_SUPPORT_CHANGED: i32 = 1 << 8;
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
         assert_eq!(
             activations_seen_by_the_plugin(&mut instance),
             1,
             "a fresh load activates once"
         );
-        assert!(instance.poll().is_empty());
+        assert!(instance.poll(&main_thread()).is_empty());
 
         instance.plugin_restart_component(K_PREFETCHABLE_SUPPORT_CHANGED);
 
-        let events = instance.poll();
+        let events = instance.poll(&main_thread());
         assert!(
             !events.iter().any(|e| matches!(e, AsyncEvent::IoChanged)),
             "the layout was not asked about: {events:?}"
@@ -847,14 +899,20 @@ mod tests {
         // `RestartFlags_::kParamIDMappingChanged`.
         const K_PARAM_ID_MAPPING_CHANGED: i32 = 1 << 11;
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
 
         instance.plugin_restart_component(K_PARAM_ID_MAPPING_CHANGED);
 
         assert!(
             instance
-                .poll()
+                .poll(&main_thread())
                 .iter()
                 .any(|e| matches!(e, AsyncEvent::ParamTitlesChanged))
         );
@@ -873,13 +931,19 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveRefusesHighRates`: `setActive(true)` fails above 50 kHz.
         let _misbehaviour = ProbeMisbehaviour::set("14");
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
-        assert!(instance.poll().is_empty());
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
+        assert!(instance.poll(&main_thread()).is_empty());
         let layout = instance.meta.loaded.clone();
 
         let error = instance
-            .set_sample_rate(96_000.0)
+            .set_sample_rate(&main_thread(), 96_000.0)
             .expect_err("the probe refuses 96 kHz");
         assert!(
             error.to_string().contains("running at 48000"),
@@ -888,7 +952,7 @@ mod tests {
         assert!(instance.is_active(), "the rollback revived the plugin");
         // The core tells the host to re-read a plugin it revived (`IoChanged`);
         // what the host reads is the layout the plugin had.
-        let told = instance.poll();
+        let told = instance.poll(&main_thread());
         assert!(
             told.iter().all(|e| matches!(e, AsyncEvent::IoChanged)),
             "{told:?}"
@@ -898,7 +962,7 @@ mod tests {
         assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
 
         instance
-            .set_sample_rate(44_100.0)
+            .set_sample_rate(&main_thread(), 44_100.0)
             .expect("a rate it takes is taken");
         assert!(instance.is_active());
     }
@@ -914,20 +978,29 @@ mod tests {
     #[test]
     fn a_rate_that_is_no_rate_is_refused_before_the_plugin_is_touched() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
-        assert!(instance.poll().is_empty());
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
+        assert!(instance.poll(&main_thread()).is_empty());
         let layout = instance.meta.loaded.clone();
         let prepare = instance.state.prepare();
         for rate in [0.0, -48_000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let error = instance
-                .set_sample_rate(rate)
+                .set_sample_rate(&main_thread(), rate)
                 .expect_err("a rate that is no rate is refused");
             assert!(error.to_string().contains("running at 48000"), "{error}");
             assert!(instance.is_active(), "{rate}");
         }
         assert_eq!(instance.state.prepare(), prepare);
-        assert!(instance.poll().is_empty(), "the host is told nothing");
+        assert!(
+            instance.poll(&main_thread()).is_empty(),
+            "the host is told nothing"
+        );
         assert_eq!(instance.meta.loaded.inputs, layout.inputs);
         assert_eq!(instance.meta.loaded.outputs, layout.outputs);
         assert_eq!(
@@ -935,7 +1008,9 @@ mod tests {
             1,
             "the plugin was never activated again"
         );
-        instance.set_sample_rate(44_100.0).expect("a real rate");
+        instance
+            .set_sample_rate(&main_thread(), 44_100.0)
+            .expect("a real rate");
     }
 
     /// **A load at no rate or no block is refused** at the activation stage:
@@ -955,7 +1030,7 @@ mod tests {
             (f64::NEG_INFINITY, 128),
             (48_000.0, 0),
         ] {
-            match Vst3Instance::load(Path::new(vst3_plugin()), rate, block, false) {
+            match Vst3Instance::load(&main_thread(), Path::new(vst3_plugin()), rate, block, false) {
                 Err(BridgeError::LoadFailed {
                     stage: LoadStage::Activation,
                     reason,
@@ -965,8 +1040,14 @@ mod tests {
                 Ok(_) => panic!("{rate} Hz in {block} frames must be refused"),
             }
         }
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("a real load");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("a real load");
         assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
     }
 
@@ -986,12 +1067,18 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         // `kMisbehaveRefusesOffline`: `setActive(true)` fails under `kOffline`.
         let _misbehaviour = ProbeMisbehaviour::set("15");
-        let mut instance = Vst3Instance::load(Path::new(vst3_plugin()), 48_000.0, 128, false)
-            .expect("the vendored VST3 probe loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(vst3_plugin()),
+            48_000.0,
+            128,
+            false,
+        )
+        .expect("the vendored VST3 probe loads");
         assert_eq!(activations_seen_by_the_plugin(&mut instance), 1);
 
         assert!(
-            !instance.set_render_mode(RenderMode::Offline),
+            !instance.set_render_mode(&main_thread(), RenderMode::Offline),
             "the probe refuses offline"
         );
         assert!(instance.is_active(), "the refusal was rolled back");
@@ -1007,7 +1094,7 @@ mod tests {
         );
 
         assert!(
-            instance.set_render_mode(RenderMode::Realtime),
+            instance.set_render_mode(&main_thread(), RenderMode::Realtime),
             "the mode it already has is taken without a restart"
         );
         assert_eq!(activations_seen_by_the_plugin(&mut instance), 2);
@@ -1028,11 +1115,16 @@ mod tests {
     #[test]
     fn a_vst3_program_keeps_its_list_id_and_bank() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
-                .expect("the multiple-program-changes sample loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(multi_program_sample()),
+            44_100.0,
+            512,
+            false,
+        )
+        .expect("the multiple-program-changes sample loads");
 
-        let presets = instance.get_presets();
+        let presets = instance.get_presets(&main_thread());
         assert!(
             presets.len() > 128,
             "16 lists of 128 programs must not collapse onto one another; got {}",
@@ -1099,21 +1191,26 @@ mod tests {
     #[test]
     fn a_vst3_program_loads_and_reads_back() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
-                .expect("the multiple-program-changes sample loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(multi_program_sample()),
+            44_100.0,
+            512,
+            false,
+        )
+        .expect("the multiple-program-changes sample loads");
 
-        let presets = instance.get_presets();
+        let presets = instance.get_presets(&main_thread());
         assert!(presets.len() > 2, "the sample publishes many programs");
 
         // Taken from the listing, never constructed.
         let wanted = presets[2].id.clone();
         assert!(
-            instance.load_preset(&wanted),
+            instance.load_preset(&main_thread(), &wanted),
             "a program the plugin listed must load"
         );
         assert_eq!(
-            instance.get_current_preset(),
+            instance.get_current_preset(&main_thread()),
             Some(wanted.clone()),
             "the plugin must report the program just written"
         );
@@ -1129,10 +1226,10 @@ mod tests {
         };
         let (param_id, step_count) = instance
             .vst3_loaded()
-            .program_change_parameter(*list_id)
+            .program_change_parameter(&main_thread(), *list_id)
             .expect("the list has a program-change parameter");
         assert_eq!(step_count, 127, "128 programs report 127 steps, not 128");
-        let raw = Control::parameter(instance.vst3_loaded(), param_id)
+        let raw = Control::parameter(instance.vst3_loaded(), &main_thread(), param_id)
             .expect("the plugin has a controller")
             .get();
         let expected = f64::from(*index) / f64::from(step_count);
@@ -1152,21 +1249,26 @@ mod tests {
     #[test]
     fn a_vst3_load_refuses_an_id_from_another_format() {
         let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            Vst3Instance::load(Path::new(multi_program_sample()), 44_100.0, 512, false)
-                .expect("the multiple-program-changes sample loads");
+        let mut instance = Vst3Instance::load(
+            &main_thread(),
+            Path::new(multi_program_sample()),
+            44_100.0,
+            512,
+            false,
+        )
+        .expect("the multiple-program-changes sample loads");
 
-        let before = instance.get_current_preset();
+        let before = instance.get_current_preset(&main_thread());
         assert!(
-            !instance.load_preset(&PresetId::Number(1)),
+            !instance.load_preset(&main_thread(), &PresetId::Number(1)),
             "an AU selector / VST2 index addresses no VST3 program"
         );
         assert!(
-            !instance.load_preset(&PresetId::Location("/x.clap-preset".into())),
+            !instance.load_preset(&main_thread(), &PresetId::Location("/x.clap-preset".into())),
             "a CLAP path addresses no VST3 program"
         );
         assert_eq!(
-            instance.get_current_preset(),
+            instance.get_current_preset(&main_thread()),
             before,
             "a refused load must not move the program"
         );
@@ -1176,7 +1278,7 @@ mod tests {
     fn test_vst3_load() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let instance = Vst3Instance::load(path, 44100.0, 512, false);
+        let instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load VST3 plugin: {:?}",
@@ -1193,8 +1295,8 @@ mod tests {
     fn test_vst3_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
         let outputs = instance.loaded().total_outputs();
 
         assert!(outputs > 0, "Expected audio outputs > 0, got {outputs}");
@@ -1204,10 +1306,10 @@ mod tests {
     fn test_vst3_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
 
-        let count = instance.get_parameter_list().len();
+        let count = instance.get_parameter_list(&main_thread()).len();
         assert!(
             count > 0,
             "TAL-NoiseMaker should have parameters, got {}",
@@ -1219,10 +1321,10 @@ mod tests {
     fn test_vst3_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
 
-        let params = instance.get_parameter_list();
+        let params = instance.get_parameter_list(&main_thread());
         assert!(
             !params.is_empty(),
             "Parameter list should not be empty for TAL-NoiseMaker"
@@ -1241,14 +1343,14 @@ mod tests {
     fn test_vst3_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
 
-        let params = instance.get_parameter_list();
+        let params = instance.get_parameter_list(&main_thread());
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let first_id = params[0].id;
-        let value = PluginParams::get_parameter(&instance, first_id);
+        let value = PluginParams::get_parameter(&instance, &main_thread(), first_id);
         assert!(
             value.is_finite(),
             "Parameter value should be finite, got {}",
@@ -1260,8 +1362,8 @@ mod tests {
     fn test_vst3_process_f32_silence() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let mut instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let mut instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
 
         let num_samples = 512;
         let input_data = vec![vec![0.0f32; num_samples]; 2];
@@ -1288,8 +1390,8 @@ mod tests {
     fn test_vst3_process_f32_with_note() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(vst3_plugin());
-        let mut instance =
-            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let mut instance = Vst3Instance::load(&main_thread(), path, 44100.0, 512, false)
+            .expect("Failed to load VST3 plugin");
 
         let num_samples = 512;
         let note_on = [MidiEvent::note_on(
@@ -1386,7 +1488,7 @@ mod tests {
             eprintln!("Skipping: SPAN.vst3 not found at {:?}", path);
             return;
         }
-        let instance = Vst3Instance::load(&path, 44100.0, 512, false);
+        let instance = Vst3Instance::load(&main_thread(), &path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load SPAN: {:?}",
@@ -1410,7 +1512,7 @@ mod tests {
             eprintln!("Skipping: Boogex.vst3 not found at {:?}", path);
             return;
         }
-        let instance = Vst3Instance::load(&path, 44100.0, 512, false);
+        let instance = Vst3Instance::load(&main_thread(), &path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load Boogex: {:?}",
@@ -1435,8 +1537,8 @@ mod tests {
             return;
         }
         // Load with f64 preference — if the plugin supports it, inner will be F64.
-        let mut instance =
-            Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
+        let mut instance = Vst3Instance::load(&main_thread(), &path, 44100.0, 512, true)
+            .expect("Failed to load SPAN");
 
         if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("SPAN does not report f64 support, skipping f64 test");
@@ -1494,8 +1596,8 @@ mod tests {
             return;
         }
         // Load with f64 preference — if the plugin supports it, inner will be F64.
-        let mut instance =
-            Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
+        let mut instance = Vst3Instance::load(&main_thread(), &path, 44100.0, 512, true)
+            .expect("Failed to load Boogex");
 
         if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("Boogex does not report f64 support, skipping f64 test");

@@ -340,6 +340,7 @@ impl InProcessVst2Client {
 /// `tests/vst2_in_process_params.rs`.
 #[cfg(test)]
 mod owed_tests {
+    use super::main_thread;
     use std::path::PathBuf;
     use std::sync::OnceLock;
     use std::sync::atomic::Ordering;
@@ -381,8 +382,9 @@ mod owed_tests {
     /// plugin keeps `1 / 16` → fails.
     #[test]
     fn a_contended_block_owes_its_values_to_the_next() {
-        let (client, handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let contention = std::sync::Arc::clone(&client.contention_count);
         let controls = client.controls();
@@ -448,8 +450,9 @@ mod owed_tests {
     /// count is short by three → fails.
     #[test]
     fn a_contended_block_cuts_the_sysex_open_in_it() {
-        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, _handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
         let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
@@ -484,8 +487,9 @@ mod owed_tests {
     #[test]
     fn a_sysex_open_across_a_reset_is_not_completed() {
         use tutti_graph::Node as _;
-        let (client, _handle) = super::super::load_client(probe(), SampleRate(48_000.0))
-            .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
+        let (client, _handle) =
+            super::super::load_client(&main_thread(), probe(), SampleRate(48_000.0))
+                .unwrap_or_else(|e| panic!("in-process load of the probe at {:?}: {e:?}", probe()));
         let inner = std::sync::Arc::clone(&client.inner);
         let controls = client.controls();
         let mut unit = Direct::new(client, SampleRate(48_000.0), BLOCK);
@@ -501,4 +505,11 @@ mod owed_tests {
         assert_eq!(inner.lock().dropped_sysex(), 1, "the cut dump, whole");
         assert_eq!(controls.dropped_midi_in(), (cut.len() - 3) as u64);
     }
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+#[cfg(test)]
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

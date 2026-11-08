@@ -12,8 +12,9 @@ pub(crate) mod protocol;
 
 pub use util::config::BridgeConfig;
 
-// Enables the debug-only main-thread assertions in the editor and state paths.
-pub use tutti_plugin_types::mark_main_thread;
+// The main-thread token the editor, state and polling entries take; a host
+// claims it once, on its UI thread, with `MainThread::claim`.
+pub use tutti_plugin_types::{MainThread, NotMainThread};
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;

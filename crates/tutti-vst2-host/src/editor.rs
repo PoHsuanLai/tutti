@@ -7,6 +7,7 @@
 use crate::error::{Result, Vst2Error};
 use crate::loaded::Vst2Loaded;
 use crate::types::{EditorSize, WindowHandle};
+use tutti_plugin_types::MainThread;
 
 impl Vst2Loaded {
     /// Returns `true` if the plugin has a native editor.
@@ -35,12 +36,9 @@ impl Vst2Loaded {
     /// # Panics
     ///
     /// Main thread only; platform GUI toolkits require it, and on macOS a call
-    /// from another thread crashes inside the plugin's UI code. In debug builds,
-    /// panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
-        tutti_plugin_types::assert_main_thread();
-
+    /// from another thread crashes inside the plugin's UI code, which the
+    /// `&MainThread` proves the caller is not on.
+    pub fn open_editor(&mut self, _main: &MainThread, parent: WindowHandle) -> Result<EditorSize> {
         let editor = &mut self
             .handle
             .editor
@@ -81,14 +79,7 @@ impl Vst2Loaded {
     }
 
     /// Closes the editor view. Does nothing when no editor is open.
-    ///
-    /// # Panics
-    ///
-    /// Main thread only; in debug builds, panics if called off the thread
-    /// registered with [`tutti_plugin_types::mark_main_thread`].
-    pub fn close_editor(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-
+    pub fn close_editor(&mut self, _main: &MainThread) {
         if let Some(editor) = self.handle.editor.as_mut() {
             editor.0.close();
         }
@@ -98,14 +89,7 @@ impl Vst2Loaded {
     ///
     /// Call periodically (around 30 Hz) from the main thread while the editor
     /// is open; JUCE-based editors rely on it to repaint and process input.
-    ///
-    /// # Panics
-    ///
-    /// Main thread only; in debug builds, panics if called off the thread
-    /// registered with [`tutti_plugin_types::mark_main_thread`].
-    pub fn editor_idle(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-
+    pub fn editor_idle(&mut self, _main: &MainThread) {
         if let Some(editor) = self.handle.editor.as_mut() {
             editor.0.idle();
         }

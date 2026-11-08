@@ -666,53 +666,32 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     );
 }
 
-/// **The main-thread guard sits where a unit is freed, not on an edit**
-/// (design 015 §4.2). A removal frees nothing, so a session owned by another
-/// thread may remove a node (Bevy removes a clip's node from a parallel
-/// system); the free happens at a collect, here a detached commit's, and
-/// that is what asserts. Debug builds with `plugin` only: the guard is a
-/// `debug_assert!` behind that feature.
+/// **An edit is any thread's** (design 015 §4.2). A removal frees nothing, so a
+/// session owned by another thread may remove a node (Bevy removes a clip's
+/// node from a parallel system); the free happens at a collect, here a
+/// detached commit's. The collect no longer asserts a thread: the session's
+/// own paths take no `MainThread` token, and an in-process plugin's teardown
+/// is the host's to run on its main thread (the `Session` docs), so this pins
+/// the half that is still a promise, that an edit made off the thread that
+/// built the session works, and that the session commits after it.
 ///
-/// The session goes back to this thread to be dropped: its drop asserts too.
-///
-/// Mutations (run):
-/// - `Session::remove` asserting the main thread again → the removal
-///   panics → fails;
-/// - `Graph::pump_local` without its guard → the commit off the main
-///   thread frees unchecked and does not panic → fails.
-#[cfg(all(feature = "plugin", debug_assertions))]
+/// No mutation can be written for it: the property is the absence of a thread
+/// check on `remove`, which is the code as it stands (a check added there would
+/// fail it).
 #[test]
-fn a_removal_is_any_threads_and_a_free_is_the_main_threads() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    tutti_plugin_types::mark_main_thread();
+fn a_removal_is_any_threads() {
     let mut s = detached(1);
     let (dc, _) = s.graph().insert(Const::mono(0.5));
     s.update();
 
-    let (s, removed) = std::thread::spawn(move || {
-        let mut s = s;
-        let removed = catch_unwind(AssertUnwindSafe(|| s.remove(dc)));
+    let (mut s, removed) = std::thread::spawn(move || {
+        let removed = s.remove(dc);
         (s, removed)
     })
     .join()
     .expect("the session comes back");
-    assert!(
-        removed.expect("a removal off the main thread does not assert"),
-        "the node was in the graph"
-    );
-
-    let (s, panicked) = std::thread::spawn(move || {
-        let mut s = s;
-        let freed = catch_unwind(AssertUnwindSafe(|| {
-            s.commit();
-        }));
-        (s, freed.is_err())
-    })
-    .join()
-    .expect("the session comes back");
-    assert!(panicked, "a commit off the main thread frees, and asserts");
-    drop(s);
+    assert!(removed, "the node was in the graph");
+    s.commit();
 }
 
 /// **The update's `Reclaim` phase frees what a block held across a

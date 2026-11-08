@@ -296,7 +296,7 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a plugin that merely lies about latency still activates");
 
-    let reported = inst.latency_samples();
+    let reported = inst.latency_samples(&main_thread());
     assert_eq!(
         reported, LIED_LATENCY_SAMPLES,
         "the probe should be reporting its inflated latency; if this is 0 the \
@@ -702,13 +702,13 @@ fn the_misbehaviour_switch_reaches_the_plugin() {
     let honest = {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
-        loaded.latency_samples()
+        loaded.latency_samples(&main_thread())
     };
 
     let lying = {
         let _m = Misbehaviour::set(misbehave::LATENCY_LIES);
         let loaded = Vst3Loaded::load(&path, LoadOptions::new()).expect("load");
-        loaded.latency_samples()
+        loaded.latency_samples(&main_thread())
     };
 
     assert_ne!(
@@ -781,11 +781,11 @@ fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
 fn a_latency_that_follows_the_rate_is_valid_after_a_rate_change() {
     let _m = Misbehaviour::set(misbehave::LATENCY_FOLLOWS_RATE);
     let mut inst = Active::<f32>::load(&probe_path(), 44_100.0, BLOCK).expect("load");
-    assert_eq!(inst.latency_samples(), 44);
+    assert_eq!(inst.latency_samples(&main_thread()), 44);
 
     inst.set_sample_rate(96_000.0).expect("rate change");
 
-    assert_eq!(inst.latency_samples(), 96);
+    assert_eq!(inst.latency_samples(&main_thread()), 96);
 }
 
 // ── Return codes that are not refusals ───────────────────────────────────────
@@ -885,4 +885,10 @@ fn a_refused_connection_does_not_fail_the_load() {
         !out.is_empty(),
         "the plugin produced no output buses after a refused connect"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

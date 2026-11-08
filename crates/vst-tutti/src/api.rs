@@ -244,6 +244,8 @@ impl AEffect {
     #[allow(clippy::borrowed_box)]
     pub unsafe fn get_plugin(&self) -> &mut Box<dyn Plugin> {
         //FIXME: find a way to do this without resorting to transmuting via a box
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` is the
+        // leaked `Box<Box<dyn Plugin>>` this library installed, with no concurrent accessor.
         unsafe { &mut *(self.object as *mut Box<dyn Plugin>) }
     }
 
@@ -252,6 +254,8 @@ impl AEffect {
     /// # Safety
     /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_info(&self) -> &Info {
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
+        // `PluginCache` this library installed and it has not been dropped.
         unsafe { &(*(self.user as *mut super::PluginCache)).info }
     }
 
@@ -260,6 +264,8 @@ impl AEffect {
     /// # Safety
     /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_params(&self) -> &Arc<dyn PluginParameters> {
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
+        // `PluginCache` this library installed and it has not been dropped.
         unsafe { &(*(self.user as *mut super::PluginCache)).params }
     }
 
@@ -270,6 +276,8 @@ impl AEffect {
     /// the caller must not invoke this concurrently with any other accessor on
     /// the same `AEffect`.
     pub unsafe fn get_editor(&self) -> &mut Option<Box<dyn Editor>> {
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `user` is the
+        // `PluginCache` this library installed, with no concurrent accessor.
         unsafe { &mut (*(self.user as *mut super::PluginCache)).editor }
     }
 
@@ -279,7 +287,10 @@ impl AEffect {
     /// Must be called exactly once, from `effClose`, after which neither
     /// `self.object` nor `self.user` may be dereferenced again.
     pub unsafe fn drop_plugin(&mut self) {
+        // SAFETY: the caller upholds this fn's `# Safety` contract: `object` came from
+        // `Box::into_raw` of a `Box<Box<dyn Plugin>>` and is freed exactly once here.
         drop(unsafe { Box::from_raw(self.object as *mut Box<dyn Plugin>) });
+        // SAFETY: as above for `user`, which came from `Box::into_raw` of a `PluginCache`.
         drop(unsafe { Box::from_raw(self.user as *mut super::PluginCache) });
     }
 }
@@ -683,6 +694,9 @@ impl Events {
     #[inline]
     pub(crate) fn events_raw(&self) -> &[*const Event] {
         use std::slice;
+        // SAFETY: VST2 ABI: `events` is a variable-length array and the host allocates
+        // `num_events` contiguous pointers from `events[0]`; `*mut Event` and
+        // `*const Event` share a layout. `num_events` is not checked for being negative.
         unsafe {
             slice::from_raw_parts(
                 &self.events[0] as *const *mut _ as *const *const _,
@@ -694,6 +708,9 @@ impl Events {
     #[inline]
     pub(crate) fn events_raw_mut(&mut self) -> &mut [*const SysExEvent] {
         use std::slice;
+        // SAFETY: as in `events_raw`: the allocation holds `num_events` contiguous
+        // pointers from `events[0]` (`SendEventBuffer` allocates exactly this), and
+        // `&mut self` gives exclusive access. `num_events` is not checked for sign.
         unsafe {
             slice::from_raw_parts_mut(
                 &mut self.events[0] as *mut *mut _ as *mut *const _,
@@ -734,6 +751,8 @@ impl Events {
     pub fn events<'a>(&'a self) -> impl Iterator<Item = crate::event::Event<'a>> {
         self.events_raw()
             .iter()
+            // SAFETY: VST2 ABI: each entry of the host's event array points at a valid
+            // event of the type its `event_type` names. Entries are not null-checked.
             .map(|ptr| unsafe { crate::event::Event::from_raw_event(*ptr) })
     }
 }
@@ -907,6 +926,9 @@ pub struct SysExEvent {
     pub _reserved2: isize,
 }
 
+// SAFETY: NOT ESTABLISHED: the struct is plain `#[repr(C)]` data and moving it never
+// dereferences `system_data`, but nothing guarantees the pointee is valid or unaliased
+// on the receiving thread; that is left to whoever sends one.
 unsafe impl Send for SysExEvent {}
 
 #[repr(C)]
@@ -1153,6 +1175,9 @@ mod tests {
             _reserved1: 0,
             _reserved2: 0,
         };
+        // SAFETY: `MidiEvent` and `Event` are both 32-byte `#[repr(C)]` structs (sizes
+        // are checked by `transmute`) with the same leading fields, and any bit pattern
+        // of `MidiEvent`'s integer fields is valid for `Event`'s byte array.
         let mut event: Event = unsafe { std::mem::transmute(midi_event) };
         event.event_type = EventType::Midi;
 

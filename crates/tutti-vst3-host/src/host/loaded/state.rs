@@ -1,6 +1,7 @@
 //! Programs and units, the compatibility JSON, and the state container.
 
 use std::collections::HashSet;
+use tutti_plugin_types::MainThread;
 
 use super::*;
 use crate::host::controller::latest_per_parameter;
@@ -12,13 +13,7 @@ impl Vst3Loaded {
     /// Read before [`units`](Self::units), which needs the list ids to tell a
     /// unit's real program list from one it names but the plugin never
     /// publishes. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn program_lists(&self) -> Vec<Vst3ProgramListInfo> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn program_lists(&self, _main: &MainThread) -> Vec<Vst3ProgramListInfo> {
         self.plugin.program_lists()
     }
 
@@ -36,13 +31,7 @@ impl Vst3Loaded {
     /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
     /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
     /// thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn units(&self) -> Vec<Vst3UnitInfo> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn units(&self, _main: &MainThread) -> Vec<Vst3UnitInfo> {
         self.plugin.units()
     }
 
@@ -52,13 +41,12 @@ impl Vst3Loaded {
     /// `list_id` is a [`Vst3ProgramListInfo::id`], **not** an index into
     /// [`program_lists`](Self::program_lists) — the two spaces differ, and a
     /// plugin is free to number its lists however it likes. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn program_name(&self, list_id: i32, program_index: u32) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn program_name(
+        &self,
+        _main: &MainThread,
+        list_id: i32,
+        program_index: u32,
+    ) -> Option<String> {
         self.plugin.program_name(list_id, program_index)
     }
 
@@ -69,13 +57,7 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn selected_unit(&self) -> Option<i32> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn selected_unit(&self, _main: &MainThread) -> Option<i32> {
         self.plugin.selected_unit()
     }
 
@@ -86,14 +68,8 @@ impl Vst3Loaded {
     /// The one write on this interface. Pass
     /// [`unit_ids::ROOT`] to select the implicit
     /// top-level unit. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     #[must_use]
-    pub fn select_unit(&mut self, unit_id: i32) -> bool {
-        tutti_plugin_types::assert_main_thread();
+    pub fn select_unit(&mut self, _main: &MainThread, unit_id: i32) -> bool {
         self.plugin.select_unit(unit_id)
     }
 
@@ -102,19 +78,14 @@ impl Vst3Loaded {
     ///
     /// `media_type` and `direction` are the SDK's `MediaTypes` and
     /// `BusDirections` values. Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub fn unit_by_bus(
         &self,
+        _main: &MainThread,
         media_type: i32,
         direction: i32,
         bus_index: i32,
         channel: i32,
     ) -> Option<i32> {
-        tutti_plugin_types::assert_main_thread();
         self.plugin
             .unit_by_bus(media_type, direction, bus_index, channel)
     }
@@ -130,13 +101,7 @@ impl Vst3Loaded {
     /// finds the one in the "Plugin Compatibility Class" category, instantiates
     /// it, and reads its JSON. Returns `None` if the bundle ships no such class.
     /// Main/UI thread.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
-    pub fn compatibility_json(&self) -> Option<String> {
-        tutti_plugin_types::assert_main_thread();
+    pub fn compatibility_json(&self, _main: &MainThread) -> Option<String> {
         self._library.module().compatibility_json()
     }
 
@@ -180,16 +145,11 @@ impl Vst3Loaded {
     /// component half is the one a project cannot be restored without, and
     /// plenty of controllers have no UI state to give. That half degrades to
     /// empty and the component half is still returned.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub(in crate::host) fn read_state(
         &self,
+        _main: &MainThread,
         undrained: &[(ParamId, Normalized)],
     ) -> Result<Vec<u8>> {
-        tutti_plugin_types::assert_main_thread();
         let component = self.read_component_state()?;
         let controller = self.read_controller_state();
         let pending = latest_per_parameter(
@@ -260,16 +220,11 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`] if the plugin
     /// rejects the component blob via `setState`. A controller that rejects its
     /// own stream is tolerated, matching [`save_state`](tutti_plugin_types::Control::save_state).
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if called off the thread registered with
-    /// [`tutti_plugin_types::mark_main_thread`].
     pub(in crate::host) fn write_state(
         &mut self,
+        _main: &MainThread,
         data: &[u8],
     ) -> Result<Vec<(ParamId, Normalized)>> {
-        tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
             return Ok(Vec::new());
         }

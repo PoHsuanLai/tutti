@@ -158,7 +158,7 @@ fn keyswitches_enumerate_and_bound_check() {
 fn units_enumerate_with_resolvable_parents() {
     let checker = require_sample("host-checker.vst3");
 
-    let units = checker.units();
+    let units = checker.units(&main_thread());
     assert!(
         !units.is_empty(),
         "host-checker implements IUnitInfo but the host read no units"
@@ -211,10 +211,10 @@ fn units_enumerate_with_resolvable_parents() {
         let Ok(loaded) = Vst3Loaded::load(&path, LoadOptions::new()) else {
             continue;
         };
-        if loaded.units().is_empty() {
+        if loaded.units(&main_thread()).is_empty() {
             silent += 1;
             assert!(
-                loaded.program_lists().is_empty(),
+                loaded.program_lists(&main_thread()).is_empty(),
                 "{name}: the host read no units but did read program lists — \
                  one accessor found IUnitInfo and the other did not"
             );
@@ -239,8 +239,8 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
         let Ok(loaded) = Vst3Loaded::load(&path, LoadOptions::new()) else {
             continue;
         };
-        let lists = loaded.program_lists();
-        let units = loaded.units();
+        let lists = loaded.program_lists(&main_thread());
+        let units = loaded.units(&main_thread());
         if units.is_empty() {
             continue;
         }
@@ -270,7 +270,7 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
         for list in &lists {
             for i in 0..list.program_count {
                 assert!(
-                    loaded.program_name(list.id, i).is_some(),
+                    loaded.program_name(&main_thread(), list.id, i).is_some(),
                     "{name}: list {} claims {} programs but program {i} has no \
                      name",
                     list.id,
@@ -412,19 +412,19 @@ fn remap_param_id_migrates_a_known_parameter() {
     let uid: [i8; 16] = AGAIN_PROCESSOR_UID.map(|b| b as i8);
 
     assert_eq!(
-        remap.remap_param_id(&uid, ParamId::new(0)),
+        remap.remap_param_id(&main_thread(), &uid, ParamId::new(0)),
         Some(ParamId::new(EXPECTED_NEW_ID)),
         "the sample maps AGain's param 0 onto {EXPECTED_NEW_ID}; a different \
          answer means the UID or the id is not reaching the plugin"
     );
     assert_eq!(
-        remap.remap_param_id(&uid, ParamId::new(999)),
+        remap.remap_param_id(&main_thread(), &uid, ParamId::new(999)),
         None,
         "param 999 has no mapping, so the host must report None rather than a \
          stale or defaulted id"
     );
     assert_eq!(
-        remap.remap_param_id(&[0i8; 16], ParamId::new(0)),
+        remap.remap_param_id(&main_thread(), &[0i8; 16], ParamId::new(0)),
         None,
         "a zero UID is not AGain, so the plugin refuses — a Some here means the \
          host is not passing the UID through"
@@ -437,7 +437,7 @@ fn remap_param_id_migrates_a_known_parameter() {
 #[test]
 fn physical_ui_mapping_is_read_per_plugin() {
     let nes = require_sample("note-expression-synth.vst3");
-    let mapping = nes.physical_ui_mapping(0, 0);
+    let mapping = nes.physical_ui_mapping(&main_thread(), 0, 0);
     assert!(
         !mapping.is_empty(),
         "note-expression-synth implements INoteExpressionPhysicalUIMapping but \
@@ -448,7 +448,7 @@ fn physical_ui_mapping_is_read_per_plugin() {
     // table — otherwise the host would invent controller routings.
     if let Some(pn) = sample("pitch-names.vst3") {
         assert!(
-            pn.physical_ui_mapping(0, 0).is_empty(),
+            pn.physical_ui_mapping(&main_thread(), 0, 0).is_empty(),
             "pitch-names does not implement the interface, so the mapping must \
              be empty rather than a synthesised default"
         );
@@ -470,6 +470,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
     let checker = require_sample("host-checker.vst3");
 
     let xml = checker.xml_representation(
+        &main_thread(),
         "Steinberg Media Technologies",
         "Generic 8 Cells",
         "1.0",
@@ -491,6 +492,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
     assert!(
         checker
             .xml_representation(
+                &main_thread(),
                 "Steinberg Media Technologies",
                 "No Such Layout",
                 "1.0",
@@ -514,10 +516,10 @@ fn param_id_for_function_name_resolves_known_functions() {
     let checker = require_sample("host-checker.vst3");
 
     let dry_wet = checker
-        .param_id_for_function_name(0, "DryWetMix")
+        .param_id_for_function_name(&main_thread(), 0, "DryWetMix")
         .expect("host-checker maps the DryWetMix function name");
     let randomize = checker
-        .param_id_for_function_name(0, "Randomize")
+        .param_id_for_function_name(&main_thread(), 0, "Randomize")
         .expect("host-checker maps the Randomize function name");
 
     assert_ne!(
@@ -526,7 +528,7 @@ fn param_id_for_function_name_resolves_known_functions() {
          ({dry_wet:?}) — the name is being ignored"
     );
     assert_eq!(
-        checker.param_id_for_function_name(0, "NotAFunctionName"),
+        checker.param_id_for_function_name(&main_thread(), 0, "NotAFunctionName"),
         None,
         "an unknown function name resolved to a parameter id"
     );
@@ -581,4 +583,10 @@ fn the_factory_flag_word_is_read_not_discarded() {
         "every VST3 plugin sets kUnicode ({unicode} of {read} did); a zero here \
          means the flag word is being dropped again rather than read"
     );
+}
+
+/// This process's main thread. Each test is its own process under nextest, so
+/// the claim cannot be refused.
+fn main_thread() -> tutti_plugin_types::MainThread {
+    tutti_plugin_types::MainThread::claim().expect("one test, one process")
 }

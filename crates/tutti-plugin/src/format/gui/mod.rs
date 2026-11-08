@@ -17,6 +17,7 @@ use crate::error::{BridgeError, LoadStage, Result};
 use crate::protocol::{Normalized, ParamId};
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
+use tutti_plugin_types::MainThread;
 
 /// The host-side, in-process plugin editor.
 ///
@@ -30,53 +31,64 @@ use std::path::Path;
 /// Kept `pub(crate)` — its only consumer is the host `PluginBridge`
 /// ([`composite`](crate::host::ipc_client::composite)); promote to `pub` if a
 /// cross-crate consumer ever appears.
+/// Every method is a main-thread call, which the `&MainThread` proves.
 pub(crate) trait PluginEditor: Send {
     /// Embed into `parent`, whose backing-store scale is `scale` (forwarded
     /// where the format takes it; see [`ContentScale`]).
-    fn open_editor(&mut self, parent: WindowHandle, scale: ContentScale) -> Result<EditorSize>;
+    fn open_editor(
+        &mut self,
+        main: &MainThread,
+        parent: WindowHandle,
+        scale: ContentScale,
+    ) -> Result<EditorSize>;
 
     /// Open as a plugin-owned floating window. No parent in, no size out.
     ///
     /// Defaulted to a refusal: only CLAP has the concept, so VST3 and AU are
     /// not made to write an override that could only say this.
-    fn open_floating_editor(&mut self) -> Result<()> {
+    fn open_floating_editor(&mut self, _main: &MainThread) -> Result<()> {
         Err(BridgeError::ProtocolError(
             "this plugin format has no floating-window editor".into(),
         ))
     }
 
-    fn close_editor(&mut self);
-    fn editor_idle(&mut self);
+    fn close_editor(&mut self, main: &MainThread);
+    fn editor_idle(&mut self, main: &MainThread);
     /// Mirror a parameter write onto the GUI instance so the editor's display
     /// follows a host-side edit. [`Normalized`] for the same reason the audio
     /// path takes one: this is the host's authoring domain, and each impl
     /// denormalizes at its own FFI edge if its format needs plain units.
-    fn set_parameter(&mut self, id: ParamId, value: Normalized);
-    fn set_state(&mut self, data: &[u8]) -> Result<()>;
+    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
+    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()>;
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
     ///
     /// Every format with an editor here is one of the three opaque-id formats
     /// (VST2's in-process editor does not go through this trait), so an impl
     /// tags what the plugin handed it rather than choosing a model.
-    fn poll_gui_param_changes(&mut self) -> Vec<(ParamId, f32)>;
+    fn poll_gui_param_changes(&mut self, main: &MainThread) -> Vec<(ParamId, f32)>;
 
     /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
     /// GUI instance so the editor can update its automation UI feedback. Each
     /// format encodes the mode onto its own ABI (VST3 `IAutomationState`, …).
     /// Default no-op for formats without the concept; only the VST3 GUI overrides it.
-    fn set_automation_state(&mut self, _mode: crate::protocol::AutomationMode) {}
+    fn set_automation_state(&mut self, _main: &MainThread, _mode: crate::protocol::AutomationMode) {
+    }
 
-    fn editor_capabilities(&mut self) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(&mut self, _requested: EditorSize) -> Result<EditorSize> {
+    fn set_editor_size(
+        &mut self,
+        _main: &MainThread,
+        _requested: EditorSize,
+    ) -> Result<EditorSize> {
         Err(BridgeError::ProtocolError(
             "set_editor_size not supported".into(),
         ))
     }
 
-    fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
         None
     }
 }

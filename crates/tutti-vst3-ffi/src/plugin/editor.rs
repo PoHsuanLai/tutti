@@ -1,6 +1,7 @@
 //! The plugin's editor: opening, closing, sizing and input.
 
 use super::*;
+use tutti_plugin_types::MainThread;
 
 impl Plugin {
     // ── The editor ───────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ impl Plugin {
     /// the view refuses, or an `attached` that fails.
     pub fn open_editor(
         &mut self,
+        _main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Option<EditorSize>, EditorError> {
@@ -46,7 +48,14 @@ impl Plugin {
     }
 
     /// Detaches and releases the editor, if one is open.
-    pub fn close_editor(&mut self) {
+    pub fn close_editor(&mut self, _main: &MainThread) {
+        self.release_editor();
+    }
+
+    /// [`close_editor`](Self::close_editor) for `Drop`, which has no token: the
+    /// thread a drop runs on is the owner's, and the per-format lane that gives
+    /// the plugin a main-thread handle is what makes that the main thread.
+    pub(super) fn release_editor(&mut self) {
         if let Some(editor) = self.editor.take() {
             editor.close();
         }
@@ -81,7 +90,11 @@ impl Plugin {
     /// The size the open editor snaps `requested` to; `None` with no editor
     /// open.
     #[must_use]
-    pub fn editor_size_constraint(&self, requested: EditorSize) -> Option<EditorSize> {
+    pub fn editor_size_constraint(
+        &self,
+        _main: &MainThread,
+        requested: EditorSize,
+    ) -> Option<EditorSize> {
         Some(self.editor.as_ref()?.constrain(requested).0)
     }
 
@@ -91,7 +104,11 @@ impl Plugin {
     ///
     /// [`Vst3Error::NotInitialized`] with no editor open, or the view's
     /// refusal.
-    pub fn resize_editor(&self, requested: EditorSize) -> Result<EditorSize, Vst3Error> {
+    pub fn resize_editor(
+        &self,
+        _main: &MainThread,
+        requested: EditorSize,
+    ) -> Result<EditorSize, Vst3Error> {
         self.editor
             .as_ref()
             .ok_or(Vst3Error::NotInitialized)?
@@ -100,30 +117,42 @@ impl Plugin {
 
     /// Delivers a key press to the open editor; `true` if it was consumed.
     #[must_use]
-    pub fn editor_key_down(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    pub fn editor_key_down(
+        &self,
+        main: &MainThread,
+        key: u16,
+        virtual_key: i16,
+        modifiers: i16,
+    ) -> bool {
         self.editor
             .as_ref()
-            .is_some_and(|e| crate::view::send_key_down(&e.view, key, virtual_key, modifiers))
+            .is_some_and(|e| crate::view::send_key_down(main, &e.view, key, virtual_key, modifiers))
     }
 
     /// Delivers a key release to the open editor; `true` if it was consumed.
     #[must_use]
-    pub fn editor_key_up(&self, key: u16, virtual_key: i16, modifiers: i16) -> bool {
+    pub fn editor_key_up(
+        &self,
+        main: &MainThread,
+        key: u16,
+        virtual_key: i16,
+        modifiers: i16,
+    ) -> bool {
         self.editor
             .as_ref()
-            .is_some_and(|e| crate::view::send_key_up(&e.view, key, virtual_key, modifiers))
+            .is_some_and(|e| crate::view::send_key_up(main, &e.view, key, virtual_key, modifiers))
     }
 
     /// Delivers a wheel step to the open editor; `true` if it was consumed.
     #[must_use]
-    pub fn editor_wheel(&self, distance: f32) -> bool {
+    pub fn editor_wheel(&self, main: &MainThread, distance: f32) -> bool {
         self.editor
             .as_ref()
-            .is_some_and(|e| crate::view::send_wheel(&e.view, distance))
+            .is_some_and(|e| crate::view::send_wheel(main, &e.view, distance))
     }
 
     /// Tells the open editor whether it has focus.
-    pub fn set_editor_focus(&self, focused: bool) {
+    pub fn set_editor_focus(&self, _main: &MainThread, focused: bool) {
         if let Some(e) = &self.editor {
             crate::view::set_view_focus(&e.view, focused);
         }
@@ -131,9 +160,9 @@ impl Plugin {
 
     /// Pumps the run loop the plugin registered timers and file descriptors on
     /// (Linux); nothing elsewhere.
-    pub fn run_editor_loop_iteration(&self) {
+    pub fn run_editor_loop_iteration(&self, main: &MainThread) {
         #[cfg(target_os = "linux")]
-        self.module.run_loop().run_iteration();
+        self.module.run_loop().run_iteration(main);
     }
 
     /// What the run loop has registered and fired.

@@ -33,6 +33,8 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::{Element};
+use tutti_au_ffi::property::{AudioChannelLayout, ElementName, SupportedChannelLayoutTags};
 use std::mem::size_of;
 
 use crate::bus::BusDirection;
@@ -331,10 +333,7 @@ pub(crate) fn supported_layout_tags(
     direction: BusDirection,
     bus: u32,
 ) -> Vec<AuLayoutTag> {
-    let Ok(bytes) = unit.get_bytes(
-        K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS,
-        direction.scope(),
-        bus,
+    let Ok(bytes) = unit.get_bytes::<SupportedChannelLayoutTags>(direction.scope(), Element(bus),
     ) else {
         return Vec::new();
     };
@@ -375,10 +374,7 @@ pub(crate) fn supported_layout_tags(
 /// a `UseChannelDescriptions` unit — none of them sets. If that changes, this
 /// returns the tag `UseChannelDescriptions` and a caller can tell.
 pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Result<AuLayoutTag> {
-    let bytes = unit.get_bytes(
-        K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
-        direction.scope(),
-        bus,
+    let bytes = unit.get_bytes::<AudioChannelLayout>(direction.scope(), Element(bus),
     )?;
     // The AU controls this length, and measured sizes differ per unit for the
     // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
@@ -455,10 +451,7 @@ pub(crate) fn set_layout_tag(
         mNumberChannelDescriptions: 0,
         mChannelDescriptions: [AudioChannelDescription::default(); 1],
     };
-    Ok(unit.set_prefix(
-        K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT,
-        direction.scope(),
-        bus,
+    Ok(unit.set_prefix::<AudioChannelLayout>(direction.scope(), Element(bus),
         &layout,
         TAG_ONLY_LAYOUT_SIZE,
     )?)
@@ -525,7 +518,7 @@ pub(crate) fn set_layout_tag(
 pub(crate) fn element_name(unit: &Unit, direction: BusDirection, bus: u32) -> Result<String> {
     // A null answer, or one that is not a CFString, is an invalid property
     // value rather than a name.
-    match unit.copy_string(K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME, direction.scope(), bus)? {
+    match unit.copy_string::<ElementName>(direction.scope(), Element(bus))? {
         Some(name) => Ok(name),
         None => Err(AuError::OsStatus {
             function: "channel_layout::element_name",

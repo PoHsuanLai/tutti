@@ -64,6 +64,8 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::{Element};
+use tutti_au_ffi::property::{ClassInfo};
 use std::path::Path;
 
 use tutti_au_ffi::{NotADictionary, PresetFacts, Unit, preset_facts, preset_with_identity};
@@ -176,10 +178,7 @@ pub fn save_preset_file(
     path: &Path,
     name: &str,
 ) -> Result<()> {
-    let class_info = unit.copy_plist(
-        crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
-        crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    let class_info = unit.copy_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
     )?;
     if class_info.is_empty() {
         return Err(AuError::invalid_preset(
@@ -275,10 +274,7 @@ pub fn load_preset_file(
     // `InputProperties`/`OutputProperties`/`GlobalProperties`) must reach the AU
     // byte-identical. A round trip through a rebuilt dictionary risks dropping a
     // key this host does not know about, and those keys carry real state.
-    unit.set_plist(
-        crate::types::K_AUDIO_UNIT_PROPERTY_CLASS_INFO,
-        crate::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    unit.set_plist::<ClassInfo>(Scope::GLOBAL, Element::ZERO,
         &bytes,
     )?;
 

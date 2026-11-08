@@ -54,6 +54,8 @@
 // AudioToolbox call dereferences. Callers must supply a valid unit, same as
 // every other entry point in this crate.
 
+use tutti_au_ffi::{Element, Scope};
+use tutti_au_ffi::property::{DependentParameters, ParameterList, ParameterValueStrings};
 use crate::error::Result;
 use crate::types::*;
 use tutti_au_ffi::Unit;
@@ -77,17 +79,17 @@ use tutti_au_ffi::Unit;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParamAddress {
     /// Raw `kAudioUnitScope_*` constant.
-    pub scope: u32,
+    pub scope: Scope,
     /// Element (bus / part) index within that scope.
-    pub element: u32,
+    pub element: Element,
 }
 
 impl ParamAddress {
     /// The global scope, element 0 — where effects and instruments keep every
     /// parameter, and what the un-suffixed functions in this module use.
     pub const GLOBAL: Self = Self {
-        scope: K_AUDIO_UNIT_SCOPE_GLOBAL,
-        element: 0,
+        scope: Scope::GLOBAL,
+        element: Element::ZERO,
     };
 
     /// Parameters attached to bus `bus` on `direction`.
@@ -96,7 +98,7 @@ impl ParamAddress {
     pub fn on_bus(direction: crate::bus::BusDirection, bus: u32) -> Self {
         Self {
             scope: direction.scope(),
-            element: bus,
+            element: Element(bus),
         }
     }
 }
@@ -254,7 +256,7 @@ impl MetaScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DependentParam {
     /// Raw `kAudioUnitScope_*` the dependent parameter lives on.
-    pub scope: u32,
+    pub scope: Scope,
     /// The dependent parameter's id within that scope.
     pub id: u32,
 }
@@ -470,10 +472,7 @@ pub fn list(unit: &Unit) -> Vec<AuParameter> {
 /// error — asking a plain effect for its input-element parameters legitimately
 /// yields nothing.
 pub fn list_at(unit: &Unit, addr: ParamAddress) -> Vec<AuParameter> {
-    let ids_bytes = match unit.get_bytes(
-        K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-        addr.scope,
-        addr.element,
+    let ids_bytes = match unit.get_bytes::<ParameterList>(addr.scope, addr.element,
     ) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
@@ -612,10 +611,7 @@ pub fn value_strings(unit: &Unit, id: u32) -> Vec<String> {
 /// [`value_strings`] at an explicit address.
 pub fn value_strings_at(unit: &Unit, addr: ParamAddress, id: u32) -> Vec<String> {
     // A refusal to answer is the "no value strings" answer; so is a null array.
-    unit.copy_string_array(
-        K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS,
-        addr.scope,
-        id,
+    unit.copy_string_array::<ParameterValueStrings>(addr.scope, Element(id),
     )
     .unwrap_or_default()
     .into_iter()
@@ -787,7 +783,7 @@ pub fn dependents_of_at(unit: &Unit, addr: ParamAddress, id: u32) -> Option<Vec<
     // struct width; `get_array` decodes the whole entries and drops the
     // remainder rather than reading past what it wrote.
     let entries: Vec<AUDependentParameter> = unit
-        .get_array(K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS, addr.scope, id)
+        .get_array::<DependentParameters>(addr.scope, Element(id))
         .ok()?;
     Some(
         entries
@@ -883,8 +879,8 @@ mod tests {
     /// here silently redirects the whole existing API.
     #[test]
     fn the_global_address_is_the_global_scope_at_element_zero() {
-        assert_eq!(ParamAddress::GLOBAL.scope, K_AUDIO_UNIT_SCOPE_GLOBAL);
-        assert_eq!(ParamAddress::GLOBAL.element, 0);
+        assert_eq!(ParamAddress::GLOBAL.scope, Scope::GLOBAL);
+        assert_eq!(ParamAddress::GLOBAL.element, Element::ZERO);
         assert_eq!(ParamAddress::default(), ParamAddress::GLOBAL);
     }
 
@@ -897,12 +893,12 @@ mod tests {
         use crate::bus::BusDirection;
 
         let addr = ParamAddress::on_bus(BusDirection::Input, 3);
-        assert_eq!(addr.scope, K_AUDIO_UNIT_SCOPE_INPUT);
-        assert_eq!(addr.element, 3);
+        assert_eq!(addr.scope, Scope::INPUT);
+        assert_eq!(addr.element, Element(3));
 
         let out = ParamAddress::on_bus(BusDirection::Output, 0);
-        assert_eq!(out.scope, K_AUDIO_UNIT_SCOPE_OUTPUT);
-        assert_eq!(out.element, 0);
+        assert_eq!(out.scope, Scope::OUTPUT);
+        assert_eq!(out.element, Element::ZERO);
 
         // Output bus 0 and the global address share an element index but are
         // different addresses — so the scope is genuinely carried.

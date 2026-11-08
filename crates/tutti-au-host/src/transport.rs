@@ -7,6 +7,8 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::{Element, Property, Scope};
+use tutti_au_ffi::property::{PresentationLatency, TailTime};
 use tutti_au_ffi::Unit;
 use tutti_types::value::units::Seconds;
 
@@ -39,16 +41,13 @@ use tutti_types::value::units::Seconds;
 /// first would tell the caller a unit of unknown tail has none, and the bounce
 /// would truncate exactly the material the property was read to protect.
 pub(crate) fn tail_time(unit: &Unit) -> crate::error::Result<Seconds> {
-    use crate::types::{K_AUDIO_UNIT_PROPERTY_TAIL_TIME, K_AUDIO_UNIT_SCOPE_GLOBAL};
+    use crate::types::{TailTime::ID, Scope::GLOBAL};
 
     // Apple's width is `Float64`; `Seconds` is f32-backed. The narrowing is
     // safe for every value this property carries — measured maxima are ~21 s
     // (AUDelay) and 10 s (AUMatrixReverb), far inside f32's exact-integer range
     // — and `Seconds` is the crate's unit for exactly this quantity.
-    let seconds: f64 = unit.get(
-        K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    let seconds: f64 = unit.get::<TailTime>(Scope::GLOBAL, Element::ZERO,
     )?;
     Ok(Seconds(seconds as f32))
 }
@@ -117,13 +116,10 @@ pub(crate) fn set_presentation_latency(
     bus: u32,
     latency: Seconds,
 ) -> crate::error::Result<()> {
-    use crate::types::K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY;
+    use PresentationLatency::ID;
 
     let seconds = f64::from(latency.0);
-    Ok(unit.set(
-        K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY,
-        direction.scope(),
-        bus,
+    Ok(unit.set::<PresentationLatency>(direction.scope(), Element(bus),
         &seconds,
     )?)
 }

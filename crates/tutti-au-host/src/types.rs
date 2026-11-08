@@ -102,47 +102,13 @@ pub const K_AUDIO_COMPONENT_FLAG_IS_V3_AUDIO_UNIT: u32 = sys::kAudioComponentFla
 
 /// `kAudioUnitErr_InvalidProperty`: the unit does not implement the property asked for.
 pub const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: OSStatus = sys::kAudioUnitErr_InvalidProperty;
-/// `kAudioUnitErr_InvalidParameter`: the unit has no such parameter.
-pub const K_AUDIO_UNIT_ERR_INVALID_PARAMETER: OSStatus = sys::kAudioUnitErr_InvalidParameter;
 /// `kAudioUnitErr_InvalidElement`: the element (bus) index is out of range for the scope.
 pub const K_AUDIO_UNIT_ERR_INVALID_ELEMENT: OSStatus = sys::kAudioUnitErr_InvalidElement;
-/// `kAudioUnitErr_NoConnection`: the input bus has neither a connection nor a render callback.
-pub const K_AUDIO_UNIT_ERR_NO_CONNECTION: OSStatus = sys::kAudioUnitErr_NoConnection;
-/// `kAudioUnitErr_FailedInitialization`: the unit could not initialize with its current configuration.
-pub const K_AUDIO_UNIT_ERR_FAILED_INITIALIZATION: OSStatus =
-    sys::kAudioUnitErr_FailedInitialization;
-/// `kAudioUnitErr_TooManyFramesToProcess`: a render asked for more frames than the maximum frames per slice.
-pub const K_AUDIO_UNIT_ERR_TOO_MANY_FRAMES_TO_PROCESS: OSStatus =
-    sys::kAudioUnitErr_TooManyFramesToProcess;
-/// `kAudioUnitErr_InvalidFile`: the file is not a valid one for the unit.
-pub const K_AUDIO_UNIT_ERR_INVALID_FILE: OSStatus = sys::kAudioUnitErr_InvalidFile;
-/// `kAudioUnitErr_UnknownFileType`: the unit does not recognize the file type.
-pub const K_AUDIO_UNIT_ERR_UNKNOWN_FILE_TYPE: OSStatus = sys::kAudioUnitErr_UnknownFileType;
-/// `kAudioUnitErr_FileNotSpecified`: the unit needs a file and none was set.
-pub const K_AUDIO_UNIT_ERR_FILE_NOT_SPECIFIED: OSStatus = sys::kAudioUnitErr_FileNotSpecified;
-/// `kAudioUnitErr_FormatNotSupported`: the stream format is not one the unit supports.
-pub const K_AUDIO_UNIT_ERR_FORMAT_NOT_SUPPORTED: OSStatus = sys::kAudioUnitErr_FormatNotSupported;
 /// `kAudioUnitErr_Uninitialized`: the call needs an initialized unit and this one is not.
 pub const K_AUDIO_UNIT_ERR_UNINITIALIZED: OSStatus = sys::kAudioUnitErr_Uninitialized;
-/// `kAudioUnitErr_InvalidScope`: the scope is not valid for the property or parameter.
-pub const K_AUDIO_UNIT_ERR_INVALID_SCOPE: OSStatus = sys::kAudioUnitErr_InvalidScope;
-/// `kAudioUnitErr_PropertyNotWritable`: the property is read-only.
-pub const K_AUDIO_UNIT_ERR_PROPERTY_NOT_WRITABLE: OSStatus = sys::kAudioUnitErr_PropertyNotWritable;
-/// `kAudioUnitErr_CannotDoInCurrentContext`: the call cannot be made from this thread or in this state, and may succeed later.
-pub const K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT: OSStatus =
-    sys::kAudioUnitErr_CannotDoInCurrentContext;
 /// `kAudioUnitErr_InvalidPropertyValue`: the value written is not valid for the property.
 pub const K_AUDIO_UNIT_ERR_INVALID_PROPERTY_VALUE: OSStatus =
     sys::kAudioUnitErr_InvalidPropertyValue;
-/// `kAudioUnitErr_PropertyNotInUse`: the property exists but is not in use in the unit's current configuration.
-pub const K_AUDIO_UNIT_ERR_PROPERTY_NOT_IN_USE: OSStatus = sys::kAudioUnitErr_PropertyNotInUse;
-/// `kAudioUnitErr_Initialized`: the call needs an uninitialized unit and this one is initialized.
-pub const K_AUDIO_UNIT_ERR_INITIALIZED: OSStatus = sys::kAudioUnitErr_Initialized;
-/// `kAudioUnitErr_InvalidOfflineRender`: an offline render was requested in a state the unit cannot do it.
-pub const K_AUDIO_UNIT_ERR_INVALID_OFFLINE_RENDER: OSStatus =
-    sys::kAudioUnitErr_InvalidOfflineRender;
-/// `kAudioUnitErr_Unauthorized`: the process is not authorized to use the unit.
-pub const K_AUDIO_UNIT_ERR_UNAUTHORIZED: OSStatus = sys::kAudioUnitErr_Unauthorized;
 
 // AU component types (four-char codes: "auou", "aufx", …).
 /// `kAudioUnitType_Output`: component type (`AudioComponentDescription::componentType`).
@@ -157,12 +123,8 @@ pub const K_AUDIO_UNIT_TYPE_FORMAT_CONVERTER: u32 = sys::kAudioUnitType_FormatCo
 pub const K_AUDIO_UNIT_TYPE_EFFECT: u32 = sys::kAudioUnitType_Effect;
 /// `kAudioUnitType_Mixer`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MIXER: u32 = sys::kAudioUnitType_Mixer;
-/// `kAudioUnitType_Panner`: component type (`AudioComponentDescription::componentType`).
-pub const K_AUDIO_UNIT_TYPE_PANNER: u32 = sys::kAudioUnitType_Panner;
 /// `kAudioUnitType_Generator`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_GENERATOR: u32 = sys::kAudioUnitType_Generator;
-/// `kAudioUnitType_OfflineEffect`: component type (`AudioComponentDescription::componentType`).
-pub const K_AUDIO_UNIT_TYPE_OFFLINE_EFFECT: u32 = sys::kAudioUnitType_OfflineEffect;
 /// `kAudioUnitType_MIDIProcessor`: component type (`AudioComponentDescription::componentType`).
 pub const K_AUDIO_UNIT_TYPE_MIDI_PROCESSOR: u32 = sys::kAudioUnitType_MIDIProcessor;
 
@@ -171,14 +133,8 @@ pub const K_AUDIO_UNIT_TYPE_MIDI_PROCESSOR: u32 = sys::kAudioUnitType_MIDIProces
 pub const K_AUDIO_FORMAT_LINEAR_PCM: u32 = sys::kAudioFormatLinearPCM;
 /// `kAudioFormatFlagIsFloat`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_FLOAT: u32 = sys::kAudioFormatFlagIsFloat;
-/// `kAudioFormatFlagIsBigEndian`: `AudioStreamBasicDescription::mFormatFlags` bit.
-pub const K_AUDIO_FORMAT_FLAG_IS_BIG_ENDIAN: u32 = sys::kAudioFormatFlagIsBigEndian;
-/// `kAudioFormatFlagIsSignedInteger`: `AudioStreamBasicDescription::mFormatFlags` bit.
-pub const K_AUDIO_FORMAT_FLAG_IS_SIGNED_INTEGER: u32 = sys::kAudioFormatFlagIsSignedInteger;
 /// `kAudioFormatFlagIsPacked`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_PACKED: u32 = sys::kAudioFormatFlagIsPacked;
-/// `kAudioFormatFlagIsAlignedHigh`: `AudioStreamBasicDescription::mFormatFlags` bit.
-pub const K_AUDIO_FORMAT_FLAG_IS_ALIGNED_HIGH: u32 = sys::kAudioFormatFlagIsAlignedHigh;
 /// `kAudioFormatFlagIsNonInterleaved`: `AudioStreamBasicDescription::mFormatFlags` bit.
 pub const K_AUDIO_FORMAT_FLAG_IS_NON_INTERLEAVED: u32 = sys::kAudioFormatFlagIsNonInterleaved;
 
@@ -189,171 +145,12 @@ pub const K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER: AudioUnitRenderActionFlags =
 /// `kAudioUnitRenderAction_PostRender`: render action flag, set or read by a render notification.
 pub const K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER: AudioUnitRenderActionFlags =
     sys::kAudioUnitRenderAction_PostRender;
-/// `kAudioUnitRenderAction_OutputIsSilence`: render action flag, set or read by a render notification.
-pub const K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE: AudioUnitRenderActionFlags =
-    sys::kAudioUnitRenderAction_OutputIsSilence;
 
 // AudioTimeStamp validity flags.
 /// `kAudioTimeStampSampleTimeValid`: `AudioTimeStamp::mFlags` validity bit.
 pub const K_AUDIO_TIME_STAMP_SAMPLE_TIME_VALID: u32 = sys::kAudioTimeStampSampleTimeValid;
-/// `kAudioTimeStampHostTimeValid`: `AudioTimeStamp::mFlags` validity bit.
-pub const K_AUDIO_TIME_STAMP_HOST_TIME_VALID: u32 = sys::kAudioTimeStampHostTimeValid;
 
-// AU property scopes.
-/// `kAudioUnitScope_Global`: property and parameter scope.
-pub const K_AUDIO_UNIT_SCOPE_GLOBAL: u32 = sys::kAudioUnitScope_Global;
-/// `kAudioUnitScope_Input`: property and parameter scope.
-pub const K_AUDIO_UNIT_SCOPE_INPUT: u32 = sys::kAudioUnitScope_Input;
-/// `kAudioUnitScope_Output`: property and parameter scope.
-pub const K_AUDIO_UNIT_SCOPE_OUTPUT: u32 = sys::kAudioUnitScope_Output;
 
-// AU property IDs.
-/// `kAudioUnitProperty_ClassInfo`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO: u32 = sys::kAudioUnitProperty_ClassInfo;
-/// The document-restore twin of `ClassInfo` (property 50).
-///
-/// Apple's header says an AU implementing this "is going to do different actions
-/// establishing its state from a document rather than from a user preset", and
-/// that a host restoring a *document* must try this property **first**, falling
-/// back to `ClassInfo` when the AU errors or does not implement it.
-///
-/// The distinction is real for units that key licensing, sample-library paths or
-/// per-document resource references off which of the two was used: a `.aupreset`
-/// is a user preset and must go through `ClassInfo`, while a project reload is a
-/// document and should offer this first.
-///
-/// Measured on macOS 15.6: **no** unit on this machine implements it — AUDelay,
-/// AUDistortion, AUMatrixReverb, AUSpatialMixer and AULowpass all answer
-/// `kAudioUnitErr_InvalidProperty` (-10879). That is exactly the case the header
-/// tells hosts to expect, which is why
-/// [`AuInstance::load_document_state`](crate::instance::AuInstance::load_document_state)
-/// treats the refusal as routine and falls back rather than surfacing it.
-pub const K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT: u32 = 50;
-/// `kAudioUnitProperty_MakeConnection`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_MAKE_CONNECTION: u32 = sys::kAudioUnitProperty_MakeConnection;
-/// `kAudioUnitProperty_SampleRate`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_SAMPLE_RATE: u32 = sys::kAudioUnitProperty_SampleRate;
-/// `kAudioUnitProperty_ParameterList`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST: u32 = sys::kAudioUnitProperty_ParameterList;
-/// `kAudioUnitProperty_ParameterInfo`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_INFO: u32 = sys::kAudioUnitProperty_ParameterInfo;
-/// `kAudioUnitProperty_StreamFormat`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT: u32 = sys::kAudioUnitProperty_StreamFormat;
-/// `kAudioUnitProperty_ElementCount`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT: u32 = sys::kAudioUnitProperty_ElementCount;
-/// `kAudioUnitProperty_Latency`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_LATENCY: u32 = sys::kAudioUnitProperty_Latency;
-/// Seconds of audio an AU keeps producing after its input goes silent — a
-/// reverb's decay, a delay's repeats. Distinct from `Latency`: latency shifts
-/// audio in time, tail extends how long it lasts. An offline bounce that stops
-/// at the last note truncates every tail on the master bus.
-pub const K_AUDIO_UNIT_PROPERTY_TAIL_TIME: u32 = sys::kAudioUnitProperty_TailTime;
-/// How long the audio on a given bus takes to *reach the listener* — the
-/// latency the AU sits behind, not the latency it adds.
-///
-/// The exact inverse of [`K_AUDIO_UNIT_PROPERTY_LATENCY`] in direction: `Latency`
-/// is the AU telling the host what it costs, this is the host telling the AU
-/// what the rest of the chain costs. Apple's header: "This property is set by a
-/// host to describe to the audio unit the presentation latency of both any of
-/// its input and/or output audio data. It describes this latency in seconds. A
-/// value of zero means either no latency or an unknown latency." Write-only, and
-/// per `(scope, element)` — the header asks for it "on each active input and
-/// output bus", because a multi-output AU's buses can be presented at different
-/// times.
-///
-/// A `Float64` count of **seconds**, like `Latency` and `TailTime`. See
-/// [`presentation_latency`](crate::transport::set_presentation_latency) for why
-/// the host-side signature takes [`Seconds`] rather than converting to samples.
-pub const K_AUDIO_UNIT_PROPERTY_PRESENTATION_LATENCY: u32 =
-    sys::kAudioUnitProperty_PresentationLatency;
-/// Which other parameters a *meta*-parameter moves when it is written.
-///
-/// Read-only, an array of `AUDependentParameter` (a `(scope, parameter id)`
-/// pair, 8 bytes). Keyed by the meta-parameter's own address: the query is made
-/// at the meta-parameter's scope with its **id in the element position**, the
-/// same addressing `ParameterInfo` uses (see [`crate::parameters::info_at`]).
-///
-/// The property exists because a parameter carrying
-/// `kAudioUnitParameterFlag_IsGlobalMeta` or `..._IsElementMeta` may change any
-/// number of others when written, and the AU sends no per-parameter
-/// notification for the ones it moved. A host caching parameter values or ranges
-/// has no other way to learn what went stale.
-pub const K_AUDIO_UNIT_PROPERTY_DEPENDENT_PARAMETERS: u32 =
-    sys::kAudioUnitProperty_DependentParameters;
-/// `kAudioUnitProperty_SupportedNumChannels`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS: u32 =
-    sys::kAudioUnitProperty_SupportedNumChannels;
-/// `kAudioUnitProperty_MaximumFramesPerSlice`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_MAXIMUM_FRAMES_PER_SLICE: u32 =
-    sys::kAudioUnitProperty_MaximumFramesPerSlice;
-/// `kAudioUnitProperty_SetRenderCallback`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_SET_RENDER_CALLBACK: u32 =
-    sys::kAudioUnitProperty_SetRenderCallback;
-/// `kAudioUnitProperty_FactoryPresets`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_FACTORY_PRESETS: u32 = sys::kAudioUnitProperty_FactoryPresets;
-/// `kAudioUnitProperty_RenderQuality`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_RENDER_QUALITY: u32 = sys::kAudioUnitProperty_RenderQuality;
-/// `kAudioUnitProperty_HostCallbacks`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS: u32 = sys::kAudioUnitProperty_HostCallbacks;
-/// `kAudioUnitProperty_InPlaceProcessing`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_IN_PLACE_PROCESSING: u32 =
-    sys::kAudioUnitProperty_InPlaceProcessing;
-/// `kAudioUnitProperty_ElementName`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_ELEMENT_NAME: u32 = sys::kAudioUnitProperty_ElementName;
-/// Where in the *host's* project this instance sits — "track 3", "Drum Bus".
-/// Read/write: all 57 instantiable units measured return the exact string
-/// written. See [`crate::identity`].
-pub const K_AUDIO_UNIT_PROPERTY_CONTEXT_NAME: u32 = sys::kAudioUnitProperty_ContextName;
-/// A per-instance name distinguishing two loads of the *same* AU from each
-/// other. Unlike `ContextName` this is the instance's own identity, so it is
-/// what belongs in a saved session. See [`crate::identity`].
-pub const K_AUDIO_UNIT_PROPERTY_NICK_NAME: u32 = sys::kAudioUnitProperty_NickName;
-/// The AU's own answer to "if you had room for only N knobs, which?" — a
-/// curated, *priority-ordered* subset of the parameter list. See
-/// [`crate::identity`].
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW: u32 =
-    sys::kAudioUnitProperty_ParametersForOverview;
-/// A `CFURLRef` to an icon file for this AU, for a plugin browser. See
-/// [`crate::identity`].
-pub const K_AUDIO_UNIT_PROPERTY_ICON_LOCATION: u32 = sys::kAudioUnitProperty_IconLocation;
-/// The channel *order* a bus is running — which speaker each channel feeds.
-/// Distinct from `StreamFormat`, which carries only a channel *count*: Apple's
-/// header says outright that the stream format "cannot specify channel layout or
-/// purpose". Without this, a 6-channel bus's centre and LFE are
-/// indistinguishable. See [`crate::channel_layout`].
-pub const K_AUDIO_UNIT_PROPERTY_AUDIO_CHANNEL_LAYOUT: u32 =
-    sys::kAudioUnitProperty_AudioChannelLayout;
-/// The channel orders a bus declares it understands. Read-only, and per-bus.
-pub const K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS: u32 =
-    sys::kAudioUnitProperty_SupportedChannelLayoutTags;
-/// How many MIDI output streams the AU offers, and their names — a `CFArrayRef`
-/// of `CFStringRef` the host owns. Its presence is the gate on
-/// `MIDIOutputCallback` being useful: see [`crate::midi_out`], and note that on
-/// this machine **no** installed AU publishes it.
-pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK_INFO: u32 =
-    sys::kAudioUnitProperty_MIDIOutputCallbackInfo;
-/// The `AUMIDIOutputCallbackStruct` a host installs so the AU can hand it MIDI
-/// during render. Write-only.
-pub const K_AUDIO_UNIT_PROPERTY_MIDI_OUTPUT_CALLBACK: u32 =
-    sys::kAudioUnitProperty_MIDIOutputCallback;
-// The parameter↔MIDI mapping family (41-44). Hand-declared for the same reason
-// `K_AUDIO_UNIT_PROPERTY_CLASS_INFO_FROM_DOCUMENT` is: `coreaudio-sys` exports
-// none of the four, nor the six `kAUParameterMIDIMapping_*` flag bits below, nor
-// `AUParameterMIDIMapping` itself. Every value here was read out of a C program
-// compiled against Apple's real `AudioUnitProperties.h` on macOS 15.6, and
-// `midi_map::tests::the_flag_bits_match_the_header` asserts each one — a
-// transposed pair changes what an incoming controller value means with no
-// compile error. See [`crate::midi_map`] for which units implement them
-// (measured: 2 of 59) and for the four ways both implementers deviate from the
-// header.
-/// Read/write the AU's whole parameter↔MIDI mapping table.
-pub const K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS: u32 = 41;
-/// Write-only: merge mappings into the AU's existing set.
-pub const K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING: u32 = 42;
-/// Write-only: drop mappings, matched on `(scope, element, parameterID)`.
-pub const K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING: u32 = 43;
-/// Read/write: "learn" mode — the AU maps the next MIDI message it sees.
-pub const K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING: u32 = 44;
 
 // `AUParameterMIDIMappingFlags`, `1 << 0` .. `1 << 5`.
 /// Match the message on any MIDI channel, ignoring the status byte's low nibble.
@@ -370,37 +167,7 @@ pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR: u32 = 1 << 4;
 /// with [`K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR`] set.
 pub const K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON: u32 = 1 << 5;
 
-/// The **deprecated** read-only CC→parameter form (`= 17`), superseded in macOS
-/// 10.2 by the 41-44 family above.
-///
-/// Aliased but deliberately **not** implemented, for the reason
-/// [`crate::midi_map`]'s docs give at length: measured on macOS 15.6, **0 of 59**
-/// installed components answer it, at any of the three scopes, in either
-/// lifecycle phase. The constant exists so `tests/au_midi_map.rs` can sweep for
-/// an implementer and report one loudly if it ever appears — a decoder written
-/// now would be untestable against reality.
-pub const K_AUDIO_UNIT_PROPERTY_MIDI_CONTROL_MAPPING: u32 = 17;
 
-/// `kAudioUnitProperty_BypassEffect`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT: u32 = sys::kAudioUnitProperty_BypassEffect;
-/// `kAudioUnitProperty_LastRenderError`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR: u32 = sys::kAudioUnitProperty_LastRenderError;
-/// `kAudioUnitProperty_PresentPreset`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET: u32 = sys::kAudioUnitProperty_PresentPreset;
-/// `kAudioUnitProperty_CocoaUI`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_COCOA_UI: u32 = sys::kAudioUnitProperty_CocoaUI;
-/// `kAudioUnitProperty_ParameterValueStrings`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_STRINGS: u32 =
-    sys::kAudioUnitProperty_ParameterValueStrings;
-/// `kAudioUnitProperty_ParameterStringFromValue`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_STRING_FROM_VALUE: u32 =
-    sys::kAudioUnitProperty_ParameterStringFromValue;
-/// `kAudioUnitProperty_ParameterValueFromString`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_VALUE_FROM_STRING: u32 =
-    sys::kAudioUnitProperty_ParameterValueFromString;
-/// `kAudioUnitProperty_ParameterClumpName`: property id.
-pub const K_AUDIO_UNIT_PROPERTY_PARAMETER_CLUMP_NAME: u32 =
-    sys::kAudioUnitProperty_ParameterClumpName;
 
 // Parameter unit kinds.
 /// `kAudioUnitParameterUnit_Generic`: parameter unit kind (`AudioUnitParameterInfo::unit`).
@@ -426,16 +193,8 @@ pub const K_AUDIO_UNIT_PARAMETER_UNIT_LINEAR_GAIN: u32 = sys::kAudioUnitParamete
 pub const K_AUDIO_UNIT_PARAMETER_UNIT_MIDI_CONTROLLER: u32 =
     sys::kAudioUnitParameterUnit_MIDIController;
 
-// Parameter flag bits.
-/// `kAudioUnitParameterFlag_IsReadable`: parameter flag bit (`AudioUnitParameterInfo::flags`).
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_READABLE: u32 = sys::kAudioUnitParameterFlag_IsReadable;
 /// `kAudioUnitParameterFlag_IsWritable`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_WRITABLE: u32 = sys::kAudioUnitParameterFlag_IsWritable;
-/// `kAudioUnitParameterFlag_HasName`: parameter flag bit (`AudioUnitParameterInfo::flags`).
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_NAME: u32 = sys::kAudioUnitParameterFlag_HasName;
-/// `kAudioUnitParameterFlag_HasCFNameString`: parameter flag bit (`AudioUnitParameterInfo::flags`).
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CF_NAME_STRING: u32 =
-    sys::kAudioUnitParameterFlag_HasCFNameString;
 /// `kAudioUnitParameterFlag_HasClump`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CLUMP: u32 = sys::kAudioUnitParameterFlag_HasClump;
 /// `kAudioUnitParameterFlag_ValuesHaveStrings`: parameter flag bit (`AudioUnitParameterInfo::flags`).
@@ -444,11 +203,6 @@ pub const K_AUDIO_UNIT_PARAMETER_FLAG_VALUES_HAVE_STRINGS: u32 =
 /// `kAudioUnitParameterFlag_MeterReadOnly`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_METER_READ_ONLY: u32 =
     sys::kAudioUnitParameterFlag_MeterReadOnly;
-/// `kAudioUnitParameterFlag_IsHighResolution`: parameter flag bit (`AudioUnitParameterInfo::flags`).
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_IS_HIGH_RESOLUTION: u32 =
-    sys::kAudioUnitParameterFlag_IsHighResolution;
-/// `kAudioUnitParameterFlag_NonRealTime`: parameter flag bit (`AudioUnitParameterInfo::flags`).
-pub const K_AUDIO_UNIT_PARAMETER_FLAG_NON_REAL_TIME: u32 = sys::kAudioUnitParameterFlag_NonRealTime;
 /// `kAudioUnitParameterFlag_CanRamp`: parameter flag bit (`AudioUnitParameterInfo::flags`).
 pub const K_AUDIO_UNIT_PARAMETER_FLAG_CAN_RAMP: u32 = sys::kAudioUnitParameterFlag_CanRamp;
 /// `kAudioUnitParameterFlag_OmitFromPresets`: parameter flag bit (`AudioUnitParameterInfo::flags`).

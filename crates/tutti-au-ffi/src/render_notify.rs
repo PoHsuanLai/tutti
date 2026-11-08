@@ -135,6 +135,7 @@ use coreaudio_sys::{
 
 use crate::callback::with_state;
 use crate::error::{Result, check};
+use crate::property::{Element, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::{Inner, RenderUnit, Unit};
 const K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER: AudioUnitRenderActionFlags =
@@ -268,17 +269,17 @@ pub enum ParamEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScheduleAddress {
     /// Raw `kAudioUnitScope_*` constant.
-    pub scope: AudioUnitScope,
+    pub scope: Scope,
     /// Element (bus / part) index within that scope.
-    pub element: AudioUnitElement,
+    pub element: Element,
 }
 
 impl ScheduleAddress {
     /// Global scope, element 0 — where effects and instruments keep every
     /// parameter.
     pub const GLOBAL: Self = Self {
-        scope: kAudioUnitScope_Global,
-        element: 0,
+        scope: Scope::GLOBAL,
+        element: Element::ZERO,
     };
 }
 
@@ -326,8 +327,8 @@ impl ParamEvent {
             ),
         };
         AudioUnitParameterEvent {
-            scope: address.scope,
-            element: address.element,
+            scope: address.scope.raw(),
+            element: address.element.0,
             parameter: id,
             eventType: event_type,
             eventValues: values,
@@ -703,8 +704,8 @@ mod tests {
     #[test]
     fn each_variant_lowers_into_its_own_union_arm() {
         let addr = ScheduleAddress {
-            scope: kAudioUnitScope_Global,
-            element: 3,
+            scope: Scope::GLOBAL,
+            element: Element(3),
         };
 
         let imm = ParamEvent::Immediate {

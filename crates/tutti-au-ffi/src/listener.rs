@@ -74,6 +74,7 @@ use coreaudio_sys::{
 
 use crate::error::{Error, Result, check};
 use crate::guard::guard;
+use crate::property::{Element, Scope};
 use crate::unit::{Inner, Unit};
 
 // ---------------------------------------------------------------- raw FFI
@@ -206,17 +207,17 @@ use coreaudio_sys::{dispatch_object_t, dispatch_queue_create, dispatch_release};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventAddress {
     /// Raw `kAudioUnitScope_*` constant.
-    pub scope: AudioUnitScope,
+    pub scope: Scope,
     /// Element (bus / part) index within that scope.
-    pub element: AudioUnitElement,
+    pub element: Element,
 }
 
 impl EventAddress {
     /// The global scope, element 0 — where effects and instruments keep every
     /// parameter, matching `GLOBAL`.
     pub const GLOBAL: Self = Self {
-        scope: kAudioUnitScope_Global,
-        element: 0,
+        scope: Scope::GLOBAL,
+        element: Element::ZERO,
     };
 }
 
@@ -295,8 +296,8 @@ impl AuEvent {
         // SAFETY: `raw` was just checked non-null and points at the `AudioUnitEvent` AudioToolbox passed for this call, live for the borrow.
         let ev = unsafe { &*raw };
         let address = EventAddress {
-            scope: ev.argument.mScope,
-            element: ev.argument.mElement,
+            scope: Scope::from_raw(ev.argument.mScope),
+            element: Element(ev.argument.mElement),
         };
         // `mParameterID` and `AudioUnitProperty::mPropertyID` occupy the same
         // offset in the union; the tag is what says which name applies.
@@ -518,8 +519,8 @@ impl AuParameterListener {
         AudioUnitParameter {
             mAudioUnit: self.unit.instance,
             mParameterID: id,
-            mScope: address.scope,
-            mElement: address.element,
+            mScope: address.scope.raw(),
+            mElement: address.element.0,
         }
     }
 
@@ -635,8 +636,8 @@ pub fn set_parameter_notifying(
     let parameter = AudioUnitParameter {
         mAudioUnit: unit.raw(),
         mParameterID: id,
-        mScope: address.scope,
-        mElement: address.element,
+        mScope: address.scope.raw(),
+        mElement: address.element.0,
     };
     // A null sending listener/object means "notify everyone" — the host is not
     // itself a listener here, so there is nobody to exclude.
@@ -691,8 +692,8 @@ pub fn emit_gesture(
         argument: AudioUnitParameter {
             mAudioUnit: unit.raw(),
             mParameterID: id,
-            mScope: address.scope,
-            mElement: address.element,
+            mScope: address.scope.raw(),
+            mElement: address.element.0,
         },
     };
     // Null sending listener/object: notify everyone, exclude nobody.
@@ -857,8 +858,8 @@ mod tests {
             mElement: 3,
         };
         let addr = EventAddress {
-            scope: kAudioUnitScope_Global,
-            element: 3,
+            scope: Scope::GLOBAL,
+            element: Element(3),
         };
 
         let cases = [

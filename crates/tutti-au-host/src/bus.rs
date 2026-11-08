@@ -13,6 +13,8 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::{Element, Scope};
+use tutti_au_ffi::property::{ElementCount, StreamFormat, SupportedNumChannels};
 use tutti_plugin_types::ChannelLayout;
 
 use crate::error::{AuError, Result};
@@ -42,10 +44,10 @@ pub enum BusDirection {
 
 impl BusDirection {
     /// The AudioToolbox scope constant this direction addresses.
-    pub(crate) fn scope(self) -> u32 {
+    pub(crate) fn scope(self) -> Scope {
         match self {
-            Self::Input => K_AUDIO_UNIT_SCOPE_INPUT,
-            Self::Output => K_AUDIO_UNIT_SCOPE_OUTPUT,
+            Self::Input => Scope::INPUT,
+            Self::Output => Scope::OUTPUT,
         }
     }
 
@@ -247,13 +249,9 @@ pub(crate) struct AuChannelInfo {
 /// `kAudioUnitProperty_ElementCount` is optional in practice and a refusal means
 /// "nothing to enumerate" — the same observable state as zero buses.
 pub(crate) fn bus_count(unit: &Unit, direction: BusDirection) -> u32 {
-    unit.get::<u32>(
-        K_AUDIO_UNIT_PROPERTY_ELEMENT_COUNT,
-        direction.scope(),
-        // The element index is meaningless for ElementCount itself — the
-        // property describes the whole scope — so it is always 0.
-        0,
-    )
+    // The element index is meaningless for ElementCount itself — the property
+    // describes the whole scope — so it is always 0.
+    unit.get::<ElementCount>(direction.scope(), Element::ZERO)
     .unwrap_or(0)
 }
 
@@ -267,10 +265,7 @@ pub(crate) fn bus_count(unit: &Unit, direction: BusDirection) -> u32 {
 /// 15.6: DLSMusicDevice has 2 output buses, and asking for output bus 2 or 99
 /// returns -10877 from AudioToolbox — the error is the AU's, not invented here.
 pub(crate) fn bus_layout(unit: &Unit, direction: BusDirection, bus: u32) -> Result<ChannelLayout> {
-    let asbd = unit.get::<AudioStreamBasicDescription>(
-        K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-        direction.scope(),
-        bus,
+    let asbd = unit.get::<StreamFormat>(direction.scope(), Element(bus),
     )?;
     ChannelLayout::try_from(asbd.mChannelsPerFrame).map_err(|_| AuError::BusTooWide {
         scope: match direction {
@@ -291,10 +286,7 @@ pub(crate) fn bus_layout(unit: &Unit, direction: BusDirection, bus: u32) -> Resu
 /// that reading is why this returns a plain `Vec` rather than a `Result`: a
 /// refusal and an empty list are the same answer to the caller's question.
 pub(crate) fn supported_channel_configs(unit: &Unit) -> Vec<AuChannelConfig> {
-    let bytes = match unit.get_bytes(
-        K_AUDIO_UNIT_PROPERTY_SUPPORTED_NUM_CHANNELS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    let bytes = match unit.get_bytes::<SupportedNumChannels>(Scope::GLOBAL, Element::ZERO,
     ) {
         Ok(b) => b,
         Err(_) => return Vec::new(),
@@ -465,8 +457,8 @@ mod tests {
     /// Direction maps onto the AudioToolbox scope constants and nothing else.
     #[test]
     fn direction_maps_to_the_audio_toolbox_scopes() {
-        assert_eq!(BusDirection::Input.scope(), K_AUDIO_UNIT_SCOPE_INPUT);
-        assert_eq!(BusDirection::Output.scope(), K_AUDIO_UNIT_SCOPE_OUTPUT);
+        assert_eq!(BusDirection::Input.scope(), Scope::INPUT);
+        assert_eq!(BusDirection::Output.scope(), Scope::OUTPUT);
         assert_ne!(BusDirection::Input.scope(), BusDirection::Output.scope());
         assert_eq!(BusDirection::ALL.len(), 2);
     }

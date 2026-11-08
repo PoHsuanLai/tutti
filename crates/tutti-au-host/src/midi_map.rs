@@ -79,6 +79,8 @@
 
 #![cfg(target_os = "macos")]
 
+use tutti_au_ffi::{Element, Property, Scope};
+use tutti_au_ffi::property::{AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping, RemoveParameterMidiMapping};
 use std::mem::size_of;
 
 use crate::error::Result;
@@ -364,7 +366,7 @@ impl AuMidiMapping {
     /// anything needing sub-range, toggle or bipolar semantics.
     pub fn control_change(parameter_id: u32, channel: u8, controller: u8) -> Self {
         Self {
-            scope: K_AUDIO_UNIT_SCOPE_GLOBAL,
+            scope: Scope::GLOBAL,
             element: 0,
             parameter_id,
             trigger: MidiTrigger::ControlChange { controller },
@@ -484,10 +486,7 @@ impl AuMidiMapping {
 /// implement the property. That refusal is the normal answer for an effect and a
 /// caller should treat it as "this AU does not do MIDI mapping", not as a fault.
 pub fn all(unit: &Unit) -> Result<Vec<AuMidiMapping>> {
-    let bytes = unit.get_bytes(
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    let bytes = unit.get_bytes::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO,
     )?;
     Ok(decode_table(&bytes))
 }
@@ -527,7 +526,7 @@ fn write_table(unit: &Unit, property: u32, mappings: &[AuMidiMapping]) -> Result
         .into_iter()
         .flat_map(AuParameterMidiMappingRaw::to_bytes)
         .collect();
-    Ok(unit.set_bytes(property, K_AUDIO_UNIT_SCOPE_GLOBAL, 0, &bytes)?)
+    Ok(unit.set_bytes(property, Scope::GLOBAL, 0, &bytes)?)
 }
 
 /// Adds `mappings` to whatever the AU already has, replacing any mapping that
@@ -548,7 +547,7 @@ pub fn add(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     }
     write_table(
         unit,
-        K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING,
+        AddParameterMidiMapping::ID,
         mappings,
     )
 }
@@ -572,7 +571,7 @@ pub fn remove(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     }
     write_table(
         unit,
-        K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING,
+        RemoveParameterMidiMapping::ID,
         mappings,
     )
 }
@@ -603,7 +602,7 @@ pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     }
     write_table(
         unit,
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
+        AllParameterMidiMappings::ID,
         mappings,
     )
 }
@@ -626,10 +625,7 @@ pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
 /// family.
 pub fn arm_hot_map(unit: &Unit, mapping: &AuMidiMapping) -> Result<()> {
     let raw = mapping.to_raw();
-    Ok(unit.set_bytes(
-        K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    Ok(unit.set_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO,
         &raw.to_bytes(),
     )?)
 }
@@ -656,10 +652,7 @@ pub fn arm_hot_map(unit: &Unit, mapping: &AuMidiMapping) -> Result<()> {
 /// status byte in it yet.
 pub fn hot_map(unit: &Unit) -> Option<AuMidiMapping> {
     let bytes = unit
-        .get_bytes(
-            K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
+        .get_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO,
         )
         .ok()?;
     let raw = AuParameterMidiMappingRaw::from_bytes(bytes.as_slice().try_into().ok()?);
@@ -689,10 +682,7 @@ pub fn hot_map_pending(unit: &Unit) -> bool {
 /// (AUSampler, AUMIDISynth), false for the other 57 including every effect and
 /// every third-party unit on this machine.
 pub fn supports_parameter_midi_mapping(unit: &Unit) -> bool {
-    unit.property_info(
-        K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-        K_AUDIO_UNIT_SCOPE_GLOBAL,
-        0,
+    unit.property_info::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO,
     )
     .is_ok()
 }
@@ -804,10 +794,10 @@ mod tests {
         assert_eq!(K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON, 32);
         // And the property ids, from the same C run: All=41 Add=42 Remove=43
         // HotMap=44.
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS, 41);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING, 42);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING, 43);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING, 44);
+        assert_eq!(AllParameterMidiMappings::ID, 41);
+        assert_eq!(AddParameterMidiMapping::ID, 42);
+        assert_eq!(RemoveParameterMidiMapping::ID, 43);
+        assert_eq!(HotMapParameterMidiMapping::ID, 44);
     }
 
     /// Every trigger must survive `to_raw`/`from_raw`, and the status byte must
@@ -1108,7 +1098,7 @@ mod tests {
         );
 
         let other_scope = AuMidiMapping {
-            scope: K_AUDIO_UNIT_SCOPE_INPUT,
+            scope: Scope::INPUT,
             ..a
         };
         assert!(

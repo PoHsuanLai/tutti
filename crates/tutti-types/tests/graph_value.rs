@@ -180,19 +180,19 @@ fn validate_reports_every_fault_at_once() {
     );
 }
 
-/// A tap names its sources like an output does, and is held to the same
-/// ranges: a node port that does not exist, a node that is not in the map and
-/// a global input past the declared width are each refused, by lane. `Zero`
-/// and a port that exists pass.
+/// A tap lane naming a source that does not exist (a node port past the
+/// node's width, a node not in the map, a global input past the declared
+/// width) is not a fault: the compiler reads silence for it, so a display or
+/// a recording cannot wedge the graph. `validate` accepts all of them.
 ///
-/// Mutation (run, recorded here): delete the tap loop in `Topology::validate`
-/// -> the three bad lanes validate and `expect_err` panics.
+/// Mutation (run, recorded here): restore a loop in `Topology::validate` that
+/// pushes an error for a tap lane whose node port is past `outputs.count()`
+/// -> `validate` returns `Err` and the first assert fails.
 #[test]
-fn a_tap_lane_must_name_a_source_that_exists() {
+fn a_tap_lane_naming_a_missing_source_is_not_a_fault() {
     let mut t = chain();
-    let tap = TapId(7);
     t.taps.insert(
-        tap,
+        TapId(7),
         TapSpec {
             sources: vec![
                 Source::Node(out(B, 0)),
@@ -204,18 +204,7 @@ fn a_tap_lane_must_name_a_source_that_exists() {
             align: TapAlign::ToOutput,
         },
     );
-    let errs = t.validate().expect_err("three bad lanes");
-    let lanes: Vec<usize> = errs
-        .iter()
-        .filter_map(|e| match e {
-            Invalid::TapOutOfRange { tap: id, lane, .. } if *id == tap => Some(*lane),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(lanes, [2, 3, 4], "{errs:?}");
-
-    t.taps.get_mut(&tap).expect("tap").sources.truncate(2);
-    assert!(t.validate().is_ok(), "the good lanes validate");
+    assert!(t.validate().is_ok(), "{:?}", t.validate());
 }
 
 /// An unbroken cycle is rejected; the same cycle with the returning edge

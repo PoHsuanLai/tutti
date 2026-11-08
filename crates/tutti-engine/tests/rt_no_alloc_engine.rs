@@ -197,7 +197,9 @@ fn the_master_meter_is_allocation_free() {
                 })
             })
             .collect();
-        let mut meter = ed.open_meter(MeterId(1), MeterSpec::Outputs);
+        let mut meter = ed
+            .open_meter(MeterId(1), MeterSpec::Outputs)
+            .expect("the sources exist");
         ed.commit().expect("commits");
         let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
         meter.enable();

@@ -41,6 +41,7 @@ fn state(outputs: usize, tap_open: bool) -> (Arc<AudioCallbackState>, Option<Tap
     let tap = tap_open.then(|| {
         let sources = ed.spec().topology.outputs.clone();
         ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(8192))
+            .expect("the sources exist")
     });
     ed.commit().expect("commits");
     let engine = Engine::new(&Transport::new(SR), &mut ed, exec).expect("within the limits");

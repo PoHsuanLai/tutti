@@ -28,6 +28,9 @@ other branches; `docs/design` on `main` ends at 018.
   taps, the all-pass diffuser, width/decorrelation.
 - **One generic node, `ReverbNode<R: Reverb>`** in `tutti-nodes` (§4), declaring
   only `R`'s params and its tail from `R::tail`.
+- **Modulation holds up** with one convention and no code change (§9): a tail
+  declared at the worst case of the node's own range, controls read once per block
+  with coefficient interpolation, and `UnitParam` kinds appended.
 - **Build order:** trait + contract suite + Freeverb (bit-identical), then
   convolution, FDN, plate, early reflections (§8).
 
@@ -204,8 +207,7 @@ change) must never jump, since a jump is a pitch glitch: the algorithm slews it
 or crossfades two taps. So smoothing of values is the param system's, and
 smoothing of what the value means (a delay length) is the algorithm's, because
 only the algorithm knows it. The contract measures click-freeness (§6) rather
-than assuming it. I did not verify whether `Param<U>` cells smooth on their own;
-if they do, the algorithm's share shrinks to lengths.
+than assuming it. §9.2 settles how the existing nodes divide this.
 
 ## 4. The graph node
 
@@ -256,9 +258,8 @@ the same params, replacing `ForkByClone`; a fork starts from silence.
 - **Tail:** `Shape` is read at compile, so it declares from `R::tail` at controls
   where each tail-driving param sits at the *top of its declared range* (the
   decay param's `max`, set when the node is built; default 8 s). The node clamps
-  the live param to that range. A longer ceiling is a rebuild. I did not verify
-  whether the graph re-reads `Shape` after a param change (`ModDelayNode` sidesteps
-  by declaring `Tail::Unknown`); if it does, the node declares from live controls.
+  the live param to that range. A longer ceiling is a rebuild. The graph does not
+  re-read `Shape` after a param change (§9.1).
 - `process` returns `Status::Modified`. Returning silent when mix is 0 and the
   state is empty is an optimisation after the first PR.
 
@@ -390,8 +391,152 @@ write its own and be refactored when 3 lands, which is cheap. Step 0 starts now.
 | Chorus and the other modulation effects? | Later. They share rate/depth/voices/feedback and several algorithms, and `ModDelayNode` is already one node. Extract what really generalises (the tail, `DryAlign`, the smoothing split) after reverb has two or three users; not before |
 | `Diffusion` and `Size` as `Mix`? | Yes, per the owner's direction (no new unit). They are positions on `0..1` each algorithm maps to its own scale; `Mix` gets a doc line saying so |
 | `UnitParam::Decay` and `Diffusion` new kinds? | Yes (§2.2); `Freeze` only with the FDN |
-| Tail with a live decay? | Declare at the top of the decay param's range (default 8 s) and clamp, unless the graph re-reads `Shape` on a param change (unverified; check before step 1) |
+| Tail with a live decay? | Declare at the node's own ceiling (default 8 s) and clamp; the graph does not re-read `Shape` (§9.1) |
 | Freeze and the unbounded tail? | Defer to step 3. Either `tail` returns a documented sentinel or a second method `holds(&Controls) -> bool` lets the node declare `Tail::Unbounded` |
 | Fork: fresh or cloned state? | `fresh()`, as for the stretcher; preroll warms the tail. Today's `ForkByClone` copies a ringing tail, so a fork taken mid-reverb now starts silent; an export-fork test pins it |
 | Does `ConvolverNode` stay? | Yes in step 2 (per-channel IR layouts, the bench); thin it onto the same implementation; retire only if nothing needs its API |
-| Do `Param<U>` cells smooth? | Unverified (§3.1). If so, the algorithm smooths only lengths |
+| Do `Param<U>` cells smooth? | No: the node ramps from where the last block ended, as `DelayLineNode` does (§9.2) |
+
+## 9. What the reverb asks of modulation
+
+The owner asked whether tutti's modulation design survives a real, demanding
+node. Each item is answered against the code on `main`; `tutti-mod` is renamed
+`tutti-modulation` in a separate PR, so the new name is used here. Verdict: the
+design handles all five; the smallest changes are two documented conventions
+and appending kinds.
+
+How modulation reaches a node today, from the code: `tutti-modulation`'s
+`compile` turns declarations into a `ControlProgram` per target; a
+`ControlLaneNode` (one per modulated param, `tutti-nodes`) reads it at its
+input's time and sends the target piecewise-linear segments on a grid of
+`CONTROL_STEP` (32) frames plus every corner; the executor turns them into a
+per-frame value for the node's param port, clamped to the port's `ParamRange`
+and ramped from the node's `Node::param_base` (the `Param<U>` cell). The node
+reads `io.param(k)`: `ParamInput::Base` (unmodulated, read your own cell) or
+`ParamInput::Frames(&[f32])`.
+
+### 9.1 A tail that depends on a modulated param
+
+- **Is `Shape`'s tail fixed at prepare?** Yes. `Node::shape` "must not change
+  after `prepare` without the node being re-inserted — a shape change is a
+  recompile", and the compiler reads shapes at `prepare`/insert
+  (`Editor`'s re-prepare path). A node cannot update its tail at runtime.
+- **What does the node declare?** The worst case over the range it can be
+  driven to. The node cannot read the `ModRange` (a `bevy-tutti` declaration
+  that becomes the port's `ParamRange` in the spec; the node never sees it), so
+  it must not trust it: the node declares from its own ceiling (`max_decay`, a
+  build parameter) and clamps the value it reads to that ceiling, whatever the
+  port's range says. A `ModRange.max` above the ceiling is therefore harmless, not
+  an under-declared tail.
+- **What breaks if the tail is under-declared?** Not the live render. The
+  executor parks a node only if it returned a silence claim (`Silent`, `Idle`,
+  all-silent masks) *and* latency plus declared tail have elapsed; a node
+  returning `Status::Modified` is never parked. So a reverb returns `Modified`
+  while it rings. A wrong tail affects the *export* extension and the silence
+  skip, nothing else. That is why the ceiling is conservative and a longer one is
+  a rebuild.
+- **Park and wake.** `Status::Idle` is "silent and nothing pending". A reverb
+  that returns `Modified` forever costs its full block when the input is silent.
+  The node keeps a counter of consecutive silent input frames; once it exceeds
+  `R::tail(ceiling controls, floor)`, it calls `R::reset()` (the state is below the
+  floor, now exactly zeroed) and returns `Idle`; the next block with input
+  wakes it by the executor's rule. The counter lives in the node, not the trait,
+  so the trait stays a processing contract. Smallest change: none in
+  `tutti-graph`. The one test is that an `Idle` reverb equals a fresh one after
+  it wakes.
+- **If a modulated decay could be known at build** (a lane that is a plain
+  automation curve), a tighter tail would be possible by re-inserting the node.
+  Not worth it; the ceiling is one number.
+
+### 9.2 Costly-to-apply params
+
+- **Cadence.** Once per block, after the lane's frames are in, is what the
+  existing nodes do. `CrossoverNode`/multiband read `block_driven` (the
+  port's *last* frame, `ramp.rs`) once per block for the split frequencies and
+  redesign there; `DelayLineNode` reads its controls once per block and ramps.
+  The lane's own resolution is a point every `CONTROL_STEP` = 32 frames, so a
+  per-block read of a 512-frame block takes 1/16 of what a lane could say. For a
+  reverb's decay that is plenty: RT60 moves over seconds.
+- **Who smooths?** Both, in the same split the existing nodes use. The lane
+  supplies a piecewise-linear shape; the executor ramps the base; the *node*
+  ramps from where the previous block ended to this block's target
+  (`DelayLineNode`: `Ramp::new(from, target, size)` for feedback, cross
+  feedback and mix, plus a per-channel delay ramp, with `last` kept across
+  blocks and re-primed after `reset`). A `Param<U>` cell does not smooth by
+  itself: it is an atomic. The reverb follows it exactly: gains and loop gains
+  are `Ramp`ed over the block; a filter redesign is done once at the block's
+  target and the coefficients are interpolated across the block
+  (`SvfCoefficients::lerp` exists for this; the absorption filter needs the same
+  `lerp` on its coefficient set). Three RT60s feeding one design is one design per
+  block, not three.
+- **Consistent?** Yes, it is the existing convention. Smallest change: none;
+  it becomes the documented convention for `Reverb` implementations (§3.1), plus a
+  `lerp` on the absorption design.
+- **Non-finite writes.** A raw cell accepts NaN; every per-block read goes
+  through the nodes' `LastGood` (`ramp.rs`). The reverb's `Controls` builder does
+  the same, which is also why the contract's stability case includes non-finite
+  controls.
+
+### 9.3 Structural params (size)
+
+- **Bounded maximum at prepare?** The node needs the maximum size when it
+  allocates the lines, in `prepare`. The param system does not hand it one:
+  `Node::prepare(&Prepare)` carries rate and block size, and a `ParamRange` is a
+  per-port clamp in the spec that the node never reads. So the maximum is the
+  node's own build parameter, as `DelayLineNode` already does (`max_delay`, then
+  `delay_secs` clamped to it, in `delay.rs`). A reverb takes `max_size` the same
+  way (`Mix` 0..1 maps onto `[min_length, max_length]` of each line, and
+  `prepare` allocates at the maximum). The clamp makes a `ModRange` that exceeds
+  it safe. Smallest change: none.
+- **Smooth length change.** `DelayLineNode` shows the pattern: a per-channel
+  `Ramp` of the delay in samples with fractional reads (`InterpolationMode`), so a
+  moving length is a pitch bend, not a click. The reverb slews each line's length
+  at a bounded rate (a fixed maximum cents per second, a build constant) and the
+  contract's click-free case measures it. A large step takes several blocks to
+  arrive, which is the intended behaviour for size.
+- **Should the node see its range at prepare?** A tempting change is passing
+  each port's `ParamRange` into `Prepare`. Recommend against it: the range is a
+  mutable fact of the graph (a `ModRange` edit is "a store into the lane, never a
+  plan"), so a node that sized from it would be wrong after an edit. The ceiling
+  is the node's, and it is a rebuild to change.
+
+### 9.4 New `UnitParam` kinds
+
+Adding `Decay`, `Diffusion` (and later `Freeze`) touches:
+
+| Place | Change |
+|---|---|
+| `tutti-types` `UnitParam` | Append variants with the next ids (25, 26, 27); `repr(u8)`, never renumber |
+| `TryFrom<u16>` and the `u16::from` side | One arm each |
+| `tutti-types` tests | The `PINNED` table (it is `[(UnitParam, u16); 25]` and becomes 27) and the documented count |
+| Param docs on each variant | Unit and meaning (`Decay`: RT60, `Seconds`, index 0 mid, 1 low, 2 high) |
+| `bevy-tutti` registration | None per kind: `add_audio_param::<U, P>` is generic over the packed address, one call per (unit, address) used; `ModRange`/`ParamRef` take any `UnitAddr` |
+| `tutti-modulation`, the session, `tutti-graph` | None: they carry `UnitAddr`, not a kind list |
+| Saved files | Ids are persisted and `AudioParam`'s `P` is the id; index 0 of a kind is bit-identical to the id before indices existed, and appended ids do not move any existing one. An older build meets an unknown id as `UnitParamOutOfRange`, which the type documents as "ignore" |
+
+The only compatibility cost is forward: a project saved with `Decay` loses that
+param in a build that predates it. Append-only ids are the rule that already
+exists.
+
+### 9.5 Bevy and the session
+
+Yes, with no reverb-specific code. `ParamRef::unit_at(entity, UnitParam::Decay, 1)`
+names the low-band RT60; `Mods`, `ModRoute` and `ModRange` take any `ParamRef`;
+the node declares only the params it has (`ParamSet` builder), and
+`Shape::with_param_addrs` lists the modulatable ones as it does for the
+multiband compressor's per-band thresholds and the crossover's splits (the
+tests `tutti-graph/tests/indexed_params.rs`, `bevy-tutti/tests/indexed_param.rs`
+and `tutti-session/tests/common/bands.rs` show the indexed path end to end). The
+number of modulatable ports is capped at `MAX_PARAM_PORTS` (32), well above the
+FDN's dozen params, so the cap does not bind.
+
+### 9.6 What the exercise found
+
+| Finding | Smallest change |
+|---|---|
+| The tail is fixed at prepare, the node cannot see a `ModRange` | Declare from the node's own ceiling and clamp (a convention; no code in `tutti-graph`) |
+| `Idle` is the node's call and `Modified` is never parked | A quiet-input counter in the node, reset and `Idle` after the tail |
+| Per-block last-frame reads plus the node's own ramp is the cadence | Document it as the `Reverb` convention; add `lerp` to the absorption design |
+| A node cannot learn a `ParamRange` at prepare, and should not | The node's own `max_size` / `max_decay` build parameters |
+| New kinds are append-only ids with one pinned table | Append `Decay`, `Diffusion`; `Freeze` with the FDN |
+| `MAX_PARAM_PORTS` is 32 | Does not bind; an FDN has about twelve params |

@@ -163,9 +163,10 @@ struct Tracker {
     reporter: Reporter,
     /// The handles of the last look reported.
     last: BTreeSet<EndpointId>,
-    /// Handles whose own start may not have been read yet (the last settle did
-    /// not quiet): the first start read for one confirms it and is no new
-    /// occupant.
+    /// Handles first listed by a look whose settle did not quiet, so their own
+    /// start may not have been read yet: the first start read for one confirms
+    /// it and is no new occupant. A handle listed by a quiet look is not here,
+    /// because the quiet read proves its start has been read.
     unconfirmed: BTreeSet<EndpointId>,
     /// Announcements read while no look succeeded; they precede the next look.
     pending: Vec<Event>,
@@ -190,12 +191,15 @@ impl Tracker {
             tracing::debug!("ALSA device watch: no complete first enumeration");
             return;
         };
-        self.last = present.iter().map(|d| d.handle).collect();
-        self.unconfirmed = if settled.quiet {
-            BTreeSet::new()
-        } else {
-            self.last.clone()
-        };
+        let handles = present.iter().map(|d| d.handle).collect();
+        self.unconfirmed = Self::unconfirmed_after(
+            BTreeSet::new(),
+            &BTreeSet::new(),
+            &handles,
+            &settled.events,
+            settled.quiet,
+        );
+        self.last = handles;
         self.reporter.seed(present);
     }
 
@@ -218,24 +222,53 @@ impl Tracker {
             self.pending = events;
             return;
         };
-        let replaced = self.replaced(&events);
-        self.last = present.iter().map(|d| d.handle).collect();
+        let (replaced, unconfirmed) = self.replaced(&events);
+        let handles = present.iter().map(|d| d.handle).collect();
+        self.unconfirmed =
+            Self::unconfirmed_after(unconfirmed, &self.last, &handles, &events, quiet);
+        self.last = handles;
         self.reporter.report(present, |id| replaced.contains(&id));
-        self.unconfirmed = if quiet {
-            BTreeSet::new()
-        } else {
-            self.last.clone()
-        };
     }
 
-    /// The reported handles that a start in `events` gives a new occupant.
+    /// The handles whose own start may still be unread after a look: none after a
+    /// quiet one; after one that did not quiet, those listed first by it that no
+    /// start read in `events` names, and those that were unconfirmed before and
+    /// still are.
+    fn unconfirmed_after(
+        kept: BTreeSet<EndpointId>,
+        last: &BTreeSet<EndpointId>,
+        handles: &BTreeSet<EndpointId>,
+        events: &[Event],
+        quiet: bool,
+    ) -> BTreeSet<EndpointId> {
+        if quiet {
+            return BTreeSet::new();
+        }
+        let started = |h: EndpointId| {
+            let (client, port) = unpack_id(h);
+            events
+                .iter()
+                .any(|&e| e == Event::ClientStart(client) || e == Event::PortStart(client, port))
+        };
+        let listed_first = handles
+            .iter()
+            .filter(|&&h| !last.contains(&h) && !started(h))
+            .copied();
+        kept.into_iter()
+            .chain(listed_first)
+            .filter(|h| handles.contains(h))
+            .collect()
+    }
+
+    /// The reported handles that a start in `events` gives a new occupant, and
+    /// those still unconfirmed after them.
     ///
     /// A client's `CLIENT_START` names a new owner of its number; a
     /// `PORT_START` after it in the stream is that owner's own port. A
     /// `PORT_START` with no `CLIENT_START` before it names a port made again on
     /// a client that lives. Either is a new occupant of a handle already
     /// reported, unless the handle is unconfirmed, whose first start is its own.
-    fn replaced(&self, events: &[Event]) -> BTreeSet<EndpointId> {
+    fn replaced(&self, events: &[Event]) -> (BTreeSet<EndpointId>, BTreeSet<EndpointId>) {
         let mut unconfirmed = self.unconfirmed.clone();
         let mut replaced = BTreeSet::new();
         let mut touch = |handle: EndpointId| {
@@ -268,7 +301,7 @@ impl Tracker {
                 | Event::PortChange(..) => {}
             }
         }
-        replaced
+        (replaced, unconfirmed)
     }
 }
 

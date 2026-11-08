@@ -32,8 +32,10 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   `a_port_made_again_on_a_live_client_is_a_new_occupant`;
 // - `replaced` treating a `PortStart` after its client's start as another start:
 //   `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
-// - `step` not marking the handles unconfirmed after a settle that did not quiet:
-//   `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
+// - `step` not marking the handles listed first unconfirmed after a settle that
+//   did not quiet: `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
+// - `unconfirmed_after` marking every present handle:
+//   `a_settle_that_does_not_quiet_does_not_hide_a_replug`;
 // - `step` treating a failed look as an empty one:
 //   `a_look_that_never_succeeds_reports_nothing_and_keeps_the_starts`;
 // - `step` not keeping `pending`: the same test, in its second round;
@@ -263,7 +265,12 @@ impl World {
 
     /// The device `name` on client 5.
     fn device(name: &str) -> Vec<OsDevice> {
-        os_devices(&[endpoint(5 << 32, name)], &[])
+        Self::device_on(5, name)
+    }
+
+    /// The device `name` on `client`.
+    fn device_on(client: u64, name: &str) -> Vec<OsDevice> {
+        os_devices(&[endpoint(client << 32, name)], &[])
     }
 
     /// One wake. `first` is what the wake read; `race` runs inside the first
@@ -451,21 +458,52 @@ fn a_seeded_devices_queued_start_is_its_own() {
     assert_eq!(world.shape(), pair("One", "One"));
 }
 
-/// When a settle does not quiet, a handle's own start may not be read yet. It is
-/// unconfirmed: the first start read for it is its own, and the port start that
-/// follows its client's start is the same owner's.
+/// When a settle does not quiet, the own start of a handle it lists first may
+/// not be read yet. The handle is unconfirmed: the first start read for it is its
+/// own, and the port start that follows its client's start is the same owner's.
 ///
-/// Mutations: `step` not marking the handles unconfirmed reports the first start
-/// as a replacement; `replaced` treating a `PortStart` after its client's start
-/// as another start reports it for the pair.
+/// Mutations: `step` not marking the handles unconfirmed reports the first
+/// start as a replacement; `replaced` treating a `PortStart` after its client's
+/// start as another start reports it for the pair.
 #[test]
 fn a_start_read_late_for_an_unconfirmed_handle_is_its_own() {
     let mut world = World::with("One", &[]);
     world.model.storm.set(true);
+    world.wake(heard(&[]), |m| {
+        m.present.borrow_mut().extend(World::device_on(6, "Two"));
+    });
+    world.model.storm.set(false);
+    assert_eq!(world.shape(), vec![("added", "Two".to_string())]);
+    world.wake(
+        heard(&[Event::ClientStart(6), Event::PortStart(6, 0)]),
+        |_| {},
+    );
+    assert_eq!(world.shape(), Vec::new());
+    world.wake(
+        heard(&[
+            Event::PortExit(6, 0),
+            Event::ClientExit(6),
+            Event::ClientStart(6),
+            Event::PortStart(6, 0),
+        ]),
+        |_| {},
+    );
+    assert_eq!(world.shape(), pair("Two", "Two"));
+}
+
+/// A settle that does not quiet (other clients keep announcing) says nothing
+/// about a handle already reported: its start was read, so a start read next is
+/// a new occupant and is reported.
+///
+/// Mutation: `unconfirmed_after` marking every present handle, not those listed
+/// first, swallows the replug's start (seen in the stress as the swap test timing
+/// out).
+#[test]
+fn a_settle_that_does_not_quiet_does_not_hide_a_replug() {
+    let mut world = World::with("One", &[]);
+    world.model.storm.set(true);
     world.wake(heard(&[]), |_| {});
     world.model.storm.set(false);
-    world.wake(heard(&START), |_| {});
-    assert_eq!(world.shape(), Vec::new());
     world.wake(heard(&REPLUG), |_| {});
     assert_eq!(world.shape(), pair("One", "One"));
 }

@@ -52,6 +52,7 @@ fn flat_wave(len: usize) -> Arc<Wave> {
 /// A voice placed on the transport at `[start, start + 1)`.
 fn voice_at(start: f64) -> Voice {
     let source = MemorySource::new(flat_wave(48_000))
+        .expect("a placeable wave")
         .placed_at(VoiceWindow::span(Beat(start), BeatDuration(1.0)));
     Voice {
         source: VoiceSource::Memory(source),

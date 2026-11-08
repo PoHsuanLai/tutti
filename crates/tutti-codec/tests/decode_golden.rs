@@ -277,7 +277,7 @@ fn the_stream_reads_every_frame_the_load_does() {
     }
 }
 
-/// The header agrees with the decode: `Wave::read_metadata`'s width, rate **and
+/// The header agrees with the decode: `Wave::read_metadata`'s width, topology, rate **and
 /// frame count** are what `Wave::read` actually produces, for every fixture.
 ///
 /// Restores the fork's `probe_metadata_matches_full_load`, which the move
@@ -290,7 +290,8 @@ fn the_probe_agrees_with_the_full_load() {
     for &(name, _, _) in GOLDEN {
         let w = Wave::read(asset(name)).expect("load");
         let meta = Wave::read_metadata(asset(name)).expect("probe");
-        assert_eq!(meta.channels, w.channels(), "{name}: probed width");
+        assert_eq!(meta.channels(), w.channels(), "{name}: probed width");
+        assert_eq!(meta.topology, *w.topology(), "{name}: probed topology");
         assert_eq!(
             meta.sample_rate as f64,
             w.sample_rate().get(),

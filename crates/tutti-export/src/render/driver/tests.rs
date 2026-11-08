@@ -31,7 +31,11 @@ fn render(
         latency: Samples(0),
     };
     let mut out = Vec::new();
-    with_source(graph, RATE, clock, |src| {
+    let file = FileChannels {
+        layout: ChannelLayout::from(ch),
+        topology: None,
+    };
+    with_source(graph, RATE, clock, &file, |src| {
         drive(
             src,
             ChannelLayout::from(ch),
@@ -59,7 +63,11 @@ fn drive_ticked(frames: usize, tick: &mut dyn FnMut(Progress) -> Flow) -> (Outco
         latency: Samples(0),
     };
     let mut consumed = 0;
-    let outcome = with_source(&mut mono_dc(0.5), RATE, &FrozenClock, |src| {
+    let file = FileChannels {
+        layout: ChannelLayout::MONO,
+        topology: None,
+    };
+    let outcome = with_source(&mut mono_dc(0.5), RATE, &FrozenClock, &file, |src| {
         drive(
             src,
             ChannelLayout::MONO,
@@ -124,20 +132,20 @@ fn progress_rises_and_reaches_the_total() {
 }
 
 /// A mono graph rendered to a wider file must NOT be copied into every
-/// channel. `fold_frame`'s rule beyond stereo is copy-and-zero-fill, and a
-/// full-level mono copy in the LFE and surrounds is the bug this pins.
+/// channel: it is the centre of a 5.1 file, and a full-level mono copy in the
+/// LFE and surrounds is the bug this pins.
 ///
-/// Mutation (run): `fold_graph_frame` writing `dst.fill(src[0])` for a
-/// one-channel source → channel 1 reads 0.5.
+/// Mutation (run): the fold replaced by `dst.fill(src[0])` for a one-channel
+/// source → channel 1 reads 0.5.
 #[test]
 fn a_mono_graph_does_not_fill_every_surround_channel() {
     let frames = render(&mut mono_dc(0.5), &FrozenClock, 6, 64);
     assert!(!frames.is_empty());
     for f in &frames {
         assert_eq!(f.len(), 6);
-        assert_eq!(f[0], 0.5, "channel 0 carries the mono signal");
-        for (c, &s) in f.iter().enumerate().skip(1) {
-            assert_eq!(s, 0.0, "channel {c} must be silent, got {s}");
+        for (c, &s) in f.iter().enumerate() {
+            let want = if c == 2 { 0.5 } else { 0.0 };
+            assert_eq!(s, want, "channel {c}: the mono signal is the centre only");
         }
     }
 }
@@ -149,8 +157,8 @@ fn a_mono_graph_does_not_fill_every_surround_channel() {
 /// Widths 3 and 5 are here on purpose: they are the ones a fixed enumeration
 /// of widths would refuse outright.
 ///
-/// Mutation (run): `fold_graph_frame` gathering `dst.len()` channels
-/// instead of `planes.len()` → it indexes a missing plane and panics.
+/// Mutation (run): the fold built for the file's width as its source width
+/// → it indexes a missing plane and panics.
 #[test]
 fn rendering_a_narrow_graph_to_a_wide_file_does_not_panic() {
     for ch in [2usize, 3, 4, 5, 12] {

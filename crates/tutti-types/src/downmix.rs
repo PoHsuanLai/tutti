@@ -1,4 +1,5 @@
-//! Runtime-width surround → stereo / mono downmix matrices.
+//! Runtime-width surround → stereo / mono downmix matrices, for the callers that
+//! hold a bare frame (see [`Fold`](crate::Fold) for any that knows its topology).
 //!
 //! When a signal is wider than the sink it feeds — a 5.1/7.1 master played on a
 //! stereo device, or read back through a stereo terminal — the extra channels
@@ -51,12 +52,6 @@ use crate::ChannelLayout;
 /// The −3 dB attenuation (`1/√2 ≈ 0.7071`) the downmix folds use for the
 /// centre and surround channels.
 pub const M3DB: f32 = core::f32::consts::FRAC_1_SQRT_2;
-
-/// Read channel `i` of `frame`, or `0.0` if the frame is narrower.
-#[inline]
-fn ch(frame: &[f32], i: usize) -> f32 {
-    frame.get(i).copied().unwrap_or(0.0)
-}
 
 /// Folds one interleaved surround frame to a stereo `(Lo, Ro)` pair.
 ///
@@ -152,48 +147,6 @@ pub fn fold_frame_to_mono(frame: &[f32]) -> f32 {
         _ => {
             let (lo, ro) = fold_frame_to_stereo(frame);
             (lo + ro) * M3DB
-        }
-    }
-}
-
-/// Folds a `src`-width interleaved frame into a `dst`-width frame, writing
-/// every channel of `dst`.
-///
-/// What [`Fold::between`](crate::Fold::between) replaces: a fold by width, not by speaker.
-///
-/// This is the general N→M form the live output path uses to match the device
-/// width:
-///
-/// - `dst.len() == 1` → [`fold_frame_to_mono`].
-/// - `dst.len() == 2` → [`fold_frame_to_stereo`] (folds surround, passes stereo,
-///   **duplicates mono** into both sides).
-/// - `dst.len() >= src.len()` (`> 2`) → straight copy, extra `dst` channels
-///   zero-filled (never a synthetic upmix — a stereo signal on a 5.1 device
-///   leaves C/LFE/surrounds silent).
-/// - narrowing to some other width (`2 < dst < src`) → front-`dst` passthrough
-///   (there is no standard matrix for an arbitrary intermediate width).
-///
-/// The mono and stereo targets inherit the limits in the module docs: the
-/// matrix is not normalised, and a source width with no matrix loses its
-/// centre and surrounds.
-///
-/// Allocation-free (only indexed reads and writes over the two slices), so
-/// safe on the audio thread.
-#[inline]
-pub fn fold_frame(src: &[f32], dst: &mut [f32]) {
-    match dst.len() {
-        0 => {}
-        1 => dst[0] = fold_frame_to_mono(src),
-        2 => {
-            let (l, r) = fold_frame_to_stereo(src);
-            dst[0] = l;
-            dst[1] = r;
-        }
-        _ => {
-            // Equal width or upmix (zero-fill): straight copy.
-            for (i, o) in dst.iter_mut().enumerate() {
-                *o = ch(src, i);
-            }
         }
     }
 }
@@ -375,32 +328,6 @@ mod tests {
         assert!((fold_frame_to_mono(&frame) - 2.0 * M3DB).abs() < 1e-6);
     }
 
-    #[test]
-    fn fold_frame_matches_the_pair_helpers() {
-        let src = [1.0, 2.0, 0.5, 0.0, 0.2, 0.4];
-        // → stereo
-        let mut st = [0.0; 2];
-        fold_frame(&src, &mut st);
-        assert_eq!((st[0], st[1]), fold_frame_to_stereo(&src));
-        // → mono
-        let mut mo = [0.0; 1];
-        fold_frame(&src, &mut mo);
-        assert!((mo[0] - fold_frame_to_mono(&src)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn fold_frame_upmix_zero_fills_extra_channels() {
-        // Stereo source into a 6-wide dst: front pair copied, C/LFE/surrounds silent.
-        let src = [0.7, -0.3];
-        let mut dst = [9.9; 6];
-        fold_frame(&src, &mut dst);
-        assert_eq!(dst[0], 0.7);
-        assert_eq!(dst[1], -0.3);
-        for &s in &dst[2..] {
-            assert_eq!(s, 0.0, "extra device channels must be silent, not upmixed");
-        }
-    }
-
     /// A rear-only 7.1 frame, which a front-pair truncation would fold to
     /// silence, survives the mono fold.
     ///
@@ -408,40 +335,18 @@ mod tests {
     #[test]
     fn fold_frame_to_mono_keeps_the_surround_rears() {
         let rears_only = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0];
-        let mut mono = [0.0; 1];
-        fold_frame(&rears_only, &mut mono);
-        assert!((mono[0] - 2.0 * M3DB * M3DB).abs() < 1e-6, "{}", mono[0]);
-    }
-
-    /// A stereo frame into four channels keeps the pair and zero-fills the
-    /// rest over stale data, so a caller emitting `dst` as a frame never
-    /// emits a short or stale one. (`matrix` pins the planar fold only.)
-    ///
-    /// Mutation (run): the wide branch skipping its copy fails.
-    #[test]
-    fn fold_frame_zero_fills_a_wider_destination_exactly() {
-        let mut dst = [9.9f32; 4];
-        fold_frame(&[0.25, -0.25], &mut dst);
-        assert_eq!(dst, [0.25, -0.25, 0.0, 0.0]);
+        let mono = fold_frame_to_mono(&rears_only);
+        assert!((mono - 2.0 * M3DB * M3DB).abs() < 1e-6, "{mono}");
     }
 
     /// Stereo into mono averages: an asymmetric pair tells the average from a
     /// dropped right channel.
     ///
-    /// Mutation (run): `fold_frame` mono arm taking `src[0]` fails.
+    /// Mutation (run): the two-channel arm taking `frame[0]` fails.
     #[test]
-    fn fold_frame_stereo_to_mono_averages_asymmetric_input() {
-        let mut mono = [0.0f32; 1];
-        fold_frame(&[0.5, 0.9], &mut mono);
-        assert!((mono[0] - 0.7).abs() < 1e-6, "{}", mono[0]);
-    }
-
-    #[test]
-    fn fold_frame_equal_width_is_a_straight_copy() {
-        let src = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mut dst = [0.0; 6];
-        fold_frame(&src, &mut dst);
-        assert_eq!(dst, src);
+    fn fold_frame_to_mono_averages_asymmetric_stereo() {
+        let mono = fold_frame_to_mono(&[0.5, 0.9]);
+        assert!((mono - 0.7).abs() < 1e-6, "{mono}");
     }
 
     #[test]

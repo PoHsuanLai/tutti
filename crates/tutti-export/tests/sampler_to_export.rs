@@ -104,7 +104,7 @@ fn voice_graph(stretch: f32, cents: f32) -> (RenderGraph, Arc<OfflineTimeline>) 
     // and read as an attenuation bug rather than an exhausted source.
     let wave = tone((SR * DUR_S) as usize * 4);
 
-    let source = MemorySource::placed(wave, Beat::new(0.0), None);
+    let source = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
 
     let play = Playback {
         stretch: StretchFactor::new(stretch),

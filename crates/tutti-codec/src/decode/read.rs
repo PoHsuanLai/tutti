@@ -18,20 +18,36 @@ use symphonia::core::probe::Hint;
 use super::error::{DecodeError, convert};
 use super::placement::{topology_of, unstated};
 use crate::Wave;
+use tutti_types::ChannelTopology;
 
 /// Container metadata read from an audio file without decoding any audio.
 ///
 /// Returned by [`Wave::read_metadata`]. The fields are the container's raw
-/// answers (`u32` rate, `usize` width).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// answers (`u32` rate), and the topology it names, the one a full read would
+/// give the [`Wave`]. It carries a [`ChannelTopology`], which owns its list of
+/// speakers, so this is `Clone` and not `Copy`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct WaveMetadata {
     /// Total sample frames, if the container reports it (`None` for some
     /// streamed/VBR formats that don't store a frame count).
     pub total_frames: Option<u64>,
     /// The file's sample rate in Hz; 44 100 if the container does not say.
     pub sample_rate: u32,
-    /// The file's channel count; 2 if the container does not say.
-    pub channels: usize,
+    /// Which speaker each channel feeds, in the order the samples are in (as
+    /// [`Wave::topology`] and [`FileIn::topology`](crate::FileIn::topology)
+    /// give it): a lone channel is the centre, a speaker the vocabulary has no
+    /// name for is [`Speaker::Unknown`](tutti_types::Speaker::Unknown), and a
+    /// container that does not say is stereo. A caller deciding whether a file
+    /// can be placed asks this before it loads or opens the file.
+    pub topology: ChannelTopology,
+}
+
+impl WaveMetadata {
+    /// The file's channel count: the width of its [`topology`](Self::topology).
+    #[must_use]
+    pub fn channels(&self) -> usize {
+        self.topology.positions().len()
+    }
 }
 
 /// Decode one packet into `dest`, reusing the buffer across calls to avoid
@@ -141,11 +157,10 @@ impl Wave {
         Ok(WaveMetadata {
             total_frames: track.codec_params.n_frames,
             sample_rate: track.codec_params.sample_rate.unwrap_or(44100),
-            channels: track
+            topology: track
                 .codec_params
                 .channels
-                .map(|ch| ch.count())
-                .unwrap_or(2),
+                .map_or_else(unstated, topology_of),
         })
     }
 

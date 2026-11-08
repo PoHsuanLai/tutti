@@ -38,7 +38,7 @@ fn ramp_wave() -> Arc<Wave> {
 }
 
 fn placed() -> MemorySource {
-    MemorySource::placed(ramp_wave(), Beat::new(0.0), None)
+    MemorySource::placed(ramp_wave(), Beat::new(0.0), None).expect("a placeable wave")
 }
 
 fn voice() -> Voice {

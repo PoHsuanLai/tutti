@@ -41,8 +41,9 @@ use crate::output::{AudioCallbackState, MAX_FRAMES, process_audio};
 pub struct OutputBlock {
     state: Arc<AudioCallbackState>,
     /// The device's true channel layout. The engine folds the graph root to
-    /// this width; a device wider than `MAX_ROOT_CHANNELS` (rare) simply gets
-    /// silent extra channels — the root renders ≤ 8 and `fold_frame`
+    /// this width (declared with [`Engine::support_output`](tutti_engine::Engine::support_output)
+    /// when the block is built); a device wider than `MAX_ROOT_CHANNELS` (rare)
+    /// simply gets silent extra channels — the root renders ≤ 8 and the fold
     /// zero-fills the rest.
     layout: ChannelLayout,
     /// The interleave stride for both the mix buffer and the device buffer,
@@ -66,8 +67,20 @@ impl std::fmt::Debug for OutputBlock {
 impl OutputBlock {
     /// Allocate the callback's working set for a device of `layout` width.
     ///
-    /// Control-thread only. This is the only allocation on the output path.
+    /// Control-thread only. This is the only allocation on the output path,
+    /// and the one place the device's width reaches the engine: it builds the
+    /// engine's fold from the graph root to the device
+    /// ([`Engine::support_output`](tutti_engine::Engine::support_output)), so the
+    /// callback never does.
+    ///
+    /// # Panics
+    ///
+    /// If `layout` has no channels: a device has at least one.
     pub fn new(state: Arc<AudioCallbackState>, layout: ChannelLayout) -> Self {
+        state
+            .engine
+            .support_output(layout)
+            .expect("a device has at least one channel");
         let channels = layout.count() as usize;
         Self {
             state,

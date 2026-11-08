@@ -34,7 +34,9 @@ fn tone(secs: f64) -> Arc<Wave> {
 
 fn stretched(wave: &Arc<Wave>) -> VoiceNode {
     VoiceNode::new(Voice {
-        source: VoiceSource::Memory(MemorySource::placed(Arc::clone(wave), Beat(0.0), None)),
+        source: VoiceSource::Memory(
+            MemorySource::placed(Arc::clone(wave), Beat(0.0), None).expect("a placeable wave"),
+        ),
         play: Playback {
             stretch: StretchFactor::new(0.5),
             ..Default::default()
@@ -89,7 +91,8 @@ fn graph(wave: &Arc<Wave>, workers: usize, declared: bool, bus: bool) -> Executo
     for k in 0..sources {
         let key = NodeKey(k + 1);
         if k < READS {
-            let read = MemorySource::placed(Arc::clone(wave), Beat(k as f64 * 0.001), None);
+            let read = MemorySource::placed(Arc::clone(wave), Beat(k as f64 * 0.001), None)
+                .expect("a placeable wave");
             if declared {
                 ed.insert(key, "read", read);
             } else {
@@ -162,12 +165,17 @@ fn bits(v: &[Vec<f32>]) -> Vec<Vec<u32>> {
 fn each_node_declares_its_class() {
     let wave = tone(0.1);
     let plain = VoiceNode::new(Voice {
-        source: VoiceSource::Memory(MemorySource::placed(Arc::clone(&wave), Beat(0.0), None)),
+        source: VoiceSource::Memory(
+            MemorySource::placed(Arc::clone(&wave), Beat(0.0), None).expect("a placeable wave"),
+        ),
         play: Playback::default(),
         channel_index: None,
     });
     assert_eq!(
-        MemorySource::new(Arc::clone(&wave)).shape().cost,
+        MemorySource::new(Arc::clone(&wave))
+            .expect("a placeable wave")
+            .shape()
+            .cost,
         Cost::Moderate
     );
     assert_eq!(plain.shape().cost, Cost::Moderate);

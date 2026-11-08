@@ -644,18 +644,28 @@ Scalars use `Param<U>`.
 - **`tutti_graph::Node::process`** is for anything that is a node in the
   graph (including sampler voices): planar `f32` through `Io`, any block
   length up to `Prepare::max_block`, the transport from `Env`.
-- **A channel fold goes through `tutti_types::Fold`**, built by `Fold::between`
-  from two `ChannelTopology` values on the control side and applied without
-  allocating. A width is not a placement: an edge reports a topology (a channel
-  with no speaker is `Speaker::Discrete`), and `Fold::assuming_smpte` is the
-  named assumption for the edge that cannot. A new caller of `fold_frame` is a
-  bug; the edges still on it (the engine's and export's output, the sampler's
-  non-mono mismatches, the nodes' mono helpers) move in their own PRs. The
-  input edges report a topology: a decoded file (`Wave::topology`,
-  `FileIn::topology`, from what the container states), a capture device (its
-  inputs are `Discrete`; `MicIn::open_inputs` chooses them with
-  `Fold::select`). The quad spelling is WAVE's (`FL FR BL BR`); `Fold` treats
-  the side-surround spelling the plugin hosts decode as the same four feeds.
+- **A channel fold goes through `tutti_types::Fold`**, built on the control side
+  and applied without allocating. A width is not a placement: an edge reports a
+  topology (a channel with no speaker is `Speaker::Discrete`), and an edge that
+  knows only a width (a device, an export file, the graph root) builds
+  `Fold::widths` / `Fold::to_width`: the engine's order where the width has one
+  (`ChannelTopology::assumed`: mono, stereo, quad at 4, 5.1, 7.1, 7.1.4), channels
+  by index (`Fold::by_index`, widening only: a narrowing there is
+  `FoldError::Unplaced`, never a truncation; `Fold::select` truncates on purpose)
+  where it has none. The width-only `fold_frame` is
+  gone; do not add another. `Engine::new` builds the folds from every root width to every device
+  width up to 16 (`OutputFolds`, published through an `ArcLend` and lent once per
+  call) and `Engine::support_output` adds a wider one; a buffer of an unsupported
+  width is a silent counted block, and `OutputBlock::new` makes the call. Export folds the graph onto the file in `GraphSource::new`.
+  The sampler builds a `Place` from `Wave::topology()` when it builds a source
+  (`MemorySource::try_with_channels`, `memory_voice`), and a wave with a channel
+  no speaker names (`FoldError::Unnamed`) is refused there as a `PlaceError`;
+  the streaming tier reads a file at its own width and order. The input edges
+  report a topology: a decoded file (`Wave::topology`, `FileIn::topology`,
+  `WaveMetadata::topology`), a capture device (its inputs are `Discrete`;
+  `MicIn::open_inputs` chooses them with `Fold::select`). The quad spelling is
+  WAVE's (`FL FR BL BR`); `Fold` treats the side-surround spelling the plugin
+  hosts decode as the same four feeds.
 - **Width is runtime.** Do not reintroduce a const-generic channel count. The
   two runtime width checks that replaced it (`pump`'s `debug_assert` and
   `Recorder::start`'s error) are mandatory.

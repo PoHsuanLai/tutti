@@ -230,7 +230,8 @@ fn assert_block_invariant<N: Node>(case: &str, mut build: impl FnMut() -> N) {
 
 /// A placed memory voice playing `play`.
 fn memory_voice(wave: &Arc<Wave>, play: Playback) -> Voice {
-    let source = MemorySource::placed(Arc::clone(wave), Beat::new(0.0), None);
+    let source =
+        MemorySource::placed(Arc::clone(wave), Beat::new(0.0), None).expect("a placeable wave");
     Voice {
         source: VoiceSource::Memory(source),
         play,
@@ -309,10 +310,10 @@ fn memory_voices_render_the_same_frames_at_any_block_length() {
 fn a_memory_source_node_renders_the_same_frames_at_any_block_length() {
     let wave = tone(1.5);
     assert_block_invariant("memory source, placed", || {
-        MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+        MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None).expect("a placeable wave")
     });
     assert_block_invariant("memory source, free-running", || {
-        let s = MemorySource::new(Arc::clone(&wave));
+        let s = MemorySource::new(Arc::clone(&wave)).expect("a placeable wave");
         s.trigger();
         s
     });

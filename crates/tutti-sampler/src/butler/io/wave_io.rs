@@ -13,24 +13,23 @@
 //! `WaveIn` deliberately does not implement [`AudioIn`](tutti_types::AudioIn) —
 //! see its type docs, which is where that decision and its reasoning live.
 
-use crate::voice::interp::MonoSpread;
-use crate::{MAX_SAMPLER_CHANNELS, nonempty};
+use crate::nonempty;
+use crate::voice::interp::Place;
 use tutti_codec::Wave;
-use tutti_types::{ChannelLayout, fold_frame};
+use tutti_types::ChannelLayout;
 
 /// The canonical planar→interleaved unpack: writes frame `idx` of `wave` into
 /// `out` at `out.len()` channels, zero past the end.
 ///
 /// # Channel policy
 ///
-/// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s: a
-/// mono source is placed by `mono` ([`MonoSpread`]); anything else folds through
-/// [`fold_frame`]. The two tiers must agree here — this is the butler's
-/// unpack and that is the RT reader, and a voice that unpacked differently on
-/// disk than in memory is precisely the divergence the shared kernel exists to
-/// prevent.
+/// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s,
+/// through the same [`Place`]. The two tiers must agree here — this is the
+/// butler's unpack and that is the RT reader, and a voice that unpacked
+/// differently on disk than in memory is precisely the divergence the shared
+/// kernel exists to prevent.
 #[inline]
-pub(crate) fn wave_frame_into(wave: &Wave, mono: &MonoSpread, idx: usize, out: &mut [f32]) {
+pub(crate) fn wave_frame_into(wave: &Wave, place: &Place, idx: usize, out: &mut [f32]) {
     if out.is_empty() {
         return;
     }
@@ -39,30 +38,7 @@ pub(crate) fn wave_frame_into(wave: &Wave, mono: &MonoSpread, idx: usize, out: &
         out.fill(0.0);
         return;
     }
-
-    // A mono sample has no channel identity: the spread places it.
-    if src_ch == 1 {
-        mono.frame(wave.at(0, idx), out);
-        return;
-    }
-
-    // Matched width: straight per-channel read. Bound: `src_ch == out.len()`,
-    // which is what keeps `Wave::at` (an unchecked index) from panicking.
-    if src_ch == out.len() {
-        for (c, o) in out.iter_mut().enumerate() {
-            *o = wave.at(c, idx);
-        }
-        return;
-    }
-
-    // Mismatched: gather at the source width into a bounded stack frame and let
-    // the engine's one matrix decide the mapping.
-    let n = src_ch.min(MAX_SAMPLER_CHANNELS);
-    let mut src = [0.0f32; MAX_SAMPLER_CHANNELS];
-    for (c, s) in src.iter_mut().enumerate().take(n) {
-        *s = wave.at(c, idx);
-    }
-    fold_frame(&src[..n], out);
+    place.frame(src_ch, |c| wave.at(c, idx), out);
 }
 
 /// A forward reader over a resident `Wave`, reading from an internal cursor.
@@ -108,8 +84,10 @@ pub(crate) struct WaveIn<'w> {
     /// Output interleave width — independent of `wave.channels()`, which
     /// [`wave_frame_into`]'s policy reconciles per frame.
     channels: ChannelLayout,
-    /// Where a mono wave goes in a frame of [`channels`](Self::channels).
-    mono: MonoSpread,
+    /// Where the wave goes in a frame of [`channels`](Self::channels): as it
+    /// stands, a mono one placed by the lone-centre rule (the ring carries the
+    /// file at its own width and order).
+    place: Place,
     cursor: usize,
 }
 
@@ -123,7 +101,7 @@ impl<'w> WaveIn<'w> {
         Self {
             wave,
             channels,
-            mono: MonoSpread::to(channels),
+            place: Place::native(channels),
             cursor: start,
         }
     }
@@ -147,7 +125,7 @@ impl<'w> WaveIn<'w> {
         let ch = self.channels.count() as usize;
         let mut frames = 0;
         for frame in out.chunks_exact_mut(ch) {
-            wave_frame_into(self.wave, &self.mono, self.cursor, frame);
+            wave_frame_into(self.wave, &self.place, self.cursor, frame);
             self.cursor += 1;
             frames += 1;
         }
@@ -167,10 +145,10 @@ mod tests {
         wave
     }
 
-    /// `wave_frame_into` with the spread a reader of `out`'s width has.
+    /// `wave_frame_into` with the placement a reader of `out`'s width has.
     fn frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {
-        let mono = MonoSpread::to(ChannelLayout::from(out.len()));
-        wave_frame_into(wave, &mono, idx, out);
+        let place = Place::for_wave(wave, ChannelLayout::from(out.len())).expect("placeable");
+        wave_frame_into(wave, &place, idx, out);
     }
 
     fn indexed_wave(channels: usize, len: usize) -> Wave {
@@ -211,7 +189,7 @@ mod tests {
     }
 
     /// The butler's unpack must follow the SAME channel policy as the RT
-    /// reader's `interp::read_frame`: mono is placed by the spread, anything else folds. Two
+    /// reader's `interp::read_frame`: mono is placed by the spread, anything else by its topology. Two
     /// implementations of a channel policy is how the two tiers drift apart.
     #[test]
     fn wave_frame_matches_the_rt_readers_channel_policy() {
@@ -234,9 +212,13 @@ mod tests {
         // Narrowing folds through the engine matrix rather than truncating.
         let mut narrow = [0.0f32; 2];
         frame_into(&six, 0, &mut narrow);
-        let mut expected = [0.0f32; 2];
-        fold_frame(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &mut expected);
-        assert_eq!(narrow, expected, "narrowing must use fold_frame");
+        // The ITU figures, in the fold's order of operations.
+        let m = tutti_types::M3DB;
+        assert_eq!(
+            narrow,
+            [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0],
+            "narrowing must fold, not truncate"
+        );
 
         // Stereo into a wide frame zero-fills rather than fanning.
         let stereo = indexed_wave(2, 4);

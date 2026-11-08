@@ -247,7 +247,8 @@ mod tests {
                 Arc::new(tutti_codec::Wave::new(1, 48_000.0)),
                 tutti_types::Beat(0.0),
                 None,
-            );
+            )
+            .expect("a placeable wave");
             assert!(keeps_one(tutti_sampler::VoiceNode::new(
                 tutti_sampler::Voice {
                     source: tutti_sampler::VoiceSource::Memory(source),

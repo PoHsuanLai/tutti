@@ -70,8 +70,8 @@ fn step_is_allocation_free_in_every_mode() {
                         velocity: 0x8000,
                         attribute: Attribute::None,
                     },
-                    cc(64, (round % 2 * 127) as u32),
-                    cc(66, (round % 3 / 2 * 127) as u32),
+                    cc(64, round % 2 * 127),
+                    cc(66, round % 3 / 2 * 127),
                     Voice2::PitchBend(round.wrapping_mul(0x0101_0101)),
                     Voice2::NoteOff {
                         note: key(k),

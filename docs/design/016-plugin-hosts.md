@@ -8,6 +8,9 @@ operations. This design moves the decisions into a pure core in
 activation splits a plugin into a realtime Processor and a main-thread
 Controller, and leaves each host crate an interpreter of effects over its FFI.
 
+What a loaded plugin *declares* (units, voices, tail, layouts, presets) is
+typed in [023](023-plugin-capabilities.md).
+
 ## Summary
 
 - **A pure core.** `step(State, Event) -> (State, Effects)` decides activation,

@@ -865,6 +865,7 @@ impl Session {
         main: &MainThread,
         loaded: PluginLoaded,
     ) -> Result<NodeKey, BridgeError> {
+        crate::main_thread();
         let path = loaded.path;
         let config = loaded.config;
         let Open {
@@ -1015,6 +1016,7 @@ impl Session {
     ///
     /// A main-thread call.
     pub fn land_reload(&mut self, main: &MainThread, done: PluginReloaded) -> Vec<SessionEvent> {
+        crate::main_thread();
         let now = self.plugins_now;
         let PluginReloaded {
             node,
@@ -1398,6 +1400,9 @@ impl Session {
 
     /// `Phase::Plugins`. See the module docs.
     pub(crate) fn plugins_phase(&mut self, cx: crate::PhaseCx<'_>, out: &mut Vec<SessionEvent>) {
+        // `refresh_node_latency` collects (`Editor::set_latency`), and what
+        // it collects may be a plugin whose drop tears down an editor.
+        crate::main_thread();
         let now = cx.now;
         self.plugins_now = now;
         let interval = self.snapshot_interval;

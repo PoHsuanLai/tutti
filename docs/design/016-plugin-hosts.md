@@ -1688,12 +1688,15 @@ nothing in release and nothing while no thread was marked. It is now a type.
 - AU keeps its OS check (`pthread_main_np`) in `tutti-au-ffi` as well: the
   claimed thread need not be AppKit's.
 - A `Drop` has no token. The editor of a dropped `PluginBridge` closes only when
-  `MainThread::current()` says so; `ClapLoaded`, the VST3 `Plugin` and `Vst2Handle`
-  tear down on the dropping thread. The per-format lanes' main-thread handles
-  make that the main thread by construction.
-- `Session` paths that free a retired unit (collect, commit, drop) take no
-  token and check nothing; a host with an in-process plugin runs them on its
-  main thread.
+  `MainThread::current()` says so; `ClapLoaded` and `Vst2Handle` check with a
+  `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
+  claims); the VST3 `Plugin` tears down on the dropping thread. The per-format
+  lanes' main-thread handles make that the main thread by construction.
+- `Session` paths that free a retired unit (collect, commit, update, drop) take
+  no token and check with the same `debug_assert!`; the entries that open an
+  in-process plugin (`add_plugin`, `land_reload`) take the token.
+- `claim` is first-come and does not ask the OS: the host claims from its UI
+  thread at startup, and an AU editor still re-checks `pthread_main_np`.
 
 ### 2.10 The VST2 quirk: serialized exclusive calls
 

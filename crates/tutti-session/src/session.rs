@@ -573,15 +573,21 @@ pub enum RootTopologyStatus {
 /// `Device`, feature `device`), or detached (the executor stays on
 /// this side: [`render_frame`](Self::render_frame)).
 ///
-/// `Send`, not `Sync`: one control thread owns it. What it frees may be an
-/// in-process plugin (VST2) whose `Drop` tears down an editor, and that is
-/// owed to the main thread: the entries that open one take the
-/// `MainThread` token (`add_plugin` and `land_reload`, with `plugin`), but the session's
-/// own paths that free a retired unit (the [`Collect`](Phase::Collect) phase,
-/// a commit, dropping the session) take none, so they check nothing: a host
-/// with an in-process plugin runs them on its main thread. Editing the graph
-/// (an insert, [`remove`](Self::remove), a wire) frees nothing and may run on
-/// any thread that owns the session.
+/// `Send`, not `Sync`: one control thread owns it. With `plugin` on, every
+/// path that frees a retired unit checks the main thread (a `debug_assert!`
+/// on `tutti_plugin_types::MainThread::claimed_elsewhere`, silent until a host
+/// claims its main thread), because what it frees may be an in-process plugin
+/// whose `Drop` tears down an editor. These paths take no `MainThread` token (a
+/// headless session has no main thread to be handed); the entries that open an
+/// in-process plugin do (`add_plugin`, `land_reload`). A unit is freed only
+/// when the executor hands it back, at the editor's collect, so the check is
+/// there: the [`Collect`](Phase::Collect) phase, a commit (on a detached
+/// session, which applies and collects at once: [`commit`](Self::commit),
+/// [`render_frame`](Self::render_frame), [`Graph::set_sample_rate`]), and
+/// dropping the session. [`update`](Self::update) and the
+/// [`Commit`](Phase::Commit) and [`AfterCommit`](Phase::AfterCommit) phases
+/// check it too. Editing the graph (an insert, [`remove`](Self::remove), a
+/// wire) frees nothing and may run on any thread that owns the session.
 ///
 /// ```
 /// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
@@ -780,7 +786,9 @@ impl Session {
     /// Runs every phase in [`PHASES`] order at `Instant::now()` with the
     /// session's own declarations, and returns what it found.
     ///
+    /// A main-thread call (see the type docs).
     pub fn update(&mut self) -> Vec<SessionEvent> {
+        crate::main_thread();
         let mut out = Vec::new();
         let cx = PhaseCx::at(Instant::now());
         for &phase in PHASES {
@@ -796,6 +804,7 @@ impl Session {
         let _ = cx;
         match phase {
             Phase::Collect => {
+                crate::main_thread();
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -825,6 +834,7 @@ impl Session {
                 self.resumed |= repreparing && !self.graph.is_repreparing();
             }
             Phase::Commit => {
+                crate::main_thread();
                 let sent = self.graph.is_edited() && self.commit() == Committed::Sent;
                 if !sent && self.resumed {
                     self.publish_sent();
@@ -838,6 +848,7 @@ impl Session {
                     .modulation_phase(&mut self.graph, cx.mods, cx.now, out)
             }
             Phase::AfterCommit => {
+                crate::main_thread();
                 #[cfg(feature = "modulation")]
                 {
                     // The re-apply's commit, as the update's own: published
@@ -1187,5 +1198,11 @@ impl Session {
     #[cfg(feature = "sampler")]
     pub fn disk_streamer(&self) -> Option<&tutti_sampler::DiskStreamer> {
         self.disk_streamer.as_ref()
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        crate::main_thread();
     }
 }

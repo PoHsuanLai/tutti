@@ -273,6 +273,10 @@ impl ClapLoaded {
     /// that gives the plugin a main-thread handle makes this unreachable off the
     /// main thread.
     pub(crate) fn destroy_editor(&mut self) {
+        debug_assert!(
+            !tutti_plugin_types::MainThread::claimed_elsewhere(),
+            "CLAP main-thread call made off the main thread"
+        );
         if !self.flags.gui_created {
             return;
         }

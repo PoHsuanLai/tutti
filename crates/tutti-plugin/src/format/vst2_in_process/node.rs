@@ -87,6 +87,11 @@ impl Node for InProcessVst2Client {
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
         let size = io.frames();
+        if self.rate_refused {
+            // The plugin was not told this node's rate (`set_rate`): silence,
+            // not audio at another rate.
+            return Status::Silent;
+        }
         let n_in = (self.declared.inputs.count() as usize).min(MAX_CHANNELS);
         let n_out = (self.declared.outputs.count() as usize).min(MAX_CHANNELS);
         // No clamp and no size check: the Processor splits a block longer than
@@ -372,6 +377,36 @@ mod owed_tests {
             .params()
             .parameter_value(ParamId::new(i as u32))
             .map(|v| v.get() as f32)
+    }
+
+    /// **A fork told its rate off the main thread is refused, not left at the
+    /// wrong rate.** A fork's `prepare` dispatches the rate under the main
+    /// thread's proof; off that thread it cannot, so the node records the
+    /// refusal, renders silence, and a `prepare` on the main thread clears it.
+    ///
+    /// Mutation (run): `set_rate` not recording the refusal off the main
+    /// thread -> `refused` is false -> fails. The silence `process` renders
+    /// while refused is not covered here.
+    #[test]
+    fn a_fork_prepared_off_the_main_thread_is_refused() {
+        let main = main_thread();
+        let (client, _handle) = super::super::load_client(&main, probe(), SampleRate(48_000.0))
+            .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
+        let fork = client
+            .fork_instance(&main, tutti_graph::ForkMode::Live)
+            .expect("the fork loads on the main thread");
+        let (fork, refused) = std::thread::spawn(move || {
+            let mut fork = fork;
+            fork.set_rate(SampleRate(96_000.0));
+            let refused = fork.rate_refused;
+            (fork, refused)
+        })
+        .join()
+        .expect("the thread returns");
+        assert!(refused, "off the main thread the rate cannot be told");
+        let mut fork = fork;
+        fork.set_rate(SampleRate(96_000.0));
+        assert!(!fork.rate_refused, "a prepare on the main thread clears it");
     }
 
     /// **A block the instance is locked for owes its values to the next.**

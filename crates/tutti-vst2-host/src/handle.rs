@@ -80,9 +80,17 @@ impl Vst2Handle {
 impl Drop for Vst2Handle {
     fn drop(&mut self) {
         // `effMainsChanged(0)` and `effClose` below are main-thread opcodes,
-        // like the `load` that opened the instance. A drop has no token to prove
-        // it: the thread is the owner's, and the VST2 lane that splits the
-        // handles makes that the main thread by construction.
+        // like the `load` that opened the instance. A drop cannot be handed a
+        // `MainThread`, so it checks (debug builds, once a host has claimed its
+        // main thread): the VST2 lane that splits the handles makes it a type.
+        // Not while unwinding: a second panic in a drop aborts, and the first
+        // one is the finding.
+        if !std::thread::panicking() {
+            debug_assert!(
+                !tutti_plugin_types::MainThread::claimed_elsewhere(),
+                "VST2 plugin dropped off the main thread"
+            );
+        }
 
         // Close the editor first — some plugins read audio state during
         // editor teardown (e.g., to flush meter buffers).

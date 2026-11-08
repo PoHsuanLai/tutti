@@ -20,6 +20,15 @@
 //! refused with [`NotMainThread`]. The host claims once, on its UI thread, at
 //! startup, and hands the token down.
 //!
+//! **Who claims.** The claim is first-come, and nothing checks that the first
+//! claimer is the UI thread: `claim` does not ask the OS (a test runner's
+//! threads are not the OS main thread, and every test claims). So the host must
+//! claim from its UI or OS main thread, first, at startup; a thread that claims
+//! earlier becomes "the main thread" for the process, and the real one is then
+//! refused. `bevy-tutti`'s `TuttiHostingPlugin::build` claims and panics if it
+//! is refused. A format whose soundness needs the OS's main thread still asks
+//! the OS itself (the AU editor re-checks `pthread_main_np`).
+//!
 //! The claim is **once per process**, not once per test. Under `cargo nextest`
 //! every test is its own process, so a test claims freely; under plain
 //! `cargo test` the tests of one binary share a process and run on different
@@ -99,6 +108,20 @@ impl MainThread {
         }
     }
 
+    /// Whether the process's main thread has been claimed by a thread other than
+    /// the caller. `false` while nobody has claimed, so a debug check built on
+    /// it is silent in a process with no main thread (a headless rig), and trips
+    /// only for a free that happens on the wrong thread.
+    ///
+    /// For the paths that cannot be handed a token (a `Drop`, a session's free
+    /// of a retired unit), where it backs a `debug_assert!`. An entry that can
+    /// take a [`MainThread`] takes one instead, and checks nothing.
+    #[must_use]
+    pub fn claimed_elsewhere() -> bool {
+        MAIN.get()
+            .is_some_and(|main| *main != std::thread::current().id())
+    }
+
     /// The proof, if the calling thread is the one that claimed, and `None`
     /// otherwise, including while nobody has claimed. It never claims.
     ///
@@ -124,10 +147,12 @@ mod tests {
 
     // Mutations (run): `claim` always returning `Ok` (drop the thread
     // comparison) fails the refusal assertion; `current` returning `Some`
-    // whenever anything is claimed fails the `elsewhere` assertion.
+    // whenever anything is claimed fails the `elsewhere` assertion; `claimed_elsewhere` answering `false` always
+    // fails the `off` assertion.
     #[test]
     fn a_claim_is_refused_on_another_thread_and_repeats_on_the_first() {
         assert!(MainThread::current().is_none(), "nobody has claimed yet");
+        assert!(!MainThread::claimed_elsewhere(), "nobody has claimed yet");
         let first = MainThread::claim();
         assert!(first.is_ok());
         assert!(MainThread::claim().is_ok(), "the same thread claims again");
@@ -142,5 +167,13 @@ mod tests {
             .join()
             .unwrap();
         assert!(elsewhere, "only the claiming thread holds the proof");
+        assert!(
+            !MainThread::claimed_elsewhere(),
+            "the claimer is not elsewhere"
+        );
+        let off = std::thread::spawn(MainThread::claimed_elsewhere)
+            .join()
+            .unwrap();
+        assert!(off, "another thread is elsewhere once a thread has claimed");
     }
 }

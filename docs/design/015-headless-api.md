@@ -478,8 +478,9 @@ lost its event input); the node it removes is freed at the next collect.
 
 - The debug guard (`assert_main_thread`) is gone (doc 016 §2.9a). The entries
   that open an in-process plugin, `add_plugin` and `land_reload`, take a
-  `MainThread` token; the session's own paths that free a unit check nothing,
-  and a host with an in-process plugin runs them on its main thread.
+  `MainThread` token; the session's own paths that free a unit keep a
+  `debug_assert!` on `MainThread::claimed_elsewhere()` (silent until a host
+  claims its main thread).
 - `Session: Send` stays, because a Bevy resource must be `Send`. A host may
   build the session on one thread and hand it to its main thread before
   the first plugin loads.

@@ -182,6 +182,16 @@ impl PluginsRes {
 /// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not
 /// add one itself, since a host that configured its own pool sizes would have
 /// them silently replaced.
+///
+/// # Panics
+///
+/// `build` claims the process's main thread (`tutti_plugin::MainThread::claim`),
+/// which is first-come: the app must be built on the UI / OS main thread, before
+/// any other thread claims. Built off it, or after another thread has claimed,
+/// the claim is refused and `build` panics. `claim` does not ask the OS (test
+/// runners build apps off the OS main thread), so the first claimer being the real
+/// main thread is the host's to guarantee. An AU editor still re-checks
+/// `pthread_main_np` itself.
 #[derive(Debug)]
 pub struct TuttiHostingPlugin;
 

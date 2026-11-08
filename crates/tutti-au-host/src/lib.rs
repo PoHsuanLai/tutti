@@ -100,7 +100,7 @@ pub use instance::{AuActive, AuInstance, AuLoaded};
 #[cfg(target_os = "macos")]
 pub use topology::{tag_for, topology_of};
 #[cfg(target_os = "macos")]
-pub use tutti_au_ffi::AuEditor;
+pub use tutti_au_ffi::{AuEditor, Unit};
 // Flat-re-exported for the reason `AuLayoutTag` is: `AuMidiMapping` is the
 // argument and return type of the five `*_parameter_midi_mapping*` methods on
 // `AuInstance`, and `MidiTrigger` is the field of it a caller must construct, so

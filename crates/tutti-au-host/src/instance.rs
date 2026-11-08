@@ -1261,7 +1261,7 @@ impl AuInstance {
         let callbacks = loaded
             .transport
             .get_or_insert_with(|| HostCallbacks::new(unit));
-        callbacks.install(unit)?;
+        callbacks.install()?;
         Ok(callbacks.state())
     }
 

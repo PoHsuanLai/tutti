@@ -25,6 +25,13 @@ pub fn mark_main_thread() {
     let _ = MAIN.set(std::thread::current().id());
 }
 
+/// Whether the caller is on the thread [`mark_main_thread`] marked; `true` while
+/// none is marked. Unlike [`assert_main_thread`] it is a real answer in release
+/// builds too, for code whose soundness depends on it.
+pub fn is_main_thread() -> bool {
+    MAIN.get().is_none_or(|m| *m == std::thread::current().id())
+}
+
 /// Asserts that the caller is on the thread [`mark_main_thread`] marked.
 ///
 /// All native plugin formats require non-audio calls (editor, state,

@@ -657,9 +657,6 @@ impl Misbehaviour {
     /// assert that a load succeeded, never that it was correctly refused.
     pub fn try_open(self, rate: f64, block: u32) -> tutti_au_host::Result<AuInstance> {
         let info = self.require();
-        // SAFETY: `info.component` came from `AudioComponentFindNext` via
-        // `enumerate_components_of_type`, so it is a live factory handle for the
-        // lifetime of this process.
         AuInstance::new(info.component, rate, block)
     }
 

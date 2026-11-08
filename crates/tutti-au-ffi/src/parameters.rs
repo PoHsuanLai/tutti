@@ -3,7 +3,7 @@
 
 use coreaudio_sys as sys;
 
-use crate::cf::CfString;
+use crate::cf::{CfString, take_string};
 use crate::error::Result;
 use crate::property::{
     Element, ParameterClumpName, ParameterInfo, ParameterStringFromValue, ParameterValueFromString,
@@ -53,9 +53,7 @@ impl Unit {
         {
             // SAFETY: with `HasCFNameString` set the record's `cfNameString` is
             // a CFString the caller owns one retain of (the header's rule).
-            unsafe { CfString::from_copied(raw.cfNameString) }
-                .map(|s| s.to_string())
-                .unwrap_or_default()
+            unsafe { take_string(raw.cfNameString) }.unwrap_or_default()
         } else {
             // `name` is `[c_char; 52]`; reinterpret as bytes for the
             // null-terminated fallback decode.
@@ -90,7 +88,7 @@ impl Unit {
             .ok()?;
         // SAFETY: documented Copy rule: "the outString ... must be released by
         // the caller", so a non-null answer is one retain we own.
-        unsafe { CfString::from_copied(answer.outString) }.map(|s| s.to_string())
+        unsafe { take_string(answer.outString) }
     }
 
     /// The value the unit parses from `text` for parameter `id`, or `None` when
@@ -135,7 +133,7 @@ impl Unit {
             .ok()?;
         // SAFETY: Copy rule, as for every CF object retrieved from an AU
         // property.
-        unsafe { CfString::from_copied(answer.out_name) }.map(|s| s.to_string())
+        unsafe { take_string(answer.out_name) }
     }
 }
 

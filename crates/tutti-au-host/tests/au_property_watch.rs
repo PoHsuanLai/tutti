@@ -129,8 +129,6 @@ impl Watched {
     fn new() -> Self {
         let au = Misbehaviour::None.open_initialized(RATE, BLOCK);
         let log = Arc::new(Log::default());
-        // SAFETY: `au` is stored in the same struct as the listener and declared
-        // after it, so it outlives the registration.
         let listener = AuParameterListener::new(au.unit(), log.sink())
             .expect("create a listener on the probe");
         for id in [

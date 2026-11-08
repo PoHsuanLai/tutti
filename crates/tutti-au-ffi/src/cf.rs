@@ -223,19 +223,38 @@ impl CfPlist {
 }
 
 /// Copies a `CFStringRef` an Audio Unit supplied into a `String`, after checking
-/// it really is a `CFString`; `None` for null, for a pointer that cannot be a CF
+/// it really is a `CFString`; `None` for null, for a word that cannot be a CF
 /// object, and for a CF object of another type.
 ///
-/// An AU with a corrupt table can hand back any word, and `CFGetTypeID` faults on
-/// a word that is not a CF reference. A short string is an arm64 tagged pointer
-/// (bit 63 set, legitimately misaligned), so the gate admits a value that is
-/// tagged or aligned and rejects the rest before the dereference. This narrows
-/// a certain crash to an unlikely one; nothing can fully validate a pointer a
-/// plugin asserts is valid.
+/// The AU supplies the pointer, and a unit with a corrupt table (a preset array
+/// that is not made of `AUPreset`s, say) hands back non-null words that are not
+/// strings. Measured, not hypothesised: a probe AU returning a `CFArray` of
+/// `CFData` made `factory_presets` read CF header internals as `presetName`, and
+/// the unchecked conversion killed the test binary with SIGBUS
+/// (`tests/au_misbehaving.rs`). `CFGetTypeID` is the documented way to ask what an
+/// object is, but it dereferences, and it faults on a word that is not a CF
+/// reference, so a plausibility gate runs first. Both halves measured on macOS 15
+/// arm64:
+///
+/// | value | bit 63 | 8-aligned |
+/// |---|---|---|
+/// | `CFString::new("Clean")` (tagged pointer) | 1 | no |
+/// | long `CFString` (a real object) | 0 | yes |
+/// | `CFData` (a real object) | 0 | yes |
+/// | garbage from a `CFData` header | 0 | no |
+///
+/// Short strings are arm64 tagged pointers carrying their payload in the word, so
+/// they are routinely misaligned: a bare alignment test would drop exactly the
+/// names real AUs ship ("Clean", "Bright"). Bit 63 is set on every tagged
+/// reference and clear on both real objects and the garbage, so a word passes the
+/// gate when it is tagged or aligned. It is a heuristic, not a proof: a hostile
+/// word with bit 63 set still reaches `CFGetTypeID`.
 ///
 /// # Safety
-/// `cf_str` is null, or a tagged reference or aligned address of a live
-/// CoreFoundation object (not necessarily a `CFString`).
+/// `cf_str` is null, or a pointer the AU returned for a string property: a tagged
+/// reference or an address of a live CoreFoundation object (not necessarily a
+/// `CFString`, which is what this checks). A word that is neither is rejected only
+/// by the gate above.
 pub unsafe fn cfstring_to_string_checked(cf_str: coreaudio_sys::CFStringRef) -> Option<String> {
     if cf_str.is_null() {
         return None;
@@ -439,6 +458,19 @@ pub fn preset_with_identity(
     unsafe { CFRelease(dict_ref as *const std::os::raw::c_void) };
     let data = serialized.map_err(|_| Error::Invalid("CFPropertyListCreateData failed".into()))?;
     Ok(data.bytes().to_vec())
+}
+
+/// Adopts a copied `CFString` the AU returned (Create rule), releasing it on
+/// every path, and copies it out after the type check.
+///
+/// # Safety
+/// `raw` is null or a pointer the AU returned under the Copy rule (one retain
+/// for the caller); see [`cfstring_to_string_checked`] for what is checked.
+pub(crate) unsafe fn take_string(raw: coreaudio_sys::CFStringRef) -> Option<String> {
+    // SAFETY: the caller's contract; `owner` releases the retain on return.
+    let owner = unsafe { CfString::from_copied(raw) }?;
+    // SAFETY: `owner` keeps the object alive across the copy.
+    unsafe { cfstring_to_string_checked(owner.as_raw()) }
 }
 
 #[cfg(test)]

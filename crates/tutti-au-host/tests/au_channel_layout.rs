@@ -815,7 +815,6 @@ fn third_party_element_names_read_repeatedly_without_leaking() {
         else {
             continue;
         };
-        // SAFETY: `component` came from `AudioComponentFindNext`.
         let Ok(au) = tutti_au_host::AuInstance::new(info.component, RATE, BLOCK) else {
             continue;
         };

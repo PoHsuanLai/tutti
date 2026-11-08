@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use coreaudio_sys as sys;
 
-use crate::cf::{CfArray, CfPlist, CfString, CfUrl, cfstring_to_string_checked};
+use crate::cf::{CfArray, CfPlist, CfString, CfUrl, cfstring_to_string_checked, take_string};
 use crate::component::ComponentRef;
 use crate::error::{Error, OsError, Result, check};
 use crate::plain::Plain;
@@ -92,6 +92,13 @@ impl Unit {
 
     pub(crate) fn raw(&self) -> sys::AudioUnit {
         self.inner.instance
+    }
+
+    pub(crate) fn from_inner(inner: Arc<Inner>) -> Self {
+        Self {
+            inner,
+            _not_sync: PhantomData,
+        }
     }
 
     pub(crate) fn share(&self) -> Arc<Inner> {
@@ -189,7 +196,7 @@ impl Unit {
     /// # Errors
     /// The `OSStatus` of `AudioUnitSetProperty`.
     fn set_raw<T: Plain>(&self, id: u32, scope: u32, element: u32, value: &T) -> Result<()> {
-        self.set_bytes_raw(id, scope, element, bytes_of(value))
+        self.set_value(id, scope, element, value, size_of::<T>())
     }
 
     /// Writes only the first `len` bytes of `value` (a variable-size record
@@ -206,8 +213,33 @@ impl Unit {
         value: &T,
         len: usize,
     ) -> Result<()> {
-        let bytes = bytes_of(value);
-        self.set_bytes_raw(id, scope, element, &bytes[..len.min(bytes.len())])
+        self.set_value(id, scope, element, value, len.min(size_of::<T>()))
+    }
+
+    /// Writes the first `len` bytes of `*value` (`len <= size_of::<T>()`). The
+    /// pointer goes straight to AudioToolbox: no byte slice is formed, so a
+    /// padded `T` is never read as initialized bytes by Rust.
+    fn set_value<T: Plain>(
+        &self,
+        id: u32,
+        scope: u32,
+        element: u32,
+        value: &T,
+        len: usize,
+    ) -> Result<()> {
+        // SAFETY: `value` is a live `T` and `len <= size_of::<T>()`.
+        let status = unsafe {
+            sys::AudioUnitSetProperty(
+                self.raw(),
+                id,
+                scope,
+                element,
+                (value as *const T).cast::<c_void>(),
+                len as u32,
+            )
+        };
+        check("AudioUnitSetProperty", status)?;
+        Ok(())
     }
 
     /// Writes a property from raw bytes (a variable-size record).
@@ -300,14 +332,8 @@ impl Unit {
     /// The `OSStatus` of the read.
     fn copy_string_raw(&self, id: u32, scope: u32, element: u32) -> Result<Option<String>> {
         let raw: sys::CFStringRef = self.get_cf(id, scope, element)?;
-        // SAFETY: a CFString-valued property is returned under the Copy rule:
-        // `raw` is null or an object we own one retain of, which `CfString`
-        // adopts and releases; the checked copier tolerates a unit that
-        // answers another type.
-        let owner = unsafe { CfString::from_copied(raw) };
-        // SAFETY: `owner` keeps `raw` alive across the copy.
-        let text = owner.and_then(|_| unsafe { cfstring_to_string_checked(raw) });
-        Ok(text)
+        // SAFETY: a CFString-valued property is returned under the Copy rule.
+        Ok(unsafe { take_string(raw) })
     }
 
     /// Reads a property that is a copied `CFURL`, as a filesystem path.
@@ -386,11 +412,9 @@ impl Unit {
     /// The `OSStatus` of the read.
     pub fn present_preset(&self) -> Result<(i32, String)> {
         let preset = self.get::<PresentPreset>(Scope::GLOBAL, Element::ZERO)?;
-        // SAFETY: `presetName` is null or a CFString we own one retain of
-        // (the Copy rule of the property).
-        let name = unsafe { CfString::from_copied(preset.presetName) }
-            .map(|s| s.to_string())
-            .unwrap_or_default();
+        // SAFETY: `presetName` is null or a CFString we own one retain of (the
+        // Copy rule of the property).
+        let name = unsafe { take_string(preset.presetName) }.unwrap_or_default();
         Ok((preset.presetNumber, name))
     }
 
@@ -695,14 +719,6 @@ impl Unit {
     ) -> Result<()> {
         self.set_string_raw(P::ID, scope.raw(), element.0, text)
     }
-}
-
-/// The bytes of a `Plain` value.
-fn bytes_of<T: Plain>(value: &T) -> &[u8] {
-    // SAFETY: `value` is a live `T`; viewing its `size_of::<T>()` bytes as `u8`
-    // reads initialized memory except for padding, which the property call
-    // copies and never interprets.
-    unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
 }
 
 /// The handle the render thread holds: it keeps the unit alive and is `Send`

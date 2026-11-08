@@ -861,8 +861,6 @@ fn a_real_au_pulls_and_consumes_the_transport() {
         return;
     };
 
-    // SAFETY: `component` came from `AudioComponentFindNext` via the
-    // enumeration, so it is a live factory handle for the process lifetime.
     let mut au = AuInstance::new(info.component, RATE, BLOCK).expect("instantiate");
     au.install_host_callbacks().expect("install");
     au.initialize().expect("initialize");

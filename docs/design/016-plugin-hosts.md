@@ -2130,3 +2130,15 @@ FFI crate follows as its own change.
   `tutti-au-host`'s `installed-units` feature (as `tutti-midi-hardware`'s
   `sequencer-tests`): CI lints it and `just test-au-installed` runs it.
 - CI lints both AU crates on `macos-latest` (`clippy (macos)`).
+- **Known gap: one thread at a time is a convention.** `Unit` is `Clone` and its
+  clones share one instance, so nothing in the types stops two clones from
+  driving the unit from two threads at once (the handles are `Send`, not `Sync`,
+  but a clone is a second handle). The registrations (listener, render notify,
+  renderer) need the share to stay alive, which is why it is `Clone`. The
+  `Loaded` / `Processor` / `Controller` split closes it: the processor owns the
+  render-side handle and the controller the main-thread one, and neither is
+  `Clone`. Until then the `AuInstance` facade is the single owner that
+  serializes the calls.
+- A registration whose withdrawing property write fails (`Renderer`,
+  `HostCallbacks`, `AuMidiOutput`) leaks its state instead of freeing memory the
+  unit may still read; an editor dropped off the main thread leaks its view.

@@ -103,7 +103,7 @@ impl RenderBufferList {
                 // `*`, so `frames * size_of::<f32>() as u32` multiplies two
                 // u32s and wraps for `frames > u32::MAX / 4`, handing the
                 // plugin a byte size far smaller than the buffer it is given.
-                // `AuInstance::process` rejects `num_frames > block_size`
+                // the host\'s `process` rejects `num_frames > block_size`
                 // before reaching here, so this is not reachable today; `bind`
                 // is public and should not depend on a caller's guard for it.
                 // Same form as `instance.rs`'s output-size report.
@@ -240,7 +240,7 @@ impl RenderScratch {
     /// Sends the render cursor back to zero, so the next block's `mSampleTime`
     /// starts a fresh run rather than continuing the previous one.
     ///
-    /// Paired with `AuInstance::reset`:
+    /// Paired with the host\'s `reset`:
     /// that call flushes the AU's signal history, and this discards the clock
     /// the flushed history was measured against. Leaving the cursor running
     /// hands an AU that phases anything off `mSampleTime` — an LFO, a
@@ -295,6 +295,7 @@ pub struct Renderer {
     scratch: std::ptr::NonNull<RenderScratch>,
     callback_installs: std::sync::atomic::AtomicU32,
     callback_installed: bool,
+    block_size: u32,
 }
 
 impl std::fmt::Debug for Renderer {
@@ -320,6 +321,7 @@ impl Renderer {
             scratch: std::ptr::NonNull::from(Box::leak(scratch)),
             callback_installs: std::sync::atomic::AtomicU32::new(0),
             callback_installed: false,
+            block_size,
         }
     }
 
@@ -385,13 +387,17 @@ impl Renderer {
     /// Renders `frames` frames (`AudioUnitRender`) into the output buffers.
     /// Returns whether the unit declared the block silent.
     ///
-    /// The caller has checked `frames` against the block size the unit was
-    /// configured with; the buffers hold that many frames.
-    ///
     /// # Errors
-    /// [`Error::RenderFailed`] with the status of `AudioUnitRender` and the
+    /// [`Error::Invalid`] when `frames` exceeds the block size the buffers were
+    /// sized for (nothing is rendered), else [`Error::RenderFailed`] with the status of `AudioUnitRender` and the
     /// unit's last-render-error property.
     pub fn render(&mut self, frames: u32) -> Result<bool> {
+        if frames > self.block_size {
+            return Err(Error::Invalid(format!(
+                "frames ({frames}) > block_size ({})",
+                self.block_size
+            )));
+        }
         let (abl, sample_time) = {
             let scratch = self.scratch();
             let abl = scratch.bind_output(frames);
@@ -422,12 +428,18 @@ impl Drop for Renderer {
                 inputProc: Some(au_input_render_callback),
                 inputProcRefCon: std::ptr::null_mut(),
             };
-            let _ = self
-                .unit
-                .set::<SetRenderCallback>(Scope::INPUT, Element::ZERO, &withdrawn);
+            let withdrawn =
+                self.unit
+                    .set::<SetRenderCallback>(Scope::INPUT, Element::ZERO, &withdrawn);
+            if withdrawn.is_err() {
+                // The unit may still hold the pointer, and other `Unit` clones
+                // can keep it alive and rendering: leak the scratch rather than
+                // free memory the callback could read.
+                return;
+            }
         }
         // SAFETY: `scratch` is the leaked box from `new`, freed exactly once
-        // here, after the callback that read it was withdrawn.
+        // here, after the callback that read it was withdrawn (or never set).
         drop(unsafe { Box::from_raw(self.scratch.as_ptr()) });
     }
 }
@@ -585,7 +597,7 @@ impl PushScratch {
     /// `inputs` and `outputs` are one entry per bus, in bus order — so a
     /// hypothetical sidechain compressor is `&[Stereo, Stereo]` in, `&[Stereo]`
     /// out. Size these from
-    /// `AuInstance::bus_count`, never
+    /// the host\'s `bus_count`, never
     /// from what the host wishes were there: an AU handed more input lists than
     /// it has input elements rejects the render outright rather than ignoring
     /// the extra (measured: AUReverb2 answers `kAudioUnitErr_InvalidElement` for
@@ -599,7 +611,7 @@ impl PushScratch {
     /// On a zero `block_size`, which would size every channel vector to empty
     /// and make each render a no-op that still reported success — the same
     /// degenerate value
-    /// `AuInstance::set_block_size`
+    /// the host\'s `set_block_size`
     /// refuses.
     pub fn new(inputs: &[ChannelLayout], outputs: &[ChannelLayout], block_size: u32) -> Self {
         assert!(block_size > 0, "PushScratch block_size must be non-zero");
@@ -630,7 +642,7 @@ impl PushScratch {
         };
         // Fill the pointer arrays once. The slabs are boxed, so their addresses
         // stay stable across a move of `PushScratch` itself — same property
-        // `AuActive::scratch` relies on. Recomputing per block would be correct
+        // the `Renderer` scratch relies on. Recomputing per block would be correct
         // but pointless work on the RT path.
         for (i, slab) in me.input_slabs.iter_mut().enumerate() {
             me.input_ptrs[i] = slab.as_mut_ptr() as *const AudioBufferList;
@@ -661,13 +673,13 @@ impl PushScratch {
     /// The push twin of the pull path's cursor restart, and it has to be a
     /// separate call because the two cursors are separate objects with separate
     /// owners: the pull cursor lives inside the instance, so
-    /// `AuInstance::reset` can restart it
+    /// the host\'s `reset` can restart it
     /// directly, while this one is host-owned — the host constructs it and
     /// lends it per render, and `reset` never sees it. A host driving the push
     /// path over a discontinuity therefore calls both, in either order; they
     /// touch disjoint state.
     ///
-    /// Not folded into `AuInstance::reset` by having it take an optional
+    /// Not folded into the host\'s `reset` by having it take an optional
     /// scratch: the two paths deliberately do not share one, for the reason the
     /// module docs give, and a `reset` that silently restarted only the cursor
     /// the caller happened to pass would be a discontinuity applied to half the
@@ -768,7 +780,7 @@ impl PushScratch {
 /// Written here rather than reusing `RenderBufferList::bind` because that type
 /// owns its slab and its single width, whereas the push path has one slab per
 /// bus with widths that differ per bus. The field math is identical —
-/// see `crate::buffer::buffer_list_bytes` for why the slab size is driven by
+/// see `buffer_list_bytes` for why the slab size is driven by
 /// `offset_of!(AudioBufferList, mBuffers)` and not `size_of::<u32>()`, a 4-byte
 /// under-allocation that put the last channel's `mData` store past the end.
 ///
@@ -827,7 +839,7 @@ unsafe fn bind_list(
 /// (peak `0.35350975`, `0.35353398`, … identical in both paths).
 ///
 /// # Errors
-/// * `Error::InvalidBuffer` if `frames` exceeds the scratch's block size, or
+/// * `Error::Invalid` if `frames` exceeds the scratch's block size, or
 ///   if the scratch has no input bus 0 / no output bus 0. The frame bound is
 ///   checked here rather than left to the AU because the host owns the buffer:
 ///   `bind_list` would report `frames * 4` bytes for storage sized to
@@ -867,7 +879,7 @@ pub fn process_push(
     };
     check_render("AudioUnitProcess", status, unit)?;
 
-    // `OutputIsSilence` is honoured for the reason `AuActive::process` documents:
+    // `OutputIsSilence` is honoured for the reason `Renderer::render` documents:
     // when the AU sets it, the buffer contents are explicitly *not* guaranteed
     // zeroed — the flag is how an AU says "I produced nothing, don't trust what
     // is in there" — so trusting them emits whatever the last block left.
@@ -939,7 +951,7 @@ fn copy_in_bus0_to_out_bus0(scratch: &mut PushScratch, silent: bool, frames: u32
 /// tutti should route a sidechain through it expecting audio to come back.
 ///
 /// # Errors
-/// * `Error::InvalidBuffer` if `frames` exceeds the scratch's block size, or
+/// * `Error::Invalid` if `frames` exceeds the scratch's block size, or
 ///   if the scratch has no output bus at all — an AU must write somewhere, and a
 ///   zero-length output array is not a render.
 /// * `Error::RenderFailed` carrying the AU's `LastRenderError`. An AU handed
@@ -1010,7 +1022,7 @@ pub fn process_push_multiple(
 /// non-`noErr`.
 ///
 /// Only called on a *failed* render, exactly as the equivalent read in
-/// `AuActive::process` is, so the property read it performs cannot affect the
+/// `Renderer::render` is, so the property read it performs cannot affect the
 /// no-alloc guarantee on the steady-state path.
 ///
 /// # Safety
@@ -1589,5 +1601,36 @@ mod tests {
             },
             -1
         );
+    }
+
+    /// A render longer than the block the buffers were sized for is refused
+    /// before any buffer is bound: `bind` would otherwise advertise `frames`
+    /// samples on a `block_size` buffer and the unit would write past it.
+    ///
+    /// Mutation (run): delete the `frames > block_size` check in
+    /// `Renderer::render` -> the call reaches the unit and returns
+    /// `RenderFailed`, not `Invalid`, so this fails.
+    #[test]
+    fn a_render_past_the_block_size_is_refused() {
+        let desc = coreaudio_sys::AudioComponentDescription {
+            componentType: coreaudio_sys::kAudioUnitType_Effect,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let comp = crate::ComponentRef::first_matching(&desc).expect("AUDelay ships with macOS");
+        let unit = Unit::new(comp).expect("instantiate");
+        let mut renderer = Renderer::new(
+            &unit,
+            BusLayout {
+                inputs: ChannelLayout::STEREO,
+                outputs: ChannelLayout::STEREO,
+                has_input: true,
+            },
+            64,
+        );
+        assert!(matches!(renderer.render(65), Err(Error::Invalid(_))));
+        assert!(matches!(renderer.render(u32::MAX), Err(Error::Invalid(_))));
     }
 }

@@ -529,7 +529,6 @@ fn a_scheduled_immediate_change_takes_effect() {
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: `unit` is the unit currently rendering, so it is live.
             let r = tutti_au_host::render_notify::schedule(
                 &unit,
                 p.id,
@@ -594,7 +593,6 @@ fn a_batch_of_scheduled_events_is_accepted() {
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: the unit is currently rendering.
             let r = tutti_au_host::render_notify::schedule(
                 &unit,
                 p.id,
@@ -843,7 +841,6 @@ fn a_multi_block_ramp_is_rescheduled_each_render() {
             // Negative once the ramp began in an earlier block — the signed
             // field carrying the ramp's progress.
             let offset = -(done as i32);
-            // SAFETY: the unit is currently rendering.
             let r = tutti_au_host::render_notify::schedule(
                 &unit,
                 p.id,
@@ -1012,7 +1009,6 @@ fn schedule_one_block(
             if n.phase != RenderPhase::Pre {
                 return;
             }
-            // SAFETY: the unit is currently rendering, so it is live.
             let _ = tutti_au_host::render_notify::schedule(
                 &unit,
                 param,

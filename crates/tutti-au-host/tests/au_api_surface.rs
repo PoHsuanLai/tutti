@@ -276,8 +276,6 @@ fn a_host_property_write_reaches_a_property_listener() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener` — `listener` is dropped at the end of this
-    // scope, before `au`, which is `AuParameterListener::new`'s requirement.
     let listener =
         AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDelay");
     listener
@@ -319,7 +317,6 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above — the listener is dropped first.
     let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_LATENCY, EventAddress::GLOBAL)
@@ -375,7 +372,6 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     let mut au = DISTORTION.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
     let listener =
         AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDistortion");
     listener
@@ -440,7 +436,6 @@ fn registration_never_refuses_a_property_id() {
     let au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
     let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
 
     for id in [0u32, 999_999, u32::MAX] {
@@ -493,7 +488,6 @@ fn a_dropped_property_listener_stops_delivering() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
     let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
         .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)

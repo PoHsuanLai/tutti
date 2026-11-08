@@ -22,7 +22,7 @@
 //! `beatAndTempoProc`, `musicalTimeLocationProc` and `transportStateProc`
 //! exactly **once per render block**.
 //!
-//! That measurement is why [`install_host_callbacks`](crate::instance::AuInstance::install_host_callbacks)
+//! That measurement is why `install_host_callbacks`
 //! fills **both** transport procs. TAL-NoiseMaker calls **v1 only**: with just
 //! `transportStateProc2` populated it calls neither, and receives no transport
 //! at all. A host that filled only the newer proc would silently lose transport
@@ -80,6 +80,7 @@ use coreaudio_sys::OSStatus;
 use crate::callback::with_state;
 use crate::property::{Element, HostCallbacksProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
+use crate::unit::Unit;
 
 /// C `Boolean` — an `unsigned char`, not a Rust `bool`.
 ///
@@ -149,7 +150,7 @@ pub type TransportStateProc2 = unsafe extern "C" fn(
 /// read by the AU through the C procs. See the module docs for why this is a
 /// set of atomics rather than an `ArcLend` cell.
 ///
-/// Lives behind a `Box` owned by the `AuInstance` so its address is stable for
+/// Lives behind a `Box` owned by the the host instance so its address is stable for
 /// the `hostUserData` pointer the AU retains — the same pinning discipline
 /// `RenderScratch` uses for the input render callback.
 #[derive(Debug)]
@@ -433,7 +434,7 @@ impl TransportState {
 ///
 /// # Safety
 /// `user_data` must be null or point at a live [`TransportState`] that outlives
-/// the call. The `AuInstance` guarantees this by boxing the state and clearing
+/// the call. The the host instance guarantees this by boxing the state and clearing
 /// the property before the box is freed.
 /// Stores `value` through `ptr` when the AU asked for that field.
 ///
@@ -676,7 +677,7 @@ unsafe impl crate::plain::Plain for HostCallbackInfo {}
 /// null procs) before the state is freed, so no pull can reach a freed state.
 pub struct HostCallbacks {
     unit: crate::Unit,
-    state: Box<TransportState>,
+    state: std::mem::ManuallyDrop<Box<TransportState>>,
     installed: std::sync::atomic::AtomicBool,
 }
 
@@ -694,7 +695,7 @@ impl HostCallbacks {
     pub fn new(unit: &crate::Unit) -> Self {
         Self {
             unit: unit.clone(),
-            state: Box::new(TransportState::new()),
+            state: std::mem::ManuallyDrop::new(Box::new(TransportState::new())),
             installed: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -709,9 +710,9 @@ impl HostCallbacks {
     ///
     /// # Errors
     /// The `OSStatus` of the write; a unit that refuses leaves nothing installed.
-    pub fn install(&self, unit: &crate::Unit) -> crate::error::Result<()> {
-        debug_assert!(self.unit.same_unit(unit));
-        unit.set::<HostCallbacksProperty>(
+    pub fn install(&self) -> crate::error::Result<()> {
+        // On the unit this was made for, the one `Drop` withdraws from.
+        self.unit.set::<HostCallbacksProperty>(
             Scope::GLOBAL,
             Element::ZERO,
             &self.state.callback_info(),
@@ -723,21 +724,24 @@ impl HostCallbacks {
 
 impl Drop for HostCallbacks {
     fn drop(&mut self) {
-        if !self.installed.load(Ordering::Acquire) {
-            return;
-        }
-        // Withdraw before the state is freed (fields drop after this body): an
-        // AU that kept the old procs would pull from freed memory. The status is
-        // ignored; this is teardown.
-        let withdrawn = HostCallbackInfo {
-            host_user_data: std::ptr::null_mut(),
-            beat_and_tempo: None,
-            musical_time_location: None,
-            transport_state: None,
-            transport_state2: None,
+        let withdrawn = !self.installed.load(Ordering::Acquire) || {
+            // A null `hostUserData` and no procs: the documented way to withdraw.
+            let none = HostCallbackInfo {
+                host_user_data: std::ptr::null_mut(),
+                beat_and_tempo: None,
+                musical_time_location: None,
+                transport_state: None,
+                transport_state2: None,
+            };
+            self.unit
+                .set::<HostCallbacksProperty>(Scope::GLOBAL, Element::ZERO, &none)
+                .is_ok()
         };
-        let _ = self
-            .unit
-            .set::<HostCallbacksProperty>(Scope::GLOBAL, Element::ZERO, &withdrawn);
+        if withdrawn {
+            // SAFETY: dropped once, here, after the AU was told to stop pulling.
+            unsafe { std::mem::ManuallyDrop::drop(&mut self.state) };
+        }
+        // Otherwise the AU may still pull from the state, and other `Unit`
+        // clones can keep it rendering: leak it rather than free memory it reads.
     }
 }

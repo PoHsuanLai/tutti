@@ -9,6 +9,8 @@
 #   from the first `#[cfg(test)] mod` of a file on is skipped). The host
 #   callbacks, the stream, event-list and context-menu callbacks all live
 #   there; `tutti-clap-host` has none.
+# - tutti-au-ffi: each `extern "C" fn NAME(` defined outside test code runs
+#   its body under `guard(..)` (text match, as for tutti-clap-ffi).
 # - tutti-vst3-ffi: each `unsafe fn` in an `impl ...Trait for ...` block
 #   under `src/com`.
 #
@@ -99,6 +101,15 @@ def matches(pattern):
 
 
 for path in matches("crates/tutti-clap-ffi/src/**/*.rs"):
+    s = open(path).read()
+    t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
+    s = s[: t.start()] if t else s
+    for m in re.finditer(r'(?:unsafe )?extern "C" fn (\w+)\(', s):
+        seen += 1
+        if m.group(1) not in ALLOW and not guarded(body_of(s, m.end())):
+            bad.append((path, m.group(1)))
+
+for path in matches("crates/tutti-au-ffi/src/**/*.rs"):
     s = open(path).read()
     t = re.search(r"^\s*#\[cfg\(test\)\]\s*\n\s*(pub )?mod \w+", s, re.M)
     s = s[: t.start()] if t else s

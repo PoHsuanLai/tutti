@@ -120,7 +120,7 @@ scripts/check-bevy-free.sh         # tutti-session reaches no Bevy and has no be
 scripts/check-adapter.sh           # bevy-tutti composes nothing, holds no policy (clock reads, usize/Duration consts); tutti-session re-exports no crate
 scripts/check-doc-features.sh      # rustdoc per feature for bevy-tutti, tutti-session, tutti
 scripts/check-guards.sh            # every host callback runs under the panic guard
-scripts/check-plugin-ffi.sh        # no CLAP/VST3 unsafe outside the -ffi crates; the forbids
+scripts/check-plugin-ffi.sh        # no CLAP/VST3/AU unsafe outside the -ffi crates; the forbids
 scripts/check-layout.sh            # flat crates/ and testing/, no crates->testing edges, layering
 scripts/check-range-types.sh       # no plain derived Deserialize on a private tuple field
 just deny                          # RustSec advisories, yanked and unmaintained crates (deny.toml)
@@ -134,8 +134,8 @@ and the docs.rs build on a dated nightly); `just check-loom` runs clippy under
 `--cfg loom`.
 
 - **`unsafe`:** a library with none carries `#![forbid(unsafe_code)]`. Plugin FFI
-  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi` and
-  `tutti-vst3-ffi`); host crates forbid `unsafe`
+  `unsafe` lives only in the per-format `-ffi` crates (`tutti-clap-ffi`,
+  `tutti-vst3-ffi` and `tutti-au-ffi`); host crates forbid `unsafe`
   (`scripts/check-plugin-ffi.sh`, design 016 §2.9).
 - **Toolchain:** `rust-toolchain.toml` pins the stable every gate runs on,
   and `Cargo.lock` is committed (`--locked` everywhere). To bump, edit
@@ -335,6 +335,7 @@ crates/          everything shipped; directory name = package name; no nesting
                  (raw ALSA UMP FFI that alsa-sys lacks; Linux only)
   tutti-plugin{,-types,-db,-server}, tutti-{vst2,vst3,clap,au}-host,
   tutti-clap-ffi (all CLAP unsafe), tutti-vst3-ffi (all VST3 unsafe),
+  tutti-au-ffi (all AU unsafe; macOS only, empty elsewhere),
   vst-tutti (our fork of the vst crate; its split is a later lane)
 testing/         never shipped
   tutti-clap-test-plugin, tutti-vst2-test-plugin, tutti-fixtures,
@@ -355,11 +356,11 @@ list (normal and build edges; dev-dependencies may go anywhere).
    `tutti-codec`, `tutti-tempo`, `tutti-voicing`
 3. `tutti-transport`, `tutti-plugin-types`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
-   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
+   `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-ffi`, `tutti-vst2-host`,
    `tutti-plugin-db`
 5. `tutti-cpal`, `tutti-export`, `tutti-spatial`, `tutti-sampler`,
    `tutti-polysynth`, `tutti-soundfont`, `tutti-midi-hardware`,
-   `tutti-clap-host`, `tutti-vst3-host`
+   `tutti-clap-host`, `tutti-vst3-host`, `tutti-au-host`
 6. `tutti-plugin`
 7. `tutti-plugin-server`, `tutti-session`
 8. `tutti`, `bevy-tutti`

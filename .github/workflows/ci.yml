@@ -232,7 +232,7 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --locked -p tutti-au-host --all-targets -- -D warnings
+      - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
       - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
 
   # The plugin contract on Windows. Not a required check: nothing else runs a

@@ -284,7 +284,7 @@ impl PropertyWatch {
         let flags = std::sync::Arc::new(PropertyFlags::default());
         let sink = std::sync::Arc::clone(&flags);
         // SAFETY: the caller guarantees `unit` outlives the returned watch.
-        let listener = unsafe {
+        let listener = {
             AuParameterListener::new(unit, move |ev| {
                 // Only property changes are subscribed, so a parameter or
                 // gesture event here would mean the registration went to the
@@ -449,13 +449,12 @@ impl AuInstance {
             let component_info = matching.unwrap();
 
             // Safety: component_handle was obtained from AudioComponentFindNext
-            let mut inner =
-                unsafe { AuHostInstance::new(component_handle, sample_rate, block_size as u32) }
-                    .map_err(|e| BridgeError::LoadFailed {
-                        path: path.to_path_buf(),
-                        stage: LoadStage::Instantiation,
-                        reason: e.to_string(),
-                    })?;
+            let mut inner = AuHostInstance::new(component_handle, sample_rate, block_size as u32)
+                .map_err(|e| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Instantiation,
+                reason: e.to_string(),
+            })?;
 
             // Offered before `initialize`, once, off the audio thread: the AU
             // pulls tempo, beat and transport state from these procs during its
@@ -598,7 +597,7 @@ impl AuInstance {
             // SAFETY: the watch is stored in the same struct as `inner` and
             // declared before it, so `inner`'s `AudioUnit` outlives the
             // registration.
-            let watch = unsafe { PropertyWatch::install(inner.unit()) };
+            let watch = PropertyWatch::install(inner.unit());
 
             Ok((
                 Self {
@@ -1035,7 +1034,9 @@ impl PluginEditorHost for AuInstance {
             width: 800,
             height: 600,
         };
-        let size = unsafe { self.inner.open_editor(parent_handle, preferred) }
+        let size = self
+            .inner
+            .open_editor(parent_handle, preferred)
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,

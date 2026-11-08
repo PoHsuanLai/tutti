@@ -9,7 +9,8 @@
 //!
 //! Call [`mark_main_thread`] once, on the UI thread, at host startup. Until it
 //! is called the guard is a no-op, so headless tests and tooling that never
-//! mark a main thread never false-fire.
+//! mark a main thread never false-fire. Code whose soundness depends on the
+//! thread (the AU editor) does not rely on this guard: it asks the OS.
 
 use std::sync::OnceLock;
 use std::thread::ThreadId;

@@ -53,6 +53,8 @@
 mod support;
 
 use std::sync::Mutex;
+use tutti_au_ffi::property::ParametersForOverview;
+use tutti_au_ffi::{Property, Scope};
 
 use support::corpus::{
     DELAY, DLS_SYNTH, DYNAMICS, INVALID_PROPERTY, MATRIX_REVERB, every_component, open_info,
@@ -271,7 +273,7 @@ fn every_overview_entry_addresses_a_readable_parameter() {
     for p in &overview {
         assert_eq!(
             p.scope,
-            tutti_au_host::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
+            Scope::GLOBAL.raw(),
             "parameter {} came back in scope {}, not global — a mis-strided \
              decode reads a neighbouring field as the scope",
             p.id,
@@ -386,8 +388,8 @@ fn the_overview_decodes_every_entry_the_au_reported() {
         let st = unsafe {
             coreaudio_sys::AudioUnitGetPropertyInfo(
                 au.raw_unit(),
-                tutti_au_host::types::K_AUDIO_UNIT_PROPERTY_PARAMETERS_FOR_OVERVIEW,
-                tutti_au_host::types::K_AUDIO_UNIT_SCOPE_GLOBAL,
+                ParametersForOverview::ID,
+                Scope::GLOBAL.raw(),
                 0,
                 &mut size,
                 &mut writable,

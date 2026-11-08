@@ -2092,3 +2092,53 @@ plugin a host inserted itself (`Graph::insert_plugin`, `host_plugin`) has no
 recorded path. State changed since the last snapshot is lost. An export
 started while the plugin is being replaced is refused (the fork of a dead
 plugin cannot save its state).
+
+**As built (the AU FFI crate).** The third format moved to the rule of §2.9.
+It is staged: this change moves the `unsafe` in; the cleanliness pass over the
+FFI crate follows as its own change.
+
+- `tutti-au-ffi` (macOS only, empty elsewhere; layer 4, with `tutti-au-host` now
+  in layer 5) holds every raw AudioToolbox, CoreAudio, CoreFoundation and Cocoa
+  call. `tutti-au-host` is `#![forbid(unsafe_code)]`, checked by
+  `scripts/check-plugin-ffi.sh`; every `extern "C"` body in the FFI crate runs
+  under `guard`, checked by `scripts/check-guards.sh`.
+- Owned handles: `ComponentRef` (a registry component, `Copy`, built only by
+  the registry lookups), `Unit` (an `AudioComponentInstance`, disposed when the
+  last share goes; `Send`, not `Sync`), `RenderUnit` (the `Send + Sync` share the
+  render thread holds). A listener, a render notification, a MIDI output, an
+  editor and a renderer each hold a share, so none can outlive its unit. The
+  `Plain` sealed trait is the set of types a property can be read into
+  (`Unit::get`, `set`, `get_array`).
+- `Renderer` owns the heap-pinned scratch the unit's input callback reads and
+  withdraws the callback before freeing it; `HostCallbacks` owns the transport
+  state the AU pulls and withdraws the callbacks first; `AuParameterListener`
+  and `RenderNotify` unregister on drop.
+- Public API: `AuComponentInfo.component` is `AuComponentRef` and
+  `AuInstance::new`, `new_with_config` and the `AuLoaded` ones are safe and take
+  it by value; `raw_unit()` is behind `test-support` and `AuInstance::unit()`
+  (a `&Unit`) is what the free functions of `parameters`, `identity` and
+  `offline` take; the `pub unsafe fn` count is zero. The raw packet walkers
+  moved to `tutti-au-ffi/test-support`.
+- Not in this change, as §7 lists them with the `Loaded` impl: the `AuInstance`
+  façade stays (its callers are the server loader and the contract; deleting it
+  is the `Lifecycle<AuLoaded>` switch), `AuLoaded::new` keeps its explicit rate
+  and block size (they come from `Prepare` with the `Loaded` impl), and the
+  `AuProcessor` / `AuController` split. The server's and the GUI's `au.rs` keep
+  one `WindowHandle::from_raw` each (step 5) and are not in the `check-plugin-ffi`
+  scan yet.
+- `no_installed_third_party_unit_implements_the_mapping_family` is behind
+  `tutti-au-host`'s `installed-units` feature (as `tutti-midi-hardware`'s
+  `sequencer-tests`): CI lints it and `just test-au-installed` runs it.
+- CI lints both AU crates on `macos-latest` (`clippy (macos)`).
+- **Known gap: one thread at a time is a convention.** `Unit` is `Clone` and its
+  clones share one instance, so nothing in the types stops two clones from
+  driving the unit from two threads at once (the handles are `Send`, not `Sync`,
+  but a clone is a second handle). The registrations (listener, render notify,
+  renderer) need the share to stay alive, which is why it is `Clone`. The
+  `Loaded` / `Processor` / `Controller` split closes it: the processor owns the
+  render-side handle and the controller the main-thread one, and neither is
+  `Clone`. Until then the `AuInstance` facade is the single owner that
+  serializes the calls.
+- A registration whose withdrawing property write fails (`Renderer`,
+  `HostCallbacks`, `AuMidiOutput`) leaks its state instead of freeing memory the
+  unit may still read; an editor dropped off the main thread leaks its view.

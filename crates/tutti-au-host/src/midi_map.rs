@@ -80,11 +80,15 @@
 #![cfg(target_os = "macos")]
 
 use std::mem::size_of;
-use std::os::raw::c_void;
+use tutti_au_ffi::property::{
+    AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping,
+    RemoveParameterMidiMapping,
+};
+use tutti_au_ffi::{Element, Property, Scope};
 
 use crate::error::Result;
-use crate::ffi::{check, get_property_bytes, property_size};
 use crate::types::*;
+use tutti_au_ffi::Unit;
 
 /// Apple's `AUParameterMIDIMapping` from `AudioUnitProperties.h`.
 ///
@@ -114,6 +118,48 @@ pub(crate) struct AuParameterMidiMappingRaw {
     reserved1: u8,
     reserved2: u8,
     reserved3: u32,
+}
+
+/// The record's size in bytes.
+const RAW_SIZE: usize = size_of::<AuParameterMidiMappingRaw>();
+
+impl AuParameterMidiMappingRaw {
+    /// The record in the byte order and layout of the C struct, written field by
+    /// field at the offsets the ABI test pins.
+    fn to_bytes(self) -> [u8; RAW_SIZE] {
+        let mut b = [0u8; RAW_SIZE];
+        b[0..4].copy_from_slice(&self.scope.to_ne_bytes());
+        b[4..8].copy_from_slice(&self.element.to_ne_bytes());
+        b[8..12].copy_from_slice(&self.parameter_id.to_ne_bytes());
+        b[12..16].copy_from_slice(&self.flags.to_ne_bytes());
+        b[16..20].copy_from_slice(&self.sub_range_min.to_ne_bytes());
+        b[20..24].copy_from_slice(&self.sub_range_max.to_ne_bytes());
+        b[24] = self.status;
+        b[25] = self.data1;
+        b[26] = self.reserved1;
+        b[27] = self.reserved2;
+        b[28..32].copy_from_slice(&self.reserved3.to_ne_bytes());
+        b
+    }
+
+    /// The inverse of [`Self::to_bytes`].
+    fn from_bytes(b: &[u8; RAW_SIZE]) -> Self {
+        let u32_at = |i: usize| u32::from_ne_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let f32_at = |i: usize| f32::from_bits(u32_at(i));
+        Self {
+            scope: u32_at(0),
+            element: u32_at(4),
+            parameter_id: u32_at(8),
+            flags: u32_at(12),
+            sub_range_min: f32_at(16),
+            sub_range_max: f32_at(20),
+            status: b[24],
+            data1: b[25],
+            reserved1: b[26],
+            reserved2: b[27],
+            reserved3: u32_at(28),
+        }
+    }
 }
 
 /// What MIDI message a mapping triggers on, decoded from `mStatus` / `mData1`.
@@ -265,9 +311,9 @@ pub struct AuMidiMapping {
     /// measured. Apple's header requires `mScope`, `mElement` and
     /// `mParameterID` to be "correctly specified" in all usages, and the
     /// remove path identifies a mapping by exactly these three.
-    pub scope: u32,
+    pub scope: Scope,
     /// The parameter's element within `scope`.
-    pub element: u32,
+    pub element: Element,
     /// The `AudioUnitParameterID` this mapping drives.
     ///
     /// Not validated by the AU: an id no parameter uses is accepted with
@@ -323,8 +369,8 @@ impl AuMidiMapping {
     /// anything needing sub-range, toggle or bipolar semantics.
     pub fn control_change(parameter_id: u32, channel: u8, controller: u8) -> Self {
         Self {
-            scope: K_AUDIO_UNIT_SCOPE_GLOBAL,
-            element: 0,
+            scope: Scope::GLOBAL,
+            element: Element::ZERO,
             parameter_id,
             trigger: MidiTrigger::ControlChange { controller },
             channel,
@@ -360,8 +406,8 @@ impl AuMidiMapping {
         let sub_range = (raw.flags & K_AU_PARAMETER_MIDI_MAPPING_SUB_RANGE != 0)
             .then_some((raw.sub_range_min, raw.sub_range_max));
         Self {
-            scope: raw.scope,
-            element: raw.element,
+            scope: Scope::from_raw(raw.scope),
+            element: Element(raw.element),
             parameter_id: raw.parameter_id,
             trigger: MidiTrigger::from_raw(raw.status, raw.data1),
             channel: raw.status & 0x0F,
@@ -400,8 +446,8 @@ impl AuMidiMapping {
         }
         let (lo, hi) = self.sub_range.unwrap_or((0.0, 0.0));
         AuParameterMidiMappingRaw {
-            scope: self.scope,
-            element: self.element,
+            scope: self.scope.raw(),
+            element: self.element.0,
             parameter_id: self.parameter_id,
             flags,
             sub_range_min: lo,
@@ -442,18 +488,8 @@ impl AuMidiMapping {
 /// `kAudioUnitErr_InvalidProperty` (-10879) from the 57 of 59 units that do not
 /// implement the property. That refusal is the normal answer for an effect and a
 /// caller should treat it as "this AU does not do MIDI mapping", not as a fault.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn all(unit: AudioUnit) -> Result<Vec<AuMidiMapping>> {
-    let bytes = unsafe {
-        get_property_bytes(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )
-    }?;
+pub fn all(unit: &Unit) -> Result<Vec<AuMidiMapping>> {
+    let bytes = unit.get_bytes::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO)?;
     Ok(decode_table(&bytes))
 }
 
@@ -466,21 +502,11 @@ pub unsafe fn all(unit: AudioUnit) -> Result<Vec<AuMidiMapping>> {
 /// trailing struct would be read out of uninitialized bytes, and refusing the
 /// whole table over one bad byte would lose the mappings that did decode.
 fn decode_table(bytes: &[u8]) -> Vec<AuMidiMapping> {
-    let stride = size_of::<AuParameterMidiMappingRaw>();
     bytes
-        .chunks_exact(stride)
-        .map(|chunk| {
-            // SAFETY: `chunk` is exactly `stride` bytes and the raw struct is
-            // `#[repr(C)]` with no padding-sensitive reads and no invalid bit
-            // patterns (every field is an integer or an `f32`), so any byte
-            // sequence of the right length is a valid value. Read unaligned
-            // because `bytes` came from a `Vec<u8>`, whose alignment is 1 —
-            // the struct's alignment is 4, so a plain deref would be UB.
-            let raw = unsafe {
-                std::ptr::read_unaligned(chunk.as_ptr() as *const AuParameterMidiMappingRaw)
-            };
-            AuMidiMapping::from_raw(&raw)
-        })
+        .as_chunks::<RAW_SIZE>()
+        .0
+        .iter()
+        .map(|chunk| AuMidiMapping::from_raw(&AuParameterMidiMappingRaw::from_bytes(chunk)))
         .collect()
 }
 
@@ -497,22 +523,12 @@ fn encode_table(mappings: &[AuMidiMapping]) -> Vec<AuParameterMidiMappingRaw> {
 }
 
 /// Writes `mappings` to a property that takes an array of them.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit, and `property` must be one
-/// that takes an `AUParameterMIDIMapping` array.
-unsafe fn write_table(unit: AudioUnit, property: u32, mappings: &[AuMidiMapping]) -> Result<()> {
-    let raw = encode_table(mappings);
-    check("AudioUnitSetProperty", unsafe {
-        AudioUnitSetProperty(
-            unit,
-            property,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            raw.as_ptr() as *const c_void,
-            (raw.len() * size_of::<AuParameterMidiMappingRaw>()) as u32,
-        )
-    })
+fn write_table<P: Property>(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
+    let bytes: Vec<u8> = encode_table(mappings)
+        .into_iter()
+        .flat_map(AuParameterMidiMappingRaw::to_bytes)
+        .collect();
+    Ok(unit.set_bytes::<P>(Scope::GLOBAL, Element::ZERO, &bytes)?)
 }
 
 /// Adds `mappings` to whatever the AU already has, replacing any mapping that
@@ -527,20 +543,11 @@ unsafe fn write_table(unit: AudioUnit, property: u32, mappings: &[AuMidiMapping]
 /// family. Note that a `noErr` return proves **nothing** about the mapping being
 /// meaningful — a parameter id no parameter uses is accepted and stored. Verify
 /// with [`all`] if it matters.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn add(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
+pub fn add(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    unsafe {
-        write_table(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING,
-            mappings,
-        )
-    }
+    write_table::<AddParameterMidiMapping>(unit, mappings)
 }
 
 /// Removes the mappings targeting each of `mappings`'
@@ -556,20 +563,11 @@ pub unsafe fn add(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
 /// family.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
+pub fn remove(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
         return Ok(());
     }
-    unsafe {
-        write_table(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING,
-            mappings,
-        )
-    }
+    write_table::<RemoveParameterMidiMapping>(unit, mappings)
 }
 
 /// Replaces the AU's entire mapping table with `mappings`.
@@ -591,21 +589,12 @@ pub unsafe fn remove(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> 
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
 /// family. The empty-slice path additionally surfaces the [`all`] read's error.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()> {
+pub fn set_all(unit: &Unit, mappings: &[AuMidiMapping]) -> Result<()> {
     if mappings.is_empty() {
-        let existing = unsafe { all(unit) }?;
-        return unsafe { remove(unit, &existing) };
+        let existing = all(unit)?;
+        return remove(unit, &existing);
     }
-    unsafe {
-        write_table(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-            mappings,
-        )
-    }
+    write_table::<AllParameterMidiMappings>(unit, mappings)
 }
 
 /// Arms "learn" mode: the AU maps the **next MIDI message it sees** to the
@@ -624,20 +613,13 @@ pub unsafe fn set_all(unit: AudioUnit, mappings: &[AuMidiMapping]) -> Result<()>
 /// # Errors
 /// `kAudioUnitErr_InvalidProperty` from a unit that does not implement the
 /// family.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn arm_hot_map(unit: AudioUnit, mapping: &AuMidiMapping) -> Result<()> {
+pub fn arm_hot_map(unit: &Unit, mapping: &AuMidiMapping) -> Result<()> {
     let raw = mapping.to_raw();
-    unsafe {
-        crate::ffi::set_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-            &raw,
-        )
-    }
+    Ok(unit.set_bytes::<HotMapParameterMidiMapping>(
+        Scope::GLOBAL,
+        Element::ZERO,
+        &raw.to_bytes(),
+    )?)
 }
 
 /// Reads the pending or just-completed hot map.
@@ -660,19 +642,11 @@ pub unsafe fn arm_hot_map(unit: AudioUnit, mapping: &AuMidiMapping) -> Result<()
 /// A `Some` whose `trigger` is filled in is the completed mapping; the armed
 /// state before any MIDI arrives reads as `None`, because the AU has not put a
 /// status byte in it yet.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn hot_map(unit: AudioUnit) -> Option<AuMidiMapping> {
-    let raw: AuParameterMidiMappingRaw = unsafe {
-        crate::ffi::get_property(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )
-    }
-    .ok()?;
+pub fn hot_map(unit: &Unit) -> Option<AuMidiMapping> {
+    let bytes = unit
+        .get_bytes::<HotMapParameterMidiMapping>(Scope::GLOBAL, Element::ZERO)
+        .ok()?;
+    let raw = AuParameterMidiMappingRaw::from_bytes(bytes.as_slice().try_into().ok()?);
     // See the docs above: `mStatus == 0` is the only reliable "nothing here"
     // signal, because the documented error is not delivered.
     (raw.status != 0).then(|| AuMidiMapping::from_raw(&raw))
@@ -683,11 +657,8 @@ pub unsafe fn hot_map(unit: AudioUnit) -> Option<AuMidiMapping> {
 /// Thin, but it is the predicate a "learn" UI polls, and having it named here
 /// keeps the `mStatus == 0` rule from being reimplemented (differently) at each
 /// call site.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn hot_map_pending(unit: AudioUnit) -> bool {
-    unsafe { hot_map(unit).is_some() }
+pub fn hot_map_pending(unit: &Unit) -> bool {
+    hot_map(unit).is_some()
 }
 
 /// Whether this AU implements the parameter↔MIDI mapping family at all.
@@ -701,19 +672,9 @@ pub unsafe fn hot_map_pending(unit: AudioUnit) -> bool {
 /// Measured on macOS 15.6: true for exactly 2 of 59 installed components
 /// (AUSampler, AUMIDISynth), false for the other 57 including every effect and
 /// every third-party unit on this machine.
-///
-/// # Safety
-/// `unit` must reference a live, valid AudioUnit.
-pub unsafe fn supports_parameter_midi_mapping(unit: AudioUnit) -> bool {
-    unsafe {
-        property_size(
-            unit,
-            K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
-            0,
-        )
+pub fn supports_parameter_midi_mapping(unit: &Unit) -> bool {
+    unit.property_info::<AllParameterMidiMappings>(Scope::GLOBAL, Element::ZERO)
         .is_ok()
-    }
 }
 
 #[cfg(test)]
@@ -731,6 +692,53 @@ mod tests {
     ///
     /// A wrong layout here is silent: the AU reads the host's `mStatus` out of
     /// the wrong byte and maps a different MIDI message than the host asked for.
+    /// The byte codec writes every field where the `#[repr(C)]` struct holds it,
+    /// so what the AU reads is the header's `AUParameterMIDIMapping`, and it
+    /// reads back what it wrote.
+    ///
+    /// Mutation (run): swap the `element` and `parameter_id` slots in
+    /// `to_bytes` -> the offset assertions below fail.
+    #[test]
+    fn the_byte_codec_places_every_field_at_its_c_offset() {
+        use std::mem::offset_of;
+        let raw = AuParameterMidiMappingRaw {
+            scope: 1,
+            element: 2,
+            parameter_id: 3,
+            flags: 4,
+            sub_range_min: 1.5,
+            sub_range_max: 2.5,
+            status: 0xB0,
+            data1: 7,
+            reserved1: 8,
+            reserved2: 9,
+            reserved3: 10,
+        };
+        let b = raw.to_bytes();
+        let u32_at = |off: usize| u32::from_ne_bytes(b[off..off + 4].try_into().unwrap());
+        assert_eq!(u32_at(offset_of!(AuParameterMidiMappingRaw, scope)), 1);
+        assert_eq!(u32_at(offset_of!(AuParameterMidiMappingRaw, element)), 2);
+        assert_eq!(
+            u32_at(offset_of!(AuParameterMidiMappingRaw, parameter_id)),
+            3
+        );
+        assert_eq!(u32_at(offset_of!(AuParameterMidiMappingRaw, flags)), 4);
+        assert_eq!(
+            f32::from_bits(u32_at(offset_of!(AuParameterMidiMappingRaw, sub_range_min))),
+            1.5
+        );
+        assert_eq!(
+            f32::from_bits(u32_at(offset_of!(AuParameterMidiMappingRaw, sub_range_max))),
+            2.5
+        );
+        assert_eq!(b[offset_of!(AuParameterMidiMappingRaw, status)], 0xB0);
+        assert_eq!(b[offset_of!(AuParameterMidiMappingRaw, data1)], 7);
+        assert_eq!(b[offset_of!(AuParameterMidiMappingRaw, reserved1)], 8);
+        assert_eq!(b[offset_of!(AuParameterMidiMappingRaw, reserved2)], 9);
+        assert_eq!(u32_at(offset_of!(AuParameterMidiMappingRaw, reserved3)), 10);
+        assert_eq!(AuParameterMidiMappingRaw::from_bytes(&b), raw);
+    }
+
     #[test]
     fn the_mapping_struct_matches_the_c_abi() {
         assert_eq!(size_of::<AuParameterMidiMappingRaw>(), 32);
@@ -776,10 +784,10 @@ mod tests {
         assert_eq!(K_AU_PARAMETER_MIDI_MAPPING_BIPOLAR_ON, 32);
         // And the property ids, from the same C run: All=41 Add=42 Remove=43
         // HotMap=44.
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_ALL_PARAMETER_MIDI_MAPPINGS, 41);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_ADD_PARAMETER_MIDI_MAPPING, 42);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_REMOVE_PARAMETER_MIDI_MAPPING, 43);
-        assert_eq!(K_AUDIO_UNIT_PROPERTY_HOT_MAP_PARAMETER_MIDI_MAPPING, 44);
+        assert_eq!(AllParameterMidiMappings::ID, 41);
+        assert_eq!(AddParameterMidiMapping::ID, 42);
+        assert_eq!(RemoveParameterMidiMapping::ID, 43);
+        assert_eq!(HotMapParameterMidiMapping::ID, 44);
     }
 
     /// Every trigger must survive `to_raw`/`from_raw`, and the status byte must
@@ -1036,12 +1044,11 @@ mod tests {
                 ..AuMidiMapping::control_change(901, 3, 74)
             },
         ];
-        let raw = encode_table(&mappings);
-        // SAFETY: `raw` is a live slice of `#[repr(C)]` PODs; reading it as
-        // bytes is the same reinterpretation the FFI write performs.
-        let bytes = unsafe {
-            std::slice::from_raw_parts(raw.as_ptr() as *const u8, std::mem::size_of_val(&*raw))
-        };
+        let bytes: Vec<u8> = encode_table(&mappings)
+            .into_iter()
+            .flat_map(AuParameterMidiMappingRaw::to_bytes)
+            .collect();
+        let bytes = bytes.as_slice();
         assert_eq!(bytes.len(), 64);
         assert_eq!(decode_table(bytes), mappings);
 
@@ -1074,14 +1081,17 @@ mod tests {
         let other_param = AuMidiMapping::control_change(901, 0, 1);
         assert!(!a.targets_same_parameter(&other_param));
 
-        let other_element = AuMidiMapping { element: 1, ..a };
+        let other_element = AuMidiMapping {
+            element: Element(1),
+            ..a
+        };
         assert!(
             !a.targets_same_parameter(&other_element),
             "the element is part of the key"
         );
 
         let other_scope = AuMidiMapping {
-            scope: K_AUDIO_UNIT_SCOPE_INPUT,
+            scope: Scope::INPUT,
             ..a
         };
         assert!(

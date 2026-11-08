@@ -552,16 +552,16 @@ fn the_matching_constraint_survives_a_real_au() {
 fn a_mixer_publishes_a_parameter_strip_per_input_bus() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
 
-    let strip0 = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Input, 0));
+    let strip0 = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Input, 0));
     assert_eq!(
         strip0.len(),
         7,
         "AUMultiChannelMixer publishes 7 parameters on each input element"
     );
 
-    let strip1 = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Input, 1));
+    let strip1 = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Input, 1));
     let ids0: Vec<u32> = strip0.iter().map(|p| p.id).collect();
     let ids1: Vec<u32> = strip1.iter().map(|p| p.id).collect();
     assert_eq!(
@@ -571,7 +571,7 @@ fn a_mixer_publishes_a_parameter_strip_per_input_bus() {
     );
 
     // The output scope has its own, different strip: 5 parameters, measured.
-    let out = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Output, 0));
+    let out = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Output, 0));
     assert_eq!(
         out.len(),
         5,
@@ -597,20 +597,20 @@ fn a_mixer_publishes_a_parameter_strip_per_input_bus() {
 fn the_same_parameter_id_on_two_elements_holds_two_values() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit().clone();
 
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
     let bus1 = ParamAddress::on_bus(BusDirection::Input, 1);
-    let volume = parameters::list_at(raw, bus0)
+    let volume = parameters::list_at(&raw, bus0)
         .into_iter()
         .find(|p| p.writable)
         .expect("AUMultiChannelMixer's input strip has writable parameters");
 
-    parameters::set_at(raw, bus0, volume.id, 0.25).expect("write element 0");
-    parameters::set_at(raw, bus1, volume.id, 0.75).expect("write element 1");
+    parameters::set_at(&raw, bus0, volume.id, 0.25).expect("write element 0");
+    parameters::set_at(&raw, bus1, volume.id, 0.75).expect("write element 1");
 
-    let read0 = parameters::get_at(raw, bus0, volume.id).expect("read element 0");
-    let read1 = parameters::get_at(raw, bus1, volume.id).expect("read element 1");
+    let read0 = parameters::get_at(&raw, bus0, volume.id).expect("read element 0");
+    let read1 = parameters::get_at(&raw, bus1, volume.id).expect("read element 1");
 
     assert!(
         (read0 - 0.25).abs() < 1e-4,
@@ -636,28 +636,28 @@ fn the_same_parameter_id_on_two_elements_holds_two_values() {
 fn a_parameter_write_to_a_missing_element_fails_rather_than_aliasing() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit().clone();
 
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
-    let volume = parameters::list_at(raw, bus0)
+    let volume = parameters::list_at(&raw, bus0)
         .into_iter()
         .find(|p| p.writable)
         .expect("a writable input parameter");
 
     // Park a known value on element 0, then aim past the last real element.
-    parameters::set_at(raw, bus0, volume.id, 0.5).expect("seed element 0");
+    parameters::set_at(&raw, bus0, volume.id, 0.5).expect("seed element 0");
     let missing = ParamAddress::on_bus(BusDirection::Input, 9_999);
 
     assert_invalid_element(
-        parameters::get_at(raw, missing, volume.id),
+        parameters::get_at(&raw, missing, volume.id),
         "read of input element 9999",
     );
     assert_invalid_element(
-        parameters::set_at(raw, missing, volume.id, 0.9),
+        parameters::set_at(&raw, missing, volume.id, 0.9),
         "write to input element 9999",
     );
 
-    let after = parameters::get_at(raw, bus0, volume.id).expect("re-read element 0");
+    let after = parameters::get_at(&raw, bus0, volume.id).expect("re-read element 0");
     assert!(
         (after - 0.5).abs() < 1e-4,
         "element 0 now holds {after}; the rejected write to element 9999 aliased \
@@ -675,12 +675,12 @@ fn a_parameter_write_to_a_missing_element_fails_rather_than_aliasing() {
 fn the_default_parameter_address_is_still_global_element_zero() {
     let _g = lock();
     let mut au = support::corpus::DELAY.open(RATE, BLOCK);
-    let raw = au.raw_unit();
+    let raw = au.unit().clone();
 
     let params = au.get_parameter_list();
     assert_eq!(
         params.len(),
-        parameters::list_at(raw, ParamAddress::GLOBAL).len(),
+        parameters::list_at(&raw, ParamAddress::GLOBAL).len(),
         "the un-suffixed list must be the global/element-0 list"
     );
 
@@ -693,7 +693,7 @@ fn the_default_parameter_address_is_still_global_element_zero() {
 
     let via_default = au.get_parameter(param.id).expect("get via default");
     let via_address =
-        parameters::get_at(raw, ParamAddress::GLOBAL, param.id).expect("get via address");
+        parameters::get_at(&raw, ParamAddress::GLOBAL, param.id).expect("get via address");
     assert_eq!(
         via_default, via_address,
         "the default path and the explicit global address must reach the same \

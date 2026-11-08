@@ -53,6 +53,7 @@
 
 use std::os::raw::c_void;
 use std::sync::Mutex;
+use tutti_au_ffi::Scope;
 
 mod support;
 use support::corpus::{
@@ -61,7 +62,6 @@ use support::corpus::{
 };
 use support::probe_au::{Misbehaviour, NOT_CALLED, last_host_pull};
 
-use tutti_au_host::types::{K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS, K_AUDIO_UNIT_SCOPE_GLOBAL};
 use tutti_au_host::{AuError, TransportInfo, TransportState};
 use tutti_types::{BarNumber, TimeSignature};
 use tutti_types::{Bpm, Samples};
@@ -807,8 +807,8 @@ fn host_callback_info_matches_apples_layout() {
     let status = unsafe {
         coreaudio_sys::AudioUnitGetPropertyInfo(
             au.raw_unit(),
-            K_AUDIO_UNIT_PROPERTY_HOST_CALLBACKS,
-            K_AUDIO_UNIT_SCOPE_GLOBAL,
+            coreaudio_sys::kAudioUnitProperty_HostCallbacks,
+            Scope::GLOBAL.raw(),
             0,
             &mut size,
             &mut writable,
@@ -861,9 +861,7 @@ fn a_real_au_pulls_and_consumes_the_transport() {
         return;
     };
 
-    // SAFETY: `component` came from `AudioComponentFindNext` via the
-    // enumeration, so it is a live factory handle for the process lifetime.
-    let mut au = unsafe { AuInstance::new(info.component, RATE, BLOCK) }.expect("instantiate");
+    let mut au = AuInstance::new(info.component, RATE, BLOCK).expect("instantiate");
     au.install_host_callbacks().expect("install");
     au.initialize().expect("initialize");
 

@@ -220,6 +220,21 @@ jobs:
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
 
+  # The AU host on macOS. Every AU crate is `#![cfg(target_os = "macos")]`, so
+  # the Linux and Windows clippy jobs compile it to nothing and a lint in it
+  # (missing docs, a new clippy rule) went unseen until someone built on a Mac.
+  # Lints only; the AU suites need installed audio units and run locally.
+  clippy-macos:
+    name: clippy (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain `rust-toolchain.toml` pins, with its components.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
+      - run: cargo clippy --locked -p tutti-au-host --features installed-units --all-targets -- -D warnings
+
   # The plugin contract on Windows. Not a required check: nothing else runs a
   # test there, and whether the shared plugin loads on a Windows runner is what
   # this finds out. Linux and macOS run the same suite in `test`.
@@ -309,6 +324,12 @@ jobs:
       #                         GUI-edit drain compile with it.
       #   tutti-session/midi-hardware — tests/midi.rs's hardware-port reclaim test
       #                         and its hot-plug tests
+      #   tutti-au-host/installed-units — linted by the macOS clippy job (the
+      #                         crate is empty on Linux) and run only locally
+      #                         (`just test-au-installed`, part of `test-all`):
+      #                         it asserts a claim about third-party Audio
+      #                         Units installed on the machine, and fails,
+      #                         never skips, where there are none
       #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
       #                         only locally (`just test-features`): the suite
       #                         needs the kernel's `snd-seq` module, which the
@@ -582,19 +603,16 @@ jobs:
       # having already run them. They are run below under the runner they were
       # written for.
       #
-      # `no_installed_third_party_unit_implements_the_mapping_family` is not
-      # broken — it is doing precisely what it was built to do. It asserts a
-      # claim about *installed* third-party Audio Units, and panics with
-      # "this test asserted nothing. Install one of [...] or accept that the
-      # claim is untested here" when none is present. A hosted runner is
-      # permanently that case, so on CI the test can only ever fail. Excluding
-      # it here does not weaken it: on a developer machine with those plugins it
-      # still runs and still asserts, which is the only place it ever could.
+      # The GUI-lifecycle binaries are `harness = false` custom mains; see above.
+      # `no_installed_third_party_unit_implements_the_mapping_family` is behind
+      # `tutti-au-host`'s `installed-units` feature, which this run leaves off:
+      # it asserts a claim about third-party Audio Units installed on the
+      # machine and fails, never skips, where there are none.
       - name: Test
         shell: bash
         run: |
           cargo nextest run --locked --workspace --no-fail-fast \
-            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main) and not test(no_installed_third_party_unit_implements_the_mapping_family)'
+            -E 'not binary(gui_lifecycle_main) and not binary(au_gui_lifecycle_main)'
 
       # The custom-harness editor tests. `cargo test` just execs the binary,
       # which is exactly what a `harness = false` main wants.

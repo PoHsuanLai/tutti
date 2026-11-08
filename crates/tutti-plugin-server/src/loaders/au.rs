@@ -2,9 +2,11 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
-#[cfg(all(target_os = "macos", feature = "au"))]
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(all(target_os = "macos", feature = "au"))]
+use tutti_au_host::Property;
+use tutti_au_host::property::{Latency, ParameterList, TailTime};
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::PluginError;
 use tutti_plugin::server::{
@@ -144,7 +146,7 @@ fn lookup_bounds(table: &[(u32, ParamBounds)], id: u32) -> Option<ParamBounds> {
 /// Read every parameter's declared range off the AU, sorted by id for
 /// [`lookup_bounds`].
 #[cfg(all(target_os = "macos", feature = "au"))]
-fn read_param_ranges(unit: tutti_au_host::types::AudioUnit) -> Vec<(u32, ParamBounds)> {
+fn read_param_ranges(unit: &tutti_au_host::Unit) -> Vec<(u32, ParamBounds)> {
     let mut table: Vec<(u32, ParamBounds)> = parameters::list(unit)
         .into_iter()
         .map(|p| {
@@ -272,24 +274,15 @@ impl PropertyWatch {
     /// `au_api_surface.rs::registration_never_refuses_a_property_id`), so a
     /// refusal here would be AudioToolbox failing rather than the AU declining a
     /// property — but a failure on one must not cost the other two.
-    ///
-    /// # Safety
-    /// `unit` must be the live `AudioUnit` of the instance that stores the
-    /// returned watch, so the field-order invariant above makes it outlive the
-    /// registration.
-    unsafe fn install(unit: tutti_au_host::types::AudioUnit) -> Option<Self> {
+    fn install(unit: &tutti_au_host::Unit) -> Option<Self> {
         use std::sync::atomic::Ordering;
 
-        use tutti_au_host::types::{
-            K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-        };
         use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 
         let flags = std::sync::Arc::new(PropertyFlags::default());
         let sink = std::sync::Arc::clone(&flags);
         // SAFETY: the caller guarantees `unit` outlives the returned watch.
-        let listener = unsafe {
+        let listener = {
             AuParameterListener::new(unit, move |ev| {
                 // Only property changes are subscribed, so a parameter or
                 // gesture event here would mean the registration went to the
@@ -297,9 +290,9 @@ impl PropertyWatch {
                 // does not mean.
                 if let AuEvent::PropertyChanged { id, .. } = ev {
                     let flag = match id {
-                        K_AUDIO_UNIT_PROPERTY_LATENCY => &sink.latency,
-                        K_AUDIO_UNIT_PROPERTY_TAIL_TIME => &sink.tail,
-                        K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST => &sink.param_list,
+                        Latency::ID => &sink.latency,
+                        TailTime::ID => &sink.tail,
+                        ParameterList::ID => &sink.param_list,
                         _ => return,
                     };
                     // `Release` pairs with the `AcqRel` swap in
@@ -312,11 +305,7 @@ impl PropertyWatch {
         }
         .ok()?;
 
-        for id in [
-            K_AUDIO_UNIT_PROPERTY_LATENCY,
-            K_AUDIO_UNIT_PROPERTY_TAIL_TIME,
-            K_AUDIO_UNIT_PROPERTY_PARAMETER_LIST,
-        ] {
+        for id in [Latency::ID, TailTime::ID, ParameterList::ID] {
             let _ = listener.watch_property(id, EventAddress::GLOBAL);
         }
 
@@ -327,31 +316,11 @@ impl PropertyWatch {
     }
 }
 
-// SAFETY: every field is already `Send` on its own terms, and this impl exists
-// because the raw AudioToolbox pointers buried in them cannot say so to the
-// compiler. Field by field:
-//
-// - `inner` (`tutti_au_host::AuInstance`) bottoms out in `AuHandle`, whose own
-//   `unsafe impl Send` records the AudioToolbox rule this whole file rests on:
-//   an `AudioComponentInstance` is a plain pointer usable from any thread *as
-//   long as access is externally synchronised*. `&mut self` on every method
-//   that touches the unit is that synchronisation — there is no `Sync` here,
-//   which is what keeps two threads from calling into one AU at once.
-// - `watch` holds an `AuParameterListener` (`Send + Sync`, argued at its own
-//   impl: an opaque listener handle, a GCD queue and a heap block, all
-//   documented thread-agnostic) plus an `Arc<PropertyFlags>` of atomics. The
-//   GCD worker that fires the callback touches only those atomics, never
-//   `inner`, so moving the instance between threads does not race the listener.
-// - `inner`'s editor is `Send` but not `Sync`, which is the tighter of the
-//   two bounds and therefore the one that decides this impl's shape. The
-//   editor lives on the host `AuInstance`, not as a sibling field here.
-// - `param_ranges`, `playhead` and `meta` are plain data.
-//
-// The field-order invariant on `watch` is what makes the listener argument hold
-// through teardown: the registration is disposed before the unit it points at.
-// Sending the instance elsewhere moves all of that together, so no thread is
-// left holding half of the pair.
-unsafe impl Send for AuInstance {}
+// `AuInstance` is `Send` without an `unsafe impl`: the host `AuInstance` is `Send`
+// (an owned `Unit`, an editor and a renderer, each `Send` at its own definition
+// in `tutti-au-ffi`), the watch holds a `Send + Sync` listener and atomics, and
+// the rest is plain data. There is no `Sync`, so two threads cannot call into one
+// AU at once.
 
 impl AuInstance {
     /// Lightweight probe: read AU component info without instantiation.
@@ -407,6 +376,7 @@ impl AuInstance {
     ///
     /// AU plugins are registered system-wide; the path is used for identification
     /// but the actual loading goes through AudioComponentFindNext.
+    #[cfg(test)]
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
         Self::load_with_state(path, sample_rate, block_size, None, &mut || {})
             .map(|(instance, _)| instance)
@@ -474,13 +444,12 @@ impl AuInstance {
             let component_info = matching.unwrap();
 
             // Safety: component_handle was obtained from AudioComponentFindNext
-            let mut inner =
-                unsafe { AuHostInstance::new(component_handle, sample_rate, block_size as u32) }
-                    .map_err(|e| BridgeError::LoadFailed {
-                        path: path.to_path_buf(),
-                        stage: LoadStage::Instantiation,
-                        reason: e.to_string(),
-                    })?;
+            let mut inner = AuHostInstance::new(component_handle, sample_rate, block_size as u32)
+                .map_err(|e| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Instantiation,
+                reason: e.to_string(),
+            })?;
 
             // Offered before `initialize`, once, off the audio thread: the AU
             // pulls tempo, beat and transport state from these procs during its
@@ -614,7 +583,7 @@ impl AuInstance {
             // Capture the declared plain ranges once, while still on the load
             // thread — the RT path denormalizes against these. `poll_changes`
             // re-reads them when the AU says its parameter list moved.
-            let param_ranges = read_param_ranges(inner.raw_unit());
+            let param_ranges = read_param_ranges(inner.unit());
 
             // Start watching the three properties the figures above are frozen
             // copies of, so a change reaches `poll_changes` instead of being
@@ -623,7 +592,7 @@ impl AuInstance {
             // SAFETY: the watch is stored in the same struct as `inner` and
             // declared before it, so `inner`'s `AudioUnit` outlives the
             // registration.
-            let watch = unsafe { PropertyWatch::install(inner.raw_unit()) };
+            let watch = PropertyWatch::install(inner.unit());
 
             Ok((
                 Self {
@@ -760,7 +729,7 @@ impl AuInstance {
             // that changed bounds leaves every write scaled by the old span.
             // Re-read it before telling the client, so a client that
             // immediately re-pulls the list gets a table that already agrees.
-            self.param_ranges = read_param_ranges(self.inner.raw_unit());
+            self.param_ranges = read_param_ranges(self.inner.unit());
             changes.param_list_changed = true;
         }
 
@@ -922,7 +891,7 @@ impl PluginParams for AuInstance {
     /// guess. `read_param_ranges` lists every parameter the AU declares, so an
     /// absence means the AU did not declare it.
     fn get_parameter(&self, id: ParamId) -> f64 {
-        let Ok(plain) = parameters::get(self.inner.raw_unit(), id.get()) else {
+        let Ok(plain) = parameters::get(self.inner.unit(), id.get()) else {
             return 0.0;
         };
         match lookup_bounds(&self.param_ranges, id.get()) {
@@ -939,7 +908,7 @@ impl PluginParams for AuInstance {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
         };
-        let _ = parameters::set(self.inner.raw_unit(), id.get(), plain);
+        let _ = parameters::set(self.inner.unit(), id.get(), plain);
     }
 
     /// The AU's own display string, denormalized on the way in.
@@ -960,7 +929,7 @@ impl PluginParams for AuInstance {
             Some(bounds) => bounds.to_plain(value.get()),
             None => value.get() as f32,
         };
-        parameters::string_from_value(self.inner.raw_unit(), id.get(), plain)
+        parameters::string_from_value(self.inner.unit(), id.get(), plain)
     }
 
     /// The inverse, re-normalized on the way out so the result can be handed
@@ -969,7 +938,7 @@ impl PluginParams for AuInstance {
     /// As with [`parameter_text`](Self::parameter_text), no Apple AU implements
     /// the underlying property on macOS 15.6.
     fn parameter_value_from_text(&self, id: ParamId, text: &str) -> Option<Normalized> {
-        let plain = parameters::value_from_string(self.inner.raw_unit(), id.get(), text)?;
+        let plain = parameters::value_from_string(self.inner.unit(), id.get(), text)?;
         let normalized = match lookup_bounds(&self.param_ranges, id.get()) {
             Some(bounds) => bounds.to_normalized(plain),
             None => f64::from(plain),
@@ -978,7 +947,7 @@ impl PluginParams for AuInstance {
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        let unit = self.inner.raw_unit();
+        let unit = self.inner.unit();
         let params = parameters::list(unit);
 
         // Resolve each distinct clump once. `clump_name` is a property read
@@ -1060,7 +1029,9 @@ impl PluginEditorHost for AuInstance {
             width: 800,
             height: 600,
         };
-        let size = unsafe { self.inner.open_editor(parent_handle, preferred) }
+        let size = self
+            .inner
+            .open_editor(parent_handle, preferred)
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
         Ok(EditorSize {
             width: size.width,
@@ -1458,7 +1429,7 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
 
         let au = AuInstance {
             watch: None,
@@ -1494,7 +1465,7 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
 
         let mut au = AuInstance {
             watch: None,
@@ -1741,7 +1712,7 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
 
         // The cutoff parameter is the one whose range makes the bug audible.
         let &(cutoff_id, bounds) = param_ranges
@@ -1759,7 +1730,7 @@ mod tests {
         let addr = cutoff_id.into();
 
         au.set_parameter(addr, Normalized::of(1.0));
-        let plain = parameters::get(au.inner.raw_unit(), cutoff_id).expect("cutoff is readable");
+        let plain = parameters::get(au.inner.unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
             "normalized 1.0 must set the top of {:?}, got {plain}",
@@ -1794,7 +1765,7 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
 
         let mut au = AuInstance {
             watch: None,
@@ -1934,7 +1905,7 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
 
         let mut au = AuInstance {
             watch: None,
@@ -2000,7 +1971,7 @@ mod tests {
             // pass even if both were wrong.
             let opaque = target.id.get();
             let native =
-                f64::from(parameters::get(au.inner.raw_unit(), opaque).expect("param is readable"));
+                f64::from(parameters::get(au.inner.unit(), opaque).expect("param is readable"));
             assert!(
                 (native - expected).abs() <= tolerance,
                 "param {} ('{}'): normalized {normalized} should reach the AU as \
@@ -2060,7 +2031,7 @@ mod tests {
             eprintln!("AUDelay unavailable; skipping");
             return;
         };
-        let param_ranges = read_param_ranges(inner.raw_unit());
+        let param_ranges = read_param_ranges(inner.unit());
         let mut au = AuInstance {
             watch: None,
             inner,
@@ -2094,7 +2065,7 @@ mod tests {
         // And that is the same value `set_parameter` writes, so the string a
         // third-party AU returns describes the value the parameter is at.
         au.set_parameter(target.id, Normalized::of(1.0));
-        let after = parameters::get(au.inner.raw_unit(), opaque).expect("param is readable");
+        let after = parameters::get(au.inner.unit(), opaque).expect("param is readable");
         assert!(
             (after - plain_at_full).abs() <= tolerance,
             "the text path and the write path must denormalize identically: \

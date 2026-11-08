@@ -231,10 +231,7 @@ fn assert_partial_resolution(found: usize, table_len: usize, what: &str) {
 
 /// Instantiate `info` initialized, as `corpus::open_info` does for the ramp test.
 fn open(info: &AuComponentInfo, label: &str) -> AuInstance {
-    // SAFETY: `component` came from `AudioComponentFindNext` via
-    // `enumerate_components_of_type`, so it is a live factory handle for the
-    // lifetime of this process.
-    let mut au = unsafe { AuInstance::new(info.component, RATE, BLOCK) }
+    let mut au = AuInstance::new(info.component, RATE, BLOCK)
         .unwrap_or_else(|e| panic!("{label}: instantiate failed: {e:?}"));
     au.initialize()
         .unwrap_or_else(|e| panic!("{label}: initialize failed: {e:?}"));
@@ -1312,15 +1309,13 @@ fn engage_processing(au: &mut AuInstance, label: &str) {
         }
     }
 
-    if touched == 0 {
-        if let Some(p) = params
+    if touched == 0
+        && let Some(p) = params
             .iter()
             .find(|p| p.writable && !p.meter_read_only && p.range.max > p.range.min)
-        {
-            if au.set_parameter(p.id, p.range.max).is_ok() {
-                touched += 1;
-            }
-        }
+        && au.set_parameter(p.id, p.range.max).is_ok()
+    {
+        touched += 1;
     }
 
     assert!(
@@ -1552,25 +1547,17 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
 
     let au = open(&info, juce_unit.label);
     assert!(
-        tutti_au_host::AuEditor::has_editor(au.raw_unit()),
+        tutti_au_host::AuEditor::has_editor(au.unit()),
         "{}: advertises no Cocoa view, so the JUCE encoding path is untested",
         juce_unit.label
     );
 
-    // SAFETY: on the main thread (checked above), and `au` is live and
-    // initialized. `open(unit, None, ..)` instantiates the view without
-    // parenting it.
-    //
-    // The preferred size is deliberately *not* the geometry asserted below:
-    // this unit reports its own measured size regardless of what the host
-    // asked for, which is exactly what makes the assertion about the plugin
-    // rather than about the request.
     let preferred = tutti_plugin_types::EditorSize {
         width: 800,
         height: 600,
     };
-    let mut editor = unsafe { tutti_au_host::AuEditor::open(au.raw_unit(), None, preferred) }
-        .unwrap_or_else(|e| {
+    let mut editor =
+        tutti_au_host::AuEditor::open(au.unit(), None, preferred).unwrap_or_else(|e| {
             panic!(
                 "{}: opening a JUCE Cocoa view failed: {e:?}. This is what an \
                  objc2 encoding-check rejection looks like — verify the \

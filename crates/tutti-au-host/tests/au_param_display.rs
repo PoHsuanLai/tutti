@@ -74,7 +74,7 @@ fn a_value_strings_parameter_enumerates_them() {
     let _g = lock();
     for &(unit_ref, param_id, count, first, last) in VALUE_STRING_PARAMS {
         let au = unit_ref.open(RATE, BLOCK);
-        let strings = parameters::value_strings(au.raw_unit(), param_id);
+        let strings = parameters::value_strings(au.unit(), param_id);
 
         assert_eq!(
             strings.len(),
@@ -130,7 +130,7 @@ fn value_strings_are_not_gated_on_the_flag_that_under_reports() {
          this now reports true, re-measure — but the read below must not become \
          conditional on it either way."
     );
-    let strings = parameters::value_strings(au.raw_unit(), 2000);
+    let strings = parameters::value_strings(au.unit(), 2000);
     assert_eq!(
         strings.len(),
         11,
@@ -149,7 +149,7 @@ fn a_continuous_parameter_has_no_value_strings() {
     // AULowpass is two continuous parameters (cutoff, resonance); neither is
     // indexed, so neither publishes value strings.
     for p in au.get_parameter_list() {
-        let strings = parameters::value_strings(au.raw_unit(), p.id);
+        let strings = parameters::value_strings(au.unit(), p.id);
         assert!(
             strings.is_empty(),
             "AULowpass param {} ({:?}) is continuous but reported {strings:?}",
@@ -169,7 +169,7 @@ fn an_unknown_id_has_no_value_strings() {
     let unknown = (0u32..100_000)
         .find(|id| !declared.contains(id))
         .expect("some id is undeclared");
-    assert!(parameters::value_strings(au.raw_unit(), unknown).is_empty());
+    assert!(parameters::value_strings(au.unit(), unknown).is_empty());
 }
 
 // --------------------------------------------------------------------- clumps
@@ -207,7 +207,7 @@ fn clumped_parameters_resolve_to_section_names() {
         );
 
         for id in ids {
-            let name = parameters::clump_name(au.raw_unit(), id).unwrap_or_else(|| {
+            let name = parameters::clump_name(au.unit(), id).unwrap_or_else(|| {
                 panic!(
                     "{}: clump {id} is claimed by a parameter but has no name — a \
                      UI would show an unlabelled section",
@@ -252,7 +252,7 @@ fn distortion_names_its_seven_sections() {
     ];
     for (id, want) in expected {
         assert_eq!(
-            parameters::clump_name(au.raw_unit(), id).as_deref(),
+            parameters::clump_name(au.unit(), id).as_deref(),
             Some(want),
             "AUDistortion clump {id}"
         );
@@ -260,7 +260,7 @@ fn distortion_names_its_seven_sections() {
     // And the names are genuinely distinct, so nothing is returning a constant.
     let names: Vec<_> = expected
         .iter()
-        .filter_map(|&(id, _)| parameters::clump_name(au.raw_unit(), id))
+        .filter_map(|&(id, _)| parameters::clump_name(au.unit(), id))
         .collect();
     let mut deduped = names.clone();
     deduped.sort();
@@ -285,7 +285,7 @@ fn an_unclumped_unit_reports_no_groups() {
     }
     // Ids well past anything AUDelay could define.
     for id in [1u32, 2, 99] {
-        assert_eq!(parameters::clump_name(au.raw_unit(), id), None);
+        assert_eq!(parameters::clump_name(au.unit(), id), None);
     }
 }
 
@@ -472,7 +472,7 @@ fn the_string_conversions_report_absence_rather_than_fabricating() {
         for p in au.get_parameter_list() {
             for value in [p.range.min, p.range.mid(), p.range.max] {
                 assert_eq!(
-                    parameters::string_from_value(au.raw_unit(), p.id, value),
+                    parameters::string_from_value(au.unit(), p.id, value),
                     None,
                     "{} param {} ({:?}): no Apple AU was measured to implement \
                      ParameterStringFromValue. A Some() here means macOS gained \
@@ -486,7 +486,7 @@ fn the_string_conversions_report_absence_rather_than_fabricating() {
             }
             for text in ["1.0", "-6", "Band Pass", "Parametric", ""] {
                 assert_eq!(
-                    parameters::value_from_string(au.raw_unit(), p.id, text),
+                    parameters::value_from_string(au.unit(), p.id, text),
                     None,
                     "{} param {} ({:?}): {text:?} must not parse to a value — no \
                      Apple AU implements ParameterValueFromString, and a \
@@ -517,12 +517,12 @@ fn the_string_conversions_report_absence_rather_than_fabricating() {
 fn enumerable_labels_do_not_imply_a_parsable_parameter() {
     let _g = lock();
     let au = N_BAND_EQ.open(RATE, BLOCK);
-    let strings = parameters::value_strings(au.raw_unit(), 2000);
+    let strings = parameters::value_strings(au.unit(), 2000);
     assert_eq!(strings.len(), 11, "precondition: the labels are enumerable");
 
     for (index, label) in strings.iter().enumerate() {
         assert_eq!(
-            parameters::value_from_string(au.raw_unit(), 2000, label),
+            parameters::value_from_string(au.unit(), 2000, label),
             None,
             "AUNBandEQ can name value {index} as {label:?} but does not implement \
              ParameterValueFromString; a host must map the label back through the \

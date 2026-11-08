@@ -127,6 +127,9 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tutti_au_ffi::Property;
+use tutti_au_ffi::property::{BypassEffect, Latency, PresentPreset};
+use tutti_au_host::types::{self, AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 
 mod support;
 use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
@@ -134,11 +137,6 @@ use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
 use tutti_au_host::component::{self, AuType};
 use tutti_au_host::midi_out::MidiOutputInfo;
 use tutti_au_host::parameters::{self, ParamAddress};
-use tutti_au_host::types::{
-    self, AudioComponentDescription, K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT,
-    K_AUDIO_UNIT_PROPERTY_LATENCY, K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, K_AUDIO_UNIT_SCOPE_GLOBAL,
-    K_AUDIO_UNIT_TYPE_EFFECT,
-};
 use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
 use tutti_au_host::{BusDirection, TransportInfo, TransportState};
 
@@ -277,12 +275,10 @@ fn a_host_property_write_reaches_a_property_listener() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: `au` outlives `listener` — `listener` is dropped at the end of this
-    // scope, before `au`, which is `AuParameterListener::new`'s requirement.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
-        .expect("create a listener on AUDelay");
+    let listener =
+        AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDelay");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch_property on kAudioUnitProperty_BypassEffect");
 
     au.set_bypass(true).expect("AUDelay accepts a bypass write");
@@ -294,9 +290,10 @@ fn a_host_property_write_reaches_a_property_listener() {
     );
     let ids = property_ids(&log.snapshot());
     assert!(
-        ids.contains(&K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        ids.contains(&BypassEffect::ID),
         "expected kAudioUnitProperty_BypassEffect \
-         ({K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT}) among {ids:?}"
+         ({}) among {ids:?}",
+        BypassEffect::ID
     );
 }
 
@@ -320,11 +317,9 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above — the listener is dropped first.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_LATENCY, EventAddress::GLOBAL)
+        .watch_property(Latency::ID, EventAddress::GLOBAL)
         .expect("watch_property on kAudioUnitProperty_Latency");
 
     au.set_bypass(true).expect("bypass on");
@@ -340,7 +335,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     );
 
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("now also watch BypassEffect");
     au.set_bypass(true).expect("bypass on again");
     assert!(
@@ -353,8 +348,7 @@ fn a_property_listener_does_not_receive_properties_it_did_not_watch() {
     // a contract. What *is* a contract is that no other property appears.
     let ids = property_ids(&log.snapshot());
     assert!(
-        ids.iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        ids.iter().all(|id| *id == BypassEffect::ID),
         "only the newly-watched property may appear; got {ids:?}"
     );
 }
@@ -377,14 +371,13 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     let mut au = DISTORTION.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
-    let listener = unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }
-        .expect("create a listener on AUDistortion");
+    let listener =
+        AuParameterListener::new(au.unit(), log.sink()).expect("create a listener on AUDistortion");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET, EventAddress::GLOBAL)
+        .watch_property(PresentPreset::ID, EventAddress::GLOBAL)
         .expect("watch PresentPreset");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch BypassEffect");
 
     // AUDistortion ships 22 factory presets, numbered 0..=21 (see
@@ -399,9 +392,7 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     // id appears is the contract, and it is what a collapsed union decode breaks.
     let preset_phase = property_ids(&log.snapshot());
     assert!(
-        preset_phase
-            .iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET),
+        preset_phase.iter().all(|id| *id == PresentPreset::ID),
         "a preset load posts PresentPreset and nothing else; got {preset_phase:?}"
     );
 
@@ -418,9 +409,7 @@ fn two_watched_properties_arrive_under_their_own_ids() {
     );
     let bypass_phase = property_ids(&log.snapshot());
     assert!(
-        bypass_phase
-            .iter()
-            .all(|id| *id == K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT),
+        bypass_phase.iter().all(|id| *id == BypassEffect::ID),
         "a bypass write posts BypassEffect, not PresentPreset — the two ids must \
          not collapse; got {bypass_phase:?}"
     );
@@ -442,9 +431,7 @@ fn registration_never_refuses_a_property_id() {
     let au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
 
     for id in [0u32, 999_999, u32::MAX] {
         assert!(
@@ -496,11 +483,9 @@ fn a_dropped_property_listener_stops_delivering() {
     let mut au = DELAY.open(RATE, BLOCK);
 
     let log = EventLog::default();
-    // SAFETY: as above.
-    let listener =
-        unsafe { AuParameterListener::new(au.raw_unit(), log.sink()) }.expect("create a listener");
+    let listener = AuParameterListener::new(au.unit(), log.sink()).expect("create a listener");
     listener
-        .watch_property(K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT, EventAddress::GLOBAL)
+        .watch_property(BypassEffect::ID, EventAddress::GLOBAL)
         .expect("watch BypassEffect");
 
     au.set_bypass(true).expect("bypass on");
@@ -553,9 +538,9 @@ fn a_dropped_property_listener_stops_delivering() {
 fn value_strings_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = N_BAND_EQ.open(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
 
-    let global = parameters::value_strings_at(unit, ParamAddress::GLOBAL, 2000);
+    let global = parameters::value_strings_at(&unit, ParamAddress::GLOBAL, 2000);
     assert_eq!(
         global.len(),
         11,
@@ -568,7 +553,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
         ("input", ParamAddress::on_bus(BusDirection::Input, 0)),
         ("output", ParamAddress::on_bus(BusDirection::Output, 0)),
     ] {
-        let scoped = parameters::value_strings_at(unit, addr, 2000);
+        let scoped = parameters::value_strings_at(&unit, addr, 2000);
         assert!(
             scoped.is_empty(),
             "AUNBandEQ answers value strings on the global scope only; the \
@@ -580,7 +565,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
     // And the un-suffixed wrapper agrees with the global address, which is the
     // property that would break if it started passing a bus scope.
     assert_eq!(
-        parameters::value_strings(unit, 2000),
+        parameters::value_strings(&unit, 2000),
         global,
         "`value_strings` must be `value_strings_at(GLOBAL)`"
     );
@@ -602,7 +587,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
 fn clump_name_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = DISTORTION.open(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
 
     // The full measured table, so a shifted or truncated read is caught rather
     // than merely a read that returns nothing.
@@ -617,14 +602,14 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     ];
     for (clump, name) in expected {
         assert_eq!(
-            parameters::clump_name_at(unit, ParamAddress::GLOBAL, clump).as_deref(),
+            parameters::clump_name_at(&unit, ParamAddress::GLOBAL, clump).as_deref(),
             Some(name),
             "AUDistortion clump {clump} is named {name:?} on the global scope"
         );
     }
     // Clump 8 does not exist — the read must stop rather than run off the table.
     assert_eq!(
-        parameters::clump_name_at(unit, ParamAddress::GLOBAL, 8),
+        parameters::clump_name_at(&unit, ParamAddress::GLOBAL, 8),
         None,
         "AUDistortion names 7 clumps; an 8th name means the read is fabricating"
     );
@@ -635,7 +620,7 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     ] {
         for (clump, _) in expected {
             assert_eq!(
-                parameters::clump_name_at(unit, addr, clump),
+                parameters::clump_name_at(&unit, addr, clump),
                 None,
                 "AUDistortion names clumps on the global scope only; the {label} \
                  scope named clump {clump}"
@@ -646,7 +631,7 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     // The un-suffixed wrapper must be the global address.
     for (clump, name) in expected {
         assert_eq!(
-            parameters::clump_name(unit, clump).as_deref(),
+            parameters::clump_name(&unit, clump).as_deref(),
             Some(name),
             "`clump_name` must be `clump_name_at(GLOBAL)`"
         );
@@ -689,7 +674,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
     // are hosted this way (they refuse `AudioUnitInitialize` as this host
     // configures them).
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
 
     let addresses = [
         ("global", ParamAddress::GLOBAL),
@@ -715,7 +700,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
         for (label, addr) in addresses {
             for value in [0.0f32, 0.5, 1.0] {
                 assert_eq!(
-                    parameters::string_from_value_at(unit, addr, id, value),
+                    parameters::string_from_value_at(&unit, addr, id, value),
                     None,
                     "AUMultiChannelMixer does not implement \
                      ParameterStringFromValue; {label} id {id} value {value} \
@@ -724,7 +709,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
             }
             for text in ["0.5", "-6 dB", "Off"] {
                 assert_eq!(
-                    parameters::value_from_string_at(unit, addr, id, text),
+                    parameters::value_from_string_at(&unit, addr, id, text),
                     None,
                     "AUMultiChannelMixer does not implement \
                      ParameterValueFromString; {label} id {id} text {text:?} \
@@ -738,12 +723,12 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
 
     // The wrappers must delegate to the global address, not to some other one.
     assert_eq!(
-        parameters::string_from_value(unit, 0, 0.5),
-        parameters::string_from_value_at(unit, ParamAddress::GLOBAL, 0, 0.5)
+        parameters::string_from_value(&unit, 0, 0.5),
+        parameters::string_from_value_at(&unit, ParamAddress::GLOBAL, 0, 0.5)
     );
     assert_eq!(
-        parameters::value_from_string(unit, 0, "0.5"),
-        parameters::value_from_string_at(unit, ParamAddress::GLOBAL, 0, "0.5")
+        parameters::value_from_string(&unit, 0, "0.5"),
+        parameters::value_from_string_at(&unit, ParamAddress::GLOBAL, 0, "0.5")
     );
 }
 
@@ -765,17 +750,17 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
 fn the_mixer_strip_arity_differs_between_input_and_output_scope() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
 
     // The global scope has no parameters at all on this unit, which is the fact
     // that makes an accidentally-global read detectable rather than plausible.
     assert!(
-        parameters::list_at(unit, ParamAddress::GLOBAL).is_empty(),
+        parameters::list_at(&unit, ParamAddress::GLOBAL).is_empty(),
         "AUMultiChannelMixer publishes no global-scope parameters"
     );
 
     for element in [0u32, 1, 7] {
-        let strip = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Input, element));
+        let strip = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Input, element));
         assert_eq!(
             strip.len(),
             7,
@@ -783,7 +768,7 @@ fn the_mixer_strip_arity_differs_between_input_and_output_scope() {
             strip.iter().map(|p| p.id).collect::<Vec<_>>()
         );
     }
-    let out = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Output, 0));
+    let out = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Output, 0));
     assert_eq!(
         out.len(),
         5,

@@ -418,9 +418,9 @@ fn per_element_parameter_writes_do_not_allocate() {
     let mut au = corpus::MULTI_CHANNEL_MIXER.open(48_000.0, BLOCK);
     let mut b = Bufs::new();
 
-    let unit = au.raw_unit();
+    let unit = au.unit().clone();
     let bus0 = ParamAddress::on_bus(BusDirection::Input, 0);
-    let strip = parameters::list_at(unit, bus0);
+    let strip = parameters::list_at(&unit, bus0);
     let pid = strip
         .first()
         .expect(
@@ -438,12 +438,12 @@ fn per_element_parameter_writes_do_not_allocate() {
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..GUARDED {
             let addr = ParamAddress::on_bus(BusDirection::Input, (i % 4) as u32);
-            parameters::set_at(unit, addr, pid, 0.5).expect("write live element");
+            parameters::set_at(&unit, addr, pid, 0.5).expect("write live element");
             // Asserted as an error rather than ignored: if this ever starts
             // succeeding, the write is landing on an element the host never
             // addressed.
             assert!(
-                parameters::set_at(unit, missing, pid, 0.5).is_err(),
+                parameters::set_at(&unit, missing, pid, 0.5).is_err(),
                 "write to element 9999 must be rejected, not silently aliased"
             );
             b.render(&mut au);

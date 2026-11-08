@@ -15,7 +15,7 @@
 //! [`frames`](Io::frames) long and that `frames` is at most the
 //! [`MaxBlock`] the node was prepared with. A node therefore never clamps.
 
-use tutti_types::Samples;
+use tutti_types::{Samples, Tail};
 
 use crate::event::{EventWriter, SortedEvents, SubBlocks};
 use crate::node::{ConstantMask, InPlaceMask, SilenceMask};
@@ -70,6 +70,9 @@ pub struct Io<'a> {
     /// Where [`count_lost`](Self::count_lost) adds; `None` where nothing
     /// counts (a hand-built `Io`).
     lost: Option<&'a std::cell::Cell<u32>>,
+    /// Where [`report_tail`](Self::report_tail) stores; `None` where nothing
+    /// reads it (a hand-built `Io`).
+    tail: Option<&'a std::cell::Cell<Option<Tail>>>,
 }
 
 impl std::fmt::Debug for Io<'_> {
@@ -211,6 +214,34 @@ impl<'a> Io<'a> {
             events_out,
             params: &[],
             lost: None,
+            tail: None,
+        }
+    }
+
+    /// These buffers, with [`report_tail`](Self::report_tail) storing into
+    /// `tail`.
+    #[inline]
+    pub(crate) fn with_tail(mut self, tail: &'a std::cell::Cell<Option<Tail>>) -> Self {
+        self.tail = Some(tail);
+        self
+    }
+
+    /// Narrows this node's tail for the silence skip: the frames it keeps
+    /// sounding after its input stops, counted once its latency is
+    /// compensated, **from now on**.
+    ///
+    /// [`Shape::tail`](crate::Shape::tail) is the ceiling. A report above it
+    /// is clamped to it, [`Tail::Unknown`] says nothing (the ceiling stands),
+    /// and [`Tail::Unbounded`] is never skipped. The report must cover the
+    /// node's ring-out (see [`Node`](crate::Node), "A tail that follows the
+    /// params"). Audio thread: one
+    /// store into the unit's own record, no allocation; the plan is untouched,
+    /// and nothing but the task that runs the node reads it, so a pooled
+    /// render parks the same blocks a serial one does.
+    #[inline]
+    pub fn report_tail(&self, tail: Tail) {
+        if let Some(cell) = self.tail {
+            cell.set(Some(tail));
         }
     }
 

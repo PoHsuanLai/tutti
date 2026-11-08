@@ -433,6 +433,8 @@ fn verify_lowered(plan: &Plan) -> Result<(), VerifyError> {
             || rec.generation != pu.generation
             || rec.arrival != pu.arrival
             || rec.park_after != pu.shape.park_after()
+            || rec.latency != pu.shape.latency.samples()
+            || rec.tail != pu.shape.tail
             || rec.event_capacity != pu.shape.event_capacity
             || rec.in_place != in_place
             || rec.params != params

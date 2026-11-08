@@ -520,6 +520,7 @@ fn cut_fades(u: &mut Unit, fade_back: &mut HeapProd<Box<Crossfade>>) -> Option<T
         u.quiet = 0;
         u.last_quiet = false;
         u.last_idle = false;
+        u.reported = None;
     }
     stale
 }
@@ -586,6 +587,12 @@ pub(crate) struct Unit {
     last_quiet: bool,
     /// Whether the last call returned [`Status::Idle`].
     last_idle: bool,
+    /// The tail its last call narrowed its ceiling to
+    /// ([`Io::report_tail`](crate::Io::report_tail), clamped to the
+    /// ceiling); `None` is the ceiling. Written only by the task that runs
+    /// the unit, so the skip it decides is a function of the unit's own
+    /// inputs and reports.
+    reported: Option<Tail>,
     /// The crossfade running here: `node` is its incoming unit.
     fade: Option<Box<Crossfade>>,
     /// A crossfade waiting for `fade` to end.
@@ -604,6 +611,7 @@ impl Unit {
             quiet: 0,
             last_quiet: false,
             last_idle: false,
+            reported: None,
             fade: None,
             queued: None,
             params,
@@ -1152,6 +1160,7 @@ impl Executor {
                         u.quiet = 0;
                         u.last_quiet = false;
                         u.last_idle = false;
+                        u.reported = None;
                     }
                 }
                 (fade, _) => {
@@ -2009,6 +2018,7 @@ fn end_fades(plan: &Plan, store: &mut [Option<Unit>], fade_back: &mut HeapProd<B
             u.quiet = 0;
             u.last_quiet = false;
             u.last_idle = false;
+            u.reported = None;
         }
     }
 }
@@ -2502,7 +2512,15 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     // output and its latency plus tail agree.
     let skip = quiet_inputs
         && if ein.is_empty() {
-            !ain.is_empty() && u.last_quiet && tail_elapsed(rec.park_after, u.quiet)
+            !ain.is_empty()
+                && u.last_quiet
+                && tail_elapsed(
+                    match u.reported {
+                        None => rec.park_after,
+                        Some(t) => Tail::Finite(rec.latency).then(t),
+                    },
+                    u.quiet,
+                )
         } else {
             u.last_idle
         };
@@ -2574,7 +2592,9 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
     } else {
         &[]
     };
+    let reported = Cell::new(None);
     let call = Call {
+        reported: &reported,
         env: h.env,
         history: h.history,
         max: h.max,
@@ -2588,6 +2608,10 @@ fn node_op_with<A: AudioSlots, F: SlotFlags + ?Sized, E: EventSlots + ?Sized>(
         params,
     };
     let status = call_node(&call, &mut *u.node, st);
+    // This call's report, or the ceiling when it made none.
+    u.reported = reported
+        .get()
+        .and_then(|r| crate::node::narrow_tail(rec.tail, r));
     if scheduled {
         st.has_due[st.at] = false;
     }
@@ -2684,6 +2708,8 @@ struct Call<'p, 'e> {
     scheduled: &'p [(u16, u32, u32)],
     /// What each declared param reads this block.
     params: &'p [ParamInput<'p>],
+    /// Where the node's [`Io::report_tail`] lands.
+    reported: &'p Cell<Option<Tail>>,
 }
 
 impl<'p> Call<'p, '_> {
@@ -2709,7 +2735,8 @@ impl<'p> Call<'p, '_> {
             &[],
             &mut [],
         )
-        .with_params(self.params);
+        .with_params(self.params)
+        .with_tail(self.reported);
         node.process(&self.cx(), io)
     }
 
@@ -2811,7 +2838,8 @@ impl<'p> Call<'p, '_> {
             &mut evout[..e_out],
         )
         .with_params(self.params)
-        .with_lost(&unplaced);
+        .with_lost(&unplaced)
+        .with_tail(self.reported);
         let status = node.process(&self.cx(), io);
         if unplaced.get() != 0 {
             dropped.at_node(rec.unit, unplaced.get());

@@ -11,7 +11,7 @@ use tutti_graph::{
     CommitError, Editor, Executor, ForkError, ForkMode, ForkRemains, ForkTarget, PendingFork, Pool,
     Prepare,
 };
-use tutti_types::{GraphTail, Samples};
+use tutti_types::{ChannelTopology, GraphTail, Samples};
 
 use crate::{ConfigError, Error, Result};
 
@@ -116,6 +116,10 @@ pub struct RenderGraph {
     /// The executor the render drives. Never handed out: the render is the
     /// only thing that runs it.
     executor: Executor,
+    /// What the graph's output channels are, when the live graph declared it
+    /// ([`set_root_topology`](Self::set_root_topology)); `None` is the engine's
+    /// order for the width.
+    root: Option<ChannelTopology>,
 }
 
 impl RenderGraph {
@@ -127,7 +131,11 @@ impl RenderGraph {
     /// (`Editor::is_paired_with`): pass the pair built or forked together.
     /// The rate is checked at render, against the render's config.
     pub fn new(editor: Editor, executor: Executor) -> Result<Self> {
-        let graph = Self { editor, executor };
+        let graph = Self {
+            editor,
+            executor,
+            root: None,
+        };
         graph.check_paired()?;
         Ok(graph)
     }
@@ -140,6 +148,24 @@ impl RenderGraph {
         } else {
             Err(ConfigError::UnpairedGraph.into())
         }
+    }
+
+    /// States what the graph's output channels are, for the fold to the file:
+    /// [`ChannelTopology::discrete`] for independent buses, a named topology for
+    /// speaker feeds. `None` (the default) is the engine's order for the width,
+    /// as for a live graph that declared nothing.
+    ///
+    /// The render refuses a declaration that is not as wide as the graph's
+    /// outputs, or that the file cannot take
+    /// ([`ConfigError::Placement`]). Use it on a fork of a live graph that
+    /// declared its root, so the file is placed as the device was.
+    pub fn set_root_topology(&mut self, root: Option<ChannelTopology>) {
+        self.root = root;
+    }
+
+    /// The declared output topology ([`set_root_topology`](Self::set_root_topology)).
+    pub fn root_topology(&self) -> Option<&ChannelTopology> {
+        self.root.as_ref()
     }
 
     /// The graph's editor, to read its spec.
@@ -273,7 +299,11 @@ impl RenderGraph {
         let (editor, executor) = pending.build().map_err(|(e, r)| (fork_error(e), r))?;
         // `PendingFork::build` returns the pair it built and installed
         // together; the render checks the pairing again.
-        Ok(Self { editor, executor })
+        Ok(Self {
+            editor,
+            executor,
+            root: None,
+        })
     }
 
     /// The look-ahead latency the graph reports, as a frame count — the

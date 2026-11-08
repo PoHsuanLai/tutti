@@ -354,6 +354,15 @@ pub struct Graph {
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
     next_crossfade: u64,
+    /// What the root's channels are, when a host declared it
+    /// ([`Session::declare_root_topology`](crate::Session::declare_root_topology));
+    /// `None` is the engine's order for the root's width.
+    root: Option<tutti_types::ChannelTopology>,
+    /// The control side of the engine's output folds, once an engine was built
+    /// over this graph: a declaration is published through it.
+    output: Option<tutti_engine::OutputControl>,
+    /// The last widening [`widen_outputs`](Self::widen_outputs) refused.
+    widen_refusal: Option<tutti_types::FoldError>,
     /// The hosted plugins' records, by node (`plugin.rs`): kept here so a
     /// crossfade to another plugin and a removal update them where they
     /// happen.
@@ -491,6 +500,9 @@ impl Graph {
             master_meter: Some(master_meter),
             parked: VecDeque::new(),
             next_crossfade: 0,
+            root: None,
+            output: None,
+            widen_refusal: None,
             #[cfg(feature = "plugin")]
             plugins: BTreeMap::new(),
         }
@@ -570,7 +582,9 @@ impl Graph {
     ) -> Result<tutti_engine::Engine, tutti_engine::GraphEngineError> {
         let mut exec = self.take_executor();
         exec.set_pool(self.render_pool("tutti-worker", self.render_worker_start.as_ref()));
-        tutti_engine::Engine::new(transport, &mut self.editor, exec)
+        let engine = tutti_engine::Engine::new(transport, &mut self.editor, exec)?;
+        self.output = Some(engine.output_control());
+        Ok(engine)
     }
 
     /// Re-prepare every node for `rate`, keeping the block and the quantum.
@@ -820,6 +834,12 @@ impl Graph {
         target: AudioNodeTarget,
         rate: SampleRate,
     ) -> tutti_export::Result<PendingExport> {
+        // Only the master's outputs are the root's channels; a node's
+        // sub-graph has its own, undeclared.
+        let root = match target {
+            AudioNodeTarget::Master => self.root.clone(),
+            AudioNodeTarget::Node(_) => None,
+        };
         let target = match target {
             AudioNodeTarget::Master => tutti_graph::ForkTarget::Master,
             AudioNodeTarget::Node(node) => tutti_graph::ForkTarget::Node(node),
@@ -837,6 +857,7 @@ impl Graph {
             // No start hook: an export's threads are not the callback's, and
             // promoting them would take cores from it.
             pool: self.render_pool("tutti-export", None),
+            root,
         })
     }
 
@@ -853,6 +874,16 @@ impl Graph {
             .filter_map(|entry| entry.reclaimer.as_ref())
             .map(crate::Reclaimer::reclaim)
             .sum();
+        // The engine's output folds (offline or on a device): the declaration
+        // retires a set, and a block may hold it when it does. Not observable
+        // from outside the engine (a held loan is the audio thread's); the
+        // cell's own behaviour is pinned in `tutti-engine`
+        // (`a_replaced_fold_set_is_reclaimed_after_the_block`).
+        let pinned = pinned
+            + self
+                .output
+                .as_ref()
+                .map_or(0, tutti_engine::OutputControl::reclaim);
         #[cfg(feature = "plugin")]
         let pinned = pinned
             + self
@@ -1649,7 +1680,10 @@ impl Graph {
     /// when they are re-wired ([`set_output_source`](Self::set_output_source),
     /// [`set_outputs_from`](Self::set_outputs_from)); its width is the
     /// output count when it was opened, and a later
-    /// [`widen_outputs`](Self::widen_outputs) does not widen it.
+    /// [`widen_outputs`](Self::widen_outputs) does not widen it. When the root
+    /// **narrows** (a declared topology narrower than the root was), the lanes
+    /// past the new width read silence, and [`take_lost`](TapReader::take_lost)
+    /// does not count it: the reader keeps the lanes it opened with.
     ///
     /// This is the signal the graph produces, before the engine's declick
     /// fader and the fold to the device's width; see [`open_tap`](Self::open_tap)
@@ -1699,7 +1733,14 @@ impl Graph {
         let outputs = spec.topology.outputs.clone();
         for (id, &width) in &self.output_taps {
             if let Some(tap) = spec.topology.taps.get_mut(id) {
-                tap.sources = outputs.iter().copied().take(width).collect();
+                // A lane whose output channel is gone (the root narrowed) reads
+                // silence, so the reader keeps the lanes it was opened with.
+                tap.sources = outputs
+                    .iter()
+                    .copied()
+                    .chain(std::iter::repeat(Source::Zero))
+                    .take(width)
+                    .collect();
             }
         }
     }
@@ -1846,12 +1887,141 @@ impl Graph {
 
     /// Widen the global outputs to `channels`. New channels read silence.
     /// Never narrows.
-    pub fn widen_outputs(&mut self, channels: usize) {
+    ///
+    /// Two requests are refused, and the refusal is returned and kept
+    /// ([`Session::root_topology_status`](crate::Session::root_topology_status)):
+    ///
+    /// - on a root whose topology was declared
+    ///   ([`Session::declare_root_topology`](crate::Session::declare_root_topology)),
+    ///   anything wider than the declaration: the root is not widened under
+    ///   it ([`FoldError::RootWidth`](tutti_types::FoldError::RootWidth));
+    /// - past [`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS): the root
+    ///   is widened to that and the excess is not rendered
+    ///   ([`FoldError::Unplaced`](tutti_types::FoldError::Unplaced), the first
+    ///   channel with no place).
+    ///
+    /// A request for as many or fewer channels than the root has is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// As above.
+    pub fn widen_outputs(&mut self, channels: usize) -> Result<(), tutti_types::FoldError> {
+        let refused = if let Some(root) = self
+            .root
+            .as_ref()
+            .filter(|r| channels > r.positions().len())
+        {
+            Some(tutti_types::FoldError::RootWidth {
+                declared: root.layout(),
+                requested: ChannelLayout::from(channels),
+            })
+        } else if channels > tutti_graph::MAX_ROOT_CHANNELS {
+            Some(tutti_types::FoldError::Unplaced {
+                channel: tutti_graph::MAX_ROOT_CHANNELS,
+                speaker: tutti_types::Speaker::Discrete,
+            })
+        } else {
+            None
+        };
+        self.widen_refusal = refused;
+        // A declared root is not widened at all when refused; an over-wide
+        // request widens as far as the engine renders.
+        let target = match refused {
+            Some(tutti_types::FoldError::RootWidth { .. }) => 0,
+            _ => channels.min(tutti_graph::MAX_ROOT_CHANNELS),
+        };
         let outputs = &mut self.editor.spec_mut().topology.outputs;
-        if outputs.len() < channels {
-            outputs.resize(channels, Source::Zero);
+        if outputs.len() < target {
+            outputs.resize(target, Source::Zero);
             self.edited = true;
         }
+        refused.map_or(Ok(()), Err)
+    }
+
+    /// The last widening [`widen_outputs`](Self::widen_outputs) refused, until
+    /// a request is not or a declaration is made.
+    pub(crate) fn widen_refusal(&self) -> Option<tutti_types::FoldError> {
+        self.widen_refusal
+    }
+
+    /// The topology the root was declared with, if one was.
+    pub fn root_topology(&self) -> Option<&tutti_types::ChannelTopology> {
+        self.root.as_ref()
+    }
+
+    /// Declares what the root's channels are, and sizes the root to it: the
+    /// root becomes exactly as wide as `root` (widened, or narrowed, its
+    /// channels past the new width dropped), since a declaration states the
+    /// root and the device is no floor under it. `None` takes it back and leaves
+    /// the root at its width.
+    ///
+    /// `device` is the width the engine renders into, when there is one: a
+    /// declaration it cannot place is refused before anything changes. The
+    /// engine's folds are republished from the declaration, so the next block
+    /// is placed by it.
+    ///
+    /// # Errors
+    ///
+    /// The [`FoldError`](tutti_types::FoldError) when the declaration is empty, wider than the engine
+    /// renders ([`MAX_ROOT_CHANNELS`](tutti_graph::MAX_ROOT_CHANNELS),
+    /// [`FoldError::Unplaced`](tutti_types::FoldError::Unplaced)), or cannot be placed on `device`. Nothing is
+    /// changed.
+    /// Whether `root` can be a root, and be placed on `device` when there is
+    /// one: not empty, no wider than the engine renders, and every channel
+    /// has a place on the device ([`Fold::declared`](tutti_types::Fold::declared)).
+    pub(crate) fn check_root(
+        root: &tutti_types::ChannelTopology,
+        device: impl Into<Option<ChannelLayout>>,
+    ) -> Result<(), tutti_types::FoldError> {
+        use tutti_types::{Fold, FoldEnd, FoldError};
+        let width = root.positions().len();
+        if width == 0 {
+            return Err(FoldError::Empty(FoldEnd::Source));
+        }
+        if width > tutti_graph::MAX_ROOT_CHANNELS {
+            return Err(FoldError::Unplaced {
+                channel: tutti_graph::MAX_ROOT_CHANNELS,
+                speaker: root.positions()[tutti_graph::MAX_ROOT_CHANNELS],
+            });
+        }
+        if let Some(device) = device.into() {
+            Fold::declared(root, device)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn declare_root(
+        &mut self,
+        root: Option<tutti_types::ChannelTopology>,
+        device: Option<ChannelLayout>,
+    ) -> Result<(), tutti_types::FoldError> {
+        use tutti_types::Fold;
+        let width = match &root {
+            Some(root) => {
+                Self::check_root(root, device)?;
+                root.positions().len()
+            }
+            None => {
+                if let Some(device) = device {
+                    Fold::widths(ChannelLayout::from(self.outputs()), device)?;
+                }
+                self.outputs()
+            }
+        };
+        // The engine first: it checks the device again, and a refusal there
+        // leaves the graph as it was.
+        if let (Some(output), Some(device)) = (&self.output, device) {
+            output.declare_root(root.clone(), device)?;
+        }
+        self.root = root;
+        self.widen_refusal = None;
+        let outputs = &mut self.editor.spec_mut().topology.outputs;
+        if outputs.len() != width {
+            outputs.resize(width, Source::Zero);
+            self.edited = true;
+            self.follow_outputs();
+        }
+        Ok(())
     }
 
     // --- Latency ---
@@ -2209,6 +2379,9 @@ impl AudioSide {
 pub(crate) struct PendingExport {
     fork: tutti_graph::PendingFork,
     pool: Option<Arc<dyn tutti_graph::Pool>>,
+    /// The live root's declared topology, for an export of the master: the
+    /// file is placed from it, as the device is.
+    root: Option<tutti_types::ChannelTopology>,
 }
 
 #[cfg(feature = "export")]
@@ -2225,6 +2398,7 @@ impl PendingExport {
     ) -> Result<tutti_export::RenderGraph, (tutti_export::Error, tutti_graph::ForkRemains)> {
         let mut graph = tutti_export::RenderGraph::build(self.fork)?;
         graph.set_pool(self.pool);
+        graph.set_root_topology(self.root);
         Ok(graph)
     }
 }

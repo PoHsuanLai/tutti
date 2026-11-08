@@ -331,11 +331,11 @@ pub(crate) fn supported_layout_tags(
     direction: BusDirection,
     bus: u32,
 ) -> Vec<AuLayoutTag> {
-    let Ok(bytes) = (unit.get_bytes(
+    let Ok(bytes) = unit.get_bytes(
         K_AUDIO_UNIT_PROPERTY_SUPPORTED_CHANNEL_LAYOUT_TAGS,
         direction.scope(),
         bus,
-    )) else {
+    ) else {
         return Vec::new();
     };
     // `chunks_exact` for the reason `bus.rs` uses it: an AU reporting a size

@@ -1942,7 +1942,7 @@ impl AuLoaded {
     /// It is the only route to a sub-stereo width from outside the crate:
     /// `apply` is `pub(crate)`, and without this a mono track pays for a doubled
     /// channel through every AU in its chain.
-    pub fn new_with_config(component: AudioComponent, config: StreamConfig) -> Result<Self> {
+    pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
         Self::with_layout(AuHandle::new(component)?, config)
     }
 

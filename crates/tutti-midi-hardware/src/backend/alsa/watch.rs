@@ -256,6 +256,7 @@ impl Tracker {
         self.unconfirmed = Self::unconfirmed_after(
             BTreeSet::new(),
             &BTreeSet::new(),
+            &BTreeSet::new(),
             &handles,
             &settled.events,
             settled.quiet,
@@ -289,8 +290,15 @@ impl Tracker {
         self.failures = 0;
         let fold = self.replaced(&events);
         let handles = present.iter().map(|d| d.handle).collect();
-        self.unconfirmed =
-            Self::unconfirmed_after(fold.unconfirmed, &self.last, &handles, &events, quiet);
+        let changed = self.reporter.changed_in(&present);
+        self.unconfirmed = Self::unconfirmed_after(
+            fold.unconfirmed,
+            &self.last,
+            &changed,
+            &handles,
+            &events,
+            quiet,
+        );
         self.port_pending =
             Self::port_pending_after(fold.port_pending, &self.last, &handles, &events);
         self.last = handles;
@@ -300,11 +308,13 @@ impl Tracker {
 
     /// The handles whose client's start may still be unread after a look: none
     /// after a quiet one; after one that did not quiet, those listed first by it
-    /// that no start read in `events` names, and those that were unconfirmed
-    /// before and still are.
+    /// or listed under another identity (a replacement, or a rename that then
+    /// costs one start read) that no start read in `events` names, and those that
+    /// were unconfirmed before and still are.
     fn unconfirmed_after(
         kept: BTreeSet<EndpointId>,
         last: &BTreeSet<EndpointId>,
+        changed: &BTreeSet<EndpointId>,
         handles: &BTreeSet<EndpointId>,
         events: &[Event],
         quiet: bool,
@@ -320,7 +330,7 @@ impl Tracker {
         };
         let listed_first = handles
             .iter()
-            .filter(|&&h| !last.contains(&h) && !started(h))
+            .filter(|&&h| (!last.contains(&h) || changed.contains(&h)) && !started(h))
             .copied();
         kept.into_iter()
             .chain(listed_first)

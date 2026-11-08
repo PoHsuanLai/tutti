@@ -9,7 +9,7 @@
 //! A subscriber's queue is unbounded, and exists only while its
 //! [`DeviceEvents`] does: an app that wants no events subscribes to none.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
@@ -217,6 +217,19 @@ impl Reporter {
             .map(|d| (d.handle, d.identity.clone()))
             .collect();
         self.sink.seed(present);
+    }
+
+    /// The handles of `present` that are known under another identity.
+    pub(crate) fn changed_in(&self, present: &[OsDevice]) -> BTreeSet<EndpointId> {
+        present
+            .iter()
+            .filter(|d| {
+                self.known
+                    .get(&d.handle)
+                    .is_some_and(|known| *known != d.identity)
+            })
+            .map(|d| d.handle)
+            .collect()
     }
 
     /// Reports `present` as the whole device list: every device in it, and the

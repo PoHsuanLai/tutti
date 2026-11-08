@@ -32,6 +32,8 @@ fn scattered_errors_do_not_end_a_drain_but_a_run_of_them_does() {
 //   `a_port_made_again_on_a_live_client_is_a_new_occupant`;
 // - `step` not marking the handles listed first unconfirmed after a settle that
 //   did not quiet: `a_start_read_late_for_an_unconfirmed_handle_is_its_own`;
+// - `unconfirmed_after` leaving out the handles listed under another identity:
+//   `a_new_occupant_listed_by_a_look_that_did_not_quiet_has_its_start_still_to_come`;
 // - `unconfirmed_after` marking every present handle:
 //   `a_settle_that_does_not_quiet_does_not_hide_a_replug`;
 // - `step` treating a failed look as an empty one:
@@ -705,4 +707,25 @@ fn a_read_stops_at_its_cap() {
     };
     assert!(!at(MAX_DRAIN_EVENTS - 1).full());
     assert!(at(MAX_DRAIN_EVENTS).full());
+}
+
+/// A look that did not quiet can list a new occupant on a reported handle whose
+/// client start is still unread; the wake that reads it is not a second
+/// replacement.
+///
+/// Mutation: `unconfirmed_after` leaving out the handles listed under another
+/// identity reports "Two" removed and added again.
+#[test]
+fn a_new_occupant_listed_by_a_look_that_did_not_quiet_has_its_start_still_to_come() {
+    let mut world = World::with("One", &[]);
+    world.model.storm.set(true);
+    world.wake(heard(&[]), |m| {
+        *m.present.borrow_mut() = World::device("Two")
+    });
+    world.model.storm.set(false);
+    assert_eq!(world.shape(), pair("One", "Two"));
+    world.wake(heard(&START), |_| {});
+    assert_eq!(world.shape(), Vec::new());
+    world.wake(heard(&REPLUG), |_| {});
+    assert_eq!(world.shape(), pair("Two", "Two"));
 }

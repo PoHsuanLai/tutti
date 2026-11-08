@@ -564,3 +564,52 @@ fn the_length_is_exact_over_rate_pairs_chunks_and_odd_lengths() {
         }
     }
 }
+
+/// The default filter's passband is flat. A sine of amplitude `a` below the
+/// band edge reads `a` (the analytic gain is 1) at the 44.1 and 48 kHz pairs
+/// listed here: within 0.005 dB from 100 Hz to 20 kHz, and at 0.93 of the
+/// lower Nyquist within 0.01 dB (44.1 <-> 48) or 0.1 dB (96 -> 44.1, whose
+/// steeper decimation puts the filter's knee closer). The response does not
+/// depend on the chunk size, so the default is measured.
+///
+/// Measured when this was written (dB, 0.93 Nyquist = 20.5 kHz): 44.1 -> 48
+/// -0.0007, 48 -> 44.1 -0.0018, 96 -> 44.1 -0.0875; at 0.97 Nyquist
+/// (21.4 kHz) 44.1 -> 48 and 48 -> 44.1 read -0.88 dB, and the edge (-6 dB) is
+/// at 0.977 Nyquist (`upsampling_cuts_at_the_input_band_edge`).
+///
+/// Mutation (run): `f_cutoff * 0.95` in `tutti_dsp`'s `Unit::new` (the knee 5%
+/// low) → the 0.93 Nyquist tone reads -9.2 dB → fails; the filter scaled
+/// by 1.001 (+0.0087 dB) → fails the 0.005 dB bound at every frequency.
+#[test]
+fn the_passband_is_flat_to_the_band_edge() {
+    for (from, to, at_edge_db) in [
+        (44_100.0, 48_000.0, 0.01),
+        (48_000.0, 44_100.0, 0.01),
+        (96_000.0, 44_100.0, 0.1),
+    ] {
+        let nyquist = f64::min(from, to) / 2.0;
+        let probes = [
+            (100.0, 0.005),
+            (1_000.0, 0.005),
+            (10_000.0, 0.005),
+            (18_000.0, 0.005),
+            (20_000.0, 0.005),
+            (0.93 * nyquist, at_edge_db),
+        ];
+        for (f, bound) in probes {
+            let out = resample(
+                &[tone(f, from, from as usize, 0.5)],
+                from as u32,
+                to as u32,
+                ChunkSize::default(),
+            );
+            let x = &out[0];
+            let (a, b) = (x.len() / 4, 3 * x.len() / 4);
+            let db = 20.0 * (level_at(x, to, f, a, b) / 0.5).log10();
+            assert!(
+                db.abs() < bound,
+                "{from}->{to}: {f:.0} Hz reads {db:+.4} dB, bound {bound}"
+            );
+        }
+    }
+}

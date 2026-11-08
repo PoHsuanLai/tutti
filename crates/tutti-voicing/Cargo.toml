@@ -15,3 +15,6 @@ workspace = true
 tutti-ump = { path = "../tutti-ump", default-features = false }
 tutti-midi-protocol = { path = "../tutti-midi-protocol" }
 tutti-types = { path = "../tutti-types", default-features = false }
+
+[dev-dependencies]
+assert_no_alloc = { version = "1", default-features = false }

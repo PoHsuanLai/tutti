@@ -953,11 +953,8 @@ pub use node::SYNTH_PARAMS;
 /// every other channel its member (RP-053 allows 15 with no upper zone).
 fn mpe_zones(enabled: bool) -> Zones {
     if enabled {
-        Zones {
-            lower: 15,
-            upper: 0,
-        }
+        Zones::new(15, 0).expect("15 members fit")
     } else {
-        Zones::default()
+        Zones::NONE
     }
 }

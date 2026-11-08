@@ -176,10 +176,54 @@ pub struct VoiceView {
 /// channel 15 and its members count down from 14. `0` is no such zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Zones {
+    lower: u8,
+    upper: u8,
+}
+
+impl Zones {
+    /// No zones: every channel is its own.
+    pub const NONE: Self = Self { lower: 0, upper: 0 };
+
+    /// The zones with `lower` and `upper` member channels. Refuses more than
+    /// 15 members in a zone, and, with both zones, more than the 14 channels
+    /// between the masters: the zones would overlap. Never clamps.
+    #[must_use]
+    pub const fn new(lower: u8, upper: u8) -> Option<Self> {
+        if lower > 15 || upper > 15 || (lower > 0 && upper > 0 && lower + upper > 14) {
+            None
+        } else {
+            Some(Self { lower, upper })
+        }
+    }
+
     /// Members of the lower zone.
-    pub lower: u8,
+    #[must_use]
+    pub const fn lower(self) -> u8 {
+        self.lower
+    }
+
     /// Members of the upper zone.
-    pub upper: u8,
+    #[must_use]
+    pub const fn upper(self) -> u8 {
+        self.upper
+    }
+}
+
+/// The error of a `(lower, upper)` pair that is not a layout; carries the pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZonesError(pub (u8, u8));
+
+impl TryFrom<(u8, u8)> for Zones {
+    type Error = ZonesError;
+    fn try_from((lower, upper): (u8, u8)) -> Result<Self, ZonesError> {
+        Self::new(lower, upper).ok_or(ZonesError((lower, upper)))
+    }
+}
+
+impl From<Zones> for (u8, u8) {
+    fn from(z: Zones) -> Self {
+        (z.lower, z.upper)
+    }
 }
 
 /// What the instrument must do, in order.
@@ -347,7 +391,7 @@ impl Voicing {
                 position: 0.0,
                 range: rules.bend_range,
             }; CHANNELS],
-            zones: Zones::default(),
+            zones: Zones::NONE,
             next: 1,
             strike: 0,
             held: [Held::NONE; CHANNELS],
@@ -374,10 +418,12 @@ impl Voicing {
         self.held = [Held::NONE; CHANNELS];
     }
 
-    /// What holds `id` open, if it is a voice the core knows.
+    /// What holds `id` open, if it is a voice the core knows and has not
+    /// released (a released note is held by nothing; its [`phase`](Self::phase)
+    /// says so).
     #[must_use]
     pub fn holds(&self, id: VoiceId) -> Option<Holds> {
-        self.note(id).map(|n| n.holds)
+        self.note(id).filter(|n| !n.released).map(|n| n.holds)
     }
 
     /// What holds `id` open or whether it is released, if the core knows it.
@@ -476,10 +522,7 @@ impl Voicing {
         voices: &[VoiceView],
     ) {
         self.strike += 1;
-        // The one place liveness is read: a voice the instrument no longer has
-        // leaves the table, so the polyphony and the steal see what sounds.
-        self.notes
-            .retain(|n| voices.binary_search_by_key(&n.id, |v| v.id).is_ok());
+        self.reconcile(voices);
         if self.rules.mode != Mode::Poly {
             self.play_mono(channel, key, velocity, patch, voices, false);
             return;
@@ -493,6 +536,40 @@ impl Voicing {
         }
     }
 
+    /// Liveness is read on a note message only: a voice the instrument no
+    /// longer has (it ended, as a sampler's does at its sample's end) leaves
+    /// the table, so the polyphony, the steal and a return to a held key see
+    /// what sounds.
+    fn reconcile(&mut self, voices: &[VoiceView]) {
+        self.notes
+            .retain(|n| voices.binary_search_by_key(&n.id, |v| v.id).is_ok());
+    }
+
+    /// A voice of an exclusive class ends the sounding voices of that class in
+    /// its scope (SF2 2.04 section 8.1.2, generator 57), on any channel, never
+    /// one of its own strike. `except` is a (channel, tag) taken over in place
+    /// instead (mono), which is not cut.
+    fn cut_exclusive(&mut self, spec: VoiceSpec, except: Option<(MidiChannel, u32)>) {
+        if !self.rules.exclusive_groups || spec.group == 0 {
+            return;
+        }
+        let strike = self.strike;
+        let mut i = 0;
+        while i < self.notes.len() {
+            let n = self.notes[i];
+            if n.group == spec.group
+                && n.scope == spec.scope
+                && n.strike != strike
+                && except != Some((n.channel, n.tag))
+            {
+                self.push(Command::Cut(n.id));
+                self.notes.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
     fn start_poly(
         &mut self,
         channel: MidiChannel,
@@ -501,19 +578,7 @@ impl Voicing {
         spec: VoiceSpec,
         voices: &[VoiceView],
     ) {
-        if self.rules.exclusive_groups && spec.group != 0 {
-            let strike = self.strike;
-            let mut i = 0;
-            while i < self.notes.len() {
-                let n = self.notes[i];
-                if n.group == spec.group && n.scope == spec.scope && n.strike != strike {
-                    self.push(Command::Cut(n.id));
-                    self.notes.remove(i);
-                } else {
-                    i += 1;
-                }
-            }
-        }
+        self.cut_exclusive(spec, None);
         let steal = if self.notes.len() < self.rules.polyphony {
             None
         } else if let Some(v) = self.victim(voices) {
@@ -551,6 +616,7 @@ impl Voicing {
         let (specs, count) = Self::specs(patch, channel, key, velocity);
         let strike = self.strike;
         for &spec in &specs[..count] {
+            self.cut_exclusive(spec, Some((channel, spec.tag)));
             // The prior voice of this layer, a sounding one before a tail.
             let prior = |notes: &[Note], released: bool| {
                 notes.iter().position(|n| {
@@ -662,6 +728,7 @@ impl Voicing {
         voices: &[VoiceView],
     ) {
         let ch = usize::from(channel.get());
+        self.reconcile(voices);
         if self.rules.mode != Mode::Poly {
             let was_top = self.held[ch].top().map(|k| k.0) == Some(key);
             if self.held[ch].remove(key) {
@@ -1620,6 +1687,86 @@ mod tests {
         assert!(matches!(s.off(0, 41)[..], [Command::Release { .. }]));
     }
 
+    /// A note the core released (Replace) is held by nothing: `holds` agrees
+    /// with `phase`.
+    ///
+    /// Mutation (run): `holds` without the released filter gives the first
+    /// voice `key: true` while it is releasing.
+    #[test]
+    fn a_replaced_note_is_held_by_nothing() {
+        let mut s = Sim::new(POLY);
+        s.on(0, 60);
+        s.on(0, 60);
+        assert_eq!(s.core.phase(id(1)), Some(Phase::Releasing));
+        assert_eq!(s.core.holds(id(1)), None);
+        assert!(s.core.holds(id(2)).is_some_and(|h| h.key()));
+    }
+
+    /// A voice the instrument ended (a sampler's, at its sample's end) is not
+    /// returned to: the return starts a fresh voice, in both mono modes.
+    ///
+    /// Mutation (run): no `reconcile` in `note_off` gives a Retarget (legato) or
+    /// a Start stealing (mono) of the ended voice.
+    #[test]
+    fn a_return_never_names_a_voice_the_instrument_ended() {
+        // The sounding voice: legato moved voice 1, mono started voice 2.
+        for (rules, sounding) in [(LEGATO, 1), (MONO, 2)] {
+            let mut s = Sim::new(rules);
+            s.on(0, 60);
+            s.on(0, 64);
+            s.end(id(sounding));
+            let c = s.off(0, 64);
+            assert!(
+                matches!(c[..], [Command::Start { key: k, steal: None, .. }] if k == key(60)),
+                "{:?}: {c:?}",
+                rules.mode
+            );
+        }
+    }
+
+    /// A mono note of an exclusive class ends the others of its class even when
+    /// it takes its own channel's voice over in place.
+    ///
+    /// Mutation (run): no `cut_exclusive` in `play_mono` leaves channel 1's
+    /// grouped voice sounding.
+    #[test]
+    fn a_mono_takeover_still_ends_its_exclusive_class() {
+        let mut s = Sim::new(Rules {
+            exclusive_groups: true,
+            ..MONO
+        });
+        s.on(0, 60);
+        s.on_with(1, 62, &Grouped { scope: 5 });
+        let c = s.on_with(0, 64, &Grouped { scope: 5 });
+        assert!(c.contains(&Command::Cut(id(2))), "{c:?}");
+        assert!(
+            c.iter()
+                .any(|x| matches!(x, Command::Start { steal: Some(v), .. } if *v == id(1))),
+            "the takeover itself is not cut: {c:?}"
+        );
+    }
+
+    /// Zone layouts that overlap or run past the channels are refused, never
+    /// clamped. (Not `check_range_contract`: that contract needs serde, and a
+    /// layout is never persisted.)
+    ///
+    /// Mutation (run): the sum test dropped accepts (8, 8).
+    #[test]
+    fn zones_refuse_overlap() {
+        assert!(Zones::new(0, 0).is_some());
+        assert!(Zones::new(15, 0).is_some());
+        assert!(Zones::new(0, 15).is_some());
+        assert!(Zones::new(7, 7).is_some());
+        assert!(Zones::new(16, 0).is_none());
+        assert!(Zones::new(0, 16).is_none());
+        assert!(Zones::new(8, 8).is_none());
+        assert!(Zones::new(14, 1).is_none());
+        assert_eq!(Zones::try_from((8u8, 8u8)), Err(ZonesError((8, 8))));
+        let z = Zones::try_from((3u8, 2u8)).unwrap();
+        assert_eq!(<(u8, u8)>::from(z), (3, 2));
+        assert_eq!((z.lower(), z.upper()), (3, 2));
+    }
+
     // ---- bends -------------------------------------------------------------
 
     fn bend(v: u32) -> Voice2 {
@@ -1689,7 +1836,7 @@ mod tests {
     #[test]
     fn a_zone_masters_bend_adds_to_each_members_own() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones { lower: 3, upper: 0 });
+        s.core.set_zones(Zones::new(3, 0).unwrap());
         // Member 2 bends its own 1 semitone (half travel at range 2).
         let c = s.send(2, bend(0xC000_0000), &One);
         assert_eq!(retunes(&c), [(2, 1.0)]);
@@ -1709,7 +1856,7 @@ mod tests {
     #[test]
     fn rpn_0_on_a_master_retunes_the_zone_and_on_a_member_only_itself() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones { lower: 2, upper: 0 });
+        s.core.set_zones(Zones::new(2, 0).unwrap());
         s.send(0, bend(u32::MAX), &One);
         let c = s.send(0, rpn0(12.0), &One);
         assert_eq!(retunes(&c).len(), 3);
@@ -1722,7 +1869,7 @@ mod tests {
     #[test]
     fn the_upper_zone_counts_down() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones { lower: 0, upper: 2 });
+        s.core.set_zones(Zones::new(0, 2).unwrap());
         let c = s.send(15, bend(u32::MAX), &One);
         let chs: Vec<_> = retunes(&c).iter().map(|x| x.0).collect();
         assert_eq!(chs, [13, 14, 15]);
@@ -1732,7 +1879,7 @@ mod tests {
     #[test]
     fn a_masters_reset_centres_the_zone() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(Zones { lower: 2, upper: 0 });
+        s.core.set_zones(Zones::new(2, 0).unwrap());
         s.send(0, bend(u32::MAX), &One);
         s.send(1, bend(u32::MAX), &One);
         assert_eq!(
@@ -1854,44 +2001,65 @@ mod tests {
             };
             let layers = stream % 4 >= 2;
             let mut s = Sim::new(rules);
-            let mut down = [[false; 128]; 2];
+            // What the keys are, in the order they went down.
+            let mut order: [Vec<u8>; 2] = [vec![], vec![]];
             let mut pedal = [false; 2];
-            for _ in 0..60 {
+            let mut sost = [false; 2];
+            let pair = Pair { group: 0, scope: 0 };
+            for _ in 0..80 {
                 let c = rng.below(2) as u8;
-                let k = 60 + rng.below(12) as u8;
+                let cu = usize::from(c);
+                // More distinct keys than the held stack holds.
+                let k = 40 + rng.below(24) as u8;
                 let before: Vec<VoiceId> = s.voices.iter().map(|v| v.id).collect();
                 let full = s.voices.len() >= 6;
-                let op = rng.below(12);
-                let note_on = op <= 4;
+                let op = rng.below(16);
+                let note_msg = op <= 8;
                 let cmds = match op {
                     0..=4 => {
-                        down[c as usize][k as usize] = true;
+                        order[cu].retain(|&x| x != k);
+                        order[cu].push(k);
                         if layers {
-                            s.on_with(c, k, &Pair { group: 0, scope: 0 })
+                            s.on_with(c, k, &pair)
                         } else {
                             s.on(c, k)
                         }
                     }
                     5..=8 => {
-                        down[c as usize][k as usize] = false;
+                        order[cu].retain(|&x| x != k);
                         if layers {
-                            s.off_with(c, k, &Pair { group: 0, scope: 0 })
+                            s.off_with(c, k, &pair)
                         } else {
                             s.off(c, k)
                         }
                     }
                     9 => {
-                        pedal[c as usize] = !pedal[c as usize];
-                        s.cc(c, 64, if pedal[c as usize] { 127 } else { 0 })
+                        pedal[cu] = !pedal[cu];
+                        s.cc(c, 64, if pedal[cu] { 127 } else { 0 })
                     }
                     10 => {
-                        down[c as usize] = [false; 128];
-                        s.cc(c, [120, 123, 126][rng.below(3) as usize], 0)
+                        order[cu].clear();
+                        s.cc(c, [120, 123, 124, 125, 126, 127][rng.below(6) as usize], 0)
+                    }
+                    11 => {
+                        order[cu].clear();
+                        pedal[cu] = false;
+                        sost[cu] = false;
+                        s.cc(c, 121, 0)
+                    }
+                    12 => {
+                        sost[cu] = !sost[cu];
+                        s.cc(c, 66, if sost[cu] { 127 } else { 0 })
                     }
                     _ => {
-                        down[c as usize] = [false; 128];
-                        pedal[c as usize] = false;
-                        s.cc(c, 121, 0)
+                        // The instrument ends a voice by itself (a sample ran
+                        // out): the core is told at the next note message.
+                        if !s.voices.is_empty() {
+                            let at = rng.below(s.voices.len() as u64) as usize;
+                            let gone = s.voices[at].id;
+                            s.end(gone);
+                        }
+                        vec![]
                     }
                 };
                 assert!(
@@ -1899,22 +2067,34 @@ mod tests {
                     "stream {stream}: {} voices",
                     s.voices.len()
                 );
-                for cmd in &cmds {
-                    let named = match *cmd {
-                        Command::Release { id, .. }
-                        | Command::Cut(id)
-                        | Command::Retarget { id, .. } => Some(id),
-                        Command::Start { steal, .. } => steal,
-                        Command::Retune { .. } => None,
-                    };
-                    if let Some(v) = named {
-                        assert!(
-                            before.contains(&v) || s.core.note(v).is_some() || starts_in(&cmds, v),
-                            "stream {stream}: {cmd:?} names a voice nobody has"
-                        );
+                if note_msg {
+                    // Every command names a voice the instrument has, or one
+                    // this very message starts.
+                    for cmd in &cmds {
+                        let named = match *cmd {
+                            Command::Release { id, .. }
+                            | Command::Cut(id)
+                            | Command::Retarget { id, .. } => Some(id),
+                            Command::Start { steal, .. } => steal,
+                            Command::Retune { .. } => None,
+                        };
+                        if let Some(v) = named {
+                            assert!(
+                                before.contains(&v) || starts_in(&cmds, v),
+                                "stream {stream}: {cmd:?} names a voice the instrument lacks"
+                            );
+                        }
                     }
+                    // And the core keeps no voice the instrument lacks.
+                    assert!(
+                        s.core
+                            .notes
+                            .iter()
+                            .all(|n| s.voices.iter().any(|v| v.id == n.id)),
+                        "stream {stream}: the core holds a voice the instrument ended"
+                    );
                 }
-                if steal == Steal::Never && full && mode == Mode::Poly && note_on {
+                if steal == Steal::Never && full && mode == Mode::Poly && op <= 4 {
                     assert!(
                         before.iter().all(|b| s.voices.iter().any(|v| v.id == *b)),
                         "stream {stream}: Never disturbed a voice: {cmds:?}"
@@ -1922,6 +2102,17 @@ mod tests {
                 }
                 if mode != Mode::Poly {
                     for chan in 0..2u8 {
+                        // The held stack is the keys that are down, the
+                        // newest HELD_KEYS of them, in order.
+                        let held = &s.core.held[usize::from(chan)];
+                        let keys: Vec<u8> =
+                            held.keys[..held.len].iter().map(|k| k.0.get()).collect();
+                        let o = &order[usize::from(chan)];
+                        assert_eq!(
+                            keys,
+                            o[o.len().saturating_sub(HELD_KEYS)..],
+                            "stream {stream}: channel {chan}'s held stack"
+                        );
                         let unreleased: Vec<&Note> = s
                             .core
                             .notes
@@ -1935,7 +2126,7 @@ mod tests {
                                 "stream {stream}: two unreleased voices of layer {tag} on channel {chan}"
                             );
                         }
-                        if let Some((top, _)) = s.core.held[usize::from(chan)].top() {
+                        if let Some((top, _)) = held.top() {
                             assert!(
                                 unreleased.iter().all(|n| n.key == top),
                                 "stream {stream}: channel {chan} sounds {:?}, the stack's top is {top:?}",
@@ -1947,20 +2138,22 @@ mod tests {
             }
             // Let everything go.
             for c in 0..2u8 {
-                if pedal[c as usize] {
+                if pedal[usize::from(c)] {
                     s.cc(c, 64, 0);
                 }
-                for k in 60..72u8 {
-                    if layers {
-                        s.off_with(c, k, &Pair { group: 0, scope: 0 });
-                    } else {
-                        s.off(c, k);
-                    }
+                if sost[usize::from(c)] {
+                    s.cc(c, 66, 0);
                 }
                 // A mono channel that returned to a held key needs the keys
-                // let go once more to reach the last.
-                for k in 60..72u8 {
-                    s.off(c, k);
+                // let go again to reach the last.
+                for _ in 0..2 {
+                    for k in 40..64u8 {
+                        if layers {
+                            s.off_with(c, k, &pair);
+                        } else {
+                            s.off(c, k);
+                        }
+                    }
                 }
             }
             assert!(
@@ -1985,17 +2178,17 @@ mod tests {
             let mut rng =
                 Rng(0xA5A5_1234_5678_9ABC ^ (stream + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let zones = [
-                Zones::default(),
-                Zones { lower: 3, upper: 0 },
-                Zones { lower: 0, upper: 4 },
-                Zones { lower: 5, upper: 6 },
+                Zones::NONE,
+                Zones::new(3, 0).unwrap(),
+                Zones::new(0, 4).unwrap(),
+                Zones::new(5, 6).unwrap(),
             ][(stream % 4) as usize];
             let mut s = Sim::new(POLY);
             s.core.set_zones(zones);
             let mut pos = [0.0f64; 16];
             let mut range = [2.0f64; 16];
             let master = |c: usize| -> Option<usize> {
-                let (lo, up) = (usize::from(zones.lower), usize::from(zones.upper));
+                let (lo, up) = (usize::from(zones.lower()), usize::from(zones.upper()));
                 if (1..=lo).contains(&c) {
                     Some(0)
                 } else if c < 15 && c >= 15 - up {

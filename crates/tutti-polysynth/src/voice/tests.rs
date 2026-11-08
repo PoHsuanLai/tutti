@@ -732,7 +732,7 @@ fn random_streams_keep_their_invariants() {
             ..Default::default()
         });
         if stream % 5 == 0 {
-            alloc.set_zones(Zones { lower: 3, upper: 2 });
+            alloc.set_zones(Zones::new(3, 2).unwrap());
         }
         // The test's own model of the held keys of each channel.
         let mut held: [Vec<u8>; 2] = [vec![], vec![]];
@@ -936,5 +936,41 @@ fn expected_victim(
         S::HighestNote => by(&live, &|i| -key(i)),
         S::LowestNote => by(&live, &key),
         S::NoSteal => None,
+    }
+}
+
+/// A voice that ended on its own (its envelope or sample ran out) is not
+/// returned to: the key left held starts a fresh voice (a `Gate::Start`).
+///
+/// Mutation (run): the core not reading the voices on a note-off leaves the
+/// slot idle, the gate retargeting a voice that is gone.
+#[test]
+fn a_return_after_the_voice_ended_starts_a_fresh_one() {
+    for mode in [VoiceMode::Mono, VoiceMode::Legato] {
+        let mut alloc = VoiceAllocator::new(VoiceAllocatorConfig {
+            max_voices: 4,
+            mode,
+            ..Default::default()
+        });
+        let ch = MidiChannel::of(0);
+        for k in [60, 64] {
+            alloc.allocate(NoteId::from_channel_note(ch, k), note_number(k), ch, 0.5);
+        }
+        let _ = alloc.take_gates();
+        let live = alloc
+            .slots()
+            .iter()
+            .find(|s| !s.is_idle())
+            .map(|s| s.voice_id())
+            .unwrap();
+        alloc.voice_finished(live);
+        alloc.release(NoteId::from_channel_note(ch, 64), ch);
+        let gates = alloc.take_gates();
+        assert!(
+            gates.iter().any(
+                |g| matches!(g, Gate::Start { key, legato: false, .. } if *key == note_number(60))
+            ),
+            "{mode:?}: {gates:?}"
+        );
     }
 }

@@ -338,10 +338,11 @@ impl VoiceAllocator {
         message: &Voice2,
         strike: Option<(NoteId, f32)>,
     ) -> AllocationResult {
-        // Only a note-on reads the voices (to forget the ones that ended and to
-        // choose a victim); every other message passes none. Sorted by id.
+        // Only a note message reads the voices (to forget the ones that ended,
+        // to choose a victim, to return to a held key); every other message
+        // passes none. Sorted by id.
         self.views.clear();
-        if strike.is_some() {
+        if matches!(message, Voice2::NoteOn { .. } | Voice2::NoteOff { .. }) {
             for s in self.slots.iter().filter(|s| !s.is_idle()) {
                 let at = self.views.partition_point(|v| v.id < s.voice_id());
                 self.views.insert(
@@ -478,9 +479,10 @@ impl VoiceAllocator {
     /// Gives back the buffer `take_gates` lent, emptied, so it is reused.
     pub(crate) fn return_gates(&mut self, mut gates: Vec<Gate>) {
         gates.clear();
-        if self.gates.is_empty() {
-            self.gates = gates;
-        }
+        // Nothing pushes a gate between `take_gates` and here (the synth
+        // carries them out), so `self.gates` is the empty buffer `take` left.
+        debug_assert!(self.gates.is_empty() && self.gates.capacity() == 0);
+        self.gates = gates;
     }
 
     pub fn allocate(

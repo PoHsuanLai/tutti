@@ -9,7 +9,7 @@ Dependencies on other lanes (this doc assumes they land first or alongside):
 |---|---|
 | E1 | Correctness: the fork-health check before the file lands, `Unmeasurable` on silence, clip counting, integer headroom for normalize, streaming normalize, the serial-versus-parallel test. |
 | E2 | `tutti-export` has `default = []`; `export-wav/flac/aiff/ogg` features on the umbrellas. |
-| E3 | Tempo. The live transport is single-tempo too and nothing in the engine reads `TempoMap`; the owner chose a separate design doc (branch `docs/tempo-map-transport`) for one tempo model shared by live playback and offline render. This doc does not design it. It needs only a *project tempo source*: today the single transport tempo, later `TempoMap`, and an offline clock built from the same source. |
+| E3 | Tempo. The live transport is single-tempo too and nothing in the engine reads `TempoMap`; the owner chose a separate design doc (doc 020, tempo maps) for one tempo model shared by live playback and offline render. This doc does not design it. It needs only a *project tempo source*: today the single transport tempo, later `TempoMap`, and an offline clock built from the same source. |
 | E5 | Dither and the streaming resampler in `tutti-dsp`. The pipeline calls them either way. |
 
 ## 1. The problem
@@ -138,7 +138,7 @@ common case.
 
 | Quantity | Derived from | Override |
 |---|---|---|
-| Range | The transport's loop if set, else `Range::Project` (see Q1). Beats are converted to frames by the project tempo source at the render rate, in one session function (`Session::beats_to_frames`, private); today that reads the single transport tempo, and the tempo-map doc switches it to `TempoMap` internally with no API change. | `.range(Range::Loop \| Beats(a, b) \| Seconds(a, b) \| Frames(a, b))` |
+| Range | The transport's loop if set, else `Range::Project` (an error without `.range` or `.until`, section 10). Beats are converted to frames by the project tempo source at the render rate, in one session function (`Session::beats_to_frames`, private); today that reads the single transport tempo, and doc 020 (tempo maps) switches it to `TempoMap` internally with no API change. | `.range(Range::Loop \| Beats(a, b) \| Seconds(a, b) \| Frames(a, b))` |
 | Clock | An offline timeline built from the same project tempo source (so it matches playback), started at the range's start beat, with the loop region off. Transport-driven nodes read the same tempo path playback does. | `.clock(ExportClock::frozen())` for an effect or patch bounce; `.clock(ExportClock::timeline(t))` for a hand-built one |
 | Render rate | The session's rate. | `.sample_rate(r)`: the graph is forked and prepared at `r`. |
 | File rate | The render rate. | `.resample(Resample::to(rate))` |
@@ -176,7 +176,7 @@ pub fn render(
 
 This differs from the brief's `render(graph, &Job, clock, Target, Control)` in
 one place: stems need several sinks in one pass, so the fourth argument is a
-list of `Output`s, each a `Target` plus the feed it reads (Q2). A single target
+list of `Output`s, each a `Target` plus the feed it reads (see section 10). A single target
 is `vec![Output::master(target)]`.
 
 | Type | Fields (all private; getters) | Constructor / notes |
@@ -213,8 +213,8 @@ is_parallel}`.
 
 | Concern | Owner | Why |
 |---|---|---|
-| Range from transport/loop, beats to frames | `tutti-session` (one private conversion over the project tempo source) | Reads session and transport state; `Range::Beats` stays in the API. The tempo model is the tempo-map doc's. |
-| Offline clock from the tempo source | `tutti-transport` (tempo-map doc) | It is the clock. |
+| Range from transport/loop, beats to frames | `tutti-session` (one private conversion over the project tempo source) | Reads session and transport state; `Range::Beats` stays in the API. The tempo model is doc 020 (tempo maps). |
+| Offline clock from the tempo source | `tutti-transport` (doc 020) | It is the clock. |
 | Latency and tail figures | `tutti-graph` (plan latency) and `tutti-types` (`graph_tail`); `tutti-session` resolves them at the fork | The plan owns them; the cap and trim are bounce policy. |
 | Fork gather/build, pool, root topology, edit hook, plugin Offline/Realtime, export token | `tutti-session` (private `Fork`) | Needs the live graph and hosted plugins. |
 | Opening stem taps on the fork, naming them | `tutti-session` | Needs node keys and the fork's editor; uses `Editor::open_tap`. |
@@ -351,7 +351,7 @@ the graph's output bus, not a node's output (audit item 12).
 
 Normalize needs the whole signal, so a normalized bounce renders once into a
 float spill (memory up to a budget, then a temporary file beside the targets;
-Q3), measures, then runs the write pass over the spill. It never re-renders.
+section 10), measures, then runs the write pass over the spill. It never re-renders.
 
 | Mode | Behaviour | Use |
 |---|---|---|
@@ -382,7 +382,7 @@ fields):
 | `TapOverrun { output, lost }` | §7.4. |
 | `EventsDropped { count }` | |
 | `ForkFailed { key, kind, cause }` | Checked before the commit. |
-| `NotCommitted { landed: Vec<PathBuf>, cause }` | A rename failed after earlier ones landed; the files that did land are listed (Q7). |
+| `NotCommitted { landed: Vec<PathBuf>, cause }` | A rename failed after earlier ones landed; the files that did land are listed (see section 10). |
 
 Removed from it: `UnsupportedChannels` (only ever 0), `ResampleStalled` stays
 as a `Resample` cause, `ConfigError`'s `UnpairedGraph` (the sealed constructor
@@ -436,18 +436,22 @@ the entity that failed to resolve.
 | `README.md` files (tutti-export, bevy-tutti) | Rewritten to the new surface; the stale "does not normalize" and "no builder" lines go. |
 | `CLAUDE.md`, doc 015 §4.3 | The export lines in the workspace table and the "offline render" role update in the last PR. |
 
-## 10. Open questions
+## 10. Decisions and open questions
 
-| # | Question | Recommendation |
-|---|---|---|
-| Q1 | A project with no loop: what is its end? The session does not know the length of the arrangement. | `Range::Project` is the loop if set; otherwise `NoRange` unless the caller gives `.range(..)` or `.until(Beat)`. bevy fills `until` from its clips. Add a `project_end` to the session only when a second consumer needs it. |
-| Q2 | `render` takes a list of `Output`s, not one `Target` (§4). | Yes: one pass with several sinks is the point of stems; keep a one-target helper. |
-| Q3 | Where does a normalized render keep its audio between measure and write? | Memory up to 512 MiB total across outputs, then one f32 temp file per output beside its target (removed on every exit). A knob only if the budget bites. |
-| Q4 | Default stem gain when the master is normalized? | `StemGain::None`; sharing is opt-in because it is only correct when the master is the sum of the stems. |
-| Q5 | `bounce` blocking, `bounce_start` for a thread? | Yes: `bounce` runs on the caller's thread and finishes; `bounce_start` returns the job, as `export` does today. |
-| Q6 | Default tail cap? | 10 s; the figure that fits a long reverb without appending a minute of silence to an unbounded graph. |
-| Q7 | A multi-file rename that fails partway. | No rollback (a rename back can fail too); return `NotCommitted { landed }` naming the files that moved. Renames happen last, in order, after every output finalized. |
-| Q8 | Does a stem include a node's downstream sends? | No: the node's own output, as `ExportSource::Node` was. A bus stem is a stem of the bus node. |
+Decided by the owner, 2026-11-08 (the answers to the questions this section
+first asked):
+
+| # | Decision |
+|---|---|
+| Q1 | With no loop set, nothing is guessed: `NoRange` is an error unless `.range(..)` or `.until(Beat)` is given. bevy may fill `until` from its clips. |
+| Q2 | `render` takes a list of `Output`s, with a one-target helper (this is the deviation in section 4, confirmed). |
+| Q3 | A normalized render keeps its audio in memory up to 512 MiB, then spills to a temp f32 file beside each target. It never renders twice. |
+| Q4, Q8 | A stem is the node's own dry output, with no downstream sends; a bus stem is a stem of the bus node. The default `StemGain` is `None`; `Shared` and `Each` are opt-in. |
+| Q5 | `bounce` blocks on the caller's thread; `bounce_start` is for threads. |
+| Q6 | The tail cap is 10 s. |
+| Q7 | No rollback on a partial rename: return `NotCommitted { landed }`. |
+
+No question is open.
 
 ## 11. Implementation plan
 

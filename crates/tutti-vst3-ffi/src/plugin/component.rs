@@ -96,6 +96,21 @@ impl Plugin {
             .collect()
     }
 
+    /// The first audio bus in `direction` whose raw `channelCount` no layout
+    /// holds (negative, or above `u16::MAX`), as `(bus index, channelCount)`.
+    ///
+    /// The accessors above saturate; the load path asks this to refuse such a
+    /// plugin instead, naming the bus.
+    #[must_use]
+    pub fn first_unrepresentable_audio_bus(&self, direction: BusDirection) -> Option<(i32, i32)> {
+        let num_buses = self.bus_count(MediaType::Audio, direction);
+        let counts = (0..num_buses.max(0)).map(|i| {
+            self.bus_info(MediaType::Audio, direction, i)
+                .map_or(0, |bus| bus.channel_count())
+        });
+        first_unrepresentable(counts)
+    }
+
     /// `IAudioProcessor::setBusArrangements`.
     ///
     /// # Errors
@@ -332,4 +347,34 @@ pub(super) fn state_ok(code: vst3::Steinberg::tresult) -> Result<(), Vst3Error> 
 /// saturates, never wraps.
 fn bus_width(count: i32) -> u16 {
     u16::try_from(count.max(0)).unwrap_or(u16::MAX)
+}
+
+/// `(index, count)` of the first count in `counts` no layout holds.
+fn first_unrepresentable(counts: impl IntoIterator<Item = i32>) -> Option<(i32, i32)> {
+    counts
+        .into_iter()
+        .zip(0..)
+        .find(|&(count, _)| u16::try_from(count).is_err())
+        .map(|(count, index)| (index, count))
+}
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+
+    /// A bus given a width past `u16::MAX`, or a negative one, is found with
+    /// its index; the widest a layout holds is not.
+    ///
+    /// Mutation (run): `first_unrepresentable` returning `None` always fails
+    /// the refusals; testing only `count > 65_535` fails the negative one.
+    #[test]
+    fn the_first_bus_no_layout_holds_is_found_with_its_index() {
+        assert_eq!(first_unrepresentable([2, 65_535, 0]), None);
+        assert_eq!(
+            first_unrepresentable([2, 65_536, 70_000]),
+            Some((1, 65_536))
+        );
+        assert_eq!(first_unrepresentable([2, 2, -1]), Some((2, -1)));
+        assert_eq!(first_unrepresentable([i32::MAX]), Some((0, i32::MAX)));
+    }
 }

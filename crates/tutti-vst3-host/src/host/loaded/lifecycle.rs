@@ -266,6 +266,20 @@ impl Vst3Loaded {
                 code: e.code(),
             })?;
 
+        for (direction, name) in [
+            (BusDirection::Input, "input"),
+            (BusDirection::Output, "output"),
+        ] {
+            if let Some((index, channels)) = self.plugin.first_unrepresentable_audio_bus(direction)
+            {
+                return Err(Vst3Error::BusTooWide {
+                    direction: name,
+                    index,
+                    channels,
+                });
+            }
+        }
+
         self.reconcile_bus_counts();
 
         self.plugin.read_process_context_requirements();

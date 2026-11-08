@@ -45,7 +45,7 @@ pub struct DistortionNode {
     last_drive: f32,
     /// Audio channel width (as many inputs as outputs). The shaper is
     /// stateless and channel-shared, so widening is purely the port count.
-    channels: usize,
+    layout: ChannelLayout,
 }
 
 /// The params a [`DistortionNode`] lets the graph modulate, in port order.
@@ -59,14 +59,18 @@ impl DistortionNode {
     /// itself is stateless, so drive is the only thing that changes its
     /// character.
     pub fn new(kind: ShapeKind, drive: impl Into<Drive>) -> Self {
-        Self::with_channels(2, kind, drive)
+        Self::with_channels(ChannelLayout::STEREO, kind, drive)
     }
 
     /// An `n`-channel waveshaper. The shaper carries no per-channel state, so
     /// every channel is shaped by the same (linked) drive/kind.
-    /// `with_channels(2, …)` is bit-identical to [`Self::new`]. The width is
-    /// clamped to `1..=65535`, the widths a `ChannelLayout` holds.
-    pub fn with_channels(channels: usize, kind: ShapeKind, drive: impl Into<Drive>) -> Self {
+    /// `with_channels(ChannelLayout::STEREO, …)` is bit-identical to
+    /// [`Self::new`]. An empty layout is taken as mono, as the other nodes do.
+    pub fn with_channels(
+        channels: impl Into<ChannelLayout>,
+        kind: ShapeKind,
+        drive: impl Into<Drive>,
+    ) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
         Self {
@@ -74,7 +78,7 @@ impl DistortionNode {
             drive: Param::new(drive),
             shaper: Shaper::build(kind, d),
             last_drive: d,
-            channels: channels.clamp(1, usize::from(u16::MAX)),
+            layout: ChannelLayout::from_count(channels.into().count().max(1)),
         }
     }
 
@@ -123,7 +127,7 @@ impl Clone for DistortionNode {
             drive: self.drive.handle(),
             shaper: self.shaper,
             last_drive: self.last_drive,
-            channels: self.channels,
+            layout: self.layout,
         }
     }
 }
@@ -138,8 +142,7 @@ impl Node for DistortionNode {
     /// `SoftCrush` (a rounding call) and `Atan` and `Tanh` (a libm call)
     /// are `Moderate`.
     fn shape(&self) -> Shape {
-        let width = ChannelLayout::try_from(self.channels)
-            .expect("the constructor bounds the width to a layout");
+        let width = self.layout;
         let cost = match self.kind {
             ShapeKind::Softsign | ShapeKind::HardClip => tutti_graph::Cost::Light,
             _ => tutti_graph::Cost::Moderate,
@@ -268,7 +271,7 @@ mod tests {
 
     #[test]
     fn with_channels_reports_arity_and_shapes_every_channel() {
-        let mut n = DistortionNode::with_channels(6, ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, 1.0);
         assert_eq!(n.shape().audio_in.count(), 6);
         assert_eq!(n.shape().audio_out.count(), 6);
 
@@ -289,7 +292,7 @@ mod tests {
     #[test]
     fn with_channels_2_is_bit_identical_to_new() {
         let mut a = DistortionNode::new(ShapeKind::Tanh, 1.7);
-        let mut b = DistortionNode::with_channels(2, ShapeKind::Tanh, 1.7);
+        let mut b = DistortionNode::with_channels(2u16, ShapeKind::Tanh, 1.7);
         for i in 0..256 {
             let x = (i as f32 / 128.0) - 1.0;
             let mut oa = [0.0f32; 2];
@@ -433,7 +436,7 @@ mod tests {
     /// block is still driven hard → fails.
     #[test]
     fn a_fed_drive_shapes_every_channel_of_a_wide_node() {
-        let mut n = DistortionNode::with_channels(6, ShapeKind::HardClip, 1.0);
+        let mut n = DistortionNode::with_channels(6u16, ShapeKind::HardClip, 1.0);
         assert_eq!(
             (n.shape().audio_in.count(), n.shape().audio_out.count()),
             (6, 6)
@@ -472,7 +475,7 @@ mod tests {
     fn a_block_is_the_curve_of_each_sample() {
         use crate::test_support::noise;
         for kind in KINDS {
-            let mut n = DistortionNode::with_channels(3, kind, 2.5);
+            let mut n = DistortionNode::with_channels(3u16, kind, 2.5);
             let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 7, 64)).collect();
             let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
             let out = drive(&mut n, RATE, &refs, &[None]);
@@ -497,7 +500,7 @@ mod tests {
         use crate::test_support::noise;
         let fed: Vec<f32> = (0..64).map(|i| 1.0 + 0.125 * i as f32).collect();
         for kind in KINDS {
-            let mut n = DistortionNode::with_channels(3, kind, 1.0);
+            let mut n = DistortionNode::with_channels(3u16, kind, 1.0);
             let ins: Vec<Vec<f32>> = (0..3).map(|c| noise(c + 11, 64)).collect();
             let refs: Vec<&[f32]> = ins.iter().map(|c| &c[..]).collect();
             let out = drive(&mut n, RATE, &refs, &[Some(&fed)]);

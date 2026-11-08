@@ -263,6 +263,15 @@ impl Vst2Loaded {
 
         instance.init();
 
+        // The pin counts are settled in `effOpen`: a count no layout holds
+        // fails the load here, naming the side, rather than wrapping later.
+        let (pin_inputs, pin_outputs) = instance.read_pin_counts();
+        check_pin_counts(pin_inputs, pin_outputs).map_err(|reason| Vst2Error::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Initialization,
+            reason,
+        })?;
+
         let info = instance.get_info();
 
         // MIDI classification. Pin count / category is the primary signal, but
@@ -558,4 +567,40 @@ fn resolve_bundle(path: &Path) -> PathBuf {
         tutti_plugin_types::bundle::ModuleKind::Vst2,
     )
     .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Refuses a pin count a layout cannot hold (negative, or above `u16::MAX`),
+/// naming the side. `pins()` saturates for the infallible re-read; the load is
+/// where a plugin that wide is turned away.
+fn check_pin_counts(inputs: i32, outputs: i32) -> std::result::Result<(), String> {
+    for (side, count) in [("input", inputs), ("output", outputs)] {
+        if u16::try_from(count).is_err() {
+            return Err(format!(
+                "the plugin reports {count} {side} channels; at most {} are supported",
+                u16::MAX
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pin_count_tests {
+    use super::check_pin_counts;
+
+    /// The widest a layout holds passes; one past it, or a negative count, is
+    /// refused naming the side.
+    ///
+    /// Mutation (run): `check_pin_counts` returning `Ok(())` always (or testing
+    /// only `inputs`) fails the refusals here.
+    #[test]
+    fn a_pin_count_no_layout_holds_is_refused_naming_the_side() {
+        assert!(check_pin_counts(0, i32::from(u16::MAX)).is_ok());
+        let err = check_pin_counts(2, 65_536).unwrap_err();
+        assert!(err.contains("65536 output"), "{err}");
+        let err = check_pin_counts(65_538, 2).unwrap_err();
+        assert!(err.contains("65538 input"), "{err}");
+        assert!(check_pin_counts(-1, 2).unwrap_err().contains("-1 input"));
+        assert!(check_pin_counts(2, i32::MAX).is_err());
+    }
 }

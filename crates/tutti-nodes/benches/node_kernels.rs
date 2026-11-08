@@ -138,7 +138,7 @@ fn distortion(c: &mut Criterion) {
         c,
         "distortion",
         "hardclip_6",
-        || DistortionNode::with_channels(6, ShapeKind::HardClip, 2.0),
+        || DistortionNode::with_channels(6u16, ShapeKind::HardClip, 2.0),
         None,
     );
     run(

@@ -227,8 +227,8 @@ mod tests {
 
     /// A parked sleeper is woken by a ring (`ring` reports it), however late.
     ///
-    /// Mutation: make `ring` return without the unpark -> the join hangs
-    /// (the test times out under nextest).
+    /// Mutation (run): make `ring` return without the unpark -> the join
+    /// hangs (the test times out under nextest).
     #[test]
     fn a_ring_wakes_a_parked_sleeper() {
         let bell = Arc::new(Doorbell::new());
@@ -239,8 +239,15 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(!t.is_finished());
-        work.store(true, Ordering::Release);
+        // Ring with `work` still false: the sleeper's check is false, so it
+        // is committed to park, and this ring must find `asleep`. (Storing
+        // `work` first races: a sleeper that sees it before parking clears
+        // `asleep` and leaves, and `ring` truthfully returns false.)
         assert!(bell.ring());
+        // Now the work, and a ring that must not be lost; its return is
+        // not asserted, since the sleeper may already be awake.
+        work.store(true, Ordering::Release);
+        bell.ring();
         t.join().unwrap();
     }
 

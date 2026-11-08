@@ -192,6 +192,10 @@ mod mapping_tests {
     /// `raised()` -> -10, fails.
     #[cfg(target_os = "linux")]
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reads /proc and calls the OS scheduler (sched_get_priority_*, setpriority), which miri isolation refuses"
+    )]
     fn the_requests_map_to_nice_minus_10_and_minus_20() {
         use thread_priority::{NormalThreadSchedulePolicy, ThreadSchedulePolicy};
         let policy = ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Other);
@@ -267,6 +271,10 @@ mod tests {
     /// arm without it): `Raised` mapped to `ThreadPriority::Max` -> nice -20,
     /// fails; the `Ok` arm reported as `Refused` -> fails.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reads /proc and calls the OS scheduler (sched_get_priority_*, setpriority), which miri isolation refuses"
+    )]
     fn raised_reports_what_the_os_did() {
         let (outcome, before, after) = on_a_thread(|| {
             let before = nice();
@@ -296,6 +304,10 @@ mod tests {
     /// `Crossplatform(75)` -> nice -10, fails the -20 check. The unprivileged
     /// refusal arm checks only that the nice value did not move.
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reads /proc and calls the OS scheduler (sched_get_priority_*, setpriority), which miri isolation refuses"
+    )]
     fn highest_is_nice_minus_20_not_real_time() {
         let (outcome, before, after) = on_a_thread(|| {
             let before = nice();

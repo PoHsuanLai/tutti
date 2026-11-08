@@ -4882,6 +4882,7 @@ dependencies = [
  "libm",
  "serde",
  "serde_json",
+ "tutti-fixtures",
 ]
 
 [[package]]

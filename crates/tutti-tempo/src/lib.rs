@@ -32,8 +32,8 @@
 //!
 //! // 120 to 180 BPM over four beats, tempo linear in time, lasts 1.6 s.
 //! let map = TempoMap::new([
-//!     TempoPoint { beat: Beat(0.0), tempo: Bpm(120.0), shape: Shape::RampTime },
-//!     TempoPoint { beat: Beat(4.0), tempo: Bpm(180.0), shape: Shape::Step },
+//!     TempoPoint { beat: Beat(0.0), tempo: Bpm::of(120.0), shape: Shape::RampTime },
+//!     TempoPoint { beat: Beat(4.0), tempo: Bpm::of(180.0), shape: Shape::Step },
 //! ])?;
 //! let rate = SampleRate(48_000.0);
 //! assert_eq!(map.frame_at_or_after(Beat(4.0), rate), Frame(76_800));

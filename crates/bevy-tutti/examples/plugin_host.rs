@@ -118,7 +118,7 @@ fn main() {
     // Stand in for the engine bootstrap: a graph and a transport, no device.
     // `TuttiPlugin` does this for a real host.
     let transport = Transport::new(SAMPLE_RATE);
-    transport.settings.set_tempo(TEMPO);
+    transport.settings.set_tempo(tutti_types::Bpm::of(TEMPO));
     let _ = transport
         .motion
         .try_send(tutti_transport::MotionEvent::Play);

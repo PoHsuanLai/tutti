@@ -22,7 +22,7 @@ use tutti_nodes::testing::{Const, Osc};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::graph::{Edge, InPort, OutPort, Source};
-use tutti_types::{ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples};
+use tutti_types::{Bpm, ChannelLayout, Hz, NodeKey, Q, SampleRate, Samples};
 
 pub const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -72,7 +72,7 @@ pub fn rolling_state(outputs: usize) -> (Transport, Arc<AudioCallbackState>) {
     });
     let state = AudioCallbackState::new(engine);
 
-    transport.settings.set_tempo(120.0);
+    transport.settings.set_tempo(Bpm::of(120.0));
     let _ = transport.motion.try_send(MotionEvent::Play);
 
     (transport, Arc::new(state))

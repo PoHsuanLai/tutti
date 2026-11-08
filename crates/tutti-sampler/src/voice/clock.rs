@@ -188,8 +188,7 @@ impl Run {
     /// Frames per beat at the block's rate (`None` when it does not roll).
     #[inline]
     pub(crate) fn frames_per_beat(&self) -> Option<f64> {
-        let (tempo, rate) = (self.tempo().get(), self.sample_rate().get());
-        (self.rolling && tempo.is_finite() && tempo > 0.0).then(|| rate * 60.0 / tempo)
+        tutti_types::frames_per_beat(self.tempo(), self.sample_rate()).filter(|_| self.rolling)
     }
 
     /// This run cut to `range`: `None` when they do not meet. A run cut
@@ -213,10 +212,9 @@ impl Run {
     }
 }
 
-/// Whether `t` moves: it plays, at a finite positive tempo.
+/// Whether `t` moves: it plays (a `Bpm` is finite and above zero).
 fn rolls(t: &Transport) -> bool {
-    let tempo = t.tempo.get();
-    t.playing && tempo.is_finite() && tempo > 0.0
+    t.playing
 }
 
 /// The loop `t` wraps at, if any.
@@ -542,7 +540,27 @@ mod tests {
     }
 
     fn at(playing: bool, frame: f64) -> Transport {
-        Transport::new(playing, Bpm(120.0), Beat(frame / FPB), None)
+        Transport::new(playing, Bpm::of(120.0), Beat(frame / FPB), None)
+    }
+
+    /// **A tempo too slow to count frames at has no frames per beat** (the
+    /// run was `Some(inf)` before the one rule).
+    ///
+    /// Mutation (run): `Run::frames_per_beat` computing `rate * 60 / tempo`
+    /// unfiltered → `Some(inf)` → fails.
+    #[test]
+    fn the_slowest_tempo_has_no_frames_per_beat() {
+        let slow = Transport::new(true, Bpm::of(f64::from_bits(1)), Beat(0.0), None);
+        let mut clock = Clock::new();
+        let run = clock.observe(&env(slow, &[])).runs().next().expect("a run");
+        assert_eq!(run.frames_per_beat(), None);
+        let mut clock = Clock::new();
+        let run = clock
+            .observe(&env(at(true, 0.0), &[]))
+            .runs()
+            .next()
+            .expect("a run");
+        assert_eq!(run.frames_per_beat(), Some(FPB));
     }
 
     /// `(start, end, jump, generation)` of each run of the block.
@@ -644,7 +662,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        let t = Transport::new(true, Bpm(120.0), Beat(1.0 - 10.0 / FPB), looping);
+        let t = Transport::new(true, Bpm::of(120.0), Beat(1.0 - 10.0 / FPB), looping);
         let mut clock = Clock::new();
         let e = env(t, &[]);
         let block = clock.observe(&e);
@@ -711,7 +729,7 @@ mod tests {
             start: Beat(0.0),
             end: Beat(1.0),
         });
-        Transport::new(true, Bpm(120.0), Beat(from / FPB), looping)
+        Transport::new(true, Bpm::of(120.0), Beat(from / FPB), looping)
     }
 
     /// `(ago, len)` of the wrap crossfade at each run of the block.
@@ -783,13 +801,13 @@ mod tests {
     fn the_crossfade_is_the_fade_or_half_a_pass() {
         let rate = SampleRate(48_000.0);
         let loop_of = |beats: f64| LoopRange::new(0.0, beats).expect("a loop");
-        let len = |beats| Wrap::new(loop_of(beats), Bpm(120.0), rate).map(|w| w.len);
+        let len = |beats| Wrap::new(loop_of(beats), Bpm::of(120.0), rate).map(|w| w.len);
         assert_eq!(len(1.0), Some(240));
         assert_eq!(len(0.005), Some(60), "a pass of 120 frames");
         assert_eq!(len(0.00005), None, "a pass of 1.2 frames");
         let fast = SampleRate(96_000.0);
         assert_eq!(
-            Wrap::new(loop_of(1.0), Bpm(120.0), fast).map(|w| w.len),
+            Wrap::new(loop_of(1.0), Bpm::of(120.0), fast).map(|w| w.len),
             Some(480)
         );
     }

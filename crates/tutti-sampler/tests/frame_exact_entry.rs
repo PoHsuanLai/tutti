@@ -55,7 +55,7 @@ use tutti_types::{
 };
 
 const SR: f64 = 48_000.0;
-const TEMPO: Bpm = Bpm(90.0);
+const TEMPO: Bpm = Bpm::of(90.0);
 /// Where the clip starts, and the frame that is exactly that beat at 90 BPM:
 /// 3 × 60 × 48 000 / 90.
 const START: Beat = Beat(3.0);

@@ -561,7 +561,7 @@ fn a_clip_into_a_synth_is_allocation_free() {
         .collect();
     ed.commit().expect("commits");
     let at = |frame: usize, playing: bool| {
-        Transport::new(playing, Bpm(120.0), Beat(frame as f64 / 24_000.0), None)
+        Transport::new(playing, Bpm::of(120.0), Beat(frame as f64 / 24_000.0), None)
     };
     // Installs the plan (and its first-block setup) outside the gate.
     let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);

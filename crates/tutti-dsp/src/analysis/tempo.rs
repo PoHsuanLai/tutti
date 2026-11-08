@@ -77,9 +77,9 @@ impl Default for TempoConfig {
     /// of 100 and two alternatives.
     fn default() -> Self {
         Self {
-            min: Bpm(60.0),
-            max: Bpm(200.0),
-            centre: Bpm(120.0),
+            min: Bpm::of(60.0),
+            max: Bpm::of(200.0),
+            centre: Bpm::of(120.0),
             spread: 1.0,
             tightness: 100.0,
             alternatives: 2,
@@ -112,9 +112,8 @@ impl TempoConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::EmptyTempoRange`] unless `1 <= min < max <= 1000`, both finite.
-    pub fn with_range(mut self, min: impl Into<Bpm>, max: impl Into<Bpm>) -> Result<Self> {
-        let (min, max) = (min.into(), max.into());
+    /// [`Error::EmptyTempoRange`] unless `1 <= min < max <= 1000`.
+    pub fn with_range(mut self, min: Bpm, max: Bpm) -> Result<Self> {
         let ok = |b: Bpm| (MIN_BPM..=MAX_BPM).contains(&b.get());
         if !(ok(min) && ok(max) && min < max) {
             return Err(Error::EmptyTempoRange { min, max });
@@ -129,13 +128,9 @@ impl TempoConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidTempoParameter`] unless `centre` and `spread` are
-    /// finite and above zero.
-    pub fn with_prior(mut self, centre: impl Into<Bpm>, spread_octaves: f32) -> Result<Self> {
-        let centre = centre.into();
-        if !(centre.get().is_finite() && centre.get() > 0.0) {
-            return Err(Error::InvalidTempoParameter("prior centre"));
-        }
+    /// [`Error::InvalidTempoParameter`] unless `spread` is finite and above
+    /// zero.
+    pub fn with_prior(mut self, centre: Bpm, spread_octaves: f32) -> Result<Self> {
         if !(spread_octaves.is_finite() && spread_octaves > 0.0) {
             return Err(Error::InvalidTempoParameter("prior spread"));
         }
@@ -334,8 +329,7 @@ pub fn track_beats(
 /// As [`estimate_tempo_from_novelty`] when estimating. With a supplied tempo,
 /// [`Error::NonFiniteInput`] for a NaN or infinite value in `novelty`, and
 /// [`Error::InvalidTempoParameter`] for a tempo whose period is not between two
-/// frames and the curve's length (this covers zero, negative and NaN); a flat
-/// curve gives no beats.
+/// frames and the curve's length; a flat curve gives no beats.
 pub fn track_beats_from_novelty(
     cfg: &TempoConfig,
     novelty: &[f32],
@@ -533,9 +527,9 @@ impl Periodicity {
         // Best first; on a tie, the shorter lag (higher tempo).
         peaks.sort_by(|&a, &b| score(b).total_cmp(&score(a)).then(a.cmp(&b)));
         let candidate = |lag: usize| TempoCandidate {
-            bpm: Bpm(self
-                .bpm(self.refined(lag))
-                .clamp(cfg.min.get(), cfg.max.get())),
+            bpm: Bpm::new(self.bpm(self.refined(lag)))
+                .unwrap_or(cfg.min)
+                .clamp(cfg.min, cfg.max),
             strength: Confidence::new_clamped(self.at(lag)),
         };
         let best = candidate(peaks[0]);
@@ -731,7 +725,9 @@ mod tests {
     /// which is why the clamp has a test of its own below.
     #[test]
     fn the_estimate_stays_inside_the_range() {
-        let cfg = TempoConfig::new().with_range(Bpm(40.0), Bpm(80.0)).unwrap();
+        let cfg = TempoConfig::new()
+            .with_range(Bpm::of(40.0), Bpm::of(80.0))
+            .unwrap();
         let x = clicks(90.0, 0.3, 24.0);
         let tempo = estimate_tempo(&cfg, geometry(), &x, &mut FftScratch::new()).unwrap();
         assert!((tempo.bpm.get() - 45.0).abs() < 1.0, "{}", tempo.bpm);
@@ -755,12 +751,12 @@ mod tests {
             at += 24.8;
         }
         let cfg = TempoConfig::new()
-            .with_range(Bpm(60.0), Bpm(120.0))
+            .with_range(Bpm::of(60.0), Bpm::of(120.0))
             .unwrap();
         let tempo =
             estimate_tempo_from_novelty(&cfg, &curve, RATE, Samples(441), &mut FftScratch::new())
                 .unwrap();
-        assert_eq!(tempo.bpm, Bpm(120.0));
+        assert_eq!(tempo.bpm, Bpm::of(120.0));
     }
 
     /// A 60 BPM train with a half-strength click between its beats is read as
@@ -801,11 +797,11 @@ mod tests {
         let weak = estimate_tempo(&TempoConfig::new(), geometry(), &train(0.1), &mut fft).unwrap();
         assert!((weak.bpm.get() - 60.0).abs() < 1.5, "{}", weak.bpm);
 
-        let centred = TempoConfig::new().with_prior(Bpm(60.0), 1.0).unwrap();
+        let centred = TempoConfig::new().with_prior(Bpm::of(60.0), 1.0).unwrap();
         let low = estimate_tempo(&centred, geometry(), &half, &mut fft).unwrap();
         assert!((low.bpm.get() - 60.0).abs() < 1.5, "{}", low.bpm);
 
-        let narrow = TempoConfig::new().with_prior(Bpm(120.0), 0.1).unwrap();
+        let narrow = TempoConfig::new().with_prior(Bpm::of(120.0), 0.1).unwrap();
         let high = estimate_tempo(&narrow, geometry(), &train(0.1), &mut fft).unwrap();
         assert!((high.bpm.get() - 120.0).abs() < 1.5, "{}", high.bpm);
 
@@ -904,7 +900,7 @@ mod tests {
                     &curve,
                     RATE,
                     Samples(512),
-                    Some(Bpm(120.0)),
+                    Some(Bpm::of(120.0)),
                     &mut fft
                 ),
                 Err(Error::NonFiniteInput)
@@ -996,10 +992,16 @@ mod tests {
 
         // A supplied tempo is used as given, even at 100 BPM against a curve
         // that holds 150: the beats follow the period, not the curve.
-        let forced =
-            track_beats_from_novelty(&cfg, &curve, RATE, Samples(441), Some(Bpm(100.0)), &mut fft)
-                .unwrap();
-        assert_eq!(forced.bpm, Bpm(100.0));
+        let forced = track_beats_from_novelty(
+            &cfg,
+            &curve,
+            RATE,
+            Samples(441),
+            Some(Bpm::of(100.0)),
+            &mut fft,
+        )
+        .unwrap();
+        assert_eq!(forced.bpm, Bpm::of(100.0));
     }
 
     /// Unstructured noise has no clear tempo: the confidence is low. White
@@ -1029,17 +1031,19 @@ mod tests {
     fn unusable_settings_are_refused() {
         let cfg = TempoConfig::new();
         let mut fft = FftScratch::new();
-        for (min, max) in [(100.0, 100.0), (120.0, 90.0), (0.0, 90.0), (-5.0, 90.0)] {
+        for (min, max) in [(100.0, 100.0), (120.0, 90.0)] {
             assert!(matches!(
-                cfg.with_range(Bpm(min), Bpm(max)),
+                cfg.with_range(Bpm::of(min), Bpm::of(max)),
                 Err(Error::EmptyTempoRange { .. })
             ));
         }
-        assert!(cfg.with_range(Bpm(f64::NAN), Bpm(90.0)).is_err());
-        assert!(cfg.with_range(Bpm(60.0), Bpm(f64::INFINITY)).is_err());
-        assert!(cfg.with_prior(Bpm(0.0), 1.0).is_err());
-        assert!(cfg.with_prior(Bpm(120.0), 0.0).is_err());
-        assert!(cfg.with_prior(Bpm(120.0), f32::NAN).is_err());
+        // A zero, negative, NaN or infinite bound, or a centre, is not a
+        // `Bpm`: the config is never handed one.
+        for raw in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+            assert!(Bpm::new(raw).is_none(), "{raw}");
+        }
+        assert!(cfg.with_prior(Bpm::of(120.0), 0.0).is_err());
+        assert!(cfg.with_prior(Bpm::of(120.0), f32::NAN).is_err());
         assert!(cfg.with_tightness(-1.0).is_err());
         assert!(cfg.with_tightness(f32::NAN).is_err());
         assert!(cfg.with_tightness(0.0).is_ok());
@@ -1066,7 +1070,7 @@ mod tests {
             Err(Error::InsufficientInput { .. })
         ));
         // At a hop this wide no whole-frame lag falls in 100 to 101 BPM.
-        let narrow = cfg.with_range(Bpm(100.0), Bpm(101.0)).unwrap();
+        let narrow = cfg.with_range(Bpm::of(100.0), Bpm::of(101.0)).unwrap();
         let mut long = vec![0.0f32; 4000];
         long[3] = 1.0;
         assert!(matches!(
@@ -1145,25 +1149,16 @@ mod tests {
         // 100 frames per second: a curve of 1000 frames spans 10 s, so the
         // slowest tempo is 6 BPM (a period of the whole curve) and the fastest
         // 3000 (a period of two frames).
-        for bad in [
-            1e-6,
-            5.0,
-            3001.0,
-            1e12,
-            0.0,
-            -120.0,
-            f64::NAN,
-            f64::INFINITY,
-        ] {
+        for bad in [1e-6, 5.0, 3001.0, 1e12] {
             assert_eq!(
-                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm(bad)), &mut fft),
+                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm::of(bad)), &mut fft),
                 Err(Error::InvalidTempoParameter("tempo")),
                 "{bad}"
             );
         }
         for good in [6.0, 150.0, 3000.0] {
             assert!(
-                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm(good)), &mut fft)
+                track_beats_from_novelty(&cfg, &curve, RATE, hop, Some(Bpm::of(good)), &mut fft)
                     .is_ok(),
                 "{good}"
             );
@@ -1182,14 +1177,14 @@ mod tests {
         for (min, max) in [(1e-300, 90.0), (0.5, 90.0), (60.0, 1e9), (60.0, 1001.0)] {
             assert!(
                 matches!(
-                    cfg.with_range(Bpm(min), Bpm(max)),
+                    cfg.with_range(Bpm::of(min), Bpm::of(max)),
                     Err(Error::EmptyTempoRange { .. })
                 ),
                 "{min}..{max}"
             );
         }
         // The slowest range allowed needs 2 * (5168 + 2) frames of curve.
-        let slow = cfg.with_range(Bpm(1.0), Bpm(200.0)).unwrap();
+        let slow = cfg.with_range(Bpm::of(1.0), Bpm::of(200.0)).unwrap();
         let curve: Vec<f32> = (0..2000).map(|i| (i % 43) as f32).collect();
         assert!(matches!(
             estimate_tempo_from_novelty(&slow, &curve, RATE, Samples(512), &mut FftScratch::new()),

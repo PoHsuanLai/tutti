@@ -330,7 +330,7 @@ impl MotionFsm {
     /// // A tempo edit on the next block.
     /// transport
     ///     .motion
-    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_types::Bpm(90.0)))?;
+    ///     .schedule(At::NextBlock, TransportCommand::Tempo(tutti_types::Bpm::of(90.0)))?;
     /// assert_eq!(transport.motion.scheduled_outstanding(), 3);
     /// # Ok::<_, tutti_transport::ScheduleFull>(())
     /// ```

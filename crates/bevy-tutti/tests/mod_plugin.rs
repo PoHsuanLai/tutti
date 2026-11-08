@@ -185,7 +185,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
     let total = BLOCK * BLOCKS;
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: Beat(0.0),
-        tempo: Bpm(120.0),
+        tempo: Bpm::of(120.0),
         sample_rate: SampleRate(RATE),
         loop_range: None,
     }));
@@ -231,7 +231,7 @@ fn an_export_is_the_live_render_on_a_clap_gain() {
         let beat = (b * BLOCK) as f64 * 2.0 / RATE;
         side.set_transport(tutti_graph::Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(beat),
             None,
         ));
@@ -349,7 +349,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
         .render_frame_at(
             &tutti_graph::Transport::new(
                 false,
-                tutti_types::Bpm(120.0),
+                tutti_types::Bpm::of(120.0),
                 tutti_types::Beat(0.0),
                 None,
             ),

@@ -28,7 +28,7 @@ fn main() {
         for shape in [Shape::Step, Shape::RampTime, Shape::RampBeats] {
             let map = TempoMap::new((0..n).map(|i| TempoPoint {
                 beat: Beat(i as f64 * 4.0),
-                tempo: Bpm(80.0 + (i % 7) as f64 * 10.0),
+                tempo: Bpm::of(80.0 + (i % 7) as f64 * 10.0),
                 shape: if i + 1 == n { Shape::Step } else { shape },
             }))
             .expect("a valid map");

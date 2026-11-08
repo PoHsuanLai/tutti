@@ -324,9 +324,16 @@ impl TransportState {
         self.samples_to_next_beat.store(samples, Ordering::Relaxed);
     }
 
-    /// Current tempo.
-    pub fn tempo(&self) -> Bpm {
-        Bpm(f64::from_bits(self.tempo_bits.load(Ordering::Relaxed)))
+    /// Current tempo; `None` when the last transport carried none a [`Bpm`]
+    /// holds (zero, negative, NaN or infinite).
+    pub fn tempo(&self) -> Option<Bpm> {
+        Bpm::new(self.tempo_raw())
+    }
+
+    /// The tempo as published, zero or NaN included: what the C callback
+    /// hands back, as the host gave it.
+    fn tempo_raw(&self) -> f64 {
+        f64::from_bits(self.tempo_bits.load(Ordering::Relaxed))
     }
 
     /// Current beat position.
@@ -504,7 +511,7 @@ unsafe extern "C" fn beat_and_tempo_proc(
         unsafe {
             // Unit newtypes stop here: Apple declares both out-params `Float64`.
             write_opt(out_beat, state.beat().0);
-            write_opt(out_tempo, state.tempo().0);
+            write_opt(out_tempo, state.tempo_raw());
         }
         NO_ERR
     };

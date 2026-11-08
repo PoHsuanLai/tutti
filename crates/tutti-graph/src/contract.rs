@@ -1083,7 +1083,7 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (Transport, Transport
     let rolling = |at: u64| {
         Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat((at - start.unwrap_or(0)) as f64 / FRAMES_PER_BEAT as f64),
             None,
         )

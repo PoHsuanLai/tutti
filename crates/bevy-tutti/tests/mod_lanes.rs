@@ -41,7 +41,7 @@ use tutti_types::{Amplitude, Beat, BeatDuration, Bpm, Depth, Hz, SampleRate, Sec
 use common::probe::{Held, ProbeUnit, Pulse};
 
 const RATE: f64 = 48_000.0;
-const TEMPO: Bpm = Bpm(120.0);
+const TEMPO: Bpm = Bpm::of(120.0);
 /// A lane's control step (`tutti_nodes::automation::CONTROL_STEP`).
 const STEP: usize = 32;
 /// A port's connect crossfade (`PARAM_DECLICK`).
@@ -211,7 +211,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut out = vec![Vec::new(), Vec::new()];
     let mut done = 0;
     while done < total {
-        let beat = done as f64 * TEMPO.0 / 60.0 / RATE;
+        let beat = done as f64 * TEMPO.get() / 60.0 / RATE;
         side.set_transport(tutti_graph::Transport::new(true, TEMPO, Beat(beat), None));
         side.render(block, block, &mut out);
         for (a, o) in all.iter_mut().zip(&out) {
@@ -341,7 +341,7 @@ fn an_export_is_the_live_render_on_a_native_param() {
             break;
         }
         let n = (*n).min(total - done);
-        let beat = done as f64 * TEMPO.0 / 60.0 / RATE;
+        let beat = done as f64 * TEMPO.get() / 60.0 / RATE;
         side.set_transport(tutti_graph::Transport::new(true, TEMPO, Beat(beat), None));
         side.render(n, n, &mut out);
         for (l, o) in live.iter_mut().zip(&out) {

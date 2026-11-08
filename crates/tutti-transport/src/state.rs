@@ -15,7 +15,32 @@ use std::sync::atomic::Ordering;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
-use tutti_types::Beat;
+use tutti_types::{Beat, Bpm};
+
+/// A tempo shared between threads: only a [`Bpm`] goes in, so the audio thread
+/// reads a valid tempo back whatever the writer did.
+#[derive(Debug)]
+pub(crate) struct AtomicBpm(AtomicF64);
+
+impl AtomicBpm {
+    pub(crate) fn new(tempo: Bpm) -> Self {
+        Self(AtomicF64::new(tempo.get()))
+    }
+
+    #[inline]
+    pub(crate) fn load(&self, order: Ordering) -> Bpm {
+        // Only `new` and `store` write the cell, both from a `Bpm`.
+        let raw = self.0.load(order);
+        let tempo = Bpm::new(raw);
+        debug_assert!(tempo.is_some(), "AtomicBpm holds {raw}, which is no tempo");
+        tempo.unwrap_or_default()
+    }
+
+    #[inline]
+    pub(crate) fn store(&self, tempo: Bpm, order: Ordering) {
+        self.0.store(tempo.get(), order);
+    }
+}
 
 /// A pending absolute jump. `pending` is the one-shot flag the clock
 /// consumes; `target` is where to land.
@@ -84,7 +109,7 @@ impl Default for SeekSlot {
 pub(crate) struct ClockLinks {
     /// Beats per minute, re-read every buffer so a tempo edit takes effect
     /// within one block.
-    pub(super) tempo: Arc<AtomicF64>,
+    pub(super) tempo: Arc<AtomicBpm>,
     /// Whether to hold position. Written by the motion FSM, never set directly.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) paused: Arc<AtomicBool>,
@@ -111,14 +136,14 @@ pub(crate) struct ClockLinks {
     /// Where the clock publishes the tempo it runs at (its hysteresis
     /// applied), so a beat resolved elsewhere uses the same one. `None` =
     /// writes nothing live.
-    pub(super) tempo_in_force: Option<Arc<AtomicF64>>,
+    pub(super) tempo_in_force: Option<Arc<AtomicBpm>>,
 }
 
 impl ClockLinks {
     /// Links that follow a transport's live tempo and pausedness and share
     /// nothing else: a clock over them writes no playhead. For tests.
     #[cfg(test)]
-    pub(crate) fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
+    pub(crate) fn bare(tempo: Arc<AtomicBpm>, paused: Arc<AtomicBool>) -> Self {
         Self {
             tempo,
             paused,
@@ -166,7 +191,7 @@ impl ClockLinks {
         } = self;
 
         Self {
-            tempo: Arc::new(AtomicF64::new(tempo.load(Ordering::Acquire))),
+            tempo: Arc::new(AtomicBpm::new(tempo.load(Ordering::Acquire))),
             paused: Arc::new(AtomicBool::new(false)),
             seek: SeekSlot::new(),
             position_writeback: None,

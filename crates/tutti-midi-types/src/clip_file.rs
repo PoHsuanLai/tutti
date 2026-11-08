@@ -83,7 +83,7 @@ impl Default for ClipHeader {
     /// 120 BPM, 4/4 — the conventional default when a caller has no better idea.
     fn default() -> Self {
         Self {
-            tempo_bpm: Bpm(120.0),
+            tempo_bpm: Bpm::of(120.0),
             time_signature: (4, 4),
         }
     }
@@ -186,7 +186,7 @@ fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[Clip
         push_words(&mut out, delta_clockstamp(0).data_words());
         push_words(
             &mut out,
-            MidiEvent::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm.get()).data_words(),
+            MidiEvent::flex_set_tempo(MidiGroup::FIRST, h.tempo_bpm).data_words(),
         );
         push_words(&mut out, delta_clockstamp(0).data_words());
         push_words(
@@ -328,7 +328,6 @@ impl ParsedClipFile {
         self.events
             .iter()
             .find_map(|ce| crate::ump::flex_tempo_bpm(&ce.event))
-            .map(Bpm)
     }
 
     /// The clip's musical context as a [`ClipHeader`] — the value to hand back

@@ -156,13 +156,15 @@ pub fn chord_cell_with(
         // segment shorter than a frame ends inside its last cell, and its
         // form past that point is not the map's.
         Shape::RampTime | Shape::RampBeats => {
-            (beat_on(end, hint).get() - b0) * 60.0 * rate.get() / (end - start).max(1) as f64
+            let chord =
+                (beat_on(end, hint).get() - b0) * 60.0 * rate.get() / (end - start).max(1) as f64;
+            Bpm::new(chord).unwrap_or(seg.bpm0)
         }
     };
     Cell {
         start: Frame(start),
         end: Frame(end),
         beat: Beat(b0),
-        tempo: Bpm(tempo),
+        tempo,
     }
 }

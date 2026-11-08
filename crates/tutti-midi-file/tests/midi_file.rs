@@ -132,7 +132,7 @@ fn a_note_on_at_tick_480_of_a_480_ppq_file_lands_at_beat_one() {
 /// Flex Data tempo. An SMF with no Set Tempo reads as the specification's
 /// 120; a clip with none reads `None`, its default being the caller's call.
 ///
-/// Mutation (run): `tempo`'s clip arm returning `Some(Bpm(120.0))` when the
+/// Mutation (run): `tempo`'s clip arm returning `Some(Bpm::of(120.0))` when the
 /// clip declares none → fails.
 #[test]
 fn tempo_reads_the_declared_tempo_from_either_container() {
@@ -141,23 +141,23 @@ fn tempo_reads_the_declared_tempo_from_either_container() {
         RawEvent::note_on(0, 0, 60, 100),
     ]]);
     let tempo = MidiFile::from_bytes(&smf).unwrap().tempo().unwrap();
-    assert!(!tempo.differs_from(Bpm(100.0), 1e-9), "got {tempo:?}");
+    assert!(!tempo.differs_from(Bpm::of(100.0), 1e-9), "got {tempo:?}");
 
     let clip = write_clip_file_with_header(
         TPQ,
         ClipHeader {
-            tempo_bpm: Bpm(100.0),
+            tempo_bpm: Bpm::of(100.0),
             time_signature: (4, 4),
         },
         &[],
     );
     let tempo = MidiFile::from_bytes(&clip).unwrap().tempo().unwrap();
-    assert!(!tempo.differs_from(Bpm(100.0), 1e-6), "got {tempo:?}");
+    assert!(!tempo.differs_from(Bpm::of(100.0), 1e-6), "got {tempo:?}");
 
     let bare_smf = metrical(&[vec![RawEvent::note_on(0, 0, 60, 100)]]);
     assert_eq!(
         MidiFile::from_bytes(&bare_smf).unwrap().tempo(),
-        Some(Bpm(120.0))
+        Some(Bpm::of(120.0))
     );
     let bare_clip = tutti_midi_file::write_clip_file(
         TPQ,
@@ -272,10 +272,10 @@ fn the_tempo_at_beat_zero_is_the_earliest_set_tempo_across_tracks() {
         ],
     ]))
     .unwrap();
-    assert_eq!(file.tempo(), Some(Bpm(100.0)));
+    assert_eq!(file.tempo(), Some(Bpm::of(100.0)));
     assert_eq!(
         file.tempo_map(),
-        vec![(Beat(0.0), Bpm(100.0)), (Beat(4.0), Bpm(60.0))]
+        vec![(Beat(0.0), Bpm::of(100.0)), (Beat(4.0), Bpm::of(60.0))]
     );
 }
 
@@ -315,8 +315,8 @@ fn a_later_set_tempo_does_not_govern_beat_zero() {
         RawEvent::tempo(8 * BEAT, 1_000_000),
     ]]))
     .unwrap();
-    assert_eq!(file.tempo(), Some(Bpm(120.0)));
-    assert_eq!(file.tempo_map(), vec![(Beat(8.0), Bpm(60.0))]);
+    assert_eq!(file.tempo(), Some(Bpm::of(120.0)));
+    assert_eq!(file.tempo_map(), vec![(Beat(8.0), Bpm::of(60.0))]);
 }
 
 /// **A Clip File's tempo map is its Flex Data Set Tempos, and its tempo at
@@ -332,21 +332,21 @@ fn a_clip_files_tempo_map_is_its_set_tempos() {
     let clip = write_clip_file_from_beats(
         TPQ,
         [
-            (Beat(0.0), MidiEvent::flex_set_tempo(g, 100.0)),
+            (Beat(0.0), MidiEvent::flex_set_tempo(g, Bpm::of(100.0))),
             (
                 Beat(0.0),
                 MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
             ),
-            (Beat(2.0), MidiEvent::flex_set_tempo(g, 150.0)),
+            (Beat(2.0), MidiEvent::flex_set_tempo(g, Bpm::of(150.0))),
         ],
     );
     let file = MidiFile::from_bytes(&clip).unwrap();
     let map = file.tempo_map();
     assert_eq!(map.len(), 2);
     assert_eq!((map[0].0, map[1].0), (Beat(0.0), Beat(2.0)));
-    assert!(!map[0].1.differs_from(Bpm(100.0), 1e-6), "got {map:?}");
-    assert!(!map[1].1.differs_from(Bpm(150.0), 1e-6), "got {map:?}");
-    assert!(!file.tempo().unwrap().differs_from(Bpm(100.0), 1e-6));
+    assert!(!map[0].1.differs_from(Bpm::of(100.0), 1e-6), "got {map:?}");
+    assert!(!map[1].1.differs_from(Bpm::of(150.0), 1e-6), "got {map:?}");
+    assert!(!file.tempo().unwrap().differs_from(Bpm::of(100.0), 1e-6));
 
     let late = write_clip_file_from_beats(
         TPQ,
@@ -355,7 +355,7 @@ fn a_clip_files_tempo_map_is_its_set_tempos() {
                 Beat(0.0),
                 MidiEvent::note_on(g, MidiChannel::FIRST, 60, 0x8000),
             ),
-            (Beat(2.0), MidiEvent::flex_set_tempo(g, 150.0)),
+            (Beat(2.0), MidiEvent::flex_set_tempo(g, Bpm::of(150.0))),
         ],
     );
     assert_eq!(MidiFile::from_bytes(&late).unwrap().tempo(), None);

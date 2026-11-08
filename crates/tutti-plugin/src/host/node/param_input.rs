@@ -186,7 +186,7 @@ mod tests {
             frame: Frame(0),
             sample_rate: SampleRate(48_000.0),
             block_len: Samples(len),
-            transport: Transport::new(false, Bpm(120.0), Beat(0.0), None),
+            transport: Transport::new(false, Bpm::of(120.0), Beat(0.0), None),
             changes: TransportChanges::NONE,
             play: PlayClock {
                 start: PlayReading {

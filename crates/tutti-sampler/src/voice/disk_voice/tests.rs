@@ -10,7 +10,7 @@ const SR: f64 = 44_100.0;
 
 /// A stopped transport: a free-running source reads none.
 fn stopped() -> Arc<MockTransport> {
-    MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0))
+    MockTransport::stopped(Beat::new(0.0), Bpm::of(120.0))
 }
 
 /// One block of `n` frames of a free-running `unit`.
@@ -148,7 +148,7 @@ fn a_disk_voice_sizes_its_positions_from_max_block() {
 #[test]
 fn placement_gate_applies_src_ratio_exactly_once() {
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
 
     let (inner, state) = make_unit(&samples);
     let ring = Arc::clone(inner.read.ring());
@@ -200,7 +200,7 @@ fn a_varispeed_change_moves_the_read_without_any_beat_discontinuity() {
     let samples: Vec<_> = (1..4096)
         .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
         .collect();
-    let transport = MockTransport::rolling(Beat::new(20.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(20.0), Bpm::of(120.0));
     let mut reader = make_clip_reader(&samples, Beat::new(0.0), None);
     let ring = Arc::clone(reader.inner.read.ring());
 
@@ -260,7 +260,7 @@ fn a_fork_closes_its_file_once_past_its_window() {
         .take_disk_voice(0, Beat::new(0.0), Some(BeatDuration::new(1.0)))
         .expect("the link is installed");
 
-    let render = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let render = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut copy = voice.fork_copy();
     copy.set_render_rate(SampleRate(48_000.0));
     let is_open = |copy: &DiskVoice| {
@@ -324,7 +324,7 @@ fn a_stopped_clock_silences_a_fork() {
     for single in [false, true] {
         let mut copy = voice.fork_copy();
         copy.set_render_rate(SampleRate(48_000.0));
-        let clock = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
+        let clock = MockTransport::rolling(Beat::new(0.25), Bpm::of(120.0));
         let blk = |copy: &mut DiskVoice| -> Vec<f32> {
             if single {
                 (0..64)
@@ -406,7 +406,7 @@ fn a_fork_never_touches_the_live_stream() {
     let ring = Arc::clone(live.inner.read.ring());
     let (play_before, window_before) = (ring.play(), ring.window());
 
-    let render = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let render = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut copy = live.fork_copy();
     for _ in 0..16 {
         under(&mut copy, &render, SR, 64);
@@ -435,7 +435,7 @@ fn clip_reader_silent_outside_window_audible_inside() {
     // Voice window: beats [4, 8). Non-zero ramp in the ring where beat 5
     // reads (half a second in: 22 050 frames).
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
-    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let mut reader = make_clip_reader_at(
         &samples,
         22_046,
@@ -474,7 +474,7 @@ fn clip_reader_silent_outside_window_audible_inside() {
 fn a_non_finite_gain_is_silence_on_a_disk_voice() {
     let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
     for gain in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         let mut reader = make_clip_reader_at(
             &samples,
             22_046,
@@ -506,7 +506,7 @@ fn a_non_finite_gain_is_silence_on_a_disk_voice() {
 #[test]
 fn clip_reader_stopped_transport_is_silent() {
     let samples: Vec<_> = (1..32).map(|i| (i as f32, i as f32)).collect();
-    let transport = MockTransport::stopped(Beat::new(5.0), Bpm::new(120.0)); // inside window but stopped
+    let transport = MockTransport::stopped(Beat::new(5.0), Bpm::of(120.0)); // inside window but stopped
     let mut reader = make_clip_reader(&samples, Beat::new(4.0), Some(BeatDuration::new(4.0)));
 
     let out = under(&mut reader, &transport, SR, 1);
@@ -549,7 +549,7 @@ fn warm_clip_reader(transport: &MockTransport, frames: usize) -> Direct<DiskVoic
 
 #[test]
 fn clip_reader_process_steady_state_is_allocation_free() {
-    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside window
+    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0)); // inside window
     let mut direct = warm_clip_reader(&transport, 64);
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..2_000 {
@@ -565,7 +565,7 @@ fn clip_reader_process_steady_state_is_allocation_free() {
 /// allocates on the jump path is caught.
 #[test]
 fn clip_reader_jump_edge_is_allocation_free() {
-    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside [4, 8)
+    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0)); // inside [4, 8)
     let mut direct = warm_clip_reader(&transport, 64);
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..2_000 {
@@ -582,7 +582,7 @@ fn clip_reader_jump_edge_is_allocation_free() {
 /// (the clock's runs, the ring's claim) allocates nothing either.
 #[test]
 fn clip_reader_single_frame_steady_state_is_allocation_free() {
-    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
     let mut direct = warm_clip_reader(&transport, 1);
     for _ in 0..256 {
         direct.block_in(&transport.env(1, 48_000.0));
@@ -606,7 +606,7 @@ fn clip_reader_single_frame_steady_state_is_allocation_free() {
 #[test]
 fn clip_reader_ragged_blocks_at_max_block_512_are_allocation_free() {
     const RAGGED: [usize; 10] = [1, 37, 100, 511, 512, 64, 200, 129, 3, 65];
-    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0));
+    let transport = MockTransport::rolling(Beat::new(5.0), Bpm::of(120.0));
     let samples: Vec<_> = (1..2048)
         .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
         .collect();
@@ -703,7 +703,7 @@ fn a_steady_lane_read_writes_the_callers_lanes_as_put_does() {
         let mut voice = wide_clip(width);
         let mut scratch = crate::lanes::BlockScratch::new(BLOCK, n);
         let mut clock = crate::voice::clock::Clock::new();
-        let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
         let mut block = |voice: &mut DiskVoice| {
             let env = t.env(BLOCK, SR);
             let clock = clock.observe(&env);
@@ -761,7 +761,7 @@ fn a_streamed_clip_wider_than_its_pool_mixes_its_first_channels() {
         );
         let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
         let mut direct = Direct::new(pool, SampleRate(SR), BLOCK);
-        let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
         for b in 0..8u64 {
             direct.block_in(&t.env(BLOCK, SR));
             t.advance(BLOCK as i64, SR);
@@ -967,7 +967,7 @@ fn outside_the_window_silences_every_channel() {
 
         // Transport parked BEFORE the voice's start beat, so the placement
         // gate reports "outside".
-        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
         let voice = DiskVoice::new(
             inner,
             state,
@@ -1181,7 +1181,7 @@ fn scripted_pool(script: &Script, no_skip: bool) -> Vec<[Vec<u32>; 2]> {
     );
     let pool = tutti_graph::contract::prepared(pool, SampleRate(SR), BLOCK);
     let mut direct = Direct::new(pool, SampleRate(SR), BLOCK);
-    let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut blocks = Vec::new();
     for &(rolling, count, seek) in script {
         if let Some(beat) = seek {
@@ -1275,7 +1275,7 @@ fn a_block_with_no_position_leaves_the_lanes_alone() {
     let mut voice = wide_clip(2);
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 2);
     let mut clock = crate::voice::clock::Clock::new();
-    let t = MockTransport::stopped(Beat::new(1.0), Bpm::new(120.0));
+    let t = MockTransport::stopped(Beat::new(1.0), Bpm::of(120.0));
     let mut run = |voice: &mut DiskVoice, scratch: &mut crate::lanes::BlockScratch| {
         for lane in scratch.out.lanes_mut() {
             lane.fill(7.0);
@@ -1335,7 +1335,7 @@ fn a_skipped_block_forgets_the_fade_and_the_last_position() {
     );
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
     let mut clock = crate::voice::clock::Clock::new();
-    let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut run = |voice: &mut DiskVoice| {
         let env = t.env(BLOCK, SR);
         let clock = clock.observe(&env);
@@ -1390,7 +1390,7 @@ fn a_skipped_block_releases_the_ring_to_the_writer() {
     );
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
     let mut clock = crate::voice::clock::Clock::new();
-    let t = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(1.0), Bpm::of(120.0));
     let mut run = |voice: &mut DiskVoice| {
         let env = t.env(BLOCK, SR);
         let clock = clock.observe(&env);
@@ -1464,7 +1464,7 @@ fn butler_fed(script: &Script, no_skip: bool) -> (Vec<Vec<u32>>, u64, usize) {
     voice.set_render_rate(SampleRate(SR));
     let mut scratch = crate::lanes::BlockScratch::new(BLOCK, 1);
     let mut clock = crate::voice::clock::Clock::new();
-    let t = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+    let t = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
     let (mut blocks, mut skipped) = (Vec::new(), 0);
     for &(rolling, count, seek) in script {
         if let Some(beat) = seek {

@@ -47,13 +47,13 @@ pub use play::PlayReading;
 pub use samples::Samples;
 pub use tail::Tail;
 pub use timeline::{
-    FRAME_TOLERANCE, TimelineSegment, beats_per_sample, first_frame_at_or_after,
+    FRAME_TOLERANCE, TimelineSegment, beats_per_sample, first_frame_at_or_after, frames_per_beat,
     snap_to_whole_frame,
 };
 pub use unit_param::{ParamAddr, ParamKey, UnitAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
-    Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, Cents, CompressionRatio, Confidence,
-    Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan, Phase, PhaseIncrement,
-    PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, SampleRate, Seconds, Semitones,
-    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
+    Amplitude, ArcDegrees, Azimuth, Beat, BeatDuration, Bpm, BpmOutOfRange, Cents,
+    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan,
+    Phase, PhaseIncrement, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition,
+    SampleRate, Seconds, Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
 };

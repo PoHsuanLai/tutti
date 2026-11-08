@@ -255,14 +255,14 @@ fn a_beat_command_lands_where_the_transport_reaches_it() {
     // reached where the *current* tempo puts it.
     let mut beat = 0.0f64;
     for n in [64usize; 4] {
-        let t = Transport::new(true, Bpm(60.0), Beat(beat), None);
+        let t = Transport::new(true, Bpm::of(60.0), Beat(beat), None);
         rig.block(n, &t);
         beat += n as f64 * 60.0 / (60.0 * rate); // 60 BPM: beats per frame
         frame += n as u64;
     }
     // Jump to just before beat 1.5 at 120 BPM: 10 frames short.
     let spb = 120.0 / (60.0 * rate); // beats per frame
-    let t = Transport::new(true, Bpm(120.0), Beat(1.5 - 10.0 * spb), None);
+    let t = Transport::new(true, Bpm::of(120.0), Beat(1.5 - 10.0 * spb), None);
     rig.block(64, &t);
     for log in [&rig.exec_log, &rig.ref_log] {
         assert_eq!(
@@ -289,7 +289,7 @@ fn a_beat_passed_in_a_refused_block_lands_late() {
     // 120 BPM at 48 kHz: a frame is 1 / 24 000 beat.
     let f = 1.0 / 24_000.0;
     let at = |frames_from_beat: f64| {
-        Transport::new(true, Bpm(120.0), Beat(1.5 + frames_from_beat * f), None)
+        Transport::new(true, Bpm::of(120.0), Beat(1.5 + frames_from_beat * f), None)
     };
     rig.block(64, &at(-100.0));
     // Crosses beat 1.5, with no output slice for a one-output plan.
@@ -721,7 +721,7 @@ fn a_ramp_into_a_coarse_node_is_refused() {
 fn at_beat(beat: f64, playing: bool, tempo: f64, looping: Option<(f64, f64)>) -> Transport {
     Transport::new(
         playing,
-        Bpm(tempo),
+        Bpm::of(tempo),
         Beat(beat),
         looping.map(|(start, end)| tutti_graph::LoopRange {
             start: Beat(start),
@@ -1264,7 +1264,7 @@ fn a_seek_out_of_a_loop_that_lines_up_with_wraps_is_a_seek() {
     let at = |beat: f64| {
         Transport::new(
             true,
-            Bpm(120.0),
+            Bpm::of(120.0),
             Beat(beat),
             Some(tutti_graph::LoopRange {
                 start: Beat(start),

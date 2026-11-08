@@ -104,7 +104,7 @@ fn tempo_is_derived_from_the_tick_interval() {
             .tempo_bpm()
             .expect("48 ticks is enough to derive a tempo");
         assert!(
-            !tempo.differs_from(Bpm(bpm), 1.0),
+            !tempo.differs_from(Bpm::of(bpm), 1.0),
             "expected ~{bpm} BPM, got {tempo:?}"
         );
     }

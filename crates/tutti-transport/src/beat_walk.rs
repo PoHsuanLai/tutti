@@ -42,7 +42,7 @@ mod tests {
             (133.3, None),
             (97.0, tutti_types::LoopRange::new(1_000.0, 1_000.004)),
         ] {
-            let mut host = FrameClock::new(Beat(0.25), Bpm(tempo), SR);
+            let mut host = FrameClock::new(Beat(0.25), Bpm::of(tempo), SR);
             host.advance(Samples(987_654_321), None);
             if let Some(l) = looping {
                 host.seat(Beat(1_000.0));

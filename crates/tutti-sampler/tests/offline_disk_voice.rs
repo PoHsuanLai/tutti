@@ -175,7 +175,7 @@ fn clock_at(rate: f64) -> Clock {
 
 fn looping_clock_at(rate: f64, looping: Option<LoopRange>) -> Clock {
     Clock {
-        clock: Cell::new(FrameClock::new(Beat(0.0), Bpm(120.0), SampleRate(rate))),
+        clock: Cell::new(FrameClock::new(Beat(0.0), Bpm::of(120.0), SampleRate(rate))),
         frame: Cell::new(0),
         looping,
     }

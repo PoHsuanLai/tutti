@@ -62,7 +62,7 @@ fn main() {
 /// why `Res<TransportRes>` never triggers Bevy change detection: a host that
 /// wants "did the tempo change this frame" diffs it itself.
 fn set_up_transport(transport: Res<TransportRes>) {
-    transport.settings.set_tempo(128.0);
+    transport.settings.set_tempo(Bpm::of(128.0));
 
     // Loop bars 2–4, in beats.
     // The engine owns the region: the edit lands at the next block.

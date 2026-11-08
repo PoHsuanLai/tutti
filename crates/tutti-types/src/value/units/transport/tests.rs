@@ -8,6 +8,12 @@ use super::*;
 /// - `Beat * f64` — scaling a position depends on where zero is.
 /// - `Beat % BeatDuration` — hides the loop-start origin.
 /// - `Bpm - Bpm` — a tempo difference is not a tempo.
+/// - `Bpm * f64`, `-Bpm`, `Bpm::from(f64)`, `Unit::from_raw` — each can build
+///   a zero, negative or non-finite tempo, which a `Bpm` never is. The named
+///   replacement is the checked constructor: scale the raw number (`get`) and
+///   call `Bpm::new`, which returns `None` when the result is not a tempo. (No
+///   such operator ever existed on `Bpm`; `From<f64>` and `Unit` did, and are
+///   replaced by `new` and `of`.)
 /// - `ReadRate * f64`, `ReadRate + ReadRate` — `advance`, which names the
 ///   operand as a sample count and returns a `SamplePosition`. This type
 ///   exists to be multiplied by exactly one thing, so a bare `*` would let
@@ -98,11 +104,15 @@ fn sample_position_survives_a_long_file() {
 #[test]
 fn beat_duration_to_seconds_is_the_readout_conversion() {
     // At 120 BPM a beat is half a second.
-    assert_eq!(BeatDuration(1.0).to_seconds(Bpm(120.0)), Seconds(0.5));
-    assert_eq!(BeatDuration(4.0).to_seconds(Bpm(120.0)), Seconds(2.0));
-    assert_eq!(BeatDuration(1.0).to_seconds(Bpm(60.0)), Seconds(1.0));
-    // A degenerate tempo yields zero rather than inf.
-    assert_eq!(BeatDuration(1.0).to_seconds(Bpm(0.0)), Seconds(0.0));
+    assert_eq!(BeatDuration(1.0).to_seconds(Bpm::of(120.0)), Seconds(0.5));
+    assert_eq!(BeatDuration(4.0).to_seconds(Bpm::of(120.0)), Seconds(2.0));
+    assert_eq!(BeatDuration(1.0).to_seconds(Bpm::of(60.0)), Seconds(1.0));
+    // The slowest tempo a `Bpm` holds (zero is not one) yields zero rather
+    // than inf.
+    assert_eq!(
+        BeatDuration(1.0).to_seconds(Bpm::of(f64::from_bits(1))),
+        Seconds(0.0)
+    );
 }
 
 #[test]
@@ -171,9 +181,9 @@ fn rem_euclid_wraps_negative_overshoot_inside_the_span() {
 
 #[test]
 fn bpm_differs_from_ignores_ulp_noise() {
-    let a = Bpm(120.0);
-    assert!(!a.differs_from(Bpm(120.000_000_1), 0.001));
-    assert!(a.differs_from(Bpm(140.0), 0.001));
+    let a = Bpm::of(120.0);
+    assert!(!a.differs_from(Bpm::of(120.000_000_1), 0.001));
+    assert!(a.differs_from(Bpm::of(140.0), 0.001));
 }
 
 #[test]

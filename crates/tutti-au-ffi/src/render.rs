@@ -1,7 +1,4 @@
 //! Render-time buffer management.
-//!
-//! Allocates the variable-length `AudioBufferList` backing storage and the
-//! per-channel scratch buffers used to marshal samples in/out of AudioToolbox.
 
 #![cfg(target_os = "macos")]
 
@@ -38,14 +35,6 @@ pub struct BusLayout {
 }
 
 /// Byte size of an `AudioBufferList` carrying `n` trailing `AudioBuffer`s.
-///
-/// `AudioBufferList` is `{ UInt32 mNumberBuffers; AudioBuffer mBuffers[1]; }`,
-/// and `AudioBuffer` contains a pointer, so the struct is 8-aligned and
-/// `mBuffers` starts at offset **8**, not 4 — there are 4 bytes of tail padding
-/// after `mNumberBuffers`. Sizing off `size_of::<u32>()` under-allocates by
-/// exactly those 4 bytes and makes the last channel's `mData` write land past
-/// the end of the slab. Measured on macOS/arm64 against the real SDK header:
-/// `sizeof(AudioBuffer) == 16`, `offsetof(AudioBufferList, mBuffers) == 8`.
 pub(crate) const fn buffer_list_bytes(n: usize) -> usize {
     std::mem::offset_of!(AudioBufferList, mBuffers) + n * std::mem::size_of::<AudioBuffer>()
 }
@@ -199,11 +188,6 @@ impl RenderScratch {
     /// f64 caller, and the narrowing is the AU's own precision ceiling rather
     /// than a loss this layer chose. Converting *here*, against the scratch that
     /// already exists, is what keeps it free of per-block allocation.
-    ///
-    /// Writes into the same `inputs` buffers as the f32 path, so a caller cannot
-    /// mix widths within one block — nor does anything ask to: the width is
-    /// picked per block by the pipeline's `SampleFormat` and applies to both
-    /// directions.
     pub fn stage_input_f64(&mut self, input: &[&[f64]], frames: u32) {
         for (ch, src) in input.iter().enumerate() {
             if let Some(dst) = self.inputs.get_mut(ch) {
@@ -239,14 +223,6 @@ impl RenderScratch {
 
     /// Sends the render cursor back to zero, so the next block's `mSampleTime`
     /// starts a fresh run rather than continuing the previous one.
-    ///
-    /// Paired with the host\'s `reset`:
-    /// that call flushes the AU's signal history, and this discards the clock
-    /// the flushed history was measured against. Leaving the cursor running
-    /// hands an AU that phases anything off `mSampleTime` — an LFO, a
-    /// look-ahead window, a block-to-block delta — a timestamp saying the block
-    /// after a locate is contiguous with the block before it, which is exactly
-    /// what the flush just said it is not.
     ///
     /// Zero rather than a host-supplied playhead. `mSampleTime` is documented
     /// as the stamp that lets an AU "determine without doubt that this is the
@@ -538,15 +514,6 @@ unsafe fn fill_input(
 /// [`process_push_multiple`] can bind and render without touching the
 /// allocator: the push calls run on the audio thread, and a `Vec` grown per
 /// block is an allocator acquisition every 1.3 ms at 48 kHz / 64 frames.
-///
-/// ## Why the fields are `Vec` and the render path still does not allocate
-///
-/// Every `Vec` here is grown exactly once, in [`PushScratch::new`]. The render
-/// methods only write through existing storage: `bind_*` rewrites the `mData` /
-/// `mDataByteSize` fields of `AudioBuffer`s that already exist, and the pointer
-/// arrays' length never changes, so `as_mut_ptr` on them is a field read.
-/// `tests/au_offline.rs` proves it — the property is not something the types
-/// can express.
 pub struct PushScratch {
     /// One `AudioBufferList` slab per input bus. 8-aligned `u64` backing for the
     /// reason the render scratch's `AblWord` documents: `AudioBufferList` needs
@@ -593,15 +560,6 @@ impl std::fmt::Debug for PushScratch {
 
 impl PushScratch {
     /// Allocates for the given per-bus input and output widths.
-    ///
-    /// `inputs` and `outputs` are one entry per bus, in bus order — so a
-    /// hypothetical sidechain compressor is `&[Stereo, Stereo]` in, `&[Stereo]`
-    /// out. Size these from
-    /// the host\'s `bus_count`, never
-    /// from what the host wishes were there: an AU handed more input lists than
-    /// it has input elements rejects the render outright rather than ignoring
-    /// the extra (measured: AUReverb2 answers `kAudioUnitErr_InvalidElement` for
-    /// a second list).
     ///
     /// An empty `inputs` is legal and is what an instrument gets; it makes
     /// [`process_push_multiple`] pass a zero-length input array, which is what
@@ -678,12 +636,6 @@ impl PushScratch {
     /// lends it per render, and `reset` never sees it. A host driving the push
     /// path over a discontinuity therefore calls both, in either order; they
     /// touch disjoint state.
-    ///
-    /// Not folded into the host\'s `reset` by having it take an optional
-    /// scratch: the two paths deliberately do not share one, for the reason the
-    /// module docs give, and a `reset` that silently restarted only the cursor
-    /// the caller happened to pass would be a discontinuity applied to half the
-    /// render sessions in flight.
     pub fn reset_position(&mut self) {
         self.sample_position = 0.0;
     }
@@ -821,23 +773,6 @@ unsafe fn bind_list(
 /// into output bus 0 itself, so [`PushScratch::emit_output`]`(0, ..)` means the
 /// same thing whichever push function produced the audio.
 ///
-/// A unit that reports [`supports_in_place`]` == false` is still driven
-/// correctly — the copy out is unconditional, so the host never asks the AU to
-/// alias anything. Skipping that copy for units that do support it would be a
-/// future optimisation (one memcpy saved) not attempted here, since getting it
-/// wrong means an AU reading its own output as input.
-///
-/// ## Measured coverage
-///
-/// On macOS 15.6, 6 of the 9 corpus effects implement this selector: AUDelay,
-/// AUDynamicsProcessor, AUDistortion, AUNBandEQ, AULowpass, AUSampleDelay and
-/// AUMultibandCompressor answer `noErr` and produce audio. AUMatrixReverb,
-/// AUReverb2, both instruments and every mixer answer `unimpErr` (`-4`) — the
-/// component manager's "selector not implemented" — as do both third-party units
-/// installed. Where it does work it is **exact**: AUDelay's push output matched
-/// its `AudioUnitRender` output to the last bit across 8 blocks of a 440 Hz sine
-/// (peak `0.35350975`, `0.35353398`, … identical in both paths).
-///
 /// # Errors
 /// * `Error::Invalid` if `frames` exceeds the scratch's block size, or
 ///   if the scratch has no input bus 0 / no output bus 0. The frame bound is
@@ -922,33 +857,6 @@ fn copy_in_bus0_to_out_bus0(scratch: &mut PushScratch, silent: bool, frames: u32
 /// the only AUv2 call that can deliver a second input bus in the same render —
 /// what a sidechain is: bus 0 the signal, bus 1 the key the compressor listens
 /// to.
-///
-/// ## It does not work on anything installed, and here are the numbers
-///
-/// Measured on macOS 15.6 against every Apple effect, instrument and mixer in
-/// the corpus plus both third-party units:
-///
-/// * **`unimpErr` (`-4`) from all but one.** AUDelay, AUDynamicsProcessor,
-///   AUDistortion, AUMatrixReverb, AUNBandEQ, AULowpass, AUSampleDelay,
-///   AUMultibandCompressor, AUSampler, DLSMusicDevice, AUMultiChannelMixer, TDR
-///   Nova and TAL-Reverb-4 all answer `-4` — the component manager's reply when
-///   an AU does not implement `kAudioUnitProcessMultipleSelect`.
-/// * **AUReverb2 implements it, for exactly one input list.** One list renders
-///   correctly and stably: 8 blocks of a 440 Hz sine at 0.5 in came out at peak
-///   `0.4974…`, finite throughout, with `mDataByteSize` reported as the full 256
-///   bytes each block. Two input lists are refused with `-10877`
-///   (`kAudioUnitErr_InvalidElement`), and AUReverb2 has one input element, so
-///   that refusal is correct rather than a bug.
-/// * **A unit with 8 real input elements still refuses.** AUMultiChannelMixer
-///   reports 8 input buses via `kAudioUnitProperty_ElementCount`, and answers
-///   `-4` to 1, 2 and 8 input lists alike. So the absence is not about element
-///   counts — the selector simply is not implemented.
-///
-/// **There is therefore no working AU sidechain on this machine.** This wrapper
-/// is kept because it is the only way to reach the contract at all, it is
-/// exercised by `tests/au_offline.rs` against the one unit that answers, and the
-/// day a plugin implements the selector the host needs no new code. Nothing in
-/// tutti should route a sidechain through it expecting audio to come back.
 ///
 /// # Errors
 /// * `Error::Invalid` if `frames` exceeds the scratch's block size, or

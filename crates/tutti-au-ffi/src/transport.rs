@@ -6,68 +6,6 @@
 //! once. Those calls land **on the render thread, inside `AudioUnitRender`** —
 //! the header is explicit that an AU may call them only from within its render,
 //! because that is the only moment the answer is well-defined.
-//!
-//! Without this, every tempo-synced AU runs free: note-value delays, LFO sync,
-//! in-plugin arpeggiators and step sequencers never lock to project tempo or
-//! start on the beat. The `outTransportStateChanged` flag is separately what
-//! tells a plugin to flush after a locate — without it a plugin's internal
-//! sequencer keeps counting from the old position after the user jumps the
-//! playhead.
-//!
-//! # Which AUs actually call these (measured, macOS 15.6)
-//!
-//! Not one of the ~35 Apple Audio Units on this machine calls any of the four
-//! procs, though all of them *accept* the property. The only installed unit
-//! that calls them is **TAL-NoiseMaker** (`TOGU`/`ncut`), which calls
-//! `beatAndTempoProc`, `musicalTimeLocationProc` and `transportStateProc`
-//! exactly **once per render block**.
-//!
-//! That measurement is why `install_host_callbacks`
-//! fills **both** transport procs. TAL-NoiseMaker calls **v1 only**: with just
-//! `transportStateProc2` populated it calls neither, and receives no transport
-//! at all. A host that filled only the newer proc would silently lose transport
-//! for that whole class of plugin, and the loss is inaudible in a test that
-//! merely checks the property was accepted.
-//!
-//! # Real-time safety
-//!
-//! Two hard constraints, both structural rather than conventional:
-//!
-//! 1. **The state is read on the audio thread without locking or allocating.**
-//!    Every field of [`TransportState`] is a scalar, so this is a set of plain
-//!    atomics rather than a `tutti_rt::ArcLend` cell. `ArcLend` exists
-//!    for state too large to pack into an atomic — a routing table, a meter map
-//!    — and its read is a slot CAS, a `SeqCst` fence and a load, plus a slot
-//!    store on release, strictly more work than the handful of `Relaxed` loads here.
-//!    Using it would also be a category error: it hands out a `Loan` borrow
-//!    whose whole purpose is to keep the audio thread from owning heap state,
-//!    and there is no heap state here to protect.
-//!
-//!    The cost of the atomic split is that a block can observe a *torn* update
-//!    — the new tempo with the old beat. That is deliberate and is the right
-//!    trade: the alternative that avoids it (publishing an immutable snapshot)
-//!    buys atomicity across fields at the price of an allocation per transport
-//!    update, and transport moves every block. A one-block skew in tempo-vs-beat
-//!    is inaudible; a malloc on the control thread feeding the audio thread each
-//!    block is not free. [`set_transport`](TransportState::set_transport)
-//!    documents the field order that keeps the skew benign.
-//!
-//! 2. **A panic must never unwind across `extern "C"`.** Unwinding out of a Rust
-//!    callback into AudioToolbox is undefined behaviour. Every one of the four
-//!    procs wraps its body in [`catch_unwind`](std::panic::catch_unwind), the
-//!    same guard `au_input_render_callback` uses, and reports a caught panic as
-//!    an OSStatus the AU understands.
-//!
-//! # Where the unit types stop
-//!
-//! [`TransportState`] speaks the engine's unit newtypes — [`Bpm`], [`Beat`],
-//! [`Seconds`] — because those are the quantities it carries and a bare `f64`
-//! tempo is exactly the kind of value that gets swapped with a beat position.
-//! The C callbacks below are the boundary: `HostCallbackInfo`'s procs are
-//! declared by Apple as `Float64`/`Float32`/`Boolean` out-params, so the unit
-//! wrappers are unwrapped to raw floats at the moment of the store. That is the
-//! documented stopping point for the units mandate — a C ABI boundary — and the
-//! widths are Apple's, not ours to choose.
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -249,10 +187,6 @@ impl TransportState {
     /// The individual value fields are `Relaxed`: they are independent scalars
     /// with no invariant between them, and a one-block skew between tempo and
     /// beat is inaudible (see the module docs).
-    ///
-    /// `changed` should be `true` on start, stop, and any discontinuity in the
-    /// playhead — the events after which a plugin's internal sequencer must
-    /// resynchronize rather than keep counting from where it was.
     pub fn set_transport(&self, info: &TransportInfo, changed: bool) {
         self.tempo_bits
             .store(info.timing.tempo.to_bits(), Ordering::Relaxed);
@@ -383,13 +317,6 @@ impl TransportState {
 
     /// The installed procs and `hostUserData`, for tests that call them the way
     /// AudioToolbox does.
-    ///
-    /// Exposed because the procs are the code that actually runs on the audio
-    /// thread, and on this machine **no Apple AU calls any of them** (see the
-    /// module docs) — so a test that only drove real units would exercise none of
-    /// this. Handing out the shipping function pointers rather than letting a
-    /// test re-declare its own is the point: a hand-rolled copy of these
-    /// signatures would keep passing after the real ones broke.
     ///
     /// Returns a tuple rather than [`HostCallbackInfo`] because that struct is
     /// `pub(crate)` — its layout is an ABI contract with AudioToolbox, not
@@ -543,9 +470,6 @@ unsafe extern "C" fn musical_time_location_proc(
 }
 
 /// `HostCallback_GetTransportState` (v1). Called on the render thread.
-///
-/// Measured to be the *only* transport proc TAL-NoiseMaker calls, so this is
-/// not the legacy path — see the module docs.
 ///
 /// # Safety
 /// As [`beat_and_tempo_proc`].

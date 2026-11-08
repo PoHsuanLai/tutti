@@ -2,66 +2,6 @@
 //!
 //! Everything else in this crate is the host talking to the AU. This module is
 //! the return path, and without it a DAW is deaf to half of what a plugin does:
-//!
-//! * **A knob moved in the plugin's editor is invisible.** The host polls
-//!   nothing, the AU pushes nothing, so a filter cutoff dragged in the plugin UI
-//!   is heard but never recorded as automation.
-//! * **A drag has no boundaries.** Touch and latch automation are defined by
-//!   where a gesture starts and stops; with no
-//!   [`AuEvent::BeginGesture`]/[`AuEvent::EndGesture`] a mouse drag is
-//!   indistinguishable from a stream of unrelated writes, so the host either
-//!   records one point or smears every intermediate value.
-//! * **Playback does not move the plugin's knobs.** The subtle one — a property
-//!   of how the *host writes*, not of listening at all. See
-//!   [`AuParameterListener`]'s "Why writes must go through `AUParameterSet`".
-//!
-//! # Why writes must go through `AUParameterSet`
-//!
-//! `AudioUnitSetParameter` is the raw write: it changes the value and tells
-//! nobody. Apple's `AudioUnitUtilities.h` says so directly:
-//!
-//! > Note that only parameter changes issued through AUParameterSet will
-//! > generate notifications to listeners. Hence, in order for this notification
-//! > mechanism to work properly, you should use AUParameterSet in preference to
-//! > AudioUnitSetParameter.
-//!
-//! The AU's own editor is itself a listener, so a host writing with the raw call
-//! has automation playback that moves the audio but not the open editor — knobs
-//! frozen while the sound sweeps. [`set_parameter_notifying`] is the write
-//! without that failure, and what
-//! `set_parameter` now calls.
-//!
-//! # Threading: a dispatch queue, not a run loop
-//!
-//! AudioToolbox offers two constructors. [`AUEventListenerCreate`] takes a
-//! `CFRunLoopRef` and attaches a run-loop source; the callback fires only while
-//! something is *running* that run loop. A `cargo test` process runs no run
-//! loop, and neither does a DAW's audio or worker thread — so every callback
-//! would be queued and never delivered, and every test asserting delivery would
-//! hang or silently observe nothing. That is a false negative by construction,
-//! so this module does not use it.
-//!
-//! `AUEventListenerCreateWithDispatchQueue` instead hands events to GCD, which
-//! services them on its own worker threads with no run loop anywhere — what this
-//! module uses, and why the tests can prove delivery rather than merely that
-//! registration returned `noErr`.
-//!
-//! The consequence a caller must design around: **the callback runs on a
-//! dispatch queue's thread, not the caller's**. It is therefore `Send`, and the
-//! host's own handoff (a channel, a lock, an atomic) is its own business. This
-//! module owns a private serial queue per listener so one plugin's flood of
-//! events cannot stall another's.
-//!
-//! # Why the callback body cannot unwind
-//!
-//! The block is called by GCD through a C function pointer. A Rust panic
-//! unwinding out of it crosses an FFI frame into libdispatch, which is undefined
-//! behaviour — the same hazard `au_input_render_callback`
-//! guards against on the render thread, and guarded the same way: the whole body
-//! runs inside [`catch_unwind`](std::panic::catch_unwind), and a caught panic is
-//! reported to stderr rather than swallowed. A host callback that panics is a
-//! host bug, but it must surface as a dropped event and a printed message, not
-//! as memory corruption inside AudioToolbox.
 
 use std::os::raw::c_void;
 use std::sync::Arc;
@@ -359,28 +299,6 @@ impl Drop for Queue {
 /// Dropping it calls `AUListenerDispose` and then releases the queue, in that
 /// order — see [`Drop`] for why the order is load-bearing rather than
 /// stylistic.
-///
-/// # Example
-///
-/// ```text
-/// # #[cfg(target_os = "macos")]
-/// # {
-/// use std::sync::{Arc, Mutex};
-/// use tutti_au_host::{AuEvent, AuParameterListener, EventAddress};
-/// # use tutti_au_host::AuInstance;
-/// # fn demo(au: &mut AuInstance, param_id: u32) -> tutti_au_host::Result<()> {
-/// let seen = Arc::new(Mutex::new(Vec::new()));
-/// let sink = Arc::clone(&seen);
-///
-/// let listener = AuParameterListener::new(au.unit(), move |ev| {
-///     sink.lock().unwrap().push(ev);
-/// })?;
-/// listener.watch_parameter(param_id, EventAddress::GLOBAL)?;
-/// listener.watch_gestures(param_id, EventAddress::GLOBAL)?;
-/// # Ok(())
-/// # }
-/// # }
-/// ```
 #[must_use = "dropping it stops the listener"]
 pub struct AuParameterListener {
     listener: AUEventListenerRef,
@@ -423,13 +341,6 @@ impl AuParameterListener {
     /// `AudioUnitUtilities.h`'s worked example gives exactly these two numbers
     /// for a system that "wishes to record events with a high degree of timing
     /// precision, but does not need to be woken up for each event".
-    ///
-    /// The granularity is what matters for correctness: value changes closer
-    /// together than this are **coalesced**, and only the last survives. At
-    /// 10 ms a mouse drag still yields ~100 points/sec — finer than any
-    /// automation lane resolution a user can perceive — where the header's
-    /// other, UI-oriented 100 ms figure would quantise a fast sweep into a
-    /// staircase.
     const NOTIFICATION_INTERVAL: f32 = 0.200;
     const VALUE_CHANGE_GRANULARITY: f32 = 0.010;
 
@@ -445,14 +356,6 @@ impl AuParameterListener {
     /// send-only), so a convenience that watched all parameters would have to
     /// enumerate them at construction and would then silently miss any the AU
     /// added later.
-    ///
-    /// `callback` runs on a private serial dispatch queue, **not** the calling
-    /// thread — hence the `Send + Sync + 'static` bound — and must not panic;
-    /// see the module docs for why a panic is caught rather than unwinding.
-    ///
-    /// The listener holds a share of the unit, so the unit outlives it:
-    /// AudioToolbox keeps the instance pointer internally and dereferences it on
-    /// every delivery, and nothing can dispose the instance first.
     ///
     /// # Errors
     /// Returns the `OSStatus` if AudioToolbox refuses to create the listener.
@@ -619,11 +522,6 @@ impl Drop for AuParameterListener {
 /// nobody; see the module docs for why that freezes the plugin's own knobs
 /// during automation playback.
 ///
-/// `buffer_offset_in_frames` is the offset into the *next* rendered buffer at
-/// which the change takes effect. `0` means "at the start of the next block",
-/// which is what a host wants unless it is scheduling sample-accurate automation
-/// within a block.
-///
 /// # Errors
 /// Returns the AU's own `OSStatus` for an id or address it does not have.
 pub fn set_parameter_notifying(
@@ -660,20 +558,6 @@ pub fn set_parameter_notifying(
 /// Gestures normally originate in the *plugin's own editor* — the AU emits them
 /// when the user grabs and releases a control, and receiving them is this
 /// crate's job. This is the other direction, with two real uses:
-///
-/// * **A host driving a plugin's UI.** When the host's own automation lane owns
-///   a parameter and the user scrubs it from the DAW's surface, bracketing the
-///   writes in a begin/end pair tells the plugin's editor one continuous
-///   gesture is in progress — some editors latch differently mid-gesture.
-/// * **Testing the receive path at all.** Nothing else can make a gesture
-///   happen, so without this `watch_gestures` could only prove registration
-///   returned `noErr`, not that delivery works. `au_notification.rs` uses it
-///   for exactly that.
-///
-/// Pass `begin: true` for `kAudioUnitEvent_BeginParameterChangeGesture` and
-/// `false` for the `End` counterpart. Callers must emit them in pairs — an
-/// unmatched begin leaves every listening editor believing a gesture is still
-/// in progress.
 ///
 /// # Errors
 /// Returns the `OSStatus` if AudioToolbox refuses.
@@ -712,16 +596,6 @@ pub fn emit_gesture(
 /// notification mechanism — by `kAudioUnitProperty_ClassInfo` (state restore) or
 /// a factory-preset load, both of which rewrite the whole parameter set inside
 /// the AU without issuing a single `AUParameterSet`.
-///
-/// Without this call, restoring a project or picking a preset leaves every open
-/// plugin editor showing the *previous* values — the audio is correct, the UI
-/// is a lie until the user nudges each control. Apple's `ClassInfo`
-/// documentation mandates the call for precisely this reason.
-///
-/// The wildcard is legal here and *only* here — the header notes
-/// `kAUParameterListener_AnyParameter` "is only valid when sending a
-/// notification, not when registering to receive one", which is why
-/// [`AuParameterListener::watch_parameter`] takes a concrete id.
 ///
 /// # Errors
 /// Returns the `OSStatus` if AudioToolbox refuses.
@@ -785,24 +659,6 @@ mod tests {
     /// A mismatch would hand AudioToolbox a struct it reads differently than this crate
     /// wrote it, and the failure would surface as events arriving with nonsense
     /// ids — not as anything that looks like a layout bug.
-    ///
-    /// The figures are measured, not derived. Compiling
-    /// `sizeof/offsetof(AudioUnitEvent)` against the real
-    /// `<AudioToolbox/AudioToolbox.h>` on macOS 15.6 (arm64) reports:
-    ///
-    /// ```text
-    /// sizeof(AudioUnitEvent)      = 32
-    /// alignof(AudioUnitEvent)     = 8
-    /// offsetof(mEventType)        = 0
-    /// offsetof(mArgument)         = 8
-    /// sizeof(AudioUnitParameter)  = 24
-    /// ```
-    ///
-    /// Note `mArgument` sits at **8**, not 4: the union contains an `AudioUnit`
-    /// pointer, so it is 8-byte aligned and the `UInt32` tag is followed by 4
-    /// bytes of padding. `4 + 24 = 28` is the tempting arithmetic and it is
-    /// wrong: asserting it fails against a *correct* struct. The figures below
-    /// are what C reports, not what the field widths suggest.
     #[test]
     fn the_event_struct_matches_the_c_layout() {
         assert_eq!(

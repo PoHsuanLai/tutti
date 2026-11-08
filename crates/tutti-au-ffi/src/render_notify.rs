@@ -6,104 +6,6 @@
 //! the action flags) and once after (`PostRender`). It is a *tap*, not a filter —
 //! the AU renders whether the notify returns `noErr` or not.
 //!
-//! Three things a DAW cannot do without it:
-//!
-//! * **Meter what a plugin actually produced.** On post-render the `ioData`
-//!   buffer list holds the AU's real output — metering the host's own
-//!   destination buffer instead measures after its own gain/silence handling,
-//!   a different number.
-//! * **Measure round-trip latency empirically.** The pre/post pair brackets the
-//!   AU's own processing, so the timestamps and frame counts are ground truth
-//!   about what the AU was handed versus what it gave back.
-//!   `kAudioUnitProperty_Latency` is the plugin's *claim*; this is the
-//!   measurement.
-//! * **Schedule sample-accurate parameter automation at all.** The reason this
-//!   module owns [`ParamEvent`] rather than leaving it in `parameters.rs` — from
-//!   `AUComponent.h`'s `AudioUnitScheduleParameters`:
-//!
-//!   > All of the parameter events must apply to the current (and only apply to
-//!   > the current) audio unit render call, so the events are scheduled as a
-//!   > part of the pre-render notification callback.
-//!
-//!   Scheduled events are consumed by one `AudioUnitRender` and do not persist,
-//!   so a host that schedules from its control thread races the render it
-//!   meant to affect — the pre-render notify is the only correct place.
-//!
-//! # What is measured, not assumed (macOS 15.6)
-//!
-//! Every claim below was measured against the installed units; the figures the
-//! tests assert on are in `tests/au_render_notify.rs`.
-//!
-//! * **The pair fires exactly once each, pre before post, both reporting the
-//!   frame count that was rendered.** Confirmed on AUSpatialMixer, AUDelay,
-//!   TDR Nova and TAL Reverb 4 — `pre=1 post=1` per `AudioUnitRender`, in that
-//!   order, both at 512 frames for a 512-frame render.
-//!
-//! * **`kAudioUnitParameterFlag_CanRamp` is a claim, not a guarantee.** Of 486
-//!   parameters across 45 units that initialize on this machine, 155 advertise
-//!   the flag — but only **one Apple unit** does at all (AUSpatialMixer, 10 of
-//!   12 parameters), and it does **not** honour a ramp: scheduling a ramp across
-//!   its `global reverb gain` versus pinning the parameter at the ramp's start
-//!   value produces envelopes that differ by `0.000000000`, reproducibly over 5
-//!   runs. The 145 remaining rampable parameters are all third-party (TDR Nova
-//!   37/75, TAL Reverb 4 20/20, TAL-NoiseMaker 88/88). So
-//!   `AuParameter::can_ramp` is
-//!   worth reading to *choose* a subject and worthless as a promise about what
-//!   the audio will do — a host wanting smooth automation on an arbitrary AU
-//!   must be prepared to interpolate itself.
-//!
-//! * **Ramping does work, where it is implemented.** TAL Reverb 4's `Dry`
-//!   parameter ramped 0.0 → 1.0 across a 512-frame block yields a strictly
-//!   monotonic output envelope `0.014483 → 0.104773` (8 segments), against a
-//!   flat `0.0` for the step-at-start control — bit-identical across 10 repeats.
-//!   That is what [`ParamEvent::Ramped`] exists for.
-//!
-//! * **`bufferOffset` is ignored by every unit measured.** An immediate event at
-//!   offsets 0 / 128 / 256 / 384 produces a *bit-identical* output envelope on
-//!   AUSpatialMixer, AUDelay, AUDistortion, AUHipass, AUPeakLimiter and TDR
-//!   Nova: the change always lands at the block start. Carried faithfully
-//!   because it is Apple's ABI and a future/third-party AU may honour it, but a
-//!   host must not *depend* on intra-block placement. See
-//!   [`ParamEvent::Immediate`].
-//!
-//! * **`AudioUnitScheduleParameters` does not validate the parameter id.**
-//!   Scheduling against id `999999` on AUDelay returns `noErr`, as does a
-//!   `Ramped` event on a parameter whose `CanRamp` flag is clear — so the status
-//!   is *not* a way to discover whether an event will do anything, which is why
-//!   [`schedule`] documents the return as "the AU accepted the call", not "the
-//!   event will take effect".
-//!
-//! # Real-time safety
-//!
-//! The notify runs **on the render thread, inside `AudioUnitRender`**. Same
-//! three constraints `transport` documents for the host callbacks:
-//!
-//! 1. **A panic must never unwind across `extern "C"`** — undefined behaviour
-//!    into AudioToolbox. The whole body runs inside
-//!    [`catch_unwind`](std::panic::catch_unwind), same guard
-//!    `au_input_render_callback` uses; a caught panic goes to stderr and returns
-//!    as an OSStatus, never propagated.
-//!
-//! 2. **The callback must not allocate** — a `malloc` here can block on a lock
-//!    held by a control thread and blow the deadline. Nothing in
-//!    [`RenderNotify`]'s own path allocates; see [`RenderNotify::new`] for why
-//!    the host closure's obligation is a documented contract rather than
-//!    something the type can enforce.
-//!
-//! 3. **Plain atomics, not [`ArcLend`](tutti_rt::ArcLend).** Every piece
-//!    of state this module hands to the render thread is a scalar: a parameter
-//!    id, two `f32` endpoints, a frame offset, a duration. `ArcLend` exists
-//!    for state too large to pack into an atomic and costs a slot CAS, a
-//!    `SeqCst` fence and a load plus a slot store — more than the handful
-//!    of loads here, and a category error besides: there is no heap state here
-//!    for a `Loan` borrow to protect. Same trade `transport`'s module
-//!    docs make.
-//!
-//!    What the host closure captures is the host's own business — that is where
-//!    an `ArcLend` belongs if the host needs to hand a table across.
-//!
-//! # Why removal ordering is load-bearing
-//!
 //! `AudioUnitRemoveRenderNotify` must run **before** the boxed state the
 //! `ref_con` points at is freed. This is the same ordering invariant
 //! uninitializing the unit documents
@@ -111,14 +13,6 @@
 //! installed the AU holds a raw pointer into the box, and it dereferences that
 //! pointer on its render thread on every single render. Free the box first and
 //! the next block calls a closure that is gone.
-//!
-//! [`RenderNotify`]'s [`Drop`] removes then frees, in that order, and the
-//! `(proc, ref_con)` tuple it removes with is the same one it registered —
-//! Apple's header is explicit that both halves must match:
-//!
-//! > The inProc and inProcUserData are treated as a tuple entity, so when
-//! > wanting to remove one, both the inProc and its inProcUserData must be
-//! > specified
 
 use std::os::raw::c_void;
 use std::sync::Arc;
@@ -165,15 +59,6 @@ pub enum RenderPhase {
 /// `io_data` and `timestamp` are raw pointers valid only inside the callback that
 /// received this value (they belong to the render in flight); copying the struct
 /// out of the callback and reading them later is undefined behaviour.
-///
-/// Deliberately does **not** expose the `AudioBufferList` as a safe slice. The
-/// buffers are only valid for the duration of the call, their channel count and
-/// per-channel length come from the AU rather than from the host's request, and
-/// `mData` may be null (Apple's `AURenderCallback` docs: "Can be null in the
-/// notification that input is available"). Handing out a `&[f32]` would be
-/// asserting a length this type cannot verify. A host that wants the samples
-/// takes the raw pointer and honours `mDataByteSize`, exactly as
-/// `render_input` in `instance.rs` does.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderNotification {
     /// Pre- or post-render.
@@ -236,18 +121,6 @@ pub enum ParamEvent {
     ///
     /// This is what makes a fader move smoothly instead of stepping once per
     /// block; without it automation is audibly zippered at block boundaries.
-    ///
-    /// **The ramp must be re-scheduled on every render for its whole
-    /// duration.** Apple's header: "When scheduling a ramped parameter, the ramp
-    /// is scheduled each audio unit render for the duration of the ramp. Each
-    /// schedule of the the new audio unit render specifies the progress of the
-    /// ramp." A host that schedules once and stops gets one block of movement
-    /// and then a step — which is the failure it was trying to avoid.
-    ///
-    /// `start_buffer_offset` is **signed** in Apple's struct, and that is not an
-    /// oversight to normalise away: a negative offset is how a host expresses
-    /// "this ramp began in an earlier block", which is exactly the state every
-    /// re-schedule after the first is in.
     Ramped {
         /// Frames into this block where the ramp starts. Negative means it
         /// started before this block began.
@@ -347,14 +220,6 @@ impl ParamEvent {
 /// Apple's wording. [`RenderNotify`] exists to give a host that pre-render
 /// moment.
 ///
-/// Takes a slice because the C API does: one call can carry a whole block's
-/// automation for many parameters, and doing it in one call rather than N is
-/// the difference between one FFI transition and N on the audio thread.
-///
-/// # Real-time safety
-/// Allocation-free. `events` is borrowed, the lowering writes into a stack
-/// buffer, and the FFI call is a direct dispatch — safe to call from the notify.
-///
 /// # Safety
 /// `unit` must be a live `AudioUnit`. In the intended use it is the unit
 /// currently rendering, which is live by construction.
@@ -423,48 +288,6 @@ struct NotifyState {
 /// Dropping it calls `AudioUnitRemoveRenderNotify` and *then* releases the
 /// state, in that order — see the module docs for why the order is a
 /// use-after-free rather than a style preference.
-///
-/// # Example
-///
-/// ```text
-/// # #[cfg(target_os = "macos")]
-/// # {
-/// use std::sync::atomic::{AtomicU32, Ordering};
-/// use std::sync::Arc;
-/// use tutti_au_host::render_notify::{
-///     schedule, ParamEvent, RenderPhase, ScheduleAddress,
-/// };
-/// # use tutti_au_host::AuInstance;
-/// # fn demo(au: &mut AuInstance, param_id: u32) -> tutti_au_host::Result<()> {
-/// let blocks = Arc::new(AtomicU32::new(0));
-/// let counter = Arc::clone(&blocks);
-/// // `RenderUnit`, not `unit()`: a `Unit` is not `Sync`,
-/// // so it cannot be captured by a callback AudioToolbox runs on its own thread.
-/// let unit = au.render_unit();
-///
-/// let notify = au.add_render_notify(move |n| {
-///     if n.phase == RenderPhase::Pre {
-///         counter.fetch_add(1, Ordering::Relaxed);
-///         // The sanctioned place to schedule automation.
-///         let _ = schedule(
-///             &unit,
-///             param_id,
-///             ScheduleAddress::GLOBAL,
-///             &[ParamEvent::Ramped {
-///                 start_buffer_offset: 0,
-///                 duration_frames: n.frames,
-///                 start_value: 0.0,
-///                 end_value: 1.0,
-///             }],
-///         );
-///     }
-/// })?;
-/// // Hold `notify` for as long as the tap should live; dropping it removes the
-/// // registration.
-/// # Ok(())
-/// # }
-/// # }
-/// ```
 #[must_use = "dropping it unregisters the callback"]
 pub struct RenderNotify {
     unit: Arc<Inner>,
@@ -490,23 +313,6 @@ impl RenderNotify {
     ///
     /// `callback` is invoked **twice per render on the AU's render thread** —
     /// once with [`RenderPhase::Pre`] and once with [`RenderPhase::Post`].
-    ///
-    /// # The no-allocation contract
-    ///
-    /// The callback **must not allocate, lock, or block** — see the module docs.
-    /// Nothing in this module's own path does; the host's closure is the part
-    /// that cannot be checked, so the bound is a contract rather than a
-    /// guarantee. Concretely: no `Vec`/`String`/`format!`, no `Mutex`, no
-    /// channel send that may allocate, no `println!`. Push scalars through
-    /// atomics; publish a table with [`ArcLend`](tutti_rt::ArcLend) from
-    /// the control thread and *read* it here.
-    ///
-    /// A panic is caught rather than propagated, but by then it has already
-    /// missed the block's deadline.
-    ///
-    /// The handle holds a share of the unit, so the unit outlives the
-    /// registration: the AU stores the `ref_con` and dereferences it on every
-    /// render, and nothing can dispose the instance first.
     ///
     /// # Errors
     /// Returns the `OSStatus` if the AU refuses `AudioUnitAddRenderNotify`. Measured on macOS 15.6: no installed
@@ -675,13 +481,6 @@ mod tests {
     /// reads the written fields at different offsets — and every field is a
     /// plain integer or float, so any bit pattern is a legal (wrong) answer
     /// rather than a detectable fault.
-    ///
-    /// Measured against the real `<AudioToolbox/AudioToolbox.h>` on macOS 15.6
-    /// (arm64): `sizeof == 32`, `alignof == 4`. The union is 16 bytes (the ramp
-    /// arm: `i32 + u32 + f32 + f32`) and the header is 16
-    /// (`scope + element + parameter + eventType`, four `UInt32`s), so unlike
-    /// `AudioUnitEvent` in `listener.rs` there is **no** interior padding here —
-    /// every member is 4-aligned.
     #[test]
     fn the_parameter_event_struct_matches_the_c_layout() {
         assert_eq!(

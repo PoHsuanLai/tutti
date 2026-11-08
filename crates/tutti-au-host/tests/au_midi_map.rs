@@ -312,8 +312,7 @@ fn no_installed_third_party_unit_implements_the_mapping_family() {
     for unit in THIRD_PARTY {
         let Some(info) = unit.find() else { continue };
         probed += 1;
-        // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (AuInstance::new(info.component, RATE, BLOCK)) else {
+        let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             continue;
         };
         let _ = au.initialize();

@@ -84,7 +84,7 @@ use tutti_au_ffi::property::{
     AddParameterMidiMapping, AllParameterMidiMappings, HotMapParameterMidiMapping,
     RemoveParameterMidiMapping,
 };
-use tutti_au_ffi::{Element, Scope};
+use tutti_au_ffi::{Element, Property, Scope};
 
 use crate::error::Result;
 use crate::types::*;

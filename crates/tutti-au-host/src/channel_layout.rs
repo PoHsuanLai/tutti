@@ -377,7 +377,7 @@ pub(crate) fn layout_tag(unit: &Unit, direction: BusDirection, bus: u32) -> Resu
     let bytes = unit.get_bytes::<AudioChannelLayoutProperty>(direction.scope(), Element(bus))?;
     // The AU controls this length, and measured sizes differ per unit for the
     // same logical value (AUMatrixReverb: 32 bytes; AUMultiChannelMixer and
-    // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayoutProperty>`
+    // AUSampler: 12), so a fixed-`size_of` `get_property::<AudioChannelLayout>`
     // would read a length neither agreed to. Anything shorter than the 4-byte
     // tag has no tag to report.
     if bytes.len() < size_of::<u32>() {
@@ -674,7 +674,7 @@ mod tests {
         );
         // And it must genuinely be smaller than the full struct, or the
         // subtraction is not doing anything.
-        assert!(TAG_ONLY_LAYOUT_SIZE < size_of::<AudioChannelLayoutProperty>());
+        assert!(TAG_ONLY_LAYOUT_SIZE < size_of::<AudioChannelLayout>());
         // The three header fields sit where the arithmetic assumes.
         assert_eq!(
             std::mem::offset_of!(AudioChannelLayout, mChannelLayoutTag),

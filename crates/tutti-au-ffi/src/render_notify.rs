@@ -128,9 +128,8 @@ use coreaudio_sys::{
     AudioUnitParameterEvent, AudioUnitParameterEvent__bindgen_ty_1 as ParamEventValues,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_1 as RawRamp,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_2 as RawImmediate, AudioUnitParameterID,
-    AudioUnitRemoveRenderNotify, AudioUnitRenderActionFlags, AudioUnitScheduleParameters,
-    AudioUnitScope, OSStatus, kAudioUnitScope_Global, kParameterEvent_Immediate,
-    kParameterEvent_Ramped,
+    AudioUnitRemoveRenderNotify, AudioUnitRenderActionFlags, AudioUnitScheduleParameters, OSStatus,
+    kParameterEvent_Immediate, kParameterEvent_Ramped,
 };
 
 use crate::callback::with_state;

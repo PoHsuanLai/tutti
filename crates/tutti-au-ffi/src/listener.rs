@@ -68,8 +68,8 @@ use std::sync::Arc;
 
 use block2::RcBlock;
 use coreaudio_sys::{
-    AudioUnitElement, AudioUnitParameter, AudioUnitParameterID, AudioUnitParameterValue,
-    AudioUnitPropertyID, AudioUnitScope, OSStatus, dispatch_queue_t, kAudioUnitScope_Global,
+    AudioUnitParameter, AudioUnitParameterID, AudioUnitParameterValue, AudioUnitPropertyID,
+    OSStatus, dispatch_queue_t, kAudioUnitScope_Global,
 };
 
 use crate::error::{Error, Result, check};
@@ -106,7 +106,7 @@ const K_AU_PARAMETER_LISTENER_ANY_PARAMETER: AudioUnitParameterID = 0xFFFF_FFFF;
 ///
 /// Modelled as a tag plus a fixed-size payload rather than a Rust `union` of the
 /// two structs, because they are **layout-identical** — both are
-/// `(AudioUnit, u32, AudioUnitScope, AudioUnitElement)`, differing only in
+/// `(AudioUnit, u32, AudioUnitElement)`, differing only in
 /// whether the second field is a parameter id or a property id. Keeping one
 /// concrete field and reinterpreting the id per tag is what the C union does
 /// anyway, and it avoids an `unsafe` union read at every use site.

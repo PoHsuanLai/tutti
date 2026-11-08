@@ -278,14 +278,15 @@ fn wav_and_flac_quantize_a_sample_identically() {
     );
 }
 
-/// A mono graph exported wider puts its signal in channel 0 and leaves the rest
+/// A mono graph exported to quad puts its signal in the front pair (a mono feeds
+/// a destination without a centre at both fronts) and leaves the rears
 /// silent — asserted on decoded *samples*, not on energy ratios.
 ///
 /// `render.rs` already checks this via peak values from `render_to_buffers`;
 /// here it goes through a real encoder and back off disk, which is what catches
 /// an interleaving slip that a buffer-level check cannot see.
 #[test]
-fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
+fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_the_front_pair() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("quad.wav");
 
@@ -302,12 +303,13 @@ fn a_mono_graph_upmixed_to_quad_puts_signal_only_in_channel_zero() {
 
     let tol = lsb(Pcm::Int24);
     for (i, frame) in samples.as_chunks::<4>().0.iter().enumerate() {
-        assert!(
-            (frame[0] - 0.5).abs() <= tol,
-            "frame {i}: channel 0 should carry 0.5, got {}",
-            frame[0]
-        );
-        for (c, &s) in frame.iter().enumerate().skip(1) {
+        for (c, &s) in frame.iter().enumerate().take(2) {
+            assert!(
+                (s - 0.5).abs() <= tol,
+                "frame {i}: channel {c} should carry 0.5, got {s}"
+            );
+        }
+        for (c, &s) in frame.iter().enumerate().skip(2) {
             assert!(
                 s.abs() <= tol,
                 "frame {i}: channel {c} should be silent, got {s}"

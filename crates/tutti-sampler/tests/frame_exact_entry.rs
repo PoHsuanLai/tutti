@@ -75,7 +75,7 @@ fn pool(start: Beat) -> VoicePool {
     for _ in 0..SR as usize {
         wave.push_frame(&[0.5]);
     }
-    let source = MemorySource::placed(Arc::new(wave), start, None);
+    let source = MemorySource::placed(Arc::new(wave), start, None).expect("a placeable wave");
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),

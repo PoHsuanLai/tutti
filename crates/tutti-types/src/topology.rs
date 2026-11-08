@@ -118,7 +118,7 @@ impl Speaker {
     ///
     /// Worth a predicate rather than an `==` at each call site because the LFE
     /// is the one position with different *handling* rather than a different
-    /// place: it is excluded from a consumer downmix (see [`crate::fold_frame`]), and
+    /// place: it is excluded from a consumer downmix (see [`Fold`](crate::Fold)), and
     /// it is not a VBAP-panned speaker.
     #[must_use]
     pub const fn is_lfe(self) -> bool {
@@ -253,7 +253,7 @@ impl ChannelTopology {
     /// width with no defined one.
     ///
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
-    /// [`crate::fold_frame`] folds by and that the spatial panner maps to:
+    /// [`Fold`](crate::Fold) folds by and that the spatial panner maps to:
     /// `FC` for mono, `FL FR` for stereo, `FL FR C LFE SL SR [BL BR]` for 5.1
     /// and 7.1, and 7.1.4 at 12: the 7.1 bed then `TFL TFR TBL TBR`. These are
     /// the widths [`Fold`](crate::Fold) has an order for.
@@ -305,6 +305,21 @@ impl ChannelTopology {
             _ => return None,
         };
         Some(Self::new(positions.iter().copied()))
+    }
+
+    /// Returns what a bare width is taken to mean at the engine's edges (a
+    /// device, a node's outputs, a file that states nothing): [`smpte`](Self::smpte)
+    /// where it has an order, quad at 4, and `None` elsewhere.
+    ///
+    /// The quad is an assumption [`smpte`](Self::smpte) refuses to make: a
+    /// four-channel device or graph root is far more often quad than B-format.
+    /// An edge that knows better states its own topology instead.
+    #[must_use]
+    pub fn assumed(layout: ChannelLayout) -> Option<Self> {
+        match layout.count() {
+            4 => Some(Self::quad()),
+            _ => Self::smpte(layout),
+        }
     }
 
     /// Returns the quad topology, `FL FR BL BR`: four speaker feeds.

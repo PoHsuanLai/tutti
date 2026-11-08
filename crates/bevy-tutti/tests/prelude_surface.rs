@@ -196,10 +196,13 @@ fn _surface_compiles() {
 
     // Sampler: build a voice, and clamp a file width to what it will play.
     // Every type in this signature comes from the prelude — `Playback`,
-    // `VoiceWindow` and `Voice` are memory_voice's arguments and return, so a
+    // `VoiceWindow`, `Voice` and `PlaceError` are memory_voice's arguments and return, so a
     // prelude carrying only the function would be an incomplete forward.
     #[cfg(feature = "sampler")]
-    fn _build_voice(wave: std::sync::Arc<tutti_codec::Wave>, width: ChannelLayout) -> Voice {
+    fn _build_voice(
+        wave: std::sync::Arc<tutti_codec::Wave>,
+        width: ChannelLayout,
+    ) -> Result<Voice, PlaceError> {
         memory_voice(
             wave,
             voice_width(width),

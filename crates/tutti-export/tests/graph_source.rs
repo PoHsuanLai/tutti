@@ -8,7 +8,7 @@
 //!   one (a sine's samples, a DC level, a lookahead's frames, a direct
 //!   time-domain convolution, the tone a dry voice reads), and the export's
 //!   own invariants where it does not (a file is its planes through
-//!   `write_buffers`; a width is the quad render through `fold_frame`; a
+//!   `write_buffers`; a width is the quad render folded by the ITU matrix; a
 //!   trimmed render is the untrimmed one shifted by the trim; a fork of a
 //!   graph renders the fresh graph).
 //! - Golden digests, on the recorded target only: FNV-1a over the planes'
@@ -430,7 +430,7 @@ fn a_dithered_export_writes_its_dithered_render() {
 
 /// The surround case: a quad VBAP mix, exported at its own width and folded
 /// down to stereo and to mono. The narrower files are the quad render folded
-/// frame by frame with `fold_frame` (the ITU matrix), to the bit; the quad
+/// frame by frame by the ITU matrix, written out, to the bit; the quad
 /// render puts the front-left source in channel 0 and the rear-left one in
 /// channel 2; and the built and forked quad renders match their
 /// golden digests.
@@ -443,7 +443,7 @@ fn a_dithered_export_writes_its_dithered_render() {
 /// glides in from front-centre, so the built render's digest depends on the
 /// block partition; the forked render's panners start on their bearing.
 ///
-/// Mutations (run): `fold_graph_frame` reading `planes[0]` for every source
+/// Mutations (run): the fold reading plane 0 for every source
 /// channel → the stereo file is not the quad render folded; `GRAPH_MAX_BLOCK
 /// = 1000` (not a multiple of 64) → the panners' ramps restart on other
 /// frames and the quad digest moves.
@@ -465,13 +465,19 @@ fn a_surround_mix_folds_to_every_width() {
     for width in [ChannelLayout::STEREO, ChannelLayout::MONO] {
         let got = buffers(built(quad_vbap()), &config(Pcm::Float32, width)).planes;
         let n = width.count() as usize;
+        // The ITU quad fold, written out: `Lo = FL + M3DB·BL`, `Ro = FR + M3DB·BR`,
+        // and the mono file is `(Lo + Ro)·M3DB`.
+        let m = tutti_types::M3DB;
         let mut folded = vec![Vec::with_capacity(FRAMES); n];
-        let mut frame = vec![0.0f32; n];
-        for i in 0..FRAMES {
-            let src: Vec<f32> = quad.iter().map(|p| p[i]).collect();
-            tutti_types::fold_frame(&src, &mut frame);
-            for (plane, &s) in folded.iter_mut().zip(&frame) {
-                plane.push(s);
+        let [fl, fr, bl, br] = [0, 1, 2, 3].map(|c| &quad[c]);
+        for (((&fl, &fr), &bl), &br) in fl.iter().zip(fr).zip(bl).zip(br) {
+            let lo = fl + m * bl;
+            let ro = fr + m * br;
+            if n == 2 {
+                folded[0].push(lo);
+                folded[1].push(ro);
+            } else {
+                folded[0].push((lo + ro) * m);
             }
         }
         assert_same(&format!("{n}-wide against the quad folded"), &folded, &got);
@@ -815,7 +821,7 @@ fn timeline() -> Arc<OfflineTimeline> {
 /// here, the render clock's.
 fn placed_pool(cents: f32) -> tutti_sampler::VoicePool {
     use tutti_sampler::{MemorySource, Playback, SlotId, Voice, VoicePool, VoiceSource};
-    let source = MemorySource::placed(tone(), Beat(0.0), None);
+    let source = MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave");
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),
@@ -973,7 +979,9 @@ fn a_forked_clip_reader_renders_the_tone_at_the_graph_block() {
 
     // Live, the voice plays on another transport, somewhere else.
     let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
-    let (k, _params) = g.add_with_controls(MemorySource::placed(tone(), Beat(0.0), None));
+    let (k, _params) = g.add_with_controls(
+        MemorySource::placed(tone(), Beat(0.0), None).expect("a placeable wave"),
+    );
     g.pipe_output(k);
     let (live, mut exec) = g.build(Prepare::new(RATE, Samples(256))).expect("builds");
     exec.apply_pending();

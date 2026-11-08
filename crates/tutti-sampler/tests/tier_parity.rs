@@ -396,7 +396,8 @@ fn the_disk_and_memory_tiers_render_the_same_material() {
             channels: ChannelLayout::STEREO,
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
 
     // ---- disk tier -------------------------------------------------------
@@ -837,7 +838,8 @@ fn the_tiers_agree_under_varispeed() {
                 speed: PlaybackRate::new(factor),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         let mut mem = contract::prepared(mem, SampleRate(SR), BLOCK);
         let mem_out = render(&mut mem, &mem_clock, 128);
         let mem_left: Vec<f32> = mem_out.iter().map(|&(l, _)| l).collect();

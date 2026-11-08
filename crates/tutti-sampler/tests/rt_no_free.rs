@@ -71,11 +71,10 @@ fn the_add_voice_drain_frees_nothing() {
     let env = t.env(64, SampleRate(48_000.0));
     let voice = || {
         Box::new(Voice {
-            source: VoiceSource::Memory(MemorySource::placed(
-                Arc::clone(&wave),
-                Beat::new(0.0),
-                None,
-            )),
+            source: VoiceSource::Memory(
+                MemorySource::placed(Arc::clone(&wave), Beat::new(0.0), None)
+                    .expect("a placeable wave"),
+            ),
             play: Playback {
                 stretch: StretchFactor::new(2.0),
                 ..Playback::default()

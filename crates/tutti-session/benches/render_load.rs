@@ -255,11 +255,10 @@ fn scene(block: usize, workers: usize, variant: Variant) -> Session {
             pool.insert_voice(
                 SlotId(v as u128 + 1),
                 Voice {
-                    source: VoiceSource::Memory(MemorySource::placed(
-                        Arc::clone(&tone),
-                        Beat(0.0),
-                        None,
-                    )),
+                    source: VoiceSource::Memory(
+                        MemorySource::placed(Arc::clone(&tone), Beat(0.0), None)
+                            .expect("a placeable wave"),
+                    ),
                     play: {
                         let k = (t * SAMPLER_VOICES + v) as f32;
                         let interval = Cents::new(-350.0 + 25.0 * k + 3.0);

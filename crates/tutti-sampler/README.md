@@ -64,7 +64,7 @@ for _ in 0..100 {
 }
 
 // Free-running (not placed on the transport), so it plays once started.
-let source = MemorySource::new(Arc::new(wave));
+let source = MemorySource::new(Arc::new(wave)).expect("a stereo wave places");
 source.play();
 
 // No audio input: the voice is the source. Stereo out.

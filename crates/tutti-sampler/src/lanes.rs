@@ -371,7 +371,8 @@ mod tests {
         let mut wave = tutti_codec::Wave::new(2, 48_000.0);
         wave.push_frame(&[0.0, 0.0]);
         let wave = std::sync::Arc::new(wave);
-        let source = MemorySource::placed(std::sync::Arc::clone(&wave), Beat::new(0.0), None);
+        let source = MemorySource::placed(std::sync::Arc::clone(&wave), Beat::new(0.0), None)
+            .expect("a placeable wave");
         let mut pool = VoicePool::new();
         let mut node = VoiceNode::new(Voice {
             source: VoiceSource::Memory(source.clone()),

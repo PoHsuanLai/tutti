@@ -288,7 +288,7 @@ pub mod prelude {
         PlaySoundFont, SoundFontAsset, SoundFontAssetLoader, TuttiSoundFontPlugin,
     };
     #[cfg(feature = "sampler")]
-    pub use tutti_sampler::{Playback, Voice, VoiceWindow, memory_voice, voice_width};
+    pub use tutti_sampler::{PlaceError, Playback, Voice, VoiceWindow, memory_voice, voice_width};
 
     pub use crate::graph::AudioNode;
     pub use tutti_graph::CrossfadeCurve;

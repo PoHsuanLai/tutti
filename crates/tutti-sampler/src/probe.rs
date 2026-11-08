@@ -22,7 +22,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tutti_types::{ChannelLayout, SampleRate, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
 
 /// What a header says about a file, and what this sampler can do with it.
 ///
@@ -31,7 +31,7 @@ use tutti_types::{ChannelLayout, SampleRate, Samples};
 /// `PartialEq` but not `Eq`: `SampleRate` is float-backed, like every measure
 /// unit in the engine's vocabulary. A host caching these compares them with
 /// `==` as usual; it just cannot use one as a `HashMap` key.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SampleFacts {
     /// Total length in frames, not interleaved samples, if the container
     /// reports one.
@@ -51,6 +51,15 @@ pub struct SampleFacts {
     /// The file's channel count. Multiply by [`frames`](Self::frames) to size an
     /// interleaved buffer.
     pub layout: ChannelLayout,
+    /// Which speaker each channel of the file feeds, in sample order.
+    ///
+    /// What a voice over this file would place by: a channel no speaker names
+    /// (a second LFE, a wide or high speaker) is
+    /// [`Speaker::Unknown`](tutti_types::Speaker::Unknown), and a
+    /// memory voice over such a file is refused
+    /// ([`PlaceError`](crate::PlaceError)). A host that wants to say so before
+    /// it loads the file reads it here.
+    pub topology: ChannelTopology,
     /// Whether this build's butler can stream this file.
     ///
     /// The sampler's verdict, not a property of the file alone. False when the
@@ -72,7 +81,7 @@ impl SampleFacts {
     /// "empty" from "unmeasurable", so this is for display and rough sizing
     /// rather than for policy. Policy reads [`frames`](Self::frames).
     #[must_use]
-    pub fn frames_or_zero(self) -> Samples {
+    pub fn frames_or_zero(&self) -> Samples {
         self.frames.unwrap_or(Samples(0))
     }
 }
@@ -124,8 +133,9 @@ pub fn probe(path: impl AsRef<Path>) -> Result<SampleFacts, ProbeError> {
     Ok(SampleFacts {
         frames: meta.total_frames.map(|f| Samples(f as usize)),
         sample_rate: SampleRate::from(meta.sample_rate),
-        layout: ChannelLayout::from(meta.channels),
+        layout: ChannelLayout::from(meta.channels()),
         streamable: streamable(path, &meta),
+        topology: meta.topology,
     })
 }
 
@@ -219,6 +229,7 @@ mod tests {
             frames: None,
             sample_rate: SampleRate::from(48_000u32),
             layout: ChannelLayout::STEREO,
+            topology: ChannelTopology::smpte(ChannelLayout::STEREO).unwrap(),
             streamable: false,
         };
         assert_eq!(unknown.frames_or_zero(), Samples(0));

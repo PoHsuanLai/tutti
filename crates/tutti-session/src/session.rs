@@ -830,10 +830,16 @@ impl Session {
     /// and each hosted plugin's meter. Beside it, the cells the session
     /// publishes to itself: the project meter (and
     /// every slot following it), the modulation lanes (inserted by the
-    /// reconciler, not through `add`) and the hardware ports' table.
+    /// reconciler, not through `add`), the hardware ports' table and an
+    /// offline engine's output folds.
     pub(crate) fn reclaim(&self) -> usize {
         let mut pinned = self.graph.reclaim();
         pinned += self.click_settings.project_meter().reclaim();
+        // An offline session's engine; a device's is in its callback state,
+        // and `support_output` reclaims what it replaces itself.
+        if let Some(engine) = &self.engine {
+            pinned += engine.reclaim();
+        }
         #[cfg(feature = "modulation")]
         {
             pinned += self.mods.state.reclaim();

@@ -271,7 +271,7 @@ impl Row {
 ///   pair; any other overhead speaker into the front speaker on its side. The
 ///   LFE is omitted unless the destination has one. This is the ITU-R BS.775 /
 ///   Dolby consumer downmix for a stereo destination, the coefficients
-///   [`fold_frame`](crate::fold_frame) always used. For any other destination
+///   the width folds always used. For any other destination
 ///   (5.1 to quad, 7.1.4 to 7.1) the same −3 dB table applies and the
 ///   coefficients and the choice of nearest speaker are this crate's own: no
 ///   standard fixes them.
@@ -307,8 +307,9 @@ impl Row {
 /// # Bit-identity with the width folds
 ///
 /// For the topologies [`ChannelTopology::smpte`] (and [`quad`](ChannelTopology::quad))
-/// gives, a fold to one or two channels reproduces
-/// [`fold_frame`](crate::fold_frame) to the bit, in their
+/// gives, a fold to one or two channels reproduces the width folds this
+/// replaced ([`fold_frame_to_stereo`](crate::fold_frame_to_stereo) is the
+/// stereo one) to the bit, in their
 /// order of operations: the direct channel, then each folded channel in source
 /// order, `acc + gain·x`. With overhead speakers in the source (7.1.4) the −3 dB
 /// channels of a side are summed first and then scaled once, as the 12-wide
@@ -578,6 +579,99 @@ impl Fold {
         Self::between(&order(src)?, &order(dst)?)
     }
 
+    /// Places the channels of a source by index, for widths that have no order:
+    /// widening only.
+    ///
+    /// Destination channel `i` is source channel `i` at gain 1.0 and the rest of
+    /// a wider destination is zero-filled. A destination narrower than the
+    /// source would have to drop channels, and a channel that cannot be placed
+    /// is an error, never a silent drop: that is [`FoldError::Unplaced`] (the
+    /// first channel with no place, carrying [`Speaker::Discrete`] since a
+    /// width names no speaker). A caller who chooses to truncate says so with
+    /// [`select`](Self::select).
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError::Empty`] for a width of zero, [`FoldError::Unplaced`] for a
+    /// narrowing.
+    pub fn by_index(src: ChannelLayout, dst: ChannelLayout) -> Result<Self, FoldError> {
+        let (s, d) = (src.count(), dst.count());
+        for (end, n) in [(FoldEnd::Source, s), (FoldEnd::Destination, d)] {
+            if n == 0 {
+                return Err(FoldError::Empty(end));
+            }
+        }
+        if s > d {
+            return Err(FoldError::Unplaced {
+                channel: usize::from(d),
+                speaker: Speaker::Discrete,
+            });
+        }
+        let rows = (0..d)
+            .map(|i| Row::One(if i < s { Expr::Copy(i) } else { Expr::Zero }))
+            .collect();
+        Ok(Self { src: s, rows })
+    }
+
+    /// Builds the fold from `src` into a destination of which only the width
+    /// is known: a device, a node's outputs, a file.
+    ///
+    /// The destination is taken to be the engine's own order for its width
+    /// ([`ChannelTopology::assumed`]); a mono source lands on the centre of a
+    /// 6, 8 or 12-wide one and the front pair of a 2 or 4-wide one. The source is placed by speaker:
+    ///
+    /// - a source with an [`Unknown`](Speaker::Unknown) channel (a second LFE,
+    ///   a wide or high speaker) is [`FoldError::Unnamed`], whatever the
+    ///   destination: nothing can be said about where it goes;
+    /// - a [`Discrete`](Speaker::Discrete) source is a bare count, and is read
+    ///   in the engine's order for it where it has one (a stereo-or-wider file
+    ///   whose container states nothing; a quad);
+    /// - where both ends have an order, [`between`](Self::between);
+    /// - where either has none (3, 5, 7, 9 to 11, 13 and up), no speaker can be
+    ///   named, so channels go by index ([`by_index`](Self::by_index)): a mono
+    ///   source widens to the first channel, and a narrowing is an error
+    ///   ([`FoldError::Unplaced`]), not a truncation.
+    ///
+    /// # Errors
+    ///
+    /// As [`between`](Self::between), and [`FoldError::Unnamed`] as above.
+    pub fn to_width(src: &ChannelTopology, dst: ChannelLayout) -> Result<Self, FoldError> {
+        if let Some(channel) = src
+            .positions()
+            .iter()
+            .position(|p| matches!(p, Speaker::Unknown(_)))
+        {
+            return Err(FoldError::Unnamed {
+                end: FoldEnd::Source,
+                channel,
+            });
+        }
+        let from = if src.is_discrete() {
+            ChannelTopology::assumed(src.layout())
+        } else {
+            Some(src.clone())
+        };
+        match (from, ChannelTopology::assumed(dst)) {
+            (Some(from), Some(to)) => Self::between(&from, &to),
+            _ => Self::by_index(src.layout(), dst),
+        }
+    }
+
+    /// As [`to_width`](Self::to_width) for two bare widths: each is the
+    /// engine's order for it where it has one, and channels go by index where
+    /// it has none.
+    ///
+    /// For the edges that know no more than a count: the graph root against a
+    /// device or an export file.
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError::Empty`] for a width of zero.
+    pub fn widths(src: ChannelLayout, dst: ChannelLayout) -> Result<Self, FoldError> {
+        let from = ChannelTopology::assumed(src).unwrap_or_else(|| ChannelTopology::discrete(src));
+        Self::to_width(&from, dst)
+    }
+
     /// Chooses source channels for a discrete destination: destination channel
     /// `i` is source channel `channels[i]`, gain 1.0, bit-exact. A channel may
     /// be chosen twice (one input to both sides); the rest are not read.
@@ -675,6 +769,18 @@ impl Fold {
             }
         };
         Ok(Box::new([row]))
+    }
+
+    /// Whether every destination channel is the source channel of the same
+    /// index, copied: a fold a caller may skip, reading the planes in place.
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        usize::from(self.src) == self.rows.len()
+            && self
+                .rows
+                .iter()
+                .enumerate()
+                .all(|(i, row)| matches!(row, Row::One(Expr::Copy(c)) if usize::from(*c) == i))
     }
 
     /// The source width this fold reads.

@@ -287,6 +287,13 @@ crates/          everything shipped; directory name = package name; no nesting
   tutti-midi-protocol  MIDI 1.0 to MIDI 2.0 translation (design 017 §4 and §6): the
                  stateless `widen`, `narrow` and `midi1` and the M2-115 scaling;
                  depends on `tutti-ump` alone
+  tutti-voicing  what a note-driven instrument decides before it makes sound, as one
+                 pure step: `Voicing::step(channel, message, patch, voices) -> &[Command]`
+                 (`Start`, `Retarget`, `Release`, `Cut`, `Retune`) over channel state, the
+                 note table and the note gate (`Holds`), with the differences between
+                 instruments as values (`Rules`) and a `Patch`; no audio, no voice, no
+                 allocation after `new`. Depends on `tutti-ump`, `tutti-midi-protocol` and
+                 `tutti-types`; `publish = false`
   tutti-midi-device  MIDI device detection core (design 017 §5): `DeviceId`, `OsChange`,
                  the pure `DeviceTable`; no OS, no thread, and no dependency but optional `serde`
   tutti-types    vocabulary only: units, channel layouts, io edge traits,
@@ -340,7 +347,7 @@ list (normal and build edges; dev-dependencies may go anywhere).
 0. `arc-lend`, `vst-tutti`, `tutti-alsa-ump-sys`, `tutti-ump`
 1. `tutti-types`, `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-sf2`
 2. `tutti-graph`, `tutti-dsp`, `tutti-mod`, `tutti-midi-types`, `tutti-metering`,
-   `tutti-codec`, `tutti-tempo`
+   `tutti-codec`, `tutti-tempo`, `tutti-voicing`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-rustysynth`
 4. `tutti-engine`, `tutti-io`, `tutti-nodes`, `tutti-midi-runtime`, `tutti-midi-file`,
    `tutti-clap-ffi`, `tutti-vst3-ffi`, `tutti-au-host`, `tutti-vst2-host`,
@@ -377,6 +384,22 @@ list (normal and build edges; dev-dependencies may go anywhere).
   it) and is `#![forbid(unsafe_code)]`. It holds no state and allocates
   nothing. A consumer's call to `widen` is transitional: the stage 3 translator
   calls it at the input edge and consumers drop theirs.
+- `tutti-voicing` depends on `tutti-ump`, `tutti-midi-protocol` and `tutti-types`
+  only, keeps every module private (`tutti_voicing::Voicing`; CI runs the
+  per-module path gate on it), is `#![forbid(unsafe_code)]`, `publish = false`
+  and has no `bevy` feature. **The note logic of an instrument is one pure step
+  here, and an instrument keeps its voices and its render:** it builds a
+  `VoiceView` list, calls `step`, and does what the `Command`s say (`PolySynth`
+  does, in `tutti-polysynth`'s `VoiceAllocator`, which is now its slot table).
+  What differs between instruments is a value of `Rules` or a `Patch`, never a
+  branch in the core; a difference only one instrument has and the spec does not
+  require is a reason to look again. `step` allocates nothing: its tables are
+  sized in `new` and a `Clone` keeps their capacity; the instrument passes
+  `VoiceView`s sorted by id, and only for a note-on (liveness is read there).
+  The spec is the only oracle: a rule gets a test from the spec and a mutation,
+  and nothing is pinned against another implementation. Mono and legato follow
+  tutti's named rule (last-note priority over a per-channel stack of held keys),
+  which MIDI 1.0 does not specify.
 - `tutti-midi-device` depends on no workspace crate, keeps every module private
   (`tutti_midi_device::DeviceTable`; CI runs the per-module path gate on it) and
   is `#![forbid(unsafe_code)]`. It holds no OS handle, thread or clock: a backend

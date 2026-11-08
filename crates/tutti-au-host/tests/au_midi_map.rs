@@ -257,7 +257,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
                     tutti_au_host::types::AudioUnitGetPropertyInfo(
                         au.raw_unit(),
                         MidiControlMapping::ID,
-                        scope,
+                        scope.raw(),
                         0,
                         &mut size,
                         &mut writable,
@@ -265,7 +265,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
                 };
                 if status == tutti_au_host::types::NO_ERR {
                     hits.push(format!(
-                        "{} ({phase}, scope {scope}, {size} bytes)",
+                        "{} ({phase}, scope {scope:?}, {size} bytes)",
                         info.name
                     ));
                 }
@@ -959,7 +959,7 @@ fn an_unarmed_hot_map_read_answers_noerr_not_the_documented_error() {
             tutti_au_host::types::AudioUnitGetProperty(
                 au.raw_unit(),
                 44, // kAudioUnitProperty_HotMapParameterMIDIMapping
-                Scope::GLOBAL,
+                Scope::GLOBAL.raw(),
                 0,
                 buf.as_mut_ptr() as *mut std::os::raw::c_void,
                 &mut size,

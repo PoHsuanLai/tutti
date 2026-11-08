@@ -157,6 +157,11 @@ required-features = ["midi"]
 name = "export_cancel"
 required-features = ["export"]
 
+# A parallel export is bit-identical to the serial one.
+[[test]]
+name = "export_parallel"
+required-features = ["export"]
+
 # Hosted plugins, their render mode and exports, over the reference CLAP
 # plugin in a real `plugin-server`: fails without the server, by design.
 [[test]]

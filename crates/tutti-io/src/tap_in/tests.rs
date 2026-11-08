@@ -56,12 +56,14 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapIn {
         })
     };
     ed.spec_mut().topology.outputs = vec![port(0), port(1)];
-    let reader = ed.open_tap(
-        TapId(0),
-        vec![port(0), port(1)],
-        TapAlign::ToOutput,
-        Samples(ring),
-    );
+    let reader = ed
+        .open_tap(
+            TapId(0),
+            vec![port(0), port(1)],
+            TapAlign::ToOutput,
+            Samples(ring),
+        )
+        .expect("the sources exist");
     ed.commit().expect("compiles");
     exec.apply_pending();
     ed.collect();
@@ -162,12 +164,14 @@ fn the_layout_follows_the_taps_width() {
     let (mut ed, _exec): (Editor, Executor) =
         Editor::new(Prepare::new(SampleRate(48_000.0), Samples(BLOCK)));
     for width in [1usize, 2, 6] {
-        let reader = ed.open_tap(
-            TapId(width as u32),
-            vec![Source::Zero; width],
-            TapAlign::Raw,
-            Samples(8),
-        );
+        let reader = ed
+            .open_tap(
+                TapId(width as u32),
+                vec![Source::Zero; width],
+                TapAlign::Raw,
+                Samples(8),
+            )
+            .expect("the sources exist");
         assert_eq!(
             TapIn::new(reader).layout(),
             ChannelLayout::from_count(width as u16)

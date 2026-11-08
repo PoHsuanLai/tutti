@@ -40,7 +40,9 @@ that pays, and the compiler packs tasks too cheap to dispatch alone.
   `Env`, never a split block.
 - Copying audio out of the graph is a **tap**, read through one `TapReader`
   (`TapIn` adapts it to `AudioIn`), and there are two kinds:
-  - **The plan tap** (`Graph::open_tap`, `open_output_tap`): `Topology.taps`,
+  - **The plan tap** (`Graph::open_tap`, `open_output_tap`; opening refuses a
+    source that does not exist then with `MissingSource`, and a lane whose port
+    goes missing later reads silence, never failing a commit): `Topology.taps`,
     one `Op::Tap` per tap in the plan, any port and width, aligned by the
     compiler or raw, a `ringbuf` ring per lane written together (the lanes
     cannot tear), the writer riding the commit queue. A closed tap compiles to
@@ -93,7 +95,7 @@ serial one.
   flip, with a loom model), so a block lands in one read, peak and energy
   together; a read takes what was held since the last read, so a reader is
   one consumer (`&mut self`, not `Clone`) and a second consumer opens a
-  second meter. A lane naming a port that no longer exists reads silence.
+  second meter. Opening refuses a source that does not exist then (`MissingSource`); a lane whose port goes missing later reads silence.
   Ballistics are the reader's.
   `LoadMeter` stays in `Engine`: it times the block and is not audio.
 - **Nodes run inside `with_no_denormals`**: never make memory safety depend

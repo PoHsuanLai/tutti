@@ -565,7 +565,12 @@ mod master_record {
         let path = dir.path().join("master.wav");
 
         let mut graph = graph();
-        let src = TapIn::new(graph.graph().open_output_tap(Samples(4096)));
+        let src = TapIn::new(
+            graph
+                .graph()
+                .open_output_tap(Samples(4096))
+                .expect("the sources exist"),
+        );
 
         let mut app = app();
         app.world_mut()
@@ -619,7 +624,12 @@ mod master_record {
         let path = dir.path().join("gappy.wav");
         let mut graph = graph();
         // A 64-frame ring, 256 frames rendered before the pump runs.
-        let src = TapIn::new(graph.graph().open_output_tap(Samples(64)));
+        let src = TapIn::new(
+            graph
+                .graph()
+                .open_output_tap(Samples(64))
+                .expect("the sources exist"),
+        );
         let mut frame = [0.0f32; 2];
         for _ in 0..256 {
             graph.render_frame(&mut frame);
@@ -665,7 +675,12 @@ mod master_record {
         let path = dir.path().join("silent.wav");
 
         let mut graph = graph();
-        let src = TapIn::new(graph.graph().open_output_tap(Samples(4096)));
+        let src = TapIn::new(
+            graph
+                .graph()
+                .open_output_tap(Samples(4096))
+                .expect("the sources exist"),
+        );
 
         let mut app = app();
         app.world_mut()

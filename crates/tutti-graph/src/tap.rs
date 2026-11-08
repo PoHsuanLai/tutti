@@ -4,9 +4,11 @@
 //! sources" ([`TapSpec`](tutti_types::TapSpec)); the compiler emits one
 //! [`Op::Tap`](crate::Op::Tap) per tap, reading every lane's source, and, for an
 //! aligned tap, the same delay an output channel gets for each. A tap that is not in the topology compiles to
-//! nothing. A lane whose port does not exist (a node replaced by a narrower
-//! one, a removed node) reads silence and the commit succeeds; the reader is
-//! not told, and the zeros count as neither data nor loss.
+//! nothing. Opening a tap refuses a source that does not exist then
+//! ([`MissingSource`](crate::MissingSource)); a lane whose port goes missing
+//! later (a node replaced by a narrower one, a removed node) reads silence and
+//! the commit succeeds; the reader is not told, and the zeros count as neither
+//! data nor loss.
 //!
 //! The ring each lane writes is `ringbuf`'s single-producer, single-consumer
 //! heap ring, already this crate's dependency for the editor-to-executor queue;

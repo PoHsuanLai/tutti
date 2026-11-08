@@ -341,8 +341,14 @@ it replaced `AudioTap`, a stereo ring the device callback pushed into under a
 
 - **The value.** `Topology.taps: BTreeMap<TapId, TapSpec>`; `TapSpec { sources:
   Vec<Source>, align: TapAlign }`, one lane a source, any ports, any width.
-  A lane naming a node port or global input that does not exist reads silence
-  and the commit succeeds (there is no `Invalid` for it: a display or a
+  **Opening checks, committing does not.** `Editor::open_tap` (and
+  `open_meter`; the session's `open_tap`, `open_output_tap`, `open_meter`,
+  `open_node_meter`) returns `Err(MissingSource)` for a source that does not
+  exist in the spec as edited at that moment (a key no node has, a port past
+  the node's width, a global input past the graph's), naming it, and opens
+  nothing: a typo'd source would otherwise record silence for good with no
+  loss counted. A lane whose port goes missing *later* reads silence and
+  the commit succeeds (there is no `Invalid` for it: a display or a
   recording must not wedge the graph; the compiler resolves the missing port
   to `Zero`, with no delay ring, and the other lanes' rings are keyed by their
   own lane and source, so they do not move). `TapReader` does not report it:
@@ -449,7 +455,9 @@ block and is not audio.
   `Commit` and is carried or replaced by id (`Executor::rebuild`); a closed
   meter emits nothing and leaves the ops of a graph that never had one
   (`tests/meter.rs`); a fork carries none; `Editor::open_meter` / `close_meter`
-  / `reap_meters`; a removed node or a narrowed one turns its lanes to silence;
+  / `reap_meters`; opening refuses a source that does not exist then
+  (`MissingSource`), and a removed node or a narrowed one turns its lanes to
+  silence afterwards;
   `CommitError::MeterWidth` for a width that no longer fits the cells. A tap
   moves samples out through a ring and can lose them; a meter keeps two
   scalars a lane and cannot. They are two ops with two readers, not one op with

@@ -91,8 +91,11 @@ fn rolling_state_with(
     let reader = tap.then(|| {
         let sources = ed.spec().topology.outputs.clone();
         ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(MAX_FRAMES))
+            .expect("the sources exist")
     });
-    let meter = ed.open_meter(MeterId(0), MeterSpec::Outputs);
+    let meter = ed
+        .open_meter(MeterId(0), MeterSpec::Outputs)
+        .expect("the sources exist");
     ed.commit().expect("commits");
     let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
     // Every commit is sent; the editor only has to outlive the engine's

@@ -299,6 +299,55 @@ impl std::fmt::Display for CommitError {
 
 impl std::error::Error for CommitError {}
 
+/// Why [`Editor::open_tap`] or [`Editor::open_meter`] refused: a source that
+/// does not exist in the spec **at the time of the call**, edits not yet
+/// committed included. Nothing was opened.
+///
+/// Only the open is checked. A port that narrows or vanishes *later* (a node
+/// replaced by one with fewer outputs, a removed node) makes its lane read
+/// silence and the commit succeeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MissingSource {
+    /// No node has this key.
+    Node {
+        /// The key.
+        node: NodeKey,
+    },
+    /// The node has no such output port.
+    Port {
+        /// The node.
+        node: NodeKey,
+        /// The port asked for.
+        port: u16,
+        /// The node's output width.
+        width: usize,
+    },
+    /// The graph has no such global input channel.
+    Global {
+        /// The channel asked for.
+        channel: u16,
+        /// The graph's input width.
+        width: usize,
+    },
+}
+
+impl std::fmt::Display for MissingSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Node { node } => write!(f, "no node {}", node.0),
+            Self::Port { node, port, width } => {
+                write!(f, "node {} has no output {port} (it has {width})", node.0)
+            }
+            Self::Global { channel, width } => {
+                write!(f, "no global input {channel} (the graph has {width})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MissingSource {}
+
 /// The control-thread half of a graph: holds the [`GraphSpec`], prepares
 /// units, compiles, and sends each result to its paired [`Executor`].
 ///
@@ -491,22 +540,32 @@ impl Editor {
     /// name compiles to nothing, so a closed tap costs the audio thread
     /// nothing.
     ///
-    /// Nothing is validated here. A lane naming a node port or global input
-    /// that does not exist (a node replaced by one with fewer outputs, a
-    /// removed node) reads silence, and the commit succeeds: a display or a
-    /// recording must not wedge the graph. The reader is not told: the lane is
-    /// zeros, counted neither as data lost nor as a loss, and a lane that
-    /// should have sound is the author's to notice (the spec still names the
-    /// port, so it plays again if a node with that port returns). A latency change that resizes an aligned tap's delay shifts
-    /// the stream by the difference with no marker for the reader, as it does
-    /// an output. A tap sees the signal before the engine's declick fader.
+    /// Every source must exist now, in the spec as edited (uncommitted edits
+    /// included): a node port past the node's width, a key no node has, or a
+    /// global input past the graph's width is refused with
+    /// [`MissingSource`] and nothing is opened. Only the open is checked. A
+    /// lane whose port narrows or vanishes **later** (a node replaced by one
+    /// with fewer outputs, a removed node) reads silence and the commit
+    /// succeeds: a display or a recording must not wedge the graph. The
+    /// reader is not told: the lane is zeros, counted neither as data lost nor
+    /// as a loss (the spec still names the port, so it plays again if a node
+    /// with that port returns). A latency change that resizes an aligned
+    /// tap's delay shifts the stream by the difference with no marker for the
+    /// reader, as it does an output. A tap sees the signal before the
+    /// engine's declick fader.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] naming the first lane's source that is not in the
+    /// spec now.
     pub fn open_tap(
         &mut self,
         id: TapId,
         sources: Vec<Source>,
         align: TapAlign,
         capacity: Samples,
-    ) -> TapReader {
+    ) -> Result<TapReader, MissingSource> {
+        self.check_sources(&sources)?;
         let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
         self.pending_taps.retain(|(k, _)| *k != id);
         self.pending_taps.push((id, writer));
@@ -516,7 +575,39 @@ impl Editor {
             .topology
             .taps
             .insert(id, TapSpec { sources, align });
-        reader
+        Ok(reader)
+    }
+
+    /// Refuses a source that is not in the spec now, uncommitted edits
+    /// included: a typo'd key or a port past a node's width would otherwise
+    /// record silence for good.
+    fn check_sources(&self, sources: &[Source]) -> Result<(), MissingSource> {
+        let t = &self.spec.topology;
+        for &source in sources {
+            match source {
+                Source::Node(p) => {
+                    let node = t
+                        .nodes
+                        .get(&p.node)
+                        .ok_or(MissingSource::Node { node: p.node })?;
+                    if p.port >= node.outputs.count() {
+                        return Err(MissingSource::Port {
+                            node: p.node,
+                            port: p.port,
+                            width: node.outputs.count() as usize,
+                        });
+                    }
+                }
+                Source::Global(channel) if channel >= t.inputs.count() => {
+                    return Err(MissingSource::Global {
+                        channel,
+                        width: t.inputs.count() as usize,
+                    });
+                }
+                Source::Global(_) | Source::Zero => {}
+            }
+        }
+        Ok(())
     }
 
     /// Removes a tap: its ops leave the plan at the next commit and its
@@ -579,10 +670,25 @@ impl Editor {
     /// one gets nothing more. A closed meter is not compiled, so it costs the
     /// audio thread nothing.
     ///
-    /// A lane naming a node port or global input that does not exist (a node
-    /// replaced by one with fewer outputs, a removed node) reads silence; it
-    /// never fails a commit, because a display must not wedge the graph.
-    pub fn open_meter(&mut self, id: MeterId, spec: MeterSpec) -> MeterReader {
+    /// A [`MeterSpec::Ports`] source must exist now, as for
+    /// [`open_tap`](Self::open_tap): otherwise [`MissingSource`] and nothing
+    /// is opened ([`MeterSpec::Outputs`] names none). A lane whose port
+    /// narrows or vanishes **later** (a node replaced by one with fewer
+    /// outputs, a removed node) reads silence; it never fails a commit,
+    /// because a display must not wedge the graph.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] naming the first [`MeterSpec::Ports`] source that is
+    /// not in the spec now.
+    pub fn open_meter(
+        &mut self,
+        id: MeterId,
+        spec: MeterSpec,
+    ) -> Result<MeterReader, MissingSource> {
+        if let MeterSpec::Ports { sources, .. } = &spec {
+            self.check_sources(sources)?;
+        }
         let (lanes, width) = match &spec {
             MeterSpec::Outputs => (MAX_ROOT_CHANNELS, 0),
             MeterSpec::Ports { sources, .. } => (sources.len(), sources.len()),
@@ -592,7 +698,7 @@ impl Editor {
         self.pending_meters.push((id, writer));
         self.meter_readers.insert(id, (lanes, reader.watch()));
         self.spec_mut().topology.meters.insert(id, spec);
-        reader
+        Ok(reader)
     }
 
     /// Removes a meter: its op leaves the plan at the next commit and its

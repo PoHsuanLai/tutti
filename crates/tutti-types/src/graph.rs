@@ -319,7 +319,9 @@ pub struct Topology {
     pub inputs: ChannelLayout,
     /// Copy-out points ("tap these sources"). A closed tap is absent: nothing
     /// is compiled for it. [`validate`](Self::validate) does not check a tap's
-    /// sources: a lane naming a port that does not exist reads silence.
+    /// sources: opening one refuses a source that does not exist then
+    /// (`tutti_graph::MissingSource`), and a lane whose port goes missing
+    /// later reads silence.
     pub taps: BTreeMap<TapId, TapSpec>,
     /// Level meters ("measure these sources"). A closed meter is absent:
     /// nothing is compiled for it.
@@ -413,7 +415,8 @@ pub enum TapAlign {
 pub struct TapSpec {
     /// One per lane. A lane naming a port that does not exist (a node
     /// replaced by one with fewer outputs, a removed node, a global input
-    /// past the declared width) reads silence; it does not fail a commit.
+    /// past the declared width) reads silence; it does not fail a commit. Opening
+    /// a tap refuses a source that does not exist at that moment.
     pub sources: Vec<Source>,
     /// Where the copy sits in time.
     pub align: TapAlign,

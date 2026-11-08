@@ -42,7 +42,8 @@ use std::sync::Arc;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::{
     CommitError, Editor, EventEdge, EventIn, EventOut, Executor, Fade, GraphInvalid, IntoNode,
-    MeterReader, ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader, Transport,
+    MeterReader, MissingSource, ParamIn, ParamMod, ParamRange, ParamSet, Prepare, TapReader,
+    Transport,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -463,7 +464,10 @@ impl Graph {
         topology.outputs = vec![Source::Zero; outputs];
         // Declared and on from the start: a host reads the master level
         // without asking for it.
-        let master_meter = editor.open_meter(MASTER_METER, MeterSpec::Outputs);
+        // `Outputs` names no source, so the open cannot be refused.
+        let master_meter = editor
+            .open_meter(MASTER_METER, MeterSpec::Outputs)
+            .expect("a master meter names no source");
         master_meter.enable();
         Self {
             editor,
@@ -1606,9 +1610,12 @@ impl Graph {
     /// output). A source that keeps running through the stop (live input, a
     /// tail) has none. A start steps alike in both: `Play` is not declicked.
     ///
-    /// A source that does not exist (a node port past its width, a removed
-    /// node) reads silence and the commit succeeds; nothing is validated here
-    /// and the reader is not told. A latency
+    /// Every source must exist now, edits not yet committed included: a key
+    /// no node has, a port past the node's width or an input past the graph's
+    /// is refused with [`MissingSource`] and nothing is opened. Only the open
+    /// is checked. A port that narrows or vanishes later (a node replaced by
+    /// one with fewer outputs, a removed node) reads silence, the commit
+    /// succeeds and the reader is not told. A latency
     /// change that resizes an aligned tap's delay shifts the stream with no
     /// marker for the reader, as it does an output. What the reader does not
     /// drain is dropped and counted, and a recording closes up over the gap.
@@ -1616,18 +1623,22 @@ impl Graph {
     /// Dropping the reader leaves the tap open until
     /// [`close_tap`](Self::close_tap) or the session's next
     /// [`Reclaim`](crate::Phase::Reclaim) phase, which closes it.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] for the first source that is not in the graph now.
     pub fn open_tap(
         &mut self,
         sources: &[GraphSource],
         align: TapAlign,
         capacity: Samples,
-    ) -> TapReader {
-        let id = TapId(self.next_tap);
-        self.next_tap += 1;
+    ) -> Result<TapReader, MissingSource> {
         let sources = sources.iter().copied().map(Self::lower).collect();
-        let reader = self.editor.open_tap(id, sources, align, capacity);
+        let id = TapId(self.next_tap);
+        let reader = self.editor.open_tap(id, sources, align, capacity)?;
+        self.next_tap += 1;
         self.edited = true;
-        reader
+        Ok(reader)
     }
 
     /// A tap on the graph's global outputs, aligned: lane `c` is output
@@ -1641,12 +1652,19 @@ impl Graph {
     /// fader and the fold to the device's width; see [`open_tap`](Self::open_tap)
     /// for what that means at a transport stop. To record what is heard, with
     /// the fade, use [`Session::open_heard_tap`](crate::Session::open_heard_tap).
-    pub fn open_output_tap(&mut self, capacity: Samples) -> TapReader {
+    ///
+    /// Refuses with [`MissingSource`] when an output names a source that does
+    /// not exist now (an output wired to a port the node does not have).
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] for the first source that is not in the graph now.
+    pub fn open_output_tap(&mut self, capacity: Samples) -> Result<TapReader, MissingSource> {
         let outputs: Vec<GraphSource> =
             (0..self.outputs()).map(|c| self.output_source(c)).collect();
-        let reader = self.open_tap(&outputs, TapAlign::ToOutput, capacity);
+        let reader = self.open_tap(&outputs, TapAlign::ToOutput, capacity)?;
         self.output_taps.insert(reader.id(), reader.width());
-        reader
+        Ok(reader)
     }
 
     /// Closes a tap: its ops leave the plan at the next commit and the ring
@@ -1703,33 +1721,51 @@ impl Graph {
     /// lane by the compensation an output of the same source gets (a ring per
     /// lane), so it lines up with what the outputs carry.
     ///
-    /// Removing a node a meter reads leaves that channel on silence, and so
-    /// does replacing it with a node that has fewer outputs (the lanes past
-    /// the new width); the commit succeeds either way. Dropping the reader
+    /// Every source must exist now, edits not yet committed included
+    /// ([`MissingSource`] otherwise, and nothing is opened). Removing a node a
+    /// meter reads afterwards leaves that channel on silence, and so does
+    /// replacing it with a node that has fewer outputs (the lanes past the
+    /// new width); the commit succeeds either way. Dropping the reader
     /// leaves the meter open until [`close_meter`](Self::close_meter) or the
     /// session's next [`Reclaim`](crate::Phase::Reclaim) phase, which closes
     /// it and frees its cells.
-    pub fn open_meter(&mut self, sources: &[GraphSource], align: TapAlign) -> MeterReader {
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] for the first source that is not in the graph now.
+    pub fn open_meter(
+        &mut self,
+        sources: &[GraphSource],
+        align: TapAlign,
+    ) -> Result<MeterReader, MissingSource> {
         let sources = sources.iter().copied().map(Self::lower).collect();
         self.declare_meter(MeterSpec::Ports { sources, align })
     }
 
     /// A raw meter on every output port of `node`: a track's level. Its width is
     /// the node's output count now; a later re-shape of the node does not
-    /// widen it.
-    pub fn open_node_meter(&mut self, node: NodeKey) -> MeterReader {
+    /// widen it. A key no node has is [`MissingSource::Node`], not a
+    /// zero-width meter.
+    ///
+    /// # Errors
+    ///
+    /// [`MissingSource`] for the first source that is not in the graph now.
+    pub fn open_node_meter(&mut self, node: NodeKey) -> Result<MeterReader, MissingSource> {
+        if self.shape(node).is_none() {
+            return Err(MissingSource::Node { node });
+        }
         let sources: Vec<GraphSource> = (0..self.node_outputs(node))
             .map(|port| GraphSource::Node(node, port))
             .collect();
         self.open_meter(&sources, TapAlign::Raw)
     }
 
-    fn declare_meter(&mut self, spec: MeterSpec) -> MeterReader {
+    fn declare_meter(&mut self, spec: MeterSpec) -> Result<MeterReader, MissingSource> {
         let id = MeterId(self.next_meter);
+        let reader = self.editor.open_meter(id, spec)?;
         self.next_meter += 1;
-        let reader = self.editor.open_meter(id, spec);
         self.edited = true;
-        reader
+        Ok(reader)
     }
 
     /// Closes a meter: its op leaves the plan at the next commit and its

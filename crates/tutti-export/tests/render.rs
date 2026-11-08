@@ -746,14 +746,49 @@ fn peak_normalization_lands_on_the_requested_dbtp() {
     );
 }
 
+/// True peak, in dBTP, of a stereo WAV on disk (float or integer), measured
+/// with the same R128 meter the export normalizes by.
+fn file_true_peak(path: &std::path::Path) -> f32 {
+    use tutti_dsp::{LoudnessConfig, measure_loudness};
+    use tutti_types::Interleaved;
+
+    let reader = hound::WavReader::open(path).unwrap();
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.into_samples::<f32>().map(|s| s.unwrap()).collect(),
+        hound::SampleFormat::Int => {
+            let full = (1i64 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .map(|s| s.unwrap() as f32 / full)
+                .collect()
+        }
+    };
+    let meter = LoudnessConfig::new(
+        SampleRate(f64::from(spec.sample_rate)),
+        ChannelLayout::STEREO,
+    );
+    measure_loudness(&meter, Interleaved::new(&samples, ChannelLayout::STEREO))
+        .expect("stereo is measurable")
+        .true_peak
+        .get()
+}
+
 /// The trap `loudness.rs::a_reading_is_always_finite_even_below_the_gate` names,
 /// reached through the export path: a render SHORTER than R128's 400 ms gating
-/// block reports `-inf` LUFS, and a gain derived from it would be `NaN` — which
-/// multiplies the whole file into `NaN`. The meter clamps to the gate, so this
-/// must produce a finite, readable file.
+/// block reports `-inf` LUFS, which the meter clamps to the -70 LUFS gate to
+/// keep every gain finite. Policy (owner decision, lane E1): that floor is not
+/// a measurement, and normalizing to a loudness from it would apply about
+/// +47 dB to whatever the render holds. So a LUFS normalization of such a
+/// render is `Unmeasurable { BelowGate }` and writes nothing, where it used to
+/// write a finite file at that invented gain. A PEAK normalization of the same
+/// render is measurable (a true peak needs no gate) and stays finite.
+///
+/// Mutation (run): drop the `ABSOLUTE_GATE_LUFS` check in `Normalize::check` →
+/// the LUFS render succeeds and writes `path` → fails.
 #[test]
-fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+fn a_sub_gating_block_render_cannot_be_loudness_normalized() {
+    use tutti_export::{Normalize, Unmeasured, render_normalized_to_file};
     use tutti_types::Db;
 
     let d = tempfile::tempdir().unwrap();
@@ -765,24 +800,51 @@ fn a_sub_gating_block_render_normalizes_without_poisoning_the_signal() {
     );
 
     let path = d.path().join("short.wav");
-    render_normalized_to_file(
+    let err = render_normalized_to_file(
         dc(RATE),
         &cfg,
         &FrozenClock,
         Normalize::lufs(Db(-14.0)),
         &path,
     )
-    .unwrap();
+    .expect_err("nothing passed the gate");
+    assert!(
+        matches!(
+            err,
+            tutti_export::Error::Unmeasurable {
+                reason: Unmeasured::BelowGate,
+                channels,
+                sample_rate,
+            } if channels == ChannelLayout::STEREO && sample_rate == RATE
+        ),
+        "{err:?}"
+    );
+    assert!(
+        !path.exists(),
+        "nothing is written for an unmeasurable render"
+    );
 
+    // The same render has a true peak, so a peak target is measurable, and
+    // the gain it picks is finite.
+    render_normalized_to_file(
+        dc(RATE),
+        &cfg,
+        &FrozenClock,
+        Normalize::peak(Db(-1.0)),
+        &path,
+    )
+    .unwrap();
     let samples: Vec<f32> = hound::WavReader::open(&path)
         .unwrap()
         .into_samples::<f32>()
         .map(|s| s.unwrap())
         .collect();
     assert!(!samples.is_empty(), "a short render still writes frames");
+    assert!(samples.iter().all(|s| s.is_finite()));
+    let peak = file_true_peak(&path);
     assert!(
-        samples.iter().all(|s| s.is_finite()),
-        "a sub-gate reading must not poison the signal into NaN"
+        (peak + 1.0).abs() < 0.05,
+        "the short render lands on its -1 dBTP target, got {peak}"
     );
 }
 
@@ -872,30 +934,24 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
         .map(|p| p + from)
 }
 
-/// Peak of an integer WAV, as a fraction of full scale.
-fn int_file_peak(path: &std::path::Path) -> f32 {
-    let reader = hound::WavReader::open(path).unwrap();
-    let bits = reader.spec().bits_per_sample;
-    let full = (1i64 << (bits - 1)) as f32;
-    reader
-        .into_samples::<i32>()
-        .map(|s| (s.unwrap() as f32).abs() / full)
-        .fold(0.0f32, f32::max)
-}
-
-/// Normalizing silence must write silence.
+/// Silence cannot be normalized. Owner decision (lane E1): exact silence is
+/// unmeasurable, so it is `Unmeasurable` (`Silent` for a peak target,
+/// `BelowGate` for a loudness one) and nothing is written. It used to be
+/// written as silence, which this test asserted (`peak <= 2 LSB`): the policy
+/// moved from "safe by multiplying zero" to "refused", because the gain it was
+/// multiplying (+144 dB, from the true-peak floor) was invented.
 ///
-/// If `render_to_buffers` dithered, at an integer depth the planes handed to
-/// the meter would not be silent — they would carry ±1 LSB of noise. The meter
-/// would read that as the signal (~-86 dBTP), the gain would come back at
-/// ~+86 dB, and `apply_gain` would amplify the noise: a "normalized" export of
-/// silence would land near full scale.
+/// It still guards what the old test did, that `render_to_buffers` hands the
+/// meter planes with no dither in them: dither added there makes the silence
+/// read as ±1 LSB of signal, which is measurable, and the render succeeds.
 ///
-/// Dither belongs at the encode boundary, where the LSB is known; buffers are
-/// `f32` and quantize to nothing.
+/// Mutation (run): drop the `Db::FLOOR` check in `Normalize::check` → the
+/// silent render is written and the `expect_err` fails. Mutation (run):
+/// `DitherState::for_config(config).apply` over the planes in `render_pass` →
+/// the silence has a reading, the render succeeds → fails.
 #[test]
-fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
-    use tutti_export::{Normalize, render_normalized_to_file};
+fn normalizing_silence_is_refused() {
+    use tutti_export::{Normalize, Unmeasured, render_normalized_to_file};
     use tutti_types::Db;
 
     let silence = || {
@@ -911,20 +967,18 @@ fn normalizing_silence_at_an_integer_depth_does_not_amplify_dither() {
     let mut cfg = config(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
     cfg.dither = tutti_export::Dither::Triangular;
 
-    render_normalized_to_file(
-        silence(),
-        &cfg,
-        &FrozenClock,
-        Normalize::peak(Db(-1.0)),
-        &path,
-    )
-    .unwrap();
-
-    let peak = int_file_peak(&path);
-    assert!(
-        peak <= 2.0 / 32768.0,
-        "normalized silence must stay at the dither floor, got {peak} of full scale"
-    );
+    for (normalize, want) in [
+        (Normalize::peak(Db(-1.0)), Unmeasured::Silent),
+        (Normalize::lufs(Db(-14.0)), Unmeasured::BelowGate),
+    ] {
+        let err = render_normalized_to_file(silence(), &cfg, &FrozenClock, normalize, &path)
+            .expect_err("silence has no reading");
+        assert!(
+            matches!(&err, tutti_export::Error::Unmeasurable { reason, .. } if *reason == want),
+            "{err:?}"
+        );
+        assert!(!path.exists());
+    }
 }
 
 /// The dBTP target must hold in the written file, resample included.

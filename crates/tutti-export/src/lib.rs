@@ -3,7 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod error;
-pub use error::{ConfigError, Error, Result};
+pub use error::{ConfigError, Error, Result, Unmeasured};
 
 mod options;
 pub use options::Dither;
@@ -56,6 +56,14 @@ pub struct Written {
     /// nonzero only under [`EventLossPolicy::Allow`] (under `Fail` the render
     /// is an error instead).
     pub dropped_events: u64,
+    /// Samples the quantizer clipped: those past full scale (after any gain,
+    /// resample and dither) written to an integer format, which the encoder
+    /// clamps to it. `0` for a format that does not quantize (`Pcm::Float32`,
+    /// and Ogg Vorbis, whose encoder takes the float stream). A normalizing
+    /// export keeps its target and ceiling one LSB plus the dither amplitude
+    /// below full scale for an integer format, so this stays `0` unless the
+    /// programme itself was past full scale.
+    pub clipped_samples: u64,
 }
 
 /// Rendered audio held in memory, one `Vec` per channel.

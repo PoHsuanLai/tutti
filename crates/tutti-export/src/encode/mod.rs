@@ -122,7 +122,15 @@ pub(crate) fn encode_to_file(
         spec.format.max_frames(spec.layout),
     )?;
     let mut encoder = Encoder::create_file(&spec, path)?;
+    // Counted here, just before the encoder's quantizer: the pipeline owns
+    // gain, resample and dither, so it is the one that knows what reaches the
+    // quantizer, and `tutti-codec` keeps its boundary (blocks in, a file out).
+    let counts_clipping = spec.format.int_depth().is_some();
+    let mut clipped = 0u64;
     let outcome = pump_blocks(src, source_rate, plan, config, control, |block| {
+        if counts_clipping {
+            clipped += clipped_in(block.samples());
+        }
         encoder.write(block).map_err(Error::from)
     })?;
     if outcome == Outcome::Cancelled {
@@ -140,7 +148,15 @@ pub(crate) fn encode_to_file(
         path: path.to_path_buf(),
         bytes,
         dropped_events: lost,
+        clipped_samples: clipped,
     }))
+}
+
+/// Samples of an integer-bound block the quantizer will clamp: those past
+/// full scale (`tutti-codec`'s converters clamp to `[-1, 1]`, so `1.0` itself
+/// is not clipped).
+fn clipped_in(samples: &[f32]) -> u64 {
+    samples.iter().filter(|s| s.abs() > 1.0).count() as u64
 }
 
 /// Pull every FRAME of the render through resample → dither, into `write`.

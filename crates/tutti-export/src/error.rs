@@ -52,19 +52,24 @@ pub enum Error {
     #[error("Unsupported channel count: {0} (a render needs at least one channel)")]
     UnsupportedChannels(u16),
 
-    /// A loudness measurement was asked for and could not be taken — EBU R128
-    /// accepts 1–64 channels at 16 Hz–2.8 MHz.
+    /// A loudness measurement was asked for and the audio cannot be
+    /// normalized by it (`reason` says why): the meter rejects it, or the
+    /// reading it gives is not a measurement of the programme.
     ///
-    /// An error rather than a skipped measurement, because a normalized export
-    /// that quietly writes un-normalized audio reports success and leaves no
-    /// trace: nothing in [`Written`](crate::Written) records that the gain the
-    /// caller asked for was never applied.
-    #[error("Cannot measure loudness: the meter rejected {channels} channels at {sample_rate} Hz")]
+    /// An error rather than a skipped or invented gain, because a normalized
+    /// export that quietly writes un-normalized audio (or applies +47 dB to a
+    /// hiss at the gate's floor) reports success and leaves no trace: nothing
+    /// in [`Written`](crate::Written) records that the gain the caller asked
+    /// for was never applied, or what it was. A file export leaves the target
+    /// as it was.
+    #[error("Cannot normalize: {channels:?} at {sample_rate:?} is unmeasurable: {reason}")]
     Unmeasurable {
-        /// The channel count of the audio.
-        channels: u16,
-        /// Its sample rate, in Hz.
-        sample_rate: f64,
+        /// The channel layout of the audio.
+        channels: ChannelLayout,
+        /// Its sample rate.
+        sample_rate: tutti_types::SampleRate,
+        /// Why the reading is not usable.
+        reason: Unmeasured,
     },
 
     /// The graph could not be forked for the render because the node at
@@ -137,6 +142,35 @@ pub enum Error {
         /// `tutti_plugin::PluginRenderFault`).
         cause: tutti_graph::ForkCause,
     },
+}
+
+/// Why audio cannot be normalized ([`Error::Unmeasurable`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unmeasured {
+    /// The meter does not take this width or rate: EBU R128 accepts 1 to 64
+    /// channels at 16 Hz to 2.8 MHz.
+    Format,
+    /// [`Normalize::Lufs`](crate::Normalize::Lufs): no part of the audio
+    /// passed the integrated loudness gate. It is silent, quieter than the
+    /// absolute gate (-70 LUFS), or shorter than the 400 ms block the gate is
+    /// judged in; any gain chosen from that reading would be made up.
+    BelowGate,
+    /// [`Normalize::Peak`](crate::Normalize::Peak): the true peak is at the
+    /// floor ([`Db::FLOOR`](tutti_types::Db::FLOOR)), which is silence.
+    Silent,
+}
+
+impl std::fmt::Display for Unmeasured {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Format => "the meter does not take this width or rate",
+            Self::BelowGate => {
+                "nothing passed the loudness gate (silent, under -70 LUFS, or under 400 ms)"
+            }
+            Self::Silent => "the true peak is at the floor (silence)",
+        })
+    }
 }
 
 /// A config the export cannot act on ([`Error::InvalidConfig`]).

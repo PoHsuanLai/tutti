@@ -18,9 +18,7 @@ mod sealed {
 /// use tutti_au_ffi::Property;
 ///
 /// struct Mine;
-/// impl sealed::Sealed for Mine {}
-
-impl Property for Mine {
+/// impl Property for Mine {
 ///     const ID: u32 = 0;
 ///     type Value = u8;
 /// }

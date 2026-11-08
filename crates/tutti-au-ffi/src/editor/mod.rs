@@ -161,7 +161,9 @@ impl AuEditor {
     fn leak_view(&mut self) {
         std::mem::forget(self.unit.clone());
         if LEAKED_VIEWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            eprintln!("[tutti-au-ffi] an AU editor was closed off the main thread; its view is leaked");
+            eprintln!(
+                "[tutti-au-ffi] an AU editor was closed off the main thread; its view is leaked"
+            );
         }
         self.view = std::ptr::null_mut();
     }

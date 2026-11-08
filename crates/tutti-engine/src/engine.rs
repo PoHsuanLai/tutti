@@ -78,9 +78,11 @@ use tutti_graph::{
     TransportChanges,
 };
 
+use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputFolds};
+use std::sync::Arc;
 use std::time::Instant;
 use tutti_metering::{LoadMeter, LoadRecorder};
-use tutti_rt::{AudioThreadCell, RtScope};
+use tutti_rt::{ArcLend, AudioThreadCell, Reader, RtScope};
 #[cfg(doc)]
 use tutti_transport::MotionFsm;
 use tutti_transport::{
@@ -88,7 +90,7 @@ use tutti_transport::{
     TransportAudio, TransportCommand,
 };
 use tutti_types::{At, Frame};
-use tutti_types::{InterleavedMut, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, FoldError, InterleavedMut, SampleRate, Samples, Seconds};
 
 /// The block capacity an engine sizes its fold scratch for unless given
 /// another ([`Engine::with_capacity`]): tutti-cpal's largest callback
@@ -169,6 +171,11 @@ pub struct Engine {
     hearing: AudioThreadCell<crate::hearing::Hearing>,
     /// Its control side.
     heard_taps: crate::HeardTaps,
+    /// The folds from the root to the device, published by
+    /// [`support_output`](Self::support_output).
+    output: Arc<ArcLend<OutputFolds>>,
+    /// The audio thread's reader of `output`, lent once per call.
+    folds: AudioThreadCell<Reader<OutputFolds>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -301,6 +308,10 @@ impl Engine {
         let dropped_seen = executor.dropped_event_count();
         let (recorder, meter) = LoadMeter::pair();
         let (heard_taps, hearing) = crate::hearing::link();
+        // Every bare root width places into every bare device width up to
+        // `DEFAULT_DEVICE_WIDTHS` (`every_root_width_places_into_any_device`).
+        let output = Arc::new(ArcLend::new(OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS)));
+        let folds = AudioThreadCell::new(output.reader());
         Ok(Self {
             graph: AudioThreadCell::new(GraphRender {
                 exec: executor,
@@ -316,7 +327,62 @@ impl Engine {
             meter,
             hearing: AudioThreadCell::new(hearing),
             heard_taps,
+            output,
+            folds,
         })
+    }
+
+    /// Builds the fold from every root width into a device of `device`
+    /// channels, so the engine can render into a buffer of that width.
+    ///
+    /// A new engine renders into buffers of up to 16 channels without being
+    /// asked: the folds from each root width (1 to `MAX_ROOT_CHANNELS`) to each
+    /// device width are built on the control side, in
+    /// [`Engine::new`](Self::new), and published through an `ArcLend` that each
+    /// call lends once, so a plan change needs no rebuild and the audio thread
+    /// never builds a fold. Call this when a stream is built for a device
+    /// wider than that (or at all, to say so); it is a no-op for a width
+    /// already supported. The device is taken to be the engine's order for its
+    /// width where it has one, and the root the same: see
+    /// [`Fold::widths`](tutti_types::Fold::widths). A buffer of a width not
+    /// supported is not rendered into: the call is silent and counted in
+    /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced), in
+    /// every build.
+    ///
+    /// Where a mono root lands: the centre of a 6, 8 or 12-wide device, the
+    /// front pair of a 4-wide (quad) or a stereo one. A **4-wide root is
+    /// treated as quad** into a 6, 8 or 12-wide device (its rears are the back
+    /// pair, not the centre and LFE), because `MasterSources` cannot declare it
+    /// `Discrete` yet.
+    ///
+    /// A callback mid-block keeps the folds it lent, and the next call reads
+    /// the new ones. Returns at once, publishing nothing, for a width already
+    /// supported.
+    ///
+    /// **One writer.** The update is read-modify-write (it publishes the
+    /// current set plus this width), so two concurrent calls could lose one
+    /// width. Call it from the one control thread that builds the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`FoldError::Empty`] for a device of no channels; nothing is published.
+    pub fn support_output(&self, device: ChannelLayout) -> Result<(), FoldError> {
+        let current = self.output.current();
+        if current.supports(device) {
+            return Ok(());
+        }
+        let mut folds = (*current).clone();
+        folds.support(device)?;
+        self.output.publish(folds);
+        self.output.reclaim();
+        Ok(())
+    }
+
+    /// Frees the folds [`support_output`](Self::support_output) replaced that a block
+    /// held at the time, and returns how many are still pinned. Control side;
+    /// cheap when nothing is retired.
+    pub fn reclaim(&self) -> usize {
+        self.output.reclaim()
     }
 
     /// The block capacity: the largest `MaxBlock` the editor may re-prepare
@@ -355,19 +421,22 @@ impl Engine {
 
     /// Renders the whole of `output` with no transport motion and no declick.
     ///
-    /// `output` is an interleaved device buffer that carries its own width.
-    /// This is the pure render.
+    /// `output` is an interleaved device buffer that carries its own width,
+    /// which the engine has folds for (up to 16 channels, or a width added with
+    /// [`support_output`](Self::support_output)). This is the pure render.
     ///
     /// One executor block per device block (up to its prepared maximum),
     /// under the
     /// transport as it stands. The graph root has no inputs. The root is
     /// rendered at its **own** output width (at most [`MAX_ROOT_CHANNELS`],
     /// which the editor's limits enforce) into scratch, then each frame is
-    /// folded to the *output's* width — the device / target width — via the
-    /// ITU/Dolby matrices ([`tutti_types::fold_frame`]): a surround root
-    /// plays folded to a stereo device, or straight through to a
-    /// matching-width surround device; a mono root duplicates into every
-    /// target channel of a wider output.
+    /// folded to the *output's* width — the device / target width — by
+    /// [`Fold::widths`](tutti_types::Fold::widths), built in
+    /// [`support_output`](Self::support_output): a surround root plays folded to a
+    /// stereo device by the ITU/Dolby matrix, or straight through to a
+    /// matching-width one; a mono root feeds the centre of a surround device
+    /// (its front pair, if it has no centre) and is not copied to every channel;
+    /// a root wider than a surround device is placed by position.
     ///
     /// # Two widths are live here; only one is the buffer's
     ///
@@ -392,9 +461,16 @@ impl Engine {
         // sends what it replaces back to the control side.
         let _rt = RtScope::enter();
         self.hearing.borrow_mut().swap();
+        // The folds to the device, lent for the call. Refused: a buffer of
+        // a width the engine has no folds for (`support_output`), a caller's
+        // bug that must not index past the fold.
+        let mut reader = self.folds.borrow_mut();
+        let folds = reader.lend();
         // Refused only while the control side holds the graph
         // (`apply_pending` racing a callback): this block is silent.
-        let Some(mut graph) = self.graph.try_borrow_mut() else {
+        let graph = self.graph.try_borrow_mut();
+        let declared = folds.has_device(out_ch);
+        let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
@@ -404,6 +480,7 @@ impl Engine {
         };
         let g = &mut *graph;
         let mut done = 0;
+        let mut unplaced = false;
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
@@ -421,13 +498,24 @@ impl Engine {
                 play: tutti_graph::PlayClock::ZERO,
             });
             g.transport.advance(len, &t);
-            g.render(output, out_ch, done, len, &t, &TransportChanges::NONE);
+            unplaced |= !g.render(
+                output,
+                &folds,
+                out_ch,
+                done,
+                len,
+                &t,
+                &TransportChanges::NONE,
+            );
             self.hearing
                 .borrow_mut()
                 .write(&output[done * out_ch..(done + len) * out_ch], out_ch);
             done += len;
         }
         let mut load = self.load.borrow_mut();
+        if unplaced {
+            load.record_silenced();
+        }
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -437,7 +525,7 @@ impl Engine {
     /// How many frames is `output`'s own business — it is `output.len()`,
     /// which cannot disagree with the slice the way a separate `frames`
     /// argument could. The graph root is folded to `output`'s width (the device
-    /// / target width) via the ITU/Dolby matrices — see
+    /// / target width, see [`support_output`](Self::support_output)) — see
     /// [`process_segment`](Self::process_segment). Untimed motion
     /// ([`MotionFsm::try_send`]) applies at the block's first frame; scheduled
     /// commands ([`MotionFsm::schedule`]) on their own frames (module docs).
@@ -461,7 +549,11 @@ impl Engine {
         // The fader and the schedule's pending list need no `try_`:
         // the fader is private to this method, and the pending list is
         // reached only under the graph borrow (here, or `apply_pending`'s).
-        let Some(mut graph) = self.graph.try_borrow_mut() else {
+        let mut reader = self.folds.borrow_mut();
+        let folds = reader.lend();
+        let graph = self.graph.try_borrow_mut();
+        let declared = folds.has_device(out_ch);
+        let (true, Some(mut graph)) = (declared, graph) else {
             output.fill(0.0);
             self.hearing.borrow_mut().write(output, out_ch);
             if let Some(mut load) = self.load.try_borrow_mut() {
@@ -471,6 +563,7 @@ impl Engine {
         };
         let g = &mut *graph;
         let mut done = 0;
+        let mut unplaced = false;
         let mut budget = Seconds(0.0);
         while done < frames {
             let (bound, rate) = g.settle();
@@ -493,7 +586,7 @@ impl Engine {
                 &mut pieces,
             );
             let changes = pieces.changes;
-            g.render(output, out_ch, done, len, &walk.start, &changes);
+            unplaced |= !g.render(output, &folds, out_ch, done, len, &walk.start, &changes);
             let mut fader = self.fader.borrow_mut();
             fader.fade = fade_frames(rate);
             fader.apply(&walk.gain, frame0, output, out_ch, done, len);
@@ -503,6 +596,9 @@ impl Engine {
             done += len;
         }
         let mut load = self.load.borrow_mut();
+        if unplaced {
+            load.record_silenced();
+        }
         load.record_dropped_events(g.take_dropped_events());
         load.record(Seconds(start.elapsed().as_secs_f32()), budget);
     }
@@ -936,12 +1032,13 @@ impl GraphRender {
     fn render(
         &mut self,
         output: &mut [f32],
+        folds: &OutputFolds,
         out_ch: usize,
         at: usize,
         len: usize,
         transport: &GraphTransport,
         changes: &TransportChanges,
-    ) {
+    ) -> bool {
         // `settle` installed every queued commit, and the executor renders
         // without applying again: a commit sent since waits for the next
         // block, so the width, the block bound and the rate read here are the
@@ -966,15 +1063,25 @@ impl GraphRender {
         self.transport.publish_position();
         if width == 0 {
             block.fill(0.0);
-            return;
+            return true;
         }
-        for i in 0..len {
-            let mut frame = [0.0f32; MAX_ROOT_CHANNELS];
-            let src = &mut frame[..width];
-            for (c, s) in src.iter_mut().enumerate() {
-                *s = outs[c][i];
+        // The fold of this width into the device, built on the control side.
+        // `width` is within `1..=MAX_ROOT_CHANNELS` (the editor's limits), so a
+        // fold is there.
+        match folds.get(out_ch, width) {
+            Some(fold) => {
+                fold.planar_to_interleaved(
+                    |c| &outs[c][..len],
+                    InterleavedMut::new(block, ChannelLayout::from(out_ch)),
+                );
+                true
             }
-            tutti_types::fold_frame(src, &mut block[i * out_ch..(i + 1) * out_ch]);
+            // A root width that cannot be placed on this device: silent, and
+            // the caller counts it.
+            None => {
+                block.fill(0.0);
+                false
+            }
         }
     }
 }
@@ -1392,8 +1499,131 @@ mod tests {
         let t = g.transport.begin_block();
         g.transport.advance(len, &t);
         let mut out = vec![-9.0f32; len * out_ch];
-        g.render(&mut out, out_ch, 0, len, &t, &TransportChanges::NONE);
+        let folds = OutputFolds::up_to(16);
+        g.render(
+            &mut out,
+            &folds,
+            out_ch,
+            0,
+            len,
+            &t,
+            &TransportChanges::NONE,
+        );
         out
+    }
+
+    /// Every root width that can be placed has a fold into every supported
+    /// device width, and the fold's figures are the analytic ones: a 5.1 root
+    /// on a stereo device is the ITU fold, a mono root on a 5.1 device is its
+    /// centre, a 3-wide root (no order) on a 5-wide device is its channels
+    /// zero-filled. A narrowing with an unordered end (5 into 3, 8 into 7, 6
+    /// into 5) has no fold, and renders a silent counted block rather than a
+    /// truncation.
+    ///
+    /// Mutation (run): `Fold::widths` placing by index only → the 5.1 and mono
+    /// rows fail; the root index off by one in `OutputFolds::get` → every row
+    /// fails; `by_index` accepting a narrowing → the `None` rows fail.
+    #[test]
+    fn every_root_width_places_into_any_device() {
+        let folds = OutputFolds::up_to(DEFAULT_DEVICE_WIDTHS);
+        for root in 1..=MAX_ROOT_CHANNELS {
+            for device in 1..=DEFAULT_DEVICE_WIDTHS {
+                let ordered = |w: usize| [1, 2, 4, 6, 8, 12].contains(&w);
+                let refused = root > device && !(ordered(root) && ordered(device));
+                let Some(fold) = folds.get(device, root) else {
+                    assert!(refused, "{root} -> {device} has no fold");
+                    continue;
+                };
+                assert!(!refused, "{root} -> {device} must have no fold");
+                assert_eq!(usize::from(fold.src_layout().count()), root);
+                assert_eq!(usize::from(fold.dst_layout().count()), device);
+            }
+        }
+        for (root, device) in [(5, 3), (6, 5), (8, 7), (3, 1), (4, 3)] {
+            assert!(folds.get(device, root).is_none(), "{root} -> {device}");
+            assert!(folds.has_device(device));
+        }
+        assert!(folds.get(DEFAULT_DEVICE_WIDTHS + 1, 2).is_none());
+        assert!(folds.get(2, MAX_ROOT_CHANNELS + 1).is_none());
+        assert!(folds.get(0, 2).is_none() && folds.get(2, 0).is_none());
+
+        let m = tutti_types::M3DB;
+        let run = |root: usize, device: usize, frame: &[f32]| {
+            let mut out = vec![9.0f32; device];
+            folds.get(device, root).unwrap().frame(frame, &mut out);
+            out
+        };
+        assert_eq!(
+            run(6, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0]
+        );
+        assert_eq!(run(1, 6, &[0.5]), [0.0, 0.0, 0.5, 0.0, 0.0, 0.0]);
+        assert_eq!(run(3, 5, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0, 0.0, 0.0]);
+    }
+
+    /// A device wider than the default is added on the control side, and a
+    /// buffer of a width nobody added is a silent counted block rather than a
+    /// fold built on the audio thread.
+    ///
+    /// Mutation (run): `support_output` publishing nothing → the 20-wide
+    /// block is silent and fails; `declared` forced to `true` in
+    /// `process_segment` → the 40-wide block is still silent but not counted,
+    /// and the `silenced` assertion fails (it survived while the check was a
+    /// release-only branch).
+    #[test]
+    fn a_wider_device_is_added_and_an_unsupported_width_is_silent() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 2);
+        let wide = ChannelLayout::from(20u16);
+        engine.support_output(wide).expect("a width");
+        let mut out = vec![-9.0f32; 20 * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, wide));
+        // Ramp(2) writes 21, 22: the front pair, the rest zero-filled.
+        for frame in out.as_chunks::<20>().0 {
+            assert_eq!(&frame[..2], &[21.0, 22.0]);
+            assert!(frame[2..].iter().all(|&s| s == 0.0));
+        }
+        assert_eq!(
+            engine.support_output(ChannelLayout::EMPTY),
+            Err(FoldError::Empty(tutti_types::FoldEnd::Destination))
+        );
+        // Not added: silent, and counted, in every build.
+        let mut out = vec![-9.0f32; 40 * 8];
+        engine.process_segment(&mut InterleavedMut::new(
+            &mut out,
+            ChannelLayout::from(40u16),
+        ));
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(engine.load_meter().peek().silenced, 1);
+    }
+
+    /// A root the device has no place for (five channels into three: either
+    /// width has no order, and two channels would be dropped) renders a silent
+    /// block, counted, instead of its first three channels; into a wider device
+    /// the same root plays.
+    ///
+    /// Mutation (run): `Fold::by_index` accepting a narrowing → the root plays
+    /// truncated and the first assertion fails; `unplaced` never recorded → the
+    /// count is 0.
+    #[test]
+    fn a_root_the_device_cannot_take_is_silent_and_counted() {
+        let transport = Transport::new(48_000.0);
+        let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
+        let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
+        rewire(&mut ed, 5);
+        let three = ChannelLayout::from(3u16);
+        let mut out = vec![-9.0f32; 3 * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, three));
+        assert!(out.iter().all(|&s| s == 0.0), "{out:?}");
+        assert_eq!(engine.load_meter().peek().silenced, 1);
+        let seven = ChannelLayout::from(7u16);
+        let mut out = vec![-9.0f32; 7 * 8];
+        engine.process_segment(&mut InterleavedMut::new(&mut out, seven));
+        // Ramp(5) writes 51..=55; the rest of the 7-wide device is silent.
+        assert_eq!(&out[..7], &[51.0, 52.0, 53.0, 54.0, 55.0, 0.0, 0.0]);
+        assert_eq!(engine.load_meter().peek().silenced, 1);
     }
 
     /// A commit that lands between `settle` and `render` waits for the next

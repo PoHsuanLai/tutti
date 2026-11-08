@@ -58,7 +58,8 @@ fn graph(wave: &Arc<Wave>, workers: usize, host: Host) -> Executor {
         let key = NodeKey(k + 1);
         // Placed before the loop's start, on it, and inside the fade.
         let at = [0.0, LOOP.0, LOOP.0 + 0.002][k as usize % 3] + k as f64 * 0.0001;
-        let source = MemorySource::placed(Arc::clone(wave), Beat(at), None);
+        let source =
+            MemorySource::placed(Arc::clone(wave), Beat(at), None).expect("a placeable wave");
         match host {
             Host::Pool => {
                 let mut pool = VoicePool::new();

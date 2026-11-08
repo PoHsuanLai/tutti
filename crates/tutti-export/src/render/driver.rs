@@ -12,48 +12,50 @@
 //! any positive count renders — 3- and 5-wide masters included.
 //!
 //! `GraphSource` folds the graph's real output width onto the requested one
-//! (see [`fold_graph_frame`]), so a graph wider than the file is downmixed
-//! rather than truncated, and a narrower one is zero-filled rather than
-//! duplicated.
+//! ([`tutti_types::Fold`], built once in [`GraphSource::new`]), so a graph wider
+//! than the file is downmixed rather than truncated, and a narrower one is
+//! zero-filled rather than duplicated.
 
 use crate::control::{Control, Flow, Outcome};
 use crate::render::BlockCursor;
 use crate::{ConfigError, RenderGraph};
 use tutti_transport::RenderClock;
-use tutti_types::{ChannelLayout, Interleaved, InterleavedMut, Samples};
+use tutti_types::{ChannelLayout, ChannelTopology, Fold, Interleaved, InterleavedMut, Samples};
 
-/// Widest graph output the fold handles (mono … 7.1.4). Channels past this are
-/// dropped by the gather.
-///
-/// It is a stack ceiling for the per-frame gather scratch, not a limit on
-/// what can be exported: the destination width is dynamic, only the *source*
-/// gather is capped. Note this is 12 while `tutti_graph`'s `MAX_ROOT_CHANNELS` is
-/// 8 — deliberately not unified here, since an offline render has no RT root's
-/// constraints.
-const MAX_SOURCE_CHANNELS: usize = 12;
+/// What the file's channels are, for the fold from the graph's outputs: its
+/// width, and the speakers they feed when the config states them.
+pub(crate) struct FileChannels<'a> {
+    pub(crate) layout: ChannelLayout,
+    pub(crate) topology: Option<&'a ChannelTopology>,
+}
 
-/// Map frame `i` of the graph's output `planes` (one per global output) onto a
-/// destination frame of whatever width `dst` is.
-///
-/// This is the entire up/down-mix policy, and it is [`tutti_types::fold_frame`]
-/// for every width — no special cases, and the mono one is the trap. A
-/// `n_out == 1` short-circuit spraying `dst.fill(s)` puts a full-level copy of a
-/// mono graph into every destination channel: for a 5.1 file that is program
-/// material in the LFE and both surrounds, +6 dB on any downmix, and
-/// correlated-mono comb filtering. No DAW does that, and neither does
-/// `fold_frame` — beyond stereo it copies and zero-fills.
-#[inline]
-fn fold_graph_frame(planes: &[Vec<f32>], i: usize, dst: &mut [f32]) {
-    // Stack, sized by the fixed ceiling rather than by the (runtime)
-    // destination width: this is the *source* gather, and the graph's output
-    // width is what it must hold. Heap-allocating it would put a `Vec` in a
-    // per-frame loop.
-    let mut src = [0.0f32; MAX_SOURCE_CHANNELS];
-    let w = planes.len().min(MAX_SOURCE_CHANNELS);
-    for (c, s) in src.iter_mut().enumerate().take(w) {
-        *s = planes[c][i];
+impl FileChannels<'_> {
+    /// The fold from a graph of `outputs` channels. The graph is the engine's
+    /// order for its width where it has one (a bare 4 is quad), and the file the
+    /// topology it states or else the same assumption for its width; where
+    /// either has no order the channels go by index
+    /// ([`Fold::widths`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::Placement`] when the file's topology is not as wide as
+    /// the file or cannot take the graph's channels.
+    fn fold_from(&self, outputs: usize) -> crate::Result<Fold> {
+        let graph = ChannelLayout::from(outputs);
+        let Some(topology) = self.topology else {
+            return Fold::widths(graph, self.layout).map_err(|e| ConfigError::Placement(e).into());
+        };
+        if topology.layout() != self.layout {
+            return Err(ConfigError::Placement(tutti_types::FoldError::Discrete {
+                src: graph,
+                dst: topology.layout(),
+            })
+            .into());
+        }
+        let from =
+            ChannelTopology::assumed(graph).unwrap_or_else(|| ChannelTopology::discrete(graph));
+        Fold::between(&from, topology).map_err(|e| ConfigError::Placement(e).into())
     }
-    tutti_types::fold_frame(&src[..w], dst);
 }
 
 /// Anything that can hand out frames one block at a time.
@@ -102,6 +104,8 @@ pub(crate) struct GraphSource<'a> {
     global_inputs: usize,
     /// One plane per global output, `max_block` long.
     planes: Vec<Vec<f32>>,
+    /// The graph's outputs onto the file's channels, built in [`new`](Self::new).
+    fold: Fold,
     max_block: usize,
     produced: Samples,
     /// The executor's dropped and recovered counts when the render began;
@@ -123,6 +127,7 @@ impl<'a> GraphSource<'a> {
         executor: &'a mut tutti_graph::Executor,
         sample_rate: tutti_types::SampleRate,
         clock: &'a dyn RenderClock,
+        file: &FileChannels<'_>,
     ) -> crate::Result<Self> {
         let prepared = executor.prepare().sample_rate();
         if prepared.get() != sample_rate.get() {
@@ -150,6 +155,7 @@ impl<'a> GraphSource<'a> {
             |p| (p.global_inputs() as usize, p.global_outputs()),
         );
         let planes = vec![vec![0.0f32; max_block]; outputs];
+        let fold = file.fold_from(outputs)?;
         Ok(Self {
             editor,
             executor,
@@ -157,6 +163,7 @@ impl<'a> GraphSource<'a> {
             silence: vec![0.0; max_block],
             global_inputs,
             planes,
+            fold,
             max_block,
             produced: Samples(0),
             before,
@@ -204,12 +211,14 @@ impl FrameSource for GraphSource<'_> {
         // as a host's control loop would free them.
         self.editor.collect();
 
-        for (i, frame) in out.samples_mut()[..block_size * ch]
-            .chunks_exact_mut(ch)
-            .enumerate()
-        {
-            fold_graph_frame(&self.planes, i, frame);
-        }
+        // The fold was built for the file's width; a block of another is a
+        // caller's bug, and `planar_to_interleaved` checks it in every build.
+        let planes = &self.planes;
+        let block = &mut out.samples_mut()[..block_size * ch];
+        self.fold.planar_to_interleaved(
+            |c| &planes[c][..block_size],
+            InterleavedMut::new(block, self.fold.dst_layout()),
+        );
         self.produced = Samples(self.produced.get() + block_size);
         block_size
     }
@@ -244,13 +253,14 @@ pub(crate) fn with_source<R>(
     graph: &mut RenderGraph,
     sample_rate: tutti_types::SampleRate,
     clock: &dyn RenderClock,
+    file: &FileChannels<'_>,
     f: impl FnOnce(&mut dyn FrameSource) -> crate::Result<R>,
 ) -> crate::Result<(R, u64)> {
     // Again at render, as a real error: `editor_mut` can swap the editor
     // after `RenderGraph::new` checked it (see `RenderGraph`, "The pair").
     graph.check_paired()?;
     let (editor, executor) = graph.parts_mut();
-    let mut src = GraphSource::new(editor, executor, sample_rate, clock)?;
+    let mut src = GraphSource::new(editor, executor, sample_rate, clock, file)?;
     let rendered = f(&mut src)?;
     let lost = src.lost_events();
     // A forked unit that failed mid-render (a plugin's server crashed or

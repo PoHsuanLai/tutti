@@ -7,7 +7,7 @@ use tutti_types::ChannelLayout;
 
 use super::memory_source::{MemorySource, VoiceWindow};
 use super::types::{Playback, Voice, VoiceSource};
-use crate::{MAX_SAMPLER_CHANNELS, Wave};
+use crate::{MAX_SAMPLER_CHANNELS, PlaceError, Wave};
 
 /// Builds an in-memory voice from a decoded wave.
 ///
@@ -21,21 +21,28 @@ use crate::{MAX_SAMPLER_CHANNELS, Wave};
 /// It is the clip's placement on the timeline. A voice built without one
 /// would play at the default position regardless of where the clip is placed,
 /// so it is taken here rather than defaulted.
+///
+/// # Errors
+///
+/// [`PlaceError`] when the wave cannot be placed into `width` channels: a file
+/// with a channel no speaker names (a second LFE, a wide or high speaker) is
+/// refused here rather than played with a channel in the wrong place or
+/// dropped.
 pub fn memory_voice(
     wave: Arc<Wave>,
     width: ChannelLayout,
     play: Playback,
     window: VoiceWindow,
-) -> Voice {
-    let source = MemorySource::with_channels(wave, width).placed_at(window);
-    Voice {
+) -> Result<Voice, PlaceError> {
+    let source = MemorySource::with_channels(wave, width)?.placed_at(window);
+    Ok(Voice {
         source: VoiceSource::Memory(source),
         play,
         // `None`: the butler channel is a disk-tier concept. `Voice`'s own doc
         // says it is "meaningless for `Memory` (loop is primed directly on the
         // `MemorySource`)".
         channel_index: None,
-    }
+    })
 }
 
 /// The width a voice should run at, given what the file has.
@@ -99,7 +106,8 @@ mod tests {
             ChannelLayout::STEREO,
             Playback::default(),
             Default::default(),
-        );
+        )
+        .expect("a stereo wave places");
         assert!(
             v.channel_index.is_none(),
             "the butler channel is a disk-tier concept; `Voice`'s doc calls it \

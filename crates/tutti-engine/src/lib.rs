@@ -7,6 +7,7 @@ pub use error::{Error, Result};
 
 mod engine;
 mod hearing;
+mod output;
 pub use engine::{DEFAULT_BLOCK_CAPACITY, Engine, GraphEngineError};
 pub use hearing::{HeardTapError, HeardTaps};
 

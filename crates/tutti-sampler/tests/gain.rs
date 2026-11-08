@@ -109,7 +109,8 @@ fn pool_at_gain(play_gain: f32) -> (VoicePool, Arc<Clock>) {
             placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
@@ -193,7 +194,8 @@ fn a_pooled_voice_applies_playback_gain_and_not_the_sources_own() {
             gain: Amplitude::new(0.25),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
 
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
@@ -285,7 +287,8 @@ fn gain_scales_every_channel_equally() {
             placement: Some(tutti_sampler::VoiceWindow::default()),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     let mut pool = contract::prepared(VoicePool::new(), SampleRate(SR), BLOCK);
     pool.insert_voice(
         SlotId(1),
@@ -333,7 +336,8 @@ fn a_bare_memory_source_applies_its_own_gain() {
                 gain: Amplitude::new(g),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         source.trigger_at(SamplePosition(0.0));
         source.play();
 
@@ -367,7 +371,8 @@ fn two_half_gain_voices_sum_to_one_full_gain_voice() {
                 placement: Some(tutti_sampler::VoiceWindow::default()),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         pool.insert_voice(
             SlotId(id),
             Voice {

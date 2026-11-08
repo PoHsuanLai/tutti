@@ -212,7 +212,7 @@ impl AudioOut for WavOut {
     /// runtime [`ChannelLayout`] and the sink's layout is the header's, so this
     /// and [`write_interleaved`](WavOut::write_interleaved) are the same
     /// operation. A caller feeding some *other* width folds first, through
-    /// [`tutti_types::fold_frame`].
+    /// [`tutti_types::Fold`].
     fn write(&mut self, frames: &[f32]) {
         self.write_interleaved(frames);
     }

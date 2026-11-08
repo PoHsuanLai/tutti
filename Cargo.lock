@@ -4881,7 +4881,6 @@ dependencies = [
  "assert_no_alloc",
  "atomic_float",
  "bevy_reflect",
- "criterion",
  "libm",
  "serde",
  "serde_json",

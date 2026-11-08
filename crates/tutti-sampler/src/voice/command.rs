@@ -405,7 +405,7 @@ impl std::error::Error for SendError {}
 /// # use std::sync::Arc;
 /// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
 /// # let voice = Voice {
-/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone())),
+/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
 /// #     channel_index: None,
 /// # };
@@ -422,7 +422,7 @@ impl std::error::Error for SendError {}
 /// # use std::sync::Arc;
 /// # let wave = Arc::new(Wave::from_samples(48_000.0, &[0.0; 64]));
 /// # let voice = Voice {
-/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone())),
+/// #     source: VoiceSource::Memory(MemorySource::new(wave.clone()).expect("a placeable wave")),
 /// #     play: Playback::default(),
 /// #     channel_index: None,
 /// # };

@@ -89,7 +89,10 @@ fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 
 #[test]
 fn memory_source_process_is_allocation_free() {
-    let mut rig = Rig::new(MemorySource::new(sine_wave(2.0, 48_000.0)), 64);
+    let mut rig = Rig::new(
+        MemorySource::new(sine_wave(2.0, 48_000.0)).expect("a placeable wave"),
+        64,
+    );
 
     // Warm-up — drains the position update branch.
     for _ in 0..16 {
@@ -106,7 +109,10 @@ fn memory_source_process_is_allocation_free() {
 /// One-frame blocks: the sample-accurate caller's path.
 #[test]
 fn memory_source_one_frame_blocks_are_allocation_free() {
-    let mut rig = Rig::new(MemorySource::new(sine_wave(2.0, 48_000.0)), 1);
+    let mut rig = Rig::new(
+        MemorySource::new(sine_wave(2.0, 48_000.0)).expect("a placeable wave"),
+        1,
+    );
     for _ in 0..256 {
         rig.block();
     }
@@ -243,7 +249,8 @@ fn voice_pool_process_steady_state_is_allocation_free() {
     let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+        let sampler =
+            MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
         unit.insert_voice(
             SlotId(i),
             Voice {
@@ -296,7 +303,8 @@ fn cloned_voice_pool_with_stretch_is_allocation_free() {
 
     let mut original = VoicePool::new();
 
-    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+    let sampler =
+        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
     original.insert_voice(
         SlotId(0),
         Voice {
@@ -339,7 +347,8 @@ fn voice_pool_one_frame_blocks_are_allocation_free() {
     let mut unit = VoicePool::new();
 
     for i in 0..2u128 {
-        let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+        let sampler =
+            MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
         unit.insert_voice(
             SlotId(i),
             Voice {
@@ -400,7 +409,8 @@ fn ragged_at_512<N: Node>(node: N) {
 
 /// A memory voice reading `wave` placed at beat 0, playing `stretch`.
 fn placed_voice(wave: &Arc<Wave>, stretch: f32) -> Voice {
-    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+    let sampler =
+        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
     Voice {
         play: Playback {
             gain: sampler.gain(),
@@ -455,7 +465,8 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
     let mut pool = VoicePool::new();
     pool.insert_voice(SlotId(0), looped(1.0));
     pool.insert_voice(SlotId(1), looped(1.37));
-    let late = MemorySource::placed(wave.clone(), Beat::new(1_000.0), None);
+    let late =
+        MemorySource::placed(wave.clone(), Beat::new(1_000.0), None).expect("a placeable wave");
     let mut silent = placed_voice(&wave, 1.0);
     silent.source = VoiceSource::Memory(late);
     pool.insert_voice(SlotId(2), silent);
@@ -463,9 +474,11 @@ fn voice_nodes_at_max_block_512_in_ragged_blocks_are_allocation_free() {
 
     ragged_at_512(VoiceNode::new(placed_voice(&wave, 0.5)));
 
-    ragged_at_512(MemorySource::placed(wave.clone(), Beat::new(0.0), None));
+    ragged_at_512(
+        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave"),
+    );
 
-    let free = MemorySource::new(wave.clone());
+    let free = MemorySource::new(wave.clone()).expect("a placeable wave");
     free.trigger();
     ragged_at_512(free);
 }
@@ -527,7 +540,9 @@ fn a_loop_wrap_crossfade_is_allocation_free() {
     pool.insert_voice(SlotId(0), placed_voice(&wave, 1.0));
     wraps_without_allocating(pool);
     wraps_without_allocating(VoiceNode::new(placed_voice(&wave, 1.0)));
-    wraps_without_allocating(MemorySource::placed(wave.clone(), Beat::new(0.0), None));
+    wraps_without_allocating(
+        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave"),
+    );
 }
 
 /// The `VoiceCommand::UpdateStretch` drain is allocation-free.
@@ -595,7 +610,8 @@ fn run_stretch_drain_under_guard() {
     let (unit, handle) = VoicePool::new().with_handle();
     let mut unit = Rig::new(unit, 64);
 
-    let sampler = MemorySource::placed(wave.clone(), Beat::new(0.0), None);
+    let sampler =
+        MemorySource::placed(wave.clone(), Beat::new(0.0), None).expect("a placeable wave");
     handle
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
@@ -661,7 +677,8 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 
 #[test]
 fn memory_source_process_is_allocation_free_at_six_channels() {
-    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize);
+    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize)
+        .expect("a placeable wave");
     assert_eq!(node.shape().audio_out.count(), 6);
     let mut rig = Rig::new(node, 64);
 
@@ -679,7 +696,8 @@ fn memory_source_process_is_allocation_free_at_six_channels() {
 /// One-frame blocks at width 6.
 #[test]
 fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
-    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize);
+    let node = MemorySource::with_channels(surround_wave(2.0, 48_000.0), 6usize)
+        .expect("a placeable wave");
     let mut rig = Rig::new(node, 1);
     for _ in 0..256 {
         rig.block();
@@ -698,7 +716,7 @@ fn memory_source_one_frame_blocks_are_allocation_free_at_six_channels() {
 #[test]
 fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
     // 6-channel wave, 2-channel node.
-    let node = MemorySource::new(surround_wave(2.0, 48_000.0));
+    let node = MemorySource::new(surround_wave(2.0, 48_000.0)).expect("a placeable wave");
     assert_eq!(node.shape().audio_out.count(), 2);
     let mut rig = Rig::new(node, 64);
 
@@ -736,7 +754,8 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
             channels: ChannelLayout::from(6u16),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     reader.insert_voice(
         SlotId(1),
         Voice {
@@ -836,7 +855,8 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
                 channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(i),
@@ -902,7 +922,8 @@ fn remove_voice_drain_does_not_free_on_the_audio_thread() {
                 channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(i),
@@ -959,7 +980,8 @@ fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
                 channels: ChannelLayout::from(6u16),
                 ..Default::default()
             },
-        );
+        )
+        .expect("a placeable wave");
         handle
             .send(VoiceCommand::AddVoice {
                 id: SlotId(i),
@@ -1026,10 +1048,12 @@ fn an_add_past_the_voice_cap_is_refused_without_allocating() {
     let mut rig = Rig::new(pool, 64);
 
     let voice_over = |wave: Arc<Wave>, play: Playback| {
-        let source = MemorySource::new(wave).placed_at(VoiceWindow {
-            start: Beat::new(0.0),
-            duration: None,
-        });
+        let source = MemorySource::new(wave)
+            .expect("a placeable wave")
+            .placed_at(VoiceWindow {
+                start: Beat::new(0.0),
+                duration: None,
+            });
         Box::new(Voice {
             source: VoiceSource::Memory(source),
             play,
@@ -1114,7 +1138,8 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
             channels: ChannelLayout::from(6u16),
             ..Default::default()
         },
-    );
+    )
+    .expect("a placeable wave");
     reader.node().insert_voice(
         SlotId(1),
         Voice {
@@ -1178,10 +1203,12 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
 /// each block (`let _keep = Arc::new(published)`) → aborts in the gate.
 #[test]
 fn voice_node_command_drain_does_not_allocate() {
-    let source = MemorySource::new(sine_wave(1.0, 48_000.0)).placed_at(VoiceWindow {
-        start: Beat::new(0.0),
-        duration: Some(BeatDuration(4.0)),
-    });
+    let source = MemorySource::new(sine_wave(1.0, 48_000.0))
+        .expect("a placeable wave")
+        .placed_at(VoiceWindow {
+            start: Beat::new(0.0),
+            duration: Some(BeatDuration(4.0)),
+        });
     source.play();
 
     let (node, handle) = tutti_sampler::VoiceNode::with_channels(

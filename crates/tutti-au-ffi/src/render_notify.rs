@@ -133,8 +133,8 @@ use coreaudio_sys::{
     kParameterEvent_Ramped,
 };
 
+use crate::callback::with_state;
 use crate::error::{Result, check};
-use crate::guard::guard;
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::{Inner, RenderUnit, Unit};
 const K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER: AudioUnitRenderActionFlags =
@@ -601,53 +601,45 @@ unsafe extern "C" fn au_render_notify(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> OSStatus {
-    // A panic drops one notification; this module holds no mutable state across
-    // a call, so nothing is left broken.
-    guard(
-        "a render notify callback",
-        CANNOT_DO_IN_CURRENT_CONTEXT,
-        || {
-            // Both are non-null for every real AudioToolbox invocation, but
-            // check rather than trust: a null here would be a dereference on
-            // the audio thread.
-            if in_ref_con.is_null() || io_action_flags.is_null() {
-                return NO_ERR;
-            }
-            // SAFETY: `in_ref_con` is the `NotifyState` payload pointer
-            // `RenderNotify::new` registered, live until
-            // `AudioUnitRemoveRenderNotify` returns (its `Drop` removes the
-            // notify before releasing the state).
-            let state = unsafe { &*(in_ref_con as *const NotifyState) };
-            // SAFETY: AudioToolbox passes a valid flags word for the call.
-            let flags = unsafe { *io_action_flags };
-
-            // Decode the phase. The AU sets exactly one of these per call; a
-            // word with neither is not a notification this module models, and
-            // inventing a phase for it would report a pre-render that never
-            // happened.
-            let phase = if flags & K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER != 0 {
-                RenderPhase::Pre
-            } else if flags & K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER != 0 {
-                RenderPhase::Post
-            } else {
-                return NO_ERR;
-            };
-
-            state
-                .deliveries
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-            (state.callback)(RenderNotification {
-                phase,
-                flags,
-                frames: in_number_frames,
-                bus: in_bus_number,
-                io_data,
-                timestamp: in_time_stamp,
-            });
-            NO_ERR
-        },
-    )
+    // SAFETY: `in_ref_con` is the `NotifyState` payload `RenderNotify::new`
+    // registered, live until `AudioUnitRemoveRenderNotify` returns (its `Drop`
+    // removes the notify before releasing the state).
+    unsafe {
+        with_state::<NotifyState, _>(
+            "a render notify callback",
+            in_ref_con,
+            NO_ERR,
+            CANNOT_DO_IN_CURRENT_CONTEXT,
+            |state| {
+                if io_action_flags.is_null() {
+                    return NO_ERR;
+                }
+                // SAFETY: AudioToolbox passes a valid flags word for the call.
+                let flags = unsafe { *io_action_flags };
+                // The AU sets exactly one phase per call; a word with neither is
+                // not a notification this module models.
+                let phase = if flags & K_AUDIO_UNIT_RENDER_ACTION_PRE_RENDER != 0 {
+                    RenderPhase::Pre
+                } else if flags & K_AUDIO_UNIT_RENDER_ACTION_POST_RENDER != 0 {
+                    RenderPhase::Post
+                } else {
+                    return NO_ERR;
+                };
+                state
+                    .deliveries
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (state.callback)(RenderNotification {
+                    phase,
+                    flags,
+                    frames: in_number_frames,
+                    bus: in_bus_number,
+                    io_data,
+                    timestamp: in_time_stamp,
+                });
+                NO_ERR
+            },
+        )
+    }
 }
 
 #[cfg(test)]

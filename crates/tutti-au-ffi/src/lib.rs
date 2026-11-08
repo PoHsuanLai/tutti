@@ -6,6 +6,7 @@
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
+mod callback;
 mod cf;
 mod component;
 mod editor;

@@ -77,7 +77,7 @@ use tutti_types::value::units::{Beat, Bpm};
 
 use coreaudio_sys::OSStatus;
 
-use crate::guard::guard;
+use crate::callback::with_state;
 use crate::property::{Element, HostCallbacksProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 
@@ -435,17 +435,6 @@ impl TransportState {
 /// `user_data` must be null or point at a live [`TransportState`] that outlives
 /// the call. The `AuInstance` guarantees this by boxing the state and clearing
 /// the property before the box is freed.
-/// # Safety
-/// `user_data` is null or points at a live `TransportState`.
-unsafe fn state_from<'a>(user_data: *mut c_void) -> Option<&'a TransportState> {
-    if user_data.is_null() {
-        None
-    } else {
-        // SAFETY: the caller's contract.
-        Some(unsafe { &*(user_data as *const TransportState) })
-    }
-}
-
 /// Stores `value` through `ptr` when the AU asked for that field.
 ///
 /// Every out-param in `HostCallbackInfo`'s procs is documented nullable — the
@@ -465,42 +454,32 @@ unsafe fn write_opt<T>(ptr: *mut T, value: T) {
     }
 }
 
-/// Run `body` with the guarantee that no panic escapes into AudioToolbox.
+/// Runs `body` on the published state behind `user_data`; an unpublished or
+/// missing state answers "cannot do" without touching an out-param.
 ///
-/// Unwinding across an `extern "C"` frame is undefined behaviour, so every proc
-/// funnels through here. A caught panic becomes
-/// `kAudioUnitErr_CannotDoInCurrentContext`, which is exactly the status Apple's
-/// header documents for "the host cannot provide this right now" — as is the
-/// answer before the host has published any transport — so a plugin
-/// that checks the status falls back to its own defaults rather than consuming
-/// values that were never written.
-///
-/// # Safety
-/// `user_data` must satisfy [`state_from`]'s contract.
 /// # Safety
 /// `user_data` is null or the `TransportState` the proc was installed with.
-unsafe fn guarded<F>(user_data: *mut c_void, body: F) -> OSStatus
-where
-    F: FnOnce(&TransportState) -> OSStatus,
-{
-    // SAFETY: the caller's contract: `user_data` is null or the
-    // `TransportState` this proc was installed with.
-    let Some(state) = (unsafe { state_from(user_data) }) else {
-        return CANNOT_DO_IN_CURRENT_CONTEXT;
-    };
-    // Nothing published: no out-param is written and the AU is told the host
-    // cannot answer.
-    if !state.is_published() {
-        return CANNOT_DO_IN_CURRENT_CONTEXT;
+unsafe fn guarded(
+    user_data: *mut c_void,
+    body: impl FnOnce(&TransportState) -> OSStatus,
+) -> OSStatus {
+    // SAFETY: the caller's contract; the state is atomics, so shared access is
+    // all the procs need.
+    unsafe {
+        with_state::<TransportState, _>(
+            "a host transport callback",
+            user_data,
+            CANNOT_DO_IN_CURRENT_CONTEXT,
+            CANNOT_DO_IN_CURRENT_CONTEXT,
+            |state| {
+                if state.is_published() {
+                    body(state)
+                } else {
+                    CANNOT_DO_IN_CURRENT_CONTEXT
+                }
+            },
+        )
     }
-    // Only `&TransportState` is reachable, whose fields are atomics: a panic
-    // between two stores leaves each holding a value that was legal to store,
-    // a stale reading and not a broken invariant.
-    guard(
-        "a host transport callback",
-        CANNOT_DO_IN_CURRENT_CONTEXT,
-        || body(state),
-    )
 }
 
 /// `HostCallback_GetBeatAndTempo`. Called on the render thread.

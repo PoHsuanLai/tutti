@@ -11,8 +11,8 @@ use tutti_plugin_types::ChannelLayout;
 
 use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRenderActionFlags};
 
+use crate::callback::with_state;
 use crate::error::{Error, Result, check};
-use crate::guard::guard;
 use crate::property::{Element, LastRenderError, Scope, SetRenderCallback};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::Unit;
@@ -441,19 +441,13 @@ unsafe extern "C" fn au_input_render_callback(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
-    guard(
-        "the input render callback",
-        CANNOT_DO_IN_CURRENT_CONTEXT,
-        || {
-            // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
-            // registered (live until `Renderer::drop` withdraws it), and `io_data`
-            // is the unit's own list for this pull; `render_input` checks both for
-            // null.
-            unsafe { render_input(in_ref_con, in_number_frames, io_data) }
-        },
-    )
+    // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
+    // registered and `io_data` the unit's own list for this pull.
+    unsafe { render_input(in_ref_con, in_number_frames, io_data) }
 }
 
+/// Fills the unit's pull buffers from the staged input.
+///
 /// # Safety
 /// `in_ref_con` is null or a live `RenderScratch`, and `io_data` is null or a
 /// valid buffer list whose buffers' `mData` hold `mDataByteSize` bytes.
@@ -462,11 +456,32 @@ unsafe fn render_input(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
-    if in_ref_con.is_null() || io_data.is_null() {
-        return -1;
+    // SAFETY: the caller's contract on `in_ref_con`; the scratch is only read.
+    unsafe {
+        with_state::<RenderScratch, _>(
+            "the input render callback",
+            in_ref_con,
+            -1,
+            CANNOT_DO_IN_CURRENT_CONTEXT,
+            |scratch| {
+                if io_data.is_null() {
+                    return -1;
+                }
+                // SAFETY: the caller's contract on `io_data`.
+                unsafe { fill_input(scratch, in_number_frames, io_data) }
+            },
+        )
     }
-    // SAFETY: non-null and live by the caller's contract; only read here.
-    let scratch = unsafe { &*(in_ref_con as *const RenderScratch) };
+}
+
+/// # Safety
+/// `io_data` is a valid buffer list whose buffers' `mData` hold
+/// `mDataByteSize` bytes.
+unsafe fn fill_input(
+    scratch: &RenderScratch,
+    in_number_frames: u32,
+    io_data: *mut AudioBufferList,
+) -> i32 {
     let requested = in_number_frames as usize;
 
     // SAFETY: the caller's contract on `io_data`.

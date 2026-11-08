@@ -59,10 +59,13 @@ use tutti_plugin_types::{Midi1Decoder, MidiEvent};
 #[cfg(feature = "test-support")]
 use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
+use crate::callback::with_state_mut;
 use crate::error::Result;
-use crate::guard::guard;
 use crate::property::{Element, MidiOutputCallbackInfo, MidiOutputCallbackProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
+
+/// The answer to a call with no state or no packet list behind it.
+const NOT_INSTALLED: OSStatus = -1;
 use crate::unit::Unit;
 
 /// The `AUMIDIOutputCallbackStruct` from `AudioUnitProperties.h`.
@@ -447,16 +450,24 @@ unsafe extern "C" fn au_midi_output_callback(
     midi_out_num: u32,
     pktlist: *const MIDIPacketList,
 ) -> OSStatus {
-    guard(
-        "the MIDI output callback",
-        CANNOT_DO_IN_CURRENT_CONTEXT,
-        || {
-            // SAFETY: AudioToolbox calls this with the `userData` registered
-            // through the MIDI-output-callback property and a packet list valid
-            // for the call; `decode_and_dispatch` documents what it needs.
-            unsafe { decode_and_dispatch(user_data, midi_out_num, pktlist) }
-        },
-    )
+    // SAFETY: `user_data` is the `MidiOutState` box `install` registered, which
+    // the withdrawing property write outlives; the AU calls only from inside its
+    // own render, one call at a time, and the host touches the box only before
+    // installing and after withdrawing, so this is the only reference.
+    unsafe {
+        with_state_mut::<MidiOutState, _>(
+            "the MIDI output callback",
+            user_data,
+            NOT_INSTALLED,
+            CANNOT_DO_IN_CURRENT_CONTEXT,
+            |state| {
+                if pktlist.is_null() {
+                    return NOT_INSTALLED;
+                }
+                dispatch(state, midi_out_num, pktlist)
+            },
+        )
+    }
 }
 
 /// The actual decode-and-deliver body. Split out so
@@ -465,30 +476,25 @@ unsafe extern "C" fn au_midi_output_callback(
 /// # Safety
 /// `user_data` must be null or point at a live `MidiOutState`; `pktlist` must be
 /// null or a well-formed `MIDIPacketList`.
-unsafe fn decode_and_dispatch(
-    user_data: *mut c_void,
+fn dispatch(
+    state: &mut MidiOutState,
     midi_out_num: u32,
     pktlist: *const MIDIPacketList,
 ) -> OSStatus {
-    if user_data.is_null() || pktlist.is_null() {
-        return -1;
-    }
-    // SAFETY: `user_data` is non-null (checked) and is the `MidiOutState` box `install` registered; the AU calls only from inside its own render, one call at a time, and the host side touches the box only before installing and after the withdrawing write, so this is the only reference.
-    let state = unsafe { &mut *(user_data as *mut MidiOutState) };
-
     // A list cut short by a panic last time leaves events staged; they belong
     // to a block that is gone.
     state.decoder.begin_list();
     let MidiOutState { sink, decoder, .. } = &mut *state;
     let mut flush = |events: &[MidiEvent]| (*sink)(midi_out_num, events);
-    // SAFETY: `pktlist` is non-null (checked) and a valid packet list for the call (the callback contract of `for_each_packet`).
+    // SAFETY: `pktlist` is non-null (checked) and a valid packet list for the
+    // call, which is `for_each_packet`'s contract.
     unsafe {
         for_each_packet(pktlist, |frame_offset, bytes| {
             decoder.decode(bytes, frame_offset, &mut flush);
         })
     };
-    // The tail of the list is flushed whole, never held for the next one:
-    // a note-off held back is a stuck voice.
+    // The tail of the list is flushed whole, never held for the next one: a
+    // note-off held back is a stuck voice.
     decoder.flush(&mut flush);
     state
         .sysex_dropped

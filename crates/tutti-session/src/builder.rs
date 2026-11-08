@@ -378,8 +378,8 @@ impl SessionBuilder {
     ///
     /// # Errors
     ///
-    /// When the engine refuses the graph, (`midi-hardware`) the MIDI device
-    /// watch cannot start, or (`sampler`) the disk streamer cannot start.
+    /// When the engine refuses the graph, `layout` has no channels,
+    /// (`midi-hardware`) the MIDI device watch cannot start, or (`sampler`) the disk streamer cannot start.
     pub fn build_offline(
         mut self,
         rate: SampleRate,
@@ -393,6 +393,8 @@ impl SessionBuilder {
             root_width(self.outputs_floor, layout),
         )?;
         let engine = parts.graph.engine(&parts.transport)?;
+        // The width of every block the host pulls.
+        engine.support_output(layout)?;
         let heard = engine.heard_taps();
         let mut session = self.session(parts, Some(engine), true)?;
         session.heard = Some((heard, layout));
@@ -516,7 +518,7 @@ impl SessionBuilder {
 /// channel loss.
 ///
 /// The device is a **floor** because a root narrower than the device leaves
-/// the extra device channels permanently silent: `fold_frame` zero-fills
+/// the extra device channels permanently silent: the fold zero-fills
 /// rather than upmixing, so nothing downstream can recover them.
 ///
 /// The [`MAX_ROOT_CHANNELS`] clamp is applied here, at construction:

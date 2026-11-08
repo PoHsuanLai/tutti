@@ -23,3 +23,29 @@ pub enum Error {
 
 /// `Result` specialized to this crate's [`Error`](enum@Error).
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Why a wave cannot be placed into a voice's channels.
+///
+/// Raised on the control side when a source is built over a wave
+/// ([`MemorySource::try_with_config`](crate::MemorySource::try_with_config),
+/// [`memory_voice`](crate::memory_voice)), never on the audio thread: a wave
+/// that cannot be placed is refused rather than played with a channel in the
+/// wrong place or dropped.
+#[derive(Error, Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum PlaceError {
+    /// A channel of the wave has no place in the voice's frame; the
+    /// [`FoldError`](tutti_types::FoldError) says which and why. A file
+    /// channel no speaker names (a second LFE, a wide or high speaker) is
+    /// [`FoldError::Unnamed`](tutti_types::FoldError::Unnamed).
+    #[error("the wave cannot be placed: {0}")]
+    Fold(#[from] tutti_types::FoldError),
+    /// The wave has more channels than the sampler gathers into a frame.
+    #[error("a wave of {channels} channels is past the {max} the sampler places")]
+    TooWide {
+        /// The wave's channel count.
+        channels: usize,
+        /// The most it places.
+        max: usize,
+    },
+}

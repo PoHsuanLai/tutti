@@ -36,6 +36,11 @@ pub enum Error {
     #[error("graph engine: {0}")]
     Graph(#[from] tutti_engine::GraphEngineError),
 
+    /// The output width has no channels to fold the graph onto: wraps
+    /// `tutti_types::FoldError`.
+    #[error("output width: {0}")]
+    Output(#[from] tutti_types::FoldError),
+
     /// The graph refused a re-prepare: a device restart asked for a block
     /// past the engine's capacity, came while another re-prepare was between
     /// its halves, or met a graph that no longer compiles at the new block.

@@ -7920,7 +7920,7 @@ by width alone.
 - **Rules.** The same speakers in another order are a bit-exact permutation.
   A speaker the destination lacks folds into its nearest speakers at -3 dB
   (stereo destination: the ITU-R BS.775 / Dolby set, unchanged and
-  bit-identical to `fold_frame` for widths 1, 2, 4 (quad), 6, 8 and 12). For
+  bit-identical to the width folds for widths 1, 2, 4 (quad), 6, 8 and 12). For
   every other destination the table, the choice of nearest speaker and the
   -3 dB are tutti's own; the table is pinned in `fold/tests.rs`. A channel
   that cannot be placed is a `FoldError`, never a silent drop.
@@ -7946,12 +7946,52 @@ by width alone.
   voice (a 12-wide one is placed as an 8-wide frame, the most the sampler
   writes; its centre is the same channel), the front pair of a stereo one, and
   every channel where the width has no order (3, 4, 5, 7), as before. Its
-  other width mismatches still use `fold_frame`.
-- **No consumer builds a `Fold` from `Wave::topology()` or `FileIn::topology()`
-  yet.** The sampler still reconciles a file's width by `fold_frame` and ignores
-  the topology, so a file with LFE2 or wide/high channels is still played (and
-  mis-placed); the `FoldError::Unnamed` refusal reaches it with the output-path
-  PR, when the sampler's mismatches move to `Fold`.
+  other width mismatches are placed by the file's topology (part 3, below).
+- **Output path and consumers** (part 3).
+  - **Widths with an order.** `ChannelTopology::assumed` is what a bare width
+    means at an edge that can say no more (cpal 0.15 gives no channel map): SMPTE
+    where the engine has an order, quad at 4, and none at 3, 5, 7, 9 to 11, 13 and
+    up. `Fold::widths(src, dst)` / `Fold::to_width(&src, dst)` place by position
+    where both ends have an order, and by index (`Fold::by_index`: the first
+    channels, zero-filled, a mono mix of the front pair) where either has none,
+    as the width folds did. A source with an `Unknown` channel is
+    `FoldError::Unnamed` whatever the destination; a `Discrete` source is read in
+    the engine's order for its width (a count-built wave of 4 is quad).
+    `fold_frame` is deleted; `fold_frame_to_mono` and `fold_frame_to_stereo` stay
+    for the nodes that hold a bare frame.
+  - **Engine.** `Engine::new` builds, on the control side, the fold from every
+    root width (1 to `MAX_ROOT_CHANNELS`) to every device width up to 16, and
+    publishes them through an `ArcLend`; each call lends the set once, so a plan
+    change needs no rebuild and the audio thread builds nothing.
+    `Engine::support_output(device)` adds a wider device (`OutputBlock::new` and
+    `SessionBuilder::build_offline` call it). `planar_to_interleaved` writes the
+    device buffer, so the heard tap still sees exactly the engine's output buffer.
+    A buffer of an unsupported width is a silent counted block (a panic in debug).
+  - **Export.** `GraphSource::new` builds `Fold::widths(graph, file)`, or
+    `Fold::between` the graph and `EncodeConfig::topology` when the config states
+    one, and the render writes through `planar_to_interleaved`. A graph wider than
+    12 is no longer cut at 12 by a gather.
+  - **Sampler.** `Place` (the old `MonoSpread` plus a `Fold`) is built from
+    `Wave::topology()` and the node's width: a mono wave by the lone-centre
+    rule, a wave already in the frame's order read channel for channel, any
+    other by `Fold::to_width`. A wave with an `Unknown` channel (LFE2, wide,
+    high) is a `PlaceError` from `MemorySource::try_with_channels` and
+    `memory_voice`. A file that names its channels in another order than the
+    engine's (a WAV 7.1 lists the rears before the sides) is permuted, and a
+    permuting wave reads a frame at a time (`read_placed_into`), not along time.
+    Waves of 9 to 32 channels into a frame of 8 (the most a reader writes) are
+    placed rather than cut to their first 8. The streaming tier still reads a file
+    at its own width and order; it does not consume `FileIn::topology()` yet.
+  - **`WaveMetadata`** carries the file's `ChannelTopology` in place of a bare
+    count (`channels()` derives it); it is `Clone`, not `Copy`, and so is the
+    sampler's `SampleFacts`. A host can refuse a file before it loads it.
+  - **Renders that changed**, all in the pairs the owner accepted: 1 to {4, 6, 8,
+    12}, 4 to {6, 8, 12}, 6 to 4, 8 to {4, 6}, 12 to {4, 6, 8}, for the engine
+    output and export; and the sampler's waves of those widths into nodes of
+    those widths. Beyond the pairs: a WAV 7.1 (or any file whose order is not the
+    engine's) is permuted in the sampler, a wave of 9 or more channels into a
+    frame of 8 folds instead of being cut, and an export of a graph wider than 12
+    channels is placed by index instead of through a 12-channel gather.
 - **Quad** is spelled `FL FR BL BR` (WAVE's `0x33`). VST3 `k40Music` and AU
   `Quadraphonic` decode to `FL FR SL SR`; `Fold` relabels between the two at
   gain 1.0, so neither is rewritten.

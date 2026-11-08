@@ -2,7 +2,7 @@
 //! frame width — and [`StereoPlanes`].
 //!
 //! A *frame* (`&[f32]` whose length **is** the width, as
-//! [`fold_frame`](crate::fold_frame) takes) and a planar buffer (`&[&[f32]]`,
+//! [`Fold::frame`](crate::Fold::frame) takes) and a planar buffer (`&[&[f32]]`,
 //! whose `len()` is the width) are already self-describing, so they carry no
 //! layout. An interleaved buffer is not: its length is `frames × width`, and
 //! neither factor is recoverable from the slice alone. Each type carries
@@ -133,7 +133,7 @@ impl<'a> Interleaved<'a> {
     }
 
     /// Iterates frame by frame. Each item is a `stride()`-long slice, which is
-    /// exactly what [`fold_frame`](crate::fold_frame) takes, so a fold over a
+    /// exactly what [`Fold::frame`](crate::Fold::frame) takes, so a fold over a
     /// whole buffer needs no index arithmetic at all.
     #[inline]
     pub fn iter_frames(&self) -> impl Iterator<Item = &'a [f32]> + '_ {
@@ -279,7 +279,7 @@ impl<'a> InterleavedMut<'a> {
     }
 
     /// Iterates frame by frame, mutably. Each item is `stride()` long — the
-    /// shape [`fold_frame`](crate::fold_frame) writes into.
+    /// shape [`Fold::frame`](crate::Fold::frame) writes into.
     #[inline]
     pub fn iter_frames_mut(&mut self) -> impl Iterator<Item = &mut [f32]> + use<'_> {
         let ch = self.stride();
@@ -418,7 +418,7 @@ mod tests {
     }
 
     /// Every frame is exactly one stride wide, in order — the shape
-    /// `fold_frame` consumes.
+    /// `Fold::frame` consumes.
     #[test]
     fn iter_frames_yields_whole_frames_in_order() {
         let buf: Vec<f32> = (0..12).map(|i| i as f32).collect();
@@ -546,16 +546,18 @@ mod tests {
     }
 
     /// A whole-buffer fold needs no index arithmetic: `iter_frames()` hands
-    /// `fold_frame` exactly what it takes.
+    /// `Fold::frame` exactly what it takes.
     #[test]
-    fn iter_frames_feeds_fold_frame_directly() {
+    fn iter_frames_feeds_a_fold_directly() {
         // 5.1 with energy only in the centre channel.
         let buf = [0.0f32, 0.0, 1.0, 0.0, 0.0, 0.0];
         let it = Interleaved::new(&buf, ChannelLayout::from(6u16));
 
+        let fold = crate::Fold::widths(ChannelLayout::from(6u16), ChannelLayout::STEREO)
+            .expect("5.1 to stereo");
         let mut out = [0.0f32; 2];
         for f in it.iter_frames() {
-            crate::fold_frame(f, &mut out);
+            fold.frame(f, &mut out);
         }
         assert!(
             out[0] > 0.0 && (out[0] - out[1]).abs() < 1e-6,

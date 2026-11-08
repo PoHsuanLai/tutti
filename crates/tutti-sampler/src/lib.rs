@@ -27,7 +27,7 @@
 //! MIT OR Apache-2.0.
 
 mod error;
-pub use error::{Error, Result};
+pub use error::{Error, PlaceError, Result};
 
 /// Widest frame the sampler reads, interpolates, or emits, in channels.
 ///

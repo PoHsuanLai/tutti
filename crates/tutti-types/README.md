@@ -23,8 +23,11 @@ Use it directly when you need only the vocabulary (a crate that implements
   `Fold::between(&src, &dst)` turns one `ChannelTopology` into another by
   speaker (ITU-R BS.775 / Dolby coefficients, a pure permutation for the same
   speakers in another order, discrete channels one to one) and refuses a channel
-  it cannot place; the matrix is not normalised. The `fold_frame` family folds by
-  width alone and is what `Fold` replaces.
+  it cannot place; the matrix is not normalised. `Fold::widths` / `Fold::to_width`
+  are the entry points for an edge that knows only a width (a device, an export
+  file, the graph root): the engine's order where the width has one, channels by
+  index (`Fold::by_index`) where it has none. The width-only `fold_frame` is gone;
+  `fold_frame_to_mono` / `fold_frame_to_stereo` remain for a bare frame.
 - **`io`** — `AudioIn` / `AudioOut` and `pump`: the two traits every audio source
   and sink in the engine speaks (mic, file, disk, plugin boundary).
 - **`latency`** / **`tail`** — PDC planning (`LatencyGraph`, `plan`,

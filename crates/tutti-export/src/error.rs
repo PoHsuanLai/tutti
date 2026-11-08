@@ -147,6 +147,10 @@ pub enum ConfigError {
     /// A prepare hook left the forked graph in a state that cannot commit.
     #[error("the prepare hook left the forked graph uncommittable: {0:?}")]
     PrepareHookUncommittable(tutti_graph::CommitError),
+    /// The graph's channels have no place in the file's: the topology the file
+    /// states cannot take them, or is not as wide as the file.
+    #[error("the graph's channels cannot be placed into the file's: {0}")]
+    Placement(tutti_types::FoldError),
 }
 
 impl From<tutti_codec::Error> for Error {

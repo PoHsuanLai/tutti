@@ -99,6 +99,7 @@ fn all_four_formats_export() {
     }
 }
 
+/// A mono graph exported to quad is the front pair, and the rears stay silent.
 #[test]
 fn upmix_does_not_panic_and_leaves_extras_silent() {
     let d = tempfile::tempdir().unwrap();
@@ -123,8 +124,11 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
         }
     }
     println!("mono->quad channel peaks: {ch:?}");
-    assert!(ch[0] > 0.4, "ch0 carries the signal");
-    for (c, &peak) in ch.iter().enumerate().skip(1) {
+    assert!(
+        ch[0] > 0.4 && ch[1] > 0.4,
+        "the front pair carries the signal"
+    );
+    for (c, &peak) in ch.iter().enumerate().skip(2) {
         assert!(peak < 1e-6, "ch{c} must be silent, got {peak}");
     }
 }

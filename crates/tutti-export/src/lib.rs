@@ -156,6 +156,14 @@ impl Rendered {
 /// the encoders use, and zero is the only rejected width. That the check is
 /// a bound rather than a list of enumerated widths is what lets a 3- or 5-wide
 /// master export at all: nothing here is generic over the count.
+/// The file's channels, for the fold from the graph's.
+fn file_channels(config: &ExportConfig) -> render::FileChannels<'_> {
+    render::FileChannels {
+        layout: config.encode.channels,
+        topology: config.encode.topology.as_ref(),
+    }
+}
+
 fn frame_width(layout: ChannelLayout) -> Result<usize> {
     match layout.count() {
         0 => Err(Error::UnsupportedChannels(0)),
@@ -264,6 +272,7 @@ pub fn render_to_file_with(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
+        &file_channels(config),
         |src| {
             encode::encode_to_file(
                 src,
@@ -351,6 +360,7 @@ fn render_pass(
         graph.borrow_mut(),
         config.render.sample_rate,
         clock,
+        &file_channels(config),
         |src| {
             render::drive(src, config.encode.channels, &plan, control, |block| {
                 block.append_to_planes(&mut planes);

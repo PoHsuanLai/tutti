@@ -889,7 +889,7 @@ mod tests {
     /// placement is exact, `Arrangement::taps`.)
     #[test]
     fn a_positions_taps_read_what_the_memory_tier_reads() {
-        use crate::voice::interp::{MonoSpread, interpolate_taps, read_frame, read_looped_frame};
+        use crate::voice::interp::{Place, interpolate_taps, read_frame, read_looped_frame};
         let len = 3_000usize;
         let mut w = Wave::new(1, 48_000.0);
         for i in 0..len {
@@ -917,20 +917,20 @@ mod tests {
                     if pos < len as f64 {
                         read_frame(
                             &wave,
-                            &MonoSpread::FAN,
+                            &Place::FAN,
                             (len as f64 - 1.0 - pos).max(0.0),
                             &mut memory,
                         );
                     }
                 } else if let Some(span) = span_of(mapping) {
                     let (p, looped) = span.place(pos);
-                    read_looped_frame(&wave, &MonoSpread::FAN, &span, p, looped, &mut memory);
+                    read_looped_frame(&wave, &Place::FAN, &span, p, looped, &mut memory);
                 } else if pos < len as f64 {
-                    read_frame(&wave, &MonoSpread::FAN, pos, &mut memory);
+                    read_frame(&wave, &Place::FAN, pos, &mut memory);
                 }
                 let mut live = [0.0f32];
                 if let Some((taps, frac)) = arrangement.taps(pos) {
-                    interpolate_taps(1, &MonoSpread::FAN, frac, &mut live, |_, t| {
+                    interpolate_taps(1, &Place::FAN, frac, &mut live, |_, t| {
                         slots[taps[t] as usize]
                     });
                 }

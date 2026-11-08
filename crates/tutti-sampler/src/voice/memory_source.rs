@@ -21,13 +21,13 @@ use tutti_types::{
 
 use super::clock::{BlockClock, Clock};
 use super::interp::{
-    Gate, MonoSpread, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
+    Gate, Place, hermite_lanes, place, place_tail, read_looped_frame, split_position, tap,
 };
 use super::loop_span::{LoopSpan, blend};
 use super::slot::Piece;
 use super::types::Direction;
 use crate::lanes::{Gather, Lane, UNPREPARED_FRAMES, audible, scale};
-use crate::{MAX_SAMPLER_CHANNELS, nonempty};
+use crate::{MAX_SAMPLER_CHANNELS, PlaceError, nonempty};
 
 /// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
 /// that says whether and how to loop. [`MemorySource::with_config`] converts it
@@ -264,12 +264,13 @@ pub struct MemorySource {
     /// Deliberately not derived from `wave.channels()`: a node whose arity
     /// followed its content would re-arity itself in the graph the moment a
     /// wider file was loaded, and edges are wired against its shape.
-    /// The wave's own width is reconciled against this one by
+    /// The wave's own channels are placed into this width by
     /// [`read_frame`](super::interp::read_frame)'s channel policy.
     channels: ChannelLayout,
 
-    /// Where a mono wave goes in a frame of [`channels`](Self::channels).
-    spread: MonoSpread,
+    /// Where the wave's channels go in a frame of [`channels`](Self::channels):
+    /// built from the wave's topology when the source is.
+    channel_place: Place,
 
     /// A block's placed positions when this source is a graph node of its
     /// own, sized from `Prepare::max_block` in `prepare` (empty until then,
@@ -321,7 +322,7 @@ impl Clone for MemorySource {
             // A copy reads its own blocks' transport.
             clock: Clock::new(),
             channels: self.channels,
-            spread: self.spread.clone(),
+            channel_place: self.channel_place.clone(),
             // Unsized, so a clone stays allocation-free: a copy inserted as
             // a node is prepared, which sizes it.
             positions: Vec::new(),
@@ -336,10 +337,50 @@ impl MemorySource {
     ///
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
     /// Use [`with_channels`](Self::with_channels) to declare a different width.
+    ///
+    /// # Panics
+    ///
+    /// If a channel of `wave` cannot be placed (a file channel no speaker
+    /// names). A wave decoded from a file goes through
+    /// [`try_with_channels`](Self::try_with_channels) instead, which says so.
     #[must_use]
     pub fn new(wave: Arc<Wave>) -> Self {
+        Self::with_channels(wave, ChannelLayout::STEREO)
+    }
+
+    /// A `channels`-wide sampler over `wave`.
+    ///
+    /// The wave's own channels are placed into this width by
+    /// [`read_frame`](super::interp::read_frame)'s channel policy (mono is the
+    /// centre or the front pair, anything else by its
+    /// [`topology`](Wave::topology)).
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new).
+    #[must_use]
+    pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
+        Self::try_with_channels(wave, channels).expect("a wave whose channels can be placed")
+    }
+
+    /// As [`with_channels`](Self::with_channels), refusing a wave that cannot
+    /// be placed.
+    ///
+    /// Control side: it builds the fold from the wave's topology to the
+    /// source's width.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaceError`] for a wave with a channel no speaker names (a second
+    /// LFE, a wide or high speaker), or one the frame has no place for.
+    pub fn try_with_channels(
+        wave: Arc<Wave>,
+        channels: impl Into<ChannelLayout>,
+    ) -> Result<Self, PlaceError> {
+        let channels = nonempty(channels.into());
+        let channel_place = Place::for_wave(&wave, channels)?;
         let sample_rate = wave.sample_rate();
-        Self {
+        Ok(Self {
             wave,
             position: Param64::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
@@ -352,26 +393,12 @@ impl MemorySource {
             placement: None,
             looped: AtomicBool::new(false),
             clock: Clock::new(),
-            channels: ChannelLayout::STEREO,
-            spread: MonoSpread::FAN,
+            channels,
+            channel_place,
             positions: Vec::new(),
             gather: Gather::empty(),
             tail: Vec::new(),
-        }
-    }
-
-    /// A `channels`-wide sampler over `wave`.
-    ///
-    /// The wave's own channel count is independent of this; the two are
-    /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
-    /// channel policy (mono fans, anything else folds).
-    pub fn with_channels(wave: Arc<Wave>, channels: impl Into<ChannelLayout>) -> Self {
-        let channels = nonempty(channels.into());
-        Self {
-            channels,
-            spread: MonoSpread::to(channels),
-            ..Self::new(wave)
-        }
+        })
     }
 
     /// Output width — the node's audio outputs.
@@ -385,16 +412,31 @@ impl MemorySource {
     /// A `LoopSetting::On { crossfade_frames, .. }` loops with that crossfade
     /// (via [`set_loop_range`](Self::set_loop_range)); `crossfade_frames == 0`
     /// loops with no crossfade.
+    ///
+    /// # Panics
+    ///
+    /// As [`new`](Self::new); [`try_with_config`](Self::try_with_config) refuses
+    /// instead.
     #[must_use]
     pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
-        let channels = nonempty(config.channels);
+        Self::try_with_config(wave, config).expect("a wave whose channels can be placed")
+    }
+
+    /// As [`with_config`](Self::with_config), refusing a wave that cannot be
+    /// placed.
+    ///
+    /// # Errors
+    ///
+    /// As [`try_with_channels`](Self::try_with_channels).
+    pub fn try_with_config(
+        wave: Arc<Wave>,
+        config: MemorySourceConfig,
+    ) -> Result<Self, PlaceError> {
         let mut unit = Self {
             gain: Param::new(config.gain),
             speed: config.speed,
             placement: config.placement,
-            channels,
-            spread: MonoSpread::to(channels),
-            ..Self::new(wave)
+            ..Self::try_with_channels(wave, config.channels)?
         };
         if let LoopSetting::On {
             start,
@@ -404,7 +446,7 @@ impl MemorySource {
         {
             unit.set_loop_range(start, end, crossfade_frames);
         }
-        unit
+        Ok(unit)
     }
 
     /// Convenience constructor for the common placed voice: on the
@@ -745,7 +787,7 @@ impl MemorySource {
 
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
         // bound-clamped), unifying this path with `DiskSource`.
-        super::interp::read_frame(&self.wave, &self.spread, position, out);
+        super::interp::read_frame(&self.wave, &self.channel_place, position, out);
     }
 
     /// Read one un-gained frame of a placed voice at `pos`, the position
@@ -799,7 +841,7 @@ impl MemorySource {
             out.fill(0.0);
             return;
         }
-        read_looped_frame(&self.wave, &self.spread, span, p, looped, out);
+        read_looped_frame(&self.wave, &self.channel_place, span, p, looped, out);
     }
 
     /// The gate a placed read seats at, for a read stepping at
@@ -892,8 +934,8 @@ impl MemorySource {
     /// tap lanes *are* the wave, shifted by a frame each: the cubic reads
     /// them in place, and nothing is gathered.
     ///
-    /// A wave folded to another width reads a frame at a time through
-    /// `read_placed_into`.
+    /// A wave placed by a fold (another width, or another order) reads a frame
+    /// at a time through `read_placed_into`.
     ///
     /// [`read_frame`]: super::interp::read_frame
     pub(crate) fn read_placed_lanes<L: AsMut<[f32]>>(
@@ -912,7 +954,9 @@ impl MemorySource {
         let src_ch = self.wave.channels();
         // (A wave past `u32::MAX` frames, 24 hours at 48 kHz, reads a frame
         // at a time: the gather keeps each frame's whole index as a `u32`.)
-        let along_time = len > 0 && len <= u32::MAX as usize && (src_ch == 1 || src_ch == n);
+        let along_time = len > 0
+            && len <= u32::MAX as usize
+            && (src_ch == 1 || (src_ch == n && self.channel_place.is_direct()));
         if !along_time {
             let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
             for (i, pos) in positions.iter().enumerate() {
@@ -1058,7 +1102,9 @@ impl MemorySource {
         if src_ch == 1 {
             // `y[0]` is free now: the mono block is placed from a copy while
             // lane 0 is itself rewritten.
-            self.spread.lanes(lanes, n, 0..frames, &mut y[0]);
+            self.channel_place
+                .mono()
+                .lanes(lanes, n, 0..frames, &mut y[0]);
         }
     }
 

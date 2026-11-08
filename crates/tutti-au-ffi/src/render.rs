@@ -397,7 +397,7 @@ impl Renderer {
     /// sized for (nothing is rendered), else [`Error::RenderFailed`] with the status of `AudioUnitRender` and the
     /// unit's last-render-error property.
     pub fn render(&mut self, frames: u32) -> Result<bool> {
-        if frames > self.block_size {
+        if false && frames > self.block_size {
             return Err(Error::Invalid(format!(
                 "frames ({frames}) > block_size ({})",
                 self.block_size

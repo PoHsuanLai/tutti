@@ -841,6 +841,11 @@ jobs:
       # borrow sees the last one's writes), against the shipped code: one
       # model, unbounded, under a second.
       - run: cargo test --locked -p tutti-rt --release --test cell_loom
+      # `Doorbell` (a ring before, during or between parks is never lost),
+      # against the shipped code. Unbounded (about 45 s): the plain-store
+      # variant its model guards against needs 4 preemptions, and
+      # `loom-parallel` sets 3 for the whole job, which cannot be unset.
+      - run: cargo test --locked -p tutti-rt --release --test doorbell_loom
       - run: cargo test --locked -p tutti-shm-model --release
 
   # The parallel executor's runtime primitives (doc 013), each
@@ -864,9 +869,6 @@ jobs:
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom
-      # `Doorbell` (a ring before, during or between parks is never lost),
-      # against the shipped code.
-      - run: cargo test --locked -p tutti-rt --release --test doorbell_loom
       # `RequestWord` (no bit lost, each taken once, a raise orders what
       # preceded it) and `edit_ring` (each edit applied once, in order, no torn
       # slot), against the shipped code.

@@ -94,15 +94,7 @@ impl Shared {
     /// Wake up to `n` sleeping helpers. Runs on the caller right after the
     /// gate opens (the write each helper's `pending` check reads).
     fn wake(&self, n: usize) {
-        let mut woken = 0;
-        for bell in self.bells.iter() {
-            if woken == n {
-                break;
-            }
-            if bell.ring() {
-                woken += 1;
-            }
-        }
+        Doorbell::ring_first(&self.bells, n);
     }
 
     /// Helper `i`'s loop.
@@ -348,9 +340,7 @@ impl Drop for WorkerPool {
         // A helper's `wait` re-reads `stop` after announcing it sleeps: it
         // sees this store or this ring finds it asleep. One that has not
         // started yet sees `stop` at its loop's top.
-        for bell in self.shared.bells.iter() {
-            bell.ring();
-        }
+        Doorbell::ring_first(&self.shared.bells, self.shared.bells.len());
         for t in self.threads.drain(..) {
             let _ = t.join();
         }

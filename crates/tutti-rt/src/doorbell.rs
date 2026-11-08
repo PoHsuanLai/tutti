@@ -19,7 +19,8 @@
 //! 2. `ring` issues a `SeqCst` fence, then reads `asleep`; only if it is set
 //!    does it clear it and unpark the thread.
 //!
-//! The two fences are totally ordered (a store-load Dekker pair), so either
+//! The two `SeqCst` fences are totally ordered (this is the store-load
+//! Dekker pattern), so either
 //! the closure sees the ringer's write and the sleeper does not park, or
 //! `ring` sees `asleep` and unparks. A ring that lands before the park is
 //! not lost either: `unpark` before `park` makes the park return at once.
@@ -32,6 +33,7 @@
 //! a fence and a load. With one parked it is also a swap and
 //! `Thread::unpark`, which is a futex wake on Linux (a system call; the
 //! wake-up itself, not a wait: it does not block on the sleeper).
+//! [`ring_first`](Doorbell::ring_first) rings several bells after one fence.
 //!
 //! # Spurious returns
 //!
@@ -100,9 +102,37 @@ impl Doorbell {
     /// whether it was. Call it **after** the write the sleeper's closure
     /// reads. Real-time safe (module docs, "What the ringer costs").
     pub fn ring(&self) -> bool {
-        // The other half of the sleeper's store-load pair (`park`): either
-        // this sees its `asleep`, or its closure sees the write before this.
         fence(Ordering::SeqCst);
+        self.ring_after_fence()
+    }
+
+    /// Ring `bells` in order until `n` sleepers have been woken, returning
+    /// how many were: one fence for the whole call, where `n` calls to
+    /// [`ring`](Self::ring) issue one each. With `n == 0` it issues none.
+    /// The same rules as `ring`: call it after the write the sleepers'
+    /// closures read.
+    pub fn ring_first(bells: &[Doorbell], n: usize) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        fence(Ordering::SeqCst);
+        let mut woken = 0;
+        for bell in bells {
+            if woken == n {
+                break;
+            }
+            if bell.ring_after_fence() {
+                woken += 1;
+            }
+        }
+        woken
+    }
+
+    /// `ring` after the caller's `SeqCst` fence, which is the ringer's half
+    /// of the store-load pair with the sleeper's fence in `park`: the two
+    /// fences are totally ordered, so either this sees the sleeper's
+    /// `asleep`, or its closure sees the write before the fence.
+    fn ring_after_fence(&self) -> bool {
         // The load first: the common case, a sleeper that is awake, is not a
         // read-modify-write on a line the sleeper owns.
         if self.asleep.load(Ordering::Relaxed) && self.asleep.swap(false, Ordering::Acquire) {

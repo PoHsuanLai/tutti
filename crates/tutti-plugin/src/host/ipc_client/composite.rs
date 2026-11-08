@@ -11,6 +11,7 @@ use crate::util::transport::shm::AudioSlab;
 use crate::util::window::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, edits};
 use tutti_types::SampleRate;
@@ -43,6 +44,10 @@ struct GuiMirror {
     params: Mutex<EditSink>,
     drain: Mutex<EditDrain>,
     automation: Mutex<Option<crate::protocol::AutomationMode>>,
+    /// Whether an editor is open. Nothing is queued while it is not, and what
+    /// was queued is discarded when it opens or closes: an edit made with no
+    /// editor to show it is not one to replay on the first idle.
+    open: AtomicBool,
 }
 
 impl GuiMirror {
@@ -52,7 +57,50 @@ impl GuiMirror {
             params: Mutex::new(sink),
             drain: Mutex::new(drain),
             automation: Mutex::new(None),
+            open: AtomicBool::new(false),
         }
+    }
+
+    /// Queues a parameter write for the editor, if one is open. Never blocks.
+    fn push_param(&self, id: ParamId, value: Normalized) {
+        if self.open.load(Ordering::Acquire)
+            && let Ok(mut sink) = self.params.try_lock()
+        {
+            let _ = sink.send(Edit::Param { id, value });
+        }
+    }
+
+    /// Queues the latest automation mode for the editor, if one is open.
+    fn push_automation(&self, mode: crate::protocol::AutomationMode) {
+        if self.open.load(Ordering::Acquire)
+            && let Ok(mut latest) = self.automation.try_lock()
+        {
+            *latest = Some(mode);
+        }
+    }
+
+    /// Drops everything queued.
+    fn discard(&self) {
+        if let Ok(mut drain) = self.drain.lock() {
+            drain.drain(|_| {});
+        }
+        if let Ok(mut latest) = self.automation.lock() {
+            *latest = None;
+        }
+    }
+
+    /// An editor opened (after its state sync): what was queued before it is
+    /// stale, and writes are queued from here on.
+    fn opened(&self) {
+        self.open.store(false, Ordering::Release);
+        self.discard();
+        self.open.store(true, Ordering::Release);
+    }
+
+    /// The editor closed: stop queueing and drop what waits.
+    fn closed(&self) {
+        self.open.store(false, Ordering::Release);
+        self.discard();
     }
 }
 
@@ -160,12 +208,7 @@ impl PluginBridge {
         // stays non-blocking and allocation-free. The authoritative delivery is
         // the audio command below; a dropped mirror write self-heals on the next
         // edit.
-        if let Ok(mut sink) = self.mirror.params.try_lock() {
-            let _ = sink.send(Edit::Param {
-                id: param_id,
-                value,
-            });
-        }
+        self.mirror.push_param(param_id, value);
         // The wire carries `f32`; the domain is enforced up to this point.
         self.audio.set_parameter_rt(param_id, value)
     }
@@ -183,9 +226,7 @@ impl PluginBridge {
         // The GUI mirror is cosmetic and a main-thread call, so the latest mode
         // waits for the next `editor_idle` (`try_lock`, never block); a dropped
         // glow self-heals on the next mode change.
-        if let Ok(mut latest) = self.mirror.automation.try_lock() {
-            *latest = Some(mode);
-        }
+        self.mirror.push_automation(mode);
         self.audio.set_automation_state_rt(mode)
     }
 
@@ -331,6 +372,7 @@ impl PluginBridge {
             );
             let _ = gui.set_state(main, &state);
         }
+        self.mirror.opened();
 
         Ok(size)
     }
@@ -373,11 +415,13 @@ impl PluginBridge {
         if let Ok(state) = state_to_sync {
             let _ = gui.set_state(main, &state);
         }
+        self.mirror.opened();
 
         Ok(())
     }
 
     pub fn close_editor(&self, main: &MainThread) -> bool {
+        self.mirror.closed();
         let Ok(mut guard) = self.gui.lock() else {
             return false;
         };
@@ -785,5 +829,64 @@ mod automation_outcome_tests {
     #[test]
     fn a_delivered_push_is_not_an_error() {
         assert!(automation_push_outcome(Delivered::Yes).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod gui_mirror_tests {
+    use super::*;
+
+    fn applied(mirror: &GuiMirror) -> Vec<ParamId> {
+        let mut out = Vec::new();
+        mirror.drain.lock().unwrap().drain(|edit| {
+            if let Edit::Param { id, .. } = edit {
+                out.push(id);
+            }
+        });
+        out
+    }
+
+    /// **An edit made with no editor open is not replayed by the first idle.**
+    /// Automation runs with the editor closed; the editor opens; the first idle
+    /// applies nothing stale. A write made while it is open is applied; what is
+    /// still queued when it closes, or when it opens again, is dropped.
+    ///
+    /// Mutations (run): `push_param` not checking `open` -> the first assert
+    /// fails (a write is queued with no editor); `closed` not discarding -> the
+    /// third fails; `opened` not discarding -> the fourth fails.
+    #[test]
+    fn automation_with_the_editor_closed_is_not_replayed_when_it_opens() {
+        let mirror = GuiMirror::new();
+        let id = ParamId::new(3);
+        mirror.push_param(id, Normalized::of(0.9));
+        mirror.push_automation(crate::protocol::AutomationMode::Writing);
+        assert!(
+            applied(&mirror).is_empty(),
+            "nothing is queued with no editor"
+        );
+        mirror.opened();
+        assert!(
+            applied(&mirror).is_empty(),
+            "the first idle applies nothing stale"
+        );
+
+        mirror.push_param(id, Normalized::of(0.2));
+        assert_eq!(
+            applied(&mirror),
+            vec![id],
+            "an open editor is shown the write"
+        );
+
+        mirror.push_param(id, Normalized::of(0.4));
+        mirror.closed();
+        assert!(applied(&mirror).is_empty(), "closing drops what waited");
+
+        mirror.opened();
+        mirror.push_param(id, Normalized::of(0.6));
+        mirror.opened();
+        assert!(
+            applied(&mirror).is_empty(),
+            "opening again drops what waited"
+        );
     }
 }

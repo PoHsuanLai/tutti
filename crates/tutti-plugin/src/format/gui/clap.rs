@@ -258,7 +258,6 @@ impl PluginEditor for ClapGuiInstance {
 
 #[cfg(test)]
 mod tests {
-
     //! What these cover, and what they cannot.
     //!
     //! Every test here exercises [`param_edit_from_event`] — the projection —

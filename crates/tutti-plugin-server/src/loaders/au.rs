@@ -1194,7 +1194,7 @@ mod tests {
                 }
             };
 
-        let params = instance.get_parameter_list();
+        let params = instance.get_parameter_list(&main_thread());
         assert!(!params.is_empty(), "AUDistortion declares parameters");
 
         let groups: std::collections::BTreeSet<&str> = params
@@ -1459,7 +1459,7 @@ mod tests {
             meta: Meta::default(),
         };
 
-        let params = au.get_parameter_list();
+        let params = au.get_parameter_list(&main_thread());
         assert!(
             !params.is_empty(),
             "AUDelay should have parameters via PluginInstance trait"
@@ -1751,7 +1751,7 @@ mod tests {
         };
         let addr = cutoff_id.into();
 
-        au.set_parameter(addr, Normalized::of(1.0));
+        au.set_parameter(&main_thread(), addr, Normalized::of(1.0));
         let plain = parameters::get(au.inner.unit(), cutoff_id).expect("cutoff is readable");
         assert!(
             (plain - bounds.max).abs() < 1.0,
@@ -1763,10 +1763,10 @@ mod tests {
             "a plain {plain} means the normalized value went through unscaled — \
              the inaudible-filter bug"
         );
-        assert!((au.get_parameter(addr) - 1.0).abs() < 1e-3);
+        assert!((au.get_parameter(&main_thread(), addr) - 1.0).abs() < 1e-3);
 
-        au.set_parameter(addr, Normalized::of(0.0));
-        assert!((au.get_parameter(addr)).abs() < 1e-3);
+        au.set_parameter(&main_thread(), addr, Normalized::of(0.0));
+        assert!((au.get_parameter(&main_thread(), addr)).abs() < 1e-3);
     }
 
     #[test]
@@ -1941,7 +1941,7 @@ mod tests {
         // Pick a writable parameter with a genuinely wide plain range — one
         // whose max is far from 1.0, so identity-vs-denormalized is decidable.
         let target = au
-            .get_parameter_list()
+            .get_parameter_list(&main_thread())
             .into_iter()
             .find(|p| {
                 p.range.bounds().is_some_and(|(_, max)| max > 2.0)
@@ -2005,7 +2005,7 @@ mod tests {
 
             // And the read path inverts it: `PluginParams` is normalized for
             // every format, so what went in comes back out.
-            let read_back = au.get_parameter(target.id);
+            let read_back = au.get_parameter(&main_thread(), target.id);
             assert!(
                 (read_back - normalized).abs() <= 1e-4,
                 "param {} ('{}'): should read back as the normalized {normalized}, \
@@ -2064,7 +2064,7 @@ mod tests {
         };
 
         let target = au
-            .get_parameter_list()
+            .get_parameter_list(&main_thread())
             .into_iter()
             .find(|p| p.range.bounds().is_some_and(|(_, max)| max > 2.0))
             .expect("AUDelay should expose a wide-range parameter");
@@ -2087,7 +2087,7 @@ mod tests {
 
         // And that is the same value `set_parameter` writes, so the string a
         // third-party AU returns describes the value the parameter is at.
-        au.set_parameter(target.id, Normalized::of(1.0));
+        au.set_parameter(&main_thread(), target.id, Normalized::of(1.0));
         let after = parameters::get(au.inner.unit(), opaque).expect("param is readable");
         assert!(
             (after - plain_at_full).abs() <= tolerance,
@@ -2097,7 +2097,7 @@ mod tests {
 
         // The AU is asked, and declines — see the doc comment.
         assert_eq!(
-            au.parameter_text(target.id, Normalized::of(1.0)),
+            au.parameter_text(&main_thread(), target.id, Normalized::of(1.0)),
             None,
             "param {} ('{}'): no Apple AU implements ParameterStringFromValue. \
              A Some() here means macOS gained the property — re-measure and \
@@ -2106,7 +2106,7 @@ mod tests {
             target.name,
         );
         assert_eq!(
-            au.parameter_value_from_text(target.id, "1000 Hz"),
+            au.parameter_value_from_text(&main_thread(), target.id, "1000 Hz"),
             None,
             "nor ParameterValueFromString — a fabricated number here would be \
              written into the user's preset",

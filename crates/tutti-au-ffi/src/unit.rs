@@ -725,7 +725,7 @@ impl RenderUnit {
     /// The raw `AudioUnit`, valid while a `RenderUnit` or `Unit` lives, for a
     /// call this crate does not wrap (`AudioUnitRender` from a notify
     /// callback, `schedule`). Using it is the caller's `unsafe`.
-    fn get_raw(&self) -> sys::AudioUnit {
+    pub fn get(&self) -> sys::AudioUnit {
         self.0.instance
     }
 }

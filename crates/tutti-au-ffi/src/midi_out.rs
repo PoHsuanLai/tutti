@@ -59,7 +59,7 @@ use tutti_plugin_types::{Midi1Decoder, MidiEvent};
 #[cfg(feature = "test-support")]
 use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
-use crate::error::{Result, check};
+use crate::error::Result;
 use crate::guard::guard;
 use crate::property::{Element, MidiOutputCallbackInfo, MidiOutputCallbackProperty, Scope};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
@@ -75,7 +75,7 @@ use crate::unit::Unit;
 /// code pointer.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct AuMidiOutputCallbackStruct {
+pub(crate) struct AuMidiOutputCallbackStruct {
     midi_output_callback: Option<AuMidiOutputCallbackFn>,
     user_data: *mut c_void,
 }

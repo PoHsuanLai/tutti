@@ -273,7 +273,7 @@ fn every_overview_entry_addresses_a_readable_parameter() {
     for p in &overview {
         assert_eq!(
             p.scope,
-            Scope::GLOBAL,
+            Scope::GLOBAL.raw(),
             "parameter {} came back in scope {}, not global — a mis-strided \
              decode reads a neighbouring field as the scope",
             p.id,

@@ -129,6 +129,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_au_ffi::Property;
 use tutti_au_ffi::property::{BypassEffect, Latency, PresentPreset};
+use tutti_au_host::types::{self, AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 
 mod support;
 use support::corpus::{DELAY, DISTORTION, MULTI_CHANNEL_MIXER, N_BAND_EQ};
@@ -291,7 +292,8 @@ fn a_host_property_write_reaches_a_property_listener() {
     assert!(
         ids.contains(&BypassEffect::ID),
         "expected kAudioUnitProperty_BypassEffect \
-         ({BypassEffect::ID}) among {ids:?}"
+         ({}) among {ids:?}",
+        BypassEffect::ID
     );
 }
 

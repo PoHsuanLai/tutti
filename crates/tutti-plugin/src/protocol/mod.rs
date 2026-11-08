@@ -114,7 +114,7 @@ pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
     }
 }
 
-pub use envelope::{BridgeMessage, HostMessage};
+pub use envelope::{BridgeMessage, HostMessage, StagedState};
 pub use process::ProcessAudioData;
 pub use shm::SlabLayout;
 pub use tutti_plugin_types::SampleFormat;
@@ -609,6 +609,7 @@ mod tests {
             block_size: 1024,
             preferred_format: SampleFormat::Float64,
             shm_name: "test_shm".to_string(),
+            state: None,
         };
 
         let encoded = bincode::serialize(&msg).unwrap();

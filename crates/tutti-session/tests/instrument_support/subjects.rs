@@ -137,7 +137,7 @@ impl Subject for Plugin {
     const CUT: usize = 1;
 
     /// The plugin's own record of what the host sent it, read from its state.
-    fn transcript(rig: &Rig) -> Option<Vec<super::cases::Logged>> {
+    fn transcript(rig: &Rig) -> Option<tutti_shared_plugin::transcript::Transcript> {
         let state = rig
             .session
             .plugin(rig.node)?
@@ -145,7 +145,11 @@ impl Subject for Plugin {
             .state()
             .save_state()
             .expect("the plugin saves its state");
-        Some(super::cases::Logged::parse(&state))
+        // Not `complete()`: its overflow flag is also set by more blocks than the
+        // log keeps, and a case this long renders more. The events are few.
+        Some(tutti_shared_plugin::transcript::Transcript::parse(
+            &tutti_shared_plugin::transcript::find_blob(&state),
+        ))
     }
 
     fn rig() -> Rig {

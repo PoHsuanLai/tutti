@@ -30,6 +30,14 @@ fn default_block_size() -> usize {
     DEFAULT_BLOCK_SIZE
 }
 
+/// A state staged for the next load: what [`HostMessage::LoadPlugin`] declares
+/// it is restoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedState {
+    /// The staged state's length in bytes.
+    pub len: u64,
+}
+
 /// A request travelling host → subprocess.
 ///
 /// Variant order is wire-significant; see the module docs.
@@ -42,8 +50,9 @@ pub enum HostMessage {
         path: PathBuf,
     },
     /// Instantiate and activate the plugin, ready to process audio. A state
-    /// staged before ([`StageStateChunk`](Self::StageStateChunk)) is restored
-    /// between the two.
+    /// staged before ([`StageStateChunk`](Self::StageStateChunk)) and declared
+    /// in `state` is restored between the two; the server says
+    /// [`BridgeMessage::RestoringState`] just before it starts.
     LoadPlugin {
         /// Filesystem path to the plugin bundle or shared library.
         path: PathBuf,
@@ -61,6 +70,14 @@ pub enum HostMessage {
         /// Name of the shared-memory audio slab, empty if not yet set up.
         #[serde(default)]
         shm_name: String,
+        /// The state this load restores, staged before it
+        /// ([`StageStateChunk`](Self::StageStateChunk)): what the host expects the
+        /// server to hold. The server refuses a load whose declaration and stage
+        /// do not agree (a state staged and none declared, or the reverse, or
+        /// another length), so a stage left over from another load is never
+        /// restored by this one.
+        #[serde(default)]
+        state: Option<StagedState>,
     },
     /// Deactivate and destroy the plugin instance, keeping the subprocess alive.
     UnloadPlugin,
@@ -444,4 +461,10 @@ pub enum BridgeMessage {
         /// now runs at `rate`.
         error: Option<String>,
     },
+    /// Sent while a load is in progress, just before the server restores the
+    /// staged state into the plugin it has opened: the point after which a
+    /// failure is the state's to answer for, and the host's wait is for a
+    /// restore (one opaque plugin call that may take as long as the state is
+    /// large) and not for an open.
+    RestoringState,
 }

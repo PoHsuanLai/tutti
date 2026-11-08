@@ -765,8 +765,10 @@ instant whatever the rate becomes, including between the read and the send: the
 queue rescales what it takes on arrival, and what waits when it is prepared at
 another rate, with the executor's own arithmetic. An event whose frame passed
 while the node did not run (the re-prepare suspends it) lands on the next
-block's first frame. When more events wait than the list holds the latest are
-dropped and counted, and a due event is never held up by later ones.
+block's first frame. When more events wait than the list holds the latest that
+may be lost are dropped and counted, never a note-off or a panic (CC 120, 123)
+while anything else can go (a note that began does not hang), and a due event is
+never held up by later ones.
 `a_rate_change_keeps_the_note_on_its_frame` and the two cases after it pin it.
 
 ## A plugin's state is restored before it is activated
@@ -782,7 +784,7 @@ the default mode). The state is now staged before the load
 (`HostMessage::StageStateChunk`), the loader restores it between opening the
 plugin and activating it, and the `PluginLoaded` reply (buses, latency) is the
 state's; a plugin that refuses the state loads at its defaults and the reply
-says so. `PluginClient::new_with_state`, `Plugin::open_with_state` and
+says so. The load declares the state it restores (`LoadPlugin { state: Some(StagedState { len }) }`) and the server refuses one that does not match what it holds; a stage is discarded by any other request. The server says `RestoringState` just before the restore, and from then the host waits a flat 60 s (a restore is one opaque call with nothing in it to measure progress by) and blames a failure on the state (`BridgeError::StateRestoreError`, which the session answers by withholding the snapshot); a failure before it, in the library or its init, is a load failure and blames nothing. `PluginClient::new_with_state`, `Plugin::open_with_state` and
 `PluginLoad::run` carry it; the in-process VST2 fork restores the program and
 the state before it activates. The AU change mirrors the others and is not
 built here (macOS only).

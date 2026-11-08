@@ -166,8 +166,15 @@ impl Plugin {
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
-        Self::load_with_state(path, sample_rate, block_size, preferred_format, None)
-            .map(|(plugin, descriptor, loaded, format, _)| (plugin, descriptor, loaded, format))
+        Self::load_with_state(
+            path,
+            sample_rate,
+            block_size,
+            preferred_format,
+            None,
+            &mut || {},
+        )
+        .map(|(plugin, descriptor, loaded, format, _)| (plugin, descriptor, loaded, format))
     }
 
     /// `load`, restoring `state` into the plugin **before it is
@@ -182,6 +189,7 @@ impl Plugin {
         block_size: usize,
         preferred_format: SampleFormat,
         state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
     ) -> Result<(
         Self,
         PluginDescriptor,
@@ -209,6 +217,7 @@ impl Plugin {
                         block_size,
                         prefer_f64,
                         state,
+                        before_restore,
                     )?;
                     (Plugin::Vst3(i), e)
                 }
@@ -221,6 +230,7 @@ impl Plugin {
                         block_size,
                         preferred_format == SampleFormat::Float64,
                         state,
+                        before_restore,
                     )?;
                     (Plugin::Vst2(i), e)
                 }
@@ -233,13 +243,20 @@ impl Plugin {
                         block_size,
                         preferred_format == SampleFormat::Float64,
                         state,
+                        before_restore,
                     )?;
                     (Plugin::Clap(i), e)
                 }
 
                 #[cfg(all(feature = "au", target_os = "macos"))]
                 "component" => {
-                    let (i, e) = AuInstance::load_with_state(path, sample_rate, block_size, state)?;
+                    let (i, e) = AuInstance::load_with_state(
+                        path,
+                        sample_rate,
+                        block_size,
+                        state,
+                        before_restore,
+                    )?;
                     (Plugin::Au(i), e)
                 }
 

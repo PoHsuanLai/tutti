@@ -127,7 +127,12 @@ impl PluginServer {
                 Ok(m) => m,
                 Err(_) => return Ok(false),
             };
-            match self.session.handle(msg)? {
+            // A load says it is restoring a state before it does (the host's wait
+            // changes with it); the transport is the interim sink.
+            let reaction = self.session.handle_with(msg, &mut |m| {
+                let _ = transport.send(&m);
+            })?;
+            match reaction {
                 Reaction::Shutdown => return Ok(true),
                 Reaction::Reply(m) => {
                     if transport.send(&m).is_err() {

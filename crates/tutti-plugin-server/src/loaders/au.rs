@@ -408,7 +408,8 @@ impl AuInstance {
     /// AU plugins are registered system-wide; the path is used for identification
     /// but the actual loading goes through AudioComponentFindNext.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, None).map(|(instance, _)| instance)
+        Self::load_with_state(path, sample_rate, block_size, None, &mut || {})
+            .map(|(instance, _)| instance)
     }
 
     /// [`load`](Self::load), restoring `state` **before the unit is
@@ -423,6 +424,7 @@ impl AuInstance {
         sample_rate: f64,
         block_size: usize,
         state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
         #[cfg(all(target_os = "macos", feature = "au"))]
         {
@@ -497,6 +499,7 @@ impl AuInstance {
             // Before the unit is initialized, so the initialization is the
             // state's.
             let state_error = state.and_then(|data| {
+                before_restore();
                 inner
                     .set_state(data)
                     .err()
@@ -624,7 +627,7 @@ impl AuInstance {
 
         #[cfg(not(all(target_os = "macos", feature = "au")))]
         {
-            let _ = (path, sample_rate, block_size, state);
+            let _ = (path, sample_rate, block_size, state, before_restore);
             Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,

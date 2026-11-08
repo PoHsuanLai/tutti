@@ -83,3 +83,29 @@ fn a_pair_past_the_outputs_is_refused() {
         Ok(_) => panic!("accepted"),
     }
 }
+
+/// The handle counts what its queue dropped: with a ring's worth of messages
+/// waiting for frames far ahead, three more for frames still further are lost,
+/// and the handle says so.
+///
+/// Mutation (run): `InstrumentHandle::dropped` returning 0 fails it.
+#[test]
+fn the_handle_counts_what_its_queue_dropped() {
+    use tutti_types::{At, Frame};
+    let mut session = instrument_support::rig::offline_session();
+    let (handle, ()) = session
+        .add_instrument(Dressed(ForkByClone(Five)))
+        .expect("an instrument");
+    let mut rig = Rig::wired(session, handle.clone());
+    let on = instrument_support::midi::note_on(0, 60, 100);
+    for k in 0..256u64 {
+        handle.send(At::Frame(Frame(1_000_000 + k)), on).unwrap();
+    }
+    rig.block();
+    assert_eq!(handle.dropped(), 0);
+    for k in 0..3u64 {
+        handle.send(At::Frame(Frame(9_000_000 + k)), on).unwrap();
+    }
+    rig.block();
+    assert_eq!(handle.dropped(), 3);
+}

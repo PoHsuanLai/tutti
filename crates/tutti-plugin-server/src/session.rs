@@ -12,7 +12,7 @@ use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin::server::{
     AudioSlab, BridgeMessage, ContentScale, HostMessage, MAX_STATE_BYTES, MidiEventVec, Normalized,
-    ParameterQueue, SampleFormat, WindowHandle,
+    ParameterQueue, SampleFormat, StagedState, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
 
@@ -150,17 +150,42 @@ impl Session {
     /// host can act on. Plugin-level failures — a load that fails, a request
     /// with no plugin loaded — come back as an error-carrying `Reply` instead.
     pub(crate) fn handle(&mut self, msg: HostMessage) -> Result<Reaction> {
+        self.handle_with(msg, &mut |_| {})
+    }
+
+    /// [`handle`](Self::handle), with `interim` for a message that cannot wait
+    /// for the reply: the host is told a load has begun restoring its state
+    /// ([`BridgeMessage::RestoringState`]) before the restore, so what it waits
+    /// for changes with it. Dispatch stays a function of the request; `interim`
+    /// is a sink, not a source.
+    pub(crate) fn handle_with(
+        &mut self,
+        msg: HostMessage,
+        interim: &mut dyn FnMut(BridgeMessage),
+    ) -> Result<Reaction> {
         use HostMessage as M;
         match msg {
-            M::ProbePlugin { path } => Ok(self.handle_probe(&path).into()),
+            M::ProbePlugin { path } => {
+                self.discard_staged();
+                Ok(self.handle_probe(&path).into())
+            }
             M::LoadPlugin {
                 path,
                 sample_rate,
                 block_size,
                 preferred_format,
                 shm_name: _,
-            } => self.handle_load(path, sample_rate.get(), block_size, preferred_format),
+                state,
+            } => self.handle_load(
+                path,
+                sample_rate.get(),
+                block_size,
+                preferred_format,
+                state,
+                interim,
+            ),
             M::UnloadPlugin => {
+                self.discard_staged();
                 self.plugin = None;
                 self.rate_refused = None;
                 self.shm = None;
@@ -409,21 +434,51 @@ impl Session {
         }
     }
 
+    /// Forgets a state staged for a load that has not come: the stage belongs to
+    /// the one load that declares it.
+    fn discard_staged(&mut self) {
+        self.stage_in = None;
+        self.staged = None;
+    }
+
     fn handle_load(
         &mut self,
         path: std::path::PathBuf,
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
+        declared: Option<StagedState>,
+        interim: &mut dyn FnMut(BridgeMessage),
     ) -> Result<Reaction> {
-        // What a host staged for this load, restored before the activation.
+        // What a host staged for this load, restored before the activation: only
+        // when the load declares exactly it. Staged here or declared here and not
+        // the other, or of another length, is a host that is out of step with
+        // this server (or a stage left by another load), and restoring it would
+        // hand a plugin a state nobody meant for it.
         let staged = self.staged.take();
+        self.stage_in = None;
+        match (&declared, &staged) {
+            (None, None) => {}
+            (Some(d), Some(bytes)) if d.len == bytes.len() as u64 => {}
+            (declared, staged) => {
+                return Ok(BridgeMessage::Error {
+                    message: format!(
+                        "the load declares a state of {:?} bytes and the server holds {:?}",
+                        declared.map(|d| d.len),
+                        staged.as_ref().map(Vec::len),
+                    ),
+                }
+                .into());
+            }
+        }
+        let mut restoring = || interim(BridgeMessage::RestoringState);
         let (plugin, descriptor, loaded, negotiated, state_error) = match Plugin::load_with_state(
             &path,
             sample_rate,
             block_size,
             preferred_format,
             staged.as_deref(),
+            &mut restoring,
         ) {
             Ok(loaded) => loaded,
             Err(e) => return Ok(load_failure(&e).into()),
@@ -583,10 +638,6 @@ impl Session {
         )
     }
 
-    /// Always answers, so the host's waiting caller is never left guessing.
-    ///
-    /// Every path produces a `StateLoaded`, including "no plugin loaded",
-    /// which is a refusal rather than a silence.
     /// Accumulate one `StageStateChunk`, keeping the state for the next load.
     ///
     /// Answers, as `LoadStateChunk` does, only on the final chunk or a failure;
@@ -616,6 +667,10 @@ impl Session {
         }
     }
 
+    /// Always answers, so the host's waiting caller is never left guessing.
+    ///
+    /// Every path produces a `StateLoaded`, including "no plugin loaded",
+    /// which is a refusal rather than a silence.
     /// Accumulate one `LoadStateChunk`, applying the state once `last` lands.
     ///
     /// Answers **only** on the final chunk (or on a failure): a `StateLoaded`
@@ -880,6 +935,7 @@ mod tests {
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: "x".into(),
+                state: None,
             })
             .expect("a failed load is a reply, not a server error")
             .into_reply();
@@ -922,6 +978,7 @@ mod tests {
             block_size: 512,
             preferred_format,
             shm_name: name.to_string(),
+            state: None,
         })
         .unwrap();
 
@@ -1462,7 +1519,7 @@ mod tests {
     }
 
     #[cfg(feature = "clap")]
-    fn load_reply(s: &mut Session) -> Option<String> {
+    fn load_reply(s: &mut Session, declared: Option<StagedState>) -> Option<String> {
         let reply = s
             .handle(HostMessage::LoadPlugin {
                 path: std::path::PathBuf::from(clap_plugin()),
@@ -1470,6 +1527,7 @@ mod tests {
                 block_size: 512,
                 preferred_format: SampleFormat::Float32,
                 shm_name: "staged".into(),
+                state: declared,
             })
             .unwrap()
             .into_reply();
@@ -1477,6 +1535,100 @@ mod tests {
             BridgeMessage::PluginLoaded { state_error, .. } => state_error,
             other => panic!("expected PluginLoaded, got {other:?}"),
         }
+    }
+
+    fn load_declaring(s: &mut Session, declared: Option<StagedState>) -> BridgeMessage {
+        s.handle(HostMessage::LoadPlugin {
+            path: std::path::PathBuf::from("/nonexistent/plugin.clap"),
+            sample_rate: tutti_plugin_types::SampleRate(44100.0),
+            block_size: 512,
+            preferred_format: SampleFormat::Float32,
+            shm_name: "x".into(),
+            state: declared,
+        })
+        .unwrap()
+        .into_reply()
+    }
+
+    fn stage(s: &mut Session, seq: u32, last: bool, bytes: &[u8]) -> Reaction {
+        s.handle(HostMessage::StageStateChunk {
+            seq,
+            last,
+            bytes: bytes.to_vec(),
+        })
+        .unwrap()
+    }
+
+    fn assert_mismatch(reply: BridgeMessage) {
+        match reply {
+            BridgeMessage::Error { message } => {
+                assert!(message.contains("declares a state"), "{message}");
+            }
+            other => panic!("expected the mismatch refused, got {other:?}"),
+        }
+    }
+
+    /// **A load restores the state it declares and holds, no other.** A state
+    /// declared and none staged, a state staged and none declared, and a length
+    /// that disagrees are each refused, and each leaves nothing staged. A load that
+    /// declares nothing and holds nothing goes on to load (here: to not find the
+    /// plugin).
+    ///
+    /// Mutation (run): `handle_load` restoring whatever is staged, whatever the
+    /// load declares, fails the second and third assertions.
+    #[test]
+    fn a_load_restores_only_the_state_it_declares() {
+        let mut s = Session::new();
+        assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 3 })));
+
+        let mut s = Session::new();
+        assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
+        assert_mismatch(load_declaring(&mut s, None));
+        assert!(s.staged.is_none(), "and the stage is gone");
+
+        let mut s = Session::new();
+        assert_state_loaded_reply(stage(&mut s, 0, true, &[1, 2, 3]));
+        assert_mismatch(load_declaring(&mut s, Some(StagedState { len: 4 })));
+        assert!(s.staged.is_none());
+
+        let mut s = Session::new();
+        match load_declaring(&mut s, None) {
+            BridgeMessage::Error { message } => {
+                assert!(message.contains("not found"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn assert_state_loaded_reply(r: Reaction) {
+        match r.into_reply() {
+            BridgeMessage::StateLoaded { error: None } => {}
+            other => panic!("expected a staged state, got {other:?}"),
+        }
+    }
+
+    /// **A stage belongs to the load that declares it**: a probe or an unload
+    /// that comes between discards it, and so does a half-received one.
+    ///
+    /// Mutation (run): `discard_staged` not called in the probe arm fails the
+    /// first assertion; not called in the unload arm, the second and third.
+    #[test]
+    fn a_stage_does_not_outlive_the_next_request() {
+        let mut s = Session::new();
+        assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
+        let _ = s.handle(HostMessage::ProbePlugin {
+            path: "/nonexistent/plugin.clap".into(),
+        });
+        assert!(s.staged.is_none(), "a probe discards the stage");
+
+        assert_state_loaded_reply(stage(&mut s, 0, true, &[1]));
+        let _ = s.handle(HostMessage::UnloadPlugin);
+        assert!(s.staged.is_none(), "an unload discards the stage");
+
+        assert!(matches!(stage(&mut s, 0, false, &[1]), Reaction::None));
+        assert!(s.stage_in.is_some());
+        let _ = s.handle(HostMessage::UnloadPlugin);
+        assert!(s.stage_in.is_none(), "and a half-received one");
     }
 
     /// **A state staged before a load is restored by the load**, before the
@@ -1497,19 +1649,81 @@ mod tests {
         let mut s = Session::new();
         assert_state_loaded(stage_state_bytes(&mut s, &own));
         assert!(s.staged.is_some(), "the state waits for the load");
-        assert_eq!(load_reply(&mut s), None, "the plugin took its own state");
+        assert_eq!(
+            load_reply(
+                &mut s,
+                Some(StagedState {
+                    len: own.len() as u64
+                })
+            ),
+            None,
+            "the plugin took its own state"
+        );
         assert!(s.staged.is_none(), "and the load consumed it");
 
         let mut s = Session::new();
         assert_state_loaded(stage_state_bytes(&mut s, &[1, 2, 3]));
         assert!(
-            load_reply(&mut s).is_some(),
+            load_reply(&mut s, Some(StagedState { len: 3 })).is_some(),
             "bytes the plugin cannot parse are refused in the reply"
         );
         assert!(s.plugin.is_some(), "and the plugin is loaded all the same");
 
         let mut s = Session::new();
-        assert_eq!(load_reply(&mut s), None, "nothing staged, nothing refused");
+        assert_eq!(
+            load_reply(&mut s, None),
+            None,
+            "nothing staged, nothing refused"
+        );
+    }
+
+    /// **A stateful load says it is restoring before it does, and a stateless
+    /// one never does**: the interim sink hears `RestoringState` once, ahead of the
+    /// reply.
+    ///
+    /// Mutation (run): the loader not calling `before_restore` leaves the
+    /// stateful load silent and fails the first assertion.
+    #[test]
+    #[cfg(feature = "clap")]
+    fn a_stateful_load_announces_the_restore() {
+        let _lock = crate::test_utils::plugin_load_lock();
+        let (mut source, _shm) = load_clap("announce_source", SampleFormat::Float32);
+        let own = save_state_bytes(&mut source);
+        let load = |s: &mut Session, declared: Option<StagedState>| {
+            let mut heard = Vec::new();
+            let reply = s
+                .handle_with(
+                    HostMessage::LoadPlugin {
+                        path: std::path::PathBuf::from(clap_plugin()),
+                        sample_rate: tutti_plugin_types::SampleRate(44100.0),
+                        block_size: 512,
+                        preferred_format: SampleFormat::Float32,
+                        shm_name: "announce".into(),
+                        state: declared,
+                    },
+                    &mut |m| heard.push(m),
+                )
+                .unwrap()
+                .into_reply();
+            (heard, reply)
+        };
+        let mut s = Session::new();
+        assert_state_loaded(stage_state_bytes(&mut s, &own));
+        let (heard, reply) = load(
+            &mut s,
+            Some(StagedState {
+                len: own.len() as u64,
+            }),
+        );
+        assert!(
+            matches!(heard.as_slice(), [BridgeMessage::RestoringState]),
+            "{heard:?}"
+        );
+        assert!(matches!(reply, BridgeMessage::PluginLoaded { .. }));
+
+        let mut s = Session::new();
+        let (heard, _) = load(&mut s, None);
+        assert!(heard.is_empty(), "{heard:?}");
     }
 
     /// A staged sequence out of order is refused, and nothing is staged.
@@ -1642,6 +1856,7 @@ mod tests {
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: name.to_string(),
+            state: None,
         })
         .unwrap();
         let loaded = s.plugin.as_ref().unwrap().instance().loaded().clone();
@@ -1797,6 +2012,7 @@ mod tests {
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "idle_vst2".to_string(),
+            state: None,
         })
         .unwrap();
         assert!(s.drain_async_events().is_empty());
@@ -1839,6 +2055,7 @@ mod tests {
             block_size: 512,
             preferred_format: SampleFormat::Float32,
             shm_name: "refit_vst3".to_string(),
+            state: None,
         })
         .unwrap();
         let params = s.plugin.as_ref().unwrap().instance().parameter_count();

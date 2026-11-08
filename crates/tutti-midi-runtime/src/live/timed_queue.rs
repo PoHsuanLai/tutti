@@ -30,8 +30,10 @@
 //! The ring and the waiting list are sized once; nothing allocates after
 //! [`new`](TimedQueueNode::new), a send never blocks or locks, and the audio
 //! side takes no lock. When more events wait than the list holds, the latest
-//! are dropped and counted ([`TimedSender::dropped`]); an event that is due is
-//! never held up by those waiting for later. Its fork is silent: nothing a
+//! that may be lost are dropped and counted ([`TimedSender::dropped`]); a
+//! note-off or a panic (CC 120, CC 123) is kept in preference to any other
+//! event, so a note that began does not hang. An event that is due is never
+//! held up by those waiting for later. Its fork is silent: nothing a
 //! control thread sends reaches an offline render.
 
 use std::sync::Arc;
@@ -45,7 +47,7 @@ use tutti_graph::{
 };
 use tutti_rt::{SeqReader, SeqWriter};
 use tutti_types::{At, ChannelLayout, Frame, SampleRate, Samples};
-use tutti_ump::Ump;
+use tutti_ump::{Message, Ump, Voice1, Voice2, decode};
 
 use super::mailbox::MAILBOX_CAPACITY;
 
@@ -199,9 +201,10 @@ impl TimedSender {
     }
 
     /// How many events the node dropped for want of room to hold them until
-    /// their frame: the latest of those waiting, when more wait than
-    /// [`TIMED_QUEUE_CAPACITY`]. Only events for frames far ahead are lost this
-    /// way; one that is due always gets through.
+    /// their frame, when more wait than [`TIMED_QUEUE_CAPACITY`]: the latest
+    /// that may be lost (never a note-off or a panic while anything else waits;
+    /// see the module docs). Only events for frames far ahead are lost this way;
+    /// one that is due always gets through.
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.shared.dropped.load(Ordering::Relaxed)
@@ -271,21 +274,50 @@ impl TimedQueueNode {
     }
 
     /// Adds `s`, due at `frame` of the node's rate, in due order. When the list
-    /// is full the latest event goes: `s` itself when it is the latest, else
-    /// the last waiting.
+    /// is full an event goes, and counts as dropped; which one is chosen so that
+    /// what ends a sound is the last to be lost:
+    ///
+    /// - the latest event that may be lost (not a note-off, not All Sound Off or
+    ///   All Notes Off: [`must_arrive`]) goes, `s` itself when it is the latest;
+    /// - `s` that must arrive takes the place of any event that may be lost;
+    /// - only when everything waiting must arrive too does a note-off or a panic
+    ///   go, the latest of them (`s` or the last waiting). That takes 256
+    ///   note-offs and panics waiting at once.
     fn keep(&mut self, mut s: Stamped, frame: u64) {
         s.frame = frame;
         s.rate = self.rate;
         if self.pending.len() == self.pending.capacity() {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-            if self.pending.last().is_none_or(|last| last.frame <= frame) {
-                return;
+            let lost = self.pending.iter().rposition(|p| !must_arrive(p.data));
+            match lost {
+                Some(i) if must_arrive(s.data) || self.pending[i].frame > frame => {
+                    self.pending.remove(i);
+                }
+                Some(_) => return,
+                None if self.pending.last().is_some_and(|last| last.frame > frame) => {
+                    self.pending.pop();
+                }
+                None => return,
             }
-            self.pending.pop();
         }
         let at = self.pending.partition_point(|p| p.frame <= frame);
         self.pending.insert(at, s);
     }
+}
+
+/// Whether losing `data` can leave a sound hanging: a note-off (its note-on has
+/// played), or All Sound Off or All Notes Off.
+fn must_arrive(data: [u32; 4]) -> bool {
+    let ump = Ump(data);
+    if ump.is_note_off() {
+        return true;
+    }
+    let controller = match decode(ump) {
+        Ok(Message::Midi1(_, Voice1::ControlChange { controller, .. }))
+        | Ok(Message::Midi2(_, Voice2::ControlChange { controller, .. })) => controller.get(),
+        _ => return false,
+    };
+    matches!(controller, 120 | 123)
 }
 
 impl Node for TimedQueueNode {
@@ -631,5 +663,81 @@ mod tests {
         assert_eq!(tx.dropped(), 2);
         block_at(&mut d, 1_000, R48, 64);
         assert_eq!(sent(&d)[..3], [(0, 10), (1, 12), (2, 10)]);
+    }
+
+    fn off(n: u8) -> Ump {
+        Ump([0x2080_0000 | u32::from(n) << 8, 0, 0, 0])
+    }
+
+    fn cc(controller: u8) -> Ump {
+        Ump([0x20B0_0000 | u32::from(controller) << 8, 0, 0, 0])
+    }
+
+    /// A full list keeps what ends a sound: with 255 note-ons and, last of all,
+    /// the note-off of a note that began, a due event costs the latest
+    /// note-on, not the note-off.
+    ///
+    /// Mutation (run): dropping the latest event whatever it is (the
+    /// `must_arrive` test removed) loses the note-off and the last block sees
+    /// nothing.
+    #[test]
+    fn a_full_list_keeps_the_note_off_and_loses_a_later_note_on() {
+        let (mut d, tx) = rig();
+        for k in 0..TIMED_QUEUE_CAPACITY - 1 {
+            tx.send(At::Frame(Frame(10_000 + k as u64)), note(10))
+                .unwrap();
+        }
+        tx.send(At::Frame(Frame(20_000)), off(10)).unwrap();
+        d.block(); // the list is full
+        tx.send(At::NextBlock, note(72)).unwrap();
+        d.block();
+        assert_eq!(sent(&d), [(0, 72)]);
+        assert_eq!(tx.dropped(), 1);
+        block_at(&mut d, 15_000, R48, 64); // the note-ons come due
+        block_at(&mut d, 19_990, R48, 64);
+        assert_eq!(sent(&d), [(10, 10)], "the note-off survived");
+    }
+
+    /// A panic is kept the same way, and a note-off that arrives to a list
+    /// that only it and other must-arrive events fill takes the place of
+    /// nothing: the latest of them goes.
+    ///
+    /// Mutation (run): `must_arrive` ignoring controller 123 loses the panic.
+    #[test]
+    fn a_full_list_keeps_a_panic() {
+        let (mut d, tx) = rig();
+        for k in 0..TIMED_QUEUE_CAPACITY - 1 {
+            tx.send(At::Frame(Frame(10_000 + k as u64)), note(10))
+                .unwrap();
+        }
+        tx.send(At::Frame(Frame(20_000)), cc(123)).unwrap();
+        d.block();
+        tx.send(At::NextBlock, note(72)).unwrap();
+        d.block();
+        block_at(&mut d, 15_000, R48, 64); // the note-ons come due
+        block_at(&mut d, 19_990, R48, 64);
+        assert_eq!(sent(&d).len(), 1, "the panic survived");
+    }
+
+    /// Only note-offs wait, and the list is full: the latest note-off goes,
+    /// and is counted; the earlier ones stay.
+    #[test]
+    fn a_list_of_nothing_but_note_offs_loses_the_latest() {
+        let (mut d, tx) = rig();
+        for k in 0..TIMED_QUEUE_CAPACITY {
+            tx.send(At::Frame(Frame(10_000 + k as u64)), off(10))
+                .unwrap();
+        }
+        d.block();
+        tx.send(At::Frame(Frame(10_000_000)), off(11)).unwrap();
+        tx.send(At::Frame(Frame(9_000)), off(12)).unwrap();
+        d.block();
+        assert_eq!(tx.dropped(), 2);
+        block_at(&mut d, 9_000, R48, 64);
+        assert_eq!(
+            sent(&d),
+            [(0, 12)],
+            "the earlier one took the latest's place"
+        );
     }
 }

@@ -195,18 +195,12 @@ impl PluginLoad {
             self.state.as_deref(),
         ) {
             Ok((plugin, restore)) => (Ok(plugin), restore),
-            // The server died, or hung, while restoring the state it was
-            // staged: the state is what the load is held against
-            // (`land_reload` withholds it).
-            Err(e)
-                if self.state.is_some()
-                    && matches!(
-                        e,
-                        tutti_plugin::BridgeError::ProcessCrashed
-                            | tutti_plugin::BridgeError::Timeout { .. }
-                    ) =>
-            {
-                let reason = format!("the plugin died or hung while restoring the state: {e}");
+            // The server died, or stopped answering, inside the step that
+            // restores the state it was staged (`StateRestoreError`; a failure
+            // before that step is a load failure and blames nothing): the state
+            // is what the load is held against (`land_reload` withholds it).
+            Err(e @ tutti_plugin::BridgeError::StateRestoreError(_)) if self.state.is_some() => {
+                let reason = e.to_string();
                 (Err(e), Some(Err(reason)))
             }
             Err(e) => (Err(e), None),

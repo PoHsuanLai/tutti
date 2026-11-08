@@ -156,7 +156,7 @@ impl ClapInstance {
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None)
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
             .map(|(instance, _)| instance)
     }
 
@@ -173,12 +173,14 @@ impl ClapInstance {
         block_size: usize,
         prefer_f64: bool,
         state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
         Self::activate(
             Self::open(path, sample_rate, block_size)?,
             path,
             prefer_f64,
             state,
+            before_restore,
         )
     }
 
@@ -213,6 +215,7 @@ impl ClapInstance {
         path: &Path,
         prefer_f64: bool,
         state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
         let Opened {
             mut loaded,
@@ -255,9 +258,12 @@ impl ClapInstance {
             refused: false,
         };
         // Before the activation: see `load_with_state`.
-        let state_error = state.and_then(|data| match instance.lifecycle.control() {
-            Some(control) => control.load_state(data).err().map(|e| e.to_string()),
-            None => Some("the plugin is lost".to_string()),
+        let state_error = state.and_then(|data| {
+            before_restore();
+            match instance.lifecycle.control() {
+                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                None => Some("the plugin is lost".to_string()),
+            }
         });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {
@@ -839,7 +845,7 @@ mod tests {
         let _layout = crate::test_utils::clap_probe_port_layout(
             tutti_clap_test_plugin::PortLayoutMode::AsymmetricAux as u32,
         );
-        let instance = ClapInstance::activate(opened, path, false, None)
+        let instance = ClapInstance::activate(opened, path, false, None, &mut || {})
             .expect("activate")
             .0;
 
@@ -868,7 +874,7 @@ mod tests {
         assert!(opened.loaded.supports_f64(), "fixture: flagged at open");
 
         let _dropped = crate::test_utils::clap_probe_ports_64bit(0);
-        let instance = ClapInstance::activate(opened, path, true, None)
+        let instance = ClapInstance::activate(opened, path, true, None, &mut || {})
             .expect("falls back to 32-bit audio")
             .0;
         assert!(!instance.loaded().features.contains(Features::F64_AUDIO));

@@ -83,7 +83,7 @@ impl Vst2Instance {
         block_size: usize,
         prefer_f64: bool,
     ) -> Result<Self> {
-        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None)
+        Self::load_with_state(path, sample_rate, block_size, prefer_f64, None, &mut || {})
             .map(|(instance, _)| instance)
     }
 
@@ -98,6 +98,7 @@ impl Vst2Instance {
         block_size: usize,
         prefer_f64: bool,
         state: Option<&[u8]>,
+        before_restore: &mut dyn FnMut(),
     ) -> Result<(Self, Option<String>)> {
         let loaded = Vst2Loaded::load(path).map_err(|e| translate_error(e, path))?;
         let format = if prefer_f64 && loaded.metadata().supports_f64 {
@@ -125,9 +126,12 @@ impl Vst2Instance {
             events: Vec::new(),
             refused: false,
         };
-        let state_error = state.and_then(|data| match instance.lifecycle.control() {
-            Some(control) => control.load_state(data).err().map(|e| e.to_string()),
-            None => Some("the plugin is lost".to_string()),
+        let state_error = state.and_then(|data| {
+            before_restore();
+            match instance.lifecycle.control() {
+                Some(control) => control.load_state(data).err().map(|e| e.to_string()),
+                None => Some("the plugin is lost".to_string()),
+            }
         });
         let refused = instance.drive(Event::Op(HostOp::Activate(prepare)));
         if instance.state.stage() != Stage::Active {

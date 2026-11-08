@@ -194,6 +194,16 @@ impl InstrumentHandle {
         self.send(at, Ump::from(message))
     }
 
+    /// How many messages the queue has dropped for want of room to hold them
+    /// until their frame (more than a ring's worth waiting for frames far
+    /// ahead). The latest that may be lost go first; a note-off or a panic goes
+    /// only when nothing else can. A full ring is reported by [`send`](Self::send)
+    /// instead.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.sender.dropped()
+    }
+
     /// Sets the gain after the instrument's main pair, a linear amplitude.
     /// A store into the strip's cell, read once per block.
     pub fn set_gain(&self, gain: Amplitude) {

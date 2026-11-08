@@ -502,3 +502,50 @@ fn the_timed_queue_processes_without_allocating() {
     // Every send but the last block's own frame-stamped one was heard.
     assert!(heard >= 199 * 2, "heard only {heard}");
 }
+
+/// The full-list path allocates nothing either: with the waiting list full of
+/// far-future events, each block takes a due event (it displaces the latest that
+/// may be lost), a far note-off (it displaces a note-on) and a later note-on (it
+/// is the one dropped), all inside the gate.
+///
+/// Mutation (run): a `Vec::new()` + push in `keep`'s full-list branch aborts the
+/// gate.
+#[test]
+fn the_timed_queue_with_a_full_list_processes_without_allocating() {
+    let (mut ed, mut exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(512)));
+    let (queue, tx) = TimedQueueNode::new();
+    ed.insert(NodeKey(1), "timed", queue);
+    let out = ed.insert(NodeKey(2), "out", MidiOutNode::new());
+    ed.spec_mut().connect_events(
+        EventIn {
+            node: NodeKey(2),
+            port: 0,
+        },
+        EventEdge::Direct(EventOut {
+            node: NodeKey(1),
+            port: 0,
+        }),
+    );
+    ed.commit().unwrap();
+    let t = Transport::new(true, Bpm::of(120.0), Beat(0.0), None);
+    let mut drain = [MidiEvent::noop(); 256];
+    let on = tutti_ump::Ump([0x2090_3C64, 0, 0, 0]);
+    let off = tutti_ump::Ump([0x2080_3C00, 0, 0, 0]);
+    // Outside the gate: fill the list with events for frames far ahead.
+    for k in 0..256u64 {
+        tx.send(At::Frame(Frame(10_000_000 + k)), on).unwrap();
+    }
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for b in 1..100u64 {
+            tx.send(At::NextBlock, on).unwrap();
+            tx.send(At::Frame(Frame(20_000_000 + b)), off).unwrap();
+            tx.send(At::Frame(Frame(30_000_000 + b)), on).unwrap();
+            exec.process(512, &t, &[], &mut []);
+            let _ = out.poll_into(&mut drain);
+        }
+    });
+    assert!(tx.dropped() >= 99 * 2, "dropped only {}", tx.dropped());
+}

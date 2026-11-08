@@ -224,7 +224,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
         .note_on(At::NextBlock, channel, 69, 100)
         .expect("room");
     let mut heard = Vec::new();
-    let mut block = |session: &mut Session, heard: &mut Vec<f32>| {
+    let block = |session: &mut Session, heard: &mut Vec<f32>| {
         let mut buf = vec![0.0f32; 128 * 2];
         session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
         session.update();

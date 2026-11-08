@@ -50,4 +50,5 @@ plain!(
     sys::AUDependentParameter,
     sys::AURenderCallbackStruct,
     sys::AudioChannelLayout,
+    sys::AudioUnitCocoaViewInfo,
 );

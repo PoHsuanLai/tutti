@@ -9,9 +9,9 @@ use std::os::raw::c_void;
 
 use tutti_plugin_types::ChannelLayout;
 
-use coreaudio_sys::{AudioBuffer, AudioBufferList};
+use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRenderActionFlags};
 
-use crate::error::{Error, Result, check};
+use crate::error::{Error, Result};
 use crate::guard::guard;
 use crate::unit::Unit;
 
@@ -268,6 +268,20 @@ impl RenderScratch {
 
 // ---------------------------------------------------------------- Renderer
 
+const NO_ERR: i32 = 0;
+const K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE: AudioUnitRenderActionFlags =
+    coreaudio_sys::kAudioUnitRenderAction_OutputIsSilence;
+
+/// A timestamp that is valid by sample time only, which is all a pull render
+/// needs.
+fn timestamp_at(sample_time: f64) -> AudioTimeStamp {
+    AudioTimeStamp {
+        mSampleTime: sample_time,
+        mFlags: coreaudio_sys::kAudioTimeStampSampleTimeValid,
+        ..Default::default()
+    }
+}
+
 const ERR_CANNOT_DO: i32 = coreaudio_sys::kAudioUnitErr_CannotDoInCurrentContext;
 
 /// Pull-model rendering of an initialized unit: the scratch buffers, the
@@ -388,12 +402,8 @@ impl Renderer {
             let abl = scratch.bind_output(frames);
             (abl, scratch.advance(frames))
         };
-        let timestamp = coreaudio_sys::AudioTimeStamp {
-            mSampleTime: sample_time,
-            mFlags: coreaudio_sys::kAudioTimeStampSampleTimeValid,
-            ..Default::default()
-        };
-        let mut flags: coreaudio_sys::AudioUnitRenderActionFlags = 0;
+        let timestamp = timestamp_at(sample_time);
+        let mut flags: AudioUnitRenderActionFlags = 0;
         // SAFETY: `abl` points at the scratch's list, bound to buffers of at
         // least `frames` frames (the caller's contract); `timestamp` and `flags`
         // are live for the call. The scratch is not borrowed across it, because
@@ -851,7 +861,7 @@ pub fn process_push(
 
     scratch.bind_inputs(frames);
     let list = scratch.input_slabs[0].as_mut_ptr() as *mut AudioBufferList;
-    let timestamp = AudioTimeStamp::with_sample_time(scratch.advance(frames));
+    let timestamp = timestamp_at(scratch.advance(frames));
     let mut flags: AudioUnitRenderActionFlags = 0;
 
     // SAFETY: `list` is input slab 0, bound to buffers of `frames` frames by
@@ -968,7 +978,7 @@ pub fn process_push_multiple(
 
     scratch.bind_inputs(frames);
     scratch.bind_outputs(frames);
-    let timestamp = AudioTimeStamp::with_sample_time(scratch.advance(frames));
+    let timestamp = timestamp_at(scratch.advance(frames));
     let mut flags: AudioUnitRenderActionFlags = 0;
 
     // The pointer arrays are fields, pre-filled in `new`, so `as_mut_ptr` here
@@ -1061,7 +1071,6 @@ pub fn output_byte_sizes(scratch: &PushScratch) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coreaudio_sys::{AudioTimeStamp, AudioUnitRenderActionFlags};
 
     /// The size math must be driven by
     /// `offset_of!(AudioBufferList, mBuffers)`, never by `size_of::<u32>()`.

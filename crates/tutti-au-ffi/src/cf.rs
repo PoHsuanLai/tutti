@@ -91,6 +91,12 @@ impl CfUrl {
         }
     }
 
+    /// The `CFURLRef`, borrowed: valid while `self` lives, and not to be
+    /// released.
+    pub(crate) fn as_raw(&self) -> coreaudio_sys::CFURLRef {
+        self.0.as_concrete_TypeRef() as coreaudio_sys::CFURLRef
+    }
+
     /// The URL as a filesystem path, or `None` if it does not name one. A
     /// `file://` URL is the only kind `kAudioUnitProperty_IconLocation` is
     /// documented to return.

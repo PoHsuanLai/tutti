@@ -72,7 +72,7 @@ use coreaudio_sys::{
     AudioUnitPropertyID, AudioUnitScope, OSStatus, dispatch_queue_t, kAudioUnitScope_Global,
 };
 
-use crate::error::{Result, check};
+use crate::error::{Error, Result, check};
 use crate::guard::guard;
 use crate::unit::{Inner, Unit};
 
@@ -538,6 +538,7 @@ impl AuParameterListener {
         check("AUEventListenerAddEventType", unsafe {
             AUEventListenerAddEventType(self.listener, std::ptr::null_mut(), &event)
         })
+        .map_err(Error::from)
     }
 
     /// Delivers [`AuEvent::ParameterChanged`] for parameter `id`.
@@ -649,6 +650,7 @@ pub fn set_parameter_notifying(
             buffer_offset_in_frames,
         )
     })
+    .map_err(Error::from)
 }
 
 /// Emits a gesture boundary to every listener registered on `unit`.
@@ -698,6 +700,7 @@ pub fn emit_gesture(
     check("AUEventListenerNotify", unsafe {
         AUEventListenerNotify(std::ptr::null_mut(), std::ptr::null_mut(), &event)
     })
+    .map_err(Error::from)
 }
 
 /// Tells every listener on `unit` to re-read **every** parameter.
@@ -732,6 +735,7 @@ pub fn notify_all_parameters(unit: &Unit) -> Result<()> {
     check("AUParameterListenerNotify", unsafe {
         AUParameterListenerNotify(std::ptr::null_mut(), std::ptr::null_mut(), &parameter)
     })
+    .map_err(Error::from)
 }
 
 #[cfg(test)]

@@ -54,10 +54,11 @@ use std::os::raw::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use coreaudio_sys::{AudioTimeStamp, CFStringRef, MIDIPacket, MIDIPacketList, OSStatus};
-use tutti_plugin_types::{Midi1Decoder, Midi1Message, Midi1Splitter, MidiEvent};
+use coreaudio_sys::{AudioTimeStamp, MIDIPacket, MIDIPacketList, OSStatus};
+use tutti_plugin_types::{Midi1Decoder, MidiEvent};
+#[cfg(feature = "test-support")]
+use tutti_plugin_types::{Midi1Message, Midi1Splitter};
 
-use crate::cf::cfstring_to_string_checked;
 use crate::error::{Result, check};
 use crate::guard::guard;
 use crate::unit::{Inner, Unit};
@@ -87,6 +88,12 @@ struct AuMidiOutputCallbackStruct {
 /// from `timeStamp`, not host times — Apple's header is explicit about this, and
 /// it is what makes the offsets directly usable as
 /// [`MidiEvent::frame_offset`] without a clock conversion.
+impl crate::plain::Sealed for AuMidiOutputCallbackStruct {}
+// SAFETY: an `Option<unsafe extern "C" fn>` and a raw pointer in a
+// `#[repr(C)]` struct: every bit pattern, zero (`None`, null) included, is a
+// valid value.
+unsafe impl crate::plain::Plain for AuMidiOutputCallbackStruct {}
+
 type AuMidiOutputCallbackFn = unsafe extern "C" fn(
     user_data: *mut c_void,
     time_stamp: *const AudioTimeStamp,

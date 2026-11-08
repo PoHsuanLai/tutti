@@ -124,7 +124,7 @@ use std::os::raw::c_void;
 use std::sync::Arc;
 
 use coreaudio_sys::{
-    AudioBufferList, AudioTimeStamp, AudioUnit, AudioUnitAddRenderNotify, AudioUnitElement,
+    AudioBufferList, AudioTimeStamp, AudioUnitAddRenderNotify, AudioUnitElement,
     AudioUnitParameterEvent, AudioUnitParameterEvent__bindgen_ty_1 as ParamEventValues,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_1 as RawRamp,
     AudioUnitParameterEvent__bindgen_ty_1__bindgen_ty_2 as RawImmediate, AudioUnitParameterID,

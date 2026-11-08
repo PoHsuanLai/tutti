@@ -1,8 +1,6 @@
 //! The parameter-shaped property queries whose request and answer share one
 //! struct, and the info record whose name is a CoreFoundation string.
 
-use std::mem::size_of;
-
 use coreaudio_sys as sys;
 
 use crate::cf::CfString;
@@ -151,6 +149,7 @@ impl Unit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::size_of;
 
     /// The clump request is hand-declared, so its layout is pinned here:
     /// `{ UInt32; CFStringRef }` is 16 bytes with the pointer at offset 8.

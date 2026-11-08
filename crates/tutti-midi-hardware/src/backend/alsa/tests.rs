@@ -200,18 +200,17 @@ fn watch_threads() -> usize {
 // - no `catch_unwind` in the watch thread: `a_watch_that_panics_reports_its_failure`
 //   fails.
 //
-// - `watch::settle` taking one look and `step` not calling `owed.owe` (the order
-//   the watch had before: a drain, a look):
+// - `watch::settle`'s loop bound `0..0` (the order the watch had before: a drain,
+//   a look):
 //   `a_device_that_takes_a_departed_clients_number_is_added_once` fails
 //   when four copies of it run at once (3 of 4 failed, 12 of 12 pass with the
 //   fix); alone and idle the race is not hit and it passes. The review that
 //   found the bug saw the extra `Removed` in 139 of 300 cycles.
 //
-// The kernel announces a client's exit after a new client may have taken its
-// number; the watch pairs each look with the exits read before it (`settle`),
-// so a reused number is one removal and one addition. These tests still read
-// ids from the list or retry an open (`when_listed`) where a dropped
-// announcement could matter.
+// The watch pairs each look with the announcements read before it (`settle`), and
+// a client's start is what says a number has a new occupant, so a reused number
+// is one removal and one addition. These tests still read ids from the list or
+// retry an open (`when_listed`) where a dropped announcement could matter.
 
 /// A client that appears is listed with its identity.
 #[test]
@@ -470,13 +469,11 @@ fn a_renamed_client_is_removed_and_added_under_its_new_name() {
     assert_ne!(after.id, before);
 }
 
-/// A client renamed in place is reported removed and added, and the kernel posts
-/// no exit for it: its change announcement must cancel what the watch expected,
-/// or the exits of an identical device that later takes the number are swallowed
-/// and its removal is never reported. Mutation: `Owed::resolve` not cancelling on
-/// a change together with `owe` without its rename skip makes the wait for
-/// `Removed` time out (the kernel posts the change at once, so either alone is
-/// covered by the other).
+/// A client renamed in place is reported removed and added (the identity is the
+/// name), and no exit follows it: an identical device that later takes the
+/// number must still be reported removed and added. The kernel posts the new
+/// client's start for it, whatever came before. Mutation: `Tracker::replaced`
+/// ignoring `ClientStart` makes the wait for `Removed` time out.
 #[test]
 fn a_renamed_client_replaced_by_an_identical_one_is_removed_then_added() {
     let devices = Watched::open();
@@ -517,7 +514,7 @@ impl crate::MidiEndpoints for Panicky {
                 !armed.load(std::sync::atomic::Ordering::SeqCst),
                 "enumeration panics"
             );
-            Vec::new()
+            Some(Vec::new())
         })
     }
     fn inputs(&self) -> Vec<crate::EndpointInfo> {
@@ -587,15 +584,16 @@ fn asking_for_capabilities_does_not_wake_the_watch() {
 /// device must be added once and never removed while it lives. One `Devices`,
 /// `A` dropped and `B` plugged at once, `B` held for 150 ms.
 ///
-/// The kernel frees a number before it posts the exit, so the exit can arrive
-/// after the look that shows `B`; `Owed` is what pays it. The test holds three
+/// The old owner's `CLIENT_EXIT` is posted after the number is free, so it can
+/// arrive after the look that shows `B`; only a start says a number has a new
+/// occupant, so that exit is nothing. The test holds three
 /// clients for six seconds. The sequencer has 64 dynamic client slots, so
 /// `.config/nextest.toml` runs the tests of this file at most four at a time
 /// (test group `sequencer`): parallel copies of the suite ran out of slots
 /// (`snd_seq_open` ENOMEM) with this test beside them.
 ///
-/// Mutation: see the record above (reports `Added, Removed, Added` for `B`,
-/// under load).
+/// Mutation: see the record above (`settle` with a bound of 0 reports
+/// `Added, Removed, Added` for `B`, under load).
 #[test]
 fn a_device_that_takes_a_departed_clients_number_is_added_once() {
     let devices = Watched::open();

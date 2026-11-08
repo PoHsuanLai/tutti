@@ -179,8 +179,8 @@ impl core::fmt::Debug for ChangeSink {
 /// exited, so two looks that straddle both see one handle. A handle that now
 /// names another identity is a different device, and so is one the OS says
 /// departed (`departed`): each is reported gone before it is reported present
-/// again. A report is applied under one hold of the state. Where the identity is the name (ALSA), a rename is therefore a
-/// removal and an addition, and closes a port held on the device; where it
+/// again. A report is applied under one hold of the state. Where the identity is
+/// the name (ALSA), a rename is therefore a removal and an addition, and closes a port held on the device; where it
 /// survives a rename (CoreMIDI's unique id), the device is `Changed`.
 #[cfg_attr(
     not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
@@ -221,31 +221,22 @@ impl Reporter {
 
     /// Reports `present` as the whole device list: every device in it, and the
     /// departure of each known one that is not, that has another identity now,
-    /// or that `departed` names. The table drops what repeats. Returns the
-    /// handles reported gone.
-    pub(crate) fn report(
-        &mut self,
-        present: Vec<OsDevice>,
-        departed: impl Fn(EndpointId) -> bool,
-    ) -> Vec<EndpointId> {
+    /// or that `departed` names. The table drops what repeats.
+    pub(crate) fn report(&mut self, present: Vec<OsDevice>, departed: impl Fn(EndpointId) -> bool) {
         let now: BTreeMap<EndpointId, Identity> = present
             .iter()
             .map(|d| (d.handle, d.identity.clone()))
             .collect();
-        let gone: Vec<EndpointId> = self
+        let gone = self
             .known
             .iter()
             .filter(|&(handle, identity)| now.get(handle) != Some(identity) || departed(*handle))
-            .map(|(handle, _)| *handle)
-            .collect();
+            .map(|(handle, _)| OsChange::Gone(*handle));
         let changes: Vec<_> = gone
-            .iter()
-            .map(|&handle| OsChange::Gone(handle))
             .chain(present.into_iter().map(OsChange::Present))
             .collect();
         self.sink.send_all(changes);
         self.known = now;
-        gone
     }
 }
 

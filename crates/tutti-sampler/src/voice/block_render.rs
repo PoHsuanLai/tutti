@@ -71,7 +71,8 @@ fn write_wav(path: &Path) {
 }
 
 fn memory(w: &Arc<Wave>, start: f64) -> VoiceSource {
-    let mut s = MemorySource::placed(Arc::clone(w), Beat::new(start), None);
+    let mut s =
+        MemorySource::placed(Arc::clone(w), Beat::new(start), None).expect("a placeable wave");
     s.set_render_rate(SampleRate(SR));
     VoiceSource::Memory(s)
 }

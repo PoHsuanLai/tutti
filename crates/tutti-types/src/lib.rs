@@ -70,8 +70,7 @@ pub use fold::{Fold, FoldEnd, FoldError};
 // the −3 dB centre/surround coefficient those matrices apply, and it comes along
 // because a caller checking a fold's output has to name the same constant.
 pub use downmix::{
-    M3DB, fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo,
-    fold_planar_to_mono,
+    M3DB, fold_buffer_to_mono, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_to_mono,
 };
 
 // A flat buffer that carries its own frame width, so a frame index and a sample

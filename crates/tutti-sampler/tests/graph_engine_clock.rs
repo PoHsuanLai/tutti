@@ -52,7 +52,7 @@ fn pool(cents: f32) -> VoicePool {
     for i in 0..4 * SR as usize {
         wave.push_frame(&[tone_at(i)]);
     }
-    let source = MemorySource::placed(Arc::new(wave), Beat(0.0), None);
+    let source = MemorySource::placed(Arc::new(wave), Beat(0.0), None).expect("a placeable wave");
     let mut pool = VoicePool::new();
     pool.insert_voice(
         SlotId(1),

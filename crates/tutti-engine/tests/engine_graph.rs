@@ -5,7 +5,7 @@
 //!
 //! - a graph rendered through `Engine` is the graph rendered by its executor
 //!   directly, bit for bit;
-//! - the engine folds a root to the device width with `fold_frame`, and its
+//! - the engine folds a root to the device width by position (`Fold`), and its
 //!   declick is the linear fade it is specified to be;
 //! - a transport command at `At::Frame` / `At::Beat` lands on its frame in a
 //!   graph node's `Env`;
@@ -242,14 +242,14 @@ fn graph_engine_render_is_bit_identical_to_the_executor() {
 /// mid-run.
 ///
 /// The oracle is computed here: each frame of the source (deterministic and
-/// libm-free), folded by `fold_frame` (the ITU/Dolby matrices, plain
-/// arithmetic), times the declick gain — 1 before the stop, zero on the
+/// libm-free), folded by the ITU/Dolby matrices (plain
+/// arithmetic, written out below), times the declick gain — 1 before the stop, zero on the
 /// stop's frame (an untimed stop has no lead) and `k / 480` for `k` frames
 /// after it, up to 1. Bit-equal wherever the gain is 1; within `f32`
 /// rounding of the ramp inside it: the fader accumulates `1/480` a frame in
 /// `f32`, at most 480 roundings of half an ulp of 1 (under 3e-5, relative).
 ///
-/// Mutation (run): copy channel `c` straight across instead of `fold_frame`
+/// Mutation (run): copy channel `c` straight across instead of the matrix
 /// in the graph render → the 6→2 case fails. Skip the fader's `apply` → the
 /// stop's frame is not zero → fails.
 #[test]
@@ -282,8 +282,17 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
 
         for f in 0..total {
             let frame: Vec<f32> = (0..src).map(|c| value(f as u64, c)).collect();
-            let mut folded = vec![0.0f32; ch];
-            tutti_types::fold_frame(&frame, &mut folded);
+            // The ITU formulas, written out: 6 -> 2 is `FL + m·C + m·SL`, and
+            // equal widths pass through; 2 -> 6 leaves the rest silent.
+            let m = tutti_types::M3DB;
+            let folded: Vec<f32> = match (src, device) {
+                (6, 2) => vec![
+                    frame[0] + m * frame[2] + m * frame[4],
+                    frame[1] + m * frame[2] + m * frame[5],
+                ],
+                (2, 6) => vec![frame[0], frame[1], 0.0, 0.0, 0.0, 0.0],
+                _ => frame.clone(),
+            };
             let at = &got[f * ch..(f + 1) * ch];
             if f < stop || f >= stop + 480 {
                 assert_eq!(bits(at), bits(&folded), "{src} → {device}, frame {f}");

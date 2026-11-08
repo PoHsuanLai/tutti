@@ -37,11 +37,10 @@ fn render(frames: usize, seek_at: usize) -> Vec<f32> {
         .send(VoiceCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
-                source: VoiceSource::Memory(MemorySource::placed(
-                    Arc::new(wave),
-                    Beat::new(0.0),
-                    None,
-                )),
+                source: VoiceSource::Memory(
+                    MemorySource::placed(Arc::new(wave), Beat::new(0.0), None)
+                        .expect("a placeable wave"),
+                ),
                 play: Playback {
                     stretch: StretchFactor::new(2.0),
                     ..Default::default()

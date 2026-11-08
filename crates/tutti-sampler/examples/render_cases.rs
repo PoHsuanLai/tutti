@@ -48,7 +48,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // and look like an attenuation bug.
     let wave = tone(440.0, FRAMES * 4);
 
-    let source = MemorySource::placed(wave, Beat::new(0.0), None);
+    let source = MemorySource::placed(wave, Beat::new(0.0), None).expect("a placeable wave");
     let play = Playback {
         stretch: StretchFactor::new(stretch),
         pitch: Cents::new(cents),

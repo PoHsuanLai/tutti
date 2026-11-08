@@ -24,14 +24,14 @@ use std::sync::Arc;
 use tutti_codec::Wave;
 use tutti_dsp::cubic_hermite;
 use tutti_types::{
-    Beat, BeatDuration, Bpm, ChannelLayout, Fold, Frame, ReadRate, SamplePosition, SampleRate,
-    Samples, TimelineSegment, fold_frame, snap_to_whole_frame,
+    Beat, BeatDuration, Bpm, ChannelLayout, Fold, FoldEnd, FoldError, Frame, ReadRate,
+    SamplePosition, SampleRate, Samples, Speaker, TimelineSegment, snap_to_whole_frame,
 };
 
 use super::clock::{BlockClock, Run, Wrap};
 use super::loop_span::{LoopSpan, blend};
 use super::memory_source::VoiceWindow;
-use crate::MAX_SAMPLER_CHANNELS;
+use crate::{MAX_SAMPLER_CHANNELS, PlaceError};
 
 /// Where the playhead sits in source samples, or `None` when it is outside the
 /// voice's window.
@@ -366,9 +366,9 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 ///
 /// # Channel policy
 ///
-/// One rule: a mono source is placed by [`MonoSpread`] (the centre of a
-/// destination that has one, else the front pair); anything else has a
-/// channel identity and folds through [`fold_frame`].
+/// One rule, [`Place`]'s, built from the wave's own
+/// [`topology`](Wave::topology) and the frame's width on the control side
+/// ([`Place::for_wave`]):
 ///
 /// - mono wave → N-wide frame: [`Fold`]'s lone-centre rule, built once as a
 ///   [`MonoSpread::to`]: the centre channel of a 6, 8 or 12-wide voice
@@ -377,18 +377,22 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 ///   kernel always did), the one channel of a mono one. A width the engine has
 ///   no order for (3, 4, 5, 7, 9 to 11, 13 and up) has no centre to name, so
 ///   the sample fans to every channel, as it did before.
-/// - wider wave → narrower frame: [`fold_frame`], i.e. the ITU-R BS.775
-///   matrix at width 2. Front-pair passthrough would silently drop the centre
-///   (dialogue) and the surrounds (ambience). The engine already owns these
-///   coefficients in exactly one place, and a sampler that folded differently
-///   would make the same file sound different depending on the node's width.
-/// - narrower (but not mono) wave → wider frame: [`fold_frame`], which
-///   copies straight through and zero-fills the extra channels. Deliberately
-///   asymmetric with the mono case: stereo carries a real L/R image, and fanning
-///   it into the centre and surrounds would smear that image and invent phantom
-///   centre content.
+/// - any other wave → a frame of another width or another order: the
+///   [`Fold`] from the wave's topology to the frame's
+///   ([`Fold::to_width`]). A wider wave folds by the ITU-R BS.775 matrix at
+///   width 2 (front-pair passthrough would silently drop the centre and the
+///   surrounds), and by position at the widths between; a narrower one keeps
+///   its channels where they are and leaves the rest silent (stereo carries a
+///   real L/R image, and fanning it into the centre and surrounds would smear
+///   that image and invent phantom centre content); a file that names its
+///   channels in another order (7.1 with the rears before the sides) is
+///   permuted to the engine's. A wave with a channel no speaker names (a
+///   second LFE, a wide or high speaker) is refused when the `Place` is
+///   built, never played.
+/// - a wave already in the frame's order and width is read channel for
+///   channel, with no fold.
 #[inline]
-pub fn read_frame(wave: &Arc<Wave>, mono: &MonoSpread, position: f64, out: &mut [f32]) {
+pub fn read_frame(wave: &Arc<Wave>, place: &Place, position: f64, out: &mut [f32]) {
     if out.is_empty() {
         return;
     }
@@ -402,7 +406,7 @@ pub fn read_frame(wave: &Arc<Wave>, mono: &MonoSpread, position: f64, out: &mut 
     // Every channel index `interpolate_taps` asks for is `< src_ch`, which is
     // what keeps `Wave::at` — an unchecked `self.vec[channel][index]` — from
     // panicking; `tap_indices` keeps the frame index in bounds.
-    interpolate_taps(src_ch, mono, frac, out, |c, t| wave.at(c, taps[t]));
+    interpolate_taps(src_ch, place, frac, out, |c, t| wave.at(c, taps[t]));
 }
 
 /// The four frames [`read_frame`] interpolates `position` from, in a source
@@ -465,7 +469,7 @@ pub(crate) fn split_position(position: f64) -> (usize, f32) {
 #[inline]
 pub(crate) fn read_looped_frame(
     wave: &Arc<Wave>,
-    mono: &MonoSpread,
+    place: &Place,
     span: &LoopSpan,
     pos: f64,
     looped: bool,
@@ -481,7 +485,7 @@ pub(crate) fn read_looped_frame(
         return;
     }
     let (taps, frac) = span.taps(len, pos, looped);
-    interpolate_taps(src_ch, mono, frac, out, |c, t| {
+    interpolate_taps(src_ch, place, frac, out, |c, t| {
         let tap = taps[t];
         let tail = wave.at(c, tap.frame);
         match tap.fade {
@@ -594,6 +598,148 @@ impl MonoSpread {
     }
 }
 
+/// The stack a frame's channels are gathered into: more than the engine has
+/// speakers for (18), and more than any placement reads.
+pub const MAX_WAVE_CHANNELS: usize = 32;
+
+/// Where the channels of a wave go in a frame of some width.
+///
+/// A mono wave is placed by its [`MonoSpread`]; any other is placed by the
+/// [`Fold`] from the wave's own [`topology`](Wave::topology) to the frame's
+/// ([`Fold::to_width`]), unless it is already the frame's width and order, in
+/// which case it is read channel for channel and there is no fold. Built once
+/// per reader, on the control side ([`for_wave`](Self::for_wave) allocates and
+/// can refuse); the per-frame and per-block writes are allocation-free.
+///
+/// The frame is the one a reader writes: its width is the node's, at most
+/// [`MAX_SAMPLER_CHANNELS`] (a wider node's remaining channels are silent).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    /// A mono wave placed by its spread, or a wave read channel for channel.
+    Native(MonoSpread),
+    /// A wave that is not mono and not already the frame's order and width,
+    /// placed by the fold.
+    Folded(Fold),
+}
+
+/// The spread of a wave that is not mono: never consulted.
+static NO_SPREAD: MonoSpread = MonoSpread::FAN;
+
+impl Place {
+    /// A wave read as it stands: every channel of one as wide as the frame in
+    /// its own slot, and a mono one to every channel. For the readers whose
+    /// frame is the wave's own width (the streaming tier's ring) and for a
+    /// test; a wave of another width than the frame is a bug there.
+    pub const FAN: Self = Self::Native(MonoSpread::FAN);
+
+    /// A wave read as it stands, a mono one placed by the lone-centre rule for
+    /// a frame of `width` ([`MonoSpread::to`]). Control side: it allocates.
+    #[must_use]
+    pub fn native(width: ChannelLayout) -> Self {
+        Self::Native(MonoSpread::to(width))
+    }
+
+    /// The placement of `wave` into a frame of `width` channels.
+    ///
+    /// Control side: it allocates. `width` is capped at
+    /// [`MAX_SAMPLER_CHANNELS`], the most a reader writes.
+    ///
+    /// # Errors
+    ///
+    /// - [`PlaceError::Fold`] with [`FoldError::Unnamed`] for a wave with a
+    ///   channel no speaker names (a second LFE, a wide or high speaker), mono
+    ///   or not: there is no telling where it should sound.
+    /// - [`PlaceError::Fold`] for any other channel the frame cannot place.
+    /// - [`PlaceError::Fold`] with [`FoldError::Unplaced`] for a wave wider
+    ///   than the frame where either has no channel order (10 channels into 8,
+    ///   a 5.1 file into 5): its extra channels would be dropped.
+    pub fn for_wave(wave: &Wave, width: ChannelLayout) -> Result<Self, PlaceError> {
+        let frame = ChannelLayout::from_count(width.count().min(MAX_SAMPLER_CHANNELS as u16));
+        let topology = wave.topology();
+        if let Some(channel) = topology
+            .positions()
+            .iter()
+            .position(|p| matches!(p, Speaker::Unknown(_)))
+        {
+            return Err(FoldError::Unnamed {
+                end: FoldEnd::Source,
+                channel,
+            }
+            .into());
+        }
+        if wave.channels() == 1 {
+            return Ok(Self::native(frame));
+        }
+        let fold = Fold::to_width(topology, frame)?;
+        if fold.is_identity() {
+            return Ok(Self::native(frame));
+        }
+        // A fold that is not the identity reads at most the widest named
+        // source: a wider source than `MAX_WAVE_CHANNELS` would need more
+        // distinct speakers than there are, and a discrete one only widens.
+        debug_assert!(usize::from(fold.src_layout().count()) <= MAX_WAVE_CHANNELS);
+        Ok(Self::Folded(fold))
+    }
+
+    /// Whether the wave's channels are read straight into the frame's
+    /// (a block reader may then read a whole channel at a time).
+    #[inline]
+    pub(crate) fn is_direct(&self) -> bool {
+        matches!(self, Self::Native(_))
+    }
+
+    /// The mono rule, for a reader that spreads a block in place.
+    #[inline]
+    pub(crate) fn mono(&self) -> &MonoSpread {
+        match self {
+            Self::Native(spread) => spread,
+            Self::Folded(_) => &NO_SPREAD,
+        }
+    }
+
+    /// Writes one frame of a `src_ch`-wide wave into `out`, every element:
+    /// channel `c` of the wave is `sample(c)`.
+    #[inline]
+    pub(crate) fn frame(&self, src_ch: usize, sample: impl Fn(usize) -> f32, out: &mut [f32]) {
+        let fold = match self {
+            Self::Native(spread) => {
+                // Mono is placed by the spread. Bound: only channel 0 is read.
+                if src_ch == 1 {
+                    spread.frame(sample(0), out);
+                    return;
+                }
+                // Already the frame's order and width, the common case,
+                // including plain stereo. Bound: `src_ch == out.len()`, so
+                // `0..out.len()` is in range. A distinct path rather than a
+                // fold, so the hot case stays a straight per-channel read.
+                debug_assert_eq!(
+                    src_ch,
+                    out.len(),
+                    "a wave of {src_ch} channels read into {} with no fold",
+                    out.len()
+                );
+                for (c, o) in out.iter_mut().enumerate() {
+                    *o = if c < src_ch { sample(c) } else { 0.0 };
+                }
+                return;
+            }
+            Self::Folded(fold) => fold,
+        };
+        // Gather the wave's channels into a bounded stack frame and let the
+        // fold place them. Bound: `for_wave` refused a wave past the scratch.
+        debug_assert!(
+            src_ch <= MAX_WAVE_CHANNELS && usize::from(fold.src_layout().count()) == src_ch,
+            "a wave of {src_ch} channels read with a fold of {:?}",
+            fold.src_layout()
+        );
+        let mut src = [0.0f32; MAX_WAVE_CHANNELS];
+        for (c, s) in src.iter_mut().enumerate().take(src_ch) {
+            *s = sample(c);
+        }
+        fold.frame(&src[..src_ch], out);
+    }
+}
+
 /// Interpolate one frame into `out` from four taps of a `src_ch`-wide source
 /// (`sample(c, t)` is channel `c` of tap `t`, `t` in `0..4` as
 /// [`tap_indices`] orders them), applying the crate's channel policy (see
@@ -603,7 +749,7 @@ impl MonoSpread {
 #[inline]
 pub(crate) fn interpolate_taps(
     src_ch: usize,
-    mono: &MonoSpread,
+    place: &Place,
     frac: f32,
     out: &mut [f32],
     sample: impl Fn(usize, usize) -> f32,
@@ -612,48 +758,7 @@ pub(crate) fn interpolate_taps(
     // from a bound that is `<= src_ch`.
     let tap =
         |c: usize| cubic_hermite(sample(c, 0), sample(c, 1), sample(c, 2), sample(c, 3), frac);
-
-    // Mono is placed by the spread. Bound: only channel 0 is read.
-    if src_ch == 1 {
-        mono.frame(tap(0), out);
-        return;
-    }
-
-    // Matched width — the common case, including plain stereo. Bound: `src_ch
-    // == out.len()`, so `0..out.len()` is in range. Kept as a distinct path
-    // rather than routed through `fold_frame` so the hot case stays a straight
-    // per-channel read with no matrix dispatch.
-    if src_ch == out.len() {
-        for (c, o) in out.iter_mut().enumerate() {
-            *o = tap(c);
-        }
-        return;
-    }
-
-    // Mismatched width: interpolate at the source width into a bounded stack
-    // frame, then let the engine's one matrix decide the mapping. Bound:
-    // `0..n` where `n <= src_ch`.
-    let n = src_ch.min(MAX_SAMPLER_CHANNELS);
-    debug_assert!(
-        src_ch <= MAX_SAMPLER_CHANNELS,
-        "wave has {src_ch} channels, past MAX_SAMPLER_CHANNELS ({MAX_SAMPLER_CHANNELS}); \
-         channels {MAX_SAMPLER_CHANNELS}.. are dropped by the fold"
-    );
-    let mut src = [0.0f32; MAX_SAMPLER_CHANNELS];
-    for (c, s) in src.iter_mut().enumerate().take(n) {
-        *s = tap(c);
-    }
-    fold_frame(&src[..n], out);
-}
-
-/// Stereo shim over [`read_frame`]: returns the interpolated `(left, right)`
-/// pair for a fixed 2-channel read. Same channel policy — a mono wave is both
-/// sides, a wider one folds through the ITU-R BS.775 matrix.
-#[inline]
-pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
-    let mut out = [0.0f32; 2];
-    read_frame(wave, &MonoSpread::FAN, position, &mut out);
-    (out[0], out[1])
+    place.frame(src_ch, tap, out);
 }
 
 #[cfg(test)]
@@ -662,10 +767,21 @@ mod tests {
     use tutti_graph::{Env, Offset, Transport, TransportChanges};
     use tutti_types::{PlaybackRate, SrcRatio};
 
-    /// [`super::read_frame`] with the spread a reader of `out`'s width has.
+    /// [`super::read_frame`] with the placement a reader of `out`'s width has.
     fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
-        let mono = MonoSpread::to(ChannelLayout::from(out.len()));
-        super::read_frame(wave, &mono, position, out);
+        let place = if out.is_empty() {
+            Place::FAN
+        } else {
+            Place::for_wave(wave, ChannelLayout::from(out.len())).expect("a placeable wave")
+        };
+        super::read_frame(wave, &place, position, out);
+    }
+
+    /// The `(left, right)` of a two-channel read.
+    fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
+        let mut out = [0.0f32; 2];
+        read_frame(wave, position, &mut out);
+        (out[0], out[1])
     }
 
     /// A position a hair under a whole frame reads that frame exactly.
@@ -891,7 +1007,7 @@ mod tests {
     }
 
     /// The mono fan-out is likewise pinned bit-for-bit — it is the one policy
-    /// arm that deliberately does *not* defer to `fold_frame`'s zero-fill.
+    /// arm that deliberately does *not* zero-fill.
     #[test]
     fn mono_fan_out_is_bit_identical_to_the_pre_width_kernel() {
         const EXPECTED: [(u32, u32); 8] = [
@@ -1025,8 +1141,7 @@ mod tests {
 
     /// Narrowing goes through the engine's ITU-R BS.775 matrix, not a front-pair
     /// truncation: a centre-only 5.1 source must reach both stereo outputs at
-    /// −3 dB. Cross-checked against `fold_frame` directly so the assertion is
-    /// "the engine's matrix was used", not a hand-picked constant.
+    /// −3 dB ([`M3DB`](tutti_types::M3DB)), the ITU figure.
     #[test]
     fn six_channel_wave_on_a_stereo_frame_folds_through_the_itu_matrix() {
         // 5.1 order: L R C LFE Ls Rs — centre only.
@@ -1039,15 +1154,175 @@ mod tests {
         let mut out = [0.0f32; 2];
         read_frame(&w, 4.0, &mut out);
 
-        let mut expected = [0.0f32; 2];
-        fold_frame(&[0.0, 0.0, 1.0, 0.0, 0.0, 0.0], &mut expected);
-        assert!(
-            (out[0] - expected[0]).abs() < 1e-6 && (out[1] - expected[1]).abs() < 1e-6,
-            "expected the engine fold {expected:?}, got {out:?}"
-        );
+        assert_eq!(out, [tutti_types::M3DB; 2], "the ITU centre figure");
         assert!(
             out[0] > 0.5 && out[1] > 0.5,
             "centre was dropped — this is front-pair truncation, not a fold: {out:?}"
+        );
+    }
+
+    /// A wave of `topology` with `frames` copies of `frame`, so an interpolated
+    /// read at any position is the frame itself (a cubic through equal taps).
+    fn constant_wave(topology: tutti_types::ChannelTopology, frame: &[f32]) -> Wave {
+        let mut w = Wave::with_topology(topology, 48_000.0);
+        for _ in 0..16 {
+            w.push_frame(frame);
+        }
+        w
+    }
+
+    /// A file with a channel no speaker names (a second LFE) is refused when
+    /// the placement is built, whatever width it goes to, mono or not; a
+    /// source and a voice over it are refused too.
+    ///
+    /// Mutation (run): the `Unknown` check removed from `Place::for_wave` and
+    /// `Fold::to_width` → the wave is placed (the 5-wide row is by index) and
+    /// every assertion here fails.
+    #[test]
+    fn a_file_with_an_unnamed_channel_is_refused() {
+        use tutti_types::{ChannelTopology, Speaker::*};
+        let lfe2 =
+            ChannelTopology::new([FrontLeft, FrontRight, FrontCenter, LowFrequency, Unknown(5)]);
+        let wave = constant_wave(lfe2, &[0.0; 5]);
+        let refused = FoldError::Unnamed {
+            end: FoldEnd::Source,
+            channel: 4,
+        };
+        for width in [1u16, 2, 5, 6, 8] {
+            assert_eq!(
+                Place::for_wave(&wave, ChannelLayout::from(width)),
+                Err(PlaceError::Fold(refused)),
+                "into {width}"
+            );
+        }
+        let mono = constant_wave(ChannelTopology::new([Unknown(1)]), &[0.0]);
+        assert!(Place::for_wave(&mono, ChannelLayout::STEREO).is_err());
+        let wave = Arc::new(wave);
+        assert_eq!(
+            super::super::MemorySource::with_channels(Arc::clone(&wave), ChannelLayout::STEREO)
+                .err(),
+            Some(PlaceError::Fold(refused))
+        );
+        let voice = crate::memory_voice(
+            wave,
+            ChannelLayout::STEREO,
+            crate::Playback::default(),
+            Default::default(),
+        );
+        assert_eq!(voice.err(), Some(PlaceError::Fold(refused)));
+    }
+
+    /// A file that lists its channels in WAV order (7.1 with the rears before
+    /// the sides) lands in the engine's order, and one already in it is read
+    /// straight.
+    ///
+    /// Mutation (run): `Place::for_wave` returning `native` for a matched width
+    /// → the first row reads the file's order and fails.
+    #[test]
+    fn a_wav_seven_one_is_permuted_to_the_engines_order() {
+        use tutti_types::{ChannelTopology, Speaker::*};
+        let wav = ChannelTopology::new([
+            FrontLeft,
+            FrontRight,
+            FrontCenter,
+            LowFrequency,
+            BackLeft,
+            BackRight,
+            SideLeft,
+            SideRight,
+        ]);
+        let frame = [0.0f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let w = Arc::new(constant_wave(wav, &frame));
+        let place = Place::for_wave(&w, ChannelLayout::from(8u16)).unwrap();
+        assert!(!place.is_direct());
+        let mut out = [9.0f32; 8];
+        super::read_frame(&w, &place, 4.0, &mut out);
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0, 6.0, 7.0, 4.0, 5.0]);
+        // The engine's own order needs no fold.
+        let own = constant_wave(
+            ChannelTopology::smpte(ChannelLayout::from(8u16)).unwrap(),
+            &frame,
+        );
+        assert!(
+            Place::for_wave(&own, ChannelLayout::from(8u16))
+                .unwrap()
+                .is_direct()
+        );
+    }
+
+    /// A wave of 9 to 12 channels into a frame of 8 (the most a reader writes)
+    /// is folded, not cut to its first 8: a 7.1.4 file's top-front-left reaches
+    /// front left at -3 dB. And a count-built 4-wide wave is a quad into stereo,
+    /// as it always was.
+    ///
+    /// Mutation (run): the gather limited to `MAX_SAMPLER_CHANNELS` channels
+    /// (the old behaviour) → the height is not read and the first row fails.
+    #[test]
+    fn a_wide_wave_is_placed_not_cut() {
+        let mut frame = [0.0f32; 12];
+        frame[8] = 1.0; // top front left
+        let w = Arc::new(constant_wave(
+            tutti_types::ChannelTopology::smpte(ChannelLayout::from(12u16)).unwrap(),
+            &frame,
+        ));
+        let place = Place::for_wave(&w, ChannelLayout::from(12u16)).unwrap();
+        let mut out = [9.0f32; MAX_SAMPLER_CHANNELS];
+        super::read_frame(&w, &place, 4.0, &mut out);
+        assert!((out[0] - tutti_types::M3DB).abs() < 1e-6, "{out:?}");
+        assert!(out[1..].iter().all(|&s| s.abs() < 1e-6), "{out:?}");
+
+        let mut quad = Wave::new(4, 48_000.0);
+        for _ in 0..16 {
+            quad.push_frame(&[1.0, 2.0, 4.0, 8.0]);
+        }
+        let quad = Arc::new(quad);
+        let mut out = [0.0f32; 2];
+        super::read_frame(
+            &quad,
+            &Place::for_wave(&quad, ChannelLayout::STEREO).unwrap(),
+            4.0,
+            &mut out,
+        );
+        let m = tutti_types::M3DB;
+        assert!((out[0] - (1.0 + m * 4.0)).abs() < 1e-5 && (out[1] - (2.0 + m * 8.0)).abs() < 1e-5);
+    }
+
+    /// A wave wider than the frame with an unordered end has no place for its
+    /// extra channels, and is refused rather than cut: ten channels into a
+    /// frame of eight, a 5.1 file into five.
+    ///
+    /// Mutation (run): `Fold::by_index` accepting a narrowing → both rows place
+    /// the wave (truncated) and fail.
+    #[test]
+    fn a_wave_with_no_place_for_its_extra_channels_is_refused() {
+        let ten = Wave::new(10, 48_000.0);
+        assert!(matches!(
+            Place::for_wave(&ten, ChannelLayout::from(8u16)),
+            Err(PlaceError::Fold(FoldError::Unplaced { channel: 8, .. }))
+        ));
+        let mut six = Wave::new(6, 48_000.0);
+        six.push_frame(&[0.0; 6]);
+        assert!(matches!(
+            Place::for_wave(&six, ChannelLayout::from(5u16)),
+            Err(PlaceError::Fold(FoldError::Unplaced { channel: 5, .. }))
+        ));
+        let w = Arc::new(six);
+        assert_eq!(
+            super::super::MemorySource::with_channels(Arc::clone(&w), ChannelLayout::from(5u16))
+                .err(),
+            Some(PlaceError::Fold(FoldError::Unplaced {
+                channel: 5,
+                speaker: tutti_types::Speaker::Discrete
+            }))
+        );
+        assert!(
+            crate::memory_voice(
+                w,
+                ChannelLayout::from(5u16),
+                crate::Playback::default(),
+                Default::default()
+            )
+            .is_err()
         );
     }
 

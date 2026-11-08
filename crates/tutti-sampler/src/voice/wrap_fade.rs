@@ -108,7 +108,9 @@ impl Rig {
             }
             // Placed by `place`.
             Host::Voice => Hosted::Voice(None),
-            Host::Node => Hosted::Node(MemorySource::new(Arc::new(Wave::new(2, SR)))),
+            Host::Node => Hosted::Node(
+                MemorySource::new(Arc::new(Wave::new(2, SR))).expect("a placeable wave"),
+            ),
         };
         Self {
             host,
@@ -137,7 +139,8 @@ impl Rig {
             Arc::clone(wave),
             Beat::new(start),
             duration.map(BeatDuration::new),
-        );
+        )
+        .expect("a placeable wave");
         match &mut self.host {
             Hosted::Pool(pool) => {
                 source.set_render_rate(SampleRate(SR));

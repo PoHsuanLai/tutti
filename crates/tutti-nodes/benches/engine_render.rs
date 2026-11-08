@@ -155,7 +155,7 @@ fn bench_depth(c: &mut Criterion) {
     group.finish();
 }
 
-/// Device width. Prices the per-frame gather and `fold_frame` at the root:
+/// Device width. Prices the fold at the root (`Fold::planar_to_interleaved`):
 /// the graph work is identical, only the fold width changes.
 fn bench_width(c: &mut Criterion) {
     let mut group = c.benchmark_group("width");
@@ -164,9 +164,26 @@ fn bench_width(c: &mut Criterion) {
         let engine = chain_engine(outputs);
         let mut buf = vec![0.0f32; FRAMES * outputs];
         let layout = ChannelLayout::from(outputs);
+        engine.support_output(layout).expect("a width");
         group.throughput(Throughput::Elements(FRAMES as u64));
         group.bench_with_input(BenchmarkId::from_parameter(outputs), &outputs, |b, _| {
             b.iter(|| render(&engine, black_box(&mut buf), layout));
+        });
+    }
+    group.finish();
+}
+
+/// A surround root on a stereo device: the fold that narrows. The graph work is
+/// identical across the rows, only the root width (and so the fold) changes.
+fn bench_to_stereo(c: &mut Criterion) {
+    let mut group = c.benchmark_group("to_stereo");
+    const FRAMES: usize = 256;
+    for outputs in [1usize, 2, 6, 8] {
+        let engine = chain_engine(outputs);
+        let mut buf = vec![0.0f32; FRAMES * 2];
+        group.throughput(Throughput::Elements(FRAMES as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(outputs), &outputs, |b, _| {
+            b.iter(|| render(&engine, black_box(&mut buf), ChannelLayout::STEREO));
         });
     }
     group.finish();
@@ -383,6 +400,7 @@ criterion_group!(
     bench_block_size,
     bench_depth,
     bench_width,
+    bench_to_stereo,
     bench_transport_overhead,
     bench_backend
 );

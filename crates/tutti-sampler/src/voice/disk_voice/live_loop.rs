@@ -263,7 +263,7 @@ struct Memory {
 impl Memory {
     fn new(wave: Arc<tutti_codec::Wave>, loop_: LoopSetting, speed: f32, from: f64) -> Self {
         let clock = MockTransport::rolling(Beat::new(from), Bpm::of(120.0));
-        let mut source = MemorySource::placed(wave, Beat(0.0), None);
+        let mut source = MemorySource::placed(wave, Beat(0.0), None).expect("a placeable wave");
         source.set_speed(PlaybackRate::new(speed));
         source.set_loop_setting(loop_);
         source.prepare(&Prepare::new(SampleRate(SR), Samples(BLOCK)));

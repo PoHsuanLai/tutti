@@ -1,6 +1,5 @@
 use super::*;
 use crate::InterleavedMut;
-use crate::fold_frame;
 use Speaker::*;
 
 fn smpte(n: u16) -> ChannelTopology {
@@ -132,39 +131,106 @@ fn the_mono_fold_is_the_itu_table() {
     assert!((out[0] - 0.212_132).abs() < 1e-6);
 }
 
-/// Invariant: for every width pair the width folds had a matrix or a copy for,
-/// `Fold` writes the same bits as `fold_frame`, on frames of every sign and
-/// magnitude and in the special values, per frame and planar. (The planar width fold, deleted with the
-/// port of `DownmixNode`, was compared the same way before it went.)
+/// The ITU-R BS.775 / Dolby formulas of a width, written out: side `side` (0
+/// left, 1 right) of the stereo fold of a frame of `width` channels. A width
+/// with no matrix passes the front pair through. This is the closed form the
+/// width folds computed, in their order of operations.
+fn itu_side(width: usize, side: usize, f: &[f32]) -> f32 {
+    let m = M3DB;
+    let get = |c: usize| f[c];
+    match width {
+        1 => get(0),
+        4 => get(side) + m * get(2 + side),
+        6 => get(side) + m * get(2) + m * get(4 + side),
+        8 => get(side) + m * get(2) + m * get(4 + side) + m * get(6 + side),
+        12 => {
+            get(side)
+                + m * (get(2) + get(4 + side) + get(6 + side) + get(8 + side) + get(10 + side))
+        }
+        _ => get(side),
+    }
+}
+
+/// One frame of width `src` onto `dst` by the closed forms: mono is the
+/// average of two channels and the stereo fold times -3 dB from three, stereo
+/// is the fold, anything wider copies and zero-fills.
+fn width_oracle(f: &[f32], dst: usize) -> Vec<f32> {
+    let (lo, ro) = (itu_side(f.len(), 0, f), itu_side(f.len(), 1, f));
+    match dst {
+        1 => vec![match f.len() {
+            1 => f[0],
+            2 => (f[0] + f[1]) * 0.5,
+            _ => (lo + ro) * M3DB,
+        }],
+        2 => vec![lo, ro],
+        _ => (0..dst).map(|i| f.get(i).copied().unwrap_or(0.0)).collect(),
+    }
+}
+
+/// The pairs whose output differs from what the width folds wrote, by
+/// decision (design 013, "Channel placement"): a mono feeds the centre or the
+/// front pair, a quad's rears are no longer the centre and LFE, and a wider
+/// surround is placed by position rather than by its first channels.
+const PLACED_BY_POSITION: [(u16, u16); 13] = [
+    (1, 4),
+    (1, 6),
+    (1, 8),
+    (1, 12),
+    (4, 6),
+    (4, 8),
+    (4, 12),
+    (6, 4),
+    (8, 4),
+    (8, 6),
+    (12, 4),
+    (12, 6),
+    (12, 8),
+];
+
+/// Widths the engine has an order for.
+const ORDERED: [u16; 6] = [1, 2, 4, 6, 8, 12];
+
+/// A narrowing with an unordered end has no place for its extra channels, and
+/// is refused rather than truncated.
+fn refused(sw: u16, dw: u16) -> bool {
+    sw > dw && !(ORDERED.contains(&sw) && ORDERED.contains(&dw))
+}
+
+/// Invariant: for every pair of widths 1 to 14 outside [`PLACED_BY_POSITION`]
+/// (and not [`refused`]),
+/// `Fold::widths` writes the bits of the closed-form ITU formulas
+/// ([`width_oracle`]), on frames of every sign and magnitude and in the special
+/// values, per frame and planar. Widths with no order (3, 5, 7, 9 to 11, 13, 14)
+/// are placed by index and only widen (copy, zero-fill); a narrowing with one is
+/// refused with `Unplaced` (its channels would be dropped).
 ///
-/// Mutation (run), each failing this test: overhead grouping off (the 12 -> 2 and
-/// 12 -> 1 pairs differ in the last bit); the mono mix reordered to
+/// Mutation (run), each failing this test: overhead grouping off (the 12 -> 2
+/// and 12 -> 1 pairs differ in the last bit); the mono mix reordered to
 /// `a + b * scale`; the direct term moved after the folded ones; the lone-mono
 /// branch off (1 -> 2 at -3 dB); the interleaved and planar lone-term `+=`
-/// written `=`; the pair scale and the wide-mix scale changed.
+/// written `=`; the pair scale and the wide-mix scale changed; `by_index`
+/// accepting a narrowing (the refusal arm removed) fails the 5 -> 3 row.
 #[test]
-fn it_is_bit_identical_to_the_width_folds() {
-    let widths = [1u16, 2, 4, 6, 8, 12];
-    let topo = |w: u16| {
-        if w == 4 {
-            ChannelTopology::quad()
-        } else {
-            smpte(w)
-        }
-    };
+fn widths_write_the_itu_formulas_to_the_bit() {
     let mut pairs = 0;
-    for &sw in &widths {
-        for &dw in &widths {
-            // 1 -> 6 and 1 -> 8 and 1 -> 12 put the mono in the centre (see
-            // `a_lone_centre_feeds_the_centre`), and the narrowing pairs past
-            // 2 had no matrix (`narrowing_below_surround_is_by_position`).
-            let had_matrix = dw <= 2 || (dw >= sw && sw > 1);
-            // A quad copied into a wider bus put its rears in the centre and
-            // the LFE: a placement the width could not state.
-            if !had_matrix || (sw == 1 && dw > 2) || (sw == 4 && dw > 4) {
+    let mut refusals = 0;
+    for sw in 1u16..=14 {
+        for dw in 1u16..=14 {
+            if PLACED_BY_POSITION.contains(&(sw, dw)) {
                 continue;
             }
-            let f = fold(&topo(sw), &topo(dw));
+            if refused(sw, dw) {
+                assert!(
+                    matches!(
+                        Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)),
+                        Err(FoldError::Unplaced { .. })
+                    ),
+                    "{sw} -> {dw} must be refused"
+                );
+                refusals += 1;
+                continue;
+            }
+            let f = Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)).unwrap();
             let (s, d) = (usize::from(sw), usize::from(dw));
             // Past two planar chunks, with specials among the noise.
             let frames = 150;
@@ -172,11 +238,11 @@ fn it_is_bit_identical_to_the_width_folds() {
             for (k, x) in data.iter_mut().enumerate().filter(|(k, _)| k % 5 == 0) {
                 *x = SPECIALS[k / 5 % SPECIALS.len()];
             }
-            let mut want = vec![0.0f32; d * frames];
+            let want: Vec<f32> = data
+                .chunks_exact(s)
+                .flat_map(|a| width_oracle(a, d))
+                .collect();
             let mut got = vec![0.0f32; d * frames];
-            for (a, b) in data.chunks_exact(s).zip(want.chunks_exact_mut(d)) {
-                fold_frame(a, b);
-            }
             for (a, b) in data.chunks_exact(s).zip(got.chunks_exact_mut(d)) {
                 f.frame(a, b);
             }
@@ -195,7 +261,133 @@ fn it_is_bit_identical_to_the_width_folds() {
             pairs += 1;
         }
     }
-    assert!(pairs >= 20, "the loop skipped too much: {pairs}");
+    assert_eq!(pairs + refusals + PLACED_BY_POSITION.len(), 14 * 14);
+    assert!(
+        refusals > 0 && pairs > 100,
+        "{refusals} refused, {pairs} placed"
+    );
+}
+
+/// Every pair in [`PLACED_BY_POSITION`] really differs from the closed form
+/// (the list is the set that changed, no more and no fewer), and a pair outside
+/// it with a matrix does not: a stale entry would otherwise hide a regression.
+///
+/// Mutation (run): `Fold::widths` placing a mono at channel 0 (the old copy)
+/// fails the (1, 6) row.
+#[test]
+fn the_placed_by_position_pairs_are_the_ones_that_differ() {
+    let probe = |s: usize| -> Vec<f32> { (0..s).map(|c| 0.25 + c as f32 * 0.5).collect() };
+    for sw in 1u16..=14 {
+        for dw in 1u16..=14 {
+            if refused(sw, dw) {
+                continue;
+            }
+            let f = Fold::widths(ChannelLayout::from(sw), ChannelLayout::from(dw)).unwrap();
+            let src = probe(usize::from(sw));
+            let mut got = vec![0.0f32; usize::from(dw)];
+            f.frame(&src, &mut got);
+            let same = got == width_oracle(&src, usize::from(dw));
+            assert_eq!(
+                same,
+                !PLACED_BY_POSITION.contains(&(sw, dw)),
+                "{sw} -> {dw}: {got:?}"
+            );
+        }
+    }
+}
+
+/// A width with no order is placed by index, widening only: a narrowing is
+/// refused, not truncated.
+///
+/// Mutation (run): the `s > d` refusal removed → 5 -> 3 and 7 -> 2 truncate and
+/// fail; the zero-fill arm replaced by `Copy(0)` fails the widening rows.
+#[test]
+fn by_index_only_widens() {
+    let w = ChannelLayout::from;
+    let run = |s: u16, d: u16, src: &[f32]| {
+        let mut out = vec![9.0f32; usize::from(d)];
+        Fold::by_index(w(s), w(d)).unwrap().frame(src, &mut out);
+        out
+    };
+    assert_eq!(run(3, 5, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0, 0.0, 0.0]);
+    assert_eq!(run(3, 3, &[1.0, 2.0, 3.0]), [1.0, 2.0, 3.0]);
+    assert_eq!(run(1, 3, &[0.5]), [0.5, 0.0, 0.0]);
+    for (s, d) in [(5u16, 3u16), (7, 2), (3, 1), (2, 1)] {
+        assert_eq!(
+            Fold::by_index(w(s), w(d)),
+            Err(FoldError::Unplaced {
+                channel: usize::from(d),
+                speaker: Speaker::Discrete
+            }),
+            "{s} -> {d}"
+        );
+    }
+    assert_eq!(
+        Fold::by_index(ChannelLayout::EMPTY, w(2)),
+        Err(FoldError::Empty(FoldEnd::Source))
+    );
+    assert_eq!(
+        Fold::by_index(w(2), ChannelLayout::EMPTY),
+        Err(FoldError::Empty(FoldEnd::Destination))
+    );
+}
+
+/// `to_width` refuses a channel no speaker names whatever the destination, reads
+/// a bare count in the engine's order (a quad at four) and places by index where
+/// there is no order.
+///
+/// Mutation (run): the `Unknown` check removed lets the LFE2 file through to a
+/// 5-wide destination; reading a discrete 4 as discrete (not quad) makes the
+/// stereo row the first two channels.
+#[test]
+fn to_width_refuses_the_unnamed_and_reads_a_count_in_the_engines_order() {
+    use Speaker::*;
+    let lfe2 = ChannelTopology::new([FrontLeft, FrontRight, FrontCenter, LowFrequency, Unknown(5)]);
+    for dst in [1u16, 2, 5, 6] {
+        assert_eq!(
+            Fold::to_width(&lfe2, ChannelLayout::from(dst)),
+            Err(FoldError::Unnamed {
+                end: FoldEnd::Source,
+                channel: 4
+            }),
+            "into {dst}"
+        );
+    }
+    // A bare four is quad.
+    let four = ChannelTopology::discrete(ChannelLayout::QUAD);
+    let mut out = [0.0f32; 2];
+    Fold::to_width(&four, ChannelLayout::STEREO)
+        .unwrap()
+        .frame(&[1.0, 2.0, 3.0, 4.0], &mut out);
+    assert_eq!(out, [1.0 + M3DB * 3.0, 2.0 + M3DB * 4.0]);
+    // A named source widens into a width with no order by index, and a
+    // narrowing into one is refused: 5.1 into five channels would lose SR.
+    let mut five = [0.0f32; 5];
+    Fold::to_width(&smpte(2), ChannelLayout::from(5u16))
+        .unwrap()
+        .frame(&[1.0, 2.0], &mut five);
+    assert_eq!(five, [1.0, 2.0, 0.0, 0.0, 0.0]);
+    assert!(matches!(
+        Fold::to_width(&smpte(6), ChannelLayout::from(5u16)),
+        Err(FoldError::Unplaced { channel: 5, .. })
+    ));
+    // A file that names its channels in another order is permuted: back
+    // before side, as WAV writes 7.1.
+    let wav71 = ChannelTopology::new([
+        FrontLeft,
+        FrontRight,
+        FrontCenter,
+        LowFrequency,
+        BackLeft,
+        BackRight,
+        SideLeft,
+        SideRight,
+    ]);
+    let mut out = [0.0f32; 8];
+    Fold::to_width(&wav71, ChannelLayout::from(8u16))
+        .unwrap()
+        .frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], &mut out);
+    assert_eq!(out, [0.0, 1.0, 2.0, 3.0, 6.0, 7.0, 4.0, 5.0]);
 }
 
 /// The same speakers in another order is a permutation: every output is a

@@ -49,7 +49,7 @@ tutti-sampler = { path = "../tutti-sampler", default-features = false, optional 
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
-tutti-export = { path = "../tutti-export", optional = true }
+tutti-export = { path = "../tutti-export", default-features = false, optional = true }
 tutti-plugin = { path = "../tutti-plugin", optional = true }
 # `assert_main_thread`, the debug-only guard on the calls whose frees are
 # main-thread-only (design 015 §4.2).
@@ -75,7 +75,15 @@ synth = ["dep:tutti-polysynth"]
 spatial = ["dep:tutti-spatial"]
 hrtf = ["spatial", "tutti-spatial/hrtf"]
 convolution = ["tutti-nodes/convolution"]
-export = ["dep:tutti-export"]
+# Export. `export` is the offline renderer and WAV, which is pure Rust; FLAC and
+# AIFF are pure Rust and opt-in, and `export-ogg` is the one path to C (the
+# Vorbis library, `ogg_next_sys`). `scripts/check-layout.sh` holds that a build
+# with `export` alone reaches no C.
+export = ["dep:tutti-export", "tutti-export/wav"]
+export-wav = ["export"]
+export-flac = ["export", "tutti-export/flac"]
+export-aiff = ["export", "tutti-export/aiff"]
+export-ogg = ["export", "tutti-export/ogg"]
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-types", "midi"]
 vst2 = ["plugin", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin/vst3"]

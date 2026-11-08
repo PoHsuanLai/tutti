@@ -42,6 +42,10 @@
 #   uses `symphonia`, one of those names, or an `impl` header does. A
 #   `pub(super)` or private item may use them. The decoder is swapped by
 #   editing that module;
+# - `export` alone on `tutti-session`, `tutti` and `bevy-tutti` reaches no C
+#   library: `cargo tree -i ogg_next_sys -e normal` finds nothing (WAV is pure
+#   Rust; `export-ogg` is the one path to the C Vorbis library, and the check
+#   sees that it still is one, so it cannot pass by looking at nothing);
 # - `tutti-spatial` depends on `tutti-nodes`, and `tutti-nodes` never on
 #   `tutti-spatial`, of any kind;
 # - nothing but `tutti` and `bevy-tutti` depends on `tutti-session`, and
@@ -107,6 +111,8 @@
 # super::..` of a name another file imported from symphonia; and `cfg`-ed text
 # (it reads every cfg arm). The complete check is the crate's rustdoc JSON or
 # `cargo public-api`, which this repo does not run.
+# - `"tutti-export/ogg"` in `tutti-session`'s `export` feature: "tutti-session with
+#   `export` alone reaches ogg_next_sys";
 # - `tutti-rt` as a `[dependencies]` entry of `tutti-tempo`: "tutti-tempo may depend on
 #   ['tutti-types'] only"; `tutti-graph` there too: "tutti-tempo -> tutti-graph (normal)
 #   points up or sideways".
@@ -239,6 +245,25 @@ if "tutti-codec" in pkgs:
             fail(f"{feat} enables an encoder library ({sorted(names & encoders)}); a build that reads pulls no encoder")
         if feat.startswith("encode-") and "symphonia" in names:
             fail(f"{feat} enables symphonia; a build that writes pulls no decoder")
+
+# ---- `export` alone pulls no C library --------------------------------------
+import subprocess
+def reaches_ogg(pkg, feats, no_default):
+    cmd = ["cargo", "tree", "--locked", "-p", pkg, "-e", "normal", "-i", "ogg_next_sys", "--features", feats]
+    if no_default:
+        cmd.append("--no-default-features")
+    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+    return r.returncode == 0 and "ogg_next_sys" in r.stdout, r
+for pkg in ("tutti-session", "tutti", "bevy-tutti"):
+    if pkg not in pkgs:
+        continue
+    # bevy-tutti's own default is empty; tutti's is `session`; `export` alone.
+    hit, _ = reaches_ogg(pkg, "export", True)
+    if hit:
+        fail(f"{pkg} with `export` alone reaches ogg_next_sys; only `export-ogg` may")
+    hit, r = reaches_ogg(pkg, "export,export-ogg", True)
+    if not hit:
+        fail(f"{pkg} with `export,export-ogg` no longer reaches ogg_next_sys; the check sees nothing ({r.stderr.strip()[:200]})")
 
 import re
 decode_root = os.path.join(root, "crates", "tutti-codec", "src", "decode")

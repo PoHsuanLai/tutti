@@ -15,9 +15,10 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [features]
-default = ["wav", "flac", "aiff", "ogg"]
+default = []
 # The formats `tutti-codec` writes; a `Format` variant exists only with its
-# feature on.
+# feature on. None is on by default: `ogg` links the C Vorbis library, and a
+# consumer names the formats it writes.
 wav = ["tutti-codec/encode-wav"]
 flac = ["tutti-codec/encode-flac"]
 aiff = ["tutti-codec/encode-aiff"]
@@ -40,6 +41,10 @@ tutti-graph = { path = "../tutti-graph" }
 tutti-dsp = { path = "../tutti-dsp", default-features = false }
 
 [dev-dependencies]
+# Every format on for this crate's own tests, examples and bench (none is
+# default: `ogg` links C), the pattern `tutti-codec` uses. A consumer's build
+# never sees it. `just test-features` checks the library with each alone.
+tutti-export = { path = ".", features = ["wav", "flac", "aiff", "ogg"] }
 criterion.workspace = true
 # An independent reader for the WAV files the tests export.
 hound = "3.5"

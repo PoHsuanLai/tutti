@@ -231,9 +231,6 @@ fn assert_partial_resolution(found: usize, table_len: usize, what: &str) {
 
 /// Instantiate `info` initialized, as `corpus::open_info` does for the ramp test.
 fn open(info: &AuComponentInfo, label: &str) -> AuInstance {
-    // SAFETY: `component` came from `AudioComponentFindNext` via
-    // `enumerate_components_of_type`, so it is a live factory handle for the
-    // lifetime of this process.
     let mut au = AuInstance::new(info.component, RATE, BLOCK)
         .unwrap_or_else(|e| panic!("{label}: instantiate failed: {e:?}"));
     au.initialize()
@@ -1555,14 +1552,6 @@ fn a_juce_cocoa_view_opens_at_its_own_geometry() {
         juce_unit.label
     );
 
-    // SAFETY: on the main thread (checked above), and `au` is live and
-    // initialized. `open(unit, None, ..)` instantiates the view without
-    // parenting it.
-    //
-    // The preferred size is deliberately *not* the geometry asserted below:
-    // this unit reports its own measured size regardless of what the host
-    // asked for, which is exactly what makes the assertion about the plugin
-    // rather than about the request.
     let preferred = tutti_plugin_types::EditorSize {
         width: 800,
         height: 600,

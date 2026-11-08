@@ -216,8 +216,6 @@ fn the_two_has_input_inferences_are_indistinguishable_on_this_machine() {
         for info in enumerate_components_of_type(ty) {
             // A unit that will not instantiate says nothing either way; several
             // output units refuse without hardware.
-            // SAFETY: `component` came from `AudioComponentFindNext` via
-            // `enumerate_components_of_type`, so it is a live factory handle.
             let Ok(au) = AuInstance::new(info.component, RATE, BLOCK) else {
                 continue;
             };

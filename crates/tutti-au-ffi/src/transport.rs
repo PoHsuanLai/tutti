@@ -22,7 +22,7 @@
 //! `beatAndTempoProc`, `musicalTimeLocationProc` and `transportStateProc`
 //! exactly **once per render block**.
 //!
-//! That measurement is why [`install_host_callbacks`](crate::instance::AuInstance::install_host_callbacks)
+//! That measurement is why `install_host_callbacks`
 //! fills **both** transport procs. TAL-NoiseMaker calls **v1 only**: with just
 //! `transportStateProc2` populated it calls neither, and receives no transport
 //! at all. A host that filled only the newer proc would silently lose transport
@@ -149,7 +149,7 @@ pub type TransportStateProc2 = unsafe extern "C" fn(
 /// read by the AU through the C procs. See the module docs for why this is a
 /// set of atomics rather than an `ArcLend` cell.
 ///
-/// Lives behind a `Box` owned by the `AuInstance` so its address is stable for
+/// Lives behind a `Box` owned by the the host instance so its address is stable for
 /// the `hostUserData` pointer the AU retains — the same pinning discipline
 /// `RenderScratch` uses for the input render callback.
 #[derive(Debug)]
@@ -433,7 +433,7 @@ impl TransportState {
 ///
 /// # Safety
 /// `user_data` must be null or point at a live [`TransportState`] that outlives
-/// the call. The `AuInstance` guarantees this by boxing the state and clearing
+/// the call. The the host instance guarantees this by boxing the state and clearing
 /// the property before the box is freed.
 /// # Safety
 /// `user_data` is null or points at a live `TransportState`.

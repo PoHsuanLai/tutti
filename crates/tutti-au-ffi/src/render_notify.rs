@@ -106,7 +106,7 @@
 //!
 //! `AudioUnitRemoveRenderNotify` must run **before** the boxed state the
 //! `ref_con` points at is freed. This is the same ordering invariant
-//! `AuActive::uninitialize` documents
+//! uninitializing the unit documents
 //! for the input render callback, and it fails the same way: while the notify is
 //! installed the AU holds a raw pointer into the box, and it dereferences that
 //! pointer on its render thread on every single render. Free the box first and
@@ -161,6 +161,10 @@ pub enum RenderPhase {
 }
 
 /// One render notification, decoded.
+///
+/// `io_data` and `timestamp` are raw pointers valid only inside the callback that
+/// received this value (they belong to the render in flight); copying the struct
+/// out of the callback and reading them later is undefined behaviour.
 ///
 /// Deliberately does **not** expose the `AudioBufferList` as a safe slice. The
 /// buffers are only valid for the duration of the call, their channel count and
@@ -356,7 +360,7 @@ impl ParamEvent {
 /// currently rendering, which is live by construction.
 ///
 /// # Errors
-/// Returns `AuError::OsStatus` if the AU
+/// Returns `Error::Os` if the AU
 /// refuses the call. Note what this does **not** tell you: measured on macOS
 /// 15.6, a nonexistent parameter id and a `Ramped` event on a parameter with
 /// `CanRamp` clear both return `noErr`. `Ok(())` means the AU accepted the
@@ -403,7 +407,7 @@ type NotifyFn = dyn Fn(RenderNotification) + Send + Sync + 'static;
 /// Heap-pinned behind an [`Arc`] inside [`RenderNotify`] so its address is
 /// stable: the AU retains the pointer and dereferences it on every render, so
 /// the body must not move even if the owning handle does. This is the same
-/// discipline `AuActive::scratch` uses for the input render callback.
+/// discipline the `Renderer` scratch uses for the input render callback.
 struct NotifyState {
     callback: Box<NotifyFn>,
     /// Counts deliveries, so a test can **observe** the notify stopping rather
@@ -565,7 +569,7 @@ impl Drop for RenderNotify {
         // and dereferences it on its render thread every block; releasing the
         // last strong count first would leave the next render calling a freed
         // closure. Same shape as the "uninitialize before freeing the scratch"
-        // rule `AuActive::uninitialize` documents.
+        // rule uninitializing the unit documents.
         //
         // The `(proc, ref_con)` tuple must match what was registered — Apple's
         // header requires both halves — so this reconstructs the pointer from

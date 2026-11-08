@@ -11,7 +11,6 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSBundle, NSSize};
 use std::os::raw::c_void;
 
-use coreaudio_sys::AudioUnitCocoaViewInfo;
 use tutti_plugin_types::EditorSize;
 
 use crate::cf::{CfString, CfUrl};
@@ -31,8 +30,8 @@ const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: i32 = coreaudio_sys::kAudioUnitErr_Inva
 /// every step below is AppKit, and the plugin's own factory assumes it.
 ///
 /// # Errors
-/// [`AuError::OsStatus`] if the AU publishes no `kAudioUnitProperty_CocoaUI`,
-/// and [`AuError::InvalidBuffer`] at each later step that can come up empty —
+/// `Error::Os` if the AU publishes no `kAudioUnitProperty_CocoaUI`,
+/// and `Error::Invalid` at each later step that can come up empty —
 /// null bundle URL, null class name, bundle that will not load, ObjC class not
 /// found, factory that returns a null view.
 pub(super) fn create_view(unit: &Unit, preferred: EditorSize) -> Result<*mut AnyObject> {
@@ -54,34 +53,42 @@ pub(super) fn create_view(unit: &Unit, preferred: EditorSize) -> Result<*mut Any
 /// struct's fixed head — an emptiness check guards the zero-length case, but a
 /// unit reporting a short non-zero size is trusted.
 fn load_cocoa_view_info(unit: &Unit) -> Result<(CfUrl, CfString)> {
-    let infos: Vec<AudioUnitCocoaViewInfo> = unit.get_array(
+    let bytes = unit.get_bytes(
         coreaudio_sys::kAudioUnitProperty_CocoaUI,
         coreaudio_sys::kAudioUnitScope_Global,
         0,
     )?;
-    let Some(info) = infos.first() else {
+    // `AudioUnitCocoaViewInfo` is a URL followed by a variable-length array of
+    // class names. All of them are ours to release, so every pointer is adopted
+    // (and dropped) and only the first class, the AU's preferred factory, is used.
+    let word = size_of::<usize>();
+    let pointer_at = |i: usize| {
+        bytes
+            .get(i * word..(i + 1) * word)
+            .map(|w| usize::from_ne_bytes(w.try_into().expect("a word")))
+    };
+    let Some(url_word) = pointer_at(0) else {
         return Err(Error::Os(OsError {
             function: "GetProperty(CocoaUI)",
             status: K_AUDIO_UNIT_ERR_INVALID_PROPERTY,
         }));
     };
-    let url_raw = info.mCocoaAUViewBundleLocation;
-    // LIMITATION (intentional): `AudioUnitCocoaViewInfo` carries a
-    // variable-length `mCocoaAUViewClass` array — an AU may advertise several
-    // candidate view-factory classes. Only `class[0]` is read — the AU's
-    // preferred/first factory. Multi-class AUs are rare in practice; supporting
-    // fallback across the remaining classes is deferred until a real plugin is
-    // found that requires it (don't build speculative fan-out).
-    let class_raw = info.mCocoaAUViewClass[0];
-
-    // SAFETY: the property hands back its URL and class name under the Copy
-    // rule (the header: "the host owns these"), one retain each to adopt.
-    let bundle_url = unsafe { CfUrl::from_copied(url_raw) }
+    // SAFETY: the property returns its URL under the Copy rule (the header: "the
+    // host owns these"): one retain to adopt.
+    let bundle_url = unsafe { CfUrl::from_copied(url_word as coreaudio_sys::CFURLRef) }
         .ok_or_else(|| Error::Invalid("CocoaUI info has null bundle URL".into()))?;
-    // SAFETY: the CocoaUI property hands back its class name under the Copy rule: one retain to adopt (the URL above is the same).
-    let class_name = unsafe { CfString::from_copied(class_raw) }
-        .ok_or_else(|| Error::Invalid("CocoaUI info has null class name".into()))?;
-
+    let classes: Vec<Option<CfString>> = (1..bytes.len() / word)
+        .filter_map(pointer_at)
+        .map(|w| {
+            // SAFETY: each class name is returned under the same Copy rule.
+            unsafe { CfString::from_copied(w as coreaudio_sys::CFStringRef) }
+        })
+        .collect();
+    let class_name = classes
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| Error::Invalid("CocoaUI info has no class name".into()))?;
     Ok((bundle_url, class_name))
 }
 
@@ -199,7 +206,8 @@ fn make_view(
     let unit_ptr = unit.raw() as *mut c_void;
     // SAFETY: `factory` is a live instance of the AUCocoaUIBase class the
     // bundle registered; `uiViewForAudioUnit:withSize:` takes the unit and a
-    // size and returns an owned (+1) view or nil.
+    // size and returns an autoreleased (+0) view or nil; the `retain` below takes
+    // the reference the editor owns.
     let view: *mut AnyObject =
         unsafe { msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size] };
 

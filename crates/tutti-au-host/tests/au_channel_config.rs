@@ -92,8 +92,6 @@ fn an_au_opened_in_mono_reports_one_output_channel() {
     for unit in ACCEPTS_MONO {
         let info = unit.require();
         let has_input = unit.au_type == tutti_au_host::AuType::Effect;
-        // SAFETY: `component` came from `AudioComponentFindNext` via the corpus,
-        // so it is a live factory handle for the lifetime of this process.
         let mut au =
             AuInstance::new_with_config(info.component, config_at(ChannelLayout::MONO, has_input))
                 .unwrap_or_else(|e| panic!("{}: instantiate in mono failed: {e:?}", unit.label));
@@ -290,7 +288,6 @@ fn has_input_agrees_with_the_input_element_count() {
         tutti_au_host::AuType::Mixer,
     ] {
         for info in tutti_au_host::component::enumerate_components_of_type(au_type) {
-            // SAFETY: `component` came from `AudioComponentFindNext`.
             let Ok(au) = AuInstance::new(info.component, RATE, BLOCK) else {
                 // A unit that refuses to instantiate says nothing about
                 // `has_input`; skipping it does not weaken the invariant, which

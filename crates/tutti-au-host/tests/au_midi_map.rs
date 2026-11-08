@@ -184,7 +184,6 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
     let mut found: Vec<String> = Vec::new();
 
     for info in every_component() {
-        // SAFETY: `component` came from `AudioComponentFindNext`.
         let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             // A unit that cannot be instantiated cannot be probed. AUAudioTapIO
             // is the one such unit here; it is an output unit, and the family is
@@ -243,7 +242,6 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
     let mut hits: Vec<String> = Vec::new();
 
     for info in every_component() {
-        // SAFETY: `component` came from `AudioComponentFindNext`.
         let Ok(mut au) = AuInstance::new(info.component, RATE, BLOCK) else {
             continue;
         };

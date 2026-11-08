@@ -136,22 +136,90 @@ impl Status {
     }
 }
 
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.message(), self.raw())
+    }
+}
+
+impl std::error::Error for Status {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every named code round-trips through `raw`, and an unnamed one is `Other`.
-    /// Mutation (run): swap two arms in `from_raw` -> the round trip fails.
+    /// Each named constant maps to its own variant and back, and has a message.
+    ///
+    /// Mutation (run): delete or swap an arm of `from_raw` (or of `message`) ->
+    /// the variant (or the "not unknown" assertion) fails for that constant.
     #[test]
-    fn named_codes_round_trip() {
-        for code in -10880..=-10840 {
-            let status = Status::from_raw(code);
-            assert_eq!(status.raw(), code);
-            if matches!(status, Status::Other(_)) {
-                assert_eq!(status.message(), "unknown error");
-            }
+    fn every_named_code_has_its_variant_and_message() {
+        let named = [
+            (sys::kAudioUnitErr_InvalidProperty, Status::InvalidProperty),
+            (
+                sys::kAudioUnitErr_InvalidParameter,
+                Status::InvalidParameter,
+            ),
+            (sys::kAudioUnitErr_InvalidElement, Status::InvalidElement),
+            (sys::kAudioUnitErr_NoConnection, Status::NoConnection),
+            (
+                sys::kAudioUnitErr_FailedInitialization,
+                Status::FailedInitialization,
+            ),
+            (
+                sys::kAudioUnitErr_TooManyFramesToProcess,
+                Status::TooManyFramesToProcess,
+            ),
+            (sys::kAudioUnitErr_InvalidFile, Status::InvalidFile),
+            (sys::kAudioUnitErr_UnknownFileType, Status::UnknownFileType),
+            (
+                sys::kAudioUnitErr_FileNotSpecified,
+                Status::FileNotSpecified,
+            ),
+            (
+                sys::kAudioUnitErr_FormatNotSupported,
+                Status::FormatNotSupported,
+            ),
+            (sys::kAudioUnitErr_Uninitialized, Status::Uninitialized),
+            (sys::kAudioUnitErr_InvalidScope, Status::InvalidScope),
+            (
+                sys::kAudioUnitErr_PropertyNotWritable,
+                Status::PropertyNotWritable,
+            ),
+            (
+                sys::kAudioUnitErr_CannotDoInCurrentContext,
+                Status::CannotDoInCurrentContext,
+            ),
+            (
+                sys::kAudioUnitErr_InvalidPropertyValue,
+                Status::InvalidPropertyValue,
+            ),
+            (
+                sys::kAudioUnitErr_PropertyNotInUse,
+                Status::PropertyNotInUse,
+            ),
+            (sys::kAudioUnitErr_Initialized, Status::Initialized),
+            (
+                sys::kAudioUnitErr_InvalidOfflineRender,
+                Status::InvalidOfflineRender,
+            ),
+            (sys::kAudioUnitErr_Unauthorized, Status::Unauthorized),
+        ];
+        assert_eq!(named.len(), 19);
+        for (raw, status) in named {
+            assert_eq!(Status::from_raw(raw), status, "{raw}");
+            assert_eq!(status.raw(), raw);
+            assert_ne!(status.message(), "unknown error", "{status:?}");
+            assert!(status.to_string().contains(&raw.to_string()));
         }
-        assert_eq!(Status::from_raw(-10879), Status::InvalidProperty);
+    }
+
+    /// Anything else is `Other`, keeping its raw value.
+    #[test]
+    fn an_unnamed_code_is_other() {
         assert_eq!(Status::from_raw(0), Status::Other(0));
+        assert_eq!(Status::from_raw(-50), Status::Other(-50));
+        assert_eq!(Status::Other(-50).message(), "unknown error");
+        assert_eq!(Status::Other(-50).raw(), -50);
     }
 }

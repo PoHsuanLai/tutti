@@ -151,7 +151,7 @@ pub struct AuMidiOutput {
     /// Heap-pinned so its address is stable: the AU retains a `userData` derived
     /// from `&*state`, and this struct may be moved by its owner. Moving the
     /// `Box` moves only its 8-byte pointer, so the address the AU holds stays
-    /// valid — the same reasoning `AuActive::scratch` and `AuLoaded::transport`
+    /// valid — the same reasoning the `Renderer` scratch and `HostCallbacks`
     /// are documented with.
     ///
     /// `Option` so [`Self::remove`] can take the box out *after* the property has
@@ -260,7 +260,7 @@ pub fn midi_output_info(unit: &Unit) -> Option<MidiOutputInfo> {
 ///
 /// # Errors
 ///
-/// [`AuError::OsStatus`] when the AU refuses the property. Measured refusals are
+/// `Error::Os` when the AU refuses the property. Measured refusals are
 /// the output units and a handful of generators; the effects, instruments and
 /// mixers all accept it.
 ///
@@ -315,7 +315,7 @@ impl AuMidiOutput {
     /// know about; `Drop` cannot report one.
     ///
     /// # Errors
-    /// [`AuError::OsStatus`] if the AU refuses the clearing write. The boxed
+    /// `Error::Os` if the AU refuses the clearing write. The boxed
     /// state is freed **either way** — see [`Self::clear`] for why that is the
     /// safe choice and not a leak-versus-crash trade.
     pub fn remove(mut self) -> Result<()> {
@@ -331,7 +331,7 @@ impl AuMidiOutput {
     ///
     /// The obvious withdrawal — a zeroed struct — **does not work**, and this was
     /// measured rather than reasoned about. Apple declares `midiOutputCallback`
-    /// nullable, and `Drop for AuLoaded` withdraws
+    /// nullable, and `Drop for HostCallbacks` withdraws
     /// `kAudioUnitProperty_HostCallbacks` with exactly that all-null trick, yet
     /// the same trick here makes every teardown fail.
     ///
@@ -365,7 +365,7 @@ impl AuMidiOutput {
     /// is the MIDI-output twin of the invariant
     /// `uninitialize` documents (there:
     /// `AudioUnitUninitialize` before the boxed `RenderScratch` is dropped) and of
-    /// the one `Drop for AuLoaded` documents for `HostCallbackInfo`. All three are
+    /// the one `Drop for HostCallbacks` documents for `HostCallbackInfo`. All three are
     /// the same hazard: while the property holds the live `userData` the AU may
     /// dereference it **on its render thread**, and freeing the box first leaves a
     /// use-after-free a host would experience as a random crash inside
@@ -383,7 +383,7 @@ impl AuMidiOutput {
     /// teardown of a refusing unit, and the alternative is unavailable: this handle
     /// does not own the AU, so it cannot dispose the unit to make the pointer
     /// unreachable. In practice a refusal means the AU is being torn down anyway,
-    /// and `AuInstance`'s `Drop` disposes the unit right after — which is what
+    /// and the unit's last owner disposes it right after — which is what
     /// actually ends its ability to call anything.
     ///
     /// # Safety
@@ -434,7 +434,7 @@ impl AuMidiOutput {
 impl Drop for AuMidiOutput {
     /// Withdraw the callback before freeing the state the AU points at.
     ///
-    /// Unlike `Drop for AuLoaded`, which can lean on Rust's field drop order
+    /// Unlike `Drop for HostCallbacks`, which can lean on Rust's field drop order
     /// happening to be correct, this type has no such luck: the AU is not owned
     /// here, so nothing else will stop it calling back. The explicit clear is the
     /// only thing standing between a dropped registration and a use-after-free on

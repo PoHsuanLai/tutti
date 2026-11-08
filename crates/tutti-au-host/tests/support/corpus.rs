@@ -95,9 +95,6 @@ impl AuRef {
     /// Instantiate this unit at `rate`/`block`, already initialized.
     pub fn open(&self, rate: f64, block: u32) -> AuInstance {
         let info = self.require();
-        // SAFETY: `component` came from `AudioComponentFindNext` via
-        // `enumerate_components_of_type`, so it is a live factory handle for
-        // the lifetime of this process.
         let mut au = AuInstance::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label));
         au.initialize()
@@ -108,7 +105,6 @@ impl AuRef {
     /// Instantiate without initializing, for tests that drive the transition.
     pub fn open_uninitialized(&self, rate: f64, block: u32) -> AuInstance {
         let info = self.require();
-        // SAFETY: as in `open`.
         AuInstance::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", self.label))
     }
@@ -499,9 +495,6 @@ pub fn optional_third_party(
 /// Open an arbitrary [`AuComponentInfo`] initialized, for units reached through
 /// [`optional_third_party`] rather than an [`AuRef`].
 pub fn open_info(info: &AuComponentInfo, rate: f64, block: u32) -> AuInstance {
-    // SAFETY: `component` came from `AudioComponentFindNext` via
-    // `enumerate_components_of_type`, so it is a live factory handle for the
-    // lifetime of this process.
     let mut au = AuInstance::new(info.component, rate, block)
         .unwrap_or_else(|e| panic!("{}: instantiate failed: {e:?}", info.name));
     au.initialize()
@@ -1025,7 +1018,6 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
     // the flag up front, and getting it wrong sends an input stream format to a
     // unit with no input element.
     let has_input = {
-        // SAFETY: `component` came from `AudioComponentFindNext`.
         let probe = AuInstance::new(info.component, rate, block)
             .unwrap_or_else(|e| panic!("{}: probe instantiate failed: {e:?}", unit.label));
         probe.num_inputs() > 0
@@ -1039,7 +1031,6 @@ pub fn open_at_output_width(unit: &AuRef, rate: f64, block: u32, width: u16) -> 
             has_input,
         },
     );
-    // SAFETY: as above.
     let au = AuInstance::new_with_config(info.component, config)
         .unwrap_or_else(|e| panic!("{}: instantiate at {width}ch failed: {e:?}", unit.label));
     let accepted = au.num_outputs() as u16;

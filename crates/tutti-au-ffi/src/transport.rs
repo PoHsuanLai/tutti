@@ -127,7 +127,7 @@ pub struct TransportState {
     /// so a host that left it latched would tell a plugin to flush its internal
     /// sequencer on *every* block forever after the first locate. The clear is a
     /// `swap`, so concurrent reads by two procs in one block cannot both observe
-    /// it — see [`take_state_changed`](Self::take_state_changed).
+    /// it — see `take_state_changed`.
     state_changed: AtomicBool,
     /// Whether the host has published a snapshot. Until it has, the procs
     /// answer `kAudioUnitErr_CannotDoInCurrentContext` ("the host cannot provide
@@ -178,7 +178,7 @@ impl TransportState {
     /// Ordering is deliberate: every value field is stored *before*
     /// `state_changed`, so an AU that observes the changed flag is guaranteed to
     /// see the position that goes with it. `Release` on that last store pairs
-    /// with the `Acquire` in [`take_state_changed`](Self::take_state_changed) to
+    /// with the `Acquire` in `take_state_changed` to
     /// make that guarantee real rather than incidental — without the pairing the
     /// compiler or CPU could hoist the flag above the position stores, and a
     /// plugin would flush its sequencer and then re-read the *old* beat, which

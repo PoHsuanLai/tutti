@@ -1,6 +1,6 @@
 // Derived from rustysynth 1.3.6 (MIT), Copyright (C) 2022 Nobuaki Tanaka, after
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
-// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: render_block, write_block, Effects and the preset id come from rustysynth's synthesizer.rs.
+// LICENSE-RUSTYSYNTH.txt, at the root of this crate. In this file: render_block, write_block and the preset id come from rustysynth's synthesizer.rs.
 
 //! The SoundFont player: the channels' controller state, the voices that
 //! sound, the core that decides when they start and end, and the mix.
@@ -8,6 +8,9 @@
 //! A message goes to [`Voicing::step`], which says which voices to start,
 //! release or cut; [`Voices`] does it. What a note becomes is the preset's
 //! ([`PresetPatch`]); how a voice sounds is the voice's own.
+//!
+//! The player renders five planes, not a mix: the dry pair, the chorus send
+//! pair and the reverb send. It holds no effect (see [`Plane`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,11 +23,9 @@ use tutti_voicing::{Mode, Order, Retrigger, Rules, Steal, Voicing};
 
 use crate::array_math::ArrayMath;
 use crate::channel::Channel;
-use crate::chorus::Chorus;
 use crate::error::{Error, Result};
 use crate::patch::PresetPatch;
 use crate::render::Render;
-use crate::reverb::Reverb;
 use crate::settings::Settings;
 use crate::soundfont_math::SoundFontMath;
 use crate::voices::Voices;
@@ -33,8 +34,76 @@ use crate::voices::Voices;
 /// (M2-104 Appendix D.3.1), which a SoundFont does not read.
 const NEUTRAL_RELEASE: u16 = 0x8000;
 
-/// The gain applied to the mix of every voice.
+/// The gain applied to the mix of every voice, on every plane: the sends carry
+/// it too, so an effect node after the unit is unity-gain.
 const MASTER_VOLUME: f32 = 0.5;
+
+/// One of the unit's five outputs, in port order.
+///
+/// The player reverberates and chorus-processes nothing: a voice's mix gains go
+/// to the dry pair, and those gains scaled by the voice's two effect sends go
+/// to the chorus pair (per channel, as the dry pair is) and to the reverb
+/// plane (mono, the sum of the two channels' gains). The effects are graph
+/// nodes after the unit.
+///
+/// A send is a linear level, and does not touch the dry pair (SF2 2.04 section
+/// 8.1.2, generators 15 and 16: `chorusEffectsSend` and `reverbEffectsSend`, in
+/// 0.1% units, 250 is a quarter of full level). A voice's send is the preset's
+/// and the instrument's generator summed over both zones (section 9.4), plus
+/// the channel's controller (CC 93 chorus, CC 91 reverb; sections 8.4.9 and
+/// 8.4.8), clamped to 0 to 1. The controller adds its whole figure over 127,
+/// where the spec's default modulator adds at most 200 tenths of a percent: a
+/// known gap, not changed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Plane {
+    DryLeft = 0,
+    DryRight = 1,
+    ChorusLeft = 2,
+    ChorusRight = 3,
+    Reverb = 4,
+}
+
+impl Plane {
+    /// The number of planes: the unit's output count.
+    pub(crate) const COUNT: usize = 5;
+
+    /// Every plane, in port order.
+    pub(crate) const ALL: [Plane; Plane::COUNT] = [
+        Plane::DryLeft,
+        Plane::DryRight,
+        Plane::ChorusLeft,
+        Plane::ChorusRight,
+        Plane::Reverb,
+    ];
+}
+
+/// The planes a render has written something into (as a bit set over
+/// [`Plane`]); a plane outside it is exact silence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Heard(u8);
+
+impl Heard {
+    fn insert(&mut self, plane: Plane) {
+        self.0 |= 1 << plane as u8;
+    }
+
+    fn union(&mut self, other: Heard) {
+        self.0 |= other.0;
+    }
+
+    /// Whether anything was written into any plane.
+    pub(crate) fn has_any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// Whether anything was written into `plane`.
+    pub(crate) fn has(self, plane: Plane) -> bool {
+        self.0 & (1 << plane as u8) != 0
+    }
+}
+
+/// Five equal-length planes: the unit's outputs for one stretch of frames.
+pub(crate) struct Planes<'a>(pub(crate) [&'a mut [f32]; Plane::COUNT]);
 
 /// The rates a player renders at, in whole hertz.
 const RATES: std::ops::RangeInclusive<i32> = 16_000..=192_000;
@@ -88,18 +157,20 @@ pub(crate) struct Player {
     voicing: Voicing,
     voices: Voices,
 
-    block_left: Vec<f32>,
-    block_right: Vec<f32>,
+    /// The chunk being read out, a plane each (see [`Plane`]).
+    block: [Vec<f32>; Plane::COUNT],
+    /// What the chunk holds written, and what has been read out since
+    /// [`take_heard`](Self::take_heard).
+    block_heard: Heard,
+    heard: Heard,
     block_read: usize,
-
-    effects: Option<Effects>,
 }
 
 impl Player {
     /// The channel General MIDI plays percussion on.
     pub(crate) const PERCUSSION_CHANNEL: MidiChannel = MidiChannel::of(9);
 
-    /// Builds a player over `font`. Allocates the voices and the effect lines.
+    /// Builds a player over `font`. Allocates the voices.
     ///
     /// # Errors
     ///
@@ -163,10 +234,10 @@ impl Player {
             channels,
             voicing: Voicing::new(rules(polyphony)),
             voices: Voices::new(&render, polyphony),
-            block_left: vec![0_f32; render.block_len()],
-            block_right: vec![0_f32; render.block_len()],
+            block: std::array::from_fn(|_| vec![0_f32; render.block_len()]),
+            block_heard: Heard::default(),
+            heard: Heard::default(),
             block_read: render.block_len(),
-            effects: settings.reverb_and_chorus().then(|| Effects::new(&render)),
         })
     }
 
@@ -289,30 +360,27 @@ impl Player {
         self.voicing.reset();
     }
 
-    /// Cuts every voice, forgets the pedals and keys, returns every
+    /// Cuts every voice, forgets the pedals and keys, and returns every
     /// channel's performance controllers to their defaults (modulation,
-    /// expression, bend and the RPN selection: Reset All Controllers) and
-    /// mutes the effects. What the host selected stays: the bank, the program,
-    /// the volume, the pan and the sends.
+    /// expression, bend and the RPN selection: Reset All Controllers). What the
+    /// host selected stays: the bank, the program, the volume, the pan and the
+    /// sends.
     pub(crate) fn reset(&mut self) {
         self.voices.clear();
         self.voicing.reset();
         for channel in &mut self.channels {
             channel.reset_all_controllers();
         }
-        if let Some(effects) = self.effects.as_mut() {
-            effects.reverb.mute();
-            effects.chorus.mute();
-        }
         self.block_read = self.render.block_len();
     }
 
-    /// Renders stereo audio into the provided buffers, which are the same
-    /// length. A shorter of the two is all that is written.
-    pub(crate) fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
-        debug_assert_eq!(left.len(), right.len());
+    /// Renders the five planes, which are the same length, advancing the
+    /// player by that many frames.
+    pub(crate) fn render(&mut self, planes: Planes<'_>) {
         let block = self.render.block_len();
-        let length = left.len().min(right.len());
+        let mut planes = planes.0;
+        let length = planes[0].len();
+        debug_assert!(planes.iter().all(|p| p.len() == length));
 
         let mut wrote = 0;
         while wrote < length {
@@ -325,112 +393,73 @@ impl Player {
             let dst_rem = length - wrote;
             let rem = src_rem.min(dst_rem);
 
-            left[wrote..wrote + rem]
-                .copy_from_slice(&self.block_left[self.block_read..self.block_read + rem]);
-            right[wrote..wrote + rem]
-                .copy_from_slice(&self.block_right[self.block_read..self.block_read + rem]);
+            for (plane, source) in planes.iter_mut().zip(&self.block) {
+                plane[wrote..wrote + rem]
+                    .copy_from_slice(&source[self.block_read..self.block_read + rem]);
+            }
+            self.heard.union(self.block_heard);
 
             self.block_read += rem;
             wrote += rem;
         }
     }
 
+    /// The planes written into since the last call: the others were exact
+    /// silence over every frame rendered meanwhile.
+    pub(crate) fn take_heard(&mut self) -> Heard {
+        std::mem::take(&mut self.heard)
+    }
+
+    /// Whether the player has nothing left to sound: no voice, and the chunk
+    /// being read out read out to its end. Silent until an event arrives.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.voices.is_empty() && self.block_read == self.render.block_len()
+    }
+
     fn render_block(&mut self) {
         let inverse_block_size = 1_f32 / self.render.block_len() as f32;
         self.voices.process(self.font.wave_data(), &self.channels);
 
-        self.block_left.fill(0_f32);
-        self.block_right.fill(0_f32);
-        for voice in self.voices.iter() {
-            let previous_gain_left = MASTER_VOLUME * voice.previous_mix_gain_left;
-            let current_gain_left = MASTER_VOLUME * voice.current_mix_gain_left;
-            write_block(
-                previous_gain_left,
-                current_gain_left,
-                voice.block(),
-                &mut self.block_left[..],
-                inverse_block_size,
-            );
-            let previous_gain_right = MASTER_VOLUME * voice.previous_mix_gain_right;
-            let current_gain_right = MASTER_VOLUME * voice.current_mix_gain_right;
-            write_block(
-                previous_gain_right,
-                current_gain_right,
-                voice.block(),
-                &mut self.block_right[..],
-                inverse_block_size,
-            );
+        for plane in &mut self.block {
+            plane.fill(0_f32);
         }
-
-        if let Some(effects) = self.effects.as_mut() {
-            let chorus = &mut effects.chorus;
-            let chorus_input_left = &mut effects.chorus_input_left[..];
-            let chorus_input_right = &mut effects.chorus_input_right[..];
-            let chorus_output_left = &mut effects.chorus_output_left[..];
-            let chorus_output_right = &mut effects.chorus_output_right[..];
-            chorus_input_left.fill(0_f32);
-            chorus_input_right.fill(0_f32);
-            for voice in self.voices.iter() {
-                let previous_gain_left = voice.previous_chorus_send * voice.previous_mix_gain_left;
-                let current_gain_left = voice.current_chorus_send * voice.current_mix_gain_left;
-                write_block(
-                    previous_gain_left,
-                    current_gain_left,
-                    voice.block(),
-                    chorus_input_left,
-                    inverse_block_size,
-                );
-                let previous_gain_right =
-                    voice.previous_chorus_send * voice.previous_mix_gain_right;
-                let current_gain_right = voice.current_chorus_send * voice.current_mix_gain_right;
-                write_block(
-                    previous_gain_right,
-                    current_gain_right,
-                    voice.block(),
-                    chorus_input_right,
-                    inverse_block_size,
-                );
-            }
-            chorus.process(
-                chorus_input_left,
-                chorus_input_right,
-                chorus_output_left,
-                chorus_output_right,
+        self.block_heard = Heard::default();
+        for voice in self.voices.iter() {
+            let (prev_l, cur_l) = (
+                MASTER_VOLUME * voice.previous_mix_gain_left,
+                MASTER_VOLUME * voice.current_mix_gain_left,
             );
-            ArrayMath::multiply_add(MASTER_VOLUME, chorus_output_left, &mut self.block_left[..]);
-            ArrayMath::multiply_add(
-                MASTER_VOLUME,
-                chorus_output_right,
-                &mut self.block_right[..],
+            let (prev_r, cur_r) = (
+                MASTER_VOLUME * voice.previous_mix_gain_right,
+                MASTER_VOLUME * voice.current_mix_gain_right,
             );
-
-            let reverb = &mut effects.reverb;
-            let reverb_input = &mut effects.reverb_input[..];
-            let reverb_output_left = &mut effects.reverb_output_left[..];
-            let reverb_output_right = &mut effects.reverb_output_right[..];
-            reverb_input.fill(0_f32);
-            for voice in self.voices.iter() {
-                let previous_gain = reverb.input_gain()
-                    * voice.previous_reverb_send
-                    * (voice.previous_mix_gain_left + voice.previous_mix_gain_right);
-                let current_gain = reverb.input_gain()
-                    * voice.current_reverb_send
-                    * (voice.current_mix_gain_left + voice.current_mix_gain_right);
-                write_block(
-                    previous_gain,
-                    current_gain,
+            let mut write = |plane: Plane, previous: f32, current: f32| {
+                if write_block(
+                    previous,
+                    current,
                     voice.block(),
-                    &mut reverb_input[..],
+                    &mut self.block[plane as usize],
                     inverse_block_size,
-                );
-            }
-
-            reverb.process(reverb_input, reverb_output_left, reverb_output_right);
-            ArrayMath::multiply_add(MASTER_VOLUME, reverb_output_left, &mut self.block_left[..]);
-            ArrayMath::multiply_add(
-                MASTER_VOLUME,
-                reverb_output_right,
-                &mut self.block_right[..],
+                ) {
+                    self.block_heard.insert(plane);
+                }
+            };
+            write(Plane::DryLeft, prev_l, cur_l);
+            write(Plane::DryRight, prev_r, cur_r);
+            write(
+                Plane::ChorusLeft,
+                voice.previous_chorus_send * prev_l,
+                voice.current_chorus_send * cur_l,
+            );
+            write(
+                Plane::ChorusRight,
+                voice.previous_chorus_send * prev_r,
+                voice.current_chorus_send * cur_r,
+            );
+            write(
+                Plane::Reverb,
+                voice.previous_reverb_send * (prev_l + prev_r),
+                voice.current_reverb_send * (cur_l + cur_r),
             );
         }
     }
@@ -441,9 +470,9 @@ impl Player {
     }
 
     /// A copy of this player that renders at `sample_rate`: the same
-    /// SoundFont (shared, not reloaded), polyphony, effects switch and
+    /// SoundFont (shared, not reloaded), polyphony and
     /// per-channel state (bank, patch, controllers, pitch bend), with no voice
-    /// sounding and fresh effect lines. Allocates.
+    /// sounding. Allocates.
     ///
     /// # Errors
     ///
@@ -455,14 +484,14 @@ impl Player {
         Ok(player)
     }
 
-    /// The longest the player can keep sounding once its last key is up:
-    /// the longest release of any voice a preset can start, then the effects
-    /// ringing out. A release time is the time to fall 100 dB (SF2 2.04 section
-    /// 8.1.2, generator 38) and a voice is dropped at -60 dB, at 0.6 of it, so
-    /// the figure is a sound bound, and a loose one. Each summed release is
-    /// within the generator's range (section 10.5), so it is at most 8000
-    /// timecents, 101.6 s. `None` if a release cannot be bounded (it is not
-    /// finite).
+    /// The longest the player can keep sounding once its last key is up: the
+    /// longest release of any voice a preset can start. A release time is the
+    /// time to fall 100 dB (SF2 2.04 section 8.1.2, generator 38) and a voice is
+    /// dropped at -60 dB, at 0.6 of it, so the figure is a sound bound, and a
+    /// loose one. Each summed release is within the generator's range (section
+    /// 10.5), so it is at most 8000 timecents, 101.6 s. `None` if a release
+    /// cannot be bounded (it is not finite). The effects after the unit are the
+    /// graph's: each node declares its own tail.
     pub(crate) fn ring_out(&self) -> Option<f64> {
         let mut longest = 0_f64;
         for preset in self.font.presets() {
@@ -474,26 +503,22 @@ impl Player {
                 }
             }
         }
-        if !longest.is_finite() {
-            return None;
-        }
-        let effects = self
-            .effects
-            .as_ref()
-            .map_or(0.0, |e| f64::from(e.reverb.ring_out(self.render.hz())));
-        Some(longest + effects)
+        longest.is_finite().then_some(longest)
     }
 }
 
+/// Adds `source` into `destination` at a gain that ramps from `previous_gain`
+/// to `current_gain` across the chunk. Returns whether it wrote anything: not
+/// when the gain stays under the audible floor.
 fn write_block(
     previous_gain: f32,
     current_gain: f32,
     source: &[f32],
     destination: &mut [f32],
     inverse_block_size: f32,
-) {
+) -> bool {
     if SoundFontMath::max(previous_gain, current_gain) < SoundFontMath::NON_AUDIBLE {
-        return;
+        return false;
     }
 
     if (current_gain - previous_gain).abs() < 1.0E-3_f32 {
@@ -502,34 +527,5 @@ fn write_block(
         let step = inverse_block_size * (current_gain - previous_gain);
         ArrayMath::multiply_add_slope(previous_gain, step, source, destination);
     }
-}
-
-#[derive(Debug, Clone)]
-struct Effects {
-    reverb: Reverb,
-    reverb_input: Vec<f32>,
-    reverb_output_left: Vec<f32>,
-    reverb_output_right: Vec<f32>,
-
-    chorus: Chorus,
-    chorus_input_left: Vec<f32>,
-    chorus_input_right: Vec<f32>,
-    chorus_output_left: Vec<f32>,
-    chorus_output_right: Vec<f32>,
-}
-
-impl Effects {
-    fn new(render: &Render) -> Effects {
-        Self {
-            reverb: Reverb::new(render.hz()),
-            reverb_input: vec![0_f32; render.block_len()],
-            reverb_output_left: vec![0_f32; render.block_len()],
-            reverb_output_right: vec![0_f32; render.block_len()],
-            chorus: Chorus::new(render.hz(), 0.002, 0.0019, 0.4),
-            chorus_input_left: vec![0_f32; render.block_len()],
-            chorus_input_right: vec![0_f32; render.block_len()],
-            chorus_output_left: vec![0_f32; render.block_len()],
-            chorus_output_right: vec![0_f32; render.block_len()],
-        }
-    }
+    true
 }

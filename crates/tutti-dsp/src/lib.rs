@@ -69,6 +69,7 @@
 //!   chorus and flanger kernel.
 //! - Interpolation: [`cubic_hermite`], the four-tap Catmull-Rom kernel the delay
 //!   line and the sampler's readers share.
+//! - Reverb: [`Freeverb`], mono in and stereo out, with its figures fixed.
 //! - Waveshaping: [`ShapeKind`] and [`Shaper`].
 //! - Resampling: [`FftResampler`], a fixed-input FFT block resampler on the
 //!   same scalar FFT, failing with a [`ResampleError`].
@@ -89,6 +90,7 @@ mod swept_delay;
 mod waveshape;
 
 mod resample;
+mod reverb;
 #[cfg(test)]
 mod test_support;
 
@@ -111,6 +113,7 @@ pub use filter::{
 };
 pub use interp::cubic_hermite;
 pub use resample::{FftResampler, ResampleError};
+pub use reverb::Freeverb;
 pub use swept_delay::SweptLines;
 pub use tutti_types::ChannelLayout;
 pub use waveshape::{ShapeKind, Shaper};

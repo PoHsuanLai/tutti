@@ -154,6 +154,11 @@ impl Voices {
         }
     }
 
+    /// Whether no voice is sounding.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.active.is_empty()
+    }
+
     /// The voices, for the mix.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Voice> {
         self.active.iter().map(|s| &s.voice)

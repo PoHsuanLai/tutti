@@ -8101,6 +8101,39 @@ by width alone.
   `Quadraphonic` decode to `FL FR SL SR`; `Fold` relabels between the two at
   gain 1.0, so neither is rewritten.
 
+## SoundFont effects as graph nodes
+
+Decided 2026-11-08 (SoundFont stage 3b). The reverb and chorus left
+`SoundFontUnit`; nothing about an effect is inside the unit, and
+`Settings::with_reverb_and_chorus` is gone.
+
+- **Five outputs**: dry left and right, chorus send left and right, reverb send
+  (mono). `Instrument::main_outputs` is the dry pair. A voice's send is the
+  preset's and instrument's `chorusEffectsSend` / `reverbEffectsSend` (SF2 2.04
+  8.1.2, generators 15 and 16) plus the channel's CC 93 / CC 91, clamped to
+  0 to 1, times the voice's mix gains (per channel for the chorus, the sum of
+  the two for the mono reverb). A send nothing is sent to is exact zeros and is
+  reported by `Status::Masked`; a unit with no voice and nothing left to read
+  out is `Status::Idle`.
+- **Chorus** is `ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`:
+  wet only (`mix` 1) and unable to recirculate (`feedback_max` 0, a new config
+  field whose default in the existing presets, `Feedback::MAX_STABLE`, changes
+  nothing). With no recirculation an output frame is input at most `max_delay`
+  old, so such a config declares `Tail::Finite(max_delay)`; any other config is
+  `Tail::Unknown`, as before.
+- **Reverb** is `ReverbNode` over `tutti_dsp::Freeverb` (the Freeverb
+  of rustysynth, MIT header kept in `tutti-dsp`): mono in, stereo wet out, no
+  controls, a tail that is its ring-out to -60 dB.
+- **Tails**: the unit declares the longest voice release only; each effect its
+  own; an export keeps the sum along the path.
+- **Summing** is `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi`
+  wires unit, chorus, reverb and a three-source sum, and leaves the graph's
+  outputs to the host.
+- **Sound**: the dry pair is bit-identical to the old unit's with its effects
+  off. The old default (effects on) had the reverb mixed into the pair; that
+  mix is now the setup's sum, whose float order differs, so it is a new sound
+  rather than the old one.
+
 ## Decisions for the owner
 
 The owner delegated these. The migration uses the proposed

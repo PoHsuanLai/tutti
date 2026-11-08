@@ -360,7 +360,7 @@ mod midi_soundfont_audio {
     /// Set up an app with a real soundfont synth wired to output.
     fn app_with_soundfont() -> (App, Entity) {
         let sf = soundfont();
-        let settings = Settings::new(SampleRate(SAMPLE_RATE)).with_reverb_and_chorus(false);
+        let settings = Settings::new(SampleRate(SAMPLE_RATE));
         let unit = SoundFontUnit::new(sf, &settings).expect("build the SoundFontUnit");
 
         let mut app = App::new();
@@ -596,7 +596,7 @@ mod midi_route {
         let (input_node, _) = graph.graph().insert(MidiInputNode::new(Some(
             Box::new(wire.clone()) as Box<dyn MidiIn>,
         )));
-        let settings = Settings::new(SampleRate(SAMPLE_RATE)).with_reverb_and_chorus(false);
+        let settings = Settings::new(SampleRate(SAMPLE_RATE));
         let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
         let (synth_node, ()) = graph.graph().insert(unit);
         graph.graph().set_outputs_from(synth_node);

@@ -195,7 +195,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // voices, so with them on the render of two notes together is genuinely not
     // the sum of each alone — the additivity this test rests on is a property
     // of the dry voice mix. Every other setting is the default.
-    let settings = Settings::new(SampleRate::SR_44K1).with_reverb_and_chorus(false);
+    let settings = Settings::new(SampleRate::SR_44K1);
     const BLOCK: usize = 64;
     // Long enough for a piano attack to clear the noise floor: the fixture's
     // envelope takes ~41 frames to leave zero and several hundred more to reach

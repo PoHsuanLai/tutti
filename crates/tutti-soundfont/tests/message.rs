@@ -46,9 +46,9 @@ fn load_test_soundfont() -> Arc<SoundFont> {
     )
 }
 
-/// Without the effect lines, which are not linear in the channel gain.
+/// The unit's dry pair, which is linear in the channel gain.
 fn unit() -> Hand {
-    let settings = Settings::new(RATE).with_reverb_and_chorus(false);
+    let settings = Settings::new(RATE);
     Hand::new(SoundFontUnit::new(load_test_soundfont(), &settings).unwrap())
 }
 

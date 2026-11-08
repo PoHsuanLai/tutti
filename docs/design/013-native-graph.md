@@ -8033,14 +8033,22 @@ by width alone.
       every frame after `rebuild` and retries nothing; its `MasterTopology`
       starts from the session's declaration, so a `SessionBuilder::root_topology`
       survives the first frame, and an equal request is a no-op.
-    - **A width change and the plan in flight.** The audio thread installs the
-      commit, so the control side cannot change the plan and the fold in one
-      step. `OutputFolds` keeps the declaration it replaced for **its** width
-      (`previous`) until the next declaration, so the plan still rendering at the
-      old width keeps its fold and never meets the new declaration's. At the
-      same width the plan is the one the declaration describes and it applies
-      at once. An output tap keeps its lanes when the root narrows; lanes past
-      the new width read silence and `take_lost` does not count it.
+    - **A declaration and the plan in flight.** The audio thread installs the
+      commit some blocks later, so the fold has to follow the plan, not the
+      newest declaration. A plan carries its width, not the topology it was
+      compiled under, so `OutputFolds` keeps a table by root width: the
+      topology last declared at each width. Declaring at another width leaves
+      the entries held, so a plan in flight keeps its fold through any number
+      of declarations (a quad of buses, then a 5.1, then a 7.1 leaves the
+      four-wide plan on the first). The limit is what a width cannot tell: a
+      declaration at the plan's own width replaces its entry at once, and
+      `None` drops every entry at once, so a plan in flight at another width
+      reads as a bare count until replaced. The exact form carries the topology
+      in `tutti_graph::Topology` and the `Plan`; it was left out as
+      disproportionate. The status is recomputed from the current request each
+      time it is stated (`MasterSources` shrinking to fit clears a `Refused`).
+      An output tap keeps its lanes when the root narrows; lanes past the new
+      width read silence and `take_lost` does not count it.
     - **Devices.** The declaration is checked against the device the session
       renders to at declare and build time (`Error::Output`), and a device
       restart onto one that cannot place it is refused before the stream moves.

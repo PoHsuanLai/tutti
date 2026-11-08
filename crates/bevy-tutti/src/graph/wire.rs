@@ -253,6 +253,9 @@ pub struct MasterSources(pub Vec<PortSource>);
 /// force; or that excess) is a value, not a log: [`MasterTopologyStatus`].
 /// The resource starts from the session's own declaration
 /// (`SessionBuilder::root_topology`), which a host that never writes it keeps.
+/// The seed cannot tell an explicit `None` written before the first frame from
+/// the default: to withdraw a builder's declaration, write `None` from the
+/// second frame on, or do not set it in the builder.
 #[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct MasterTopology(pub Option<ChannelTopology>);
 
@@ -414,6 +417,39 @@ pub fn rebuild(
         let _ = graph.session().declare_root_topology(declared.0.clone());
     }
 
+    // A declaration wider than the root widens the root — it is not silently
+    // truncated. Clamping instead would drop a 6-entry `MasterSources` down to a
+    // stereo root's channels 0-1 with no warning and nothing in the ECS to
+    // inspect, and the clamp would read as a bound rather than a policy.
+    //
+    // **Widen only, never narrow.** A *shorter* declaration silences the
+    // channels past its length (`topology::build`) and leaves the root at its
+    // width: the root is sized to the device (`engine::build::root_width`),
+    // and narrowing it under the device would make the engine fold channels
+    // the host never asked to lose. Narrowing needs its own explicit API, not
+    // an inference from a `Vec`'s length.
+    //
+    // Global output arity has none of the per-vertex hazard that makes node
+    // arity a respawn: global outputs are sinks, so shrinking cannot dangle a
+    // reference. The width is part of the spec the next commit compiles, and
+    // the engine renders each plan at its own output count, so the RT side
+    // needs nothing here.
+    //
+    // Driven by the declaration rather than by `want`, and that is deliberate:
+    // `topology::build` clamps its outputs to the arity the root *has*, so a
+    // value asked to widen the root would be reporting the outcome of a
+    // widening that has not happened yet. The arity is a property of the
+    // runtime the value is compiled into, not of the graph.
+    if master.is_changed() {
+        // The whole length is asked for: what the root cannot take (a declared
+        // topology's width, the engine's `MAX_ROOT_CHANNELS`) is the session's
+        // refusal, kept in its status, not clamped or logged here.
+        // Stated on every change, fitting or not: the session recomputes its
+        // refusal from this request, so a `MasterSources` that shrinks to fit
+        // clears it.
+        let _ = graph.graph().widen_outputs(master.0.len().max(1));
+    }
+
     // What the ECS says the graph should be, built before anything is written.
     // From here on this value is the truth for edges and outputs; the engine is
     // what gets brought into line with it.
@@ -457,40 +493,7 @@ pub fn rebuild(
         return;
     }
 
-    // A declaration wider than the root widens the root — it is not silently
-    // truncated. Clamping instead would drop a 6-entry `MasterSources` down to a
-    // stereo root's channels 0-1 with no warning and nothing in the ECS to
-    // inspect, and the clamp would read as a bound rather than a policy.
-    //
-    // **Widen only, never narrow.** A *shorter* declaration silences the
-    // channels past its length (`topology::build`) and leaves the root at its
-    // width: the root is sized to the device (`engine::build::root_width`),
-    // and narrowing it under the device would make the engine fold channels
-    // the host never asked to lose. Narrowing needs its own explicit API, not
-    // an inference from a `Vec`'s length.
-    //
-    // Global output arity has none of the per-vertex hazard that makes node
-    // arity a respawn: global outputs are sinks, so shrinking cannot dangle a
-    // reference. The width is part of the spec the next commit compiles, and
-    // the engine renders each plan at its own output count, so the RT side
-    // needs nothing here.
-    //
-    // Driven by the declaration rather than by `want`, and that is deliberate:
-    // `topology::build` clamps its outputs to the arity the root *has*, so a
-    // value asked to widen the root would be reporting the outcome of a
-    // widening that has not happened yet. The arity is a property of the
-    // runtime the value is compiled into, not of the graph.
-    if master.is_changed() {
-        // The whole length is asked for: what the root cannot take (a declared
-        // topology's width, the engine's `MAX_ROOT_CHANNELS`) is the session's
-        // refusal, kept in its status, not clamped or logged here.
-        let declared = master.0.len().max(1);
-        if declared > graph.graph_ref().outputs() {
-            let _ = graph.graph().widen_outputs(declared);
-        }
-    }
-
-    // The widening above may have changed the root's arity, which is one of the
+    // The widening (and the declaration) above may have changed the root's arity, which is one of the
     // two inputs `build` clamps against. Re-derive so the value that gets
     // applied — and stored as `live` — describes the graph that now exists,
     // rather than the one that did a moment ago.
@@ -562,7 +565,7 @@ pub fn unwire_removed_sources(
 
 /// Whether the session has the root as [`MasterTopology`] and [`MasterSources`]
 /// asked: the session's own [`RootTopologyStatus`], mirrored every frame after
-/// [`rebuild`] (it holds no policy and never retries; the session does, on a
+/// [`rebuild`], in `Update` and under `engine_ready` like it (it holds no policy and never retries; the session does, on a
 /// device restart).
 ///
 /// `Refused` carries the `FoldError`: the declaration the device cannot place

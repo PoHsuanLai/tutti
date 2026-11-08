@@ -119,7 +119,8 @@ mod graph_wire {
     /// root stays two wide and the first assertion fails; the status mirror
     /// not writing the resource → the `RootWidth` assertion fails; the check
     /// removed in `Graph::widen_outputs` → the six-entry `MasterSources`
-    /// widens the root to six.
+    /// widens the root to six; `rebuild` stating the width only when it is
+    /// wider than the root → the shrink to three leaves `Refused`.
     #[test]
     fn a_master_topology_is_the_sessions_declaration() {
         use bevy_tutti::graph::{MasterTopology, MasterTopologyStatus};
@@ -156,6 +157,12 @@ mod graph_wire {
                 requested: ChannelLayout::from(6u16)
             })
         );
+
+        // Shrunk to fit the declared root: the refusal goes with its cause.
+        app.world_mut()
+            .insert_resource(MasterSources::from_node_at_width(osc, 3u16));
+        app.update();
+        assert_eq!(status(&app), RootTopologyStatus::Applied);
 
         // A declaration past what the engine renders is refused; the last stands.
         app.world_mut()

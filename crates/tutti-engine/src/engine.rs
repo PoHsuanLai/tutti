@@ -1709,34 +1709,44 @@ mod tests {
         );
     }
 
-    /// A declaration that changes the root's width is not applied to the plan
-    /// still rendering at the old width: that plan keeps the previous
-    /// declaration's fold until the commit lands. Here the plan stays four wide
-    /// (it is never re-committed) while the root is re-declared six wide; the
-    /// four channels are still placed by the first declaration (by index).
+    /// The fold follows the plan, not the declaration history: with the plan
+    /// still four wide (it is never re-committed), three declarations at other
+    /// widths in a row (a quad of buses, a 5.1, a 7.1) leave the four-wide plan
+    /// on the first one's by-index fold. Re-declaring at its own width replaces
+    /// it at once, and undeclaring is the bare quad.
     ///
-    /// Mutation (run): `declare_root` not keeping `previous` → the four-wide
-    /// plan reads as quad and the rears land at 4 and 5.
+    /// Mutation (run): `declare_root` keeping only the latest declaration and
+    /// the one before it (the earlier single `previous` slot) → after the third
+    /// declaration the plan reads as quad and the rears land on the back pair (6 and 7).
     #[test]
-    fn a_declaration_that_changes_the_width_leaves_the_old_plan_its_fold() {
+    fn declarations_at_other_widths_leave_the_plan_in_flight_its_fold() {
         let transport = Transport::new(48_000.0);
         let (mut ed, exec) = Editor::new(Prepare::new(SampleRate(48_000.0), Samples(64)));
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 4);
-        let six = ChannelLayout::from(6u16);
-        let _ = first_frame(&engine, 6);
+        let eight = ChannelLayout::from(8u16);
+        let _ = first_frame(&engine, 8);
         let control = engine.output_control();
+        let by_index = [41.0, 42.0, 43.0, 44.0, 0.0, 0.0, 0.0, 0.0];
+        for root in [
+            ChannelTopology::discrete(ChannelLayout::QUAD),
+            ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap(),
+            ChannelTopology::smpte(eight).unwrap(),
+        ] {
+            control.declare_root(Some(root), eight).unwrap();
+            assert_eq!(first_frame(&engine, 8), by_index);
+        }
+        // At its own width: replaced at once (the quad of speakers, rears on 6, 7).
         control
-            .declare_root(Some(ChannelTopology::discrete(ChannelLayout::QUAD)), six)
+            .declare_root(Some(ChannelTopology::quad()), eight)
             .unwrap();
-        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
-        let five_one = ChannelTopology::smpte(six).unwrap();
-        control.declare_root(Some(five_one), six).unwrap();
-        // The plan is still four wide: no block meets the six-wide fold yet.
-        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 43.0, 44.0, 0.0, 0.0]);
-        // Same width: a re-declaration applies at once, `previous` dropped.
-        control.declare_root(None, six).unwrap();
-        assert_eq!(first_frame(&engine, 6), [41.0, 42.0, 0.0, 0.0, 43.0, 44.0]);
+        assert_ne!(first_frame(&engine, 8), by_index);
+        // Undeclared: every entry goes, the bare quad.
+        control.declare_root(None, eight).unwrap();
+        assert_eq!(
+            first_frame(&engine, 8),
+            [41.0, 42.0, 0.0, 0.0, 0.0, 0.0, 43.0, 44.0]
+        );
     }
 
     /// A fold set a block holds when it is replaced stays pinned until the

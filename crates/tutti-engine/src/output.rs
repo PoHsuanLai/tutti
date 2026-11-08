@@ -36,18 +36,25 @@ pub(crate) const DEFAULT_DEVICE_WIDTHS: usize = 16;
 /// width supported.
 #[derive(Debug, Clone)]
 pub(crate) struct OutputFolds {
-    /// What the graph root's channels are, when the session declared it
-    /// ([`OutputControl::declare_root`]). It applies to the root width it is as
-    /// wide as; every other width is a bare count.
-    root: Option<ChannelTopology>,
-    /// The declaration `root` replaced, kept for **its** width until the next
-    /// declaration. When a declaration changes the root's width, the plan
-    /// still rendering is the old width, and the new declaration's fold must
-    /// not be applied to it. The engine cannot see when the commit lands (the
-    /// audio thread installs it), so the old fold stays for the old width; no
-    /// plan of that width follows without another declaration, which replaces
-    /// this.
-    previous: Option<ChannelTopology>,
+    /// The root topologies declared ([`OutputControl::declare_root`]), at most
+    /// one per root width, sorted by width: the one last declared at each
+    /// width, so a plan of that width is folded from it. Every other width is
+    /// a bare count.
+    ///
+    /// **Why a table by width, and its limit.** The audio thread installs a
+    /// plan some blocks after a declaration, and the engine cannot see when,
+    /// so the fold has to follow the plan and not the newest declaration. A
+    /// plan carries a width and not the topology it was compiled under, so the
+    /// width is the key: declaring at another width leaves the entries at the
+    /// widths already held, and a plan still rendering at one of them keeps
+    /// its fold through any number of declarations. The limit is what a width
+    /// cannot tell: a declaration at the *same* width as the plan in flight
+    /// replaces its entry at once (the plan is the one it describes, only its
+    /// reading changes), and undeclaring (`None`) drops every entry at once,
+    /// including a plan still in flight at another width, which reads as a
+    /// bare count until it is replaced. Exact, per plan, would carry the
+    /// topology in `tutti_graph::Topology` and its `Plan`.
+    roots: Vec<ChannelTopology>,
     /// Index `d - 1` holds the folds into a device of `d` channels, `None` for
     /// a width not supported; inside, index `w - 1` folds a root of `w`.
     by_device: Vec<Option<Box<[Option<Fold>]>>>,
@@ -62,8 +69,7 @@ impl OutputFolds {
     /// silent block, never a wrong one.
     pub(crate) fn up_to(widest: usize) -> Self {
         let mut folds = Self {
-            root: None,
-            previous: None,
+            roots: Vec::new(),
             by_device: Vec::new(),
         };
         for device in 1..=widest {
@@ -110,9 +116,9 @@ impl OutputFolds {
     /// topology when the root is as wide as the declaration, otherwise from the
     /// engine's order for the bare width.
     fn root_fold(&self, width: usize, device: ChannelLayout) -> Result<Fold, FoldError> {
-        let declared = [&self.root, &self.previous]
-            .into_iter()
-            .flatten()
+        let declared = self
+            .roots
+            .iter()
             .find(|root| usize::from(root.layout().count()) == width);
         match declared {
             Some(root) => Fold::declared(root, device),
@@ -221,16 +227,19 @@ impl OutputControl {
             Fold::declared(root, device)?;
         }
         self.update(|folds| {
-            if folds.root == root {
+            let mut next = folds.roots.clone();
+            match &root {
+                Some(new) => {
+                    next.retain(|old| old.layout() != new.layout());
+                    next.push(new.clone());
+                    next.sort_by_key(|t| t.layout().count());
+                }
+                None => next.clear(),
+            }
+            if next == folds.roots {
                 return Ok(false);
             }
-            // Kept only where the width moves: at the same width the plan is
-            // the one the new declaration describes.
-            folds.previous = folds.root.take().filter(|old| {
-                root.as_ref()
-                    .is_some_and(|new| new.layout() != old.layout())
-            });
-            folds.root = root;
+            folds.roots = next;
             // Every held device is rebuilt against the new declaration.
             let held: Vec<usize> = (1..=folds.by_device.len())
                 .filter(|d| folds.has_device(*d))

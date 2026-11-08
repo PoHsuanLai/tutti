@@ -83,7 +83,7 @@ def body_of(s, name_end):
 
 
 def guarded(body):
-    return re.search(r"\b(guard|guarded|or_abort|with_state|with_state_mut)\(", body) is not None
+    return re.search(r"\b(guard|guarded|or_abort|with_state|with_state_mut)(::<[^(]*>)?\(", body) is not None
 
 
 bad, seen = [], 0

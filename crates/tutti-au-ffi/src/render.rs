@@ -429,22 +429,9 @@ unsafe extern "C" fn au_input_render_callback(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> i32 {
-    // SAFETY: `in_ref_con` is the scratch pointer `install_input_callback`
-    // registered and `io_data` the unit's own list for this pull.
-    unsafe { render_input(in_ref_con, in_number_frames, io_data) }
-}
-
-/// Fills the unit's pull buffers from the staged input.
-///
-/// # Safety
-/// `in_ref_con` is null or a live `RenderScratch`, and `io_data` is null or a
-/// valid buffer list whose buffers' `mData` hold `mDataByteSize` bytes.
-unsafe fn render_input(
-    in_ref_con: *mut c_void,
-    in_number_frames: u32,
-    io_data: *mut AudioBufferList,
-) -> i32 {
-    // SAFETY: the caller's contract on `in_ref_con`; the scratch is only read.
+    // SAFETY: `in_ref_con` is the `RenderScratch` `install_input_callback`
+    // registered (null once withdrawn), and `io_data` is the unit's own list for
+    // this pull, checked for null below.
     unsafe {
         with_state::<RenderScratch, _>(
             "the input render callback",
@@ -455,7 +442,6 @@ unsafe fn render_input(
                 if io_data.is_null() {
                     return -1;
                 }
-                // `io_data` is covered by the caller's contract.
                 fill_input(scratch, in_number_frames, io_data)
             },
         )
@@ -980,6 +966,25 @@ pub fn output_byte_sizes(scratch: &PushScratch) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The callback as a unit calls it, flags and timestamp unused.
+    unsafe fn render_input(
+        in_ref_con: *mut c_void,
+        frames: u32,
+        io_data: *mut AudioBufferList,
+    ) -> i32 {
+        // SAFETY: forwarded; each test passes what it documents.
+        unsafe {
+            au_input_render_callback(
+                in_ref_con,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                frames,
+                io_data,
+            )
+        }
+    }
 
     /// The size math must be driven by
     /// `offset_of!(AudioBufferList, mBuffers)`, never by `size_of::<u32>()`.

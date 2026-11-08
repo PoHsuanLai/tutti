@@ -552,9 +552,9 @@ fn a_dropped_property_listener_stops_delivering() {
 fn value_strings_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = N_BAND_EQ.open(RATE, BLOCK);
-    let unit = au.unit();
+    let unit = au.unit().clone();
 
-    let global = parameters::value_strings_at(unit, ParamAddress::GLOBAL, 2000);
+    let global = parameters::value_strings_at(&unit, ParamAddress::GLOBAL, 2000);
     assert_eq!(
         global.len(),
         11,
@@ -567,7 +567,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
         ("input", ParamAddress::on_bus(BusDirection::Input, 0)),
         ("output", ParamAddress::on_bus(BusDirection::Output, 0)),
     ] {
-        let scoped = parameters::value_strings_at(unit, addr, 2000);
+        let scoped = parameters::value_strings_at(&unit, addr, 2000);
         assert!(
             scoped.is_empty(),
             "AUNBandEQ answers value strings on the global scope only; the \
@@ -579,7 +579,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
     // And the un-suffixed wrapper agrees with the global address, which is the
     // property that would break if it started passing a bus scope.
     assert_eq!(
-        parameters::value_strings(unit, 2000),
+        parameters::value_strings(&unit, 2000),
         global,
         "`value_strings` must be `value_strings_at(GLOBAL)`"
     );
@@ -601,7 +601,7 @@ fn value_strings_at_is_answered_only_on_the_global_scope() {
 fn clump_name_at_is_answered_only_on_the_global_scope() {
     let _g = lock();
     let au = DISTORTION.open(RATE, BLOCK);
-    let unit = au.unit();
+    let unit = au.unit().clone();
 
     // The full measured table, so a shifted or truncated read is caught rather
     // than merely a read that returns nothing.
@@ -616,14 +616,14 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     ];
     for (clump, name) in expected {
         assert_eq!(
-            parameters::clump_name_at(unit, ParamAddress::GLOBAL, clump).as_deref(),
+            parameters::clump_name_at(&unit, ParamAddress::GLOBAL, clump).as_deref(),
             Some(name),
             "AUDistortion clump {clump} is named {name:?} on the global scope"
         );
     }
     // Clump 8 does not exist — the read must stop rather than run off the table.
     assert_eq!(
-        parameters::clump_name_at(unit, ParamAddress::GLOBAL, 8),
+        parameters::clump_name_at(&unit, ParamAddress::GLOBAL, 8),
         None,
         "AUDistortion names 7 clumps; an 8th name means the read is fabricating"
     );
@@ -634,7 +634,7 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     ] {
         for (clump, _) in expected {
             assert_eq!(
-                parameters::clump_name_at(unit, addr, clump),
+                parameters::clump_name_at(&unit, addr, clump),
                 None,
                 "AUDistortion names clumps on the global scope only; the {label} \
                  scope named clump {clump}"
@@ -645,7 +645,7 @@ fn clump_name_at_is_answered_only_on_the_global_scope() {
     // The un-suffixed wrapper must be the global address.
     for (clump, name) in expected {
         assert_eq!(
-            parameters::clump_name(unit, clump).as_deref(),
+            parameters::clump_name(&unit, clump).as_deref(),
             Some(name),
             "`clump_name` must be `clump_name_at(GLOBAL)`"
         );
@@ -688,7 +688,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
     // are hosted this way (they refuse `AudioUnitInitialize` as this host
     // configures them).
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.unit();
+    let unit = au.unit().clone();
 
     let addresses = [
         ("global", ParamAddress::GLOBAL),
@@ -714,7 +714,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
         for (label, addr) in addresses {
             for value in [0.0f32, 0.5, 1.0] {
                 assert_eq!(
-                    parameters::string_from_value_at(unit, addr, id, value),
+                    parameters::string_from_value_at(&unit, addr, id, value),
                     None,
                     "AUMultiChannelMixer does not implement \
                      ParameterStringFromValue; {label} id {id} value {value} \
@@ -723,7 +723,7 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
             }
             for text in ["0.5", "-6 dB", "Off"] {
                 assert_eq!(
-                    parameters::value_from_string_at(unit, addr, id, text),
+                    parameters::value_from_string_at(&unit, addr, id, text),
                     None,
                     "AUMultiChannelMixer does not implement \
                      ParameterValueFromString; {label} id {id} text {text:?} \
@@ -737,12 +737,12 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
 
     // The wrappers must delegate to the global address, not to some other one.
     assert_eq!(
-        parameters::string_from_value(unit, 0, 0.5),
-        parameters::string_from_value_at(unit, ParamAddress::GLOBAL, 0, 0.5)
+        parameters::string_from_value(&unit, 0, 0.5),
+        parameters::string_from_value_at(&unit, ParamAddress::GLOBAL, 0, 0.5)
     );
     assert_eq!(
-        parameters::value_from_string(unit, 0, "0.5"),
-        parameters::value_from_string_at(unit, ParamAddress::GLOBAL, 0, "0.5")
+        parameters::value_from_string(&unit, 0, "0.5"),
+        parameters::value_from_string_at(&unit, ParamAddress::GLOBAL, 0, "0.5")
     );
 }
 
@@ -764,17 +764,17 @@ fn the_at_string_conversions_report_absence_rather_than_fabricating_zero() {
 fn the_mixer_strip_arity_differs_between_input_and_output_scope() {
     let _g = lock();
     let au = MULTI_CHANNEL_MIXER.open_uninitialized(RATE, BLOCK);
-    let unit = au.unit();
+    let unit = au.unit().clone();
 
     // The global scope has no parameters at all on this unit, which is the fact
     // that makes an accidentally-global read detectable rather than plausible.
     assert!(
-        parameters::list_at(unit, ParamAddress::GLOBAL).is_empty(),
+        parameters::list_at(&unit, ParamAddress::GLOBAL).is_empty(),
         "AUMultiChannelMixer publishes no global-scope parameters"
     );
 
     for element in [0u32, 1, 7] {
-        let strip = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Input, element));
+        let strip = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Input, element));
         assert_eq!(
             strip.len(),
             7,
@@ -782,7 +782,7 @@ fn the_mixer_strip_arity_differs_between_input_and_output_scope() {
             strip.iter().map(|p| p.id).collect::<Vec<_>>()
         );
     }
-    let out = parameters::list_at(unit, ParamAddress::on_bus(BusDirection::Output, 0));
+    let out = parameters::list_at(&unit, ParamAddress::on_bus(BusDirection::Output, 0));
     assert_eq!(
         out.len(),
         5,

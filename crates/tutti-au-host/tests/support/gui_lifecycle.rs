@@ -66,7 +66,7 @@ unsafe fn open_headless(au: &AuInstance) -> tutti_au_host::Result<AuEditor> {
         width: 800,
         height: 600,
     };
-    unsafe { AuEditor::open(au.unit(), None, preferred) }
+    Ok(AuEditor::open(au.unit(), None, preferred)?)
 }
 
 /// Instantiate and initialize `unit`, panicking with its label on failure.
@@ -288,9 +288,8 @@ fn view_ptr_is_non_null_only_while_open() {
         );
         // The editor must also know which unit it belongs to; a host with
         // several plugins open routes events by this.
-        assert_eq!(
-            editor.unit(),
-            au.raw_unit(),
+        assert!(
+            editor.unit().same_unit(au.unit()),
             "{}: editor reports a different AudioUnit than it was opened for",
             unit.label
         );

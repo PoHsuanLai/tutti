@@ -3,7 +3,7 @@
 SoundFont (`.sf2`) playback for the Tutti audio engine.
 
 The crate has one type, `SoundFontUnit`: a graph node (`tutti_graph::Node`)
-with no audio inputs, stereo out and one MIDI event input. Build it from a
+with no audio inputs, five outputs and one MIDI event input. Build it from a
 decoded `SoundFont` and a `Settings`, choose a preset with
 `program_change` (or build both in one call with
 `SoundFontUnit::with_preset(font, rate, channel, program)`), insert it into a
@@ -11,6 +11,18 @@ graph, and wire a MIDI source (a clip node, a keyboard queue, a hardware
 input) to its event input. Each event is
 applied at its own frame offset within the block, to a resolution of 8
 frames.
+
+The outputs are the dry left and right pair, the chorus send left and right,
+and the reverb send (mono). The unit has no effect inside it: the sends are how
+much of each voice would go to one, from the font's `chorusEffectsSend` and
+`reverbEffectsSend` generators (SF2 2.04 section 8.1.2, generators 15 and 16)
+and the channel's CC 93 and CC 91, and a send nothing is sent to is reported
+silent (`Status::Masked`). The chorus and reverb are graph nodes
+(`tutti_nodes::ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`, and
+`tutti_nodes::ReverbNode`), summed with the dry pair by a `ChannelSumNode`;
+`tutti-session`'s `Session::add_general_midi` wires the three, and a host that
+wants other effects wires the sends itself. `Settings` has no switch for
+them: a dry instrument is one whose sends are left unconnected.
 
 Use it when you want General MIDI or sampled-instrument playback from a
 SoundFont file. For a subtractive synthesizer, use `tutti-polysynth`; the two
@@ -37,7 +49,7 @@ let settings = Settings::new(SampleRate::SR_44K1);
 let mut unit = SoundFontUnit::new(soundfont, &settings)?;
 unit.program_change(MidiChannel::FIRST, U7::new(0).unwrap()); // channel 0 → program 0
 
-// Into the graph: no audio input, stereo out, one MIDI event input (wire a
+// Into the graph: no audio input, five outputs, one MIDI event input (wire a
 // clip or a keyboard's queue node to it with `GraphSpec::connect_events`).
 // The graph runs at 48 kHz, so `prepare` rebuilds the synthesizer at 48 kHz,
 // keeping the preset.
@@ -123,11 +135,11 @@ There is no minimum sounding time.
 ## Ring-out and reset
 
 The node declares its tail: the longest volume-envelope release of any voice
-the font can start, then, with the effects on, the effects ringing out. An
-export that stops at the last note-off extends by it. `reset` cuts every
-voice, forgets the pedals and the held keys, returns modulation, expression and
-pitch bend to their defaults and mutes the effects; the bank, program, volume
-and pan stay.
+the font can start, and no more; each effect after it declares its own. An
+export that stops at the last note-off extends by the sum along the path.
+Once its voices have ended the node returns `Status::Idle`. `reset` cuts every
+voice, forgets the pedals and the held keys and returns modulation, expression
+and pitch bend to their defaults; the bank, program, volume and pan stay.
 
 ## Real-time behaviour
 

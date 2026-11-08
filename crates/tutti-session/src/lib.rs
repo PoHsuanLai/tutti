@@ -42,6 +42,8 @@ mod device;
 mod error;
 #[cfg(feature = "export")]
 mod export;
+#[cfg(feature = "soundfont")]
+mod general_midi;
 mod graph;
 #[cfg(feature = "midi")]
 mod instrument;
@@ -67,6 +69,8 @@ pub use export::{
     EXPORT_STALL_WARNING, ExportClock, ExportHandle, ExportJob, ExportOutput, ExportRendered,
     ExportRequest, ExportSource, ExportTarget, PrepareEdit, PreparedGraph,
 };
+#[cfg(feature = "soundfont")]
+pub use general_midi::GeneralMidi;
 #[cfg(feature = "modulation")]
 pub use graph::ModKeys;
 pub use graph::RenderWorkerStart;

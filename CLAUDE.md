@@ -500,7 +500,8 @@ list (normal and build edges; dev-dependencies may go anywhere).
   convolver, the delay line and swept-delay kernel, the cubic Hermite kernel, the phaser's all-pass chain, the
   block ramps, the export resampler and its streaming
   bookkeeping (`StreamingResampler`, `ChunkSize`), the dither noise
-  (`DitherNoise`), the
+  (`DitherNoise`), the Freeverb reverb (`Freeverb`, which `ReverbNode`
+  adapts), the
   ring buffers and the waveshaping curves. `tutti-nodes` holds the `tutti_graph::Node` adapters over
   them (shape, prepare, process, params, fork), and re-exports only the
   algorithm types that sit in a node's signature (`SvfType`, `LadderType`,

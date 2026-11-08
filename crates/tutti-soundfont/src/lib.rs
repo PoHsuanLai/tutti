@@ -4,8 +4,8 @@
 //!
 //! ## Items
 //!
-//! - [`SoundFontUnit`]: the player, a stereo graph node with one MIDI event
-//!   input.
+//! - [`SoundFontUnit`]: the player, a graph node with one MIDI event input and
+//!   five outputs: the dry pair and the effect sends.
 //! - [`SYNTH_BLOCK_FRAMES`]: the 8-frame MIDI timing resolution.
 //! - [`Settings`]: what a unit is built with.
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
@@ -13,7 +13,6 @@
 mod array_math;
 mod bi_quad_filter;
 mod channel;
-mod chorus;
 mod envelope_stage;
 mod error;
 mod lfo;
@@ -24,7 +23,6 @@ mod player;
 mod region_ex;
 mod region_pair;
 mod render;
-mod reverb;
 mod settings;
 mod soundfont_math;
 mod voice;
@@ -47,7 +45,7 @@ use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Tail};
 use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Unknown, Voice1, decode};
 
-use crate::player::Player;
+use crate::player::{Heard, Plane, Planes, Player};
 use crate::render::Render;
 
 /// Capacity of the block's MIDI scratch, in events: past it a block's events
@@ -67,10 +65,20 @@ const NO_RELEASE_VELOCITY: U7 = U7::new(0).unwrap();
 /// control rate the voices' figures were made at (0.18 ms at 44.1 kHz).
 pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 
-/// A stereo graph node that renders MIDI through a decoded SoundFont.
+/// A graph node that renders MIDI through a decoded SoundFont.
 ///
-/// No audio inputs, two outputs (left, right) and one MIDI event input: the
-/// unit is a source. Build it with [`new`](Self::new), pick a preset with
+/// No audio inputs, five outputs and one MIDI event input: the unit is a
+/// source. The outputs are, in order, the dry left and right pair (the sound a
+/// host plays: this is the unit's [`tutti_graph::Instrument::main_outputs`]), the chorus
+/// send left and right, and the reverb send (mono). The unit has no effect
+/// inside it: the sends are what each voice would send to one, at the level the
+/// preset and the channel ask (SF2 2.04 section 8.1.2, generators 15 and 16, and
+/// CC 93 and CC 91), and the chorus and reverb are graph nodes
+/// (`tutti_nodes::ModDelayNode` with `ModDelayConfig::GENERAL_MIDI_CHORUS`, and
+/// `tutti_nodes::ReverbNode`) summed back with the dry pair by a
+/// `ChannelSumNode`; `tutti-session`'s `Session::add_general_midi` wires all of
+/// that. A send with nothing to send is reported silent in the block's status
+/// (`Status::Masked`), and a unit with no voice sounding is `Status::Idle`. Build it with [`new`](Self::new), pick a preset with
 /// [`program_change`](Self::program_change), then insert it into a graph
 /// (it implements `tutti_graph::Node` and `tutti_graph::IntoNode`, with no
 /// controls) and wire a clip or a keyboard queue to its event input. Events
@@ -142,12 +150,11 @@ pub struct SoundFontUnit {
     /// seconds, if that is bounded: see [`Self::shape_tail`].
     ring_out: Option<f64>,
     sample_rate: SampleRate,
-    /// De-interleaved scratch for one block, sized in the node's `prepare`
-    /// to the graph's largest block and never resized on the audio thread.
-    /// A block renders into `[..size]` in segments split at each event's
-    /// offset.
-    left_buffer: Vec<f32>,
-    right_buffer: Vec<f32>,
+    /// One block's output, a plane each (see `player::Plane`), sized in the
+    /// node's `prepare` to the graph's largest block and never resized on the
+    /// audio thread. A block renders into `[..size]` in segments split at each
+    /// event's offset.
+    planes: [Vec<f32>; Plane::COUNT],
     /// The block's MIDI, sorted by offset: its event input's.
     midi_buffer: Vec<MidiEvent>,
 }
@@ -167,8 +174,7 @@ impl SoundFontUnit {
             sample_rate: player.sample_rate(),
             ring_out: player.ring_out(),
             player,
-            left_buffer: vec![0.0; buffers],
-            right_buffer: vec![0.0; buffers],
+            planes: std::array::from_fn(|_| vec![0.0; buffers]),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         }
     }
@@ -178,7 +184,7 @@ impl SoundFontUnit {
     ///
     /// The voices cannot be re-rated, so a graph prepared at another rate has
     /// the node build a new one ([`with_sample_rate`](Self::with_sample_rate)).
-    /// Allocates the voices and effect lines and reads every zone of the
+    /// Allocates the voices and reads every zone of the
     /// font once (for the tail), so call it off the audio thread.
     ///
     /// # Errors
@@ -224,7 +230,7 @@ impl SoundFontUnit {
     ///
     /// The copy has the same SoundFont (shared, not reloaded), settings,
     /// preset and channel state, and no voice sounding. The rate is rounded to
-    /// whole hertz. Allocates a new player's voices and effect lines, so
+    /// whole hertz. Allocates a new player's voices, so
     /// call it off the audio thread. A graph node does this itself in
     /// `prepare` when its graph runs at another rate (see "The rate" on
     /// [`SoundFontUnit`]).
@@ -235,12 +241,11 @@ impl SoundFontUnit {
     /// 192 kHz.
     pub fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
         let player = self.player.with_sample_rate(sample_rate)?;
-        Ok(Self::from_player(player, self.left_buffer.len()))
+        Ok(Self::from_player(player, self.planes[0].len()))
     }
 
-    /// The tail the node declares: the longest release of any voice, then the
-    /// effects ringing out, in frames at the unit's rate, or unbounded if a
-    /// release has no finite length.
+    /// The tail the node declares: the longest release of any voice, in frames
+    /// at the unit's rate, or unbounded if a release has no finite length.
     pub(crate) fn shape_tail(&self) -> Tail {
         match self.ring_out {
             Some(seconds) => Tail::Finite(tutti_types::Samples(
@@ -289,7 +294,7 @@ impl SoundFontUnit {
         self.player.program_change(channel, program);
     }
 
-    /// Renders `range` of the scratch buffers, advancing the player by
+    /// Renders `range` of the scratch planes, advancing the player by
     /// `range.len()` frames. The player keeps its own chunk cursor across
     /// calls, so `[0, 16)` then `[16, 64)` equals `[0, 64)`, and a state change
     /// between them takes effect at frame 16 (to the chunk size).
@@ -297,10 +302,24 @@ impl SoundFontUnit {
         if range.is_empty() {
             return;
         }
-        self.player.render(
-            &mut self.left_buffer[range.clone()],
-            &mut self.right_buffer[range],
-        );
+        let [dry_left, dry_right, chorus_left, chorus_right, reverb] = &mut self.planes;
+        self.player.render(Planes([
+            &mut dry_left[range.clone()],
+            &mut dry_right[range.clone()],
+            &mut chorus_left[range.clone()],
+            &mut chorus_right[range.clone()],
+            &mut reverb[range],
+        ]));
+    }
+
+    /// Whether no voice is left to sound and the last chunk is read out.
+    fn is_idle(&self) -> bool {
+        self.player.is_idle()
+    }
+
+    /// Which planes the player wrote into since the last call.
+    fn take_heard(&mut self) -> Heard {
+        self.player.take_heard()
     }
 
     /// Renders `size` frames into the scratch, applying the first `count`
@@ -369,8 +388,7 @@ impl Clone for SoundFontUnit {
             sample_rate: self.sample_rate,
             // Scratch, not state: sized fresh rather than copied, since every
             // block overwrites the frames it reads back.
-            left_buffer: vec![0.0; self.left_buffer.len()],
-            right_buffer: vec![0.0; self.right_buffer.len()],
+            planes: std::array::from_fn(|_| vec![0.0; self.planes[0].len()]),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         }
     }

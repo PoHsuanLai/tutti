@@ -195,7 +195,7 @@ fn two_events_in_one_block_apply_at_their_own_offsets() {
     // voices, so with them on the render of two notes together is genuinely not
     // the sum of each alone — the additivity this test rests on is a property
     // of the dry voice mix. Every other setting is the default.
-    let settings = Settings::new(SampleRate::SR_44K1).with_reverb_and_chorus(false);
+    let settings = Settings::new(SampleRate::SR_44K1);
     const BLOCK: usize = 64;
     // Long enough for a piano attack to clear the noise floor: the fixture's
     // envelope takes ~41 frames to leave zero and several hundred more to reach
@@ -628,5 +628,9 @@ fn a_preset_units_first_note_on_renders_that_preset() {
 
     let got = digest(&out);
     // RustySynth's voices call `sin`, `exp` and `pow`, so the digest is libm's.
-    assert_golden("the soundfont voice", got, 0xcf94_549c_015d_9f17);
+    // What this pins: the unit's dry pair (outputs 0 and 1) alone. The effects
+    // left the unit (stage 3b), so the pair has no reverb in it; the digest was
+    // 0xcf94_549c_015d_9f17 while the in-unit reverb was mixed in by default,
+    // and the dry pair equals what that code rendered with its effects off.
+    assert_golden("the soundfont voice", got, 0xfbb4_4b59_223f_1840);
 }

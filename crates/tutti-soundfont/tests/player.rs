@@ -16,7 +16,8 @@ use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Settings, SoundFontUnit};
 use tutti_types::SampleRate;
 
-/// A unit with no effect lines, so a stopped voice leaves true silence.
+/// A unit at the default settings, whose dry pair is true silence once a voice
+/// stops.
 fn dry() -> Rig {
     Rig::dry(&timgm6mb())
 }
@@ -51,9 +52,7 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
 fn a_pool_of_one_voice_gives_way_to_the_next_note() {
     let font = support::font::one_preset(vec![vec![]]);
     let level = |voices: usize| {
-        let settings = Settings::new(RATE)
-            .with_reverb_and_chorus(false)
-            .with_polyphony(NonZeroUsize::new(voices).unwrap());
+        let settings = Settings::new(RATE).with_polyphony(NonZeroUsize::new(voices).unwrap());
         let mut rig = Rig::with(&font, &settings);
         rig.note_on(0, 60, 100);
         rig.energy(4096);
@@ -164,8 +163,7 @@ fn a_note_on_at_velocity_zero_is_a_note_off() {
 }
 
 // Control Change dispatch, one test per arm of the unit's controller match,
-// through the unit's message face. The unit is dry (no effect lines) unless a
-// test is about the sends.
+// through the unit's message face. The sends are `sends.rs`'s.
 
 fn cc(rig: &mut Rig, controller: u8, value: u8) {
     rig.cc(0, controller, value);
@@ -293,32 +291,6 @@ fn cc_64_holds_released_notes_until_the_pedal_lifts() {
         "lifting the pedal ends it"
     );
     assert_eq!(ring(63).0, 0.0, "63 is not down");
-}
-
-// Arms 0x5B (reverb send) and 0x5D (chorus send): after every voice is cut,
-// the effect line's tail is all that sounds.
-#[test]
-fn cc_91_and_93_send_to_the_reverb_and_the_chorus() {
-    let tail = |controller: u8, value: u8| {
-        let mut synthesizer = Rig::with(&timgm6mb(), &Settings::new(RATE));
-        synthesizer.program(0, 40);
-        cc(&mut synthesizer, 91, 0);
-        cc(&mut synthesizer, 93, 0);
-        cc(&mut synthesizer, controller, value);
-        synthesizer.note_on(0, 69, 100);
-        energy(&mut synthesizer, 8192);
-        synthesizer.cut_all();
-        energy(&mut synthesizer, 64);
-        energy(&mut synthesizer, 4096)
-    };
-    for controller in [91, 93] {
-        let none = tail(controller, 0);
-        let full = tail(controller, 127);
-        assert!(
-            full > none * 2.0 + 1.0,
-            "CC {controller}: {none} against {full}"
-        );
-    }
 }
 
 // Arms 0x65 and 0x64 (RPN select), 0x06 and 0x26 (data entry): RPN 0 is the

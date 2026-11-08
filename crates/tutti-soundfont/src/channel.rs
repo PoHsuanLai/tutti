@@ -2,6 +2,11 @@
 // MeltySynth (Copyright (C) 2021 Nobuaki Tanaka). The MIT notice is
 // LICENSE-RUSTYSYNTH.txt, at the root of this crate.
 
+/// The amount of the default modulators CC 91 to reverb send and CC 93 to
+/// chorus send (SF2 2.04 sections 8.4.8 and 8.4.9): 200 tenths of a percent,
+/// which is 20% of full level at the controller's top.
+const SEND_AMOUNT: f32 = 0.2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DataType {
     None,
@@ -213,12 +218,18 @@ impl Channel {
         (1_f32 / 16383_f32) * self.expression as f32
     }
 
+    /// What CC 91 adds to a voice's reverb send, as a fraction of full level:
+    /// the default modulator of SF2 2.04 section 8.4.8 (a linear positive
+    /// unipolar source, so the controller maps to `value / 128`, times an
+    /// amount of 200 tenths of a percent).
     pub(crate) fn reverb_send(&self) -> f32 {
-        (1_f32 / 127_f32) * self.reverb_send as f32
+        SEND_AMOUNT * (f32::from(self.reverb_send) / 128_f32)
     }
 
+    /// What CC 93 adds to a voice's chorus send: the default modulator of
+    /// section 8.4.9, as [`reverb_send`](Self::reverb_send).
     pub(crate) fn chorus_send(&self) -> f32 {
-        (1_f32 / 127_f32) * self.chorus_send as f32
+        SEND_AMOUNT * (f32::from(self.chorus_send) / 128_f32)
     }
 
     pub(crate) fn pitch_bend_range(&self) -> f32 {

@@ -51,6 +51,13 @@ pub struct ModDelayConfig {
     pub feedback: Feedback,
     /// Initial wet/dry mix.
     pub mix: Mix,
+    /// The most feedback the node applies, whatever is set through its param
+    /// or driven on its port, and whatever is written to the raw cells: a value
+    /// above it reads as it, and one below zero as zero. [`Feedback::MAX_STABLE`]
+    /// is the most the unit allows. [`Feedback::NONE`] makes the line a pure
+    /// delay, with no recirculation, and so with a tail of exactly
+    /// [`max_delay`](Self::max_delay) (see [`ModDelayNode`]'s "Tail").
+    pub feedback_max: Feedback,
 }
 
 impl ModDelayConfig {
@@ -82,6 +89,7 @@ impl ModDelayConfig {
         depth: Seconds(0.005),
         feedback: Feedback(0.3),
         mix: Mix(0.5),
+        feedback_max: Feedback::MAX_STABLE,
     };
 
     /// Flanger: 1 ms base delay, a half-cycle stagger, 0.5 Hz rate, 2 ms sweep
@@ -99,6 +107,29 @@ impl ModDelayConfig {
         depth: Seconds(0.002),
         feedback: Feedback(0.7),
         mix: Mix(0.5),
+        feedback_max: Feedback::MAX_STABLE,
+    };
+
+    /// The chorus of a General MIDI synthesizer's chorus send, as SoundFont
+    /// players have it: wet only (a send effect, summed with the dry signal
+    /// elsewhere), a 2 ms centre delay swept 1.9 ms either side by a sine at
+    /// 0.4 Hz, the right channel a quarter cycle ahead of the left, and no
+    /// feedback at all.
+    ///
+    /// The dry signal is not in the output (`mix` 1), and the node can recirculate
+    /// nothing (`feedback_max` 0), which is what lets it declare a finite tail:
+    /// what it outputs was in its input at most `max_delay` ago.
+    pub const GENERAL_MIDI_CHORUS: Self = Self {
+        base_delay: Seconds(0.002),
+        max_delay: Seconds(0.005),
+        channel_phase_offset: PhaseIncrement(0.25),
+        depth_min: Seconds(0.0),
+        depth_max: Seconds(0.0019),
+        rate: Hz(0.4),
+        depth: Seconds(0.0019),
+        feedback: Feedback::NONE,
+        mix: Mix(1.0),
+        feedback_max: Feedback::NONE,
     };
 }
 
@@ -140,8 +171,14 @@ struct ModDelayControls {
 /// ([`UnitParam::Depth`]), feedback ([`UnitParam::Feedback`]) and mix
 /// ([`UnitParam::Wet`]); a fork starts from the values last set through it. The
 /// graph prepares it at the device rate, which sizes the lines, before its
-/// first block. Its tail is [`Tail::Unknown`] (a recirculating line), so it is
-/// never skipped.
+/// first block.
+///
+/// # Tail
+///
+/// [`Tail::Unknown`] (a recirculating line), so it is never skipped, unless the
+/// config's [`feedback_max`](ModDelayConfig::feedback_max) is [`Feedback::NONE`]:
+/// then nothing recirculates, an output frame is made of input at most
+/// [`max_delay`](ModDelayConfig::max_delay) old, and the tail is exactly that.
 pub struct ModDelayNode {
     config: ModDelayConfig,
     /// One line per channel; `len()` is the audio width. Built at construction
@@ -256,6 +293,15 @@ impl ModDelayNode {
         self
     }
 
+    /// The tail the node declares (see "Tail" on [`ModDelayNode`]).
+    fn tail(&self) -> Tail {
+        if self.config.feedback_max == Feedback::NONE {
+            Tail::Finite(self.config.max_delay.to_samples_ceil(self.sample_rate))
+        } else {
+            Tail::Unknown
+        }
+    }
+
     /// The configuration this node was built from.
     pub fn config(&self) -> ModDelayConfig {
         self.config
@@ -339,7 +385,7 @@ impl ModDelayNode {
         let (depth, fb, mix) = self.controls.load([depth, fb, mix]);
         let target = ModDelayControls {
             depth: self.config.clamp_depth(depth),
-            fb,
+            fb: fb.clamp(0.0, self.config.feedback_max.get()),
             mix: mix.get(),
         };
         let from = self.last.unwrap_or(target);
@@ -402,7 +448,7 @@ impl Node for ModDelayNode {
             ChannelLayout::try_from(self.delays.len()).expect("the width came from a layout");
         Shape::audio(width, width)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unknown)
+            .with_tail(self.tail())
             .with_params(&MOD_DELAY_PARAMS)
     }
 
@@ -588,6 +634,7 @@ mod tests {
                 depth: Seconds(depth),
                 feedback: Feedback(0.0),
                 mix: Mix(1.0),
+                feedback_max: Feedback::MAX_STABLE,
             },
         );
         tutti_graph::contract::prepared(node, SampleRate(48_000.0), 128)

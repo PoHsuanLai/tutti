@@ -17,15 +17,13 @@ use tutti_types::SampleRate;
 /// use tutti_types::SampleRate;
 ///
 /// let settings = Settings::new(SampleRate::SR_48K)
-///     .with_polyphony(NonZeroUsize::new(16).unwrap())
-///     .with_reverb_and_chorus(false);
+///     .with_polyphony(NonZeroUsize::new(16).unwrap());
 /// assert_eq!(settings.polyphony().get(), 16);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
     sample_rate: SampleRate,
     polyphony: NonZeroUsize,
-    reverb_and_chorus: bool,
 }
 
 impl Settings {
@@ -36,13 +34,12 @@ impl Settings {
     /// The polyphony of [`new`](Self::new).
     pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
-    /// Settings at `sample_rate`: 64 voices, reverb and chorus on.
+    /// Settings at `sample_rate`: 64 voices.
     #[must_use]
     pub const fn new(sample_rate: SampleRate) -> Self {
         Self {
             sample_rate,
             polyphony: Self::DEFAULT_POLYPHONY,
-            reverb_and_chorus: true,
         }
     }
 
@@ -61,13 +58,6 @@ impl Settings {
         self
     }
 
-    /// These settings with the reverb and chorus effect lines on or off.
-    #[must_use]
-    pub const fn with_reverb_and_chorus(mut self, on: bool) -> Self {
-        self.reverb_and_chorus = on;
-        self
-    }
-
     /// The rate to render at.
     #[must_use]
     pub const fn sample_rate(&self) -> SampleRate {
@@ -78,11 +68,5 @@ impl Settings {
     #[must_use]
     pub const fn polyphony(&self) -> NonZeroUsize {
         self.polyphony
-    }
-
-    /// Whether the reverb and chorus effect lines run.
-    #[must_use]
-    pub const fn reverb_and_chorus(&self) -> bool {
-        self.reverb_and_chorus
     }
 }

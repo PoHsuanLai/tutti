@@ -109,3 +109,45 @@ fn the_handle_counts_what_its_queue_dropped() {
     rig.block();
     assert_eq!(handle.dropped(), 3);
 }
+
+/// A root of five channels or more fed from an instrument with sends takes its
+/// main pair, repeated, and never a send: `set_outputs_from` wraps over every
+/// output (a five-output node on a five-wide root feeds the speakers its
+/// sends), `set_outputs_from_ports` with the handle's pair does not. Read from
+/// the graph's own topology.
+///
+/// Mutations (run): `set_outputs_from_ports` ignoring `ports` and wrapping over
+/// the node's outputs fails it; the handle's `main_outputs` returning `[0, 1]`
+/// fails the port check (the pair here is `[2, 3]`).
+#[test]
+fn a_wide_root_is_fed_from_the_main_pair_not_the_sends() {
+    use tutti_session::GraphSource;
+    let mut session = instrument_support::rig::offline_session();
+    let (handle, ()) = session
+        .add_instrument(Dressed(ForkByClone(Five)))
+        .expect("an instrument");
+    session.graph().widen_outputs(5).expect("a wider root");
+    let node = handle.node();
+    session.graph().set_outputs_from(node);
+    let wrapped: Vec<_> = (0..5)
+        .map(|c| session.graph_ref().output_source(c))
+        .collect();
+    assert_eq!(
+        wrapped[4],
+        GraphSource::node(node, 4),
+        "the wrap feeds a send"
+    );
+
+    session
+        .graph()
+        .set_outputs_from_ports(node, &handle.main_outputs());
+    assert_eq!(handle.main_outputs(), [2, 3]);
+    for c in 0..5 {
+        let want = 2 + c % 2;
+        assert_eq!(
+            session.graph_ref().output_source(c),
+            GraphSource::node(node, want),
+            "channel {c}"
+        );
+    }
+}

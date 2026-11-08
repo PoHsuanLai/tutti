@@ -23,7 +23,7 @@ mod sealed {
 ///     type Value = u8;
 /// }
 /// ```
-pub trait Property {
+pub trait Property: sealed::Sealed {
     /// The `AudioUnitPropertyID`.
     const ID: u32;
     /// The plain value a [`Unit::get`](crate::Unit::get) returns.

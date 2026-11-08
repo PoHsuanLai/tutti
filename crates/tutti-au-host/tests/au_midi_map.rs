@@ -185,7 +185,7 @@ fn exactly_two_installed_components_implement_the_mapping_family() {
 
     for info in every_component() {
         // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+        let Ok(mut au) = (AuInstance::new(info.component, RATE, BLOCK)) else {
             // A unit that cannot be instantiated cannot be probed. AUAudioTapIO
             // is the one such unit here; it is an output unit, and the family is
             // an instrument surface, so nothing is lost.
@@ -244,7 +244,7 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
 
     for info in every_component() {
         // SAFETY: `component` came from `AudioComponentFindNext`.
-        let Ok(mut au) = (unsafe { AuInstance::new(info.component, RATE, BLOCK) }) else {
+        let Ok(mut au) = (AuInstance::new(info.component, RATE, BLOCK)) else {
             continue;
         };
         for phase in ["loaded", "initialized"] {

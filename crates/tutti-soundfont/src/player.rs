@@ -21,6 +21,7 @@ use crate::error::{Error, Result};
 use crate::patch::PresetPatch;
 use crate::render::Render;
 use crate::reverb::Reverb;
+use crate::settings::Settings;
 use crate::soundfont_math::SoundFontMath;
 use crate::voices::Voices;
 
@@ -71,7 +72,7 @@ fn rules(polyphony: usize) -> Rules {
 pub(crate) struct Player {
     font: Arc<SoundFont>,
     render: Render,
-    polyphony: usize,
+    settings: Settings,
 
     presets: HashMap<i32, usize>,
     default_preset: usize,
@@ -95,31 +96,28 @@ impl Player {
     ///
     /// # Errors
     ///
-    /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz and
-    /// [`Error::PolyphonyOutOfRange`] for no voices.
-    pub(crate) fn new(
-        font: &Arc<SoundFont>,
-        rate: SampleRate,
-        polyphony: usize,
-        effects: bool,
-    ) -> Result<Self> {
-        let render = Render::new(rate);
+    /// [`Error::SampleRateOutOfRange`] outside 16 to 192 kHz.
+    pub(crate) fn new(font: &Arc<SoundFont>, settings: &Settings) -> Result<Self> {
+        let render = Render::new(settings.sample_rate());
         if !RATES.contains(&render.hz()) {
-            return Err(Error::SampleRateOutOfRange(rate));
+            return Err(Error::SampleRateOutOfRange(settings.sample_rate()));
         }
-        if polyphony == 0 {
-            return Err(Error::PolyphonyOutOfRange(polyphony));
-        }
+        let polyphony = settings.polyphony().get();
 
         let mut presets: HashMap<i32, usize> = HashMap::new();
         let mut min_preset_id = i32::MAX;
         let mut default_preset: usize = 0;
         for (i, preset) in font.presets().iter().enumerate() {
+            // A preset whose bank or program is not MIDI's cannot be played
+            // (SF2 2.04 section 7.2): it is kept in the font and not looked up.
+            let (Some(bank), Some(patch)) = (preset.bank(), preset.patch()) else {
+                continue;
+            };
             // The preset ID is Int32, where the upper 16 bits represent the bank number
             // and the lower 16 bits represent the patch number.
             // This ID is used to search for presets by the combination of bank number
             // and patch number.
-            let preset_id = (preset.bank_number() << 16) | preset.patch_number();
+            let preset_id = (i32::from(bank.get()) << 16) | i32::from(patch.get());
             presets.insert(preset_id, i);
 
             // The preset with the minimum ID number will be default.
@@ -137,7 +135,7 @@ impl Player {
         Ok(Self {
             font: Arc::clone(font),
             render,
-            polyphony,
+            settings: *settings,
             presets,
             default_preset,
             channels,
@@ -146,7 +144,7 @@ impl Player {
             block_left: vec![0_f32; render.block_len()],
             block_right: vec![0_f32; render.block_len()],
             block_read: render.block_len(),
-            effects: effects.then(|| Effects::new(&render)),
+            effects: settings.reverb_and_chorus().then(|| Effects::new(&render)),
         })
     }
 
@@ -420,11 +418,6 @@ impl Player {
         SampleRate(f64::from(self.render.hz()))
     }
 
-    /// Whether the reverb and chorus run.
-    pub(crate) fn has_effects(&self) -> bool {
-        self.effects.is_some()
-    }
-
     /// A copy of this player that renders at `sample_rate`: the same
     /// SoundFont (shared, not reloaded), polyphony, effects switch and
     /// per-channel state (bank, patch, controllers, pitch bend), with no voice
@@ -435,7 +428,7 @@ impl Player {
     /// [`Error::SampleRateOutOfRange`] if `sample_rate` is outside 16 to
     /// 192 kHz.
     pub(crate) fn with_sample_rate(&self, sample_rate: SampleRate) -> Result<Self> {
-        let mut player = Self::new(&self.font, sample_rate, self.polyphony, self.has_effects())?;
+        let mut player = Self::new(&self.font, &self.settings.with_sample_rate(sample_rate))?;
         player.channels = self.channels.clone();
         Ok(player)
     }

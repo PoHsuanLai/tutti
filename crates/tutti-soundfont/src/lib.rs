@@ -8,8 +8,6 @@
 //!   input.
 //! - [`SYNTH_BLOCK_FRAMES`]: the 8-frame MIDI timing resolution.
 //! - [`Settings`]: what a unit is built with.
-//! - [`SoundFont`] and [`SoundFontError`]: re-exported from `tutti-sf2` to
-//!   decode a file.
 //! - [`enum@Error`] and [`Result`]: this crate's failure type.
 
 mod array_math;
@@ -35,7 +33,6 @@ mod volume_envelope;
 
 pub use error::{Error, Result};
 pub use settings::Settings;
-pub use tutti_sf2::{SoundFont, SoundFontError};
 
 // `SoundFontUnit::fork_instance`: the unit in a fork of the graph
 // (an export), with its clip.
@@ -46,6 +43,7 @@ use std::sync::Arc;
 use tutti_midi_protocol::widen;
 use tutti_midi_runtime::{BlockSplitter, Overrun, Step};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_sf2::SoundFont;
 use tutti_types::{SampleRate, Tail};
 use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Unknown, Voice1, decode};
 
@@ -111,7 +109,8 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// use std::sync::Arc;
 /// use tutti_types::SampleRate;
 /// use tutti_ump::{MidiChannel, U7};
-/// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+/// use tutti_sf2::SoundFont;
+/// use tutti_soundfont::{Settings, SoundFontUnit};
 ///
 /// let soundfont = Arc::new(SoundFont::new(&mut File::open("piano.sf2")?)?);
 /// let mut unit = SoundFontUnit::new(soundfont, &Settings::new(SampleRate::SR_48K))?;
@@ -184,15 +183,10 @@ impl SoundFontUnit {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::SampleRateOutOfRange`] or
-    /// [`Error::PolyphonyOutOfRange`] if `settings` is out of range.
+    /// Returns [`Error::SampleRateOutOfRange`] if the rate of `settings` is
+    /// outside 16 to 192 kHz.
     pub fn new(soundfont: Arc<SoundFont>, settings: &Settings) -> Result<Self> {
-        let player = Player::new(
-            &soundfont,
-            settings.sample_rate,
-            settings.max_polyphony,
-            settings.reverb_and_chorus,
-        )?;
+        let player = Player::new(&soundfont, settings)?;
         Ok(Self::from_player(player, 0))
     }
 

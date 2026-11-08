@@ -1,13 +1,13 @@
 use std::io::Read;
 
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
+use crate::error::Error;
 
 #[non_exhaustive]
 pub(crate) struct PresetInfo {
     pub(crate) name: String,
-    pub(crate) patch_number: i32,
-    pub(crate) bank_number: i32,
+    pub(crate) patch_number: u16,
+    pub(crate) bank_number: u16,
     pub(crate) zone_start_index: i32,
     pub(crate) zone_end_index: i32,
     pub(crate) library: i32,
@@ -16,10 +16,10 @@ pub(crate) struct PresetInfo {
 }
 
 impl PresetInfo {
-    fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let name = reader.read_fixed_length_string(20)?;
-        let patch_number = reader.read_u16()? as i32;
-        let bank_number = reader.read_u16()? as i32;
+        let patch_number = reader.read_u16()?;
+        let bank_number = reader.read_u16()?;
         let zone_start_index = reader.read_u16()? as i32;
         let library = reader.read_i32()?;
         let genre = reader.read_i32()?;
@@ -40,9 +40,9 @@ impl PresetInfo {
     pub(crate) fn read_from_chunk<R: Read>(
         reader: &mut R,
         size: usize,
-    ) -> Result<Vec<PresetInfo>, SoundFontError> {
+    ) -> Result<Vec<PresetInfo>, Error> {
         if size == 0 || !size.is_multiple_of(38) {
-            return Err(SoundFontError::InvalidPresetList);
+            return Err(Error::InvalidPresetList);
         }
 
         let count = size / 38;

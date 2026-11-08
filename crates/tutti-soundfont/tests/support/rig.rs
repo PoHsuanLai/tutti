@@ -57,8 +57,7 @@ pub struct Rig {
 impl Rig {
     /// A unit with no effect lines, so a stopped voice leaves true silence.
     pub fn dry(font: &Arc<SoundFont>) -> Self {
-        let mut settings = Settings::new(RATE);
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(RATE).with_reverb_and_chorus(false);
         Self::with(font, &settings)
     }
 

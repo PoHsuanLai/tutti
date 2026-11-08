@@ -1,7 +1,9 @@
 use std::io::Read;
 
+use tutti_types::{Cents, SampleRate, Samples};
+
 use crate::binary_reader::ReadExt;
-use crate::error::SoundFontError;
+use crate::error::Error;
 
 /// Represents a sample in the SoundFont.
 #[derive(Debug)]
@@ -20,7 +22,7 @@ pub struct SampleHeader {
 }
 
 impl SampleHeader {
-    fn new<R: Read>(reader: &mut R) -> Result<Self, SoundFontError> {
+    fn new<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let name = reader.read_fixed_length_string(20)?;
         let start = reader.read_i32()?;
         let end = reader.read_i32()?;
@@ -49,9 +51,9 @@ impl SampleHeader {
     pub(crate) fn read_from_chunk<R: Read>(
         reader: &mut R,
         size: usize,
-    ) -> Result<Vec<SampleHeader>, SoundFontError> {
+    ) -> Result<Vec<SampleHeader>, Error> {
         if size == 0 || !size.is_multiple_of(46) {
-            return Err(SoundFontError::InvalidSampleHeaderList);
+            return Err(Error::InvalidSampleHeaderList);
         }
 
         let count = size / 46 - 1;
@@ -67,53 +69,65 @@ impl SampleHeader {
         Ok(headers)
     }
 
-    /// Gets the name of the sample.
+    /// The name of the sample.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Gets the start point of the sample in the sample data.
-    pub fn start(&self) -> i32 {
-        self.start
+    /// The start point of the sample in the sample data: an absolute index of
+    /// 16-bit sample points (SF2 2.04 section 9.3), counted from the first.
+    #[must_use]
+    pub fn start(&self) -> Samples {
+        Samples(self.start as u32 as usize)
     }
 
-    /// Gets the end point of the sample in the sample data.
-    pub fn end(&self) -> i32 {
-        self.end
+    /// The end point of the sample in the sample data.
+    #[must_use]
+    pub fn end(&self) -> Samples {
+        Samples(self.end as u32 as usize)
     }
 
-    /// Gets the loop start point of the sample in the sample data.
-    pub fn start_loop(&self) -> i32 {
-        self.start_loop
+    /// The loop start point of the sample in the sample data.
+    #[must_use]
+    pub fn start_loop(&self) -> Samples {
+        Samples(self.start_loop as u32 as usize)
     }
 
-    /// Gets the loop end point of the sample in the sample data.
-    pub fn end_loop(&self) -> i32 {
-        self.end_loop
+    /// The loop end point of the sample in the sample data.
+    #[must_use]
+    pub fn end_loop(&self) -> Samples {
+        Samples(self.end_loop as u32 as usize)
     }
 
-    /// Gets the sample rate of the sample.
-    pub fn sample_rate(&self) -> i32 {
-        self.sample_rate
+    /// The rate the sample was recorded at.
+    #[must_use]
+    pub fn sample_rate(&self) -> SampleRate {
+        SampleRate(f64::from(self.sample_rate as u32))
     }
 
-    /// Gets the key number of the recorded pitch of the sample.
-    pub fn original_pitch(&self) -> i32 {
-        self.original_pitch as i32
+    /// The key number of the recorded pitch of the sample: 0 to 127, or 255
+    /// for an unpitched sample (section 7.10). A raw byte, not a `NoteNumber`,
+    /// because 255 is not a key.
+    #[must_use]
+    pub fn original_pitch(&self) -> u8 {
+        self.original_pitch
     }
 
-    /// Gets the pitch correction in cents that should be applied to the sample on playback.
-    pub fn pitch_correction(&self) -> i32 {
-        self.pitch_correction as i32
+    /// The pitch correction that should be applied to the sample on playback.
+    #[must_use]
+    pub fn pitch_correction(&self) -> Cents {
+        Cents(f32::from(self.pitch_correction))
     }
 
-    /// Gets the link info.
-    pub fn link(&self) -> i32 {
-        self.link as i32
+    /// The link info: the index of the sample this one is linked with.
+    #[must_use]
+    pub fn link(&self) -> u16 {
+        self.link
     }
 
-    /// Gets the sample type.
-    pub fn sample_type(&self) -> i32 {
-        self.sample_type as i32
+    /// The sample type: the `SFSampleLink` word (mono, right, left, linked, ROM).
+    #[must_use]
+    pub fn sample_type(&self) -> u16 {
+        self.sample_type
     }
 }

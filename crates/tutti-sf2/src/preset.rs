@@ -1,4 +1,7 @@
-use crate::error::SoundFontError;
+use tutti_ump::U7;
+
+use crate::bank::Bank;
+use crate::error::Error;
 use crate::instrument::Instrument;
 use crate::preset_info::PresetInfo;
 use crate::preset_region::PresetRegion;
@@ -9,8 +12,8 @@ use crate::zone::Zone;
 #[non_exhaustive]
 pub struct Preset {
     pub(crate) name: String,
-    pub(crate) patch_number: i32,
-    pub(crate) bank_number: i32,
+    pub(crate) patch_number: u16,
+    pub(crate) bank_number: u16,
     pub(crate) library: i32,
     pub(crate) genre: i32,
     pub(crate) morphology: i32,
@@ -23,12 +26,12 @@ impl Preset {
         preset_id: usize,
         zones: &[Zone],
         instruments: &[Instrument],
-    ) -> Result<Self, SoundFontError> {
+    ) -> Result<Self, Error> {
         let name = info.name.clone();
 
         let zone_count = info.zone_end_index - info.zone_start_index + 1;
         if zone_count <= 0 {
-            return Err(SoundFontError::InvalidPreset(preset_id));
+            return Err(Error::InvalidPreset(preset_id));
         }
 
         let span_start = info.zone_start_index as usize;
@@ -51,9 +54,9 @@ impl Preset {
         infos: &[PresetInfo],
         zones: &[Zone],
         instruments: &[Instrument],
-    ) -> Result<Vec<Preset>, SoundFontError> {
+    ) -> Result<Vec<Preset>, Error> {
         if infos.len() <= 1 {
-            return Err(SoundFontError::PresetNotFound);
+            return Err(Error::PresetNotFound);
         }
 
         // The last one is the terminator.
@@ -67,37 +70,42 @@ impl Preset {
         Ok(presets)
     }
 
-    /// Gets the name of the preset.
+    /// The name of the preset.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Gets the patch number of the preset.
-    pub fn patch_number(&self) -> i32 {
-        self.patch_number
+    /// The MIDI program the preset answers (`wPreset`, 0 to 127), or `None`
+    /// when the file's value is not a MIDI program: the preset cannot be played
+    /// but is kept (SF2 2.04 section 7.2).
+    #[must_use]
+    pub fn patch(&self) -> Option<U7> {
+        u8::try_from(self.patch_number).ok().and_then(U7::new)
     }
 
-    /// Gets the bank number of the preset.
-    pub fn bank_number(&self) -> i32 {
-        self.bank_number
+    /// The bank the preset answers (`wBank`), or `None` when the file's value
+    /// is not one: the preset cannot be played but is kept (section 7.2).
+    #[must_use]
+    pub fn bank(&self) -> Option<Bank> {
+        Bank::new(self.bank_number)
     }
 
-    /// Gets the library info.
+    /// The library info.
     pub fn library(&self) -> i32 {
         self.library
     }
 
-    /// Gets the genre info.
+    /// The genre info.
     pub fn genre(&self) -> i32 {
         self.genre
     }
 
-    /// Gets the morphology info.
+    /// The morphology info.
     pub fn morphology(&self) -> i32 {
         self.morphology
     }
 
-    /// Gets the regions of the preset.
+    /// The regions of the preset.
     pub fn regions(&self) -> &[PresetRegion] {
         &self.regions[..]
     }

@@ -8,6 +8,7 @@
 
 mod support;
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use support::rig::{RATE, Rig, timgm6mb};
 
@@ -39,15 +40,35 @@ fn a_rate_outside_16_to_192_khz_is_refused_with_the_rate() {
     }
 }
 
-// Mutation (run): letting a polyphony of 0 through leaves a core that can start
-// no voice, and fails the first assertion.
+// The polyphony is a count of voices that cannot be zero (`NonZeroUsize`), and
+// one voice is enough: a second note takes the first's place, so two notes
+// sound at the power of one, where a pool of two sounds both (two sines an
+// octave apart add in power, twice the one).
+//
+// Mutation (run): `Player::new` reading the polyphony as 64 whatever the
+// settings say lets both sound at once and fails the last assertion.
 #[test]
-fn no_voices_is_refused_with_the_value_and_one_is_enough() {
-    let mut settings = Settings::new(RATE);
-    settings.max_polyphony = 0;
-    assert!(matches!(refused(settings), Error::PolyphonyOutOfRange(0)));
-    settings.max_polyphony = 1;
-    assert!(SoundFontUnit::new(timgm6mb(), &settings).is_ok());
+fn a_pool_of_one_voice_gives_way_to_the_next_note() {
+    let font = support::font::one_preset(vec![vec![]]);
+    let level = |voices: usize| {
+        let settings = Settings::new(RATE)
+            .with_reverb_and_chorus(false)
+            .with_polyphony(NonZeroUsize::new(voices).unwrap());
+        let mut rig = Rig::with(&font, &settings);
+        rig.note_on(0, 60, 100);
+        rig.energy(4096);
+        rig.note_on(0, 72, 100);
+        rig.energy(8192);
+        let (left, _) = rig.render(4096);
+        left.iter().map(|s| s * s).sum::<f32>()
+    };
+    let one = level(1);
+    let two = level(2);
+    assert!(one > 1.0);
+    assert!(
+        two > one * 1.8,
+        "two voices sound both: {two} against {one}"
+    );
 }
 
 #[test]
@@ -348,7 +369,8 @@ fn cc_99_and_98_make_data_entry_ignore_the_rpn() {
 /// 0 of bank 1 plays the same sample 144 dB down. The loud one answers
 /// velocities 0 to 63 only.
 fn two_bank_soundfont() -> Arc<SoundFont> {
-    use support::font::{Inst, Preset, font, generator, range};
+    use support::font::{Inst, Preset, font};
+    use tutti_fixtures::sf2::{generator, range};
     font(
         &[
             Preset {

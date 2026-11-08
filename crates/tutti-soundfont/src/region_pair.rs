@@ -23,19 +23,19 @@ impl<'a> RegionPair<'a> {
     }
 
     pub(crate) fn sample_start(&self) -> i32 {
-        self.instrument.sample_start()
+        self.instrument.sample_start().get() as i32
     }
 
     pub(crate) fn sample_end(&self) -> i32 {
-        self.instrument.sample_end()
+        self.instrument.sample_end().get() as i32
     }
 
     pub(crate) fn sample_start_loop(&self) -> i32 {
-        self.instrument.sample_start_loop()
+        self.instrument.sample_start_loop().get() as i32
     }
 
     pub(crate) fn sample_end_loop(&self) -> i32 {
-        self.instrument.sample_end_loop()
+        self.instrument.sample_end_loop().get() as i32
     }
 
     pub(crate) fn modulation_lfo_to_pitch(&self) -> i32 {
@@ -177,7 +177,7 @@ impl<'a> RegionPair<'a> {
     }
 
     pub(crate) fn fine_tune(&self) -> i32 {
-        self.gs(GeneratorType::FineTune) + self.instrument.sample_pitch_correction()
+        self.gs(GeneratorType::FineTune) + self.instrument.sample_pitch_correction().get() as i32
     }
 
     pub(crate) fn sample_modes(&self) -> LoopMode {
@@ -193,23 +193,18 @@ impl<'a> RegionPair<'a> {
     }
 }
 
-/// The in-memory SoundFont builder the integration tests share.
-#[cfg(test)]
-#[path = "../tests/support/font.rs"]
-mod font;
-
 /// SF2 2.04 section 9.4: the generators of a preset zone add to those of an
 /// instrument zone in the generator's own unit, and section 9.3 says what each
 /// unit is. The zones are built in memory.
 #[cfg(test)]
 mod tests {
     use super::RegionPair;
-    use super::font::{self, Inst, Preset, generator};
+    use tutti_fixtures::sf2::{self as font, Inst, Preset, generator};
 
     /// The first pair of a font whose preset zone has `preset` generators and
     /// whose instrument zone has `instrument`.
     fn pair(preset: font::Zone, instrument: font::Zone) -> std::sync::Arc<tutti_sf2::SoundFont> {
-        font::font(
+        let bytes = font::bytes(
             &[Preset {
                 name: "p",
                 bank: 0,
@@ -220,6 +215,10 @@ mod tests {
                 name: "i",
                 zones: vec![instrument],
             }],
+        );
+        std::sync::Arc::new(
+            tutti_sf2::SoundFont::new(&mut std::io::Cursor::new(bytes))
+                .expect("the built SoundFont parses"),
         )
     }
 

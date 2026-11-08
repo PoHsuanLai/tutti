@@ -1081,7 +1081,8 @@ mod synths {
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig};
-    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_sf2::SoundFont;
+    use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
     use tutti_types::{Beat, Bpm, Seconds};
     use tutti_ump::{MidiChannel, MidiGroup, U7};
@@ -1122,8 +1123,7 @@ mod synths {
 
     /// A SoundFont unit at `rate`, on [`PRESET`].
     fn sf2(font: &Arc<SoundFont>, rate: f64) -> SoundFontUnit {
-        let mut settings = Settings::new(SampleRate(rate));
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(SampleRate(rate)).with_reverb_and_chorus(false);
         let mut unit = SoundFontUnit::new(Arc::clone(font), &settings).expect("the unit builds");
         unit.program_change(MidiChannel::FIRST, PRESET);
         unit

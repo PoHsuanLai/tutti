@@ -36,6 +36,7 @@ tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
+tutti-sf2 = { path = "../tutti-sf2", optional = true }
 tutti-spatial = { path = "../tutti-spatial", default-features = false, optional = true }
 tutti-dsp = { path = "../tutti-dsp", default-features = false, optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
@@ -138,7 +139,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardwar
 # session's feature of the same name, with `?` here because `session` is
 # optional; in bevy-tutti the session is always there.)
 synth = ["dep:tutti-polysynth", "tutti-session?/synth"]
-soundfont = ["midi", "dep:tutti-soundfont", "tutti-session?/soundfont"]
+soundfont = ["midi", "dep:tutti-soundfont", "dep:tutti-sf2", "tutti-session?/soundfont"]
 sampler = ["wav", "dep:tutti-sampler", "tutti-session?/sampler"]
 audio-io = ["io", "tutti-cpal?/capture", "tutti-session?/audio-io"]
 export = ["dep:tutti-export", "tutti-session?/export"]

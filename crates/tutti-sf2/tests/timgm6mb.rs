@@ -3,7 +3,8 @@
 use std::fs::File;
 
 use tutti_fixtures::asset;
-use tutti_sf2::{GeneratorType, SoundFont};
+
+use tutti_sf2::{Bank, GeneratorType, SoundFont};
 use tutti_ump::{NoteNumber, U7};
 
 fn timgm6mb() -> SoundFont {
@@ -19,10 +20,9 @@ fn the_file_has_presets_instruments_and_samples() {
     assert_eq!(soundfont.bits_per_sample(), 16);
     assert!(!soundfont.wave_data().is_empty());
     assert!(
-        soundfont
-            .presets()
-            .iter()
-            .any(|p| (p.bank_number(), p.patch_number()) == (0, 0)),
+        soundfont.presets().iter().any(
+            |p| (p.bank(), p.patch()) == (Some(Bank::Melodic(U7::new(0).unwrap())), U7::new(0))
+        ),
         "the acoustic grand piano"
     );
 }
@@ -92,9 +92,8 @@ fn every_region_names_a_real_sample_inside_the_wave_data() {
     for instrument in soundfont.instruments() {
         for region in instrument.regions() {
             assert!(region.sample_id() < soundfont.sample_headers().len());
-            assert!(0 <= region.sample_start());
             assert!(region.sample_start() < region.sample_end());
-            assert!((region.sample_end() as usize) < soundfont.wave_data().len());
+            assert!(region.sample_end().get() < soundfont.wave_data().len());
         }
     }
 }

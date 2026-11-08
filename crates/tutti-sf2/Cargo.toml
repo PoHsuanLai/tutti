@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+tutti-types = { path = "../tutti-types", default-features = false }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 
 [dev-dependencies]

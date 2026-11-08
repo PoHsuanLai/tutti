@@ -272,7 +272,8 @@ mod midi_soundfont_audio {
     use bevy_tutti::midi::{LiveMidi, LiveMidiInput, MidiSourceInstall, TuttiMidiPlugin};
     use tutti_midi_runtime::TimedMidiEvent;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_sf2::SoundFont;
+    use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::Transport;
     use tutti_types::{Beat, BeatDuration, SampleRate};
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -359,8 +360,7 @@ mod midi_soundfont_audio {
     /// Set up an app with a real soundfont synth wired to output.
     fn app_with_soundfont() -> (App, Entity) {
         let sf = soundfont();
-        let mut settings = Settings::new(SampleRate(SAMPLE_RATE));
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(SampleRate(SAMPLE_RATE)).with_reverb_and_chorus(false);
         let unit = SoundFontUnit::new(sf, &settings).expect("build the SoundFontUnit");
 
         let mut app = App::new();
@@ -534,7 +534,8 @@ mod midi_route {
     use tutti_midi_runtime::MidiInputNode;
     use tutti_midi_types::MidiIn;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
+    use tutti_sf2::SoundFont;
+    use tutti_soundfont::{Settings, SoundFontUnit};
     use tutti_transport::Transport;
     use tutti_types::SampleRate;
     use tutti_ump::{MidiChannel, MidiGroup};
@@ -595,8 +596,7 @@ mod midi_route {
         let (input_node, _) = graph.graph().insert(MidiInputNode::new(Some(
             Box::new(wire.clone()) as Box<dyn MidiIn>,
         )));
-        let mut settings = Settings::new(SampleRate(SAMPLE_RATE));
-        settings.reverb_and_chorus = false;
+        let settings = Settings::new(SampleRate(SAMPLE_RATE)).with_reverb_and_chorus(false);
         let unit = SoundFontUnit::new(soundfont(), &settings).expect("build the SoundFontUnit");
         let (synth_node, ()) = graph.graph().insert(unit);
         graph.graph().set_outputs_from(synth_node);

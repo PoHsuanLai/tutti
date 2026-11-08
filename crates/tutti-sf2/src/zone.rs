@@ -1,4 +1,4 @@
-use crate::error::SoundFontError;
+use crate::error::Error;
 use crate::generator::Generator;
 use crate::zone_info::ZoneInfo;
 
@@ -26,12 +26,9 @@ impl Zone {
         }
     }
 
-    pub(crate) fn create(
-        infos: &[ZoneInfo],
-        generators: &[Generator],
-    ) -> Result<Vec<Zone>, SoundFontError> {
+    pub(crate) fn create(infos: &[ZoneInfo], generators: &[Generator]) -> Result<Vec<Zone>, Error> {
         if infos.len() <= 1 {
-            return Err(SoundFontError::ZoneNotFound);
+            return Err(Error::ZoneNotFound);
         }
 
         // The last one is the terminator.

@@ -32,7 +32,7 @@ tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true
 tutti-io = { path = "../tutti-io", optional = true }
 tutti-codec = { path = "../tutti-codec", optional = true }
 tutti-export = { path = "../tutti-export", default-features = false, optional = true }
-tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
+tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
 tutti-sampler = { path = "../tutti-sampler", default-features = false, optional = true }
 tutti-polysynth = { path = "../tutti-polysynth", optional = true }
 tutti-soundfont = { path = "../tutti-soundfont", optional = true }
@@ -137,7 +137,7 @@ midi-hardware = ["midi", "dep:tutti-midi-hardware", "tutti-session?/midi-hardwar
 # Every one of these is bevy-tutti's feature MINUS its `/bevy` forwards. That
 # is the only systematic difference between the two tables, and it is the
 # whole point of this crate: `bevy-tutti`'s `modulation` pulls
-# `tutti-mod/bevy` + `tutti-types/bevy`, and its `sampler` pulls
+# `tutti-modulation/bevy` + `tutti-types/bevy`, and its `sampler` pulls
 # `tutti-sampler/bevy`. None of that belongs here. (Each also turns on the
 # session's feature of the same name, with `?` here because `session` is
 # optional; in bevy-tutti the session is always there.)
@@ -155,7 +155,7 @@ export-flac = ["export", "tutti-export/flac", "tutti-session?/export-flac"]
 export-aiff = ["export", "tutti-export/aiff", "tutti-session?/export-aiff"]
 export-ogg = ["export", "tutti-export/ogg", "tutti-session?/export-ogg"]
 spatial = ["dep:tutti-spatial", "tutti-session?/spatial"]
-modulation = ["dep:tutti-mod", "tutti-session?/modulation"]
+modulation = ["dep:tutti-modulation", "tutti-session?/modulation"]
 convolution = ["tutti-nodes/convolution", "tutti-session?/convolution"]
 
 # Axes bevy-tutti does not have: bevy-tutti does not depend on

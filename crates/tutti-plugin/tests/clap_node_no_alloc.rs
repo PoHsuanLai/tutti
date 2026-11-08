@@ -30,7 +30,7 @@ use std::time::Duration;
 use tutti_graph::{Offset, Transport, TransportChanges};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, LfoShape, Polarity, Wave};
 use tutti_nodes::automation::{AutomationEnvelope, AutomationPoint, ControlLaneNode, CurveType};
 use tutti_types::{Beat, Bpm, Samples};
 use tutti_types::{BeatDuration, Depth, PhaseIncrement};

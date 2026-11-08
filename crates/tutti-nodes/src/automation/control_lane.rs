@@ -10,7 +10,7 @@ use tutti_graph::{
     NodeParts, Offset, ParamRange, ParamRangeReader, ParamSegment, PlayReading, Prepare,
     SegmentShape, Shape, Status, Transport,
 };
-use tutti_mod::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
+use tutti_modulation::{Clock, ControlProgram, CurveSegment, MAX_LANE_INPUTS, ProgramTime, Wave};
 use tutti_rt::{ArcLend, PackedAtomic, Reader};
 use tutti_types::ChannelLayout;
 use tutti_types::{

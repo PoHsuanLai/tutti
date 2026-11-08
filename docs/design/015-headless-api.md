@@ -170,12 +170,12 @@ The ordered bootstrap in `build_on`, step by step:
 | `collect` (detail below) | `modulation/reconcile.rs:204-292` | logic | session |
 | `apply` / `after_commit` protocol (detail below) | `modulation/reconcile.rs:325-444` | logic | `Phase::Modulation`, `Phase::AfterCommit` |
 | Unresolved-target warning after 240 frames | `modulation/reconcile.rs:54` | logic | session, as a time (§4.4) |
-| `ModulationState` | `modulation/reconcile.rs:39-105` | logic, keyed by `Entity` | session, keyed by `tutti_mod`'s `TargetKey`/`SourceKey` |
+| `ModulationState` | `modulation/reconcile.rs:39-105` | logic, keyed by `Entity` | session, keyed by `tutti_modulation`'s `TargetKey`/`SourceKey` |
 | `ModulationRefused` → route/target entity | `modulation/reconcile.rs:109-185` | glue | stays |
 | `ModEntities` (`node`, `plugin_value`, `feed`) | `modulation/reconcile.rs:174-182` | the seam | becomes `ModKeys` (§4.6) |
 | `Declared` query | `modulation/reconcile.rs:186-324` | glue | stays, implements `ModKeys` |
-| `Lfo`, `Macro` → `tutti_mod::Source` | `modulation/declare.rs:142-243` | logic | **(c)** `tutti-mod` |
-| `Follower`, `NoteEnvelope` | `modulation/declare.rs:245-330` | logic (the `Source`) plus glue (the `Entity` they follow, `ModFeed::Audio(Entity)` at `:79`) | split: the `Source` half to **(c)** `tutti-mod`, the feed stays |
+| `Lfo`, `Macro` → `tutti_modulation::Source` | `modulation/declare.rs:142-243` | logic | **(c)** `tutti-modulation` |
+| `Follower`, `NoteEnvelope` | `modulation/declare.rs:245-330` | logic (the `Source`) plus glue (the `Entity` they follow, `ModFeed::Audio(Entity)` at `:79`) | split: the `Source` half to **(c)** `tutti-modulation`, the feed stays |
 | `AutomationTake`, `close_takes` | `modulation/declare.rs:446-530` | logic | session (`tutti-nodes`' automation `Recorder` plus the close rule) |
 | `ModSource`/`ModRoute`/`ModRange`/`Automation` components, `Mods` | `modulation/declare.rs` | glue | stays |
 
@@ -313,7 +313,7 @@ needing logic the other owns?
 - This is right for every piece with one owner, and §2 marks them.
 - It cannot hold the composition. The bootstrap needs `tutti-cpal`,
   `tutti-midi-hardware`, `tutti-sampler`'s streamer and the click. The
-  modulation protocol needs `tutti-nodes`, `tutti-mod` and the plugin
+  modulation protocol needs `tutti-nodes`, `tutti-modulation` and the plugin
   mirror. Export needs `tutti-export` and `tutti-plugin`'s render mode.
 - Putting the bootstrap in `tutti-cpal` (the notes' old suggestion,
   "device bootstrap in `tutti-cpal`") would make the device layer depend on
@@ -357,7 +357,7 @@ plugin crates, and `core/` is the floor.
 | `tracing` | always | logging; what `GraphRuntime`'s `bevy_log` calls become |
 | `tutti-cpal` | `device` | the sound card; off means offline only, with no ALSA headers |
 | `tutti-io` | `audio-io` | the pump (`Recorder`), mic |
-| `tutti-mod` | `modulation` | declarations |
+| `tutti-modulation` | `modulation` | declarations |
 | `tutti-midi-types`, `tutti-midi-runtime`, `tutti-midi-file` | `midi` | |
 | `tutti-midi-hardware` | `midi-hardware` | |
 | `tutti-sampler` | `sampler` | streamer, voices |
@@ -378,7 +378,7 @@ Constraints on the crate:
   crate.
 - **There is no `bevy` feature, and nothing reaches Bevy.** Any type a Bevy
   app wants reflected lives in the crate that owns it, behind that crate's
-  `bevy` feature, as today (`tutti-mod/bevy`).
+  `bevy` feature, as today (`tutti-modulation/bevy`).
 - **It is not an umbrella.** It never re-exports a crate whole (§8 check
   4). It re-exports single items its own signatures take, as any crate does.
 - No tutti crate depends on `tutti-session` except `bevy-tutti` and
@@ -552,7 +552,7 @@ addresses.
 it mints. The full example is §5.1.
 
 ```rust
-let lfo = s.mods().lfo(Lfo::sine().rate(BeatDuration(0.5)));    // a SourceKey; builders from tutti-mod
+let lfo = s.mods().lfo(Lfo::sine().rate(BeatDuration(0.5)));    // a SourceKey; builders from tutti-modulation
 s.mods().range(ParamRef::unit(filter, UnitParam::Cutoff), 0.0, 1_000.0);
 s.mods().route(lfo, ParamRef::unit(filter, UnitParam::Cutoff), Depth(0.3));
 ```
@@ -684,7 +684,7 @@ pub struct PhaseCx<'a> {
     pub mods: Option<ModInput<'a>>,
 }
 pub struct ModInput<'a> {
-    pub declarations: Declarations<'a>,   // tutti_mod's: borrowed slices
+    pub declarations: Declarations<'a>,   // tutti_modulation's: borrowed slices
     pub keys: &'a dyn ModKeys,            // §4.6
 }
 
@@ -804,7 +804,7 @@ Two things are deliberately not offered:
 
 ### 4.6 Modulation keys
 
-`tutti_mod`'s declarations key targets by `TargetKey { node: u64, param }`,
+`tutti_modulation`'s declarations key targets by `TargetKey { node: u64, param }`,
 sources by `SourceKey(u64)` and routes by `RouteKey(u64)`. Today the u64 is
 an `Entity`'s bits, and `ModHostOver` decodes it (`graph/runtime.rs:998`,
 `:1020`).
@@ -837,7 +837,7 @@ pub trait ModKeys {
 - **Headless:** `s.mods()` keeps its own declarations. It mints
   `SourceKey`s and `RouteKey`s from a counter, and keys targets by the
   `NodeKey` bits, so the session's own resolver applies.
-  There is no new id type: `tutti_mod::SourceId(pub u32)` (`program.rs:46`)
+  There is no new id type: `tutti_modulation::SourceId(pub u32)` (`program.rs:46`)
   is the compiler's own index and stays out of the API.
 - **Bevy:** `Declared` implements `ModKeys` over entities. The re-apply
   loop, the resync and the warning are the session's either way.
@@ -891,7 +891,7 @@ loop { for e in s.update() { log(e) } sleep(frame) }
 - This is line for line the Bevy example, with `ParamRef` taking an
   `NodeKey` where Bevy takes an `Entity`. The session's `ParamRef` is
   `{ node: NodeKey, param: ParamAddr }`.
-- `m.follower` takes `tutti-mod`'s `Follower` (attack and release, the
+- `m.follower` takes `tutti-modulation`'s `Follower` (attack and release, the
   `Source` half) and the node it follows (the feed). Bevy's `Follower`
   component keeps its `input: Entity` and wraps the same builder.
 - The 250 lines of `headless_modulation.rs` (the hand-built `ModHost`, the
@@ -1116,7 +1116,7 @@ with its failure message naming the alternative.
    `crates/tutti-session/src` holds a whole-crate re-export: `pub use
    tutti_x as …;`, `pub use tutti_x;` or `pub use tutti_x::*;`. Single-item
    re-exports are allowed.
-   - Mutation: add `pub use tutti_mod as modulation;` to the crate root.
+   - Mutation: add `pub use tutti_modulation as modulation;` to the crate root.
      The script fails and names `tutti` as the umbrella.
 
 `no_logic.rs` cannot tell "logic" from "glue" in general. The checks pin
@@ -1253,9 +1253,9 @@ not the loader; the loader-extension and write tests stay unchanged, as do
 - `tutti-soundfont`: `SoundFontUnit::with_preset(font, rate, channel,
   preset)`: the rate cast, `SoundFontUnit::new` and `program_change` of
   `soundfont.rs:205-212` and `:266`.
-- `tutti-mod`: the `Lfo` and `Macro` builders, and the `Source` half of
+- `tutti-modulation`: the `Lfo` and `Macro` builders, and the `Source` half of
   `Follower` (attack, release) and `NoteEnvelope` (ADSR), each producing a
-  `Source`. Reflect stays behind `tutti-mod/bevy`.
+  `Source`. Reflect stays behind `tutti-modulation/bevy`.
 - `bevy-tutti` keeps the rest: `Follower`'s and `NoteEnvelope`'s followed
   `Entity` and `ModFeed`, the `AsyncComputeTaskPool` spawns of the read and
   the snapshot, and `MAX_CONCURRENT_LOADS`.
@@ -1291,10 +1291,10 @@ The step is as scoped, with these specifics:
   60 Hz, later under jitter), not on its 3rd. Its adapter tests space their
   frames half a window apart; the rule's own tests, with explicit `now`s,
   are `tutti-plugin`'s. `PluginLiveness` stays as the component's mirror.
-- `tutti_mod::{Lfo, LfoRate, Macro, Follower, NoteEnvelope}`, each a
+- `tutti_modulation::{Lfo, LfoRate, Macro, Follower, NoteEnvelope}`, each a
   `Source` through `From`. `bevy_tutti::modulation` re-exports `Lfo`,
   `LfoRate` and `Macro`; its `Follower` and `NoteEnvelope` wrap the
-  `tutti-mod` builder in an `envelope` field beside their entity. No
+  `tutti-modulation` builder in an `envelope` field beside their entity. No
   `Reflect` was added: none of these was reflected before.
 - `SoundFontUnit::with_preset` takes a `SampleRate`; `bevy-tutti`'s
   off-thread build now applies the preset too.

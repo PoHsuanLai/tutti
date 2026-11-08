@@ -23,7 +23,7 @@
 //! carries no target trait.
 
 use audio_automation::{AutomationEnvelope, AutomationPoint, CurveType};
-use tutti_mod::Curve;
+use tutti_modulation::Curve;
 use tutti_types::{Beat, BeatDuration};
 
 // ───────────────────────────── mode ──────────────────────────────

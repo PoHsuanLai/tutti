@@ -1,4 +1,4 @@
-# tutti-mod
+# tutti-modulation
 
 Modulation for the Tutti engine, as a **pure compiler** (design doc 014 §7).
 A host declares sources, routes and targets; [`compile()`] turns them into one
@@ -43,7 +43,7 @@ It depends only on `tutti-types` and `audio-automation` (for `CurveType`).
 An LFO on a filter's cutoff, a quarter of the range deep:
 
 ```rust
-use tutti_mod::{
+use tutti_modulation::{
     compile, Clock, CurveType, Declarations, LfoShape, Polarity, ProgramTime, RouteDecl,
     RouteKey, RouteTarget, Source, SourceKey, TargetDecl, TargetKey, Wave,
 };

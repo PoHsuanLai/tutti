@@ -30,7 +30,7 @@ use tutti_graph::{
     Editor, EventOut, GraphBuilder, IntoNode, NodeParts, PARAM_DECLICK, ParamIn, ParamRange,
     Prepare, Renderer,
 };
-use tutti_mod::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
+use tutti_modulation::{Amount, Clock, ControlProgram, Layer, LayerId, Polarity, Wave};
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_nodes::{
     BrickwallLimiterNode, BusStripNode, CompressorNode, DelayLineNode, DistortionNode, GateNode,

@@ -1,12 +1,12 @@
 [package]
-name = "tutti-mod"
+name = "tutti-modulation"
 version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Modulation for the Tutti engine: a pure compiler from sources and routes to one control program per target"
 license.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tutti-mod"
+documentation = "https://docs.rs/tutti-modulation"
 readme = "README.md"
 keywords = ["audio", "modulation", "lfo"]
 categories = ["multimedia::audio"]

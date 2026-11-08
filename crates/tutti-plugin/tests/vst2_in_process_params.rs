@@ -27,7 +27,7 @@ use tutti_graph::contract::Direct;
 use tutti_graph::{
     Event, ForkMode, ForkTarget, GraphBuilder, Offset, ParamRamp, Prepare, Transport,
 };
-use tutti_mod::ControlProgram;
+use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_plugin::handles::{Normalized, ParamId, PluginHandle};
 use tutti_plugin::{InProcessVst2Client, in_process_vst2_client};

@@ -40,7 +40,7 @@ thiserror.workspace = true
 # The sound card. Off: offline only, and no ALSA headers needed.
 tutti-cpal = { path = "../tutti-cpal", default-features = false, optional = true }
 tutti-io = { path = "../tutti-io", optional = true }
-tutti-mod = { path = "../tutti-mod", default-features = false, optional = true }
+tutti-modulation = { path = "../tutti-modulation", default-features = false, optional = true }
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, optional = true }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false, optional = true }
 tutti-midi-file = { path = "../tutti-midi-file", optional = true }
@@ -61,7 +61,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types", optional = true }
 default = []
 device = ["dep:tutti-cpal"]
 audio-io = ["dep:tutti-io", "tutti-cpal?/capture"]
-modulation = ["dep:tutti-mod"]
+modulation = ["dep:tutti-modulation"]
 midi = [
     "dep:tutti-midi-types",
     "dep:tutti-midi-runtime",

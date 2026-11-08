@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tutti_graph::EventOut;
-use tutti_mod::{
+use tutti_modulation::{
     Curve, Declarations, Follower, Lfo, Macro, NoteEnvelope, RouteDecl, RouteKey, RouteTarget,
     Source, SourceKey, TargetDecl, TargetKey,
 };
@@ -136,7 +136,7 @@ impl ModRefusal {
     /// The route it names: a route whose follower is downstream of its own
     /// target, or one the compile refused.
     pub fn route(&self) -> Option<RouteKey> {
-        use tutti_mod::CompileError as C;
+        use tutti_modulation::CompileError as C;
         match self {
             Self::Apply(ReconcileError::Cycle { route })
             | Self::Apply(ReconcileError::Compile(
@@ -155,7 +155,7 @@ impl ModRefusal {
 
     /// The target it names.
     pub fn target(&self) -> Option<TargetKey> {
-        use tutti_mod::CompileError as C;
+        use tutti_modulation::CompileError as C;
         match self {
             Self::Apply(
                 ReconcileError::WrongTarget(t)
@@ -178,7 +178,7 @@ impl ModRefusal {
 
     /// The source it names.
     pub fn source(&self) -> Option<SourceKey> {
-        use tutti_mod::CompileError as C;
+        use tutti_modulation::CompileError as C;
         match self {
             Self::Apply(
                 ReconcileError::WrongFeed(s)
@@ -204,7 +204,7 @@ impl std::fmt::Display for ModRefusal {
 
 impl std::error::Error for ModRefusal {}
 
-/// The targets of a set of declarations, as `tutti_mod` takes them, from a
+/// The targets of a set of declarations, as `tutti_modulation` takes them, from a
 /// host's ranges and automations: a range and an automation on one target
 /// make one [`TargetDecl`]; an automation with no range is unclamped
 /// (`±∞`); an automation whose curve is `None` (a recording take is open on
@@ -802,8 +802,8 @@ impl Mods<'_> {
                 source,
                 to: RouteTarget::Param(target.key()),
                 depth,
-                polarity: tutti_mod::Polarity::Bipolar,
-                curve: tutti_mod::CurveType::Linear,
+                polarity: tutti_modulation::Polarity::Bipolar,
+                curve: tutti_modulation::CurveType::Linear,
             },
         );
         key

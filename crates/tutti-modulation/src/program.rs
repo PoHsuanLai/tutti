@@ -333,7 +333,7 @@ impl std::error::Error for ProgramError {}
 /// every program a lane reads holds those invariants.
 ///
 /// ```
-/// use tutti_mod::{
+/// use tutti_modulation::{
 ///     Amount, Clock, ControlProgram, CurveType, Layer, LayerId, LfoShape, Polarity,
 ///     ProgramTime, Wave,
 /// };

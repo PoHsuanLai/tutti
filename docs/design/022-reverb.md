@@ -309,7 +309,7 @@ ChannelLayout }`. `Effort` is a three-variant enum here because `Cost` is
 ### 4.1 Why not one engine that runs every network
 
 An engine that interprets any `Network` would be the fixed-shape trap that old
-`tutti-mod` fell into, in a new place. It would block: fixed-N matrix kernels and
+`tutti-modulation` fell into, in a new place. It would block: fixed-N matrix kernels and
 const generics (a Hadamard of 8 lines is a handful of butterflies, not a generic
 matrix-vector product); SIMD across lines; fused comb loops (Freeverb's
 `process` runs one comb over a whole block); and Freeverb's exact float order,
@@ -526,7 +526,7 @@ real (two algorithms, the enum). After 1b, 1c, 2 and 3b are independent files;
 ## 10. What the reverb asks of modulation
 
 The owner asked whether tutti's modulation design survives a real, demanding
-node. Each item is answered against the code on `main`; `tutti-mod` is renamed
+node. Each item is answered against the code on `main`; `tutti-modulation` is renamed
 `tutti-modulation` in a separate PR, so the new name is used here. Verdict: the
 design handles all five; the smallest changes are two documented conventions
 and appending kinds.

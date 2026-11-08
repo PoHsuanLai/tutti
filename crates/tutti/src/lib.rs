@@ -109,11 +109,11 @@ pub use tutti_spatial as spatial;
 #[cfg(feature = "dsp")]
 pub use tutti_dsp as dsp;
 
-/// Modulation (`tutti-mod`): sources, routes and the compiler that turns
+/// Modulation (`tutti-modulation`): sources, routes and the compiler that turns
 /// them into one control program per param. Feature
 /// `modulation`.
 #[cfg(feature = "modulation")]
-pub use tutti_mod as modulation;
+pub use tutti_modulation as modulation;
 
 // --- midi -------------------------------------------------------------------
 

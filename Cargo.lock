@@ -402,7 +402,7 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-plugin-db",
@@ -4208,7 +4208,7 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-polysynth",
@@ -4525,7 +4525,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tutti-mod"
+name = "tutti-modulation"
 version = "0.0.1"
 dependencies = [
  "audio-automation",
@@ -4546,7 +4546,7 @@ dependencies = [
  "tutti-dsp",
  "tutti-engine",
  "tutti-graph",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-rt",
  "tutti-transport",
@@ -4585,7 +4585,7 @@ dependencies = [
  "tutti-graph",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin-db",
  "tutti-plugin-types",
@@ -4690,7 +4690,7 @@ dependencies = [
  "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-types",
  "tutti-ump",
@@ -4737,7 +4737,7 @@ dependencies = [
  "tutti-engine",
  "tutti-fixtures",
  "tutti-graph",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-rt",
  "tutti-sampler",
@@ -4766,7 +4766,7 @@ dependencies = [
  "tutti-midi-hardware",
  "tutti-midi-runtime",
  "tutti-midi-types",
- "tutti-mod",
+ "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin",
  "tutti-plugin-types",

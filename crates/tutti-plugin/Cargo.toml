@@ -136,7 +136,7 @@ tutti-export = { path = "../tutti-export", default-features = false, features = 
 # automation node. Dev-only: the node itself names no lane.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 # The lane's `ControlProgram`, for the tests and the example that build one.
-tutti-mod = { path = "../tutti-mod", default-features = false }
+tutti-modulation = { path = "../tutti-modulation", default-features = false }
 criterion.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }

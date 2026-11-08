@@ -108,9 +108,9 @@ tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 tutti-engine = { path = "../tutti-engine" }
 tutti-transport = { path = "../tutti-transport" }
 # `ControlProgram`, for a control lane on a voice's gain port
-# (`voice_gain_survives_commit.rs`). No cycle: `tutti-mod` names no tutti
+# (`voice_gain_survives_commit.rs`). No cycle: `tutti-modulation` names no tutti
 # crate but `tutti-types`.
-tutti-mod = { path = "../tutti-mod", default-features = false }
+tutti-modulation = { path = "../tutti-modulation", default-features = false }
 
 tracing-subscriber = "0.3"
 insta = { version = "1.41", features = ["yaml"] }

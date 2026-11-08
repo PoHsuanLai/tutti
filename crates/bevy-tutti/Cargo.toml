@@ -63,7 +63,7 @@ tutti-spatial = { path = "../tutti-spatial", default-features = false, optional 
 # Optional subsystems (gated by bevy-tutti features below).
 # The modulation compiler the declarations compile through; the `modulation`
 # feature turns on its `bevy` feature (Reflect on its vocabulary).
-tutti-mod = { path = "../tutti-mod", optional = true, default-features = false }
+tutti-modulation = { path = "../tutti-modulation", optional = true, default-features = false }
 tutti-sampler = { path = "../tutti-sampler", optional = true, default-features = false }
 # The I/O edge. Not optional: `AudioPump` (`graph::pump`, always compiled)
 # is a component around `tutti_io::Recorder`, the one pump loop. `audio-io`
@@ -148,10 +148,10 @@ convolution = ["tutti-nodes/convolution", "tutti-session/convolution"]
 
 # Modulation as declarations (`Mods`, `ModRoute`, `ModRange`) that compile to
 # control lanes.
-# `tutti-mod/bevy` is what makes the components reflectable — it carries the
+# `tutti-modulation/bevy` is what makes the components reflectable — it carries the
 # `Reflect` derives on the shape vocabulary and pulls the reflection features of
 # the units and the curve type underneath.
-modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy", "tutti-session/modulation"]
+modulation = ["dep:tutti-modulation", "tutti-modulation/bevy", "tutti-types/bevy", "tutti-session/modulation"]
 
 # Audio formats. The decoder is `tutti-codec`'s (always a dependency, see
 # above); the sampler forwards to it too when it is on.

@@ -25,10 +25,11 @@ test *ARGS: plugin-server
 
 # The AU mapping-family claim, which needs third-party Audio Units installed.
 # It hard-fails rather than skipping when none is present — deliberately — so it
-# is excluded from CI and run on purpose here, on a machine that has them.
+# is behind the `installed-units` feature: CI lints it, and it runs on purpose
+# here, on a macOS machine that has them.
 test-au-installed:
-    cargo test --locked -p tutti-au-host --test au_midi_map \
-        no_installed_third_party_unit_implements_the_mapping_family
+    cargo nextest run --locked -p tutti-au-host --features installed-units \
+        -E 'test(no_installed_third_party_unit_implements_the_mapping_family)'
 
 # The custom-harness editor tests. `cargo test` just execs the binary, which is
 # what a `harness = false` main wants.

@@ -14,6 +14,14 @@ categories = ["multimedia::audio", "os::macos-apis"]
 [lints]
 workspace = true
 
+[features]
+# `tests/au_midi_map.rs`'s claim about third-party Audio Units that are
+# installed on the machine (TDR Nova, TAL-NoiseMaker, TAL Reverb 4). It fails,
+# never skips, where they are absent, so it is compiled out unless asked for:
+# CI lints it (`clippy (macos)`) and a developer with the units runs it with
+# `just test-au-installed`. It gates one test and adds no code to the library.
+installed-units = []
+
 [dependencies]
 tutti-plugin-types = { path = "../tutti-plugin-types" }
 # Structured errors (`AuError`), matching the sibling format hosts.

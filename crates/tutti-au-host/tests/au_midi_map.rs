@@ -66,9 +66,10 @@
 use std::sync::Mutex;
 
 mod support;
+#[cfg(feature = "installed-units")]
+use support::corpus::THIRD_PARTY;
 use support::corpus::{
-    AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, THIRD_PARTY,
-    every_component,
+    AuRef, DELAY, INVALID_PROPERTY, LOWPASS, MIDI_SYNTH, N_BAND_EQ, SAMPLER, every_component,
 };
 
 use tutti_au_host::AuInstance;
@@ -297,6 +298,11 @@ fn nothing_implements_the_deprecated_midi_control_mapping_property() {
 ///
 /// Absent third-party units are skipped, not failed — the crate's rule is that
 /// only Apple's units are guaranteed present.
+///
+/// Behind the `installed-units` feature (`just test-au-installed`): none of the
+/// units is installed on a hosted runner, and a test that can only fail there
+/// is compiled out rather than filtered by name or skipped.
+#[cfg(feature = "installed-units")]
 #[test]
 fn no_installed_third_party_unit_implements_the_mapping_family() {
     let _g = lock();

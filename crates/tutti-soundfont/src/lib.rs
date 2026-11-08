@@ -109,7 +109,7 @@ pub const SYNTH_BLOCK_FRAMES: usize = Render::BLOCK;
 /// ```no_run
 /// use std::fs::File;
 /// use std::sync::Arc;
-/// /// use tutti_types::SampleRate;
+/// use tutti_types::SampleRate;
 /// use tutti_ump::{MidiChannel, U7};
 /// use tutti_soundfont::{Settings, SoundFont, SoundFontUnit};
 ///

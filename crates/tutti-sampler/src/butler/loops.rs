@@ -991,8 +991,13 @@ mod tests {
         let wave = Arc::new(make_mono_wave(
             &(0..LEN).map(|i| i as f32).collect::<Vec<_>>(),
         ));
-        let (mut writer, shared) =
-            RegionBuffer::for_file(RegionId(1), std::path::PathBuf::new(), LEN, 1u16, LEN);
+        let (mut writer, shared) = RegionBuffer::for_file(
+            RegionId(1),
+            std::path::PathBuf::new(),
+            LEN,
+            tutti_types::ChannelTopology::new([tutti_types::Speaker::FrontCenter]),
+            LEN,
+        );
         writer.set_resident(Arc::clone(&wave));
         let mut held = vec![0.0f32; 10_000];
         writer.fill_with(&Mapping::plain(LEN), 0, &mut held);

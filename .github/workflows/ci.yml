@@ -120,7 +120,7 @@ jobs:
       # And `tutti-voicing`, which keeps its modules private.
       - run: scripts/check-canonical-paths.sh tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
-      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
+      - run: scripts/check-canonical-paths.sh tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
       # The vendored VST3 SDK is three Steinberg submodules, documented as
       # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
       # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
@@ -841,6 +841,11 @@ jobs:
       # borrow sees the last one's writes), against the shipped code: one
       # model, unbounded, under a second.
       - run: cargo test --locked -p tutti-rt --release --test cell_loom
+      # `Doorbell` (a ring before, during or between parks is never lost),
+      # against the shipped code. Unbounded (about 45 s): the plain-store
+      # variant its model guards against needs 4 preemptions, and
+      # `loom-parallel` sets 3 for the whole job, which cannot be unset.
+      - run: cargo test --locked -p tutti-rt --release --test doorbell_loom
       - run: cargo test --locked -p tutti-shm-model --release
 
   # The parallel executor's runtime primitives (doc 013), each

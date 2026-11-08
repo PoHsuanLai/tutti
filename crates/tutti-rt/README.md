@@ -24,6 +24,8 @@ taking the unit vocabulary.
 - **`with_no_denormals`** — runs a closure with subnormals flushed to zero and restores the mode after, unwinding included.
 - **`level_cell()`** — a peak and an energy the audio thread folds each block
   into and one reader takes whole since its last take (a level meter's lane).
+- **`Doorbell`** — wakes one parked thread from the audio thread (a futex wake only
+  if a sleeper is parked), with no wake-up lost between the sleeper's check and its park.
 - **`ArcLend`/`Loan`/`Reader`** — the publish cell, re-exported from `arc-lend`:
   a control thread publishes non-scalar state, the audio thread only borrows it.
 
